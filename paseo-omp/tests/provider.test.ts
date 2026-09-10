@@ -1696,7 +1696,9 @@ describe("OMP direct provider", () => {
       ),
     ).toEqual([expect.objectContaining({ state: "failed" })]);
 
-    const recoveredTurn = turnIdFrom(await startPrompt(connection, events, "host-recovered", "continue"));
+    const recoveredTurn = turnIdFrom(
+      await startPrompt(connection, events, "host-recovered", "continue"),
+    );
     await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
     for (const turnId of [firstTurn, recoveredTurn]) {
       expect(
@@ -1990,7 +1992,9 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         result: expect.objectContaining({
           type: "failed",
-          error: expect.objectContaining({ message: expect.stringContaining("resumed native session") }),
+          error: expect.objectContaining({
+            message: expect.stringContaining("resumed native session"),
+          }),
         }),
       }),
     );
@@ -2000,22 +2004,32 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         result: expect.objectContaining({
           type: "failed",
-          error: expect.objectContaining({ message: expect.stringContaining("candidate close failed") }),
+          error: expect.objectContaining({
+            message: expect.stringContaining("candidate close failed"),
+          }),
         }),
       }),
     );
     expect(runtime.starts).toHaveLength(2);
 
-    await connection.send({ type: "session.close", requestId: "candidate-close", sessionId: "session-1" });
+    await connection.send({
+      type: "session.close",
+      requestId: "candidate-close",
+      sessionId: "session-1",
+    });
     const closeFailure = await events.waitFor(
       (event) => event.type === "request.failed" && event.requestId === "candidate-close",
     );
     expect(closeFailure).toEqual(
-      expect.objectContaining({ error: { message: "OMP session close failed: candidate close failed" } }),
+      expect.objectContaining({
+        error: { message: "OMP session close failed: candidate close failed" },
+      }),
     );
     const closed = await events.waitFor((event) => event.type === "session.closed");
     expect(closed).toEqual(
-      expect.objectContaining({ error: { message: "OMP session close failed: candidate close failed" } }),
+      expect.objectContaining({
+        error: { message: "OMP session close failed: candidate close failed" },
+      }),
     );
     await connection.close();
   });
@@ -2199,9 +2213,17 @@ describe("OMP direct provider", () => {
     session.abortError = new Error("abort rejected");
     await startPrompt(connection, events, "abort-error-turn", "work");
 
-    await connection.send({ type: "session.interrupt", requestId: "abort-error-one", sessionId: "session-1" });
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "abort-error-one",
+      sessionId: "session-1",
+    });
     await observed.promise;
-    await connection.send({ type: "session.interrupt", requestId: "abort-error-two", sessionId: "session-1" });
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "abort-error-two",
+      sessionId: "session-1",
+    });
     const firstFailure = events.waitFor(
       (event) => event.type === "request.failed" && event.requestId === "abort-error-one",
     );
