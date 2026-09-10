@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   buildOmpSpawnRequest,
@@ -709,7 +709,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const runtime = new OmpRpcRuntime({

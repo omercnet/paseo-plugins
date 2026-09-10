@@ -177,10 +177,7 @@ export function createOmpConnection(
   );
   const listeners = new Set<(event: ProviderEvent) => void>();
   const sessions = new Map<string, { token: symbol; session: OmpProviderSession }>();
-  const opening = new Map<
-    string,
-    { token: symbol; promise: Promise<OmpProviderSession> }
-  >();
+  const opening = new Map<string, { token: symbol; promise: Promise<OmpProviderSession> }>();
   const shutdown = new AbortController();
   const activeOperations = new Set<Promise<void>>();
   let closing = false;

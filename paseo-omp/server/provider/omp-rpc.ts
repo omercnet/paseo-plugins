@@ -424,7 +424,8 @@ function buildOmpEnvironment(
       throw new Error("OMP provider credential is too short for safe redaction");
     }
     totalBytes += utf8Bytes(name) + valueBytes;
-    if (totalBytes > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP inherited environment is too large");
+    if (totalBytes > MAX_ENV_TOTAL_LENGTH)
+      throw new Error("OMP inherited environment is too large");
     env[name] = value;
     if (isProviderAuth && value.length > 0) sensitiveValues.push(value);
   }
@@ -432,12 +433,17 @@ function buildOmpEnvironment(
   for (const name in sessionEnv ?? {}) {
     if (!Object.hasOwn(sessionEnv ?? {}, name)) continue;
     entryCount += 1;
-    if (entryCount > MAX_ENV_ENTRIES) throw new Error("OMP session environment has too many entries");
+    if (entryCount > MAX_ENV_ENTRIES)
+      throw new Error("OMP session environment has too many entries");
     const value = (sessionEnv as Readonly<Record<string, string>>)[name];
     if (!ENV_NAME.test(name) || BLOCKED_SESSION_ENV.test(name.toUpperCase())) {
       throw new Error("OMP session environment contains a forbidden variable");
     }
-    if (typeof value !== "string" || utf8Bytes(value) > MAX_ENV_VALUE_LENGTH || value.includes("\0")) {
+    if (
+      typeof value !== "string" ||
+      utf8Bytes(value) > MAX_ENV_VALUE_LENGTH ||
+      value.includes("\0")
+    ) {
       throw new Error("OMP session environment contains an invalid value");
     }
     if (value.length > 0 && utf8Bytes(value) < 4) {
@@ -451,10 +457,7 @@ function buildOmpEnvironment(
   return { env, sensitiveValues };
 }
 
-function collectAmbientMcpSecrets(
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): string[] {
+function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[] {
   const home = env.HOME ?? env.USERPROFILE ?? homedir();
   const agentDir = env.PI_CODING_AGENT_DIR ?? join(home, env.PI_CONFIG_DIR ?? ".omp", "agent");
   const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
@@ -503,7 +506,9 @@ function collectAmbientMcpSecrets(
     } catch {
       throw new Error("OMP MCP configuration cannot be secured");
     }
-    if (boundedJsonBytes(parsed, MAX_MCP_CONFIG_BYTES, MAX_ARRAY_ITEMS) === Number.POSITIVE_INFINITY) {
+    if (
+      boundedJsonBytes(parsed, MAX_MCP_CONFIG_BYTES, MAX_ARRAY_ITEMS) === Number.POSITIVE_INFINITY
+    ) {
       throw new Error("OMP MCP configuration cannot be secured");
     }
     if (!parsed || typeof parsed !== "object") continue;
@@ -825,7 +830,12 @@ class OmpRpcProcess {
       this.pending.delete(id);
       result.reject(new Error("OMP RPC request timed out"));
     }, timeoutMs);
-    this.pending.set(id, { resolve: result.resolve, reject: result.reject, timer, bytes: payload.byteLength });
+    this.pending.set(id, {
+      resolve: result.resolve,
+      reject: result.reject,
+      timer,
+      bytes: payload.byteLength,
+    });
     this.pendingWriteBytes += payload.byteLength;
     try {
       this.child.stdin.write(payload, (cause) => {

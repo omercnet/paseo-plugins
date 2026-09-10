@@ -19,7 +19,7 @@ const BEARER_CREDENTIAL = /\bBearer\s+[A-Za-z0-9._~+/=-]{1,}/giu;
 const CREDENTIAL_ASSIGNMENT =
   /\b(api[ _-]?key|access[ _-]?token|refresh[ _-]?token|authorization|cookie|credential|password|private[ _-]?key|secret|session[ _-]?token)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
 const TOKEN_CREDENTIAL = /\b(?:sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_-]{8,}\b/gu;
-const POSIX_ABSOLUTE_PATH = /(^|[\s("'=:\[])(\/(?!\/)[^\s"'`<>\])},;]+)/gu;
+const POSIX_ABSOLUTE_PATH = /(^|[\s("'=:[])(\/(?!\/)[^\s"'`<>\])},;]+)/gu;
 const WINDOWS_ABSOLUTE_PATH = /\b[A-Za-z]:\\[^\s"'`<>\])},;]+/gu;
 
 export function utf8Bytes(value: string): number {
@@ -92,7 +92,8 @@ export class BoundedStringSet {
   private readonly values = new Map<string, true>();
 
   constructor(private readonly limit: number) {
-    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Bounded set limit must be positive");
+    if (!Number.isSafeInteger(limit) || limit < 1)
+      throw new Error("Bounded set limit must be positive");
   }
 
   has(value: string): boolean {
@@ -175,11 +176,7 @@ export class OmpPublicDataFilter {
         ) {
           continue;
         }
-        output[safeKey] = visit(
-          (value as Record<string, unknown>)[childKey],
-          childKey,
-          depth + 1,
-        );
+        output[safeKey] = visit((value as Record<string, unknown>)[childKey], childKey, depth + 1);
       }
       return output;
     };

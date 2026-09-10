@@ -100,7 +100,6 @@ export class OmpTimelineProjector {
     this.dataFilter.addSensitiveValues(values);
   }
 
-
   project(event: OmpRpcEvent, turnId: string): void {
     if (this.closed) return;
     if (
@@ -326,7 +325,10 @@ export class OmpTimelineProjector {
   private messageIdForNativeIdentity(nativeIdentity: string): string | undefined {
     const existing = this.turnNativeMessageIds.get(nativeIdentity);
     if (existing) return existing;
-    if (this.nativeIdentitySaturated || this.turnNativeMessageIds.size >= MAX_TURN_NATIVE_IDENTITIES) {
+    if (
+      this.nativeIdentitySaturated ||
+      this.turnNativeMessageIds.size >= MAX_TURN_NATIVE_IDENTITIES
+    ) {
       this.nativeIdentitySaturated = true;
       return undefined;
     }
@@ -344,11 +346,14 @@ export class OmpTimelineProjector {
   private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {
     const nativeIdentity = assistantIdentity(message);
     if (this.stream && nativeIdentity && this.stream.nativeIdentity !== nativeIdentity) {
-      if (!this.stream.nativeIdentity) {
-        if (!this.stream.published) {
-          this.stream.messageId = this.messageIdForNativeIdentity(nativeIdentity);
-          this.stream.nativeIdentity = nativeIdentity;
+      if (!this.stream.nativeIdentity && !this.stream.published) {
+        const messageId = this.messageIdForNativeIdentity(nativeIdentity);
+        if (!messageId) {
+          this.stream = null;
+          return;
         }
+        this.stream.messageId = messageId;
+        this.stream.nativeIdentity = nativeIdentity;
       } else {
         this.flush();
         this.stream = null;

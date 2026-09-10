@@ -3156,15 +3156,17 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("provider-internal-response-id");
     expect(visible).not.toContain("token-not-from-env");
     const toolIds = events.flatMap((event) =>
-      event.type === "timeline.item" && event.item.type === "tool_call"
-        ? [event.item.callId]
-        : [],
+      event.type === "timeline.item" && event.item.type === "tool_call" ? [event.item.callId] : [],
     );
     expect(new Set(toolIds).size).toBe(2);
     const firstTool = events.find(
       (event) => event.type === "timeline.item" && event.item.type === "tool_call",
     );
-    if (firstTool?.type !== "timeline.item" || firstTool.item.type !== "tool_call") {
+    if (
+      firstTool?.type !== "timeline.item" ||
+      firstTool.item.type !== "tool_call" ||
+      firstTool.item.detail.type !== "unknown"
+    ) {
       throw new Error("Expected sanitized tool item");
     }
     const detailInput = firstTool.item.detail.input;
@@ -3172,7 +3174,7 @@ describe("OMP direct provider", () => {
       throw new Error("Expected sanitized tool input object");
     }
     expect(Object.getPrototypeOf(detailInput)).toBeNull();
-    expect(Object.prototype.hasOwnProperty.call({}, "polluted")).toBe(false);
+    expect(Object.hasOwn({}, "polluted")).toBe(false);
     expect(Object.keys(detailInput)).toEqual(["apiKey", "<absolute path>"]);
     expect(visible).toContain("<redacted>");
     expect(visible).toContain("<absolute path>");
@@ -3213,13 +3215,14 @@ describe("OMP direct provider", () => {
     const latest = events.findLast(
       (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
     );
-    expect(latest?.type === "timeline.item" && latest.item.type === "assistant_message"
-      ? latest.item.text.endsWith("<truncated>")
-      : false).toBe(true);
+    expect(
+      latest?.type === "timeline.item" && latest.item.type === "assistant_message"
+        ? latest.item.text.endsWith("<truncated>")
+        : false,
+    ).toBe(true);
     await finishTurn(events, session, turnId);
     await connection.close();
   });
-
 
   test("fails unsupported interactive permission UI without reflecting its payload", async () => {
     const { connection, events, runtime } = await createHarness();
@@ -3580,7 +3583,9 @@ describe("OMP direct provider", () => {
     const rejected = await events.waitFor(
       (event) => event.type === "request.failed" && event.requestId === "bounded-open-32",
     );
-    expect(rejected).toEqual(expect.objectContaining({ error: { message: "OMP session limit reached" } }));
+    expect(rejected).toEqual(
+      expect.objectContaining({ error: { message: "OMP session limit reached" } }),
+    );
     expect(runtime.starts).toHaveLength(32);
     gate.resolve();
     await connection.close();
@@ -3600,7 +3605,6 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-
   test("retains a closing session ID and fences its late events", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -3611,7 +3615,11 @@ describe("OMP direct provider", () => {
     const observed = Promise.withResolvers<void>();
     oldSession.closeGate = gate.promise;
     oldSession.closeObserved = observed.resolve;
-    await connection.send({ type: "session.close", requestId: "close-old", sessionId: "session-1" });
+    await connection.send({
+      type: "session.close",
+      requestId: "close-old",
+      sessionId: "session-1",
+    });
     await observed.promise;
     await connection.send({
       type: "session.open",
@@ -3631,7 +3639,9 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "open-too-early",
     );
     gate.resolve();
-    await events.waitFor((event) => event.type === "request.completed" && event.requestId === "close-old");
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "close-old",
+    );
     await openSession(connection, events, "open-replacement", "session-1");
     const baseline = events.length;
     staleListener({ type: "notice", level: "error", message: "stale-secret" });
@@ -3686,7 +3696,8 @@ describe("OMP direct provider", () => {
       isTerminal: true,
     });
     const terminal = await events.waitFor(
-      (event) => event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
     const assistantIds = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "assistant_message"
@@ -3732,7 +3743,9 @@ describe("OMP direct provider", () => {
     ).toHaveLength(1_024);
     await finishTurn(events, session, firstTurn);
 
-    const nextTurn = turnIdFrom(await startPrompt(connection, events, "after-saturation", "continue"));
+    const nextTurn = turnIdFrom(
+      await startPrompt(connection, events, "after-saturation", "continue"),
+    );
     session.emit({
       type: "message_update",
       message: {

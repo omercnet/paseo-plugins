@@ -16,8 +16,8 @@ import type {
 } from "./omp-rpc";
 import { buildOmpSpawnRequest } from "./omp-rpc";
 import {
-  boundedJsonBytes,
   BoundedStringSet,
+  boundedJsonBytes,
   OmpPublicDataFilter,
   OmpPublicError,
   utf8Bytes,
@@ -928,9 +928,7 @@ export class OmpProviderSession {
           ) {
             return;
           }
-          if (
-            retainedBytes(messages, MAX_UNCLAIMED_BRANCH_BYTES) === Number.POSITIVE_INFINITY
-          ) {
+          if (retainedBytes(messages, MAX_UNCLAIMED_BRANCH_BYTES) === Number.POSITIVE_INFINITY) {
             this.quarantineBranchEntries();
             return;
           }
