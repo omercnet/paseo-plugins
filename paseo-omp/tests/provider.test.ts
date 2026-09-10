@@ -1540,8 +1540,7 @@ describe("OMP direct provider", () => {
       sessionId: "session-1",
     });
     await events.waitFor(
-      (event) =>
-        event.type === "request.completed" && event.requestId === "close-delayed-lookup",
+      (event) => event.type === "request.completed" && event.requestId === "close-delayed-lookup",
     );
     const timelineCount = events.filter((event) => event.type === "timeline.item").length;
 

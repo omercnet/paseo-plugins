@@ -99,7 +99,6 @@ function isPathLikeSlashProse(text: string, commandName: string): boolean {
   return PATH_LIKE_ROOTS[commandName] === true && text.length > commandName.length + 1;
 }
 
-
 function nativeEntryId(message: OmpMessage): string | undefined {
   return message.entryId;
 }
@@ -239,7 +238,10 @@ export class OmpProviderSession {
         configState,
         capabilities,
         new Set(
-          commandDiscovery.commands.flatMap((command) => [command.name, ...(command.aliases ?? [])]),
+          commandDiscovery.commands.flatMap((command) => [
+            command.name,
+            ...(command.aliases ?? []),
+          ]),
         ),
         commandDiscovery.available,
         emit,
