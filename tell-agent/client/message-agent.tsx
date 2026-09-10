@@ -6,7 +6,7 @@ import {
 } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   AGENT_PAGE_LIMIT,
@@ -35,6 +35,7 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
   const [query, setQuery] = useState("");
   const [targetId, setTargetId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const messageInputRef = useRef<TextInput>(null);
   const directory = useQuery({
     queryKey: ["tell-agent", "message-targets", host.id],
     queryFn: () => loadAgents(paseo),
@@ -47,6 +48,11 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
     [entries, query, sourceAgentId],
   );
   const visibleTargets = matchingTargets.slice(0, VISIBLE_TARGETS);
+  useEffect(() => {
+    if (!targetId) return;
+    const focusTimer = setTimeout(() => messageInputRef.current?.focus(), 0);
+    return () => clearTimeout(focusTimer);
+  }, [targetId]);
   const send = useMutation({
     mutationFn: async ({ entry, text }: { entry: AgentEntry; text: string }) => {
       await paseo.agents
@@ -208,6 +214,7 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
       {target ? (
         <>
           <TextInput
+            ref={messageInputRef}
             accessibilityLabel={`Message to ${title(target)}`}
             multiline
             onChangeText={setMessage}
