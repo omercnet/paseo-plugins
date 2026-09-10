@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-fresh-worktrees",
-  "description": "Keeps new Paseo worktrees based on current remote refs without mutating the source checkout",
+  "description": "Fast-forwards clean local base branches before Paseo creates branch-off worktrees",
   "license": "MIT",
   "private": true,
   "version": "1.0.0",

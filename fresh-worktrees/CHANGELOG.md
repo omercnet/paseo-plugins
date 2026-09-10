@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+* Fast-forward the clean, checked-out local base branch before creating a branch-off worktree.
+
 ## 1.0.0 (2026-09-10)
 
 

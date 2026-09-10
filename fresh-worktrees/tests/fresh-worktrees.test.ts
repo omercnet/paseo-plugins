@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createRemoteRefreshCoordinator,
+  createRepositoryRefreshCoordinator,
   refreshWorkspaceRequest,
   type WorkspaceCreateRequest,
 } from "../server/fresh-worktrees";
@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 describe("worktree refresh", () => {
-  test("fetches the remote and bases a new worktree on its current default branch", async () => {
+  test("fast-forwards the clean local default branch before creating a worktree", async () => {
     const root = await mkdtemp(join(tmpdir(), "fresh-worktrees-"));
     temporaryDirectories.push(root);
     const remote = join(root, "remote.git");
@@ -51,6 +51,7 @@ describe("worktree refresh", () => {
     git(publisher, "commit", "-m", "advance remote");
     git(publisher, "push", "origin", "main");
     const currentRemoteHead = git(publisher, "rev-parse", "HEAD");
+    expect(staleLocalHead).not.toBe(currentRemoteHead);
 
     const request: WorkspaceCreateRequest = {
       source: {
@@ -69,25 +70,14 @@ describe("worktree refresh", () => {
           projectKind: "git",
         },
       ],
-      refreshRemote: createRemoteRefreshCoordinator(),
+      refreshRepository: createRepositoryRefreshCoordinator(),
     });
 
-    expect(refreshed.source).toMatchObject({ refName: "origin/main" });
-    if (refreshed.source.kind !== "worktree" || !refreshed.source.refName) {
-      throw new Error("Expected a remote-backed worktree request");
-    }
+    expect(refreshed).toBe(request);
+    expect(git(source, "rev-parse", "main")).toBe(currentRemoteHead);
 
-    git(
-      source,
-      "worktree",
-      "add",
-      "-b",
-      refreshed.source.branchName ?? "feature/fresh",
-      worktree,
-      refreshed.source.refName,
-    );
+    git(source, "worktree", "add", "-b", "feature/fresh", worktree, "main");
     expect(git(worktree, "rev-parse", "HEAD")).toBe(currentRemoteHead);
-    expect(git(source, "rev-parse", "main")).toBe(staleLocalHead);
   });
 
   test("leaves explicit checkout requests alone", async () => {
@@ -105,7 +95,7 @@ describe("worktree refresh", () => {
       listProjects: async () => {
         throw new Error("Project lookup must not run");
       },
-      refreshRemote: async () => {
+      refreshRepository: async () => {
         throw new Error("Fetch must not run");
       },
       runGit: async () => {

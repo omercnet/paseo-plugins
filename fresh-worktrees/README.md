@@ -1,7 +1,7 @@
 # Fresh Worktrees
 
-A headless Paseo plugin that keeps branch-off workspaces based on current remote refs without
-mutating the source checkout.
+A headless Paseo plugin that fast-forwards the source checkout's clean local base branch before
+Paseo creates a branch-off workspace.
 
 Fresh Worktrees has no client entry or visual surface, so there is no UI screenshot. It runs only
 inside the Paseo daemon during worktree creation.
@@ -12,13 +12,15 @@ Before Paseo creates a branch-off worktree, the plugin:
 
 1. Resolves the source repository from the request path or Paseo project.
 2. Fetches and prunes the relevant Git remote without interactive prompts.
-3. Replaces an implicit or local base such as `main` with its current remote-tracking ref, such as
-   `origin/main`.
-4. Leaves the source checkout and its local branch untouched.
+3. For an implicit or local base such as `main`, verifies that branch is checked out and the source
+   checkout is clean, then fast-forwards it to its remote-tracking branch.
+4. Leaves the workspace request unchanged, so Paseo forks from the now-current local branch.
 
-Explicit checkout and change-request workspaces are unchanged. Repositories without remotes are
-unchanged. A failed fetch stops worktree creation rather than silently using stale history.
-Concurrent requests for the same repository and remote share one fetch.
+Explicit checkout and change-request workspaces are unchanged. Explicit remote bases are fetched
+but do not mutate a local branch. Repositories without remotes are unchanged. A failed fetch, dirty
+source checkout, or non-fast-forward update stops worktree creation rather than silently using stale
+history. Concurrent requests for the same target share one refresh, and updates are serialized per
+repository.
 
 ## Install
 

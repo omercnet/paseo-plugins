@@ -17,12 +17,18 @@ export type GitRunner = (
   signal: AbortSignal,
 ) => Promise<string>;
 
-export type RemoteRefresh = (cwd: string, remote: string, signal: AbortSignal) => Promise<void>;
+export type RepositoryRefresh = (
+  cwd: string,
+  remote: string,
+  localBranch: string | null,
+  upstream: string | null,
+  signal: AbortSignal,
+) => Promise<string | null>;
 
 export interface RefreshDependencies {
   signal: AbortSignal;
   listProjects(): Promise<readonly ProjectDescriptor[]>;
-  refreshRemote: RemoteRefresh;
+  refreshRepository: RepositoryRefresh;
   runGit?: GitRunner;
   log?(message: string): void;
 }
@@ -52,23 +58,69 @@ export async function executeGit(
   }
 }
 
-export function createRemoteRefreshCoordinator(runGit: GitRunner = executeGit): RemoteRefresh {
-  const inFlight = new Map<string, Promise<void>>();
+export function createRepositoryRefreshCoordinator(
+  runGit: GitRunner = executeGit,
+): RepositoryRefresh {
+  const inFlight = new Map<string, Promise<string | null>>();
+  const repositoryTails = new Map<string, Promise<void>>();
 
-  return async (cwd, remote, signal) => {
-    const key = `${cwd}\0${remote}`;
-    let refresh = inFlight.get(key);
-    if (!refresh) {
-      refresh = runGit(cwd, ["fetch", "--prune", "--quiet", remote], signal).then(() => {});
-      inFlight.set(key, refresh);
-    }
+  return async (cwd, remote, localBranch, upstream, signal) => {
+    const targetKey = `${cwd}\0${remote}\0${localBranch ?? ""}\0${upstream ?? ""}`;
+    const existingRefresh = inFlight.get(targetKey);
+    if (existingRefresh) return existingRefresh;
+
+    const previousRefresh = repositoryTails.get(cwd) ?? Promise.resolve();
+    const refresh = previousRefresh.catch(() => {}).then(async () => {
+      await runGit(cwd, ["fetch", "--prune", "--quiet", remote], signal);
+      if (!localBranch) return null;
+
+      const matchingRemoteBranch = `${remote}/${localBranch}`;
+      const freshBase =
+        upstream && (await remoteRefExists(runGit, cwd, upstream, signal))
+          ? upstream
+          : (await remoteRefExists(runGit, cwd, matchingRemoteBranch, signal))
+            ? matchingRemoteBranch
+            : null;
+      if (!freshBase) return null;
+
+      const currentBranch = await optionalGit(
+        runGit,
+        cwd,
+        ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        signal,
+      );
+      if (currentBranch !== localBranch) {
+        throw new Error(
+          `Cannot refresh local branch ${localBranch} in ${cwd}: the source checkout is on ${currentBranch ?? "a detached HEAD"}`,
+        );
+      }
+
+      const status = await runGit(
+        cwd,
+        ["status", "--porcelain", "--untracked-files=normal"],
+        signal,
+      );
+      if (status) {
+        throw new Error(
+          `Cannot refresh local branch ${localBranch} in ${cwd}: the source checkout is not clean`,
+        );
+      }
+
+      await runGit(cwd, ["merge", "--ff-only", "--quiet", freshBase], signal);
+      return freshBase;
+    });
+    const tail = refresh.then(
+      () => {},
+      () => {},
+    );
+    inFlight.set(targetKey, refresh);
+    repositoryTails.set(cwd, tail);
 
     try {
-      await refresh;
+      return await refresh;
     } finally {
-      if (inFlight.get(key) === refresh) {
-        inFlight.delete(key);
-      }
+      if (inFlight.get(targetKey) === refresh) inFlight.delete(targetKey);
+      if (repositoryTails.get(cwd) === tail) repositoryTails.delete(cwd);
     }
   };
 }
@@ -199,41 +251,20 @@ export async function refreshWorkspaceRequest(
     remoteForRef(localBranch?.upstream ?? null, remotes) ??
     (remotes.includes("origin") ? "origin" : remotes[0]);
 
-  await dependencies.refreshRemote(cwd, remote, dependencies.signal);
-
-  let freshBase: string | null = null;
-  if (requestedRef && remoteForRef(requestedRef, remotes)) {
-    freshBase = requestedRef;
-  } else if (localBranch) {
-    if (
-      localBranch.upstream &&
-      (await remoteRefExists(runGit, cwd, localBranch.upstream, dependencies.signal))
-    ) {
-      freshBase = localBranch.upstream;
-    } else {
-      const matchingRemoteBranch = `${remote}/${localBranch.branch}`;
-      if (await remoteRefExists(runGit, cwd, matchingRemoteBranch, dependencies.signal)) {
-        freshBase = matchingRemoteBranch;
-      }
-    }
-  } else if (!requestedRef) {
-    const remoteHead = await optionalGit(
-      runGit,
-      cwd,
-      ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remote}/HEAD`],
-      dependencies.signal,
-    );
-    if (remoteHead && (await remoteRefExists(runGit, cwd, remoteHead, dependencies.signal))) {
-      freshBase = remoteHead;
-    }
-  }
+  const requestedRemote = remoteForRef(requestedRef, remotes);
+  const freshBase = await dependencies.refreshRepository(
+    cwd,
+    remote,
+    requestedRemote ? null : (localBranch?.branch ?? null),
+    localBranch?.upstream ?? null,
+    dependencies.signal,
+  );
 
   dependencies.log?.(
     freshBase
-      ? `Fetched ${remote} for ${cwd}; basing the worktree on ${freshBase}`
-      : `Fetched ${remote} for ${cwd}; preserving the requested base`,
+      ? `Fetched ${remote} for ${cwd}; fast-forwarded ${localBranch?.branch} to ${freshBase}`
+      : `Fetched ${remote} for ${cwd}; no local branch update was needed`,
   );
 
-  if (!freshBase || freshBase === source.refName) return request;
-  return { ...request, source: { ...source, refName: freshBase } };
+  return request;
 }
