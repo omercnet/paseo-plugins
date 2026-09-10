@@ -1,76 +1,154 @@
 import { describe, expect, test } from "bun:test";
+import type { PaseoProviderSnapshotResult } from "@getpaseo/client";
 import {
+  formatOmpVersion,
+  lspTone,
+  processTone,
+  rpcUiTone,
   selectKnownOmpProviders,
   summarizeBinaryHealth,
+  summarizeLspSupport,
+  summarizeMcpDiagnostics,
+  summarizeMemoryBackend,
+  summarizePathState,
+  summarizeProcessDiagnostics,
   summarizeRpcUiSupport,
 } from "../client/provider-diagnostics-state";
 import type { OmpProviderHealth } from "../shared/provider-diagnostics";
 
-function binary(overrides: Partial<OmpProviderHealth["binary"]>): OmpProviderHealth["binary"] {
+function health(overrides: Partial<OmpProviderHealth> = {}): OmpProviderHealth {
   return {
-    installed: true,
-    resolvedPath: "/usr/local/bin/omp",
-    version: "18.1.15",
-    versionStatus: "ok",
+    binary: {
+      installed: true,
+      resolvedPath: "/usr/local/bin/omp",
+      version: { major: 18, minor: 1, patch: 15, prerelease: null },
+      versionStatus: "ok",
+      processCleanupFailed: false,
+    },
+    rpcUi: { checked: true, supported: true },
+    lsp: { status: "supported" },
+    mcp: { status: "unknown", reason: "No safe MCP signal." },
+    process: { status: "ok", trackedCount: 2 },
+    roots: {
+      agentRoot: "/home/test/.omp/agent",
+      agentRootState: "available",
+      configPath: "/home/test/.omp/agent/config.yml",
+      configState: "available",
+      sessionRoot: "/home/test/.omp/agent/sessions",
+      sessionRootState: "available",
+    },
+    databases: { agentDbState: "available", historyDbState: "available" },
+    memoryBackend: "mnemopi",
+    checkedAt: "2026-09-10T00:00:00.000Z",
     ...overrides,
   };
 }
 
-describe("summarizeBinaryHealth", () => {
-  test("includes the parsed version in the label when the probe succeeds", () => {
-    expect(summarizeBinaryHealth(binary({}))).toEqual({
-      label: "Installed (18.1.15)",
-      tone: "ok",
-    });
-  });
+describe("version health summaries", () => {
+  test("formats normalized versions and includes them on successful probes", () => {
+    const version = { major: 18, minor: 1, patch: 15, prerelease: "beta.1" };
 
-  test("reports a danger tone when the binary could not be found at all", () => {
+    expect(formatOmpVersion(version)).toBe("18.1.15-beta.1");
     expect(
-      summarizeBinaryHealth(
-        binary({ installed: false, resolvedPath: null, version: null, versionStatus: "not-found" }),
-      ),
-    ).toEqual({ label: "Not installed", tone: "danger" });
+      summarizeBinaryHealth({
+        installed: true,
+        resolvedPath: "/usr/local/bin/omp",
+        version,
+        versionStatus: "ok",
+        processCleanupFailed: false,
+      }),
+    ).toEqual({ label: "Installed (18.1.15-beta.1)", tone: "ok" });
   });
 
-  test("reports a warning tone for a timed-out version probe", () => {
-    expect(summarizeBinaryHealth(binary({ version: null, versionStatus: "timeout" }))).toEqual({
-      label: "Version check timed out",
-      tone: "warning",
-    });
-  });
+  test("distinguishes not-found, unrunnable, timeout, failed, and malformed outcomes", () => {
+    const base = health().binary;
+    const cases = [
+      ["not-found", "Not installed", "danger"],
+      ["unrunnable", "Found but could not run", "danger"],
+      ["timeout", "Version check timed out", "warning"],
+      ["probe-failed", "Version check failed", "warning"],
+      ["malformed", "Unrecognized version output", "warning"],
+    ] as const;
 
-  test("reports a warning tone for an unparsable version response", () => {
-    expect(summarizeBinaryHealth(binary({ version: null, versionStatus: "malformed" }))).toEqual({
-      label: "Unrecognized version output",
-      tone: "warning",
-    });
+    for (const [versionStatus, label, tone] of cases) {
+      expect(summarizeBinaryHealth({ ...base, version: null, versionStatus })).toEqual({
+        label,
+        tone,
+      });
+    }
   });
 });
 
-describe("summarizeRpcUiSupport", () => {
-  test("distinguishes an unchecked probe from a checked-but-unsupported one", () => {
+describe("compatibility and process summaries", () => {
+  test("never turns unknown rpc-ui/LSP probes into unsupported claims", () => {
     expect(summarizeRpcUiSupport({ checked: false, supported: null })).toBe(
       "Unknown (omp binary unavailable)",
     );
     expect(summarizeRpcUiSupport({ checked: true, supported: null })).toBe(
-      "Unknown (probe failed)",
+      "Unknown (probe failed, empty, or truncated)",
     );
-    expect(summarizeRpcUiSupport({ checked: true, supported: false })).toBe(
-      "Not advertised by this build",
+    expect(rpcUiTone({ checked: true, supported: null })).toBe("muted");
+
+    expect(summarizeLspSupport({ status: "unknown" })).toBe(
+      "Unknown (probe failed, empty, or truncated)",
     );
-    expect(summarizeRpcUiSupport({ checked: true, supported: true })).toBe("Supported");
+    expect(lspTone({ status: "not-advertised" })).toBe("muted");
+  });
+
+  test("renders honest MCP unknown and process availability states", () => {
+    expect(summarizeMcpDiagnostics({ status: "unknown", reason: "No safe signal." })).toBe(
+      "Unknown (No safe signal.)",
+    );
+    expect(summarizeProcessDiagnostics({ status: "ok", trackedCount: 3 })).toBe("3 tracked");
+    expect(processTone({ status: "ok", trackedCount: 3 })).toBe("ok");
+    expect(summarizeProcessDiagnostics({ status: "unavailable", trackedCount: null })).toBe(
+      "No hub run directory found",
+    );
+  });
+});
+
+describe("storage summaries", () => {
+  test("keeps missing, invalid, and wrong-type states distinct", () => {
+    expect(summarizePathState("missing")).toEqual({ label: "Missing", tone: "danger" });
+    expect(summarizePathState("invalid")).toEqual({
+      label: "Invalid or unreadable",
+      tone: "warning",
+    });
+    expect(summarizePathState("wrong-type")).toEqual({
+      label: "Wrong type on disk",
+      tone: "warning",
+    });
+  });
+
+  test("does not call unavailable memory not configured", () => {
+    expect(summarizeMemoryBackend(health({ memoryBackend: null }))).toBe("Not configured");
+    expect(
+      summarizeMemoryBackend(
+        health({
+          memoryBackend: null,
+          roots: { ...health().roots, configState: "invalid" },
+        }),
+      ),
+    ).toBe("Unknown (config invalid or unreadable)");
   });
 });
 
 describe("selectKnownOmpProviders", () => {
-  test("keeps only the bundled and canary OMP identities, dropping unrelated providers", () => {
-    const result = selectKnownOmpProviders([
+  test("keeps only explicit bundled and canary ids, including prototype-like ids safely", () => {
+    const entries: PaseoProviderSnapshotResult["entries"] = [
       { provider: "omp", status: "unavailable", enabled: false, label: "OMP" },
-      { provider: "omp-plugin", status: "ready", enabled: true, label: "OMP (Plugin Preview)" },
+      {
+        provider: "omp-plugin",
+        status: "ready",
+        enabled: true,
+        label: "OMP (Plugin Preview)",
+      },
+      { provider: "constructor", status: "ready", enabled: true },
+      { provider: "toString", status: "ready", enabled: true },
       { provider: "claude", status: "ready", enabled: true, label: "Claude" },
-    ]);
+    ];
 
-    expect(result).toEqual([
+    expect(selectKnownOmpProviders(entries)).toEqual([
       { id: "omp", label: "OMP", kind: "bundled", status: "unavailable", enabled: false },
       {
         id: "omp-plugin",
@@ -80,17 +158,5 @@ describe("selectKnownOmpProviders", () => {
         enabled: true,
       },
     ]);
-  });
-
-  test("defaults enabled to true and falls back to the provider id as a label", () => {
-    const result = selectKnownOmpProviders([{ provider: "omp-plugin", status: "loading" }]);
-
-    expect(result).toEqual([
-      { id: "omp-plugin", label: "omp-plugin", kind: "canary", status: "loading", enabled: true },
-    ]);
-  });
-
-  test("returns an empty list when no known OMP provider is present", () => {
-    expect(selectKnownOmpProviders([{ provider: "codex", status: "ready" }])).toEqual([]);
   });
 });

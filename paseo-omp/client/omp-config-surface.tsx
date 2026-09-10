@@ -9,18 +9,29 @@ import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider-diagnostics";
 import {
   type BinaryHealthSummary,
+  lspTone,
+  type PathStateSummary,
+  processTone,
+  rpcUiTone,
   selectKnownOmpProviders,
   summarizeBinaryHealth,
+  summarizeLspSupport,
+  summarizeMcpDiagnostics,
+  summarizeMemoryBackend,
+  summarizePathState,
+  summarizeProcessDiagnostics,
   summarizeRpcUiSupport,
 } from "./provider-diagnostics-state";
 
 const CONFIG_POLL_MS = 30_000;
+const OMP_PROVIDER_IDS = ["omp", "omp-plugin"] as const;
 
 export interface OmpConfigStyles {
   root: ViewStyle;
-  header: ViewStyle;
-  headerRow: ViewStyle;
-  title: TextStyle;
+  pageTitle: TextStyle;
+  sectionHeader: ViewStyle;
+  sectionHeaderRow: ViewStyle;
+  sectionTitle: TextStyle;
   source: TextStyle;
   muted: TextStyle;
   error: TextStyle;
@@ -42,9 +53,18 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
         padding: compact ? 16 : 24,
         backgroundColor: theme.colors.surface0,
       },
-      header: { gap: 4 },
-      headerRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-      title: { color: theme.colors.foreground, fontSize: compact ? 20 : 24, fontWeight: "700" },
+      pageTitle: {
+        color: theme.colors.foreground,
+        fontSize: compact ? 22 : 26,
+        fontWeight: "700",
+      },
+      sectionHeader: { gap: 4, marginTop: compact ? 2 : 4 },
+      sectionHeaderRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+      sectionTitle: {
+        color: theme.colors.foreground,
+        fontSize: compact ? 16 : 18,
+        fontWeight: "600",
+      },
       source: { color: theme.colors.foregroundMuted, fontSize: 12 },
       muted: { color: theme.colors.foregroundMuted, fontSize: 13 },
       error: { color: theme.colors.statusDanger, fontSize: 13 },
@@ -316,8 +336,6 @@ function isEmptyConfig(config: OmpConfig): boolean {
   return Object.keys(config).length === 0;
 }
 
-const PROVIDER_HEALTH_POLL_MS = 60_000;
-
 function toneColor(theme: PluginSurfaceProps["theme"], tone: BinaryHealthSummary["tone"]): string {
   if (tone === "ok") return theme.colors.statusSuccess;
   if (tone === "warning") return theme.colors.statusWarning;
@@ -346,51 +364,122 @@ function BinarySection({
       {health.binary.resolvedPath ? (
         <KeyValueRow styles={styles} label="Resolved path" value={health.binary.resolvedPath} />
       ) : null}
+      {health.binary.processCleanupFailed ? (
+        <KeyValueRow
+          styles={styles}
+          label="Process cleanup"
+          value="Timed-out probe did not confirm exit"
+          valueColor={theme.colors.statusDanger}
+        />
+      ) : null}
+    </SectionCard>
+  );
+}
+
+function CapabilitiesSection({
+  theme,
+  styles,
+  health,
+}: {
+  theme: PluginSurfaceProps["theme"];
+  styles: OmpConfigStyles;
+  health: OmpProviderHealth;
+}) {
+  return (
+    <SectionCard styles={styles} title="Runtime compatibility">
       <KeyValueRow
         styles={styles}
         label="rpc-ui protocol"
         value={summarizeRpcUiSupport(health.rpcUi)}
+        valueColor={toneColor(theme, rpcUiTone(health.rpcUi))}
+      />
+      <KeyValueRow
+        styles={styles}
+        label="LSP tool"
+        value={summarizeLspSupport(health.lsp)}
+        valueColor={toneColor(theme, lspTone(health.lsp))}
+      />
+      <KeyValueRow
+        styles={styles}
+        label="MCP"
+        value={summarizeMcpDiagnostics(health.mcp)}
+        valueColor={theme.colors.foregroundMuted}
       />
     </SectionCard>
   );
 }
 
+function pathValue(path: string, state: PathStateSummary): string {
+  return `${path} (${state.label})`;
+}
+
 function StorageSection({
+  theme,
   styles,
   health,
 }: {
+  theme: PluginSurfaceProps["theme"];
   styles: OmpConfigStyles;
   health: OmpProviderHealth;
 }) {
+  const agentRoot = summarizePathState(health.roots.agentRootState);
+  const configPath = summarizePathState(health.roots.configState);
+  const sessionRoot = summarizePathState(health.roots.sessionRootState);
+  const agentDb = summarizePathState(health.databases.agentDbState);
+  const historyDb = summarizePathState(health.databases.historyDbState);
   return (
     <SectionCard styles={styles} title="Storage">
-      <KeyValueRow styles={styles} label="Agent root" value={health.roots.agentRoot} />
+      <KeyValueRow
+        styles={styles}
+        label="Agent root"
+        value={pathValue(health.roots.agentRoot, agentRoot)}
+        valueColor={toneColor(theme, agentRoot.tone)}
+      />
       <KeyValueRow
         styles={styles}
         label="Config file"
-        value={`${health.roots.configPath} (${health.roots.configAvailable ? "found" : "missing"})`}
+        value={pathValue(health.roots.configPath, configPath)}
+        valueColor={toneColor(theme, configPath.tone)}
       />
       <KeyValueRow
         styles={styles}
         label="Session root"
-        value={`${health.roots.sessionRoot} (${
-          health.roots.sessionRootAvailable ? "found" : "missing"
-        })`}
+        value={pathValue(health.roots.sessionRoot, sessionRoot)}
+        valueColor={toneColor(theme, sessionRoot.tone)}
       />
       <KeyValueRow
         styles={styles}
         label="agent.db"
-        value={health.databases.agentDbPresent ? "Present" : "Missing"}
+        value={agentDb.label}
+        valueColor={toneColor(theme, agentDb.tone)}
       />
       <KeyValueRow
         styles={styles}
         label="history.db"
-        value={health.databases.historyDbPresent ? "Present" : "Missing"}
+        value={historyDb.label}
+        valueColor={toneColor(theme, historyDb.tone)}
       />
+      <KeyValueRow styles={styles} label="Memory backend" value={summarizeMemoryBackend(health)} />
+    </SectionCard>
+  );
+}
+
+function ProcessSection({
+  theme,
+  styles,
+  health,
+}: {
+  theme: PluginSurfaceProps["theme"];
+  styles: OmpConfigStyles;
+  health: OmpProviderHealth;
+}) {
+  return (
+    <SectionCard styles={styles} title="Processes">
       <KeyValueRow
         styles={styles}
-        label="Memory backend"
-        value={health.memoryBackend ?? "Not configured"}
+        label="OMP Hub"
+        value={summarizeProcessDiagnostics(health.process)}
+        valueColor={toneColor(theme, processTone(health.process))}
       />
     </SectionCard>
   );
@@ -408,32 +497,39 @@ function ProviderHealthSection({
   const health = useQuery({
     queryKey: ["paseo-omp", "provider-health"],
     queryFn: () => loadHealth({}),
-    refetchInterval: PROVIDER_HEALTH_POLL_MS,
   });
   const providers = useQuery({
     queryKey: ["paseo-omp", "provider-snapshot"],
     queryFn: () => paseo.providers.snapshot({}),
-    refetchInterval: PROVIDER_HEALTH_POLL_MS,
   });
   const isRefreshing = health.isFetching || providers.isFetching;
   const knownProviders = providers.data ? selectKnownOmpProviders(providers.data.entries) : [];
 
+  async function refreshProviderHealth() {
+    try {
+      await paseo.providers.refresh({ providers: [...OMP_PROVIDER_IDS] });
+    } catch {
+      // An older host may not support targeted refresh; still refetch the visible safe facts.
+    }
+    await Promise.all([health.refetch(), providers.refetch()]);
+  }
+
   return (
-    <View style={styles.header}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Provider health</Text>
-        <Pressable
-          accessibilityRole="button"
-          style={styles.refresh}
-          disabled={isRefreshing}
-          onPress={() => {
-            void health.refetch();
-            void providers.refetch();
-          }}
-        >
-          <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
-          <Text style={styles.refreshLabel}>{isRefreshing ? "Refreshing…" : "Refresh"}</Text>
-        </Pressable>
+    <>
+      <View style={styles.sectionHeader}>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionTitle}>Provider health</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Refresh OMP provider health"
+            style={styles.refresh}
+            disabled={isRefreshing}
+            onPress={() => void refreshProviderHealth()}
+          >
+            <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
+            <Text style={styles.refreshLabel}>{isRefreshing ? "Refreshing…" : "Refresh"}</Text>
+          </Pressable>
+        </View>
       </View>
 
       {health.isLoading ? <Text style={styles.muted}>Checking the omp installation…</Text> : null}
@@ -441,7 +537,15 @@ function ProviderHealthSection({
         <Text style={styles.error}>Could not check the omp installation. Try refreshing.</Text>
       ) : null}
       {health.data ? <BinarySection theme={theme} styles={styles} health={health.data} /> : null}
-      {health.data ? <StorageSection styles={styles} health={health.data} /> : null}
+      {health.data ? (
+        <CapabilitiesSection theme={theme} styles={styles} health={health.data} />
+      ) : null}
+      {health.data ? (
+        <StorageSection theme={theme} styles={styles} health={health.data} />
+      ) : null}
+      {health.data ? (
+        <ProcessSection theme={theme} styles={styles} health={health.data} />
+      ) : null}
 
       {providers.isLoading ? <Text style={styles.muted}>Loading provider status…</Text> : null}
       {providers.error ? (
@@ -451,7 +555,7 @@ function ProviderHealthSection({
         <Text style={styles.muted}>No OMP provider entries reported yet.</Text>
       ) : null}
       {knownProviders.length > 0 ? (
-        <SectionCard styles={styles} title="Providers">
+        <SectionCard styles={styles} title="Registered providers">
           {knownProviders.map((provider) => (
             <KeyValueRow
               key={provider.id}
@@ -462,7 +566,7 @@ function ProviderHealthSection({
           ))}
         </SectionCard>
       ) : null}
-    </View>
+    </>
   );
 }
 
@@ -478,18 +582,23 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
+      <Text style={styles.pageTitle}>OMP</Text>
       <ProviderHealthSection theme={theme} styles={styles} />
-      <View style={styles.header}>
-        <View style={styles.headerRow}>
-          <Text style={styles.title}>OMP configuration</Text>
+
+      <View style={styles.sectionHeader}>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionTitle}>Configuration</Text>
           <Pressable
             accessibilityRole="button"
+            accessibilityLabel="Refresh OMP configuration"
             style={styles.refresh}
             disabled={result.isFetching}
             onPress={() => void result.refetch()}
           >
             <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
-            <Text style={styles.refreshLabel}>{result.isFetching ? "Refreshing…" : "Refresh"}</Text>
+            <Text style={styles.refreshLabel}>
+              {result.isFetching ? "Refreshing…" : "Refresh"}
+            </Text>
           </Pressable>
         </View>
         {result.data?.path ? (
@@ -503,8 +612,8 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
       ) : null}
       {!result.isLoading && !result.error && result.data && !result.data.available ? (
         <Text style={styles.muted}>
-          No OMP configuration found at this path. It may not have been created yet, or it could not
-          be parsed as YAML.
+          OMP configuration is unavailable at this path. It may be missing, unreadable, malformed,
+          or the wrong type on disk.
         </Text>
       ) : null}
       {!result.isLoading && !result.error && config && isEmptyConfig(config) ? (

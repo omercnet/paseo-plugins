@@ -3,46 +3,98 @@ import { z } from "zod";
 
 // Health/compatibility facts about the omp CLI itself, surfaced on the global OMP page. This is
 // an explicit allowlist, not a passthrough: every field is either a resolved filesystem path, a
-// boolean presence check, or a version string parsed out of a bounded subprocess probe. Raw
-// stdout/stderr, environment variables, config file text, and arbitrary provider diagnostics
-// never cross this boundary — see server/provider-diagnostics.ts for the redaction boundary.
+// classification enum, a bounded/normalized numeric value, or a boolean derived from a positive
+// documented grammar match. Raw stdout/stderr, environment variables, config file text, and
+// arbitrary provider diagnostics never cross this boundary — see server/provider-diagnostics.ts
+// for the redaction boundary.
 
-/** Outcome of the bounded `omp --version` probe. Mirrors the four states callers must handle. */
-export const OmpVersionStatusSchema = z.enum(["ok", "not-found", "timeout", "malformed"]);
+/** Outcome of the bounded `omp --version` probe. */
+export const OmpVersionStatusSchema = z.enum([
+  "ok",
+  "not-found",
+  "unrunnable",
+  "timeout",
+  "probe-failed",
+  "malformed",
+]);
 export type OmpVersionStatus = z.infer<typeof OmpVersionStatusSchema>;
+
+// Normalized, bounded fields parsed out of one canonical anchored version line
+// (`omp/<major>.<minor>.<patch>[-<prerelease>]`) — never the raw stdout string, so no unbounded
+// build metadata or unrelated text can ride along.
+export const OmpVersionSchema = z.object({
+  major: z.number().int().nonnegative(),
+  minor: z.number().int().nonnegative(),
+  patch: z.number().int().nonnegative(),
+  prerelease: z.string().min(1).max(32).nullable(),
+});
+export type OmpVersion = z.infer<typeof OmpVersionSchema>;
+
+/** Filesystem classification for a diagnostic root/file: distinguishes every failure mode. */
+export const PathStateSchema = z.enum(["available", "missing", "invalid", "wrong-type"]);
+export type PathState = z.infer<typeof PathStateSchema>;
 
 // Mirrors OmpMemorySectionSchema.backend in shared/omp-config.ts. Duplicated as a literal rather
 // than imported so this module's wire contract does not shift silently if that schema changes.
 const MemoryBackendSchema = z.enum(["off", "local", "hindsight", "mnemopi", "sharpshooter"]);
+
+export const OmpProcessDiagnosticsSchema = z.object({
+  status: z.enum(["ok", "unavailable", "unknown"]),
+  /** Count of daemon-supervised process entries tracked under the hub run root; null
+   * unless "ok". */
+  trackedCount: z.number().int().nonnegative().nullable(),
+});
+export type OmpProcessDiagnostics = z.infer<typeof OmpProcessDiagnosticsSchema>;
+
+// omp's public --version/--help surface exposes no safe, non-secret MCP signal (MCP wiring is
+// provider-session configuration, not global CLI state), so this is honestly always "unknown"
+// rather than a guessed boolean.
+export const OmpMcpDiagnosticsSchema = z.object({
+  status: z.literal("unknown"),
+  reason: z.string(),
+});
+export type OmpMcpDiagnostics = z.infer<typeof OmpMcpDiagnosticsSchema>;
+
+export const OmpLspDiagnosticsSchema = z.object({
+  status: z.enum(["supported", "not-advertised", "unknown"]),
+});
+export type OmpLspDiagnostics = z.infer<typeof OmpLspDiagnosticsSchema>;
 
 export const OmpProviderHealthSchema = z.object({
   binary: z.object({
     /** Whether an executable file was found (env override or PATH), independent of a working
      * `--version`. */
     installed: z.boolean(),
-    /** Absolute resolved path, or null when nothing executable was found. Metadata only. */
+    /** Absolute resolved (realpath'd) path, or null when nothing executable was found. */
     resolvedPath: z.string().nullable(),
-    /** Parsed semver-like substring from `--version` output; never the raw stdout line. */
-    version: z.string().nullable(),
+    version: OmpVersionSchema.nullable(),
     versionStatus: OmpVersionStatusSchema,
+    /** True only when a bounded probe timed out and its process tree never confirmed exit. */
+    processCleanupFailed: z.boolean(),
   }),
   rpcUi: z.object({
     /** False when the binary was unavailable, so the probe was never attempted. */
     checked: z.boolean(),
-    /** Null when checked but the probe itself failed (timeout/error), not merely unsupported. */
+    /** Null when the help probe failed, was empty, or was truncated — never a guessed false. */
     supported: z.boolean().nullable(),
   }),
+  lsp: OmpLspDiagnosticsSchema,
+  mcp: OmpMcpDiagnosticsSchema,
+  process: OmpProcessDiagnosticsSchema,
   roots: z.object({
     agentRoot: z.string(),
+    agentRootState: PathStateSchema,
     configPath: z.string(),
-    configAvailable: z.boolean(),
+    configState: PathStateSchema,
     sessionRoot: z.string(),
-    sessionRootAvailable: z.boolean(),
+    sessionRootState: PathStateSchema,
   }),
   databases: z.object({
-    agentDbPresent: z.boolean(),
-    historyDbPresent: z.boolean(),
+    agentDbState: PathStateSchema,
+    historyDbState: PathStateSchema,
   }),
+  /** Null both when the config is unavailable and when it is available but unset — callers must
+   * check `roots.configState` to tell those apart. */
   memoryBackend: MemoryBackendSchema.nullable(),
   checkedAt: z.string(),
 });
@@ -50,6 +102,6 @@ export type OmpProviderHealth = z.infer<typeof OmpProviderHealthSchema>;
 
 export const getOmpProviderHealth = defineRpc({
   name: "paseo-omp.get-provider-health",
-  input: z.object({}),
+  input: z.object({ force: z.boolean().optional() }),
   output: OmpProviderHealthSchema,
 });
