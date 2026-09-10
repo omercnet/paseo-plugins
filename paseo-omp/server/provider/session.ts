@@ -30,6 +30,7 @@ const LOCAL_ONLY_SETTLE_MS = 5_000;
 type PendingUser = {
   clientMessageId: string;
   text: string;
+  fallbackOnFinish: boolean;
 };
 
 type ActiveTurn = {
@@ -93,10 +94,19 @@ function terminalError(event: Extract<OmpRpcEvent, { type: "agent_end" }>): stri
 }
 
 function isNativeTurnActivity(event: OmpRpcEvent): boolean {
-  if (event.type === "agent_start" || event.type === "turn_start" || event.type === "agent_end") {
+  if (
+    event.type === "agent_start" ||
+    event.type === "turn_start" ||
+    event.type === "turn_end" ||
+    event.type === "agent_end"
+  ) {
     return true;
   }
-  if (event.type === "message_start" || event.type === "message_update") {
+  if (
+    event.type === "message_start" ||
+    event.type === "message_update" ||
+    event.type === "message_end"
+  ) {
     return event.message.role === "assistant";
   }
   return event.type.startsWith("tool_execution_");
@@ -258,7 +268,9 @@ export class OmpProviderSession {
       unresolvedUsers: new Set(),
       userLookups: new Set(),
       bufferedEvents: [],
-      pendingUsers: [{ clientMessageId: input.prompt.clientMessageId, text }],
+      pendingUsers: [
+        { clientMessageId: input.prompt.clientMessageId, text, fallbackOnFinish: true },
+      ],
     };
     this.activeTurn = turn;
     try {
@@ -400,13 +412,24 @@ export class OmpProviderSession {
       });
       return;
     }
+    const pending: PendingUser = { clientMessageId, text, fallbackOnFinish: false };
+    turn.pendingUsers.push(pending);
     try {
       await this.runtime.steer(text);
       if (turn.terminal || this.activeTurn !== turn) {
-        this.projector.publishUser(text, clientMessageId);
-      } else {
-        turn.pendingUsers.push({ clientMessageId, text });
+        this.removePendingUser(turn, pending);
+        this.emit({
+          type: "session.prompt_result",
+          sessionId: this.id,
+          clientMessageId,
+          result: {
+            type: "failed",
+            error: { message: "The active OMP turn ended before the steer was accepted" },
+          },
+        });
+        return;
       }
+      pending.fallbackOnFinish = true;
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -414,6 +437,7 @@ export class OmpProviderSession {
         result: { type: "steer", turnId: turn.turnId },
       });
     } catch (error) {
+      this.removePendingUser(turn, pending);
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -426,11 +450,18 @@ export class OmpProviderSession {
   private handleRuntimeEvent(event: OmpRpcEvent): void {
     if (this.closed) return;
     if (event.type === "extension_ui_request") {
-      if (isPassiveUiMethod(event.method)) return;
+      if (isPassiveUiMethod(event.method)) {
+        this.projector.projectPassive(event);
+        return;
+      }
       const detail = event.title ?? event.message ?? event.method;
       this.handleRuntimeFailure(
         `OMP requested unsupported interactive UI (${detail}); use Full Access mode`,
       );
+      return;
+    }
+    if (event.type === "notice" || event.type === "todo_reminder") {
+      this.projector.projectPassive(event);
       return;
     }
     if (event.type === "process_exit") {
@@ -491,8 +522,9 @@ export class OmpProviderSession {
       .then((messages) => {
         let resolvedId: string | undefined;
         for (let candidate = messages.length - 1; candidate >= 0; candidate -= 1) {
-          if (messages[candidate]?.text === pending.text) {
-            resolvedId = messages[candidate]?.entryId;
+          const message = messages[candidate];
+          if (message?.text === pending.text && !this.emittedEntryIds.has(message.entryId)) {
+            resolvedId = message.entryId;
             break;
           }
         }
@@ -555,8 +587,16 @@ export class OmpProviderSession {
   private publishPendingUsers(turn: ActiveTurn): void {
     for (const pending of [...turn.pendingUsers.splice(0), ...turn.unresolvedUsers]) {
       turn.unresolvedUsers.delete(pending);
-      this.projector.publishUser(pending.text, pending.clientMessageId);
+      if (pending.fallbackOnFinish) {
+        this.projector.publishUser(pending.text, pending.clientMessageId);
+      }
     }
+  }
+
+  private removePendingUser(turn: ActiveTurn, pending: PendingUser): void {
+    const index = turn.pendingUsers.indexOf(pending);
+    if (index >= 0) turn.pendingUsers.splice(index, 1);
+    turn.unresolvedUsers.delete(pending);
   }
 
   private publishPromptResult(

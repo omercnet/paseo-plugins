@@ -94,6 +94,8 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly steers: string[] = [];
   promptGate: Promise<void> | null = null;
   promptObserved: (() => void) | null = null;
+  steerGate: Promise<void> | null = null;
+  steerObserved: (() => void) | null = null;
   closeGate: Promise<void> | null = null;
   closeObserved: (() => void) | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
@@ -159,10 +161,11 @@ class FakeOmpSession implements OmpRuntimeSession {
     return Promise.resolve();
   }
 
-  steer(message: string) {
-    if (this.steerError) return Promise.reject(this.steerError);
+  async steer(message: string) {
+    this.steerObserved?.();
+    if (this.steerGate) await this.steerGate;
+    if (this.steerError) throw this.steerError;
     this.steers.push(message);
-    return Promise.resolve();
   }
 
   getBranchMessages() {
@@ -476,8 +479,8 @@ describe("OMP direct provider", () => {
       (item) => item.text === "Hello" || item.text === "Hello world",
     );
     expect(firstStreamSnapshots.map((item) => item.id)).toEqual([
-      `assistant:${firstTurnId}:1`,
-      `assistant:${firstTurnId}:1`,
+      `assistant:${firstTurnId}:1:content:1:text`,
+      `assistant:${firstTurnId}:1:content:1:text`,
     ]);
     expect(
       events.filter(
@@ -537,6 +540,187 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("keeps multiple native assistant messages distinct within one turn", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+
+    session.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "response-1", id: "generic-id" },
+    });
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "First" },
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "First" }],
+        responseId: "response-1",
+        id: "generic-id",
+      },
+    });
+    scheduler.flush();
+    session.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "First" }],
+        responseId: "response-1",
+        id: "generic-id",
+      },
+    });
+    session.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "response-2", id: "generic-id" },
+    });
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Second" },
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Second" }],
+        responseId: "response-2",
+        id: "generic-id",
+      },
+    });
+    scheduler.flush();
+
+    const assistantItems = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "assistant_message"
+        ? [event.item]
+        : [],
+    );
+    expect(assistantItems).toEqual([
+      expect.objectContaining({
+        id: "response-1:content:0:text",
+        messageId: "response-1",
+        text: "First",
+      }),
+      expect.objectContaining({
+        id: "response-2:content:0:text",
+        messageId: "response-2",
+        text: "Second",
+      }),
+    ]);
+    expect(assistantItems.some((item) => item.id.includes("generic-id"))).toBe(false);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("keeps interleaved indexed reasoning and text blocks stable", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "response-interleaved" },
+    });
+    const snapshots = [
+      {
+        assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "Reason A" },
+        content: [{ type: "thinking", thinking: "Reason A" }],
+      },
+      {
+        assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Answer A" },
+        content: [
+          { type: "thinking", thinking: "Reason A" },
+          { type: "text", text: "Answer A" },
+        ],
+      },
+      {
+        assistantMessageEvent: { type: "thinking_delta", contentIndex: 2, delta: "Reason B" },
+        content: [
+          { type: "thinking", thinking: "Reason A" },
+          { type: "text", text: "Answer A" },
+          { type: "thinking", thinking: "Reason B" },
+        ],
+      },
+      {
+        assistantMessageEvent: { type: "text_delta", contentIndex: 3, delta: "Answer B" },
+        content: [
+          { type: "thinking", thinking: "Reason A" },
+          { type: "text", text: "Answer A" },
+          { type: "thinking", thinking: "Reason B" },
+          { type: "text", text: "Answer B" },
+        ],
+      },
+    ] as const;
+    for (const snapshot of snapshots) {
+      session.emit({
+        type: "message_update",
+        assistantMessageEvent: snapshot.assistantMessageEvent,
+        message: {
+          role: "assistant",
+          content: [...snapshot.content],
+          responseId: "response-interleaved",
+        },
+      });
+      scheduler.flush();
+    }
+
+    const projected = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      (event.item.type === "assistant_message" || event.item.type === "reasoning")
+        ? [event.item]
+        : [],
+    );
+    expect(projected.map((item) => [item.id, item.text])).toEqual([
+      ["response-interleaved:content:0:reasoning", "Reason A"],
+      ["response-interleaved:content:1:text", "Answer A"],
+      ["response-interleaved:content:2:reasoning", "Reason B"],
+      ["response-interleaved:content:3:text", "Answer B"],
+    ]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("correlates equal user text to distinct native entry IDs", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "same-1", "repeat"));
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "repeat", entryId: "entry-repeat-1" },
+    });
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "same-2",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "repeat" }] },
+      },
+    });
+    await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "same-2",
+    );
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "repeat", entryId: "entry-repeat-2" },
+    });
+
+    const userItems = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
+    );
+    expect(userItems).toEqual([
+      expect.objectContaining({
+        id: "entry-repeat-1",
+        messageId: "entry-repeat-1",
+        clientMessageId: "same-1",
+      }),
+      expect.objectContaining({
+        id: "entry-repeat-2",
+        messageId: "entry-repeat-2",
+        clientMessageId: "same-2",
+      }),
+    ]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
   test("keeps one user bubble through hidden notices and mid-turn steering", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -554,6 +738,12 @@ describe("OMP direct provider", () => {
       },
     });
     session.emit({
+      type: "notice",
+      id: "notice-before-echo",
+      level: "info",
+      message: "Background setup finished",
+    });
+    session.emit({
       type: "message_end",
       message: { role: "user", content: "normalized echo", id: "generic-message-id" },
     });
@@ -563,10 +753,6 @@ describe("OMP direct provider", () => {
         event.item.type === "user_message" &&
         event.item.clientMessageId === "client-1",
     );
-    session.emit({
-      type: "message_end",
-      message: { role: "user", content: "duplicate", entryId: "entry-user-1" },
-    });
 
     await connection.send({
       type: "session.prompt",
@@ -582,11 +768,36 @@ describe("OMP direct provider", () => {
     );
     session.emit({
       type: "message_end",
+      message: { role: "user", content: "duplicate", entryId: "entry-user-1" },
+    });
+    session.emit({
+      type: "message_end",
       message: { role: "user", content: "focus", entryId: "entry-steer-1" },
     });
     const terminal = await finishTurn(events, session, turnId);
+    const correlatedUsers = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
+    );
+    expect(correlatedUsers).toEqual([
+      expect.objectContaining({
+        id: "entry-user-1",
+        messageId: "entry-user-1",
+        clientMessageId: "client-1",
+      }),
+      expect.objectContaining({
+        id: "entry-steer-1",
+        messageId: "entry-steer-1",
+        clientMessageId: "steer-1",
+      }),
+    ]);
+    expect(correlatedUsers.some((item) => item.id === "generic-message-id")).toBe(false);
 
     expect(steerResult).toEqual(expect.objectContaining({ result: { type: "steer", turnId } }));
+    expect(
+      events.filter(
+        (event) => event.type === "session.prompt_result" && event.clientMessageId === "steer-1",
+      ),
+    ).toHaveLength(1);
     expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
     for (const clientMessageId of ["client-1", "steer-1"]) {
       expect(
@@ -615,6 +826,59 @@ describe("OMP direct provider", () => {
       expect.objectContaining({ result: expect.objectContaining({ type: "failed" }) }),
     );
     expect(session.steers).toEqual(["focus"]);
+    await connection.close();
+  });
+
+  test("fails a steer whose expected turn ends before native acceptance", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+    const steerGate = Promise.withResolvers<void>();
+    const steerObserved = Promise.withResolvers<void>();
+    session.steerGate = steerGate.promise;
+    session.steerObserved = steerObserved.resolve;
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "stale-steer",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "late" }] },
+      },
+    });
+    await steerObserved.promise;
+    const terminal = finishTurn(events, session, turnId);
+    await terminal;
+    steerGate.resolve();
+    const result = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "stale-steer",
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: { message: "The active OMP turn ended before the steer was accepted" },
+        }),
+      }),
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.prompt_result" && event.clientMessageId === "stale-steer",
+      ),
+    ).toHaveLength(1);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === "stale-steer",
+      ),
+    ).toBe(false);
     await connection.close();
   });
 
@@ -737,22 +1001,65 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("ignores passive OMP widget updates without failing the turn", async () => {
+  test("projects safe passive updates outside a turn without wedging the session", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
-    const promptResult = await startPrompt(connection, events, "widget-1", "work");
-    const turnId = turnIdFrom(promptResult);
     const session = sessionAt(runtime);
 
     session.emit({
+      type: "notice",
+      id: "notice-idle",
+      level: "warning",
+      message: "Background task delayed",
+    });
+    session.emit({
+      type: "todo_reminder",
+      todos: [{ id: "todo-idle", content: "Wait for background task", status: "pending" }],
+    });
+    session.emit({
       type: "extension_ui_request",
-      id: "widget-request",
+      id: "notify-idle",
+      method: "notify",
+      notifyType: "info",
+      message: "Background task resumed",
+    });
+    session.emit({
+      type: "extension_ui_request",
+      id: "widget-idle",
       method: "setWidget",
     });
-    const terminal = await finishTurn(events, session, turnId);
 
-    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-1",
+      item: {
+        type: "notification",
+        id: "notice-idle",
+        level: "warning",
+        message: "Background task delayed",
+      },
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({ type: "todo", id: "omp:todos" }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({
+          type: "notification",
+          id: "omp:ui:notify-idle",
+          message: "Background task resumed",
+        }),
+      }),
+    );
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+
+    const turnId = turnIdFrom(await startPrompt(connection, events, "after-passive", "continue"));
+    const terminal = await finishTurn(events, session, turnId);
+    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
     await connection.close();
   });
 

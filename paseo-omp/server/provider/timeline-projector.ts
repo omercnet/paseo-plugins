@@ -10,10 +10,19 @@ const STREAM_FRAME_MS = 32;
 type Emit = (event: ProviderEvent) => void;
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
+type StreamBlockKind = "assistant_message" | "reasoning";
+
+type StreamBlockSnapshot = {
+  kind: StreamBlockKind;
+  text: string;
+};
+
 type StreamSnapshot = {
-  assistantId: string;
-  reasoningId: string;
-  message: OmpMessage;
+  messageId: string;
+  nativeIdentity?: string;
+  published: boolean;
+  blocks: Map<number, StreamBlockSnapshot>;
+  dirtyBlocks: Set<number>;
 };
 
 type ToolSnapshot = {
@@ -41,15 +50,27 @@ function toJsonValue(value: unknown): JsonValue {
   }
 }
 
-function extractStreamText(message: OmpMessage): { assistant: string; reasoning: string } {
-  if (!Array.isArray(message.content)) return { assistant: "", reasoning: "" };
-  const assistant: string[] = [];
-  const reasoning: string[] = [];
-  for (const part of message.content) {
-    if (part.type === "text" && part.text) assistant.push(part.text);
-    else if (part.type === "thinking" && part.thinking) reasoning.push(part.thinking);
+type AssistantMessageEvent = Extract<
+  OmpRpcEvent,
+  { type: "message_update" }
+>["assistantMessageEvent"];
+
+function assistantIdentity(message: OmpMessage): string | undefined {
+  return message.responseId ?? message.entryId;
+}
+
+function blockText(
+  message: OmpMessage,
+  contentIndex: number,
+): { kind: StreamBlockKind; text: string } | undefined {
+  if (typeof message.content === "string") {
+    return contentIndex === 0 ? { kind: "assistant_message", text: message.content } : undefined;
   }
-  return { assistant: assistant.join(""), reasoning: reasoning.join("") };
+  if (!Array.isArray(message.content)) return undefined;
+  const part = message.content[contentIndex];
+  if (part?.type === "text") return { kind: "assistant_message", text: part.text ?? "" };
+  if (part?.type === "thinking") return { kind: "reasoning", text: part.thinking ?? "" };
+  return undefined;
 }
 
 export class OmpTimelineProjector {
@@ -58,8 +79,8 @@ export class OmpTimelineProjector {
   private flushTimer: unknown;
   private currentTurnId: string | null = null;
   private assistantSequence = 0;
+  private noticeSequence = 0;
   private commandText = "";
-  private dirty = false;
   private closed = false;
 
   constructor(
@@ -70,6 +91,14 @@ export class OmpTimelineProjector {
 
   project(event: OmpRpcEvent, turnId: string): void {
     if (this.closed) return;
+    if (
+      event.type === "todo_reminder" ||
+      event.type === "notice" ||
+      event.type === "extension_ui_request"
+    ) {
+      this.projectPassive(event);
+      return;
+    }
     this.ensureTurn(turnId);
     switch (event.type) {
       case "message_start":
@@ -79,10 +108,12 @@ export class OmpTimelineProjector {
           this.stream = null;
         }
         this.beginStream(event.message, turnId);
+        this.updateAllBlocks(event.message);
+        this.scheduleFlush();
         return;
       case "message_update":
         if (event.message.role !== "assistant") return;
-        this.updateStream(event.message, turnId);
+        this.updateStream(event.message, turnId, event.assistantMessageEvent);
         this.scheduleFlush();
         return;
       case "message_end":
@@ -138,17 +169,43 @@ export class OmpTimelineProjector {
           text: this.commandText,
         });
         return;
-      case "todo_reminder":
-        this.publish({
-          type: "todo",
-          id: "omp:todos",
-          items: event.todos.map((todo, index) => ({
-            id: todo.id ?? `omp:todo:${index}`,
-            text: todo.content,
-            completed: todo.status === "completed" || todo.status === "abandoned",
-            status: todo.status === "abandoned" ? "completed" : todo.status,
-          })),
-        });
+    }
+  }
+
+  projectPassive(event: OmpRpcEvent): void {
+    if (this.closed) return;
+    if (event.type === "todo_reminder") {
+      this.publish({
+        type: "todo",
+        id: "omp:todos",
+        items: event.todos.map((todo, index) => ({
+          id: todo.id ?? `omp:todo:${index}`,
+          text: todo.content,
+          completed: todo.status === "completed" || todo.status === "abandoned",
+          status: todo.status === "abandoned" ? "completed" : todo.status,
+        })),
+      });
+      return;
+    }
+    if (event.type === "notice") {
+      this.noticeSequence += 1;
+      this.publish({
+        type: "notification",
+        id: event.id ?? `omp:notice:${this.noticeSequence}`,
+        level: event.level,
+        message: event.source ? `${event.source}: ${event.message}` : event.message,
+      });
+      return;
+    }
+    if (event.type === "extension_ui_request" && event.method === "notify") {
+      const message = event.message ?? event.title;
+      if (!message) return;
+      this.publish({
+        type: "notification",
+        id: `omp:ui:${event.id}`,
+        level: event.notifyType ?? "info",
+        message,
+      });
     }
   }
 
@@ -164,19 +221,26 @@ export class OmpTimelineProjector {
 
   flush(): void {
     this.clearFlushTimer();
-    if (!this.dirty || !this.stream || this.closed) return;
-    this.dirty = false;
-    const text = extractStreamText(this.stream.message);
-    if (text.reasoning) {
-      this.publish({ type: "reasoning", id: this.stream.reasoningId, text: text.reasoning });
-    }
-    if (text.assistant) {
-      this.publish({
-        type: "assistant_message",
-        id: this.stream.assistantId,
-        messageId: this.stream.assistantId,
-        text: text.assistant,
-      });
+    if (!this.stream || this.closed || this.stream.dirtyBlocks.size === 0) return;
+    const stream = this.stream;
+    const indexes = [...stream.dirtyBlocks].sort((left, right) => left - right);
+    stream.dirtyBlocks.clear();
+    for (const contentIndex of indexes) {
+      const block = stream.blocks.get(contentIndex);
+      if (!block?.text) continue;
+      const suffix = block.kind === "reasoning" ? "reasoning" : "text";
+      const id = `${stream.messageId}:content:${contentIndex}:${suffix}`;
+      if (block.kind === "reasoning") {
+        this.publish({ type: "reasoning", id, text: block.text });
+      } else {
+        this.publish({
+          type: "assistant_message",
+          id,
+          messageId: stream.messageId,
+          text: block.text,
+        });
+      }
+      stream.published = true;
     }
   }
 
@@ -184,7 +248,6 @@ export class OmpTimelineProjector {
     if (this.currentTurnId !== turnId) return;
     this.flush();
     this.stream = null;
-    this.dirty = false;
     this.tools.clear();
     this.commandText = "";
     this.currentTurnId = null;
@@ -209,28 +272,91 @@ export class OmpTimelineProjector {
 
   private beginStream(message: OmpMessage, turnId: string): StreamSnapshot {
     this.assistantSequence += 1;
-    const assistantId =
-      message.responseId ??
-      message.entryId ??
-      message.id ??
-      `assistant:${turnId}:${this.assistantSequence}`;
+    const nativeIdentity = assistantIdentity(message);
     this.stream = {
-      assistantId,
-      reasoningId: `${assistantId}:reasoning`,
-      message,
+      messageId: nativeIdentity ?? `assistant:${turnId}:${this.assistantSequence}`,
+      ...(nativeIdentity ? { nativeIdentity } : {}),
+      published: false,
+      blocks: new Map(),
+      dirtyBlocks: new Set(),
     };
     return this.stream;
   }
 
-  private updateStream(message: OmpMessage, turnId: string): void {
-    const responseId = message.responseId ?? message.entryId ?? message.id;
-    if (this.stream && responseId && responseId !== this.stream.assistantId) {
-      this.flush();
-      this.stream = null;
+  private updateStream(
+    message: OmpMessage,
+    turnId: string,
+    update?: AssistantMessageEvent,
+  ): void {
+    const nativeIdentity = assistantIdentity(message);
+    if (this.stream && nativeIdentity && this.stream.nativeIdentity !== nativeIdentity) {
+      if (!this.stream.nativeIdentity) {
+        if (!this.stream.published) {
+          this.stream.messageId = nativeIdentity;
+          this.stream.nativeIdentity = nativeIdentity;
+        }
+      } else {
+        this.flush();
+        this.stream = null;
+      }
     }
     const stream = this.stream ?? this.beginStream(message, turnId);
-    stream.message = message;
-    this.dirty = true;
+    if (update?.contentIndex !== undefined) {
+      this.updateBlock(stream, message, update.contentIndex, update);
+      return;
+    }
+    this.updateAllBlocks(message);
+  }
+
+  private updateAllBlocks(message: OmpMessage): void {
+    const stream = this.stream;
+    if (!stream) return;
+    if (typeof message.content === "string") {
+      this.setBlock(stream, 0, { kind: "assistant_message", text: message.content });
+      return;
+    }
+    if (!Array.isArray(message.content)) return;
+    for (let index = 0; index < message.content.length; index += 1) {
+      const block = blockText(message, index);
+      if (block) this.setBlock(stream, index, block);
+    }
+  }
+
+  private updateBlock(
+    stream: StreamSnapshot,
+    message: OmpMessage,
+    contentIndex: number,
+    update: NonNullable<AssistantMessageEvent>,
+  ): void {
+    const snapshot = blockText(message, contentIndex);
+    if (snapshot) {
+      this.setBlock(stream, contentIndex, snapshot);
+      return;
+    }
+    const kind = update.type.startsWith("thinking_")
+      ? "reasoning"
+      : update.type.startsWith("text_")
+        ? "assistant_message"
+        : undefined;
+    if (!kind) return;
+    const previous = stream.blocks.get(contentIndex);
+    const text =
+      update.content ??
+      (update.delta !== undefined && previous?.kind === kind
+        ? `${previous.text}${update.delta}`
+        : update.delta ?? previous?.text ?? "");
+    this.setBlock(stream, contentIndex, { kind, text });
+  }
+
+  private setBlock(
+    stream: StreamSnapshot,
+    contentIndex: number,
+    snapshot: StreamBlockSnapshot,
+  ): void {
+    const previous = stream.blocks.get(contentIndex);
+    if (previous?.kind === snapshot.kind && previous.text === snapshot.text) return;
+    stream.blocks.set(contentIndex, snapshot);
+    stream.dirtyBlocks.add(contentIndex);
   }
 
   private scheduleFlush(): void {

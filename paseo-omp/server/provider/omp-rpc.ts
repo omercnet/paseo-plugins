@@ -23,6 +23,14 @@ const OmpContentPartSchema = z
     thinking: z.string().optional(),
   })
   .passthrough();
+const OmpAssistantMessageEventSchema = z
+  .object({
+    type: z.string(),
+    contentIndex: z.number().int().nonnegative().optional(),
+    delta: z.string().optional(),
+    content: z.string().optional(),
+  })
+  .passthrough();
 const OmpMessageSchema = z
   .object({
     role: z.string(),
@@ -97,7 +105,13 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("turn_start") }).passthrough(),
   z.object({ type: z.literal("turn_end") }).passthrough(),
   z.object({ type: z.literal("message_start"), message: OmpMessageSchema }).passthrough(),
-  z.object({ type: z.literal("message_update"), message: OmpMessageSchema }).passthrough(),
+  z
+    .object({
+      type: z.literal("message_update"),
+      message: OmpMessageSchema,
+      assistantMessageEvent: OmpAssistantMessageEventSchema.optional(),
+    })
+    .passthrough(),
   z.object({ type: z.literal("message_end"), message: OmpMessageSchema }).passthrough(),
   z
     .object({
@@ -139,6 +153,15 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
       ),
     })
     .passthrough(),
+  z
+    .object({
+      type: z.literal("notice"),
+      id: z.string().optional(),
+      level: z.enum(["info", "warning", "error"]),
+      message: z.string(),
+      source: z.string().optional(),
+    })
+    .passthrough(),
   z.object({ type: z.literal("command_output"), text: z.string().optional() }).passthrough(),
   z
     .object({
@@ -147,6 +170,7 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
       method: z.string(),
       title: z.string().optional(),
       message: z.string().optional(),
+      notifyType: z.enum(["info", "warning", "error"]).optional(),
     })
     .passthrough(),
   z
@@ -179,6 +203,7 @@ const RECOGNIZED_FRAME_TYPES: Readonly<Record<string, true>> = {
   message_end: true,
   message_start: true,
   message_update: true,
+  notice: true,
   process_exit: true,
   prompt_result: true,
   ready: true,
