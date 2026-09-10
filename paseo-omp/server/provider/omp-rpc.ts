@@ -42,6 +42,9 @@ const OmpMessageSchema = z
     stopReason: z.string().optional(),
   })
   .passthrough();
+const OmpAvailableCommandSchema = z
+  .object({ name: z.string(), aliases: z.array(z.string()).optional() })
+  .passthrough();
 const OmpModelSchema = z
   .object({
     provider: z.string(),
@@ -155,6 +158,12 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     .passthrough(),
   z
     .object({
+      type: z.literal("available_commands_update"),
+      commands: z.array(OmpAvailableCommandSchema),
+    })
+    .passthrough(),
+  z
+    .object({
       type: z.literal("notice"),
       id: z.string().optional(),
       level: z.enum(["info", "warning", "error"]),
@@ -189,13 +198,7 @@ const OmpPromptAckSchema = z
   .passthrough()
   .optional();
 const OmpAvailableCommandsResultSchema = z
-  .object({
-    commands: z.array(
-      z
-        .object({ name: z.string(), aliases: z.array(z.string()).optional() })
-        .passthrough(),
-    ),
-  })
+  .object({ commands: z.array(OmpAvailableCommandSchema) })
   .passthrough();
 const OmpBranchMessagesResultSchema = z
   .object({
@@ -205,6 +208,7 @@ const OmpBranchMessagesResultSchema = z
 const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2) }).passthrough();
 
 const RECOGNIZED_FRAME_TYPES: Readonly<Record<string, true>> = {
+  available_commands_update: true,
   agent_end: true,
   agent_start: true,
   command_output: true,

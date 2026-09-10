@@ -206,6 +206,16 @@ describe("OMP RPC transport", () => {
       type: "todo_reminder",
       todos: [{ id: "blocked-1", content: "Waiting", status: "blocked" }],
     });
+
+    const commandsEvent = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "available_commands_update",
+      commands: [{ name: "fresh-command", aliases: ["fresh"] }],
+    });
+    await expect(commandsEvent).resolves.toEqual({
+      type: "available_commands_update",
+      commands: [{ name: "fresh-command", aliases: ["fresh"] }],
+    });
     await session.close();
   });
 

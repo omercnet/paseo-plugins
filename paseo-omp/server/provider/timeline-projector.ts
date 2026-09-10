@@ -289,11 +289,7 @@ export class OmpTimelineProjector {
     return this.stream;
   }
 
-  private updateStream(
-    message: OmpMessage,
-    turnId: string,
-    update?: AssistantMessageEvent,
-  ): void {
+  private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {
     const nativeIdentity = assistantIdentity(message);
     if (this.stream && nativeIdentity && this.stream.nativeIdentity !== nativeIdentity) {
       if (!this.stream.nativeIdentity) {
@@ -351,7 +347,7 @@ export class OmpTimelineProjector {
       eventContent ??
       (update.delta !== undefined && previous?.kind === kind
         ? `${previous.text}${update.delta}`
-        : update.delta ?? previous?.text ?? "");
+        : (update.delta ?? previous?.text ?? ""));
     this.setBlock(stream, contentIndex, { kind, text });
   }
 

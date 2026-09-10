@@ -83,6 +83,22 @@ function slashCommandName(text: string): string | undefined {
   const match = /^\/([^\s/]+)(?:\s|$)/.exec(text);
   return match?.[1];
 }
+const PATH_LIKE_ROOTS: Readonly<Record<string, true>> = {
+  bin: true,
+  dev: true,
+  etc: true,
+  home: true,
+  opt: true,
+  root: true,
+  tmp: true,
+  usr: true,
+  var: true,
+};
+
+function isPathLikeSlashProse(text: string, commandName: string): boolean {
+  return PATH_LIKE_ROOTS[commandName] === true && text.length > commandName.length + 1;
+}
+
 
 function nativeEntryId(message: OmpMessage): string | undefined {
   return message.entryId;
@@ -148,6 +164,7 @@ export class OmpProviderSession {
   private readonly emittedEntryIds = new Set<string>();
   private readonly seenEntryIds = new Set<string>();
   private branchWatermarkValid = true;
+  private readonly unclaimedBranchEntries: Array<{ entryId: string; text: string }> = [];
   private readonly scheduler: OmpTimelineScheduler;
 
   private constructor(
@@ -156,7 +173,8 @@ export class OmpProviderSession {
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
     private readonly capabilities: readonly string[],
-    private readonly slashCommands: ReadonlySet<string>,
+    private readonly slashCommands: Set<string>,
+    private commandDiscoveryAvailable: boolean,
     private readonly emit: Emit,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
@@ -191,10 +209,13 @@ export class OmpProviderSession {
       signal,
     });
     try {
-      const [state, nativeModels, nativeCommands] = await Promise.all([
+      const [state, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
         native.getAvailableModels(),
-        native.getAvailableCommands().catch(() => []),
+        native.getAvailableCommands().then(
+          (commands) => ({ available: true, commands }),
+          () => ({ available: false, commands: [] }),
+        ),
       ]);
       const models = mapOmpModels(nativeModels);
       const currentModel = state.model
@@ -217,7 +238,10 @@ export class OmpProviderSession {
         input.config,
         configState,
         capabilities,
-        new Set(nativeCommands.flatMap((command) => [command.name, ...(command.aliases ?? [])])),
+        new Set(
+          commandDiscovery.commands.flatMap((command) => [command.name, ...(command.aliases ?? [])]),
+        ),
+        commandDiscovery.available,
         emit,
         scheduler,
       );
@@ -433,7 +457,12 @@ export class OmpProviderSession {
 
   private async steer(clientMessageId: string, text: string): Promise<void> {
     const commandName = slashCommandName(text);
-    if (commandName && this.slashCommands.has(commandName)) {
+    const recognizedCommand = commandName ? this.slashCommands.has(commandName) : false;
+    const unrecognizedCommandShape =
+      commandName !== undefined &&
+      !isPathLikeSlashProse(text, commandName) &&
+      (!this.commandDiscoveryAvailable || !recognizedCommand);
+    if (recognizedCommand || unrecognizedCommandShape) {
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -446,13 +475,7 @@ export class OmpProviderSession {
       return;
     }
     const turn = this.activeTurn;
-    if (
-      !turn ||
-      turn.terminal ||
-      turn.terminalizing ||
-      turn.deferredAgentEnd ||
-      !turn.started
-    ) {
+    if (!turn || turn.terminal || turn.terminalizing || turn.deferredAgentEnd || !turn.started) {
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -512,6 +535,15 @@ export class OmpProviderSession {
 
   private handleRuntimeEvent(event: OmpRpcEvent): void {
     if (this.closed) return;
+    if (event.type === "available_commands_update") {
+      this.slashCommands.clear();
+      for (const command of event.commands) {
+        this.slashCommands.add(command.name);
+        for (const alias of command.aliases ?? []) this.slashCommands.add(alias);
+      }
+      this.commandDiscoveryAvailable = true;
+      return;
+    }
     if (event.type === "extension_ui_request") {
       if (isPassiveUiMethod(event.method)) {
         this.projector.projectPassive(event);
@@ -582,7 +614,13 @@ export class OmpProviderSession {
 
   private projectUserEcho(turn: ActiveTurn, message: OmpMessage): void {
     const entryId = nativeEntryId(message);
-    if (entryId && this.seenEntryIds.has(entryId)) return;
+    if (
+      entryId &&
+      this.seenEntryIds.has(entryId) &&
+      !this.unclaimedBranchEntries.some((entry) => entry.entryId === entryId)
+    ) {
+      return;
+    }
     turn.userEchoes.push(message);
     this.drainUserEchoes(turn);
   }
@@ -606,7 +644,11 @@ export class OmpProviderSession {
       const message = turn.userEchoes[0];
       if (!message) return;
       const entryId = nativeEntryId(message);
-      if (entryId && this.emittedEntryIds.has(entryId)) {
+      if (
+        entryId &&
+        this.emittedEntryIds.has(entryId) &&
+        !this.unclaimedBranchEntries.some((entry) => entry.entryId === entryId)
+      ) {
         turn.userEchoes.shift();
         continue;
       }
@@ -619,30 +661,48 @@ export class OmpProviderSession {
         pending.bufferedEchoes.push(...turn.userEchoes.splice(0));
         return;
       }
-      let resolvedId = entryId;
+      let resolvedId = entryId ?? this.claimUnclaimedBranchEntry(pending.text);
       if (!resolvedId) {
         try {
           const messages = await this.runtime.getBranchMessages();
-          if (this.closed || turn.terminal || this.activeTurn !== turn || turn.pendingUsers[0] !== pending) {
+          if (
+            this.closed ||
+            turn.terminal ||
+            this.activeTurn !== turn ||
+            turn.pendingUsers[0] !== pending
+          ) {
             return;
           }
           const unseen = messages.filter(
             (branchMessage) => !this.seenEntryIds.has(branchMessage.entryId),
           );
-          for (const branchMessage of messages) this.seenEntryIds.add(branchMessage.entryId);
           if (!this.branchWatermarkValid) {
+            this.unclaimedBranchEntries.length = 0;
             this.branchWatermarkValid = true;
           } else {
-            resolvedId = unseen.find((branchMessage) => branchMessage.text === pending.text)?.entryId;
+            this.unclaimedBranchEntries.push(...unseen);
           }
+          for (const branchMessage of messages) this.seenEntryIds.add(branchMessage.entryId);
+          resolvedId = this.claimUnclaimedBranchEntry(pending.text);
         } catch {
-          if (this.closed || turn.terminal || this.activeTurn !== turn || turn.pendingUsers[0] !== pending) {
+          if (
+            this.closed ||
+            turn.terminal ||
+            this.activeTurn !== turn ||
+            turn.pendingUsers[0] !== pending
+          ) {
             return;
           }
+          this.unclaimedBranchEntries.length = 0;
           this.branchWatermarkValid = false;
         }
       }
-      if (this.closed || turn.terminal || this.activeTurn !== turn || turn.pendingUsers[0] !== pending) {
+      if (
+        this.closed ||
+        turn.terminal ||
+        this.activeTurn !== turn ||
+        turn.pendingUsers[0] !== pending
+      ) {
         return;
       }
       turn.userEchoes.shift();
@@ -652,11 +712,21 @@ export class OmpProviderSession {
     }
   }
 
+  private claimUnclaimedBranchEntry(text: string): string | undefined {
+    const index = this.unclaimedBranchEntries.findIndex((entry) => entry.text === text);
+    if (index < 0) return undefined;
+    return this.unclaimedBranchEntries.splice(index, 1)[0]?.entryId;
+  }
+
   private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
       this.seenEntryIds.add(entryId);
       this.emittedEntryIds.add(entryId);
+      const unclaimedIndex = this.unclaimedBranchEntries.findIndex(
+        (entry) => entry.entryId === entryId,
+      );
+      if (unclaimedIndex >= 0) this.unclaimedBranchEntries.splice(unclaimedIndex, 1);
     }
     this.projector.publishUser(pending.text, pending.clientMessageId, entryId);
   }
@@ -678,6 +748,7 @@ export class OmpProviderSession {
 
   private async completeLocalOnlyTurn(turn: ActiveTurn): Promise<void> {
     await Promise.allSettled(turn.userLookups);
+    if (this.closed || turn.terminal || this.activeTurn !== turn) return;
     if (
       turn.terminal ||
       turn.nativeActivity ||
@@ -697,8 +768,11 @@ export class OmpProviderSession {
   ): void {
     if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) return;
     turn.terminalizing = true;
-    if (turn.userLookups.size === 0) this.completeAgentEnd(turn, event);
-    else void this.finishFromAgentEnd(turn, event);
+    if (turn.userLookups.size === 0 && turn.userEchoes.length === 0) {
+      this.completeAgentEnd(turn, event);
+    } else {
+      void this.finishFromAgentEnd(turn, event);
+    }
   }
 
   private resumeAfterFailedSteer(turn: ActiveTurn): void {
@@ -718,7 +792,14 @@ export class OmpProviderSession {
     turn: ActiveTurn,
     event: Extract<OmpRpcEvent, { type: "agent_end" }>,
   ): Promise<void> {
-    await Promise.allSettled(turn.userLookups);
+    while (true) {
+      await Promise.allSettled(turn.userLookups);
+      if (this.closed || turn.terminal || this.activeTurn !== turn) return;
+      if (turn.userEchoes.length === 0) break;
+      this.drainUserEchoes(turn);
+      if (turn.userLookups.size === 0) break;
+    }
+    if (this.closed || turn.terminal || this.activeTurn !== turn) return;
     this.completeAgentEnd(turn, event);
   }
 
