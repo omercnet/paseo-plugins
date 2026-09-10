@@ -78,11 +78,13 @@ export function boundedJsonBytes(
     let itemCount = 0;
     for (const key in item) {
       if (!Object.hasOwn(item, key)) continue;
+      const child = (item as Record<string, unknown>)[key];
+      if (child === undefined) continue;
       itemCount += 1;
       if (itemCount > maxItems) return Number.POSITIVE_INFINITY;
       bytes += utf8Bytes(key);
       if (bytes > maxBytes) return Number.POSITIVE_INFINITY;
-      stack.push({ value: (item as Record<string, unknown>)[key], depth: current.depth + 1 });
+      stack.push({ value: child, depth: current.depth + 1 });
     }
   }
   return bytes;

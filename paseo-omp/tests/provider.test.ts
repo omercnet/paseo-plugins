@@ -3668,7 +3668,7 @@ describe("OMP direct provider", () => {
       prompt: {
         clientMessageId: "late-command",
         delivery: "steer",
-        input: { type: "message", content: [{ type: "text", text: "/command-128" }] },
+        input: { type: "message", content: [{ type: "text", text: "late command" }] },
       },
     });
     const commandResult = await events.waitFor(

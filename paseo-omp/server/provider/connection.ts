@@ -299,7 +299,11 @@ export function createOmpConnection(
           requestFailure(input.requestId, new OmpPublicError("Unknown OMP session"));
           return;
         }
-        await slot.session.close();
+        try {
+          await slot.session.close();
+        } catch {
+          throw new OmpPublicError("OMP session close failed");
+        }
         if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
         emit({ type: "request.completed", requestId: input.requestId });
         return;
@@ -337,12 +341,39 @@ export function createOmpConnection(
       if (activeOperations.size >= MAX_ACTIVE_OPERATIONS) {
         throw new OmpPublicError("OMP provider is busy");
       }
-      preflightProviderInput(input);
-      const parsed = ProviderInputSchema.safeParse(input);
-      if (!parsed.success) throw new OmpPublicError("Invalid provider request");
-      input = parsed.data;
-      validateInputEnvelope(input);
-      requireProviderCapabilities(safeCapabilities, input);
+      try {
+        preflightProviderInput(input);
+        const parsed = ProviderInputSchema.safeParse(input);
+        if (!parsed.success) throw new OmpPublicError("Invalid provider request");
+        input = parsed.data;
+        validateInputEnvelope(input);
+        requireProviderCapabilities(safeCapabilities, input);
+      } catch (error) {
+        const raw = input as unknown;
+        if (raw && typeof raw === "object") {
+          const record = raw as Record<string, unknown>;
+          if (record.type === "session.prompt" && isBoundedIdentifier(record.sessionId)) {
+            const prompt = record.prompt;
+            if (prompt && typeof prompt === "object") {
+              const clientMessageId = (prompt as Record<string, unknown>).clientMessageId;
+              if (isBoundedIdentifier(clientMessageId)) {
+                emit({
+                  type: "session.prompt_result",
+                  sessionId: record.sessionId,
+                  clientMessageId,
+                  result: { type: "failed", error: errorDetails(error, "OMP prompt failed") },
+                });
+                return;
+              }
+            }
+          }
+          if (isBoundedIdentifier(record.requestId)) {
+            requestFailure(record.requestId, error, "OMP provider request failed");
+            return;
+          }
+        }
+        throw error;
+      }
       const operation = Promise.resolve()
         .then(async () => {
           if (closing || closed) return;
