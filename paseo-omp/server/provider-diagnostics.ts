@@ -616,7 +616,9 @@ async function readSafeConfig(agentDir: string): Promise<SafeConfigResult> {
     const path = join(agentDir, filename);
     const fileRead = await readBoundedNoSymlinkFile(path, MAX_CONFIG_BYTES);
     if (fileRead.state === "missing") continue;
-    if (fileRead.state !== "available") return { path, state: fileRead.state, config: null };
+    if (fileRead.state !== "available" || !("text" in fileRead)) {
+      return { path, state: fileRead.state, config: null };
+    }
     try {
       const raw: unknown = parseYaml(fileRead.text);
       if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -673,6 +675,14 @@ async function computeMcpDiagnostics(agentDir: string): Promise<OmpMcpDiagnostic
       reason: `${MCP_MANIFEST_FILENAME} under the agent root is too large or unstable`,
     };
   }
+  if (!("text" in fileRead)) {
+    return {
+      status: "invalid",
+      serverCount: null,
+      reason: `${MCP_MANIFEST_FILENAME} under the agent root could not be read`,
+    };
+  }
+
   let raw: unknown;
   try {
     raw = JSON.parse(fileRead.text);

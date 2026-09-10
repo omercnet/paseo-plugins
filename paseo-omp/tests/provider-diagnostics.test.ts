@@ -769,7 +769,7 @@ describe("computeOmpProviderHealth", () => {
   describe("path sanitization", () => {
     test("renders a constant custom-path label without leaking its basename", async () => {
       const binaryDir = await tempDir("paseo-omp-bin-");
-      const binaryPath = await createFakeBinary(binaryDir);
+      await createFakeBinary(binaryDir);
       const agentDir = await tempDir("paseo-omp-agent-");
 
       const health = await computeOmpProviderHealth(

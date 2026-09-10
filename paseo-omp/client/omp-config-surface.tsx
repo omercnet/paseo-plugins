@@ -9,6 +9,7 @@ import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider-diagnostics";
 import {
   type BinaryHealthSummary,
+  loadReadyProviderSnapshot,
   lspTone,
   mcpTone,
   type PathStateSummary,
@@ -24,7 +25,6 @@ import {
   summarizeProcessDiagnostics,
   summarizeProviderStatus,
   summarizeRpcUiSupport,
-  loadReadyProviderSnapshot,
 } from "./provider-diagnostics-state";
 
 const CONFIG_POLL_MS = 30_000;

@@ -240,8 +240,8 @@ describe("provider snapshot convergence and forced refresh", () => {
 
   test("caches successful forced health even when provider refresh partially fails", async () => {
     const forcedHealth = health();
-    let cachedHealth: OmpProviderHealth | null = null;
-    let cachedProviders: PaseoProviderSnapshotResult | null = null;
+    const cachedHealth: OmpProviderHealth[] = [];
+    const cachedProviders: PaseoProviderSnapshotResult[] = [];
     const providers = {
       async waitForReady() {
         return snapshot;
@@ -260,16 +260,16 @@ describe("provider snapshot convergence and forced refresh", () => {
         return forcedHealth;
       },
       cacheHealth(value) {
-        cachedHealth = value;
+        cachedHealth.push(value);
       },
       cacheProviders(value) {
-        cachedProviders = value;
+        cachedProviders.push(value);
       },
     });
 
     expect(result.failed).toBe(true);
-    expect(cachedHealth).toBe(forcedHealth);
-    expect(cachedProviders).toBe(snapshot);
+    expect(cachedHealth).toEqual([forcedHealth]);
+    expect(cachedProviders).toEqual([snapshot]);
   });
 
   test("suppresses only a recognized unsupported-host refresh error", async () => {
