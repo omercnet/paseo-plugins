@@ -39,19 +39,23 @@ export type PathState = z.infer<typeof PathStateSchema>;
 const MemoryBackendSchema = z.enum(["off", "local", "hindsight", "mnemopi", "sharpshooter"]);
 
 export const OmpProcessDiagnosticsSchema = z.object({
-  status: z.enum(["ok", "unavailable", "unknown"]),
+  /** "partial" means at least one project's daemon directory could not be read (e.g.
+   * permission denied) and the count below only reflects the readable subset. */
+  status: z.enum(["ok", "partial", "unavailable", "unknown"]),
   /** Count of daemon-supervised process entries tracked under the hub run root; null
-   * unless "ok". */
+   * unless "ok" or "partial". */
   trackedCount: z.number().int().nonnegative().nullable(),
 });
 export type OmpProcessDiagnostics = z.infer<typeof OmpProcessDiagnosticsSchema>;
 
-// omp's public --version/--help surface exposes no safe, non-secret MCP signal (MCP wiring is
-// provider-session configuration, not global CLI state), so this is honestly always "unknown"
-// rather than a guessed boolean.
+// Reports safe facts from omp's own mcp.json manifest: server identifiers and a parse/access
+// status. Never the credentials, headers, env, URLs, or commands nested inside each entry.
 export const OmpMcpDiagnosticsSchema = z.object({
-  status: z.literal("unknown"),
-  reason: z.string(),
+  status: z.enum(["configured", "unavailable", "invalid"]),
+  serverCount: z.number().int().nonnegative().nullable(),
+  serverNames: z.array(z.string()).nullable(),
+  /** Null only when "configured"; otherwise a specific, path-backed explanation. */
+  reason: z.string().nullable(),
 });
 export type OmpMcpDiagnostics = z.infer<typeof OmpMcpDiagnosticsSchema>;
 

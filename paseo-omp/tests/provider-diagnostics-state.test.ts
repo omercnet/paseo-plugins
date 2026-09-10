@@ -3,6 +3,7 @@ import type { PaseoProviderSnapshotResult } from "@getpaseo/client";
 import {
   formatOmpVersion,
   lspTone,
+  mcpTone,
   processTone,
   rpcUiTone,
   selectKnownOmpProviders,
@@ -27,7 +28,7 @@ function health(overrides: Partial<OmpProviderHealth> = {}): OmpProviderHealth {
     },
     rpcUi: { checked: true, supported: true },
     lsp: { status: "supported" },
-    mcp: { status: "unknown", reason: "No safe MCP signal." },
+    mcp: { status: "unavailable", serverCount: null, serverNames: null, reason: "No mcp.json." },
     process: { status: "ok", trackedCount: 2 },
     roots: {
       agentRoot: "/home/test/.omp/agent",
@@ -95,15 +96,39 @@ describe("compatibility and process summaries", () => {
     expect(lspTone({ status: "not-advertised" })).toBe("muted");
   });
 
-  test("renders honest MCP unknown and process availability states", () => {
-    expect(summarizeMcpDiagnostics({ status: "unknown", reason: "No safe signal." })).toBe(
-      "Unknown (No safe signal.)",
-    );
+  test("renders honest MCP and process availability states", () => {
+    expect(
+      summarizeMcpDiagnostics({
+        status: "unavailable",
+        serverCount: null,
+        serverNames: null,
+        reason: "No signal.",
+      }),
+    ).toBe("Unavailable (No signal.)");
+    expect(
+      summarizeMcpDiagnostics({
+        status: "configured",
+        serverCount: 2,
+        serverNames: ["alpha", "beta"],
+        reason: null,
+      }),
+    ).toBe("2 configured (alpha, beta)");
+    const configuredMcp = {
+      status: "configured" as const,
+      serverCount: 1,
+      serverNames: ["a"],
+      reason: null,
+    };
+    expect(mcpTone(configuredMcp)).toBe("ok");
     expect(summarizeProcessDiagnostics({ status: "ok", trackedCount: 3 })).toBe("3 tracked");
     expect(processTone({ status: "ok", trackedCount: 3 })).toBe("ok");
     expect(summarizeProcessDiagnostics({ status: "unavailable", trackedCount: null })).toBe(
       "No hub run directory found",
     );
+    expect(summarizeProcessDiagnostics({ status: "partial", trackedCount: 1 })).toBe(
+      "1 tracked (partial: some inaccessible)",
+    );
+    expect(processTone({ status: "partial", trackedCount: 1 })).toBe("warning");
   });
 });
 

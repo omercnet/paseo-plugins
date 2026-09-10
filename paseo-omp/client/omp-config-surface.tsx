@@ -1,8 +1,8 @@
 import { type PluginSurfaceProps, usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
@@ -10,6 +10,7 @@ import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider
 import {
   type BinaryHealthSummary,
   lspTone,
+  mcpTone,
   type PathStateSummary,
   processTone,
   rpcUiTone,
@@ -403,7 +404,7 @@ function CapabilitiesSection({
         styles={styles}
         label="MCP"
         value={summarizeMcpDiagnostics(health.mcp)}
-        valueColor={theme.colors.foregroundMuted}
+        valueColor={toneColor(theme, mcpTone(health.mcp))}
       />
     </SectionCard>
   );
@@ -493,25 +494,37 @@ function ProviderHealthSection({
   styles: OmpConfigStyles;
 }) {
   const paseo = usePaseo();
+  const queryClient = useQueryClient();
   const loadHealth = useRpc(getOmpProviderHealth);
+  const healthQueryKey = ["paseo-omp", "provider-health"];
   const health = useQuery({
-    queryKey: ["paseo-omp", "provider-health"],
+    queryKey: healthQueryKey,
     queryFn: () => loadHealth({}),
   });
   const providers = useQuery({
     queryKey: ["paseo-omp", "provider-snapshot"],
     queryFn: () => paseo.providers.snapshot({}),
   });
-  const isRefreshing = health.isFetching || providers.isFetching;
+  const [isForcingHealth, setIsForcingHealth] = useState(false);
+  const isRefreshing = isForcingHealth || health.isFetching || providers.isFetching;
   const knownProviders = providers.data ? selectKnownOmpProviders(providers.data.entries) : [];
 
   async function refreshProviderHealth() {
+    setIsForcingHealth(true);
     try {
-      await paseo.providers.refresh({ providers: [...OMP_PROVIDER_IDS] });
-    } catch {
-      // An older host may not support targeted refresh; still refetch the visible safe facts.
+      try {
+        await paseo.providers.refresh({ providers: [...OMP_PROVIDER_IDS] });
+      } catch {
+        // An older host may not support targeted refresh; still force the health probe below.
+      }
+      const [forcedHealth] = await Promise.all([
+        loadHealth({ force: true }),
+        providers.refetch(),
+      ]);
+      queryClient.setQueryData(healthQueryKey, forcedHealth);
+    } finally {
+      setIsForcingHealth(false);
     }
-    await Promise.all([health.refetch(), providers.refetch()]);
   }
 
   return (
@@ -540,12 +553,8 @@ function ProviderHealthSection({
       {health.data ? (
         <CapabilitiesSection theme={theme} styles={styles} health={health.data} />
       ) : null}
-      {health.data ? (
-        <StorageSection theme={theme} styles={styles} health={health.data} />
-      ) : null}
-      {health.data ? (
-        <ProcessSection theme={theme} styles={styles} health={health.data} />
-      ) : null}
+      {health.data ? <StorageSection theme={theme} styles={styles} health={health.data} /> : null}
+      {health.data ? <ProcessSection theme={theme} styles={styles} health={health.data} /> : null}
 
       {providers.isLoading ? <Text style={styles.muted}>Loading provider status…</Text> : null}
       {providers.error ? (
@@ -596,9 +605,7 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
             onPress={() => void result.refetch()}
           >
             <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
-            <Text style={styles.refreshLabel}>
-              {result.isFetching ? "Refreshing…" : "Refresh"}
-            </Text>
+            <Text style={styles.refreshLabel}>{result.isFetching ? "Refreshing…" : "Refresh"}</Text>
           </Pressable>
         </View>
         {result.data?.path ? (

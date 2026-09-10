@@ -1,19 +1,12 @@
 import { spawn } from "node:child_process";
 import { constants, type Stats } from "node:fs";
-import {
-  access,
-  type FileHandle,
-  lstat,
-  open,
-  readdir,
-  realpath,
-  stat,
-} from "node:fs/promises";
+import { access, type FileHandle, lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, sep } from "node:path";
+import { basename, delimiter, isAbsolute, join, sep } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import { parse as parseYaml } from "yaml";
-import type { OmpConfig } from "../shared/omp-config";
+import { z } from "zod";
+import { type OmpConfig, OmpConfigSchema } from "../shared/omp-config";
 import type {
   getOmpProviderHealth,
   OmpLspDiagnostics,
@@ -24,7 +17,6 @@ import type {
   OmpVersionStatus,
   PathState,
 } from "../shared/provider-diagnostics";
-import { parseOmpConfig } from "./omp-config";
 import { ompAgentDir } from "./paths";
 
 const VERSION_TIMEOUT_MS = 3_000;
@@ -32,6 +24,8 @@ const HELP_TIMEOUT_MS = 3_000;
 const KILL_GRACE_MS = 2_000;
 const MAX_VERSION_BYTES = 2_048;
 const MAX_HELP_BYTES = 65_536;
+const MAX_CONFIG_BYTES = 256 * 1024;
+const MAX_MCP_MANIFEST_BYTES = 64 * 1024;
 const HEALTH_CACHE_TTL_MS = 30_000;
 
 const AGENT_DB_FILENAME = "agent.db";
@@ -39,9 +33,10 @@ const HISTORY_DB_FILENAME = "history.db";
 // Matches the `--session-dir` default omp documents in its own `--help` output and the layout
 // providers.md describes for terminal-started session import (`~/.omp/agent/sessions`).
 const SESSION_DIR_NAME = "sessions";
-const WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
+const MCP_MANIFEST_FILENAME = "mcp.json";
 const CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
-const MAX_CONFIG_BYTES = 256 * 1024;
+const WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
+const WINDOWS_DEFAULT_SYSTEM_ROOT = "C:\\Windows";
 
 // Only these variables ever reach a diagnostic probe's environment. Daemon credentials, API
 // keys, and MCP headers — everything a real provider session legitimately inherits — are
@@ -90,26 +85,11 @@ export type SpawnFn = (
   env: NodeJS.ProcessEnv,
 ) => ProbeChildProcess;
 
-function killProcessTree(
-  pid: number | undefined,
-  signal: NodeJS.Signals,
-  platform: NodeJS.Platform,
-): void {
-  if (pid === undefined) return;
-  if (platform === "win32") {
-    try {
-      spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
-        stdio: "ignore",
-        env: buildProbeEnv(process.env),
-      });
-    } catch {
-      // Best effort: the caller's bounded grace-period wait still applies.
-    }
-    return;
-  }
+function killPosixProcessGroup(pid: number, signal: NodeJS.Signals): void {
   try {
     // The real child is spawned detached (its own process group leader); a negative pid
-    // signals the whole group, catching grandchildren the direct child spawned.
+    // signals the whole group, catching grandchildren the direct child spawned. This
+    // escalation runs independently of whether the group leader has already closed.
     process.kill(-pid, signal);
   } catch {
     try {
@@ -118,6 +98,41 @@ function killProcessTree(
       // Already exited between the kill attempt and this fallback.
     }
   }
+}
+
+/**
+ * Terminates a Windows process tree via the resolved absolute `taskkill.exe` (never a bare
+ * "taskkill" left to PATH search). `onError`/`onClose` are always attached before this returns,
+ * so a missing/failing taskkill can never surface as an unhandled child "error" event; the
+ * promise still resolves, bounded by `graceMs`, whichever of close/error/timeout comes first.
+ */
+export async function killWindowsProcessTree(
+  pid: number,
+  spawnFn: SpawnFn,
+  systemRoot: string,
+  graceMs: number,
+): Promise<void> {
+  const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
+  const { promise, resolve } = Promise.withResolvers<void>();
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    resolve();
+  };
+
+  let child: ProbeChildProcess;
+  try {
+    child = spawnFn(taskkillPath, ["/pid", String(pid), "/t", "/f"], buildProbeEnv(process.env));
+  } catch {
+    return; // Nothing to attach handlers to; best effort ends here.
+  }
+  timer = setTimeout(finish, graceMs);
+  child.onError(() => finish());
+  child.onClose(() => finish());
+  return promise;
 }
 
 function defaultSpawn(
@@ -144,7 +159,17 @@ function defaultSpawn(
       child.removeAllListeners();
     },
     kill: (signal) => {
-      killProcessTree(child.pid, signal, process.platform);
+      if (child.pid === undefined) return true;
+      if (process.platform === "win32") {
+        void killWindowsProcessTree(
+          child.pid,
+          defaultSpawn,
+          process.env.SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT,
+          KILL_GRACE_MS,
+        );
+      } else {
+        killPosixProcessGroup(child.pid, signal);
+      }
       return true;
     },
   };
@@ -242,9 +267,10 @@ export interface BoundedRun {
 /**
  * Runs one bounded, argv-only subprocess with a minimal allowlisted environment. stderr is
  * drained and discarded, never inspected or forwarded. On timeout the full process tree is
- * signaled and the promise still waits (bounded by `killGraceMs`) for the close event so exit
- * status is real whenever the process cooperates, and cleanup failure is reported when it does
- * not.
+ * signaled (TERM, then KILL after `killGraceMs`, independent of whether the immediate leader has
+ * already closed) and the promise still waits, bounded by one more `killGraceMs`, for the close
+ * event so exit status is real whenever the process cooperates, and cleanup failure is reported
+ * when it does not.
  */
 export function runBounded(
   spawnFn: SpawnFn,
@@ -361,31 +387,31 @@ export function runBounded(
   return promise;
 }
 
-// Anchored against a single trimmed line so an unrelated substring elsewhere in stdout (or
-// arbitrary build metadata after a `+`) can never be mistaken for the version. Digit groups are
-// bounded to 4 characters and prerelease text to 32, so nothing unbounded is ever parsed out.
-const VERSION_LINE_PATTERN = new RegExp(
-  "^omp/(\\d{1,4})\\.(\\d{1,4})\\.(\\d{1,4})(?:-([0-9A-Za-z][0-9A-Za-z.]{0,31}))?$",
-);
+// Anchored against the entire trimmed stdout (not merely one of several lines) so extra output,
+// build metadata after a `+`, or a prefix/suffix can never be mistaken for the version. Digit
+// groups are bounded to 4 characters and prerelease text to 32, so nothing unbounded parses out.
+const VERSION_LINE_PATTERN =
+  /^omp\/(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:-([0-9A-Za-z][0-9A-Za-z.]{0,31}))?$/;
 
-function parseVersionLine(stdout: string): OmpVersion | null {
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const match = VERSION_LINE_PATTERN.exec(rawLine.trim());
-    if (!match) continue;
-    const [, major, minor, patch, prerelease] = match;
-    return {
-      major: Number(major),
-      minor: Number(minor),
-      patch: Number(patch),
-      prerelease: prerelease ?? null,
-    };
-  }
-  return null;
+/** Requires the whole trimmed probe output to be exactly one canonical version line. */
+function parseCanonicalVersionLine(stdout: string): OmpVersion | null {
+  const lines = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length !== 1) return null;
+  const match = VERSION_LINE_PATTERN.exec(lines[0].trim());
+  if (!match) return null;
+  const [, major, minor, patch, prerelease] = match;
+  return {
+    major: Number(major),
+    minor: Number(minor),
+    patch: Number(patch),
+    prerelease: prerelease ?? null,
+  };
 }
 
-function toVersionOutcome(
-  result: BoundedRun,
-): { status: OmpVersionStatus; version: OmpVersion | null } {
+function toVersionOutcome(result: BoundedRun): {
+  status: OmpVersionStatus;
+  version: OmpVersion | null;
+} {
   if (result.outcome === "timeout") return { status: "timeout", version: null };
   if (result.outcome === "spawn-error") {
     return {
@@ -393,10 +419,13 @@ function toVersionOutcome(
       version: null,
     };
   }
-  const version = parseVersionLine(result.stdout);
-  if (version) return { status: "ok", version };
-  const ranCleanly = result.exitCode === 0 && result.signal === null;
-  return { status: ranCleanly ? "malformed" : "probe-failed", version: null };
+  // Only a clean, unsignaled, non-truncated exit can ever license "ok"; a nonzero exit or a
+  // delivered signal is a probe failure regardless of how plausible the stdout looks.
+  const exitedCleanly = result.exitCode === 0 && result.signal === null;
+  if (!exitedCleanly) return { status: "probe-failed", version: null };
+  if (result.truncated) return { status: "malformed", version: null };
+  const version = parseCanonicalVersionLine(result.stdout);
+  return version ? { status: "ok", version } : { status: "malformed", version: null };
 }
 
 // Matches the exact flag line omp documents for `--mode`, not a bare "rpc-ui" substring that
@@ -405,7 +434,8 @@ const RPC_UI_HELP_PATTERN = /--mode=<value>\s+Output mode:.*\brpc-ui\b/i;
 // Matches the exact "Available Tools" listing line for the built-in lsp tool.
 const LSP_TOOL_PATTERN = /^\s*lsp\s+-\s+Language server protocol/im;
 
-/** A clean, non-empty, non-truncated help dump is required before trusting a negative match. */
+/** A clean, non-empty, non-truncated, zero-exit help dump is required before trusting either a
+ * positive or a negative match. */
 function helpResultUsable(result: BoundedRun): boolean {
   return (
     result.outcome === "exited" &&
@@ -425,18 +455,6 @@ function computeLspDiagnostics(result: BoundedRun): OmpLspDiagnostics {
   return { status: LSP_TOOL_PATTERN.test(result.stdout) ? "supported" : "not-advertised" };
 }
 
-/**
- * omp exposes no safe, non-secret MCP signal on its documented `--version`/`--help` surface —
- * MCP wiring lives in provider-session configuration, not global CLI state. Rather than invent a
- * detector, this is reported as an honest "unknown" instead of a fabricated boolean.
- */
-function computeMcpDiagnostics(): OmpMcpDiagnostics {
-  return {
-    status: "unknown",
-    reason: "omp's --version/--help surface exposes no safe, non-secret MCP configuration signal.",
-  };
-}
-
 function isEnoent(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException)?.code;
   return code === "ENOENT" || code === "ENOTDIR";
@@ -445,6 +463,8 @@ function isEnoent(error: unknown): boolean {
 /**
  * Classifies a known diagnostic path without following symlinks. A symlink is "wrong-type"
  * rather than an invitation to read an arbitrary target outside omp's expected state tree.
+ * Directories additionally require both read and traverse (X_OK) access before "available";
+ * a directory that exists but cannot be listed is not usable state, so it is "invalid".
  */
 async function classifyPath(path: string, kind: "file" | "directory"): Promise<PathState> {
   let pathStats: Stats;
@@ -456,14 +476,45 @@ async function classifyPath(path: string, kind: "file" | "directory"): Promise<P
   if (pathStats.isSymbolicLink()) return "wrong-type";
   const matchesKind = kind === "file" ? pathStats.isFile() : pathStats.isDirectory();
   if (!matchesKind) return "wrong-type";
-  if (kind === "file") {
-    try {
-      await access(path, constants.R_OK);
-    } catch {
-      return "invalid";
-    }
+  const mode = kind === "file" ? constants.R_OK : constants.R_OK | constants.X_OK;
+  try {
+    await access(path, mode);
+  } catch {
+    return "invalid";
   }
   return "available";
+}
+
+type BoundedFileRead =
+  | { state: "available"; text: string }
+  | { state: "missing" | "wrong-type" | "invalid" };
+
+/** Bounded, no-symlink file read shared by the config and MCP-manifest readers. */
+async function readBoundedNoSymlinkFile(path: string, maxBytes: number): Promise<BoundedFileRead> {
+  let pathStats: Stats;
+  try {
+    pathStats = await lstat(path);
+  } catch (error) {
+    return { state: isEnoent(error) ? "missing" : "invalid" };
+  }
+  if (pathStats.isSymbolicLink() || !pathStats.isFile()) return { state: "wrong-type" };
+
+  let handle: FileHandle | undefined;
+  try {
+    const noFollowFlag = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+    handle = await open(path, constants.O_RDONLY | noFollowFlag);
+    const openedStats = await handle.stat();
+    if (!openedStats.isFile()) return { state: "wrong-type" };
+    if (openedStats.size > maxBytes) return { state: "invalid" };
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > maxBytes) return { state: "invalid" };
+    return { state: "available", text: buffer.subarray(0, bytesRead).toString("utf8") };
+  } catch {
+    return { state: "invalid" };
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 interface SafeConfigResult {
@@ -472,42 +523,103 @@ interface SafeConfigResult {
   config: OmpConfig | null;
 }
 
+/**
+ * Reads omp's config.yml/.yaml with the same safe-allowlist schema the config surface uses, but
+ * classifies anything that parses to a non-mapping root or fails the allowed-section schema
+ * (including an invalid `memory.backend`) as "invalid" rather than silently degrading to an
+ * empty-but-"available" config — a health check must not call a broken config healthy.
+ */
 async function readSafeConfig(agentDir: string): Promise<SafeConfigResult> {
   const canonicalPath = join(agentDir, CONFIG_FILENAMES[0]);
   for (const filename of CONFIG_FILENAMES) {
     const path = join(agentDir, filename);
-    let pathStats: Stats;
+    const fileRead = await readBoundedNoSymlinkFile(path, MAX_CONFIG_BYTES);
+    if (fileRead.state === "missing") continue;
+    if (fileRead.state !== "available") return { path, state: fileRead.state, config: null };
     try {
-      pathStats = await lstat(path);
-    } catch (error) {
-      if (isEnoent(error)) continue;
-      return { path, state: "invalid", config: null };
-    }
-    if (pathStats.isSymbolicLink() || !pathStats.isFile()) {
-      return { path, state: "wrong-type", config: null };
-    }
-
-    let handle: FileHandle | undefined;
-    try {
-      const noFollowFlag = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-      handle = await open(path, constants.O_RDONLY | noFollowFlag);
-      const openedStats = await handle.stat();
-      if (!openedStats.isFile()) return { path, state: "wrong-type", config: null };
-      if (openedStats.size > MAX_CONFIG_BYTES) return { path, state: "invalid", config: null };
-      const buffer = Buffer.alloc(MAX_CONFIG_BYTES + 1);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      if (bytesRead > MAX_CONFIG_BYTES) return { path, state: "invalid", config: null };
-      const raw: unknown = parseYaml(buffer.subarray(0, bytesRead).toString("utf8"));
-      return { path, state: "available", config: parseOmpConfig(raw) };
+      const raw: unknown = parseYaml(fileRead.text);
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        return { path, state: "invalid", config: null };
+      }
+      const parsed = OmpConfigSchema.safeParse(raw);
+      if (!parsed.success) return { path, state: "invalid", config: null };
+      return { path, state: "available", config: parsed.data };
     } catch {
       return { path, state: "invalid", config: null };
-    } finally {
-      await handle?.close().catch(() => undefined);
     }
   }
   return { path: canonicalPath, state: "missing", config: null };
 }
 
+const McpManifestSchema = z
+  .object({ mcpServers: z.record(z.string(), z.unknown()).optional() })
+  .passthrough();
+
+/**
+ * Reports configured MCP server count/names from omp's own `mcp.json` manifest (server names
+ * are identifiers, never the credentials/headers/URLs nested inside each entry, which are never
+ * read past the top-level key). When no manifest exists this reports a specific reason backed by
+ * the checked filename rather than a placeholder; there is no fabricated "unknown" default.
+ */
+async function computeMcpDiagnostics(agentDir: string): Promise<OmpMcpDiagnostics> {
+  const fileRead = await readBoundedNoSymlinkFile(
+    join(agentDir, MCP_MANIFEST_FILENAME),
+    MAX_MCP_MANIFEST_BYTES,
+  );
+  if (fileRead.state === "missing") {
+    return {
+      status: "unavailable",
+      serverCount: null,
+      serverNames: null,
+      reason: `No ${MCP_MANIFEST_FILENAME} manifest found under the agent root`,
+    };
+  }
+  if (fileRead.state === "wrong-type") {
+    return {
+      status: "invalid",
+      serverCount: null,
+      serverNames: null,
+      reason: `${MCP_MANIFEST_FILENAME} under the agent root is not a regular file`,
+    };
+  }
+  if (fileRead.state === "invalid") {
+    return {
+      status: "invalid",
+      serverCount: null,
+      serverNames: null,
+      reason: `${MCP_MANIFEST_FILENAME} under the agent root could not be read`,
+    };
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fileRead.text);
+  } catch {
+    return {
+      status: "invalid",
+      serverCount: null,
+      serverNames: null,
+      reason: `${MCP_MANIFEST_FILENAME} under the agent root is not valid JSON`,
+    };
+  }
+  const parsed = McpManifestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return {
+      status: "invalid",
+      serverCount: null,
+      serverNames: null,
+      reason: `${MCP_MANIFEST_FILENAME} under the agent root does not match the expected shape`,
+    };
+  }
+  const serverNames = Object.keys(parsed.data.mcpServers ?? {});
+  return { status: "configured", serverCount: serverNames.length, serverNames, reason: null };
+}
+
+/**
+ * Counts daemon-supervised process entries recognized by an existing `meta.json` under each
+ * project's `daemons/` directory (never their names, cwd, or args). A project scope missing its
+ * `daemons/` subdirectory entirely is normal and skipped; any other read failure (e.g. a
+ * permission error) is surfaced as "partial" rather than silently undercounting.
+ */
 async function computeProcessDiagnostics(hubRunRoot: string): Promise<OmpProcessDiagnostics> {
   let projectHashes: string[];
   try {
@@ -516,15 +628,42 @@ async function computeProcessDiagnostics(hubRunRoot: string): Promise<OmpProcess
     return { status: isEnoent(error) ? "unavailable" : "unknown", trackedCount: null };
   }
   let trackedCount = 0;
+  let hadInaccessibleEntries = false;
   for (const hash of projectHashes) {
+    const daemonsDir = join(hubRunRoot, hash, "daemons");
+    let daemonNames: string[];
     try {
-      const daemonNames = await readdir(join(hubRunRoot, hash, "daemons"));
-      trackedCount += daemonNames.length;
-    } catch {
-      // Not every scope directory necessarily has a populated daemons subdirectory.
+      daemonNames = await readdir(daemonsDir);
+    } catch (error) {
+      if (!isEnoent(error)) hadInaccessibleEntries = true;
+      continue;
+    }
+    for (const name of daemonNames) {
+      try {
+        const metaStats = await stat(join(daemonsDir, name, "meta.json"));
+        if (metaStats.isFile()) trackedCount += 1;
+      } catch {
+        // Not a recognizable daemon entry (missing/broken meta.json); do not count it.
+      }
     }
   }
-  return { status: "ok", trackedCount };
+  return { status: hadInaccessibleEntries ? "partial" : "ok", trackedCount };
+}
+
+function homeRelative(path: string, homeDir: string): string | null {
+  if (path === homeDir) return "~";
+  const prefix = homeDir.endsWith(sep) ? homeDir : `${homeDir}${sep}`;
+  return path.startsWith(prefix) ? `~${sep}${path.slice(prefix.length)}` : null;
+}
+
+/** Home-relative when possible; otherwise a coarse label carrying only the basename, so an
+ * override root pointed at an arbitrary machine-specific location never leaks its full path. */
+function sanitizeRootPath(path: string, homeDir: string): string {
+  return homeRelative(path, homeDir) ?? `<custom path>/${basename(path)}`;
+}
+
+function sanitizeDerivedPath(rawRoot: string, sanitizedRoot: string, fullPath: string): string {
+  return `${sanitizedRoot}${fullPath.slice(rawRoot.length)}`;
 }
 
 export interface ProviderDiagnosticsDeps {
@@ -537,6 +676,7 @@ export interface ProviderDiagnosticsDeps {
   env: NodeJS.ProcessEnv;
   spawnFn: SpawnFn;
   hubRunRoot: string;
+  homeDir: string;
   versionTimeoutMs?: number;
   helpTimeoutMs?: number;
   killGraceMs?: number;
@@ -597,21 +737,32 @@ export async function computeOmpProviderHealth(
   const historyDbPath = join(deps.agentDir, HISTORY_DB_FILENAME);
   const sessionRoot = join(deps.agentDir, SESSION_DIR_NAME);
 
-  const configResult = await readSafeConfig(deps.agentDir);
-  const [agentRootState, sessionRootState, agentDbState, historyDbState, processDiagnostics] =
+  const [
+    configResult,
+    agentRootState,
+    sessionRootState,
+    agentDbState,
+    historyDbState,
+    mcp,
+    processDiagnostics,
+  ] =
     await Promise.all([
+      readSafeConfig(deps.agentDir),
       classifyPath(deps.agentDir, "directory"),
       classifyPath(sessionRoot, "directory"),
       classifyPath(agentDbPath, "file"),
       classifyPath(historyDbPath, "file"),
+      computeMcpDiagnostics(deps.agentDir),
       computeProcessDiagnostics(deps.hubRunRoot),
     ]);
   const configState = configResult.state;
 
+  const sanitizedAgentRoot = sanitizeRootPath(deps.agentDir, deps.homeDir);
+
   return {
     binary: {
       installed,
-      resolvedPath,
+      resolvedPath: resolvedPath ? sanitizeRootPath(resolvedPath, deps.homeDir) : null,
       version: versionOutcome.version,
       versionStatus: versionOutcome.status,
       processCleanupFailed,
@@ -621,14 +772,14 @@ export async function computeOmpProviderHealth(
       supported: rpcUiSupported,
     },
     lsp,
-    mcp: computeMcpDiagnostics(),
+    mcp,
     process: processDiagnostics,
     roots: {
-      agentRoot: deps.agentDir,
+      agentRoot: sanitizedAgentRoot,
       agentRootState,
-      configPath: configResult.path,
+      configPath: sanitizeDerivedPath(deps.agentDir, sanitizedAgentRoot, configResult.path),
       configState,
-      sessionRoot,
+      sessionRoot: sanitizeDerivedPath(deps.agentDir, sanitizedAgentRoot, sessionRoot),
       sessionRootState,
     },
     databases: {
@@ -671,6 +822,7 @@ export async function resolveGetOmpProviderHealth(
     env: process.env,
     spawnFn: defaultSpawn,
     hubRunRoot: defaultHubRunRoot(),
+    homeDir: homedir(),
   })
     .then((value) => {
       cachedHealth = { value, expiresAt: Date.now() + HEALTH_CACHE_TTL_MS };

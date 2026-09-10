@@ -71,17 +71,31 @@ export function lspTone(lsp: OmpLspDiagnostics): ProviderHealthTone {
 }
 
 export function summarizeMcpDiagnostics(mcp: OmpMcpDiagnostics): string {
-  return `Unknown (${mcp.reason})`;
+  if (mcp.status === "configured") {
+    const names = mcp.serverNames ?? [];
+    if (names.length === 0) return "0 configured";
+    return `${mcp.serverCount} configured (${names.join(", ")})`;
+  }
+  return `${mcp.status === "invalid" ? "Invalid" : "Unavailable"} (${mcp.reason ?? "no detail"})`;
+}
+
+export function mcpTone(mcp: OmpMcpDiagnostics): ProviderHealthTone {
+  if (mcp.status === "configured") return "ok";
+  if (mcp.status === "invalid") return "warning";
+  return "muted";
 }
 
 export function summarizeProcessDiagnostics(diagnostics: OmpProcessDiagnostics): string {
   if (diagnostics.status === "unavailable") return "No hub run directory found";
   if (diagnostics.status === "unknown") return "Unknown (could not read the hub run directory)";
-  return `${diagnostics.trackedCount ?? 0} tracked`;
+  const count = diagnostics.trackedCount ?? 0;
+  if (diagnostics.status === "partial") return `${count} tracked (partial: some inaccessible)`;
+  return `${count} tracked`;
 }
 
 export function processTone(diagnostics: OmpProcessDiagnostics): ProviderHealthTone {
   if (diagnostics.status === "unknown") return "warning";
+  if (diagnostics.status === "partial") return "warning";
   if (diagnostics.status === "unavailable") return "muted";
   return diagnostics.trackedCount && diagnostics.trackedCount > 0 ? "ok" : "muted";
 }
