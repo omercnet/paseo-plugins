@@ -1654,9 +1654,7 @@ describe("OMP direct provider", () => {
     const session = sessionAt(runtime);
 
     session.emit({ type: "process_exit", error: "OMP exited with code 7" });
-    expect(
-      events.filter((event) => event.type === "session.runtime_failed"),
-    ).toHaveLength(0);
+    expect(events.filter((event) => event.type === "session.runtime_failed")).toHaveLength(0);
     expect(
       events.filter(
         (event) =>
@@ -1805,7 +1803,9 @@ describe("OMP direct provider", () => {
     expect(session.closes).toBe(1);
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
 
-    const recoveredTurn = turnIdFrom(await startPrompt(connection, events, "after-stuck", "continue"));
+    const recoveredTurn = turnIdFrom(
+      await startPrompt(connection, events, "after-stuck", "continue"),
+    );
     staleListener({ type: "agent_end", messages: [], isTerminal: true });
     staleListener({ type: "turn_end" });
     await Promise.resolve();
@@ -1841,8 +1841,12 @@ describe("OMP direct provider", () => {
     );
     expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
     expect(session.closes).toBe(1);
-    const recoveredTurn = turnIdFrom(await startPrompt(connection, events, "after-unavailable", "continue"));
-    expect(runtime.starts[1]).toEqual(expect.objectContaining({ resumeSessionId: "native-session" }));
+    const recoveredTurn = turnIdFrom(
+      await startPrompt(connection, events, "after-unavailable", "continue"),
+    );
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({ resumeSessionId: "native-session" }),
+    );
     await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
     await connection.close();
   });
@@ -1871,13 +1875,13 @@ describe("OMP direct provider", () => {
       }),
     );
     expect(
-      events.some(
-        (event) => event.type === "timeline.item" && event.item.type === "user_message",
-      ),
+      events.some((event) => event.type === "timeline.item" && event.item.type === "user_message"),
     ).toBe(true);
     expect(session.closes).toBe(1);
     await startPrompt(connection, events, "after-active", "continue");
-    expect(runtime.starts[1]).toEqual(expect.objectContaining({ resumeSessionId: "native-session" }));
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({ resumeSessionId: "native-session" }),
+    );
     await connection.close();
   });
 
@@ -1893,7 +1897,9 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         result: expect.objectContaining({
           type: "failed",
-          error: expect.objectContaining({ message: expect.stringContaining("native session handle") }),
+          error: expect.objectContaining({
+            message: expect.stringContaining("native session handle"),
+          }),
         }),
       }),
     );
@@ -1912,7 +1918,9 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         result: expect.objectContaining({
           type: "failed",
-          error: expect.objectContaining({ message: expect.stringContaining("native close failed") }),
+          error: expect.objectContaining({
+            message: expect.stringContaining("native close failed"),
+          }),
         }),
       }),
     );
@@ -2131,16 +2139,24 @@ describe("OMP direct provider", () => {
     await openSession(connection, events);
     sessionAt(runtime).closeError = new Error("native close failed");
 
-    await connection.send({ type: "session.close", requestId: "close-failure", sessionId: "session-1" });
+    await connection.send({
+      type: "session.close",
+      requestId: "close-failure",
+      sessionId: "session-1",
+    });
     const failure = await events.waitFor(
       (event) => event.type === "request.failed" && event.requestId === "close-failure",
     );
     const closed = await events.waitFor((event) => event.type === "session.closed");
     expect(failure).toEqual(
-      expect.objectContaining({ error: { message: "OMP session close failed: native close failed" } }),
+      expect.objectContaining({
+        error: { message: "OMP session close failed: native close failed" },
+      }),
     );
     expect(closed).toEqual(
-      expect.objectContaining({ error: { message: "OMP session close failed: native close failed" } }),
+      expect.objectContaining({
+        error: { message: "OMP session close failed: native close failed" },
+      }),
     );
     await connection.close();
   });

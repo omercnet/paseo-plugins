@@ -161,9 +161,7 @@ describe("OMP RPC transport", () => {
     child.write(READY_FRAME);
     const session = await opening;
 
-    expect(launches[0]?.args).toEqual(
-      expect.arrayContaining(["--resume", "native-session-42"]),
-    );
+    expect(launches[0]?.args).toEqual(expect.arrayContaining(["--resume", "native-session-42"]));
     await session.close();
   });
 

@@ -561,7 +561,8 @@ export class OmpProviderSession {
     this.lifetime.abort(new Error("OMP provider session closed"));
     this.projector.close();
     this.unsubscribe();
-    const runtimeDisposal = (this.runtimeDisposal ??= this.runtime.close());
+    this.runtimeDisposal ??= this.runtime.close();
+    const runtimeDisposal = this.runtimeDisposal;
     const outcomes = await Promise.allSettled([runtimeDisposal, this.recoveryPromise]);
     const disposal = outcomes[0];
     if (disposal?.status === "rejected") throw disposal.reason;
