@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-tell-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Tell agents in other Paseo workspaces.",
   "license": "MIT",
