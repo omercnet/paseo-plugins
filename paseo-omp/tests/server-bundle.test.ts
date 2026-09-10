@@ -62,7 +62,7 @@ describe("plugin server bundle", () => {
         handle: (...args: unknown[]) => handlers.push(args),
         registerProvider: (provider: ProviderRegistration) => providers.push(provider),
       });
-      expect(handlers).toHaveLength(6);
+      expect(handlers).toHaveLength(7);
       expect(providers).toEqual([
         expect.objectContaining({ id: "omp-plugin", label: "OMP (Plugin Preview)" }),
       ]);

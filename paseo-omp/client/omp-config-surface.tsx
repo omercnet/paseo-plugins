@@ -1,4 +1,4 @@
-import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
+import { type PluginSurfaceProps, usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -6,6 +6,13 @@ import { useMemo } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
+import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider-diagnostics";
+import {
+  type BinaryHealthSummary,
+  selectKnownOmpProviders,
+  summarizeBinaryHealth,
+  summarizeRpcUiSupport,
+} from "./provider-diagnostics-state";
 
 const CONFIG_POLL_MS = 30_000;
 
@@ -78,15 +85,17 @@ function KeyValueRow({
   styles,
   label,
   value,
+  valueColor,
 }: {
   styles: OmpConfigStyles;
   label: string;
   value: string;
+  valueColor?: string;
 }) {
   return (
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={styles.rowValue}>{value}</Text>
+      <Text style={[styles.rowValue, valueColor ? { color: valueColor } : null]}>{value}</Text>
     </View>
   );
 }
@@ -307,6 +316,156 @@ function isEmptyConfig(config: OmpConfig): boolean {
   return Object.keys(config).length === 0;
 }
 
+const PROVIDER_HEALTH_POLL_MS = 60_000;
+
+function toneColor(theme: PluginSurfaceProps["theme"], tone: BinaryHealthSummary["tone"]): string {
+  if (tone === "ok") return theme.colors.statusSuccess;
+  if (tone === "warning") return theme.colors.statusWarning;
+  if (tone === "danger") return theme.colors.statusDanger;
+  return theme.colors.foregroundMuted;
+}
+
+function BinarySection({
+  theme,
+  styles,
+  health,
+}: {
+  theme: PluginSurfaceProps["theme"];
+  styles: OmpConfigStyles;
+  health: OmpProviderHealth;
+}) {
+  const summary = summarizeBinaryHealth(health.binary);
+  return (
+    <SectionCard styles={styles} title="omp binary">
+      <KeyValueRow
+        styles={styles}
+        label="Status"
+        value={summary.label}
+        valueColor={toneColor(theme, summary.tone)}
+      />
+      {health.binary.resolvedPath ? (
+        <KeyValueRow styles={styles} label="Resolved path" value={health.binary.resolvedPath} />
+      ) : null}
+      <KeyValueRow
+        styles={styles}
+        label="rpc-ui protocol"
+        value={summarizeRpcUiSupport(health.rpcUi)}
+      />
+    </SectionCard>
+  );
+}
+
+function StorageSection({
+  styles,
+  health,
+}: {
+  styles: OmpConfigStyles;
+  health: OmpProviderHealth;
+}) {
+  return (
+    <SectionCard styles={styles} title="Storage">
+      <KeyValueRow styles={styles} label="Agent root" value={health.roots.agentRoot} />
+      <KeyValueRow
+        styles={styles}
+        label="Config file"
+        value={`${health.roots.configPath} (${health.roots.configAvailable ? "found" : "missing"})`}
+      />
+      <KeyValueRow
+        styles={styles}
+        label="Session root"
+        value={`${health.roots.sessionRoot} (${
+          health.roots.sessionRootAvailable ? "found" : "missing"
+        })`}
+      />
+      <KeyValueRow
+        styles={styles}
+        label="agent.db"
+        value={health.databases.agentDbPresent ? "Present" : "Missing"}
+      />
+      <KeyValueRow
+        styles={styles}
+        label="history.db"
+        value={health.databases.historyDbPresent ? "Present" : "Missing"}
+      />
+      <KeyValueRow
+        styles={styles}
+        label="Memory backend"
+        value={health.memoryBackend ?? "Not configured"}
+      />
+    </SectionCard>
+  );
+}
+
+function ProviderHealthSection({
+  theme,
+  styles,
+}: {
+  theme: PluginSurfaceProps["theme"];
+  styles: OmpConfigStyles;
+}) {
+  const paseo = usePaseo();
+  const loadHealth = useRpc(getOmpProviderHealth);
+  const health = useQuery({
+    queryKey: ["paseo-omp", "provider-health"],
+    queryFn: () => loadHealth({}),
+    refetchInterval: PROVIDER_HEALTH_POLL_MS,
+  });
+  const providers = useQuery({
+    queryKey: ["paseo-omp", "provider-snapshot"],
+    queryFn: () => paseo.providers.snapshot({}),
+    refetchInterval: PROVIDER_HEALTH_POLL_MS,
+  });
+  const isRefreshing = health.isFetching || providers.isFetching;
+  const knownProviders = providers.data ? selectKnownOmpProviders(providers.data.entries) : [];
+
+  return (
+    <View style={styles.header}>
+      <View style={styles.headerRow}>
+        <Text style={styles.title}>Provider health</Text>
+        <Pressable
+          accessibilityRole="button"
+          style={styles.refresh}
+          disabled={isRefreshing}
+          onPress={() => {
+            void health.refetch();
+            void providers.refetch();
+          }}
+        >
+          <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
+          <Text style={styles.refreshLabel}>{isRefreshing ? "Refreshing…" : "Refresh"}</Text>
+        </Pressable>
+      </View>
+
+      {health.isLoading ? <Text style={styles.muted}>Checking the omp installation…</Text> : null}
+      {health.error ? (
+        <Text style={styles.error}>Could not check the omp installation. Try refreshing.</Text>
+      ) : null}
+      {health.data ? <BinarySection theme={theme} styles={styles} health={health.data} /> : null}
+      {health.data ? <StorageSection styles={styles} health={health.data} /> : null}
+
+      {providers.isLoading ? <Text style={styles.muted}>Loading provider status…</Text> : null}
+      {providers.error ? (
+        <Text style={styles.error}>Could not load provider status. Try refreshing.</Text>
+      ) : null}
+      {providers.data && knownProviders.length === 0 ? (
+        <Text style={styles.muted}>No OMP provider entries reported yet.</Text>
+      ) : null}
+      {knownProviders.length > 0 ? (
+        <SectionCard styles={styles} title="Providers">
+          {knownProviders.map((provider) => (
+            <KeyValueRow
+              key={provider.id}
+              styles={styles}
+              label={`${provider.label} (${provider.kind})`}
+              value={provider.enabled ? provider.status : `${provider.status}, disabled`}
+            />
+          ))}
+        </SectionCard>
+      ) : null}
+    </View>
+  );
+}
+
 export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
   const loadConfig = useRpc(listOmpConfig);
   const result = useQuery({
@@ -319,6 +478,7 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
+      <ProviderHealthSection theme={theme} styles={styles} />
       <View style={styles.header}>
         <View style={styles.headerRow}>
           <Text style={styles.title}>OMP configuration</Text>
