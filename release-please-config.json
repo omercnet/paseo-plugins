@@ -7,6 +7,11 @@
       "package-name": "agent-crew",
       "include-component-in-tag": true
     },
+    "tell-agent": {
+      "release-type": "node",
+      "package-name": "tell-agent",
+      "include-component-in-tag": true
+    },
     "agent-monitor": {
       "release-type": "node",
       "package-name": "agent-monitor",
