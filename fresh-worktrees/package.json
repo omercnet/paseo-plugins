@@ -3,7 +3,7 @@
   "description": "Keeps new Paseo worktrees based on current remote refs without mutating the source checkout",
   "license": "MIT",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "test": "bun test",
