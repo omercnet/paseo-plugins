@@ -105,6 +105,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   closeObserved: (() => void) | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
   availableCommandsError: Error | null = null;
+  availableCommandLookups = 0;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
   readonly thinkingChanges: string[] = [];
   branchMessages: Array<{ entryId: string; text: string }> = [];
@@ -141,6 +142,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   }
 
   getAvailableCommands() {
+    this.availableCommandLookups += 1;
     if (this.availableCommandsError) return Promise.reject(this.availableCommandsError);
     return Promise.resolve(this.availableCommands);
   }
@@ -206,6 +208,7 @@ class FakeOmpRuntime implements OmpRuntime {
   startGate: Promise<void> | null = null;
   startObserved: (() => void) | null = null;
   commandDiscoveryError: Error | null = null;
+  availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
 
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     this.starts.push(options);
@@ -213,6 +216,10 @@ class FakeOmpRuntime implements OmpRuntime {
     if (this.startGate) await this.startGate;
     const session = new FakeOmpSession();
     session.availableCommandsError = this.commandDiscoveryError;
+    session.availableCommands = this.availableCommands.map((command) => ({
+      ...command,
+      ...(command.aliases ? { aliases: [...command.aliases] } : {}),
+    }));
     this.sessions.push(session);
     return session;
   }
@@ -649,6 +656,62 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("namespaces a repeated native assistant identity across turns", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+
+    const firstTurnId = turnIdFrom(await startPrompt(connection, events, "identity-1", "first"));
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "First" },
+      message: {
+        role: "assistant",
+        responseId: "shared-response",
+        content: [{ type: "text", text: "First" }],
+      },
+    });
+    await scheduler.flush();
+    await finishTurn(events, session, firstTurnId);
+
+    const secondTurnId = turnIdFrom(
+      await startPrompt(connection, events, "identity-2", "second"),
+    );
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Second" },
+      message: {
+        role: "assistant",
+        responseId: "shared-response",
+        content: [{ type: "text", text: "Second" }],
+      },
+    });
+    await scheduler.flush();
+    await finishTurn(events, session, secondTurnId);
+
+    expect(
+      events.flatMap((event) =>
+        event.type === "timeline.item" && event.item.type === "assistant_message"
+          ? [event.item]
+          : [],
+      ),
+    ).toEqual([
+      {
+        type: "assistant_message",
+        id: "shared-response:content:0:text",
+        messageId: "shared-response",
+        text: "First",
+      },
+      {
+        type: "assistant_message",
+        id: "shared-response:occurrence:2:content:0:text",
+        messageId: "shared-response:occurrence:2",
+        text: "Second",
+      },
+    ]);
+    await connection.close();
+  });
+
   test("keeps contentIndex 0 to 1 to 0 snapshots stable", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
@@ -716,6 +779,51 @@ describe("OMP direct provider", () => {
         text: "Reason A revised",
       },
     ]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("bounds huge and excessive content indices without sparse state", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "message_start",
+      message: { role: "assistant", content: [], responseId: "response-bounded" },
+    });
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 1_000_000, delta: "huge" },
+      message: { role: "assistant", content: [], responseId: "response-bounded" },
+    });
+    for (let contentIndex = 0; contentIndex <= 64; contentIndex += 1) {
+      session.emit({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex,
+          delta: `block-${contentIndex}`,
+        },
+        message: { role: "assistant", content: [], responseId: "response-bounded" },
+      });
+    }
+    await scheduler.flush();
+
+    expect(
+      events.flatMap((event) =>
+        event.type === "timeline.item" && event.item.type === "assistant_message"
+          ? [event.item]
+          : [],
+      ),
+    ).toEqual(
+      Array.from({ length: 64 }, (_, contentIndex) => ({
+        type: "assistant_message",
+        id: `response-bounded:content:${contentIndex}:text`,
+        messageId: "response-bounded",
+        text: `block-${contentIndex}`,
+      })),
+    );
     await finishTurn(events, session, turnId);
     await connection.close();
   });
@@ -1061,9 +1169,7 @@ describe("OMP direct provider", () => {
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state === "started",
       ),
-    ).toEqual([
-      { type: "session.turn", sessionId: "session-1", turnId, state: "started" },
-    ]);
+    ).toEqual([{ type: "session.turn", sessionId: "session-1", turnId, state: "started" }]);
     await finishTurn(events, session, turnId);
     await connection.close();
   });
@@ -1296,6 +1402,77 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("does not complete after a suspended local timer loses to steering", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.promptAgentInvoked = false;
+    const branchGate = Promise.withResolvers<void>();
+    session.branchMessagesGate = branchGate.promise;
+    session.branchMessages = [{ entryId: "entry-suspended-local", text: "work" }];
+    const turnId = turnIdFrom(await startPrompt(connection, events, "suspended-local", "work"));
+    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
+
+    await scheduler.flush();
+    const steerGate = Promise.withResolvers<void>();
+    const steerObserved = Promise.withResolvers<void>();
+    session.steerGate = steerGate.promise;
+    session.steerObserved = steerObserved.resolve;
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "steer-after-timer",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "continue" }] },
+      },
+    });
+    await steerObserved.promise;
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "continue", entryId: "entry-after-timer" },
+    });
+
+    branchGate.resolve();
+    await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.clientMessageId === "suspended-local",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual([]);
+
+    steerGate.resolve();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "steer-after-timer",
+    );
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+
+    expect(terminal).toEqual({
+      type: "session.turn",
+      sessionId: "session-1",
+      turnId,
+      state: "completed",
+    });
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual([terminal]);
+    await connection.close();
+  });
+
   test("discards an early steer echo when native steering rejects", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -1449,9 +1626,7 @@ describe("OMP direct provider", () => {
 
     expect(
       events.flatMap((event) =>
-        event.type === "timeline.item" && event.item.type === "user_message"
-          ? [event.item]
-          : [],
+        event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
       ),
     ).toEqual([
       {
@@ -1542,6 +1717,63 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("does not let a surplus branch entry cross turn ownership", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.branchMessages = [
+      { entryId: "entry-owned-1", text: "repeat" },
+      { entryId: "entry-surplus", text: "repeat" },
+    ];
+    const firstTurnId = turnIdFrom(await startPrompt(connection, events, "owner-1", "repeat"));
+    session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+    await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.clientMessageId === "owner-1",
+    );
+    await finishTurn(events, session, firstTurnId);
+
+    session.branchMessages = [
+      { entryId: "entry-owned-1", text: "repeat" },
+      { entryId: "entry-surplus", text: "repeat" },
+      { entryId: "entry-owned-2", text: "repeat" },
+    ];
+    const secondTurnId = turnIdFrom(await startPrompt(connection, events, "owner-2", "repeat"));
+    session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+    await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.clientMessageId === "owner-2",
+    );
+    await finishTurn(events, session, secondTurnId);
+
+    expect(
+      events.flatMap((event) =>
+        event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
+      ),
+    ).toEqual([
+      {
+        type: "user_message",
+        id: "entry-owned-1",
+        messageId: "entry-owned-1",
+        clientMessageId: "owner-1",
+        text: "repeat",
+      },
+      {
+        type: "user_message",
+        id: "entry-owned-2",
+        messageId: "entry-owned-2",
+        clientMessageId: "owner-2",
+        text: "repeat",
+      },
+    ]);
+    expect(session.branchMessageLookups).toBe(2);
+    await connection.close();
+  });
+
   test("fails closed slash steering and refreshes the native command catalog", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.commandDiscoveryError = new Error("commands unavailable");
@@ -1623,6 +1855,133 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("refreshes an unknown slash command and fails closed on stale catalogs", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.availableCommands = [{ name: "old-command" }];
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+    session.availableCommands = [{ name: "new-command" }];
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "stale-command",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/new-command now" }] },
+      },
+    });
+    const refreshed = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "stale-command",
+    );
+
+    session.availableCommands = [];
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "unknown-command",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/unknown now" }] },
+      },
+    });
+    const unknown = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "unknown-command",
+    );
+
+    expect([refreshed, unknown]).toEqual([
+      {
+        type: "session.prompt_result",
+        sessionId: "session-1",
+        clientMessageId: "stale-command",
+        result: {
+          type: "failed",
+          error: { message: "OMP slash commands are unavailable while steering" },
+        },
+      },
+      {
+        type: "session.prompt_result",
+        sessionId: "session-1",
+        clientMessageId: "unknown-command",
+        result: {
+          type: "failed",
+          error: { message: "OMP slash commands are unavailable while steering" },
+        },
+      },
+    ]);
+    expect(session.availableCommandLookups).toBe(3);
+    expect(session.steers).toEqual([]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("replaces the discovered slash catalog authoritatively", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.availableCommands = [{ name: "usr" }];
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+    session.availableCommands = [{ name: "fresh-command" }];
+    session.emit({
+      type: "available_commands_update",
+      commands: [{ name: "fresh-command" }],
+    });
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "former-command-path",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/usr is full" }] },
+      },
+    });
+    const former = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "former-command-path",
+    );
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "replacement-command",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/fresh-command now" }] },
+      },
+    });
+    const replacement = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "replacement-command",
+    );
+
+    expect([former, replacement]).toEqual([
+      {
+        type: "session.prompt_result",
+        sessionId: "session-1",
+        clientMessageId: "former-command-path",
+        result: { type: "steer", turnId },
+      },
+      {
+        type: "session.prompt_result",
+        sessionId: "session-1",
+        clientMessageId: "replacement-command",
+        result: {
+          type: "failed",
+          error: { message: "OMP slash commands are unavailable while steering" },
+        },
+      },
+    ]);
+    expect(session.availableCommandLookups).toBe(2);
+    expect(session.steers).toEqual(["/usr is full"]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
   test("quarantines branch entries after lookup failure before the same text", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -1647,9 +2006,7 @@ describe("OMP direct provider", () => {
 
     expect(
       events.flatMap((event) =>
-        event.type === "timeline.item" && event.item.type === "user_message"
-          ? [event.item]
-          : [],
+        event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
       ),
     ).toEqual([
       {
@@ -1693,9 +2050,7 @@ describe("OMP direct provider", () => {
     await finishTurn(events, session, firstTurnId);
 
     session.branchMessages = [{ entryId: "entry-late", text: "repeat" }];
-    const secondTurnId = turnIdFrom(
-      await startPrompt(connection, events, "fallback-2", "repeat"),
-    );
+    const secondTurnId = turnIdFrom(await startPrompt(connection, events, "fallback-2", "repeat"));
     session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
     await Promise.resolve();
     await Promise.resolve();
@@ -1703,9 +2058,7 @@ describe("OMP direct provider", () => {
 
     expect(
       events.flatMap((event) =>
-        event.type === "timeline.item" && event.item.type === "user_message"
-          ? [event.item]
-          : [],
+        event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
       ),
     ).toEqual([
       {

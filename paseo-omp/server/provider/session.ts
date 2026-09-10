@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import type {
   ProviderConfigState,
   ProviderEvent,
@@ -93,6 +94,13 @@ function slashCommandName(text: string): string | undefined {
         : Math.min(firstWhitespace, firstColon);
   const name = separator === -1 ? body : body.slice(0, separator);
   return name || undefined;
+}
+
+function isExistingAbsolutePathProse(text: string): boolean {
+  const firstWhitespace = text.search(/\s/);
+  if (firstWhitespace <= 1) return false;
+  const candidate = text.slice(0, firstWhitespace);
+  return !candidate.includes(":") && existsSync(candidate);
 }
 
 function nativeEntryId(message: OmpMessage): string | undefined {
@@ -455,10 +463,7 @@ export class OmpProviderSession {
 
   private async steer(clientMessageId: string, text: string): Promise<void> {
     const commandName = slashCommandName(text);
-    const slashCommandUnavailable =
-      commandName !== undefined &&
-      (!this.commandDiscoveryAvailable || this.slashCommands.has(commandName));
-    if (slashCommandUnavailable) {
+    if (commandName && (await this.slashSteerUnavailable(commandName, text))) {
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -532,12 +537,7 @@ export class OmpProviderSession {
   private handleRuntimeEvent(event: OmpRpcEvent): void {
     if (this.closed) return;
     if (event.type === "available_commands_update") {
-      this.slashCommands.clear();
-      for (const command of event.commands) {
-        this.slashCommands.add(command.name);
-        for (const alias of command.aliases ?? []) this.slashCommands.add(alias);
-      }
-      this.commandDiscoveryAvailable = true;
+      this.replaceSlashCommands(event.commands);
       return;
     }
     if (event.type === "extension_ui_request") {
@@ -718,6 +718,26 @@ export class OmpProviderSession {
     this.branchWatermarkValid = false;
   }
 
+  private replaceSlashCommands(commands: Array<{ name: string; aliases?: string[] }>): void {
+    this.slashCommands.clear();
+    for (const command of commands) {
+      this.slashCommands.add(command.name);
+      for (const alias of command.aliases ?? []) this.slashCommands.add(alias);
+    }
+    this.commandDiscoveryAvailable = true;
+  }
+
+  private async slashSteerUnavailable(commandName: string, text: string): Promise<boolean> {
+    if (!this.commandDiscoveryAvailable || !this.slashCommands.has(commandName)) {
+      try {
+        this.replaceSlashCommands(await this.runtime.getAvailableCommands());
+      } catch {
+        this.commandDiscoveryAvailable = false;
+      }
+    }
+    return this.slashCommands.has(commandName) || !isExistingAbsolutePathProse(text);
+  }
+
   private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
@@ -880,6 +900,7 @@ export class OmpProviderSession {
     turn.terminal = true;
     this.cancelLocalOnlyCompletion(turn);
     this.projector.finishTurn(turn.turnId);
+    this.unclaimedBranchEntries.length = 0;
     this.emit({
       type: "session.turn",
       sessionId: this.id,

@@ -6,6 +6,7 @@ import type {
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
 
 const STREAM_FRAME_MS = 32;
+const MAX_STREAM_CONTENT_BLOCKS = 64;
 
 type Emit = (event: ProviderEvent) => void;
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -79,6 +80,8 @@ export class OmpTimelineProjector {
   private flushTimer: unknown;
   private currentTurnId: string | null = null;
   private assistantSequence = 0;
+  private readonly nativeIdentityOccurrences = new Map<string, number>();
+  private readonly turnNativeMessageIds = new Map<string, string>();
   private noticeSequence = 0;
   private commandText = "";
   private closed = false;
@@ -258,6 +261,7 @@ export class OmpTimelineProjector {
     this.commandText = "";
     this.currentTurnId = null;
     this.assistantSequence = 0;
+    this.turnNativeMessageIds.clear();
   }
 
   close(): void {
@@ -280,7 +284,9 @@ export class OmpTimelineProjector {
     this.assistantSequence += 1;
     const nativeIdentity = assistantIdentity(message);
     this.stream = {
-      messageId: nativeIdentity ?? `assistant:${turnId}:${this.assistantSequence}`,
+      messageId: nativeIdentity
+        ? this.messageIdForNativeIdentity(nativeIdentity)
+        : `assistant:${turnId}:${this.assistantSequence}`,
       ...(nativeIdentity ? { nativeIdentity } : {}),
       published: false,
       blocks: new Map(),
@@ -289,12 +295,23 @@ export class OmpTimelineProjector {
     return this.stream;
   }
 
+  private messageIdForNativeIdentity(nativeIdentity: string): string {
+    const existing = this.turnNativeMessageIds.get(nativeIdentity);
+    if (existing) return existing;
+    const occurrence = (this.nativeIdentityOccurrences.get(nativeIdentity) ?? 0) + 1;
+    this.nativeIdentityOccurrences.set(nativeIdentity, occurrence);
+    const messageId =
+      occurrence === 1 ? nativeIdentity : `${nativeIdentity}:occurrence:${occurrence}`;
+    this.turnNativeMessageIds.set(nativeIdentity, messageId);
+    return messageId;
+  }
+
   private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {
     const nativeIdentity = assistantIdentity(message);
     if (this.stream && nativeIdentity && this.stream.nativeIdentity !== nativeIdentity) {
       if (!this.stream.nativeIdentity) {
         if (!this.stream.published) {
-          this.stream.messageId = nativeIdentity;
+          this.stream.messageId = this.messageIdForNativeIdentity(nativeIdentity);
           this.stream.nativeIdentity = nativeIdentity;
         }
       } else {
@@ -318,7 +335,8 @@ export class OmpTimelineProjector {
       return;
     }
     if (!Array.isArray(message.content)) return;
-    for (let index = 0; index < message.content.length; index += 1) {
+    const blockCount = Math.min(message.content.length, MAX_STREAM_CONTENT_BLOCKS);
+    for (let index = 0; index < blockCount; index += 1) {
       const block = blockText(message, index);
       if (block) this.setBlock(stream, index, block);
     }
@@ -330,6 +348,7 @@ export class OmpTimelineProjector {
     contentIndex: number,
     update: NonNullable<AssistantMessageEvent>,
   ): void {
+    if (!this.isValidContentIndex(contentIndex)) return;
     const snapshot = blockText(message, contentIndex);
     if (snapshot) {
       this.setBlock(stream, contentIndex, snapshot);
@@ -356,10 +375,19 @@ export class OmpTimelineProjector {
     contentIndex: number,
     snapshot: StreamBlockSnapshot,
   ): void {
+    if (!this.isValidContentIndex(contentIndex)) return;
     const previous = stream.blocks.get(contentIndex);
     if (previous?.kind === snapshot.kind && previous.text === snapshot.text) return;
     stream.blocks.set(contentIndex, snapshot);
     stream.dirtyBlocks.add(contentIndex);
+  }
+
+  private isValidContentIndex(contentIndex: number): boolean {
+    return (
+      Number.isSafeInteger(contentIndex) &&
+      contentIndex >= 0 &&
+      contentIndex < MAX_STREAM_CONTENT_BLOCKS
+    );
   }
 
   private scheduleFlush(): void {
