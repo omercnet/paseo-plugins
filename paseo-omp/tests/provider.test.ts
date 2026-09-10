@@ -1355,6 +1355,69 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("drains duplicate entry-less echoes before terminal fallback", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "queued-1", "repeat"));
+    const session = sessionAt(runtime);
+    const branchGate = Promise.withResolvers<void>();
+    session.branchMessagesGate = branchGate.promise;
+    session.branchMessages = [{ entryId: "entry-queued-1", text: "repeat" }];
+    session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "queued-2",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "repeat" }] },
+      },
+    });
+    await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "queued-2",
+    );
+    session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "repeat", entryId: "entry-queued-2" },
+    });
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
+
+    branchGate.resolve();
+    await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.clientMessageId === "queued-2",
+    );
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+
+    const users = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
+    );
+    expect(users).toEqual([
+      expect.objectContaining({ id: "entry-queued-1", clientMessageId: "queued-1" }),
+      expect.objectContaining({ id: "entry-queued-2", clientMessageId: "queued-2" }),
+    ]);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toHaveLength(1);
+    await connection.close();
+  });
+
   test("fails closed slash steering and refreshes the native command catalog", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.commandDiscoveryError = new Error("commands unavailable");
