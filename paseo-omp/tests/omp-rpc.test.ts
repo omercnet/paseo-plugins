@@ -139,6 +139,34 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("passes an exact native session handle to OMP resume", async () => {
+    const child = new FakeRpcChild();
+    const launches: OmpSpawnRequest[] = [];
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child, launches).startSession({
+      cwd: "/repo",
+      mode: "full",
+      resumeSessionId: "native-session-42",
+    });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    expect(launches[0]?.args).toEqual(
+      expect.arrayContaining(["--resume", "native-session-42"]),
+    );
+    await session.close();
+  });
+
   test("accepts image stream events and blocked todos without breaking later frames", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {

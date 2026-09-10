@@ -242,6 +242,8 @@ export interface OmpStartOptions {
   mode?: "full";
   thinkingOption?: string;
   systemPrompt?: string;
+  /** Resume this exact native OMP session; never use this to start a new conversation. */
+  resumeSessionId?: string;
   noSession?: boolean;
   signal?: AbortSignal;
 }
@@ -299,6 +301,7 @@ function buildArgs(options: OmpStartOptions): string[] {
   const args = ["--mode", "rpc-ui", "--approval-mode", "yolo"];
   if (options.model) args.push("--model", options.model);
   if (options.thinkingOption) args.push("--thinking", options.thinkingOption);
+  if (options.resumeSessionId) args.push("--resume", options.resumeSessionId);
   if (options.noSession) args.push("--no-session");
   const systemPrompt = options.systemPrompt?.trim();
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
