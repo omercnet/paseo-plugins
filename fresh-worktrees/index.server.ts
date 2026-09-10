@@ -17,6 +17,9 @@ export default function contribute(server: PluginServerContext) {
       log(message) {
         console.log(`[fresh-worktrees] ${message}`);
       },
+      warn(message) {
+        console.warn(`[fresh-worktrees] ${message}`);
+      }
     });
   });
 

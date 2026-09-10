@@ -5,6 +5,7 @@
 ### Changed
 
 * Fast-forward the clean, checked-out local base branch before creating a branch-off worktree.
+* Warn and skip the local branch update when the source checkout is dirty instead of blocking workspace creation.
 
 ## 1.0.0 (2026-09-10)
 

@@ -17,13 +17,18 @@ export type GitRunner = (
   signal: AbortSignal,
 ) => Promise<string>;
 
+export type RepositoryRefreshResult =
+  | { kind: "updated"; freshBase: string }
+  | { kind: "unchanged" }
+  | { kind: "dirty" };
+
 export type RepositoryRefresh = (
   cwd: string,
   remote: string,
   localBranch: string | null,
   upstream: string | null,
   signal: AbortSignal,
-) => Promise<string | null>;
+) => Promise<RepositoryRefreshResult>;
 
 export interface RefreshDependencies {
   signal: AbortSignal;
@@ -31,6 +36,7 @@ export interface RefreshDependencies {
   refreshRepository: RepositoryRefresh;
   runGit?: GitRunner;
   log?(message: string): void;
+  warn?(message: string): void;
 }
 
 const execFileAsync = promisify(execFile);
@@ -61,7 +67,7 @@ export async function executeGit(
 export function createRepositoryRefreshCoordinator(
   runGit: GitRunner = executeGit,
 ): RepositoryRefresh {
-  const inFlight = new Map<string, Promise<string | null>>();
+  const inFlight = new Map<string, Promise<RepositoryRefreshResult>>();
   const repositoryTails = new Map<string, Promise<void>>();
 
   return async (cwd, remote, localBranch, upstream, signal) => {
@@ -70,9 +76,9 @@ export function createRepositoryRefreshCoordinator(
     if (existingRefresh) return existingRefresh;
 
     const previousRefresh = repositoryTails.get(cwd) ?? Promise.resolve();
-    const refresh = previousRefresh.catch(() => {}).then(async () => {
+    const refresh = previousRefresh.catch(() => {}).then(async (): Promise<RepositoryRefreshResult> => {
       await runGit(cwd, ["fetch", "--prune", "--quiet", remote], signal);
-      if (!localBranch) return null;
+      if (!localBranch) return { kind: "unchanged" };
 
       const matchingRemoteBranch = `${remote}/${localBranch}`;
       const freshBase =
@@ -81,7 +87,7 @@ export function createRepositoryRefreshCoordinator(
           : (await remoteRefExists(runGit, cwd, matchingRemoteBranch, signal))
             ? matchingRemoteBranch
             : null;
-      if (!freshBase) return null;
+      if (!freshBase) return { kind: "unchanged" };
 
       const currentBranch = await optionalGit(
         runGit,
@@ -100,14 +106,10 @@ export function createRepositoryRefreshCoordinator(
         ["status", "--porcelain", "--untracked-files=normal"],
         signal,
       );
-      if (status) {
-        throw new Error(
-          `Cannot refresh local branch ${localBranch} in ${cwd}: the source checkout is not clean`,
-        );
-      }
+      if (status) return { kind: "dirty" };
 
       await runGit(cwd, ["merge", "--ff-only", "--quiet", freshBase], signal);
-      return freshBase;
+      return { kind: "updated", freshBase };
     });
     const tail = refresh.then(
       () => {},
@@ -252,7 +254,7 @@ export async function refreshWorkspaceRequest(
     (remotes.includes("origin") ? "origin" : remotes[0]);
 
   const requestedRemote = remoteForRef(requestedRef, remotes);
-  const freshBase = await dependencies.refreshRepository(
+  const refreshResult = await dependencies.refreshRepository(
     cwd,
     remote,
     requestedRemote ? null : (localBranch?.branch ?? null),
@@ -260,11 +262,17 @@ export async function refreshWorkspaceRequest(
     dependencies.signal,
   );
 
-  dependencies.log?.(
-    freshBase
-      ? `Fetched ${remote} for ${cwd}; fast-forwarded ${localBranch?.branch} to ${freshBase}`
-      : `Fetched ${remote} for ${cwd}; no local branch update was needed`,
-  );
+  if (refreshResult.kind === "dirty") {
+    dependencies.warn?.(
+      `Skipped refreshing local branch ${localBranch?.branch} in ${cwd} because the source checkout is not clean`,
+    );
+  } else {
+    dependencies.log?.(
+      refreshResult.kind === "updated"
+        ? `Fetched ${remote} for ${cwd}; fast-forwarded ${localBranch?.branch} to ${refreshResult.freshBase}`
+        : `Fetched ${remote} for ${cwd}; no local branch update was needed`,
+    );
+  }
 
   return request;
 }

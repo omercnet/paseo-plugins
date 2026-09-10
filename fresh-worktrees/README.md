@@ -17,10 +17,10 @@ Before Paseo creates a branch-off worktree, the plugin:
 4. Leaves the workspace request unchanged, so Paseo forks from the now-current local branch.
 
 Explicit checkout and change-request workspaces are unchanged. Explicit remote bases are fetched
-but do not mutate a local branch. Repositories without remotes are unchanged. A failed fetch, dirty
-source checkout, or non-fast-forward update stops worktree creation rather than silently using stale
-history. Concurrent requests for the same target share one refresh, and updates are serialized per
-repository.
+but do not mutate a local branch. Repositories without remotes are unchanged. A dirty source
+checkout emits a warning and skips the local branch update, allowing workspace creation to continue
+from the existing local base. Failed fetches and non-fast-forward updates still stop creation.
+Concurrent requests for the same target share one refresh, and updates are serialized per repository.
 
 ## Install
 
