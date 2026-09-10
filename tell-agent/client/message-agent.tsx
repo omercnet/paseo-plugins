@@ -1,4 +1,5 @@
 import {
+  type PluginAgentPanelProps,
   type PluginButtonContentProps,
   type PluginClientContext,
   usePaseo,
@@ -6,7 +7,7 @@ import {
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   AGENT_PAGE_LIMIT,
   type AgentEntry,
@@ -16,21 +17,19 @@ import {
   stateLabel,
   title,
 } from "./agents";
-import {
-  formatCrossSessionMessage,
-  messageTargets,
-  parseTellArguments,
-  resolveMessageTarget,
-} from "./messaging";
+import { formatCrossSessionMessage, messageTargets } from "./messaging";
+import { handleTellCommand } from "./tell-command";
 
 const VISIBLE_TARGETS = 8;
 
-function MessageAgentForm({
-  sourceAgentId,
-  theme,
-  host,
-  close,
-}: PluginButtonContentProps & { sourceAgentId: string }) {
+type MessageAgentFormProps = {
+  sourceAgentId: string;
+  theme: PluginButtonContentProps["theme"];
+  host: PluginButtonContentProps["host"];
+  close?: () => void;
+};
+
+function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFormProps) {
   const paseo = usePaseo();
   const toast = useToast();
   const [query, setQuery] = useState("");
@@ -57,7 +56,11 @@ function MessageAgentForm({
     },
     onSuccess(entry) {
       toast.show(`Message sent to ${title(entry)}`, { variant: "success" });
-      close();
+      if (close) close();
+      else {
+        setTargetId(null);
+        setMessage("");
+      }
     },
   });
   const styles = useMemo(
@@ -234,10 +237,16 @@ function MessageAgentForm({
         <Pressable
           accessibilityRole="button"
           disabled={send.isPending}
-          onPress={close}
+          onPress={() => {
+            if (close) close();
+            else {
+              setTargetId(null);
+              setMessage("");
+            }
+          }}
           style={({ pressed }) => [styles.button, pressed && styles.disabled]}
         >
-          <Text style={styles.buttonText}>Cancel</Text>
+          <Text style={styles.buttonText}>{close ? "Cancel" : "Clear"}</Text>
         </Pressable>
         <Pressable
           accessibilityRole="button"
@@ -272,7 +281,31 @@ export function MessageAgentPopover(props: PluginButtonContentProps) {
   return <MessageAgentForm {...props} sourceAgentId={props.agentId} />;
 }
 
+export function TellAgentPanel({ theme, host, layout, agentId }: PluginAgentPanelProps) {
+  const contentStyle = useMemo(
+    () => ({
+      flexGrow: 1,
+      padding: layout.compact ? 14 : 20,
+      backgroundColor: theme.colors.surface0,
+    }),
+    [layout.compact, theme.colors.surface0],
+  );
+  return (
+    <ScrollView contentContainerStyle={contentStyle} keyboardShouldPersistTaps="handled">
+      <MessageAgentForm sourceAgentId={agentId} theme={theme} host={host} />
+    </ScrollView>
+  );
+}
+
 export function contributeAgentMessaging(client: PluginClientContext) {
+  const removePanel = client.addWorkspacePanel({
+    id: "tell-agent",
+    title: "Tell agent",
+    icon: "MessagesSquare",
+    context: "agent",
+    locations: ["workspace", "explorer"],
+    Component: TellAgentPanel,
+  });
   const pills = new Map<string, { workspaceId: string; remove(): void }>();
   let stopped = false;
 
@@ -326,44 +359,17 @@ export function contributeAgentMessaging(client: PluginClientContext) {
 
   const removeTellCommand = client.addSlashCommand({
     name: "tell",
-    description: "Message another agent session",
-    argumentHint: "<agent or workspace> :: <message>",
+    description: "Open the agent picker or message another session",
+    argumentHint: "[agent or workspace :: message]",
     context: "agent",
-    async onSubmit({ args, agent, paseo }) {
-      const parsed = parseTellArguments(args);
-      if (!parsed) {
-        throw new Error("Usage: /tell <agent or workspace> :: <message>");
-      }
-      const { entries } = await loadAgents(paseo);
-      const resolution = resolveMessageTarget(entries, agent.id, parsed.target);
-      if (resolution.kind === "none") {
-        throw new Error(`No active agent matches “${parsed.target}”.`);
-      }
-      if (resolution.kind === "ambiguous") {
-        const examples = resolution.entries
-          .slice(0, 3)
-          .map((entry) => `${title(entry)} (${placement(entry)})`)
-          .join(", ");
-        throw new Error(`More than one agent matches “${parsed.target}”: ${examples}. Refine it.`);
-      }
-      const target = resolution.entry;
-      const working = target.agent.status === "running" || target.agent.status === "initializing";
-      if (working || target.agent.pendingPermissions.length > 0) {
-        throw new Error(
-          `${title(target)} is ${working ? "working" : "waiting for permission"}. Use the Tell agent pill to review and confirm the interruption.`,
-        );
-      }
-      const source = entries.find((entry) => entry.agent.id === agent.id);
-      await paseo.agents
-        .ref(target.agent.id)
-        .send(formatCrossSessionMessage(source, agent.id, parsed.message));
-    },
+    onSubmit: handleTellCommand,
   });
 
   return () => {
     if (stopped) return;
     stopped = true;
     removeTellCommand();
+    removePanel();
     unsubscribe();
     for (const pill of pills.values()) pill.remove();
     pills.clear();
