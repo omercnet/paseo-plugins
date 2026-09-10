@@ -6,7 +6,6 @@ import type {
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, OMP_MODES, ompModelId, parseOmpModelId, thinkingForModel } from "./catalog";
-import { buildOmpSpawnRequest } from "./omp-rpc";
 import type {
   OmpMessage,
   OmpRpcEvent,
@@ -15,12 +14,13 @@ import type {
   OmpSessionState,
   OmpStartOptions,
 } from "./omp-rpc";
+import { buildOmpSpawnRequest } from "./omp-rpc";
+import { BoundedStringSet, OmpPublicDataFilter, OmpPublicError } from "./security";
 import {
   defaultOmpTimelineScheduler,
   OmpTimelineProjector,
   type OmpTimelineScheduler,
 } from "./timeline-projector";
-import { BoundedStringSet, OmpPublicDataFilter, OmpPublicError } from "./security";
 
 type SessionOpenInput = Extract<ProviderInput, { type: "session.open" }>;
 type SessionPromptInput = Extract<ProviderInput, { type: "session.prompt" }>;
@@ -889,7 +889,8 @@ export class OmpProviderSession {
             this.unclaimedBranchEntries.length = 0;
             this.branchWatermarkValid = true;
           } else if (
-            unseen.length <= MAX_UNCLAIMED_BRANCH_ENTRIES - this.unclaimedBranchEntries.length
+            unseen.length <=
+            MAX_UNCLAIMED_BRANCH_ENTRIES - this.unclaimedBranchEntries.length
           ) {
             this.unclaimedBranchEntries.push(...unseen);
           } else {

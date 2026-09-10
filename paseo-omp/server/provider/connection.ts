@@ -7,9 +7,9 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { discoverOmpCatalog } from "./catalog";
 import type { OmpRuntime } from "./omp-rpc";
+import { OmpPublicError } from "./security";
 import { OmpProviderSession } from "./session";
 import type { OmpTimelineScheduler } from "./timeline-projector";
-import { OmpPublicError } from "./security";
 
 const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.message": true,
@@ -37,7 +37,8 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
     throw new OmpPublicError("Unsupported provider request");
   }
   if (record.type === "catalog") {
-    if (!isBoundedIdentifier(record.requestId)) throw new OmpPublicError("Invalid provider request");
+    if (!isBoundedIdentifier(record.requestId))
+      throw new OmpPublicError("Invalid provider request");
     if (
       record.cwd !== undefined &&
       (typeof record.cwd !== "string" || record.cwd.length > 4_096 || record.cwd.includes("\0"))
@@ -61,11 +62,18 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
     return;
   }
   if (record.type === "session.permission") {
-    if (!isBoundedIdentifier(record.permissionId) || !record.response || typeof record.response !== "object") {
+    if (
+      !isBoundedIdentifier(record.permissionId) ||
+      !record.response ||
+      typeof record.response !== "object"
+    ) {
       throw new OmpPublicError("Invalid permission response");
     }
     const response = record.response as Record<string, unknown>;
-    if (response.selectedActionId !== undefined && !isBoundedIdentifier(response.selectedActionId)) {
+    if (
+      response.selectedActionId !== undefined &&
+      !isBoundedIdentifier(response.selectedActionId)
+    ) {
       throw new OmpPublicError("Invalid permission response");
     }
     if (Array.isArray(response.updatedPermissions) && response.updatedPermissions.length > 64) {

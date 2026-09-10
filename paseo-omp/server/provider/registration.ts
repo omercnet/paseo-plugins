@@ -27,7 +27,9 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         throw new Error("OMP Plugin Preview requires a valid provider protocol version 1 request");
       }
       const requestedCapabilities = new Set(parsed.data.capabilities);
-      const capabilities = CAPABILITIES.filter((capability) => requestedCapabilities.has(capability));
+      const capabilities = CAPABILITIES.filter((capability) =>
+        requestedCapabilities.has(capability),
+      );
       return createOmpConnection(
         options.runtime ?? new OmpRpcRuntime(),
         capabilities,

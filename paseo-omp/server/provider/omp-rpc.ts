@@ -61,7 +61,9 @@ function isBoundedJson(value: unknown, maxTextLength = MAX_TOOL_PAYLOAD_LENGTH):
       continue;
     }
     if (typeof item !== "object") return false;
-    const entries = Array.isArray(item) ? item.map((child) => ["", child] as const) : Object.entries(item);
+    const entries = Array.isArray(item)
+      ? item.map((child) => ["", child] as const)
+      : Object.entries(item);
     if (entries.length > MAX_ARRAY_ITEMS) return false;
     for (const [key, child] of entries) {
       if (key.length > MAX_NAME_LENGTH) return false;
@@ -96,9 +98,17 @@ const OmpContentPartSchema = z
 const OmpAssistantMessageEventSchema = z
   .object({
     type: NAME,
-    contentIndex: z.number().int().nonnegative().max(MAX_CONTENT_PARTS - 1).optional(),
+    contentIndex: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(MAX_CONTENT_PARTS - 1)
+      .optional(),
     delta: TEXT.optional(),
-    content: z.unknown().refine((value) => isBoundedJson(value)).optional(),
+    content: z
+      .unknown()
+      .refine((value) => isBoundedJson(value))
+      .optional(),
   })
   .superRefine((event, context) => {
     if (!event.type.startsWith("image_")) return;
@@ -151,7 +161,10 @@ const OmpResponseFrameSchema = z.object({
   type: z.literal("response"),
   id: IDENTIFIER,
   success: z.boolean(),
-  data: z.unknown().refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES)).optional(),
+  data: z
+    .unknown()
+    .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES))
+    .optional(),
   error: z.string().max(4_096).optional(),
 });
 const OmpChunkFrameSchema = z.object({
@@ -229,7 +242,10 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     id: IDENTIFIER,
     method: z.string().min(1).max(64),
     title: z.string().max(4_096).optional(),
-    message: z.string().max(64 * 1024).optional(),
+    message: z
+      .string()
+      .max(64 * 1024)
+      .optional(),
     notifyType: z.enum(["info", "warning", "error"]).optional(),
   }),
   z.object({
@@ -247,9 +263,7 @@ const OmpAvailableCommandsResultSchema = z.object({
   commands: z.array(OmpAvailableCommandSchema).max(MAX_ARRAY_ITEMS),
 });
 const OmpBranchMessagesResultSchema = z.object({
-  messages: z
-    .array(z.object({ entryId: IDENTIFIER, text: TEXT }))
-    .max(1_024),
+  messages: z.array(z.object({ entryId: IDENTIFIER, text: TEXT })).max(1_024),
 });
 const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2) });
 
@@ -368,7 +382,12 @@ const BLOCKED_SESSION_ENV =
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 
 function validateBoundedText(value: unknown, field: string, maxLength: number): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > maxLength || value.includes("\0")) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    value.includes("\0")
+  ) {
     throw new Error(`Invalid OMP ${field}`);
   }
   return value;
@@ -388,16 +407,23 @@ function buildOmpEnvironment(
   let totalLength = 0;
   for (const [name, value] of Object.entries(sourceEnv)) {
     if (value === undefined || name === "OMP_COMMAND") continue;
-    if (!(name in INHERITED_RUNTIME_ENV) && !INHERITED_PROVIDER_ENV.test(name) && !INHERITED_CREDENTIAL_ENV.test(name)) {
+    if (
+      !(name in INHERITED_RUNTIME_ENV) &&
+      !INHERITED_PROVIDER_ENV.test(name) &&
+      !INHERITED_CREDENTIAL_ENV.test(name)
+    ) {
       continue;
     }
-    if (!ENV_NAME.test(name) || value.length > MAX_ENV_VALUE_LENGTH || value.includes("\0")) continue;
+    if (!ENV_NAME.test(name) || value.length > MAX_ENV_VALUE_LENGTH || value.includes("\0"))
+      continue;
     totalLength += name.length + value.length;
-    if (totalLength > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP inherited environment is too large");
+    if (totalLength > MAX_ENV_TOTAL_LENGTH)
+      throw new Error("OMP inherited environment is too large");
     env[name] = value;
   }
   const entries = Object.entries(sessionEnv ?? {});
-  if (entries.length > MAX_ENV_ENTRIES) throw new Error("OMP session environment has too many entries");
+  if (entries.length > MAX_ENV_ENTRIES)
+    throw new Error("OMP session environment has too many entries");
   for (const [name, value] of entries) {
     if (!ENV_NAME.test(name) || BLOCKED_SESSION_ENV.test(name)) {
       throw new Error("OMP session environment contains a forbidden variable");
@@ -996,9 +1022,7 @@ class OmpRpcProcess {
     }
     if (event.message.role !== "assistant") return true;
     const nextBlocks =
-      event.type === "message_start"
-        ? new Map<number, string>()
-        : new Map(this.streamedBlocks);
+      event.type === "message_start" ? new Map<number, string>() : new Map(this.streamedBlocks);
     const content = event.message.content;
     if (typeof content === "string") {
       nextBlocks.set(0, content);
@@ -1117,7 +1141,11 @@ class OmpRpcSession implements OmpRuntimeSession {
     const safeProvider = validateBoundedText(provider, "model provider", MAX_NAME_LENGTH);
     const safeModelId = validateBoundedText(modelId, "model identifier", MAX_NAME_LENGTH);
     return OmpModelSchema.parse(
-      await this.process.request({ type: "set_model", provider: safeProvider, modelId: safeModelId }),
+      await this.process.request({
+        type: "set_model",
+        provider: safeProvider,
+        modelId: safeModelId,
+      }),
     );
   }
 

@@ -501,7 +501,6 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-
   test("rejects unsupported MCP configuration and dangerous environment before spawn", async () => {
     const runtime = new FakeOmpRuntime();
     const connection = await createOmpProvider({ runtime }).connect({
@@ -579,7 +578,8 @@ describe("OMP direct provider", () => {
       },
     });
     const result = await events.waitFor(
-      (event) => event.type === "session.prompt_result" && event.clientMessageId === "uploaded-file",
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "uploaded-file",
     );
 
     expect(result).toEqual(
@@ -602,7 +602,8 @@ describe("OMP direct provider", () => {
       },
     });
     const oversized = await events.waitFor(
-      (event) => event.type === "session.prompt_result" && event.clientMessageId === "too-many-parts",
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "too-many-parts",
     );
     expect(oversized).toEqual(
       expect.objectContaining({
@@ -998,15 +999,12 @@ describe("OMP direct provider", () => {
     }
 
     const userIds = events.flatMap((event) =>
-      event.type === "timeline.item" && event.item.type === "user_message"
-        ? [event.item.id]
-        : [],
+      event.type === "timeline.item" && event.item.type === "user_message" ? [event.item.id] : [],
     );
-    const assistantIds = events.flatMap((event) =>
-      event.type === "timeline.item" && event.item.type === "assistant_message"
-        ? [event.item.messageId]
-        : [],
-    );
+    const assistantIds = events.flatMap((event) => {
+      if (event.type !== "timeline.item" || event.item.type !== "assistant_message") return [];
+      return event.item.messageId ? [event.item.messageId] : [];
+    });
     expect(new Set(userIds).size).toBe(1_030);
     expect(new Set(assistantIds).size).toBe(1_030);
     expect(userIds.some((id) => id.includes("entry-0"))).toBe(false);
@@ -1277,15 +1275,16 @@ describe("OMP direct provider", () => {
     const turnId = turnIdFrom(promptResult);
     const session = sessionAt(runtime);
     session.branchMessages = [{ entryId: "entry-user-1", text: "hello" }];
-    session.emit({
-      type: "message_end",
+    const hiddenNotice = {
+      type: "message_end" as const,
       message: {
         role: "custom",
         content: "Mounted development tools",
         customType: "xdev-mount-notice",
         display: false,
       },
-    });
+    };
+    session.emit(hiddenNotice);
     session.emit({
       type: "notice",
       id: "notice-before-echo",
@@ -3120,7 +3119,11 @@ describe("OMP direct provider", () => {
     });
     session.emit({
       type: "message_update",
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "credential-value-1234" },
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "credential-value-1234",
+      },
       message: {
         role: "assistant",
         responseId: "provider-internal-response-id",
@@ -3274,12 +3277,8 @@ describe("OMP direct provider", () => {
     );
     abort.resolve();
     const [first, second] = await Promise.all([firstFailure, secondFailure]);
-    expect(first).toEqual(
-      expect.objectContaining({ error: { message: "OMP interrupt failed" } }),
-    );
-    expect(second).toEqual(
-      expect.objectContaining({ error: { message: "OMP interrupt failed" } }),
-    );
+    expect(first).toEqual(expect.objectContaining({ error: { message: "OMP interrupt failed" } }));
+    expect(second).toEqual(expect.objectContaining({ error: { message: "OMP interrupt failed" } }));
     await connection.close();
   });
   test("serializes interrupt and close while awaiting runtime disposal", async () => {

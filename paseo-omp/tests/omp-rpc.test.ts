@@ -426,7 +426,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const opening = runtimeFor(child).startSession({
@@ -459,7 +464,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
@@ -483,7 +493,10 @@ describe("OMP RPC transport", () => {
     });
     child.write({
       type: "message_update",
-      message: { role: "assistant", content: [{ type: "image", data: "%%%", mimeType: "image/png" }] },
+      message: {
+        role: "assistant",
+        content: [{ type: "image", data: "%%%", mimeType: "image/png" }],
+      },
       assistantMessageEvent: { type: "image_end", contentIndex: 0 },
     });
     child.write({ type: "notice", level: "warning", message: "valid after rejected frames" });
@@ -500,7 +513,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
@@ -512,7 +530,10 @@ describe("OMP RPC transport", () => {
       events.push(event);
       if (event.type === "notice") recovered.resolve(event);
     });
-    child.write({ type: "message_start", message: { role: "assistant", responseId: "bounded", content: [] } });
+    child.write({
+      type: "message_start",
+      message: { role: "assistant", responseId: "bounded", content: [] },
+    });
     for (let index = 0; index < 5; index += 1) {
       child.write({
         type: "message_update",
@@ -532,7 +553,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
