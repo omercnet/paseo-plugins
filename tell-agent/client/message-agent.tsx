@@ -17,7 +17,7 @@ import {
   stateLabel,
   title,
 } from "./agents";
-import { formatCrossSessionMessage, messageTargets } from "./messaging";
+import { formatTellInstruction, messageTargets } from "./messaging";
 import { handleTellCommand } from "./tell-command";
 
 const VISIBLE_TARGETS = 8;
@@ -41,7 +41,6 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
     queryFn: () => loadAgents(paseo),
   });
   const entries = directory.data?.entries ?? [];
-  const source = entries.find((entry) => entry.agent.id === sourceAgentId);
   const target = targetId ? entries.find((entry) => entry.agent.id === targetId) : undefined;
   const matchingTargets = useMemo(
     () => messageTargets(entries, sourceAgentId, query),
@@ -55,13 +54,11 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
   }, [targetId]);
   const send = useMutation({
     mutationFn: async ({ entry, text }: { entry: AgentEntry; text: string }) => {
-      await paseo.agents
-        .ref(entry.agent.id)
-        .send(formatCrossSessionMessage(source, sourceAgentId, text));
+      await paseo.agents.ref(sourceAgentId).send(formatTellInstruction(entry.agent.id, text));
       return entry;
     },
     onSuccess(entry) {
-      toast.show(`Message sent to ${title(entry)}`, { variant: "success" });
+      toast.show(`Asked current agent to tell ${title(entry)}`, { variant: "success" });
       if (close) close();
       else {
         setTargetId(null);
@@ -135,16 +132,14 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
     }),
     [theme],
   );
-  const targetIsWorking =
-    target?.agent.status === "running" || target?.agent.status === "initializing";
-  const targetHasPermission = (target?.agent.pendingPermissions.length ?? 0) > 0;
   const canSend = Boolean(target && message.trim()) && !send.isPending;
 
   return (
     <View style={styles.body}>
-      <Text style={styles.heading}>Message another agent</Text>
+      <Text style={styles.heading}>Tell another agent</Text>
       <Text style={styles.detail}>
-        Search every active session on {host.label}. The current session is excluded.
+        Search active sessions on {host.label}. Your current agent receives the instruction and can
+        add context before contacting the selected agent.
       </Text>
       <TextInput
         accessibilityLabel="Search message targets"
@@ -212,28 +207,16 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
         </View>
       ) : null}
       {target ? (
-        <>
-          <TextInput
-            ref={messageInputRef}
-            accessibilityLabel={`Message to ${title(target)}`}
-            multiline
-            onChangeText={setMessage}
-            placeholder="What should this agent do?"
-            placeholderTextColor={theme.colors.foregroundMuted}
-            value={message}
-            style={styles.message}
-          />
-          {targetIsWorking ? (
-            <Text style={styles.warning}>
-              This agent is working. Sending stops its current turn and starts this direction.
-            </Text>
-          ) : targetHasPermission ? (
-            <Text style={styles.warning}>
-              This agent is waiting for permission. Sending dismisses that request and starts this
-              direction.
-            </Text>
-          ) : null}
-        </>
+        <TextInput
+          ref={messageInputRef}
+          accessibilityLabel={`Instruction for ${title(target)}`}
+          multiline
+          onChangeText={setMessage}
+          placeholder="What should your current agent tell this agent?"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          value={message}
+          style={styles.message}
+        />
       ) : null}
       {send.error ? (
         <Text accessibilityRole="alert" style={styles.error}>
@@ -257,7 +240,9 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
         </Pressable>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={target ? `Send message to ${title(target)}` : "Select a target agent"}
+          accessibilityLabel={
+            target ? `Ask current agent to tell ${title(target)}` : "Select a target agent"
+          }
           disabled={!canSend}
           onPress={() => {
             if (target && message.trim()) send.mutate({ entry: target, text: message });
@@ -269,13 +254,7 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
           ]}
         >
           <Text style={styles.primaryText}>
-            {send.isPending
-              ? "Sending…"
-              : targetIsWorking
-                ? "Interrupt & send"
-                : targetHasPermission
-                  ? "Dismiss & send"
-                  : "Send message"}
+            {send.isPending ? "Sending…" : "Ask current agent"}
           </Text>
         </Pressable>
       </View>

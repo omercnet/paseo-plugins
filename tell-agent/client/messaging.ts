@@ -1,4 +1,4 @@
-import { type AgentEntry, matches, placement, title } from "./agents";
+import { type AgentEntry, matches, title } from "./agents";
 
 export type TellArguments = { target: string; message: string };
 
@@ -58,13 +58,6 @@ export function parseTellArguments(args: string): TellArguments | null {
   return target && message ? { target, message } : null;
 }
 
-export function formatCrossSessionMessage(
-  source: AgentEntry | undefined,
-  sourceAgentId: string,
-  message: string,
-): string {
-  const sourceLabel = source
-    ? `${title(source)} (${placement(source)})`
-    : `agent ${sourceAgentId.slice(0, 8)}`;
-  return `[Cross-session message from the user while viewing ${sourceLabel}]\n\n${message.trim()}`;
+export function formatTellInstruction(targetAgentId: string, message: string): string {
+  return `tell ${targetAgentId}: ${message.trim()}`;
 }

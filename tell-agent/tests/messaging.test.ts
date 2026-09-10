@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEntry } from "../client/agents";
 import {
-  formatCrossSessionMessage,
+  formatTellInstruction,
   messageTargets,
   parseTellArguments,
   resolveMessageTarget,
@@ -100,10 +100,9 @@ describe("tell command", () => {
     expect(parseTellArguments("Payments ::   ")).toBeNull();
   });
 
-  test("labels the receiving prompt with its source session", () => {
-    const source = entry();
-    expect(formatCrossSessionMessage(source, source.agent.id, "  Please review this.  ")).toBe(
-      "[Cross-session message from the user while viewing Source agent (Source project / Source workspace)]\n\nPlease review this.",
+  test("formats an instruction for the current agent", () => {
+    expect(formatTellInstruction("agent-payments", "  Please review this.  ")).toBe(
+      "tell agent-payments: Please review this.",
     );
   });
 });

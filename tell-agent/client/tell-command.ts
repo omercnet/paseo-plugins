@@ -1,6 +1,6 @@
 import type { PluginAgentCommandContext } from "@getpaseo/plugin/client";
 import { loadAgents, placement, title } from "./agents";
-import { formatCrossSessionMessage, parseTellArguments, resolveMessageTarget } from "./messaging";
+import { formatTellInstruction, parseTellArguments, resolveMessageTarget } from "./messaging";
 
 export async function handleTellCommand({
   args,
@@ -29,14 +29,5 @@ export async function handleTellCommand({
     throw new Error(`More than one agent matches “${parsed.target}”: ${examples}. Refine it.`);
   }
   const target = resolution.entry;
-  const working = target.agent.status === "running" || target.agent.status === "initializing";
-  if (working || target.agent.pendingPermissions.length > 0) {
-    throw new Error(
-      `${title(target)} is ${working ? "working" : "waiting for permission"}. Use the Tell agent pill to review and confirm the interruption.`,
-    );
-  }
-  const source = entries.find((entry) => entry.agent.id === agent.id);
-  await paseo.agents
-    .ref(target.agent.id)
-    .send(formatCrossSessionMessage(source, agent.id, parsed.message));
+  await paseo.agents.ref(agent.id).send(formatTellInstruction(target.agent.id, parsed.message));
 }

@@ -28,4 +28,51 @@ describe("tell command keyboard flow", () => {
     expect(opened).toEqual(["tell-agent"]);
     expect(listed).toBeFalse();
   });
+
+  test("prompts the source session instead of sending verbatim to the target", async () => {
+    const referencedAgents: string[] = [];
+    const sentMessages: string[] = [];
+    const target = {
+      agent: {
+        id: "target-agent",
+        title: "Target agent",
+        status: "running",
+        archivedAt: null,
+        updatedAt: "2026-09-10T12:00:00.000Z",
+      },
+      project: {
+        projectName: "Other project",
+        workspaceName: "Other workspace",
+        checkout: { isGit: false },
+      },
+    };
+    const context = {
+      args: "target-agent :: review this change",
+      agent: { id: "source-agent" },
+      openPanel() {},
+      paseo: {
+        agents: {
+          async list() {
+            return {
+              entries: [target],
+              pageInfo: { hasMore: false, nextCursor: null },
+            };
+          },
+          ref(agentId: string) {
+            referencedAgents.push(agentId);
+            return {
+              async send(message: string) {
+                sentMessages.push(message);
+              },
+            };
+          },
+        },
+      },
+    } as unknown as TellContext;
+
+    await handleTellCommand(context);
+
+    expect(referencedAgents).toEqual(["source-agent"]);
+    expect(sentMessages).toEqual(["tell target-agent: review this change"]);
+  });
 });
