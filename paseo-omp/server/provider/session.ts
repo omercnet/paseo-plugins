@@ -80,23 +80,19 @@ function textPrompt(input: SessionPromptInput): string {
 }
 
 function slashCommandName(text: string): string | undefined {
-  const match = /^\/([^\s/]+)(?:\s|$)/.exec(text);
-  return match?.[1];
-}
-const PATH_LIKE_ROOTS: Readonly<Record<string, true>> = {
-  bin: true,
-  dev: true,
-  etc: true,
-  home: true,
-  opt: true,
-  root: true,
-  tmp: true,
-  usr: true,
-  var: true,
-};
-
-function isPathLikeSlashProse(text: string, commandName: string): boolean {
-  return PATH_LIKE_ROOTS[commandName] === true && text.length > commandName.length + 1;
+  if (!text.startsWith("/")) return undefined;
+  const body = text.slice(1);
+  if (!body) return undefined;
+  const firstWhitespace = body.search(/\s/);
+  const firstColon = body.indexOf(":");
+  const separator =
+    firstWhitespace === -1
+      ? firstColon
+      : firstColon === -1
+        ? firstWhitespace
+        : Math.min(firstWhitespace, firstColon);
+  const name = separator === -1 ? body : body.slice(0, separator);
+  return name || undefined;
 }
 
 function nativeEntryId(message: OmpMessage): string | undefined {
@@ -458,34 +454,27 @@ export class OmpProviderSession {
   }
 
   private async steer(clientMessageId: string, text: string): Promise<void> {
-    const commandName = slashCommandName(text);
-    const recognizedCommand = commandName ? this.slashCommands.has(commandName) : false;
-    const unrecognizedCommandShape =
-      commandName !== undefined &&
-      !isPathLikeSlashProse(text, commandName) &&
-      (!this.commandDiscoveryAvailable || !recognizedCommand);
-    if (recognizedCommand || unrecognizedCommandShape) {
-      this.emit({
-        type: "session.prompt_result",
-        sessionId: this.id,
-        clientMessageId,
-        result: {
-          type: "failed",
-          error: { message: "OMP slash commands are unavailable while steering" },
-        },
-      });
-      return;
-    }
     const turn = this.activeTurn;
-    if (!turn || turn.terminal || turn.terminalizing || turn.deferredAgentEnd || !turn.started) {
-      this.emit({
-        type: "session.prompt_result",
-        sessionId: this.id,
-        clientMessageId,
-        result: { type: "failed", error: { message: "There is no active OMP turn to steer" } },
-      });
+    if (!this.isSteerableTurn(turn)) {
+      this.publishSteerFailure(clientMessageId, "There is no active OMP turn to steer");
       return;
     }
+    const commandName = slashCommandName(text);
+    const slashCommandUnavailable = commandName
+      ? await this.slashSteerUnavailable(commandName)
+      : false;
+    if (!this.isSteerableTurn(turn)) {
+      this.publishSteerFailure(clientMessageId, "There is no active OMP turn to steer");
+      return;
+    }
+    if (slashCommandUnavailable) {
+      this.publishSteerFailure(
+        clientMessageId,
+        "OMP slash commands are unavailable while steering",
+      );
+      return;
+    }
+
     const pending: PendingUser = {
       clientMessageId,
       text,
@@ -538,12 +527,7 @@ export class OmpProviderSession {
   private handleRuntimeEvent(event: OmpRpcEvent): void {
     if (this.closed) return;
     if (event.type === "available_commands_update") {
-      this.slashCommands.clear();
-      for (const command of event.commands) {
-        this.slashCommands.add(command.name);
-        for (const alias of command.aliases ?? []) this.slashCommands.add(alias);
-      }
-      this.commandDiscoveryAvailable = true;
+      this.replaceSlashCommands(event.commands);
       return;
     }
     if (event.type === "extension_ui_request") {
@@ -695,8 +679,7 @@ export class OmpProviderSession {
           ) {
             return;
           }
-          this.unclaimedBranchEntries.length = 0;
-          this.branchWatermarkValid = false;
+          this.quarantineBranchEntries();
         }
       }
       if (
@@ -720,6 +703,52 @@ export class OmpProviderSession {
     return this.unclaimedBranchEntries.splice(index, 1)[0]?.entryId;
   }
 
+  private quarantineBranchEntries(): void {
+    this.unclaimedBranchEntries.length = 0;
+    this.branchWatermarkValid = false;
+  }
+
+  private isSteerableTurn(turn: ActiveTurn | null): turn is ActiveTurn {
+    return (
+      turn !== null &&
+      this.activeTurn === turn &&
+      !turn.terminal &&
+      !turn.terminalizing &&
+      !turn.deferredAgentEnd &&
+      turn.started
+    );
+  }
+
+  private publishSteerFailure(clientMessageId: string, message: string): void {
+    this.emit({
+      type: "session.prompt_result",
+      sessionId: this.id,
+      clientMessageId,
+      result: { type: "failed", error: { message } },
+    });
+  }
+
+  private replaceSlashCommands(commands: Array<{ name: string; aliases?: string[] }>): void {
+    this.slashCommands.clear();
+    for (const command of commands) {
+      this.slashCommands.add(command.name);
+      for (const alias of command.aliases ?? []) this.slashCommands.add(alias);
+    }
+    this.commandDiscoveryAvailable = true;
+  }
+
+  private async slashSteerUnavailable(commandName: string): Promise<boolean> {
+    if (!this.commandDiscoveryAvailable || !this.slashCommands.has(commandName)) {
+      try {
+        this.replaceSlashCommands(await this.runtime.getAvailableCommands());
+      } catch {
+        this.commandDiscoveryAvailable = false;
+        return true;
+      }
+    }
+    return this.slashCommands.has(commandName);
+  }
+
   private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
@@ -738,7 +767,7 @@ export class OmpProviderSession {
     this.cancelLocalOnlyCompletion(turn);
     turn.localOnlyTimer = this.scheduler.set(() => {
       turn.localOnlyTimer = undefined;
-      void this.completeLocalOnlyTurn(turn);
+      return this.completeLocalOnlyTurn(turn);
     }, LOCAL_ONLY_SETTLE_MS);
   }
 
@@ -823,6 +852,7 @@ export class OmpProviderSession {
         if (entryId) this.seenEntryIds.add(entryId);
       }
       if (pending.accepted && pending.fallbackOnFinish) {
+        this.quarantineBranchEntries();
         this.projector.publishUser(pending.text, pending.clientMessageId);
       }
     }
@@ -881,6 +911,7 @@ export class OmpProviderSession {
     turn.terminal = true;
     this.cancelLocalOnlyCompletion(turn);
     this.projector.finishTurn(turn.turnId);
+    this.unclaimedBranchEntries.length = 0;
     this.emit({
       type: "session.turn",
       sessionId: this.id,

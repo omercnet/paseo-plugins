@@ -6,6 +6,7 @@ import type {
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
 
 const STREAM_FRAME_MS = 32;
+const MAX_STREAM_CONTENT_BLOCKS = 64;
 
 type Emit = (event: ProviderEvent) => void;
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -32,7 +33,7 @@ type ToolSnapshot = {
 };
 
 export interface OmpTimelineScheduler {
-  set(callback: () => void, delayMs: number): unknown;
+  set(callback: () => void | Promise<void>, delayMs: number): unknown;
   clear(handle: unknown): void;
 }
 
@@ -79,6 +80,9 @@ export class OmpTimelineProjector {
   private flushTimer: unknown;
   private currentTurnId: string | null = null;
   private assistantSequence = 0;
+  private readonly usedAssistantMessageIds = new Set<string>();
+  private readonly turnNativeMessageIds = new Map<string, string>();
+  private assistantIdentitySequence = 0;
   private noticeSequence = 0;
   private commandText = "";
   private closed = false;
@@ -258,6 +262,7 @@ export class OmpTimelineProjector {
     this.commandText = "";
     this.currentTurnId = null;
     this.assistantSequence = 0;
+    this.turnNativeMessageIds.clear();
   }
 
   close(): void {
@@ -279,8 +284,14 @@ export class OmpTimelineProjector {
   private beginStream(message: OmpMessage, turnId: string): StreamSnapshot {
     this.assistantSequence += 1;
     const nativeIdentity = assistantIdentity(message);
+    const messageId = nativeIdentity
+      ? this.messageIdForNativeIdentity(nativeIdentity)
+      : this.reserveAssistantMessageId(
+          `assistant:${turnId}:${this.assistantSequence}`,
+          `turn:${turnId}:${this.assistantSequence}`,
+        );
     this.stream = {
-      messageId: nativeIdentity ?? `assistant:${turnId}:${this.assistantSequence}`,
+      messageId,
       ...(nativeIdentity ? { nativeIdentity } : {}),
       published: false,
       blocks: new Map(),
@@ -289,12 +300,30 @@ export class OmpTimelineProjector {
     return this.stream;
   }
 
+  private messageIdForNativeIdentity(nativeIdentity: string): string {
+    const existing = this.turnNativeMessageIds.get(nativeIdentity);
+    if (existing) return existing;
+    const messageId = this.reserveAssistantMessageId(nativeIdentity, nativeIdentity);
+    this.turnNativeMessageIds.set(nativeIdentity, messageId);
+    return messageId;
+  }
+
+  private reserveAssistantMessageId(preferred: string, source: string): string {
+    let messageId = preferred;
+    while (this.usedAssistantMessageIds.has(messageId)) {
+      this.assistantIdentitySequence += 1;
+      messageId = `assistant:${source.length}:${source}:${this.assistantIdentitySequence}`;
+    }
+    this.usedAssistantMessageIds.add(messageId);
+    return messageId;
+  }
+
   private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {
     const nativeIdentity = assistantIdentity(message);
     if (this.stream && nativeIdentity && this.stream.nativeIdentity !== nativeIdentity) {
       if (!this.stream.nativeIdentity) {
         if (!this.stream.published) {
-          this.stream.messageId = nativeIdentity;
+          this.stream.messageId = this.messageIdForNativeIdentity(nativeIdentity);
           this.stream.nativeIdentity = nativeIdentity;
         }
       } else {
@@ -318,7 +347,8 @@ export class OmpTimelineProjector {
       return;
     }
     if (!Array.isArray(message.content)) return;
-    for (let index = 0; index < message.content.length; index += 1) {
+    const blockCount = Math.min(message.content.length, MAX_STREAM_CONTENT_BLOCKS);
+    for (let index = 0; index < blockCount; index += 1) {
       const block = blockText(message, index);
       if (block) this.setBlock(stream, index, block);
     }
@@ -330,6 +360,7 @@ export class OmpTimelineProjector {
     contentIndex: number,
     update: NonNullable<AssistantMessageEvent>,
   ): void {
+    if (!this.isValidContentIndex(contentIndex)) return;
     const snapshot = blockText(message, contentIndex);
     if (snapshot) {
       this.setBlock(stream, contentIndex, snapshot);
@@ -356,10 +387,19 @@ export class OmpTimelineProjector {
     contentIndex: number,
     snapshot: StreamBlockSnapshot,
   ): void {
+    if (!this.isValidContentIndex(contentIndex)) return;
     const previous = stream.blocks.get(contentIndex);
     if (previous?.kind === snapshot.kind && previous.text === snapshot.text) return;
     stream.blocks.set(contentIndex, snapshot);
     stream.dirtyBlocks.add(contentIndex);
+  }
+
+  private isValidContentIndex(contentIndex: number): boolean {
+    return (
+      Number.isSafeInteger(contentIndex) &&
+      contentIndex >= 0 &&
+      contentIndex < MAX_STREAM_CONTENT_BLOCKS
+    );
   }
 
   private scheduleFlush(): void {

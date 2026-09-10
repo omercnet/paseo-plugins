@@ -170,12 +170,19 @@ describe("OMP RPC transport", () => {
         content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
       },
     });
-    await expect(imageEvent).resolves.toEqual(
-      expect.objectContaining({
-        type: "message_update",
-        assistantMessageEvent: expect.objectContaining({ type: "image_end", contentIndex: 0 }),
-      }),
-    );
+    await expect(imageEvent).resolves.toEqual({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "image_end",
+        contentIndex: 0,
+        content: { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+      },
+      message: {
+        role: "assistant",
+        responseId: "response-image",
+        content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+      },
+    });
 
     const textEvent = nextEvent((listener) => session.onEvent(listener));
     child.write({
@@ -190,12 +197,18 @@ describe("OMP RPC transport", () => {
         ],
       },
     });
-    await expect(textEvent).resolves.toEqual(
-      expect.objectContaining({
-        type: "message_update",
-        assistantMessageEvent: expect.objectContaining({ type: "text_delta", contentIndex: 1 }),
-      }),
-    );
+    await expect(textEvent).resolves.toEqual({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "after image" },
+      message: {
+        role: "assistant",
+        responseId: "response-image",
+        content: [
+          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          { type: "text", text: "after image" },
+        ],
+      },
+    });
 
     const todoEvent = nextEvent((listener) => session.onEvent(listener));
     child.write({
