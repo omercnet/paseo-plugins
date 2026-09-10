@@ -80,23 +80,19 @@ function textPrompt(input: SessionPromptInput): string {
 }
 
 function slashCommandName(text: string): string | undefined {
-  const match = /^\/([^\s/]+)(?:\s|$)/.exec(text);
-  return match?.[1];
-}
-const PATH_LIKE_ROOTS: Readonly<Record<string, true>> = {
-  bin: true,
-  dev: true,
-  etc: true,
-  home: true,
-  opt: true,
-  root: true,
-  tmp: true,
-  usr: true,
-  var: true,
-};
-
-function isPathLikeSlashProse(text: string, commandName: string): boolean {
-  return PATH_LIKE_ROOTS[commandName] === true && text.length > commandName.length + 1;
+  if (!text.startsWith("/")) return undefined;
+  const body = text.slice(1);
+  if (!body) return undefined;
+  const firstWhitespace = body.search(/\s/);
+  const firstColon = body.indexOf(":");
+  const separator =
+    firstWhitespace === -1
+      ? firstColon
+      : firstColon === -1
+        ? firstWhitespace
+        : Math.min(firstWhitespace, firstColon);
+  const name = separator === -1 ? body : body.slice(0, separator);
+  return name || undefined;
 }
 
 function nativeEntryId(message: OmpMessage): string | undefined {
@@ -459,12 +455,10 @@ export class OmpProviderSession {
 
   private async steer(clientMessageId: string, text: string): Promise<void> {
     const commandName = slashCommandName(text);
-    const recognizedCommand = commandName ? this.slashCommands.has(commandName) : false;
-    const unrecognizedCommandShape =
+    const slashCommandUnavailable =
       commandName !== undefined &&
-      !isPathLikeSlashProse(text, commandName) &&
-      (!this.commandDiscoveryAvailable || !recognizedCommand);
-    if (recognizedCommand || unrecognizedCommandShape) {
+      (!this.commandDiscoveryAvailable || this.slashCommands.has(commandName));
+    if (slashCommandUnavailable) {
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -695,8 +689,7 @@ export class OmpProviderSession {
           ) {
             return;
           }
-          this.unclaimedBranchEntries.length = 0;
-          this.branchWatermarkValid = false;
+          this.quarantineBranchEntries();
         }
       }
       if (
@@ -718,6 +711,11 @@ export class OmpProviderSession {
     const index = this.unclaimedBranchEntries.findIndex((entry) => entry.text === text);
     if (index < 0) return undefined;
     return this.unclaimedBranchEntries.splice(index, 1)[0]?.entryId;
+  }
+
+  private quarantineBranchEntries(): void {
+    this.unclaimedBranchEntries.length = 0;
+    this.branchWatermarkValid = false;
   }
 
   private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {
@@ -823,6 +821,7 @@ export class OmpProviderSession {
         if (entryId) this.seenEntryIds.add(entryId);
       }
       if (pending.accepted && pending.fallbackOnFinish) {
+        this.quarantineBranchEntries();
         this.projector.publishUser(pending.text, pending.clientMessageId);
       }
     }
