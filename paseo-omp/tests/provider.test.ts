@@ -2999,7 +2999,7 @@ describe("OMP direct provider", () => {
         error: { message: "OMP session close failed" },
       }),
     );
-    await connection.close();
+    await expect(connection.close()).resolves.toBeUndefined();
   });
 
   test("fails a degraded terminal frame with no outcome messages", async () => {
@@ -3422,7 +3422,7 @@ describe("OMP direct provider", () => {
         error: { message: "OMP session close failed" },
       }),
     );
-    await connection.close();
+    await expect(connection.close()).resolves.toBeUndefined();
   });
 
   test("close during open waits for the created runtime session cleanup", async () => {

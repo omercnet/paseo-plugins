@@ -318,21 +318,22 @@ export function createOmpConnection(
   const disposeConnection = async (): Promise<void> => {
     closing = true;
     shutdown.abort(new Error("OMP provider connection closed"));
-    const sessionClosures = Promise.all(
+    const sessionClosures = Promise.allSettled(
       [...sessions.values()].map(({ session }) => session.close()),
     );
     await Promise.all([Promise.all(activeOperations), sessionClosures]);
     const pending = await Promise.allSettled([...opening.values()].map((slot) => slot.promise));
+    const orphanClosures: Promise<void>[] = [];
     for (const result of pending) {
       if (result.status === "fulfilled" && !sessions.has(result.value.id)) {
-        await result.value.close();
+        orphanClosures.push(result.value.close());
       }
     }
+    await Promise.allSettled(orphanClosures);
     sessions.clear();
     listeners.clear();
     closed = true;
   };
-
   return {
     version: 1,
     capabilities: safeCapabilities,
