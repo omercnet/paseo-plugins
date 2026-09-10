@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { type OmpRpcEvent, OmpRpcRuntime, type OmpSpawnRequest } from "../server/provider/omp-rpc";
+import {
+  buildOmpSpawnRequest,
+  type OmpRpcEvent,
+  OmpRpcRuntime,
+  type OmpSpawnRequest,
+  terminatePosixProcessTree,
+} from "../server/provider/omp-rpc";
 
 const READY_FRAME = {
   type: "ready",
@@ -40,6 +46,9 @@ class FakeRpcChild extends EventEmitter {
 
   write(frame: Record<string, unknown>): void {
     this.stdout.write(`${JSON.stringify(frame)}\n`);
+  }
+  writeRaw(value: string): void {
+    this.stdout.write(value);
   }
 
   asChildProcess(): ChildProcessWithoutNullStreams {
@@ -365,14 +374,13 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("fails a malformed recognized event exactly once", async () => {
+  test("isolates malformed recognized and physical frames from later valid events", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
         child.write({
           type: "response",
           id: command.id,
-          command: "negotiate_protocol",
           success: true,
           data: { protocolVersion: 2 },
         });
@@ -381,15 +389,234 @@ describe("OMP RPC transport", () => {
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
-    const failure = nextEvent((listener) => session.onEvent(listener));
+    const recovered = nextEvent((listener) => session.onEvent(listener));
 
     child.write({ type: "agent_end", messages: "not-an-array" });
+    child.writeRaw(`${"x".repeat(1_048_577)}\n`);
+    child.write({
+      type: "rpc_chunk",
+      chunkId: "bad-order",
+      index: 1,
+      count: 2,
+      byteLength: 4,
+      data: "e30=",
+    });
+    child.write({
+      type: "rpc_chunk",
+      chunkId: "semantic-overflow",
+      index: 0,
+      count: 1,
+      byteLength: 13 * 1024 * 1024,
+      data: "e30=",
+    });
+    for (let index = 0; index < 100; index += 1) {
+      child.write({ type: `unknown_${index}`, detail: "API_KEY=must-not-surface" });
+    }
+    child.write({ type: "notice", level: "info", message: "still healthy" });
 
-    await expect(failure).resolves.toEqual({
-      type: "process_exit",
-      error: "OMP emitted a malformed agent_end frame",
+    await expect(recovered).resolves.toEqual({
+      type: "notice",
+      level: "info",
+      message: "still healthy",
     });
     await session.close();
+  });
+
+  test("redacts stderr, environment values, credentials, and absolute paths", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const opening = runtimeFor(child).startSession({
+      cwd: "/repo",
+      mode: "full",
+      env: { OPENAI_API_KEY: "credential-value-1234" },
+    });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const notice = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "notice",
+      level: "error",
+      message: "OPENAI_API_KEY=credential-value-1234 at /home/private/config",
+    });
+    expect(await notice).toEqual({
+      type: "notice",
+      level: "error",
+      message: "OPENAI_API_KEY=<redacted> at <absolute path>",
+    });
+
+    const exit = nextEvent((listener) => session.onEvent(listener));
+    child.stderr.write("OPENAI_API_KEY=credential-value-1234 /home/private/config raw stderr");
+    child.close(7);
+    expect(await exit).toEqual({ type: "process_exit", error: "OMP RPC process exited (code 7)" });
+    await session.close();
+  });
+
+  test("rejects frame-valid semantic overflows without poisoning later events", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const recovered = nextEvent((listener) => session.onEvent(listener));
+
+    child.write({
+      type: "todo_reminder",
+      todos: Array.from({ length: 257 }, (_, index) => ({
+        id: `todo-${index}`,
+        content: "bounded",
+        status: "pending",
+      })),
+    });
+    child.write({
+      type: "tool_execution_start",
+      toolCallId: "oversized-tool",
+      toolName: "read",
+      args: Array.from({ length: 513 }, () => null),
+    });
+    child.write({
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "image", data: "%%%", mimeType: "image/png" }] },
+      assistantMessageEvent: { type: "image_end", contentIndex: 0 },
+    });
+    child.write({ type: "notice", level: "warning", message: "valid after rejected frames" });
+
+    await expect(recovered).resolves.toEqual({
+      type: "notice",
+      level: "warning",
+      message: "valid after rejected frames",
+    });
+    await session.close();
+  });
+
+  test("bounds cumulative streamed text while retaining later protocol events", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    const recovered = Promise.withResolvers<OmpRpcEvent>();
+    session.onEvent((event) => {
+      events.push(event);
+      if (event.type === "notice") recovered.resolve(event);
+    });
+    child.write({ type: "message_start", message: { role: "assistant", responseId: "bounded", content: [] } });
+    for (let index = 0; index < 5; index += 1) {
+      child.write({
+        type: "message_update",
+        message: { role: "assistant", responseId: "bounded", content: [] },
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x".repeat(900_000) },
+      });
+    }
+    child.write({ type: "notice", level: "info", message: "after stream bound" });
+    await recovered.promise;
+
+    expect(events.filter((event) => event.type === "message_update")).toHaveLength(4);
+    expect(events.at(-1)).toEqual({ type: "notice", level: "info", message: "after stream bound" });
+    await session.close();
+  });
+
+  test("drops spoofed lifecycle and malformed permission frames", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const recovered = nextEvent((listener) => session.onEvent(listener));
+    child.write({ type: "process_exit", error: "spoofed", sessionId: "other-session" });
+    child.write({ type: "extension_ui_request", id: "permission", method: 42, approved: true });
+    child.write({
+      type: "notice",
+      level: "info",
+      message: "safe",
+      sessionId: "other-session",
+      capabilities: ["admin"],
+    });
+
+    await expect(recovered).resolves.toEqual({ type: "notice", level: "info", message: "safe" });
+    await session.close();
+  });
+
+  test("builds argv-only launches with a minimal authenticated environment", () => {
+    const request = buildOmpSpawnRequest(
+      {
+        cwd: "/repo",
+        mode: "full",
+        model: "provider/model; touch /tmp/not-run",
+        env: { TEST_ENV: "explicit", CUSTOMER_API_KEY: "session-secret" },
+      },
+      {
+        OMP_COMMAND: "/opt/omp/bin/omp",
+        PATH: "/usr/bin",
+        HOME: "/home/runner",
+        OPENAI_API_KEY: "daemon-secret",
+        UNRELATED_DAEMON_VALUE: "must-not-pass",
+        NODE_OPTIONS: "--require attacker.js",
+      },
+    );
+
+    expect(request.command).toBe("/opt/omp/bin/omp");
+    expect(request.args).toContain("provider/model; touch /tmp/not-run");
+    expect(request.env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/runner",
+      OPENAI_API_KEY: "daemon-secret",
+      TEST_ENV: "explicit",
+      CUSTOMER_API_KEY: "session-secret",
+    });
+    expect(request.env.UNRELATED_DAEMON_VALUE).toBeUndefined();
+    expect(request.env.NODE_OPTIONS).toBeUndefined();
+    expect(() =>
+      buildOmpSpawnRequest(
+        { cwd: "/repo", mode: "full", env: { LD_PRELOAD: "/tmp/evil.so" } },
+        { PATH: "/usr/bin" },
+      ),
+    ).toThrow("forbidden variable");
+    expect(() =>
+      buildOmpSpawnRequest(
+        { cwd: "/repo", mode: "full", systemPrompt: "x".repeat(64 * 1024 + 1) },
+        { PATH: "/usr/bin" },
+      ),
+    ).toThrow("system prompt");
+    expect(() =>
+      buildOmpSpawnRequest({ cwd: "relative", mode: "full" }, { PATH: "/usr/bin" }),
+    ).toThrow("absolute");
+  });
+
+  test("terminates a surviving POSIX process group after its leader exited", async () => {
+    const signals: Array<NodeJS.Signals | 0> = [];
+    let descendantsAlive = true;
+    const stopped = await terminatePosixProcessTree(
+      42,
+      0,
+      (_pid, signal) => {
+        signals.push(signal);
+        if (signal === "SIGKILL") descendantsAlive = false;
+        if (signal === 0 && !descendantsAlive) {
+          throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        }
+      },
+      () => Promise.resolve(),
+    );
+
+    expect(stopped).toBe(true);
+    expect(signals).toEqual([0, "SIGTERM", 0, "SIGKILL", 0]);
   });
 
   test("fails the session once when child stdin closes with EPIPE", async () => {

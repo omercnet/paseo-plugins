@@ -1,15 +1,19 @@
+import { createHash } from "node:crypto";
 import type {
   ProviderEvent,
   ProviderTimelineItem,
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
+import { type JsonValue, OmpPublicDataFilter } from "./security";
 
 const STREAM_FRAME_MS = 32;
 const MAX_STREAM_CONTENT_BLOCKS = 64;
+const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
+const MAX_ACTIVE_TOOLS = 64;
+const MAX_TODOS = 256;
 
 type Emit = (event: ProviderEvent) => void;
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 type StreamBlockKind = "assistant_message" | "reasoning";
 
@@ -27,6 +31,7 @@ type StreamSnapshot = {
 };
 
 type ToolSnapshot = {
+  publicId: string;
   name: string;
   input: JsonValue;
   output: JsonValue;
@@ -41,15 +46,6 @@ export const defaultOmpTimelineScheduler: OmpTimelineScheduler = {
   set: (callback, delayMs) => setTimeout(callback, delayMs),
   clear: (handle) => clearTimeout(handle as NodeJS.Timeout),
 };
-
-function toJsonValue(value: unknown): JsonValue {
-  if (value === undefined) return null;
-  try {
-    return JSON.parse(JSON.stringify(value)) as JsonValue;
-  } catch {
-    return String(value);
-  }
-}
 
 type AssistantMessageEvent = Extract<
   OmpRpcEvent,
@@ -80,10 +76,11 @@ export class OmpTimelineProjector {
   private flushTimer: unknown;
   private currentTurnId: string | null = null;
   private assistantSequence = 0;
-  private readonly usedAssistantMessageIds = new Set<string>();
   private readonly turnNativeMessageIds = new Map<string, string>();
   private assistantIdentitySequence = 0;
   private noticeSequence = 0;
+  private toolSequence = 0;
+  private userSequence = 0;
   private commandText = "";
   private closed = false;
 
@@ -91,7 +88,12 @@ export class OmpTimelineProjector {
     private readonly sessionId: string,
     private readonly emit: Emit,
     private readonly scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
-  ) {}
+    sensitiveValues: Iterable<string> = [],
+  ) {
+    this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
+  }
+
+  private readonly dataFilter: OmpPublicDataFilter;
 
   project(event: OmpRpcEvent, turnId: string): void {
     if (this.closed) return;
@@ -128,51 +130,61 @@ export class OmpTimelineProjector {
         return;
       case "tool_execution_start": {
         this.flush(true);
+        if (!this.tools.has(event.toolCallId) && this.tools.size >= MAX_ACTIVE_TOOLS) return;
+        this.toolSequence += 1;
         const snapshot: ToolSnapshot = {
-          name: event.toolName,
-          input: toJsonValue(event.args),
+          publicId: `omp:tool:${this.toolSequence}`,
+          name: this.dataFilter.text(event.toolName, 256),
+          input: this.dataFilter.json(event.args),
           output: null,
         };
         this.tools.set(event.toolCallId, snapshot);
-        this.publishTool(event.toolCallId, snapshot, "running");
+        this.publishTool(snapshot, "running");
         return;
       }
       case "tool_execution_update": {
         const previous = this.tools.get(event.toolCallId);
+        if (!previous) return;
         const snapshot: ToolSnapshot = {
-          name: event.toolName,
-          input: previous?.input ?? toJsonValue(event.args),
-          output: toJsonValue(event.partialResult),
+          publicId: previous.publicId,
+          name: previous.name,
+          input: previous.input,
+          output: this.dataFilter.json(event.partialResult),
         };
         this.tools.set(event.toolCallId, snapshot);
-        this.publishTool(event.toolCallId, snapshot, "running");
+        this.publishTool(snapshot, "running");
         return;
       }
       case "tool_execution_end": {
         const previous = this.tools.get(event.toolCallId);
+        if (!previous) return;
         const snapshot: ToolSnapshot = {
-          name: event.toolName,
-          input: previous?.input ?? null,
-          output: toJsonValue(event.result),
+          publicId: previous.publicId,
+          name: previous.name,
+          input: previous.input,
+          output: this.dataFilter.json(event.result),
         };
         this.tools.delete(event.toolCallId);
         if (event.isError) {
-          this.publishTool(event.toolCallId, snapshot, "failed", snapshot.output);
+          this.publishTool(snapshot, "failed", snapshot.output);
         } else {
-          this.publishTool(event.toolCallId, snapshot, "completed");
+          this.publishTool(snapshot, "completed");
         }
         return;
       }
-      case "command_output":
+      case "command_output": {
         if (!event.text) return;
-        this.commandText += event.text;
+        const next = `${this.commandText}${this.dataFilter.text(event.text)}`;
+        if (next.length > MAX_STREAM_TEXT_LENGTH) return;
+        this.commandText = next;
         this.publish({
           type: "assistant_message",
-          id: `command:${turnId}`,
-          messageId: `command:${turnId}`,
+          id: `omp:command:${turnId}`,
+          messageId: `omp:command:${turnId}`,
           text: this.commandText,
         });
         return;
+      }
     }
   }
 
@@ -182,9 +194,9 @@ export class OmpTimelineProjector {
       this.publish({
         type: "todo",
         id: "omp:todos",
-        items: event.todos.map((todo, index) => ({
-          id: todo.id ?? `omp:todo:${index}`,
-          text: todo.content,
+        items: event.todos.slice(0, MAX_TODOS).map((todo, index) => ({
+          id: `omp:todo:${index}`,
+          text: this.dataFilter.text(todo.content, 16_384),
           completed: todo.status === "completed" || todo.status === "abandoned",
           status:
             todo.status === "completed" || todo.status === "abandoned"
@@ -200,31 +212,37 @@ export class OmpTimelineProjector {
       this.noticeSequence += 1;
       this.publish({
         type: "notification",
-        id: event.id ?? `omp:notice:${this.noticeSequence}`,
+        id: `omp:notice:${this.noticeSequence}`,
         level: event.level,
-        message: event.source ? `${event.source}: ${event.message}` : event.message,
+        message: this.dataFilter.text(event.message, 64 * 1024),
       });
       return;
     }
     if (event.type === "extension_ui_request" && event.method === "notify") {
       const message = event.message ?? event.title;
       if (!message) return;
+      this.noticeSequence += 1;
       this.publish({
         type: "notification",
-        id: `omp:ui:${event.id}`,
+        id: `omp:ui:${this.noticeSequence}`,
         level: event.notifyType ?? "info",
-        message,
+        message: this.dataFilter.text(message, 64 * 1024),
       });
     }
   }
 
   publishUser(text: string, clientMessageId: string, nativeId?: string): void {
+    this.userSequence += 1;
+    const nativeHash = nativeId
+      ? createHash("sha256").update(nativeId).digest("base64url").slice(0, 12)
+      : "local";
+    const messageId = `omp:user:${this.userSequence}:${nativeHash}`;
     this.publish({
       type: "user_message",
-      id: nativeId ?? `user:${clientMessageId}`,
-      ...(nativeId ? { messageId: nativeId } : {}),
+      id: messageId,
+      messageId,
       clientMessageId,
-      text,
+      text: this.dataFilter.text(text),
     });
   }
 
@@ -286,10 +304,7 @@ export class OmpTimelineProjector {
     const nativeIdentity = assistantIdentity(message);
     const messageId = nativeIdentity
       ? this.messageIdForNativeIdentity(nativeIdentity)
-      : this.reserveAssistantMessageId(
-          `assistant:${turnId}:${this.assistantSequence}`,
-          `turn:${turnId}:${this.assistantSequence}`,
-        );
+      : this.nextAssistantMessageId(`turn:${turnId}:${this.assistantSequence}`);
     this.stream = {
       messageId,
       ...(nativeIdentity ? { nativeIdentity } : {}),
@@ -303,19 +318,15 @@ export class OmpTimelineProjector {
   private messageIdForNativeIdentity(nativeIdentity: string): string {
     const existing = this.turnNativeMessageIds.get(nativeIdentity);
     if (existing) return existing;
-    const messageId = this.reserveAssistantMessageId(nativeIdentity, nativeIdentity);
+    const messageId = this.nextAssistantMessageId(nativeIdentity);
     this.turnNativeMessageIds.set(nativeIdentity, messageId);
     return messageId;
   }
 
-  private reserveAssistantMessageId(preferred: string, source: string): string {
-    let messageId = preferred;
-    while (this.usedAssistantMessageIds.has(messageId)) {
-      this.assistantIdentitySequence += 1;
-      messageId = `assistant:${source.length}:${source}:${this.assistantIdentitySequence}`;
-    }
-    this.usedAssistantMessageIds.add(messageId);
-    return messageId;
+  private nextAssistantMessageId(source: string): string {
+    this.assistantIdentitySequence += 1;
+    const digest = createHash("sha256").update(source).digest("base64url").slice(0, 12);
+    return `omp:assistant:${this.assistantIdentitySequence}:${digest}`;
   }
 
   private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {
@@ -388,9 +399,15 @@ export class OmpTimelineProjector {
     snapshot: StreamBlockSnapshot,
   ): void {
     if (!this.isValidContentIndex(contentIndex)) return;
+    const sanitized = { ...snapshot, text: this.dataFilter.text(snapshot.text) };
+    let totalLength = sanitized.text.length;
+    for (const [index, block] of stream.blocks) {
+      if (index !== contentIndex) totalLength += block.text.length;
+      if (totalLength > MAX_STREAM_TEXT_LENGTH) return;
+    }
     const previous = stream.blocks.get(contentIndex);
-    if (previous?.kind === snapshot.kind && previous.text === snapshot.text) return;
-    stream.blocks.set(contentIndex, snapshot);
+    if (previous?.kind === sanitized.kind && previous.text === sanitized.text) return;
+    stream.blocks.set(contentIndex, sanitized);
     stream.dirtyBlocks.add(contentIndex);
   }
 
@@ -416,19 +433,9 @@ export class OmpTimelineProjector {
     this.flushTimer = undefined;
   }
 
+  private publishTool(snapshot: ToolSnapshot, status: "running" | "completed"): void;
+  private publishTool(snapshot: ToolSnapshot, status: "failed", error: JsonValue): void;
   private publishTool(
-    callId: string,
-    snapshot: ToolSnapshot,
-    status: "running" | "completed",
-  ): void;
-  private publishTool(
-    callId: string,
-    snapshot: ToolSnapshot,
-    status: "failed",
-    error: JsonValue,
-  ): void;
-  private publishTool(
-    callId: string,
     snapshot: ToolSnapshot,
     status: "running" | "completed" | "failed",
     error?: JsonValue,
@@ -441,8 +448,8 @@ export class OmpTimelineProjector {
     if (status === "failed") {
       this.publish({
         type: "tool_call",
-        id: callId,
-        callId,
+        id: snapshot.publicId,
+        callId: snapshot.publicId,
         name: snapshot.name,
         detail,
         status,
@@ -452,8 +459,8 @@ export class OmpTimelineProjector {
     }
     this.publish({
       type: "tool_call",
-      id: callId,
-      callId,
+      id: snapshot.publicId,
+      callId: snapshot.publicId,
       name: snapshot.name,
       detail,
       status,

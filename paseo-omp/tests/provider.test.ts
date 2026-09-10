@@ -341,6 +341,7 @@ async function openSession(
   events: EventLog,
   requestId = "open-1",
   sessionId = "session-1",
+  env: Record<string, string> = { TEST_ENV: "1" },
 ) {
   await connection.send({
     type: "session.open",
@@ -348,7 +349,7 @@ async function openSession(
     sessionId,
     config: {
       cwd: "/repo",
-      env: { TEST_ENV: "1" },
+      env,
       systemPrompt: "Be precise",
       mcpServers: {},
       model: "anthropic/claude-sonnet-4-5",
@@ -456,6 +457,159 @@ describe("OMP direct provider", () => {
       "prompt.steer",
       "session.configure",
     ]);
+    await connection.close();
+  });
+
+  test("rejects malformed capabilities and filters unsupported capability names", async () => {
+    const provider = createOmpProvider({ runtime: new FakeOmpRuntime() });
+    await expect(
+      provider.connect({ versions: [1], capabilities: ["prompt.message", 42] } as never),
+    ).rejects.toThrow("valid provider protocol version 1 request");
+
+    const connection = await provider.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "provider.admin"],
+    });
+    expect(connection.capabilities).toEqual(["prompt.message"]);
+    await connection.close();
+  });
+  test("rejects malformed and unsupported permission responses", async () => {
+    const runtime = new FakeOmpRuntime();
+    const connection = await createOmpProvider({ runtime }).connect({
+      versions: [1],
+      capabilities: ["prompt.message", "permission"],
+    });
+
+    await expect(
+      connection.send({
+        type: "session.permission",
+        sessionId: "session-1",
+        permissionId: "permission-1",
+        response: { behavior: "allow", updatedPermissions: Array.from({ length: 65 }, () => ({})) },
+      } as never),
+    ).rejects.toThrow("Invalid permission response");
+    await expect(
+      connection.send({
+        type: "session.permission",
+        sessionId: "session-1",
+        permissionId: "permission-1",
+        response: { behavior: "deny" },
+      }),
+    ).rejects.toThrow();
+    expect(connection.capabilities).not.toContain("permission");
+    expect(runtime.starts).toHaveLength(0);
+    await connection.close();
+  });
+
+
+  test("rejects unsupported MCP configuration and dangerous environment before spawn", async () => {
+    const runtime = new FakeOmpRuntime();
+    const connection = await createOmpProvider({ runtime }).connect({
+      versions: [1],
+      capabilities: ["prompt.message"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({
+      type: "session.open",
+      requestId: "unsupported-mcp",
+      sessionId: "session-mcp",
+      config: {
+        cwd: "/repo",
+        env: { API_TOKEN: "credential-value" },
+        mcpServers: { filesystem: { type: "stdio", command: "cat", args: ["/etc/passwd"] } },
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unsupported-mcp",
+    );
+    await connection.send({
+      type: "session.open",
+      requestId: "dangerous-env",
+      sessionId: "session-env",
+      config: {
+        cwd: "/repo",
+        env: { LD_PRELOAD: "/tmp/injected.so" },
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "dangerous-env",
+    );
+
+    expect(runtime.starts).toHaveLength(0);
+    const visible = JSON.stringify(events);
+    expect(visible).not.toContain("credential-value");
+    expect(visible).not.toContain("/etc/passwd");
+    expect(visible).not.toContain("/tmp/injected.so");
+    await connection.close();
+  });
+
+  test("rejects uploaded prompt content before invoking OMP", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "uploaded-file",
+        delivery: "auto",
+        input: {
+          type: "message",
+          content: [
+            {
+              type: "uploaded_file",
+              id: "upload-1",
+              fileName: "secret.txt",
+              mimeType: "text/plain",
+              size: 12,
+              path: "/etc/passwd",
+            },
+          ],
+        },
+      },
+    });
+    const result = await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "uploaded-file",
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        result: { type: "failed", error: { message: "OMP supports text messages only" } },
+      }),
+    );
+    expect(session.promptCount).toBe(0);
+    expect(JSON.stringify(events)).not.toContain("/etc/passwd");
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "too-many-parts",
+        delivery: "auto",
+        input: {
+          type: "message",
+          content: Array.from({ length: 65 }, () => ({ type: "text" as const, text: "x" })),
+        },
+      },
+    });
+    const oversized = await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "too-many-parts",
+    );
+    expect(oversized).toEqual(
+      expect.objectContaining({
+        result: { type: "failed", error: { message: "OMP prompt has too many content parts" } },
+      }),
+    );
+    expect(session.promptCount).toBe(0);
     await connection.close();
   });
 
@@ -605,8 +759,8 @@ describe("OMP direct provider", () => {
       (item) => item.text === "Hello" || item.text === "Hello world",
     );
     expect(firstStreamSnapshots.map((item) => item.id)).toEqual([
-      "response-main:content:1:text",
-      "response-main:content:1:text",
+      "omp:assistant:1:W-GOZ8cyzNX6:content:1:text",
+      "omp:assistant:1:W-GOZ8cyzNX6:content:1:text",
     ]);
     expect(
       events.filter(
@@ -622,8 +776,8 @@ describe("OMP direct provider", () => {
     expect(toolSnapshots).toEqual([
       {
         type: "tool_call",
-        id: "tool-1",
-        callId: "tool-1",
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
         name: "read",
         detail: { type: "unknown", input: { path: "file.ts" }, output: null },
         status: "running",
@@ -631,8 +785,8 @@ describe("OMP direct provider", () => {
       },
       {
         type: "tool_call",
-        id: "tool-1",
-        callId: "tool-1",
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
         name: "read",
         detail: {
           type: "unknown",
@@ -644,8 +798,8 @@ describe("OMP direct provider", () => {
       },
       {
         type: "tool_call",
-        id: "tool-1",
-        callId: "tool-1",
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
         name: "read",
         detail: {
           type: "unknown",
@@ -730,13 +884,13 @@ describe("OMP direct provider", () => {
     );
     expect(assistantItems).toEqual([
       expect.objectContaining({
-        id: "response-1:content:0:text",
-        messageId: "response-1",
+        id: "omp:assistant:1:FptmLPBZggWJ:content:0:text",
+        messageId: "omp:assistant:1:FptmLPBZggWJ",
         text: "First",
       }),
       expect.objectContaining({
-        id: "response-2:content:0:text",
-        messageId: "response-2",
+        id: "omp:assistant:2:bcYQ7w4CEWWL:content:0:text",
+        messageId: "omp:assistant:2:bcYQ7w4CEWWL",
         text: "Second",
       }),
     ]);
@@ -786,30 +940,77 @@ describe("OMP direct provider", () => {
     expect(assistantItems).toEqual([
       {
         type: "assistant_message",
-        id: "x:content:0:text",
-        messageId: "x",
+        id: "omp:assistant:1:LXEWQrcmsEQB:content:0:text",
+        messageId: "omp:assistant:1:LXEWQrcmsEQB",
         text: "First",
       },
       {
         type: "assistant_message",
-        id: "x:occurrence:2:content:0:text",
-        messageId: "x:occurrence:2",
+        id: "omp:assistant:2:f4WLYWiaVvzc:content:0:text",
+        messageId: "omp:assistant:2:f4WLYWiaVvzc",
         text: "Adversarial",
       },
       {
         type: "assistant_message",
-        id: "assistant:1:x:1:content:0:text",
-        messageId: "assistant:1:x:1",
+        id: "omp:assistant:3:LXEWQrcmsEQB:content:0:text",
+        messageId: "omp:assistant:3:LXEWQrcmsEQB",
         text: "Third draft",
       },
       {
         type: "assistant_message",
-        id: "assistant:1:x:1:content:0:text",
-        messageId: "assistant:1:x:1",
+        id: "omp:assistant:3:LXEWQrcmsEQB:content:0:text",
+        messageId: "omp:assistant:3:LXEWQrcmsEQB",
         text: "Third final",
       },
     ]);
     expect(new Set(assistantItems.map((item) => item.messageId)).size).toBe(3);
+    await connection.close();
+  });
+
+  test("keeps timeline IDs unique after bounded native identity eviction", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+
+    for (let index = 0; index < 1_030; index += 1) {
+      const turnId = turnIdFrom(
+        await startPrompt(connection, events, `bounded-identity-${index}`, `prompt-${index}`),
+      );
+      session.emit({
+        type: "message_end",
+        message: {
+          role: "user",
+          content: `prompt-${index}`,
+          entryId: index === 1_029 ? "entry-0" : `entry-${index}`,
+        },
+      });
+      session.emit({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: `answer-${index}` },
+        message: {
+          role: "assistant",
+          responseId: "repeated-native-response",
+          content: [{ type: "text", text: `answer-${index}` }],
+        },
+      });
+      await scheduler.flush();
+      await finishTurn(events, session, turnId);
+    }
+
+    const userIds = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "user_message"
+        ? [event.item.id]
+        : [],
+    );
+    const assistantIds = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "assistant_message"
+        ? [event.item.messageId]
+        : [],
+    );
+    expect(new Set(userIds).size).toBe(1_030);
+    expect(new Set(assistantIds).size).toBe(1_030);
+    expect(userIds.some((id) => id.includes("entry-0"))).toBe(false);
+    expect(assistantIds.some((id) => id.includes("repeated-native-response"))).toBe(false);
     await connection.close();
   });
 
@@ -865,18 +1066,18 @@ describe("OMP direct provider", () => {
     ).toEqual([
       {
         type: "reasoning",
-        id: "response-interleaved:content:0:reasoning",
+        id: "omp:assistant:1:_rtzMvYnX4Ti:content:0:reasoning",
         text: "Reason A",
       },
       {
         type: "assistant_message",
-        id: "response-interleaved:content:1:text",
-        messageId: "response-interleaved",
+        id: "omp:assistant:1:_rtzMvYnX4Ti:content:1:text",
+        messageId: "omp:assistant:1:_rtzMvYnX4Ti",
         text: "Answer A",
       },
       {
         type: "reasoning",
-        id: "response-interleaved:content:0:reasoning",
+        id: "omp:assistant:1:_rtzMvYnX4Ti:content:0:reasoning",
         text: "Reason A revised",
       },
     ]);
@@ -920,8 +1121,8 @@ describe("OMP direct provider", () => {
     ).toEqual(
       Array.from({ length: 64 }, (_, contentIndex) => ({
         type: "assistant_message",
-        id: `response-bounded:content:${contentIndex}:text`,
-        messageId: "response-bounded",
+        id: `omp:assistant:1:B7lAkpW__Trl:content:${contentIndex}:text`,
+        messageId: "omp:assistant:1:B7lAkpW__Trl",
         text: `block-${contentIndex}`,
       })),
     );
@@ -973,7 +1174,7 @@ describe("OMP direct provider", () => {
     ).toEqual([
       expect.objectContaining({
         item: expect.objectContaining({
-          id: "response-image:content:1:text",
+          id: "omp:assistant:1:-588CG_nYBzM:content:1:text",
           text: "after image",
         }),
       }),
@@ -1014,8 +1215,8 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         type: "timeline.item",
         item: expect.objectContaining({
-          id: "response-late:content:0:text",
-          messageId: "response-late",
+          id: "omp:assistant:2:DP-A_9m7gBMN:content:0:text",
+          messageId: "omp:assistant:2:DP-A_9m7gBMN",
           text: "Draft final",
         }),
       }),
@@ -1055,13 +1256,13 @@ describe("OMP direct provider", () => {
     );
     expect(userItems).toEqual([
       expect.objectContaining({
-        id: "entry-repeat-1",
-        messageId: "entry-repeat-1",
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        messageId: expect.stringMatching(/^omp:user:\d+:/u),
         clientMessageId: "same-1",
       }),
       expect.objectContaining({
-        id: "entry-repeat-2",
-        messageId: "entry-repeat-2",
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        messageId: expect.stringMatching(/^omp:user:\d+:/u),
         clientMessageId: "same-2",
       }),
     ]);
@@ -1146,13 +1347,13 @@ describe("OMP direct provider", () => {
     );
     expect(correlatedUsers).toEqual([
       expect.objectContaining({
-        id: "entry-user-1",
-        messageId: "entry-user-1",
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        messageId: expect.stringMatching(/^omp:user:\d+:/u),
         clientMessageId: "client-1",
       }),
       expect.objectContaining({
-        id: "entry-steer-1",
-        messageId: "entry-steer-1",
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        messageId: expect.stringMatching(/^omp:user:\d+:/u),
         clientMessageId: "steer-1",
       }),
     ]);
@@ -1175,7 +1376,7 @@ describe("OMP direct provider", () => {
     const activeToolSnapshots = events.flatMap((event) =>
       event.type === "timeline.item" &&
       event.item.type === "tool_call" &&
-      event.item.id === "active-tool"
+      event.item.id === "omp:tool:1"
         ? [event.item]
         : [],
     );
@@ -1358,8 +1559,8 @@ describe("OMP direct provider", () => {
         sessionId: "session-1",
         item: {
           type: "user_message",
-          id: "entry-accepted-steer",
-          messageId: "entry-accepted-steer",
+          id: expect.stringMatching(/^omp:user:\d+:/u),
+          messageId: expect.stringMatching(/^omp:user:\d+:/u),
           clientMessageId: "accepted-after-end",
           text: "continue",
         },
@@ -1369,8 +1570,8 @@ describe("OMP direct provider", () => {
         sessionId: "session-1",
         item: {
           type: "tool_call",
-          id: "post-steer-tool",
-          callId: "post-steer-tool",
+          id: "omp:tool:1",
+          callId: "omp:tool:1",
           name: "read",
           detail: { type: "unknown", input: { path: "after.ts" }, output: null },
           status: "running",
@@ -1382,8 +1583,8 @@ describe("OMP direct provider", () => {
         sessionId: "session-1",
         item: {
           type: "tool_call",
-          id: "post-steer-tool",
-          callId: "post-steer-tool",
+          id: "omp:tool:1",
+          callId: "omp:tool:1",
           name: "read",
           detail: {
             type: "unknown",
@@ -1399,8 +1600,8 @@ describe("OMP direct provider", () => {
         sessionId: "session-1",
         item: {
           type: "tool_call",
-          id: "post-steer-tool",
-          callId: "post-steer-tool",
+          id: "omp:tool:1",
+          callId: "omp:tool:1",
           name: "read",
           detail: {
             type: "unknown",
@@ -1416,8 +1617,8 @@ describe("OMP direct provider", () => {
         sessionId: "session-1",
         item: {
           type: "assistant_message",
-          id: "response-after-steer:content:0:text",
-          messageId: "response-after-steer",
+          id: "omp:assistant:1:fu4akAEZQMwl:content:0:text",
+          messageId: "omp:assistant:1:fu4akAEZQMwl",
           text: "continued",
         },
       },
@@ -1477,8 +1678,8 @@ describe("OMP direct provider", () => {
         sessionId: "session-1",
         item: {
           type: "user_message",
-          id: "entry-early-steer",
-          messageId: "entry-early-steer",
+          id: expect.stringMatching(/^omp:user:\d+:/u),
+          messageId: expect.stringMatching(/^omp:user:\d+:/u),
           clientMessageId: "early-steer",
           text: "focus",
         },
@@ -1621,7 +1822,7 @@ describe("OMP direct provider", () => {
       type: "session.prompt_result",
       sessionId: "session-1",
       clientMessageId: "rejected-early",
-      result: { type: "failed", error: { message: "OMP steer failed: rejected" } },
+      result: { type: "failed", error: { message: "OMP steer failed" } },
     });
     expect(
       events.some(
@@ -1740,15 +1941,15 @@ describe("OMP direct provider", () => {
     ).toEqual([
       {
         type: "user_message",
-        id: "entry-repeat-1",
-        messageId: "entry-repeat-1",
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        messageId: expect.stringMatching(/^omp:user:\d+:/u),
         clientMessageId: "repeat-1",
         text: "repeat",
       },
       {
         type: "user_message",
-        id: "entry-repeat-2",
-        messageId: "entry-repeat-2",
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        messageId: expect.stringMatching(/^omp:user:\d+:/u),
         clientMessageId: "repeat-2",
         text: "repeat",
       },
@@ -1814,8 +2015,14 @@ describe("OMP direct provider", () => {
       event.type === "timeline.item" && event.item.type === "user_message" ? [event.item] : [],
     );
     expect(users).toEqual([
-      expect.objectContaining({ id: "entry-queued-1", clientMessageId: "queued-1" }),
-      expect.objectContaining({ id: "entry-queued-2", clientMessageId: "queued-2" }),
+      expect.objectContaining({
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        clientMessageId: "queued-1",
+      }),
+      expect.objectContaining({
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        clientMessageId: "queued-2",
+      }),
     ]);
     expect(
       events.filter(
@@ -1866,15 +2073,15 @@ describe("OMP direct provider", () => {
     ).toEqual([
       {
         type: "user_message",
-        id: "entry-owned-1",
-        messageId: "entry-owned-1",
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        messageId: expect.stringMatching(/^omp:user:\d+:/u),
         clientMessageId: "owner-1",
         text: "repeat",
       },
       {
         type: "user_message",
-        id: "entry-owned-2",
-        messageId: "entry-owned-2",
+        id: expect.stringMatching(/^omp:user:\d+:/u),
+        messageId: expect.stringMatching(/^omp:user:\d+:/u),
         clientMessageId: "owner-2",
         text: "repeat",
       },
@@ -2194,13 +2401,15 @@ describe("OMP direct provider", () => {
     ).toEqual([
       {
         type: "user_message",
-        id: "user:lookup-1",
+        id: "omp:user:1:local",
+        messageId: "omp:user:1:local",
         clientMessageId: "lookup-1",
         text: "repeat",
       },
       {
         type: "user_message",
-        id: "user:lookup-2",
+        id: "omp:user:2:local",
+        messageId: "omp:user:2:local",
         clientMessageId: "lookup-2",
         text: "repeat",
       },
@@ -2246,13 +2455,15 @@ describe("OMP direct provider", () => {
     ).toEqual([
       {
         type: "user_message",
-        id: "user:fallback-1",
+        id: "omp:user:1:local",
+        messageId: "omp:user:1:local",
         clientMessageId: "fallback-1",
         text: "repeat",
       },
       {
         type: "user_message",
-        id: "user:fallback-2",
+        id: "omp:user:2:local",
+        messageId: "omp:user:2:local",
         clientMessageId: "fallback-2",
         text: "repeat",
       },
@@ -2284,7 +2495,8 @@ describe("OMP direct provider", () => {
         sessionId: "session-1",
         item: {
           type: "user_message",
-          id: "user:closing-lookup",
+          id: "omp:user:1:local",
+          messageId: "omp:user:1:local",
           clientMessageId: "closing-lookup",
           text: "hello",
         },
@@ -2337,7 +2549,7 @@ describe("OMP direct provider", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "timeline.item",
-        item: expect.objectContaining({ id: `command:${turnId}`, text: "first second" }),
+        item: expect.objectContaining({ id: `omp:command:${turnId}`, text: "first second" }),
       }),
     );
     await connection.close();
@@ -2707,7 +2919,7 @@ describe("OMP direct provider", () => {
         result: expect.objectContaining({
           type: "failed",
           error: expect.objectContaining({
-            message: expect.stringContaining("native session handle"),
+            message: "OMP session recovery failed",
           }),
         }),
       }),
@@ -2728,7 +2940,7 @@ describe("OMP direct provider", () => {
         result: expect.objectContaining({
           type: "failed",
           error: expect.objectContaining({
-            message: expect.stringContaining("native close failed"),
+            message: "OMP session recovery failed",
           }),
         }),
       }),
@@ -2750,7 +2962,7 @@ describe("OMP direct provider", () => {
         result: expect.objectContaining({
           type: "failed",
           error: expect.objectContaining({
-            message: expect.stringContaining("resumed native session"),
+            message: "OMP session recovery failed",
           }),
         }),
       }),
@@ -2762,7 +2974,7 @@ describe("OMP direct provider", () => {
         result: expect.objectContaining({
           type: "failed",
           error: expect.objectContaining({
-            message: expect.stringContaining("candidate close failed"),
+            message: "OMP session recovery failed",
           }),
         }),
       }),
@@ -2779,13 +2991,13 @@ describe("OMP direct provider", () => {
     );
     expect(closeFailure).toEqual(
       expect.objectContaining({
-        error: { message: "OMP session close failed: candidate close failed" },
+        error: { message: "OMP session close failed" },
       }),
     );
     const closed = await events.waitFor((event) => event.type === "session.closed");
     expect(closed).toEqual(
       expect.objectContaining({
-        error: { message: "OMP session close failed: candidate close failed" },
+        error: { message: "OMP session close failed" },
       }),
     );
     await connection.close();
@@ -2844,7 +3056,7 @@ describe("OMP direct provider", () => {
       sessionId: "session-1",
       item: {
         type: "notification",
-        id: "notice-idle",
+        id: "omp:notice:1",
         level: "warning",
         message: "Background task delayed",
       },
@@ -2860,7 +3072,7 @@ describe("OMP direct provider", () => {
           id: "omp:todos",
           items: [
             {
-              id: "todo-idle",
+              id: "omp:todo:0",
               text: "Wait for background task",
               completed: false,
               status: "pending",
@@ -2874,7 +3086,7 @@ describe("OMP direct provider", () => {
         type: "timeline.item",
         item: expect.objectContaining({
           type: "notification",
-          id: "omp:ui:notify-idle",
+          id: "omp:ui:2",
           message: "Background task resumed",
         }),
       }),
@@ -2884,6 +3096,74 @@ describe("OMP direct provider", () => {
     const turnId = turnIdFrom(await startPrompt(connection, events, "after-passive", "continue"));
     const terminal = await finishTurn(events, session, turnId);
     expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    await connection.close();
+  });
+
+  test("redacts provider-owned timeline payloads and native identifiers", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events, "redacted-open", "session-1", {
+      MY_RUNTIME_SECRET: "credential-value-1234",
+    });
+    const turnId = turnIdFrom(await startPrompt(connection, events, "redacted-prompt", "work"));
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "notice",
+      id: "provider-internal-notice-id",
+      level: "warning",
+      message: "credential-value-1234 at /home/private/config",
+    });
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "provider-internal-tool-id",
+      toolName: "read",
+      args: { apiKey: "another-secret", path: "/home/private/file" },
+    });
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "credential-value-1234" },
+      message: {
+        role: "assistant",
+        responseId: "provider-internal-response-id",
+        content: [{ type: "text", text: "credential-value-1234 from /home/private/file" }],
+      },
+    });
+    await scheduler.flush();
+
+    const visible = JSON.stringify(events);
+    expect(visible).not.toContain("credential-value-1234");
+    expect(visible).not.toContain("another-secret");
+    expect(visible).not.toContain("/home/private");
+    expect(visible).not.toContain("provider-internal-notice-id");
+    expect(visible).not.toContain("provider-internal-tool-id");
+    expect(visible).not.toContain("provider-internal-response-id");
+    expect(visible).toContain("<redacted>");
+    expect(visible).toContain("<absolute path>");
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("fails unsupported interactive permission UI without reflecting its payload", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "permission-turn", "work"));
+    sessionAt(runtime).emit({
+      type: "extension_ui_request",
+      id: "permission-request",
+      method: "confirm",
+      title: "Approve API_KEY=secret-value from /home/private/file",
+    });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+
+    expect(terminal).toEqual(
+      expect.objectContaining({ state: "failed", error: { message: "OMP runtime failed" } }),
+    );
+    const visible = JSON.stringify(events);
+    expect(visible).not.toContain("secret-value");
+    expect(visible).not.toContain("/home/private/file");
+    expect(visible).not.toContain("permission-request");
     await connection.close();
   });
 
@@ -2995,10 +3275,10 @@ describe("OMP direct provider", () => {
     abort.resolve();
     const [first, second] = await Promise.all([firstFailure, secondFailure]);
     expect(first).toEqual(
-      expect.objectContaining({ error: { message: "OMP interrupt failed: abort rejected" } }),
+      expect.objectContaining({ error: { message: "OMP interrupt failed" } }),
     );
     expect(second).toEqual(
-      expect.objectContaining({ error: { message: "OMP interrupt failed: abort rejected" } }),
+      expect.objectContaining({ error: { message: "OMP interrupt failed" } }),
     );
     await connection.close();
   });
@@ -3056,12 +3336,12 @@ describe("OMP direct provider", () => {
     const closed = await events.waitFor((event) => event.type === "session.closed");
     expect(failure).toEqual(
       expect.objectContaining({
-        error: { message: "OMP session close failed: native close failed" },
+        error: { message: "OMP session close failed" },
       }),
     );
     expect(closed).toEqual(
       expect.objectContaining({
-        error: { message: "OMP session close failed: native close failed" },
+        error: { message: "OMP session close failed" },
       }),
     );
     await connection.close();
@@ -3216,7 +3496,7 @@ describe("OMP direct provider", () => {
     );
 
     expect(failure).toEqual(
-      expect.objectContaining({ error: { message: "OMP session close failed: close failed" } }),
+      expect.objectContaining({ error: { message: "OMP session close failed" } }),
     );
     expect(
       events.some((event) => event.type === "request.completed" && event.requestId === "close-1"),
