@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { ProviderConnection, ProviderEvent } from "@getpaseo/plugin/server/provider";
+import { createRequire } from "node:module";
+import type {
+  ProviderConnection,
+  ProviderEvent,
+  ProviderRegistration,
+} from "@getpaseo/plugin/server/provider";
 import type {
   OmpModel,
   OmpRpcEvent,
@@ -9,6 +14,49 @@ import type {
 } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
 import type { OmpTimelineScheduler } from "../server/provider/timeline-projector";
+
+type HostLogger = object;
+type PinoFactory = (options: { enabled: boolean }) => HostLogger;
+type HostTerminalEvent = {
+  type: "turn_failed" | "turn_completed" | "turn_canceled";
+  turnId: string | undefined;
+};
+type HostStreamEvent = { type: string; turnId?: string };
+type HostSession = {
+  readonly id: string | null;
+  startTurn(prompt: string, options?: { clientMessageId?: string }): Promise<{ turnId: string }>;
+  subscribe(callback: (event: HostStreamEvent) => void): () => void;
+  close(): Promise<void>;
+};
+type HostSessionConfig = {
+  provider: string;
+  cwd: string;
+  systemPrompt?: string;
+  mcpServers?: Record<string, unknown>;
+  modeId?: string;
+  model?: string;
+  thinkingOptionId?: string;
+  featureValues?: Record<string, unknown>;
+};
+type HostLaunchContext = { env?: Record<string, string> };
+type HostClient = {
+  createSession(
+    config: HostSessionConfig,
+    launchContext?: HostLaunchContext,
+    options?: { persistSession?: boolean },
+  ): Promise<HostSession>;
+};
+type HostRegistry = {
+  replace(registrations: readonly ProviderRegistration[]): void;
+  clients(): Record<string, HostClient>;
+  shutdown(): Promise<void>;
+};
+type HostRegistryConstructor = new (logger: HostLogger) => HostRegistry;
+
+const pluginProviderModulePath: string =
+  "../node_modules/@getpaseo/server/dist/server/server/agent/plugin-provider.js";
+const hostRequire = createRequire(new URL(pluginProviderModulePath, import.meta.url));
+const pino = hostRequire("pino") as PinoFactory;
 
 const MODEL: OmpModel = {
   provider: "anthropic",
@@ -113,6 +161,9 @@ class FakeOmpSession implements OmpRuntimeSession {
   branchMessageLookups = 0;
   closeGate: Promise<void> | null = null;
   closeObserved: (() => void) | null = null;
+  abortGate: Promise<void> | null = null;
+  abortObserved: (() => void) | null = null;
+  abortError: Error | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
   availableCommandsError: Error | null = null;
   availableCommandLookups = 0;
@@ -122,6 +173,11 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly thinkingChanges: string[] = [];
   branchMessages: Array<{ entryId: string; text: string }> = [];
   currentModel = MODEL;
+  nativeSessionId = "native-session";
+  stateGate: Promise<void> | null = null;
+  stateError: Error | null = null;
+  isStreaming = false;
+  isCompacting = false;
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" = "medium";
   promptAgentInvoked: boolean | undefined = true;
   promptEvents: OmpRpcEvent[] = [];
@@ -130,7 +186,6 @@ class FakeOmpSession implements OmpRuntimeSession {
   aborts = 0;
   promptCount = 0;
   closes = 0;
-
   onEvent(listener: (event: OmpRpcEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -139,14 +194,16 @@ class FakeOmpSession implements OmpRuntimeSession {
     for (const listener of this.listeners) listener(event);
   }
 
-  getState() {
-    return Promise.resolve({
+  async getState() {
+    if (this.stateGate) await this.stateGate;
+    if (this.stateError) throw this.stateError;
+    return {
       model: this.currentModel,
       thinkingLevel: this.thinkingLevel,
-      isStreaming: false,
-      isCompacting: false,
-      sessionId: "native-session",
-    });
+      isStreaming: this.isStreaming,
+      isCompacting: this.isCompacting,
+      sessionId: this.nativeSessionId,
+    };
   }
 
   getAvailableModels() {
@@ -203,9 +260,11 @@ class FakeOmpSession implements OmpRuntimeSession {
     return this.branchMessages;
   }
 
-  abort() {
+  async abort() {
     this.aborts += 1;
-    return Promise.resolve();
+    this.abortObserved?.();
+    if (this.abortGate) await this.abortGate;
+    if (this.abortError) throw this.abortError;
   }
 
   async close() {
@@ -219,11 +278,14 @@ class FakeOmpSession implements OmpRuntimeSession {
 class FakeOmpRuntime implements OmpRuntime {
   readonly sessions: FakeOmpSession[] = [];
   readonly starts: OmpStartOptions[] = [];
+  readonly sessionIds: string[] = [];
+  nextModel: OmpModel | null = null;
+  nextThinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null = null;
+  nextCloseError: Error | null = null;
   startGate: Promise<void> | null = null;
   startObserved: (() => void) | null = null;
   commandDiscoveryError: Error | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
-
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     this.starts.push(options);
     this.startObserved?.();
@@ -234,6 +296,19 @@ class FakeOmpRuntime implements OmpRuntime {
       ...command,
       ...(command.aliases ? { aliases: [...command.aliases] } : {}),
     }));
+    session.nativeSessionId = this.sessionIds.shift() ?? session.nativeSessionId;
+    if (this.nextModel) {
+      session.currentModel = this.nextModel;
+      this.nextModel = null;
+    }
+    if (this.nextThinkingLevel) {
+      session.thinkingLevel = this.nextThinkingLevel;
+      this.nextThinkingLevel = null;
+    }
+    if (this.nextCloseError) {
+      session.closeError = this.nextCloseError;
+      this.nextCloseError = null;
+    }
     this.sessions.push(session);
     return session;
   }
@@ -2307,7 +2382,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("fails an active turn exactly once when the runtime exits", async () => {
+  test("fails an active turn without terminalizing the host session", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const result = await startPrompt(connection, events, "failed-1", "work");
@@ -2315,19 +2390,404 @@ describe("OMP direct provider", () => {
     const session = sessionAt(runtime);
 
     session.emit({ type: "process_exit", error: "OMP exited with code 7" });
-    const runtimeFailure = await events.waitFor((event) => event.type === "session.runtime_failed");
-
-    expect(runtimeFailure).toEqual({
-      type: "session.runtime_failed",
-      sessionId: "session-1",
-      error: { message: "OMP exited with code 7" },
-    });
+    expect(events.filter((event) => event.type === "session.runtime_failed")).toHaveLength(0);
     expect(
       events.filter(
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
     ).toEqual([expect.objectContaining({ state: "failed" })]);
+    await connection.close();
+  });
+  test("real Paseo provider host keeps a recovered session reachable", async () => {
+    const runtime = new FakeOmpRuntime();
+    const registration = createOmpProvider({ runtime, timelineScheduler: new ManualScheduler() });
+    // Static imports resolve the host's incompatible Node/Zod declaration graph in this package.
+    const adapter = (await import(pluginProviderModulePath)) as unknown as {
+      PluginAgentClientRegistry: HostRegistryConstructor;
+    };
+    const registry = new adapter.PluginAgentClientRegistry(pino({ enabled: false }));
+    registry.replace([registration]);
+    const client = registry.clients()[registration.id];
+    if (!client) throw new Error("registered OMP client is missing");
+    const config: HostSessionConfig = {
+      provider: registration.id,
+      cwd: "/repo",
+      systemPrompt: "Be precise",
+      mcpServers: {},
+      modeId: "full",
+      model: "anthropic/claude-sonnet-4-5",
+      thinkingOptionId: "medium",
+      featureValues: {},
+    };
+    const launchContext: HostLaunchContext = { env: { TEST_ENV: "1" } };
+    let session: HostSession | undefined;
+    let unsubscribe: (() => void) | undefined;
+    try {
+      session = await client.createSession(config, launchContext, { persistSession: false });
+      const sessionId = session.id;
+      const terminals: HostTerminalEvent[] = [];
+      const firstTerminal = Promise.withResolvers<HostTerminalEvent>();
+      const secondTerminal = Promise.withResolvers<HostTerminalEvent>();
+      let firstTurnId: string | undefined;
+      let secondTurnId: string | undefined;
+      unsubscribe = session.subscribe((event) => {
+        if (
+          event.type !== "turn_failed" &&
+          event.type !== "turn_completed" &&
+          event.type !== "turn_canceled"
+        ) {
+          return;
+        }
+        const terminal = event as HostTerminalEvent;
+        terminals.push(terminal);
+        if (terminal.turnId === firstTurnId) firstTerminal.resolve(terminal);
+        if (terminal.turnId === secondTurnId) secondTerminal.resolve(terminal);
+      });
+
+      const first = await session.startTurn("work", { clientMessageId: "host-first" });
+      firstTurnId = first.turnId;
+      sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited" });
+      await expect(firstTerminal.promise).resolves.toEqual(
+        expect.objectContaining({ type: "turn_failed", turnId: first.turnId }),
+      );
+
+      const second = await session.startTurn("continue", { clientMessageId: "host-recovered" });
+      secondTurnId = second.turnId;
+      expect(session.id).toBe(sessionId);
+      expect(runtime.starts[1]).toEqual(
+        expect.objectContaining({ resumeSessionId: "native-session" }),
+      );
+      sessionAt(runtime, 1).emit({ type: "agent_end", messages: [], isTerminal: true });
+      await expect(secondTerminal.promise).resolves.toEqual(
+        expect.objectContaining({ type: "turn_completed", turnId: second.turnId }),
+      );
+      for (const turnId of [first.turnId, second.turnId]) {
+        expect(terminals.filter((event) => event.turnId === turnId)).toHaveLength(1);
+      }
+      expect(terminals.some((event) => event.turnId === undefined)).toBe(false);
+    } finally {
+      unsubscribe?.();
+      await session?.close();
+      await registry.shutdown();
+    }
+  });
+  test("recovers a dead idle runtime by resuming the same native session", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const first = sessionAt(runtime);
+
+    first.emit({ type: "process_exit", error: "OMP exited between turns" });
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+
+    const result = await startPrompt(connection, events, "recovered-1", "continue");
+    const turnId = turnIdFrom(result);
+    const recovered = sessionAt(runtime, 1);
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({
+        cwd: "/repo",
+        env: { TEST_ENV: "1" },
+        model: "anthropic/claude-sonnet-4-5",
+        mode: "full",
+        thinkingOption: "medium",
+        systemPrompt: "Be precise",
+        resumeSessionId: "native-session",
+      }),
+    );
+    expect(await finishTurn(events, recovered, turnId)).toEqual(
+      expect.objectContaining({ state: "completed" }),
+    );
+    await connection.close();
+  });
+  test("recovers with the native model and thinking selected at open", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
+    const { connection, events } = await createHarness(runtime);
+    await connection.send({
+      type: "session.open",
+      requestId: "open-default-config",
+      sessionId: "session-1",
+      config: {
+        cwd: "/repo",
+        env: { TEST_ENV: "1" },
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "open-default-config",
+    );
+
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+    const turnId = turnIdFrom(await startPrompt(connection, events, "observed-config", "continue"));
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({
+        model: "openai/gpt-5.4",
+        thinkingOption: "high",
+        resumeSessionId: "native-session",
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("ignores stale terminal events from a dead runtime generation", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const first = sessionAt(runtime);
+    const staleListener = [...first.listeners][0];
+    if (!staleListener) throw new Error("expected native event listener");
+
+    first.emit({ type: "process_exit", error: "OMP killed by SIGKILL" });
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    const result = await startPrompt(connection, events, "generation-2", "continue");
+    const turnId = turnIdFrom(result);
+
+    staleListener({ type: "agent_end", messages: [], isTerminal: true });
+    staleListener({ type: "turn_end" });
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toHaveLength(0);
+
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("fails an EPIPE turn once without terminalizing the host session", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "epipe-1", "work"));
+
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP RPC stdin write failed: EPIPE" });
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual([expect.objectContaining({ state: "failed" })]);
+    await connection.close();
+  });
+
+  test("retires timed-out state confirmation after completing the authoritative agent_end", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const staleListener = [...session.listeners][0];
+    if (!staleListener) throw new Error("expected native event listener");
+    const branch = Promise.withResolvers<void>();
+    const state = Promise.withResolvers<void>();
+    session.branchMessagesGate = branch.promise;
+    session.stateGate = state.promise;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "stuck-state", "work"));
+
+    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
+    await Promise.resolve();
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    branch.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await scheduler.flush();
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    expect(session.closes).toBe(1);
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+
+    const recoveredTurn = turnIdFrom(
+      await startPrompt(connection, events, "after-stuck", "continue"),
+    );
+    staleListener({ type: "agent_end", messages: [], isTerminal: true });
+    staleListener({ type: "turn_end" });
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === recoveredTurn &&
+          event.state !== "started",
+      ),
+    ).toHaveLength(0);
+    await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
+    state.resolve();
+    await connection.close();
+  });
+
+  test("retires unavailable state confirmation after completing agent_end", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const branch = Promise.withResolvers<void>();
+    session.branchMessagesGate = branch.promise;
+    session.stateError = new Error("runtime state unavailable");
+    const turnId = turnIdFrom(await startPrompt(connection, events, "unavailable-state", "work"));
+
+    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
+    await Promise.resolve();
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    branch.resolve();
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    expect(session.closes).toBe(1);
+    const recoveredTurn = turnIdFrom(
+      await startPrompt(connection, events, "after-unavailable", "continue"),
+    );
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({ resumeSessionId: "native-session" }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
+    await connection.close();
+  });
+
+  test("fails and retires a still-active completion state", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const branch = Promise.withResolvers<void>();
+    session.branchMessagesGate = branch.promise;
+    session.isStreaming = true;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "active-state", "work"));
+
+    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
+    await Promise.resolve();
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    branch.resolve();
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        state: "failed",
+        error: { message: "OMP agent_end arrived while the native runtime remained active" },
+      }),
+    );
+    expect(
+      events.some((event) => event.type === "timeline.item" && event.item.type === "user_message"),
+    ).toBe(true);
+    expect(session.closes).toBe(1);
+    await startPrompt(connection, events, "after-active", "continue");
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({ resumeSessionId: "native-session" }),
+    );
+    await connection.close();
+  });
+
+  test("rejects recovery when the initial native session handle is absent", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.sessionIds.push("");
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    const result = await startPrompt(connection, events, "missing-handle", "continue");
+    expect(result).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: expect.objectContaining({
+            message: expect.stringContaining("native session handle"),
+          }),
+        }),
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("fails closed when disposing the old runtime fails", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    sessionAt(runtime).closeError = new Error("native close failed");
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    const result = await startPrompt(connection, events, "cleanup-failure", "continue");
+    expect(result).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: expect.objectContaining({
+            message: expect.stringContaining("native close failed"),
+          }),
+        }),
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    await connection.close().catch(() => undefined);
+  });
+  test("retains failed replacement cleanup until explicit close reports it", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.sessionIds.push("native-session", "wrong-session");
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    runtime.nextCloseError = new Error("candidate close failed");
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    const replacement = await startPrompt(connection, events, "wrong-candidate", "continue");
+    expect(replacement).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: expect.objectContaining({
+            message: expect.stringContaining("resumed native session"),
+          }),
+        }),
+      }),
+    );
+    expect(runtime.starts).toHaveLength(2);
+    const blocked = await startPrompt(connection, events, "blocked-candidate", "continue");
+    expect(blocked).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: expect.objectContaining({
+            message: expect.stringContaining("candidate close failed"),
+          }),
+        }),
+      }),
+    );
+    expect(runtime.starts).toHaveLength(2);
+
+    await connection.send({
+      type: "session.close",
+      requestId: "candidate-close",
+      sessionId: "session-1",
+    });
+    const closeFailure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "candidate-close",
+    );
+    expect(closeFailure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP session close failed: candidate close failed" },
+      }),
+    );
+    const closed = await events.waitFor((event) => event.type === "session.closed");
+    expect(closed).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP session close failed: candidate close failed" },
+      }),
+    );
     await connection.close();
   });
 
@@ -2453,6 +2913,157 @@ describe("OMP direct provider", () => {
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
     ).toHaveLength(1);
+    await connection.close();
+  });
+  test("does not start a later turn while an earlier abort is unsettled", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const abort = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.abortGate = abort.promise;
+    session.abortObserved = observed.resolve;
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "abort-first", "first"));
+
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "abort-first",
+      sessionId: "session-1",
+    });
+    await observed.promise;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === firstTurn && event.state === "canceled",
+    );
+    const blocked = await startPrompt(connection, events, "abort-blocked", "second");
+    expect(blocked).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: { message: "OMP interrupt is still settling" },
+        }),
+      }),
+    );
+    expect(session.prompts).toEqual(["first"]);
+
+    abort.resolve();
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "abort-first",
+    );
+    const secondTurn = turnIdFrom(await startPrompt(connection, events, "abort-second", "second"));
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "abort-second",
+      sessionId: "session-1",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "abort-second",
+    );
+    await finishTurn(events, session, secondTurn);
+    expect(session.aborts).toBe(2);
+    await connection.close();
+  });
+  test("reports the same abort failure to concurrent interrupts", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const abort = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.abortGate = abort.promise;
+    session.abortObserved = observed.resolve;
+    session.abortError = new Error("abort rejected");
+    await startPrompt(connection, events, "abort-error-turn", "work");
+
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "abort-error-one",
+      sessionId: "session-1",
+    });
+    await observed.promise;
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "abort-error-two",
+      sessionId: "session-1",
+    });
+    const firstFailure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "abort-error-one",
+    );
+    const secondFailure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "abort-error-two",
+    );
+    abort.resolve();
+    const [first, second] = await Promise.all([firstFailure, secondFailure]);
+    expect(first).toEqual(
+      expect.objectContaining({ error: { message: "OMP interrupt failed: abort rejected" } }),
+    );
+    expect(second).toEqual(
+      expect.objectContaining({ error: { message: "OMP interrupt failed: abort rejected" } }),
+    );
+    await connection.close();
+  });
+  test("serializes interrupt and close while awaiting runtime disposal", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const abort = Promise.withResolvers<void>();
+    const abortObserved = Promise.withResolvers<void>();
+    const close = Promise.withResolvers<void>();
+    session.abortGate = abort.promise;
+    session.abortObserved = abortObserved.resolve;
+    session.closeGate = close.promise;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "interrupt-close", "work"));
+
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "interrupt-race",
+      sessionId: "session-1",
+    });
+    await abortObserved.promise;
+    const closing = connection.close();
+    let closed = false;
+    void closing.then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    abort.resolve();
+    close.resolve();
+    await closing;
+    expect(session.aborts).toBe(1);
+    expect(session.closes).toBe(1);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual([expect.objectContaining({ state: "canceled" })]);
+  });
+  test("reports native close rejection to an explicit close request", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    sessionAt(runtime).closeError = new Error("native close failed");
+
+    await connection.send({
+      type: "session.close",
+      requestId: "close-failure",
+      sessionId: "session-1",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "close-failure",
+    );
+    const closed = await events.waitFor((event) => event.type === "session.closed");
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP session close failed: native close failed" },
+      }),
+    );
+    expect(closed).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP session close failed: native close failed" },
+      }),
+    );
     await connection.close();
   });
 
