@@ -706,9 +706,7 @@ describe("OMP direct provider", () => {
     await finishTurn(events, session, repeatedTurnId);
 
     const assistantItems = events.flatMap((event) =>
-      event.type === "timeline.item" && event.item.type === "assistant_message"
-        ? [event.item]
-        : [],
+      event.type === "timeline.item" && event.item.type === "assistant_message" ? [event.item] : [],
     );
     expect(assistantItems).toEqual([
       {

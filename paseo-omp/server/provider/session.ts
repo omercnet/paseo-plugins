@@ -476,7 +476,10 @@ export class OmpProviderSession {
       return;
     }
     if (slashCommandUnavailable) {
-      this.publishSteerFailure(clientMessageId, "OMP slash commands are unavailable while steering");
+      this.publishSteerFailure(
+        clientMessageId,
+        "OMP slash commands are unavailable while steering",
+      );
       return;
     }
 
