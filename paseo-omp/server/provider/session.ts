@@ -45,9 +45,12 @@ type ActiveTurn = {
   starting: boolean;
   nativeActivity: boolean;
   localOnlyDisabled: boolean;
+  localOnlyEligible: boolean;
   nativeRequestId?: string;
   localOnlyTimer?: unknown;
   terminalizing: boolean;
+  steersInFlight: number;
+  deferredAgentEnd?: Extract<OmpRpcEvent, { type: "agent_end" }>;
   bufferedEvents: OmpRpcEvent[];
   pendingUsers: PendingUser[];
   userEchoes: OmpMessage[];
@@ -74,6 +77,11 @@ function textPrompt(input: SessionPromptInput): string {
   const text = parts.join("\n\n").trim();
   if (!text) throw new Error("OMP prompt text cannot be empty");
   return text;
+}
+
+function slashCommandName(text: string): string | undefined {
+  const match = /^\/([^\s/]+)(?:\s|$)/.exec(text);
+  return match?.[1];
 }
 
 function nativeEntryId(message: OmpMessage): string | undefined {
@@ -138,6 +146,8 @@ export class OmpProviderSession {
   private disposalPromise: Promise<void> | null = null;
   private sessionClosedPublished = false;
   private readonly emittedEntryIds = new Set<string>();
+  private readonly seenEntryIds = new Set<string>();
+  private branchWatermarkValid = true;
   private readonly scheduler: OmpTimelineScheduler;
 
   private constructor(
@@ -146,6 +156,7 @@ export class OmpProviderSession {
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
     private readonly capabilities: readonly string[],
+    private readonly slashCommands: ReadonlySet<string>,
     private readonly emit: Emit,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
@@ -180,9 +191,10 @@ export class OmpProviderSession {
       signal,
     });
     try {
-      const [state, nativeModels] = await Promise.all([
+      const [state, nativeModels, nativeCommands] = await Promise.all([
         native.getState(),
         native.getAvailableModels(),
+        native.getAvailableCommands().catch(() => []),
       ]);
       const models = mapOmpModels(nativeModels);
       const currentModel = state.model
@@ -205,6 +217,7 @@ export class OmpProviderSession {
         input.config,
         configState,
         capabilities,
+        new Set(nativeCommands.flatMap((command) => [command.name, ...(command.aliases ?? [])])),
         emit,
         scheduler,
       );
@@ -269,7 +282,9 @@ export class OmpProviderSession {
       starting: true,
       nativeActivity: false,
       localOnlyDisabled: false,
+      localOnlyEligible: false,
       terminalizing: false,
+      steersInFlight: 0,
       userCorrelationActive: false,
       userLookups: new Set(),
       userEchoes: [],
@@ -292,7 +307,10 @@ export class OmpProviderSession {
       this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
       this.startTurn(turn);
       turn.starting = false;
-      if (acknowledgement.agentInvoked !== true) this.scheduleLocalOnlyCompletion(turn);
+      if (acknowledgement.agentInvoked !== true) {
+        turn.localOnlyEligible = true;
+        this.scheduleLocalOnlyCompletion(turn);
+      }
       const bufferedEvents = turn.bufferedEvents.splice(0);
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
     } catch (error) {
@@ -414,7 +432,8 @@ export class OmpProviderSession {
   }
 
   private async steer(clientMessageId: string, text: string): Promise<void> {
-    if (/^\/[A-Za-z][\w-]*(?:\s|$)/.test(text)) {
+    const commandName = slashCommandName(text);
+    if (commandName && this.slashCommands.has(commandName)) {
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -427,7 +446,13 @@ export class OmpProviderSession {
       return;
     }
     const turn = this.activeTurn;
-    if (!turn || turn.terminal || turn.terminalizing || !turn.started) {
+    if (
+      !turn ||
+      turn.terminal ||
+      turn.terminalizing ||
+      turn.deferredAgentEnd ||
+      !turn.started
+    ) {
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -444,8 +469,11 @@ export class OmpProviderSession {
       bufferedEchoes: [],
     };
     turn.pendingUsers.push(pending);
+    turn.steersInFlight += 1;
+    this.cancelLocalOnlyCompletion(turn);
     try {
       await this.runtime.steer(text);
+      turn.steersInFlight -= 1;
       if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) {
         this.removePendingUser(turn, pending);
         this.emit({
@@ -457,10 +485,11 @@ export class OmpProviderSession {
             error: { message: "The active OMP turn ended before the steer was accepted" },
           },
         });
+        this.resumeAfterFailedSteer(turn);
         return;
       }
       turn.localOnlyDisabled = true;
-      this.cancelLocalOnlyCompletion(turn);
+      turn.deferredAgentEnd = undefined;
       this.acceptPendingUser(turn, pending);
       this.emit({
         type: "session.prompt_result",
@@ -469,6 +498,7 @@ export class OmpProviderSession {
         result: { type: "steer", turnId: turn.turnId },
       });
     } catch (error) {
+      turn.steersInFlight -= 1;
       this.removePendingUser(turn, pending);
       this.emit({
         type: "session.prompt_result",
@@ -476,6 +506,7 @@ export class OmpProviderSession {
         clientMessageId,
         result: { type: "failed", error: providerError(error, "OMP steer failed") },
       });
+      this.resumeAfterFailedSteer(turn);
     }
   }
 
@@ -512,9 +543,21 @@ export class OmpProviderSession {
   private handleTurnEvent(turn: ActiveTurn, event: OmpRpcEvent): void {
     if (turn.terminal || this.activeTurn !== turn) return;
     if (event.type === "prompt_result") {
-      if (!event.id || event.id !== turn.nativeRequestId || turn.localOnlyDisabled) return;
-      if (event.agentInvoked) this.cancelLocalOnlyCompletion(turn);
-      else if (!turn.nativeActivity) this.scheduleLocalOnlyCompletion(turn);
+      if (
+        !event.id ||
+        event.id !== turn.nativeRequestId ||
+        turn.localOnlyDisabled ||
+        turn.steersInFlight > 0
+      ) {
+        return;
+      }
+      if (event.agentInvoked) {
+        turn.localOnlyEligible = false;
+        this.cancelLocalOnlyCompletion(turn);
+      } else if (!turn.nativeActivity) {
+        turn.localOnlyEligible = true;
+        this.scheduleLocalOnlyCompletion(turn);
+      }
       return;
     }
     if (isNativeTurnActivity(event)) {
@@ -527,9 +570,11 @@ export class OmpProviderSession {
     }
     if (event.type === "agent_end") {
       if (event.isTerminal === false || turn.terminalizing) return;
-      turn.terminalizing = true;
-      if (turn.userLookups.size === 0) this.completeAgentEnd(turn, event);
-      else void this.finishFromAgentEnd(turn, event);
+      if (turn.steersInFlight > 0) {
+        turn.deferredAgentEnd = event;
+        return;
+      }
+      this.beginTerminalization(turn, event);
       return;
     }
     this.projector.project(event, turn.turnId);
@@ -537,7 +582,7 @@ export class OmpProviderSession {
 
   private projectUserEcho(turn: ActiveTurn, message: OmpMessage): void {
     const entryId = nativeEntryId(message);
-    if (entryId && this.emittedEntryIds.has(entryId)) return;
+    if (entryId && this.seenEntryIds.has(entryId)) return;
     turn.userEchoes.push(message);
     this.drainUserEchoes(turn);
   }
@@ -578,18 +623,27 @@ export class OmpProviderSession {
       if (!resolvedId) {
         try {
           const messages = await this.runtime.getBranchMessages();
-          for (const branchMessage of messages) {
-            if (
-              branchMessage.text === pending.text &&
-              !this.emittedEntryIds.has(branchMessage.entryId)
-            ) {
-              resolvedId = branchMessage.entryId;
-              break;
-            }
+          if (this.closed || turn.terminal || this.activeTurn !== turn || turn.pendingUsers[0] !== pending) {
+            return;
+          }
+          const unseen = messages.filter(
+            (branchMessage) => !this.seenEntryIds.has(branchMessage.entryId),
+          );
+          for (const branchMessage of messages) this.seenEntryIds.add(branchMessage.entryId);
+          if (!this.branchWatermarkValid) {
+            this.branchWatermarkValid = true;
+          } else {
+            resolvedId = unseen.find((branchMessage) => branchMessage.text === pending.text)?.entryId;
           }
         } catch {
-          resolvedId = undefined;
+          if (this.closed || turn.terminal || this.activeTurn !== turn || turn.pendingUsers[0] !== pending) {
+            return;
+          }
+          this.branchWatermarkValid = false;
         }
+      }
+      if (this.closed || turn.terminal || this.activeTurn !== turn || turn.pendingUsers[0] !== pending) {
+        return;
       }
       turn.userEchoes.shift();
       if (!resolvedId) return;
@@ -601,13 +655,14 @@ export class OmpProviderSession {
   private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
+      this.seenEntryIds.add(entryId);
       this.emittedEntryIds.add(entryId);
     }
     this.projector.publishUser(pending.text, pending.clientMessageId, entryId);
   }
 
   private scheduleLocalOnlyCompletion(turn: ActiveTurn): void {
-    if (turn.localOnlyDisabled) return;
+    if (turn.localOnlyDisabled || turn.steersInFlight > 0) return;
     this.cancelLocalOnlyCompletion(turn);
     turn.localOnlyTimer = this.scheduler.set(() => {
       turn.localOnlyTimer = undefined;
@@ -627,12 +682,36 @@ export class OmpProviderSession {
       turn.terminal ||
       turn.nativeActivity ||
       turn.localOnlyDisabled ||
+      turn.steersInFlight > 0 ||
       this.activeTurn !== turn
     ) {
       return;
     }
     this.publishPendingUsers(turn);
     this.finishTurn(turn, "completed");
+  }
+
+  private beginTerminalization(
+    turn: ActiveTurn,
+    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  ): void {
+    if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) return;
+    turn.terminalizing = true;
+    if (turn.userLookups.size === 0) this.completeAgentEnd(turn, event);
+    else void this.finishFromAgentEnd(turn, event);
+  }
+
+  private resumeAfterFailedSteer(turn: ActiveTurn): void {
+    if (turn.terminal || this.activeTurn !== turn || turn.steersInFlight > 0) return;
+    const deferred = turn.deferredAgentEnd;
+    if (deferred) {
+      turn.deferredAgentEnd = undefined;
+      this.beginTerminalization(turn, deferred);
+      return;
+    }
+    if (turn.localOnlyEligible && !turn.localOnlyDisabled && !turn.nativeActivity) {
+      this.scheduleLocalOnlyCompletion(turn);
+    }
   }
 
   private async finishFromAgentEnd(
@@ -654,12 +733,19 @@ export class OmpProviderSession {
     else if (error) this.finishTurn(turn, "failed", { message: error });
     else this.finishTurn(turn, "completed");
   }
-
   private publishPendingUsers(turn: ActiveTurn): void {
     for (const pending of turn.pendingUsers.splice(0)) {
+      for (const echo of pending.bufferedEchoes) {
+        const entryId = nativeEntryId(echo);
+        if (entryId) this.seenEntryIds.add(entryId);
+      }
       if (pending.accepted && pending.fallbackOnFinish) {
         this.projector.publishUser(pending.text, pending.clientMessageId);
       }
+    }
+    for (const echo of turn.userEchoes) {
+      const entryId = nativeEntryId(echo);
+      if (entryId) this.seenEntryIds.add(entryId);
     }
     turn.userEchoes.length = 0;
   }
@@ -676,6 +762,10 @@ export class OmpProviderSession {
   private removePendingUser(turn: ActiveTurn, pending: PendingUser): void {
     const index = turn.pendingUsers.indexOf(pending);
     if (index >= 0) turn.pendingUsers.splice(index, 1);
+    for (const echo of pending.bufferedEchoes) {
+      const entryId = nativeEntryId(echo);
+      if (entryId) this.seenEntryIds.add(entryId);
+    }
     pending.bufferedEchoes.length = 0;
   }
 

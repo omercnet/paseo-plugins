@@ -188,6 +188,15 @@ const OmpPromptAckSchema = z
   .object({ agentInvoked: z.boolean().optional() })
   .passthrough()
   .optional();
+const OmpAvailableCommandsResultSchema = z
+  .object({
+    commands: z.array(
+      z
+        .object({ name: z.string(), aliases: z.array(z.string()).optional() })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
 const OmpBranchMessagesResultSchema = z
   .object({
     messages: z.array(z.object({ entryId: z.string(), text: z.string() }).passthrough()),
@@ -237,6 +246,7 @@ export interface OmpRuntimeSession {
   onEvent(listener: (event: OmpRpcEvent) => void): () => void;
   getState(): Promise<OmpSessionState>;
   getAvailableModels(): Promise<OmpModel[]>;
+  getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>>;
   prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: string): Promise<void>;
@@ -757,6 +767,13 @@ class OmpRpcSession implements OmpRuntimeSession {
   async setThinkingLevel(level: string): Promise<void> {
     const parsed = OmpThinkingLevelSchema.parse(level);
     await this.process.request({ type: "set_thinking_level", level: parsed });
+  }
+
+  async getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>> {
+    const result = OmpAvailableCommandsResultSchema.parse(
+      await this.process.request({ type: "get_available_commands" }),
+    );
+    return result.commands;
   }
 
   async getBranchMessages(): Promise<Array<{ entryId: string; text: string }>> {
