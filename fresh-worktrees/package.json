@@ -1,5 +1,6 @@
 {
   "name": "@omercnet/paseo-fresh-worktrees",
+  "description": "Keeps new Paseo worktrees based on current remote refs without mutating the source checkout",
   "private": true,
   "version": "0.0.0",
   "type": "module",
