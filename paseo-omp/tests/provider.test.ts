@@ -2051,8 +2051,7 @@ describe("OMP direct provider", () => {
     });
     const former = await events.waitFor(
       (event) =>
-        event.type === "session.prompt_result" &&
-        event.clientMessageId === "former-command-prose",
+        event.type === "session.prompt_result" && event.clientMessageId === "former-command-prose",
     );
     await connection.send({
       type: "session.prompt",
