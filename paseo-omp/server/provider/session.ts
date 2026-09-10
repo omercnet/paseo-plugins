@@ -462,29 +462,24 @@ export class OmpProviderSession {
   }
 
   private async steer(clientMessageId: string, text: string): Promise<void> {
-    const commandName = slashCommandName(text);
-    if (commandName && (await this.slashSteerUnavailable(commandName, text))) {
-      this.emit({
-        type: "session.prompt_result",
-        sessionId: this.id,
-        clientMessageId,
-        result: {
-          type: "failed",
-          error: { message: "OMP slash commands are unavailable while steering" },
-        },
-      });
-      return;
-    }
     const turn = this.activeTurn;
-    if (!turn || turn.terminal || turn.terminalizing || turn.deferredAgentEnd || !turn.started) {
-      this.emit({
-        type: "session.prompt_result",
-        sessionId: this.id,
-        clientMessageId,
-        result: { type: "failed", error: { message: "There is no active OMP turn to steer" } },
-      });
+    if (!this.isSteerableTurn(turn)) {
+      this.publishSteerFailure(clientMessageId, "There is no active OMP turn to steer");
       return;
     }
+    const commandName = slashCommandName(text);
+    const slashCommandUnavailable = commandName
+      ? await this.slashSteerUnavailable(commandName, text)
+      : false;
+    if (!this.isSteerableTurn(turn)) {
+      this.publishSteerFailure(clientMessageId, "There is no active OMP turn to steer");
+      return;
+    }
+    if (slashCommandUnavailable) {
+      this.publishSteerFailure(clientMessageId, "OMP slash commands are unavailable while steering");
+      return;
+    }
+
     const pending: PendingUser = {
       clientMessageId,
       text,
@@ -718,6 +713,26 @@ export class OmpProviderSession {
     this.branchWatermarkValid = false;
   }
 
+  private isSteerableTurn(turn: ActiveTurn | null): turn is ActiveTurn {
+    return (
+      turn !== null &&
+      this.activeTurn === turn &&
+      !turn.terminal &&
+      !turn.terminalizing &&
+      !turn.deferredAgentEnd &&
+      turn.started
+    );
+  }
+
+  private publishSteerFailure(clientMessageId: string, message: string): void {
+    this.emit({
+      type: "session.prompt_result",
+      sessionId: this.id,
+      clientMessageId,
+      result: { type: "failed", error: { message } },
+    });
+  }
+
   private replaceSlashCommands(commands: Array<{ name: string; aliases?: string[] }>): void {
     this.slashCommands.clear();
     for (const command of commands) {
@@ -733,6 +748,7 @@ export class OmpProviderSession {
         this.replaceSlashCommands(await this.runtime.getAvailableCommands());
       } catch {
         this.commandDiscoveryAvailable = false;
+        return true;
       }
     }
     return this.slashCommands.has(commandName) || !isExistingAbsolutePathProse(text);
@@ -756,7 +772,7 @@ export class OmpProviderSession {
     this.cancelLocalOnlyCompletion(turn);
     turn.localOnlyTimer = this.scheduler.set(() => {
       turn.localOnlyTimer = undefined;
-      void this.completeLocalOnlyTurn(turn);
+      return this.completeLocalOnlyTurn(turn);
     }, LOCAL_ONLY_SETTLE_MS);
   }
 

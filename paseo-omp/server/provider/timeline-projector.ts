@@ -33,7 +33,7 @@ type ToolSnapshot = {
 };
 
 export interface OmpTimelineScheduler {
-  set(callback: () => void, delayMs: number): unknown;
+  set(callback: () => void | Promise<void>, delayMs: number): unknown;
   clear(handle: unknown): void;
 }
 
@@ -80,8 +80,9 @@ export class OmpTimelineProjector {
   private flushTimer: unknown;
   private currentTurnId: string | null = null;
   private assistantSequence = 0;
-  private readonly nativeIdentityOccurrences = new Map<string, number>();
+  private readonly usedAssistantMessageIds = new Set<string>();
   private readonly turnNativeMessageIds = new Map<string, string>();
+  private assistantIdentitySequence = 0;
   private noticeSequence = 0;
   private commandText = "";
   private closed = false;
@@ -283,10 +284,14 @@ export class OmpTimelineProjector {
   private beginStream(message: OmpMessage, turnId: string): StreamSnapshot {
     this.assistantSequence += 1;
     const nativeIdentity = assistantIdentity(message);
+    const messageId = nativeIdentity
+      ? this.messageIdForNativeIdentity(nativeIdentity)
+      : this.reserveAssistantMessageId(
+          `assistant:${turnId}:${this.assistantSequence}`,
+          `turn:${turnId}:${this.assistantSequence}`,
+        );
     this.stream = {
-      messageId: nativeIdentity
-        ? this.messageIdForNativeIdentity(nativeIdentity)
-        : `assistant:${turnId}:${this.assistantSequence}`,
+      messageId,
       ...(nativeIdentity ? { nativeIdentity } : {}),
       published: false,
       blocks: new Map(),
@@ -298,11 +303,18 @@ export class OmpTimelineProjector {
   private messageIdForNativeIdentity(nativeIdentity: string): string {
     const existing = this.turnNativeMessageIds.get(nativeIdentity);
     if (existing) return existing;
-    const occurrence = (this.nativeIdentityOccurrences.get(nativeIdentity) ?? 0) + 1;
-    this.nativeIdentityOccurrences.set(nativeIdentity, occurrence);
-    const messageId =
-      occurrence === 1 ? nativeIdentity : `${nativeIdentity}:occurrence:${occurrence}`;
+    const messageId = this.reserveAssistantMessageId(nativeIdentity, nativeIdentity);
     this.turnNativeMessageIds.set(nativeIdentity, messageId);
+    return messageId;
+  }
+
+  private reserveAssistantMessageId(preferred: string, source: string): string {
+    let messageId = preferred;
+    while (this.usedAssistantMessageIds.has(messageId)) {
+      this.assistantIdentitySequence += 1;
+      messageId = `assistant:${source.length}:${source}:${this.assistantIdentitySequence}`;
+    }
+    this.usedAssistantMessageIds.add(messageId);
     return messageId;
   }
 

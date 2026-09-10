@@ -66,10 +66,10 @@ class EventLog extends Array<ProviderEvent> {
 
 class ManualScheduler implements OmpTimelineScheduler {
   private nextId = 1;
-  private readonly callbacks = new Map<number, () => void>();
+  private readonly callbacks = new Map<number, () => void | Promise<void>>();
   readonly delays: number[] = [];
 
-  set(callback: () => void, delayMs: number): number {
+  set(callback: () => void | Promise<void>, delayMs: number): number {
     const id = this.nextId;
     this.delays.push(delayMs);
     this.nextId += 1;
@@ -81,10 +81,20 @@ class ManualScheduler implements OmpTimelineScheduler {
     if (typeof handle === "number") this.callbacks.delete(handle);
   }
 
-  async flush(): Promise<void> {
+  runPending(): Promise<void>[] {
     const callbacks = [...this.callbacks.values()];
     this.callbacks.clear();
-    for (const callback of callbacks) callback();
+    return callbacks.map((callback) => {
+      try {
+        return Promise.resolve(callback());
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    });
+  }
+
+  async flush(): Promise<void> {
+    await Promise.all(this.runPending());
     await Promise.resolve();
     await Promise.resolve();
   }
@@ -106,6 +116,8 @@ class FakeOmpSession implements OmpRuntimeSession {
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
   availableCommandsError: Error | null = null;
   availableCommandLookups = 0;
+  availableCommandsGate: Promise<void> | null = null;
+  availableCommandsObserved: (() => void) | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
   readonly thinkingChanges: string[] = [];
   branchMessages: Array<{ entryId: string; text: string }> = [];
@@ -141,10 +153,12 @@ class FakeOmpSession implements OmpRuntimeSession {
     return Promise.resolve([MODEL, ALTERNATE_MODEL]);
   }
 
-  getAvailableCommands() {
+  async getAvailableCommands() {
     this.availableCommandLookups += 1;
-    if (this.availableCommandsError) return Promise.reject(this.availableCommandsError);
-    return Promise.resolve(this.availableCommands);
+    this.availableCommandsObserved?.();
+    if (this.availableCommandsGate) await this.availableCommandsGate;
+    if (this.availableCommandsError) throw this.availableCommandsError;
+    return this.availableCommands;
   }
   async prompt(message: string) {
     this.prompts.push(message);
@@ -656,57 +670,73 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("namespaces a repeated native assistant identity across turns", async () => {
+  test("keeps repeated and adversarial native assistant identities collision free", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
 
+    const emitAssistant = async (responseId: string, text: string) => {
+      session.emit({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text },
+        message: {
+          role: "assistant",
+          responseId,
+          content: [{ type: "text", text }],
+        },
+      });
+      await scheduler.flush();
+    };
+
     const firstTurnId = turnIdFrom(await startPrompt(connection, events, "identity-1", "first"));
-    session.emit({
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "First" },
-      message: {
-        role: "assistant",
-        responseId: "shared-response",
-        content: [{ type: "text", text: "First" }],
-      },
-    });
-    await scheduler.flush();
+    await emitAssistant("x", "First");
     await finishTurn(events, session, firstTurnId);
 
-    const secondTurnId = turnIdFrom(await startPrompt(connection, events, "identity-2", "second"));
-    session.emit({
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Second" },
-      message: {
-        role: "assistant",
-        responseId: "shared-response",
-        content: [{ type: "text", text: "Second" }],
-      },
-    });
-    await scheduler.flush();
-    await finishTurn(events, session, secondTurnId);
+    const adversarialTurnId = turnIdFrom(
+      await startPrompt(connection, events, "identity-2", "adversarial"),
+    );
+    await emitAssistant("x:occurrence:2", "Adversarial");
+    await finishTurn(events, session, adversarialTurnId);
 
-    expect(
-      events.flatMap((event) =>
-        event.type === "timeline.item" && event.item.type === "assistant_message"
-          ? [event.item]
-          : [],
-      ),
-    ).toEqual([
+    const repeatedTurnId = turnIdFrom(
+      await startPrompt(connection, events, "identity-3", "repeated"),
+    );
+    await emitAssistant("x", "Third draft");
+    await emitAssistant("x", "Third final");
+    await finishTurn(events, session, repeatedTurnId);
+
+    const assistantItems = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "assistant_message"
+        ? [event.item]
+        : [],
+    );
+    expect(assistantItems).toEqual([
       {
         type: "assistant_message",
-        id: "shared-response:content:0:text",
-        messageId: "shared-response",
+        id: "x:content:0:text",
+        messageId: "x",
         text: "First",
       },
       {
         type: "assistant_message",
-        id: "shared-response:occurrence:2:content:0:text",
-        messageId: "shared-response:occurrence:2",
-        text: "Second",
+        id: "x:occurrence:2:content:0:text",
+        messageId: "x:occurrence:2",
+        text: "Adversarial",
+      },
+      {
+        type: "assistant_message",
+        id: "assistant:1:x:1:content:0:text",
+        messageId: "assistant:1:x:1",
+        text: "Third draft",
+      },
+      {
+        type: "assistant_message",
+        id: "assistant:1:x:1:content:0:text",
+        messageId: "assistant:1:x:1",
+        text: "Third final",
       },
     ]);
+    expect(new Set(assistantItems.map((item) => item.messageId)).size).toBe(3);
     await connection.close();
   });
 
@@ -1411,7 +1441,8 @@ describe("OMP direct provider", () => {
     const turnId = turnIdFrom(await startPrompt(connection, events, "suspended-local", "work"));
     session.emit({ type: "message_end", message: { role: "user", content: "work" } });
 
-    await scheduler.flush();
+    const [localCompletion] = scheduler.runPending();
+    if (!localCompletion) throw new Error("Expected the local completion timer to start");
     const steerGate = Promise.withResolvers<void>();
     const steerObserved = Promise.withResolvers<void>();
     session.steerGate = steerGate.promise;
@@ -1432,12 +1463,7 @@ describe("OMP direct provider", () => {
     });
 
     branchGate.resolve();
-    await events.waitFor(
-      (event) =>
-        event.type === "timeline.item" &&
-        event.item.type === "user_message" &&
-        event.item.clientMessageId === "suspended-local",
-    );
+    await localCompletion;
     expect(
       events.filter(
         (event) =>
@@ -1446,16 +1472,28 @@ describe("OMP direct provider", () => {
     ).toEqual([]);
 
     steerGate.resolve();
-    await events.waitFor(
+    const steerResult = await events.waitFor(
       (event) =>
         event.type === "session.prompt_result" && event.clientMessageId === "steer-after-timer",
     );
+    expect(steerResult).toEqual({
+      type: "session.prompt_result",
+      sessionId: "session-1",
+      clientMessageId: "steer-after-timer",
+      result: { type: "steer", turnId },
+    });
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual([]);
+
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     const terminal = await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
-
     expect(terminal).toEqual({
       type: "session.turn",
       sessionId: "session-1",
@@ -1772,7 +1810,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("fails closed slash steering and refreshes the native command catalog", async () => {
+  test("fails closed slash steering until path prose has a fresh catalog", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.commandDiscoveryError = new Error("commands unavailable");
     const { connection, events } = await createHarness(runtime);
@@ -1789,20 +1827,46 @@ describe("OMP direct provider", () => {
         input: { type: "message", content: [{ type: "text", text: "/help" }] },
       },
     });
-    const result = await events.waitFor(
+    const unavailableCommand = await events.waitFor(
       (event) => event.type === "session.prompt_result" && event.clientMessageId === "slash-steer",
     );
-    expect(result).toEqual({
-      type: "session.prompt_result",
+    await connection.send({
+      type: "session.prompt",
       sessionId: "session-1",
-      clientMessageId: "slash-steer",
-      result: {
-        type: "failed",
-        error: { message: "OMP slash commands are unavailable while steering" },
+      prompt: {
+        clientMessageId: "unavailable-path",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/usr is full" }] },
       },
     });
+    const unavailablePath = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "unavailable-path",
+    );
+    expect([unavailableCommand, unavailablePath]).toEqual([
+      {
+        type: "session.prompt_result",
+        sessionId: "session-1",
+        clientMessageId: "slash-steer",
+        result: {
+          type: "failed",
+          error: { message: "OMP slash commands are unavailable while steering" },
+        },
+      },
+      {
+        type: "session.prompt_result",
+        sessionId: "session-1",
+        clientMessageId: "unavailable-path",
+        result: {
+          type: "failed",
+          error: { message: "OMP slash commands are unavailable while steering" },
+        },
+      },
+    ]);
     expect(session.steers).toEqual([]);
 
+    session.availableCommandsError = null;
+    session.availableCommands = [{ name: "fresh-command", aliases: ["fresh"] }];
     session.emit({
       type: "available_commands_update",
       commands: [{ name: "fresh-command", aliases: ["fresh"] }],
@@ -1848,6 +1912,7 @@ describe("OMP direct provider", () => {
         error: { message: "OMP slash commands are unavailable while steering" },
       },
     });
+    expect(session.availableCommandLookups).toBe(4);
     expect(session.steers).toEqual(["/usr is full"]);
     await finishTurn(events, session, turnId);
     await connection.close();
@@ -1914,6 +1979,49 @@ describe("OMP direct provider", () => {
     expect(session.availableCommandLookups).toBe(3);
     expect(session.steers).toEqual([]);
     await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("does not retarget a steer after deferred command discovery", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurnId = turnIdFrom(await startPrompt(connection, events, "turn-a", "first"));
+    const discoveryGate = Promise.withResolvers<void>();
+    const discoveryObserved = Promise.withResolvers<void>();
+    session.availableCommands = [];
+    session.availableCommandsGate = discoveryGate.promise;
+    session.availableCommandsObserved = discoveryObserved.resolve;
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "delayed-path-steer",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/usr is full" }] },
+      },
+    });
+    await discoveryObserved.promise;
+    await finishTurn(events, session, firstTurnId);
+    const secondTurnId = turnIdFrom(await startPrompt(connection, events, "turn-b", "second"));
+
+    discoveryGate.resolve();
+    const result = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "delayed-path-steer",
+    );
+    expect(result).toEqual({
+      type: "session.prompt_result",
+      sessionId: "session-1",
+      clientMessageId: "delayed-path-steer",
+      result: {
+        type: "failed",
+        error: { message: "There is no active OMP turn to steer" },
+      },
+    });
+    expect(session.steers).toEqual([]);
+    await finishTurn(events, session, secondTurnId);
     await connection.close();
   });
 
