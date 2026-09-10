@@ -23,6 +23,8 @@ jobs:
             check: true
           - plugin: fresh-worktrees
             check: false
+          - plugin: paseo-omp
+            check: true
           - plugin: paseo-dracula
             check: true
           - plugin: pr-radar

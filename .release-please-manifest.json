@@ -2,6 +2,7 @@
   "agent-crew": "0.2.2",
   "agent-monitor": "0.4.1",
   "fresh-worktrees": "0.0.0",
+  "paseo-omp": "0.0.0",
   "paseo-dracula": "0.2.1",
   "paseo-shared-browser": "0.2.1",
   "pr-radar": "0.3.3"

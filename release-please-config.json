@@ -17,6 +17,11 @@
       "package-name": "fresh-worktrees",
       "include-component-in-tag": true
     },
+    "paseo-omp": {
+      "release-type": "node",
+      "package-name": "paseo-omp",
+      "include-component-in-tag": true
+    },
     "paseo-dracula": {
       "release-type": "node",
       "package-name": "paseo-dracula",
