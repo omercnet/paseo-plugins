@@ -6,6 +6,7 @@
 
 * Fast-forward the clean, checked-out local base branch before creating a branch-off worktree.
 * Warn and skip the local branch update when the source checkout is dirty instead of blocking workspace creation.
+* Show a workspace-header indicator when a worktree is behind the source branch's remote-tracking ref.
 
 ## 1.0.0 (2026-09-10)
 

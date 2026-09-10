@@ -8,6 +8,7 @@ import {
   refreshWorkspaceRequest,
   type WorkspaceCreateRequest,
 } from "../server/fresh-worktrees";
+import { inspectWorkspaceFreshness } from "../server/workspace-freshness";
 
 const temporaryDirectories: string[] = [];
 
@@ -84,10 +85,16 @@ describe("worktree refresh", () => {
 
     git(source, "worktree", "add", "-b", "feature/fresh", worktree, "main");
     expect(git(worktree, "rev-parse", "HEAD")).toBe(currentRemoteHead);
+    expect(
+      await inspectWorkspaceFreshness(source, worktree, {
+        signal: new AbortController().signal,
+        refreshRepository: createRepositoryRefreshCoordinator(),
+      }),
+    ).toEqual({ kind: "current", remoteRef: "origin/main" });
   });
 
   test("warns and preserves a dirty local base branch", async () => {
-    const { source, staleLocalHead, currentRemoteHead } = await createStaleRepository();
+    const { root, source, staleLocalHead, currentRemoteHead } = await createStaleRepository();
     await writeFile(join(source, "local.txt"), "uncommitted\n");
     const warnings: string[] = [];
     const request: WorkspaceCreateRequest = {
@@ -114,6 +121,15 @@ describe("worktree refresh", () => {
     expect(warnings).toEqual([
       `Skipped refreshing local branch main in ${source} because the source checkout is not clean`,
     ]);
+
+    const worktree = join(root, "dirty-worktree");
+    git(source, "worktree", "add", "-b", "feature/dirty", worktree, "main");
+    expect(
+      await inspectWorkspaceFreshness(source, worktree, {
+        signal: new AbortController().signal,
+        refreshRepository: createRepositoryRefreshCoordinator(),
+      }),
+    ).toEqual({ kind: "behind", remoteRef: "origin/main", behindBy: 1 });
   });
 
   test("leaves explicit checkout requests alone", async () => {
