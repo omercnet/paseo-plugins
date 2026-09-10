@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-agent-crew",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "A Paseo Explorer panel for visualizing and controlling every managed agent crew in a workspace.",
   "license": "MIT",
