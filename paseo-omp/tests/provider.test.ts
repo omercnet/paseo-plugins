@@ -674,9 +674,7 @@ describe("OMP direct provider", () => {
     await scheduler.flush();
     await finishTurn(events, session, firstTurnId);
 
-    const secondTurnId = turnIdFrom(
-      await startPrompt(connection, events, "identity-2", "second"),
-    );
+    const secondTurnId = turnIdFrom(await startPrompt(connection, events, "identity-2", "second"));
     session.emit({
       type: "message_update",
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Second" },
