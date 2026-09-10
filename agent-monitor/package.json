@@ -1,0 +1,55 @@
+{
+  "name": "@omercnet/paseo-agent-monitor",
+  "version": "0.4.1",
+  "type": "module",
+  "description": "A Paseo plugin that provides a host-wide agent triage roster.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "bun@1.4.0",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "author": "Omer Cohen",
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "agent-monitor",
+    "coding-agents"
+  ],
+  "files": [
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "shared",
+    "docs",
+    "paseo-plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "test": "bun test",
+    "package:release": "bun scripts/package-release.ts",
+    "test:coverage": "bun test --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@getpaseo/cli": "0.8.0-beta.1",
+    "@getpaseo/client": "0.8.0-beta.1",
+    "@getpaseo/plugin": "0.8.0-beta.1",
+    "@getpaseo/protocol": "0.8.0-beta.1",
+    "@tanstack/react-query": "^5.102.3",
+    "@types/bun": "^1.4.0",
+    "@types/react": "^19.2.18",
+    "esbuild": "^0.25.12",
+    "fflate": "^0.8.3",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^7.0.2",
+    "zod": "^4.4.3"
+  }
+}

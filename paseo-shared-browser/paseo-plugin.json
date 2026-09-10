@@ -1,0 +1,11 @@
+{
+  "id": "shared-browser",
+  "requirements": {
+    "paseo": "^0.8.0"
+  },
+  "build": [
+    ["npm", "ci"],
+    ["npm", "run", "prepare:runtime"],
+    ["npm", "exec", "--", "playwright", "install", "chromium"]
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "id": "pr-radar",
+  "requirements": { "paseo": "^0.8.0" }
+}

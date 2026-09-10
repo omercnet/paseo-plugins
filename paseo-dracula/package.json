@@ -1,0 +1,50 @@
+{
+  "name": "@omercnet/paseo-dracula",
+  "version": "0.2.1",
+  "type": "module",
+  "description": "Dracula Classic and Alucard Classic themes for Paseo.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "bun@1.4.0",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "author": "Omer Cohen",
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "dracula",
+    "theme",
+    "color-scheme"
+  ],
+  "files": [
+    "bun.lock",
+    "CHANGELOG.md",
+    "INSTALL.md",
+    "index.client.ts",
+    "paseo-plugin.json",
+    "README.md",
+    "screenshot.png",
+    "screenshot-alucard.png",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "test": "bun test",
+    "package:release": "bun scripts/package-release.ts",
+    "test:coverage": "bun test --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@getpaseo/client": "0.8.0-beta.1",
+    "@getpaseo/plugin": "0.8.0-beta.1",
+    "@getpaseo/protocol": "0.8.0-beta.1",
+    "@types/bun": "^1.4.0",
+    "fflate": "^0.8.3",
+    "typescript": "^5.9.3"
+  }
+}

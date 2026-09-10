@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "packages": {
+    "agent-crew": {
+      "release-type": "node",
+      "package-name": "agent-crew",
+      "include-component-in-tag": true
+    },
+    "agent-monitor": {
+      "release-type": "node",
+      "package-name": "agent-monitor",
+      "include-component-in-tag": true
+    },
+    "fresh-worktrees": {
+      "release-type": "node",
+      "package-name": "fresh-worktrees",
+      "include-component-in-tag": true
+    },
+    "paseo-dracula": {
+      "release-type": "node",
+      "package-name": "paseo-dracula",
+      "include-component-in-tag": true
+    },
+    "paseo-shared-browser": {
+      "release-type": "node",
+      "package-name": "shared-browser",
+      "include-component-in-tag": true
+    },
+    "pr-radar": {
+      "release-type": "node",
+      "package-name": "pr-radar",
+      "include-component-in-tag": true
+    }
+  }
+}
