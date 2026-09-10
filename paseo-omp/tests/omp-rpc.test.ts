@@ -139,6 +139,76 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("accepts image stream events and blocked todos without breaking later frames", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const imageEvent = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "image_end",
+        contentIndex: 0,
+        content: { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+      },
+      message: {
+        role: "assistant",
+        responseId: "response-image",
+        content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+      },
+    });
+    await expect(imageEvent).resolves.toEqual(
+      expect.objectContaining({
+        type: "message_update",
+        assistantMessageEvent: expect.objectContaining({ type: "image_end", contentIndex: 0 }),
+      }),
+    );
+
+    const textEvent = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "after image" },
+      message: {
+        role: "assistant",
+        responseId: "response-image",
+        content: [
+          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          { type: "text", text: "after image" },
+        ],
+      },
+    });
+    await expect(textEvent).resolves.toEqual(
+      expect.objectContaining({
+        type: "message_update",
+        assistantMessageEvent: expect.objectContaining({ type: "text_delta", contentIndex: 1 }),
+      }),
+    );
+
+    const todoEvent = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "todo_reminder",
+      todos: [{ id: "blocked-1", content: "Waiting", status: "blocked" }],
+    });
+    await expect(todoEvent).resolves.toEqual({
+      type: "todo_reminder",
+      todos: [{ id: "blocked-1", content: "Waiting", status: "blocked" }],
+    });
+    await session.close();
+  });
+
   test("rejects incomplete ready metadata instead of guessing v1", async () => {
     const child = new FakeRpcChild();
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });

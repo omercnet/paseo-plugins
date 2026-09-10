@@ -104,7 +104,7 @@ export class OmpTimelineProjector {
       case "message_start":
         if (event.message.role !== "assistant") return;
         if (this.stream) {
-          this.flush();
+          this.flush(true);
           this.stream = null;
         }
         this.beginStream(event.message, turnId);
@@ -119,11 +119,11 @@ export class OmpTimelineProjector {
       case "message_end":
         if (event.message.role !== "assistant") return;
         this.updateStream(event.message, turnId);
-        this.flush();
+        this.flush(true);
         this.stream = null;
         return;
       case "tool_execution_start": {
-        this.flush();
+        this.flush(true);
         const snapshot: ToolSnapshot = {
           name: event.toolName,
           input: toJsonValue(event.args),
@@ -182,7 +182,12 @@ export class OmpTimelineProjector {
           id: todo.id ?? `omp:todo:${index}`,
           text: todo.content,
           completed: todo.status === "completed" || todo.status === "abandoned",
-          status: todo.status === "abandoned" ? "completed" : todo.status,
+          status:
+            todo.status === "completed" || todo.status === "abandoned"
+              ? "completed"
+              : todo.status === "blocked"
+                ? "pending"
+                : todo.status,
         })),
       });
       return;
@@ -219,10 +224,11 @@ export class OmpTimelineProjector {
     });
   }
 
-  flush(): void {
+  flush(finalizeFallback = false): void {
     this.clearFlushTimer();
     if (!this.stream || this.closed || this.stream.dirtyBlocks.size === 0) return;
     const stream = this.stream;
+    if (!stream.nativeIdentity && !finalizeFallback) return;
     const indexes = [...stream.dirtyBlocks].sort((left, right) => left - right);
     stream.dirtyBlocks.clear();
     for (const contentIndex of indexes) {
@@ -246,7 +252,7 @@ export class OmpTimelineProjector {
 
   finishTurn(turnId: string): void {
     if (this.currentTurnId !== turnId) return;
-    this.flush();
+    this.flush(true);
     this.stream = null;
     this.tools.clear();
     this.commandText = "";
@@ -255,7 +261,7 @@ export class OmpTimelineProjector {
   }
 
   close(): void {
-    this.flush();
+    this.flush(true);
     this.closed = true;
     this.clearFlushTimer();
     this.stream = null;
@@ -340,8 +346,9 @@ export class OmpTimelineProjector {
         : undefined;
     if (!kind) return;
     const previous = stream.blocks.get(contentIndex);
+    const eventContent = typeof update.content === "string" ? update.content : undefined;
     const text =
-      update.content ??
+      eventContent ??
       (update.delta !== undefined && previous?.kind === kind
         ? `${previous.text}${update.delta}`
         : update.delta ?? previous?.text ?? "");

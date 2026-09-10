@@ -28,7 +28,7 @@ const OmpAssistantMessageEventSchema = z
     type: z.string(),
     contentIndex: z.number().int().nonnegative().optional(),
     delta: z.string().optional(),
-    content: z.string().optional(),
+    content: z.unknown().optional(),
   })
   .passthrough();
 const OmpMessageSchema = z
@@ -147,7 +147,7 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
           .object({
             id: z.string().optional(),
             content: z.string(),
-            status: z.enum(["pending", "in_progress", "completed", "abandoned"]),
+            status: z.enum(["pending", "in_progress", "blocked", "completed", "abandoned"]),
           })
           .passthrough(),
       ),

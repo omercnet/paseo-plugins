@@ -30,7 +30,9 @@ const LOCAL_ONLY_SETTLE_MS = 5_000;
 type PendingUser = {
   clientMessageId: string;
   text: string;
+  accepted: boolean;
   fallbackOnFinish: boolean;
+  bufferedEchoes: OmpMessage[];
 };
 
 type ActiveTurn = {
@@ -42,13 +44,15 @@ type ActiveTurn = {
   interrupted: boolean;
   starting: boolean;
   nativeActivity: boolean;
+  localOnlyDisabled: boolean;
   nativeRequestId?: string;
   localOnlyTimer?: unknown;
   terminalizing: boolean;
   bufferedEvents: OmpRpcEvent[];
   pendingUsers: PendingUser[];
+  userEchoes: OmpMessage[];
+  userCorrelationActive: boolean;
   userLookups: Set<Promise<void>>;
-  unresolvedUsers: Set<PendingUser>;
 };
 
 function providerError(error: unknown, prefix?: string): { message: string } {
@@ -264,12 +268,20 @@ export class OmpProviderSession {
       interrupted: false,
       starting: true,
       nativeActivity: false,
+      localOnlyDisabled: false,
       terminalizing: false,
-      unresolvedUsers: new Set(),
+      userCorrelationActive: false,
       userLookups: new Set(),
+      userEchoes: [],
       bufferedEvents: [],
       pendingUsers: [
-        { clientMessageId: input.prompt.clientMessageId, text, fallbackOnFinish: true },
+        {
+          clientMessageId: input.prompt.clientMessageId,
+          text,
+          accepted: true,
+          fallbackOnFinish: true,
+          bufferedEchoes: [],
+        },
       ],
     };
     this.activeTurn = turn;
@@ -402,8 +414,20 @@ export class OmpProviderSession {
   }
 
   private async steer(clientMessageId: string, text: string): Promise<void> {
+    if (/^\/[A-Za-z][\w-]*(?:\s|$)/.test(text)) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId,
+        result: {
+          type: "failed",
+          error: { message: "OMP slash commands are unavailable while steering" },
+        },
+      });
+      return;
+    }
     const turn = this.activeTurn;
-    if (!turn || turn.terminal || !turn.started) {
+    if (!turn || turn.terminal || turn.terminalizing || !turn.started) {
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -412,11 +436,17 @@ export class OmpProviderSession {
       });
       return;
     }
-    const pending: PendingUser = { clientMessageId, text, fallbackOnFinish: false };
+    const pending: PendingUser = {
+      clientMessageId,
+      text,
+      accepted: false,
+      fallbackOnFinish: false,
+      bufferedEchoes: [],
+    };
     turn.pendingUsers.push(pending);
     try {
       await this.runtime.steer(text);
-      if (turn.terminal || this.activeTurn !== turn) {
+      if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) {
         this.removePendingUser(turn, pending);
         this.emit({
           type: "session.prompt_result",
@@ -429,7 +459,9 @@ export class OmpProviderSession {
         });
         return;
       }
-      pending.fallbackOnFinish = true;
+      turn.localOnlyDisabled = true;
+      this.cancelLocalOnlyCompletion(turn);
+      this.acceptPendingUser(turn, pending);
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
@@ -480,7 +512,7 @@ export class OmpProviderSession {
   private handleTurnEvent(turn: ActiveTurn, event: OmpRpcEvent): void {
     if (turn.terminal || this.activeTurn !== turn) return;
     if (event.type === "prompt_result") {
-      if (!event.id || event.id !== turn.nativeRequestId) return;
+      if (!event.id || event.id !== turn.nativeRequestId || turn.localOnlyDisabled) return;
       if (event.agentInvoked) this.cancelLocalOnlyCompletion(turn);
       else if (!turn.nativeActivity) this.scheduleLocalOnlyCompletion(turn);
       return;
@@ -506,33 +538,64 @@ export class OmpProviderSession {
   private projectUserEcho(turn: ActiveTurn, message: OmpMessage): void {
     const entryId = nativeEntryId(message);
     if (entryId && this.emittedEntryIds.has(entryId)) return;
-    const pending = turn.pendingUsers.shift();
-    if (!pending) return;
-    if (entryId) {
-      this.publishCorrelatedUser(pending, entryId);
-      return;
-    }
-    turn.unresolvedUsers.add(pending);
-    const publish = (resolvedId?: string) => {
-      if (!turn.unresolvedUsers.delete(pending)) return;
-      this.publishCorrelatedUser(pending, resolvedId);
-    };
-    const lookup = this.runtime
-      .getBranchMessages()
-      .then((messages) => {
-        let resolvedId: string | undefined;
-        for (let candidate = messages.length - 1; candidate >= 0; candidate -= 1) {
-          const message = messages[candidate];
-          if (message?.text === pending.text && !this.emittedEntryIds.has(message.entryId)) {
-            resolvedId = message.entryId;
-            break;
+    turn.userEchoes.push(message);
+    this.drainUserEchoes(turn);
+  }
+
+  private drainUserEchoes(turn: ActiveTurn): void {
+    if (turn.userCorrelationActive) return;
+    turn.userCorrelationActive = true;
+    const correlation = this.correlateUserEchoes(turn);
+    turn.userLookups.add(correlation);
+    void correlation.finally(() => {
+      turn.userLookups.delete(correlation);
+      turn.userCorrelationActive = false;
+      if (!turn.terminal && !turn.terminalizing && turn.userEchoes.length > 0) {
+        this.drainUserEchoes(turn);
+      }
+    });
+  }
+
+  private async correlateUserEchoes(turn: ActiveTurn): Promise<void> {
+    while (turn.userEchoes.length > 0) {
+      const message = turn.userEchoes[0];
+      if (!message) return;
+      const entryId = nativeEntryId(message);
+      if (entryId && this.emittedEntryIds.has(entryId)) {
+        turn.userEchoes.shift();
+        continue;
+      }
+      const pending = turn.pendingUsers[0];
+      if (!pending) {
+        turn.userEchoes.shift();
+        continue;
+      }
+      if (!pending.accepted) {
+        pending.bufferedEchoes.push(...turn.userEchoes.splice(0));
+        return;
+      }
+      let resolvedId = entryId;
+      if (!resolvedId) {
+        try {
+          const messages = await this.runtime.getBranchMessages();
+          for (const branchMessage of messages) {
+            if (
+              branchMessage.text === pending.text &&
+              !this.emittedEntryIds.has(branchMessage.entryId)
+            ) {
+              resolvedId = branchMessage.entryId;
+              break;
+            }
           }
+        } catch {
+          resolvedId = undefined;
         }
-        publish(resolvedId);
-      })
-      .catch(() => publish());
-    turn.userLookups.add(lookup);
-    void lookup.finally(() => turn.userLookups.delete(lookup));
+      }
+      turn.userEchoes.shift();
+      if (!resolvedId) return;
+      turn.pendingUsers.shift();
+      this.publishCorrelatedUser(pending, resolvedId);
+    }
   }
 
   private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {
@@ -544,6 +607,7 @@ export class OmpProviderSession {
   }
 
   private scheduleLocalOnlyCompletion(turn: ActiveTurn): void {
+    if (turn.localOnlyDisabled) return;
     this.cancelLocalOnlyCompletion(turn);
     turn.localOnlyTimer = this.scheduler.set(() => {
       turn.localOnlyTimer = undefined;
@@ -559,7 +623,14 @@ export class OmpProviderSession {
 
   private async completeLocalOnlyTurn(turn: ActiveTurn): Promise<void> {
     await Promise.allSettled(turn.userLookups);
-    if (turn.terminal || turn.nativeActivity || this.activeTurn !== turn) return;
+    if (
+      turn.terminal ||
+      turn.nativeActivity ||
+      turn.localOnlyDisabled ||
+      this.activeTurn !== turn
+    ) {
+      return;
+    }
     this.publishPendingUsers(turn);
     this.finishTurn(turn, "completed");
   }
@@ -585,18 +656,27 @@ export class OmpProviderSession {
   }
 
   private publishPendingUsers(turn: ActiveTurn): void {
-    for (const pending of [...turn.pendingUsers.splice(0), ...turn.unresolvedUsers]) {
-      turn.unresolvedUsers.delete(pending);
-      if (pending.fallbackOnFinish) {
+    for (const pending of turn.pendingUsers.splice(0)) {
+      if (pending.accepted && pending.fallbackOnFinish) {
         this.projector.publishUser(pending.text, pending.clientMessageId);
       }
     }
+    turn.userEchoes.length = 0;
+  }
+
+  private acceptPendingUser(turn: ActiveTurn, pending: PendingUser): void {
+    pending.accepted = true;
+    pending.fallbackOnFinish = true;
+    if (pending.bufferedEchoes.length > 0) {
+      turn.userEchoes.unshift(...pending.bufferedEchoes.splice(0));
+    }
+    this.drainUserEchoes(turn);
   }
 
   private removePendingUser(turn: ActiveTurn, pending: PendingUser): void {
     const index = turn.pendingUsers.indexOf(pending);
     if (index >= 0) turn.pendingUsers.splice(index, 1);
-    turn.unresolvedUsers.delete(pending);
+    pending.bufferedEchoes.length = 0;
   }
 
   private publishPromptResult(
