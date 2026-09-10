@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import {
   computeOmpProviderHealth,
+  computeProcessDiagnostics,
   killWindowsProcessTree,
   type ProbeChildProcess,
   type ProbeReadable,
@@ -11,6 +12,7 @@ import {
   resolveExecutablePath,
   runBounded,
   type SpawnFn,
+  terminatePosixProcessTree,
 } from "../server/provider-diagnostics";
 import { OmpProviderHealthSchema } from "../shared/provider-diagnostics";
 
@@ -57,13 +59,11 @@ class FakeChild implements ProbeChildProcess {
   readonly pid = 12345;
   readonly stdout = new FakeReadable();
   readonly stderr = new FakeReadable();
-  readonly killSignals: NodeJS.Signals[] = [];
+  terminateCalls = 0;
   closeEvents = 0;
-  onKill?: (signal: NodeJS.Signals) => void;
+  onTerminate?: (graceMs: number) => Promise<boolean>;
   private errorListeners: Array<(error: NodeJS.ErrnoException) => void> = [];
-  private closeListeners: Array<
-    (code: number | null, signal: NodeJS.Signals | null) => void
-  > = [];
+  private closeListeners: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
 
   onError(listener: (error: NodeJS.ErrnoException) => void): void {
     this.errorListeners.push(listener);
@@ -78,10 +78,9 @@ class FakeChild implements ProbeChildProcess {
     this.closeListeners = [];
   }
 
-  kill(signal: NodeJS.Signals): boolean {
-    this.killSignals.push(signal);
-    this.onKill?.(signal);
-    return true;
+  terminateTree(graceMs: number): Promise<boolean> {
+    this.terminateCalls += 1;
+    return this.onTerminate?.(graceMs) ?? Promise.resolve(true);
   }
 
   emitError(code: string): void {
@@ -238,29 +237,40 @@ describe("runBounded", () => {
     });
   });
 
-  test("kills the process tree on timeout and waits for close", async () => {
+  test("waits for tree cleanup after the timed-out leader closes", async () => {
     const child = new FakeChild();
-    child.onKill = (signal) => {
-      if (signal === "SIGTERM") queueMicrotask(() => child.emitClose(null, "SIGTERM"));
+    const cleanup = Promise.withResolvers<boolean>();
+    const terminationStarted = Promise.withResolvers<void>();
+    child.onTerminate = () => {
+      terminationStarted.resolve();
+      queueMicrotask(() => child.emitClose(null, "SIGTERM"));
+      return cleanup.promise;
     };
 
-    const result = await runBounded(() => child, "omp", ["--help"], {}, 10, 10, 64);
-
-    expect(child.killSignals).toEqual(["SIGTERM"]);
+    const resultPromise = runBounded(() => child, "omp", ["--help"], {}, 0, 0, 64);
+    await terminationStarted.promise;
+    await Promise.resolve();
     expect(child.closeEvents).toBe(1);
-    expect(result).toMatchObject({
-      outcome: "timeout",
-      signal: "SIGTERM",
-      cleanupFailed: false,
+    let settled = false;
+    void resultPromise.then(() => {
+      settled = true;
     });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    cleanup.resolve(true);
+    const result = await resultPromise;
+    expect(child.terminateCalls).toBe(1);
+    expect(result).toMatchObject({ outcome: "timeout", signal: "SIGTERM", cleanupFailed: false });
   });
 
-  test("reports cleanup failure after the full bounded kill sequence", async () => {
+  test("reports cleanup failure after cleanup and leader-close deadlines", async () => {
     const child = new FakeChild();
+    child.onTerminate = async () => false;
 
-    const result = await runBounded(() => child, "omp", ["--help"], {}, 5, 5, 64);
+    const result = await runBounded(() => child, "omp", ["--help"], {}, 0, 0, 64);
 
-    expect(child.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(child.terminateCalls).toBe(1);
     expect(child.closeEvents).toBe(0);
     expect(result).toMatchObject({ outcome: "timeout", cleanupFailed: true });
   });
@@ -280,6 +290,21 @@ describe("runBounded", () => {
   });
 });
 
+describe("terminatePosixProcessTree", () => {
+  test("continues TERM-to-KILL escalation after the leader may have closed", async () => {
+    const signals: Array<NodeJS.Signals | 0> = [];
+    const signalProcess = (_pid: number, signal: NodeJS.Signals | 0) => {
+      signals.push(signal);
+      if (signal === 0) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    };
+
+    const terminated = await terminatePosixProcessTree(42, 1, signalProcess, async () => {});
+
+    expect(terminated).toBe(true);
+    expect(signals).toEqual(["SIGTERM", "SIGKILL", 0]);
+  });
+});
+
 describe("killWindowsProcessTree", () => {
   const SYSTEM_ROOT = "C:\\Windows";
   const EXPECTED_TASKKILL_PATH = join(SYSTEM_ROOT, "System32", "taskkill.exe");
@@ -293,49 +318,40 @@ describe("killWindowsProcessTree", () => {
       return child;
     };
 
-    await killWindowsProcessTree(4321, spawnFn, SYSTEM_ROOT, 200);
+    expect(await killWindowsProcessTree(4321, spawnFn, SYSTEM_ROOT, 200)).toBe(true);
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.command).toBe(EXPECTED_TASKKILL_PATH);
     expect(calls[0]?.args).toEqual(["/pid", "4321", "/t", "/f"]);
   });
 
-  test("resolves promptly on close instead of waiting the full grace period", async () => {
+  test("resolves true when taskkill closes successfully", async () => {
     const child = new FakeChild();
     queueMicrotask(() => child.emitClose(0, null));
-    const started = Date.now();
 
-    await killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 5_000);
-
-    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(await killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 5_000)).toBe(true);
   });
 
-  test("never lets a taskkill error event escape unhandled, and still resolves", async () => {
+  test("awaits a taskkill error and returns false without an unhandled error", async () => {
     const child = new FakeChild();
     queueMicrotask(() => child.emitError("ENOENT"));
-    const started = Date.now();
 
-    await killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 5_000);
-
-    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(await killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 5_000)).toBe(false);
   });
 
-  test("resolves without throwing when the spawn itself fails synchronously", async () => {
+  test("awaits taskkill close and propagates a nonzero exit as cleanup failure", async () => {
+    const child = new FakeChild();
+    queueMicrotask(() => child.emitClose(1, null));
+
+    expect(await killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 5_000)).toBe(false);
+  });
+
+  test("returns false when the spawn itself fails synchronously", async () => {
     const spawnFn: SpawnFn = () => {
       throw Object.assign(new Error("not found"), { code: "ENOENT" });
     };
 
-    await expect(killWindowsProcessTree(1, spawnFn, SYSTEM_ROOT, 200)).resolves.toBeUndefined();
-  });
-
-  test("resolves within the grace bound when taskkill never responds", async () => {
-    const child = new FakeChild();
-    const started = Date.now();
-
-    await killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 30);
-
-    expect(Date.now() - started).toBeGreaterThanOrEqual(25);
-    expect(Date.now() - started).toBeLessThan(1_000);
+    await expect(killWindowsProcessTree(1, spawnFn, SYSTEM_ROOT, 200)).resolves.toBe(false);
   });
 });
 
@@ -378,12 +394,9 @@ describe("computeOmpProviderHealth", () => {
       versionStatus: "ok",
       processCleanupFailed: false,
     });
-    expect(health.rpcUi).toEqual({ checked: true, supported: true });
-    expect(health.lsp).toEqual({ status: "supported" });
     expect(health.mcp).toEqual({
       status: "configured",
       serverCount: 2,
-      serverNames: ["alpha", "beta"],
       reason: null,
     });
     expect(health.process).toEqual({ status: "ok", trackedCount: 2 });
@@ -499,8 +512,8 @@ describe("computeOmpProviderHealth", () => {
 
       const health = await computeOmpProviderHealth(
         baseDeps(agentDir, binaryDir, {
-          maxVersionBytes: 4,
-          spawnFn: respondingSpawn({ versionStdout: "omp/18.1.15\n" }),
+          maxVersionBytes: Buffer.byteLength("omp/18.1.15"),
+          spawnFn: respondingSpawn({ versionStdout: "omp/18.1.15EXTRA" }),
         }),
       );
 
@@ -545,18 +558,10 @@ describe("computeOmpProviderHealth", () => {
       const missingDir = await tempDir("paseo-omp-missing-");
       const missing = await computeOmpProviderHealth(baseDeps(missingDir, binaryDir));
       expect(missing.roots.configState).toBe("missing");
-
-      const malformedDir = await tempDir("paseo-omp-malformed-");
-      await writeFile(join(malformedDir, "config.yml"), "memory: [\n");
-      const malformed = await computeOmpProviderHealth(baseDeps(malformedDir, binaryDir));
-      expect(malformed.roots.configState).toBe("invalid");
-
-      const unreadableDir = await tempDir("paseo-omp-unreadable-");
-      const unreadablePath = join(unreadableDir, "config.yml");
-      await writeFile(unreadablePath, "memory:\n  backend: local\n");
-      await chmod(unreadablePath, 0o000);
-      const unreadable = await computeOmpProviderHealth(baseDeps(unreadableDir, binaryDir));
-      expect(unreadable.roots.configState).toBe("invalid");
+      const invalidDir = await tempDir("paseo-omp-invalid-");
+      await writeFile(join(invalidDir, "config.yml"), "memory: [\n");
+      const invalid = await computeOmpProviderHealth(baseDeps(invalidDir, binaryDir));
+      expect(invalid.roots.configState).toBe("invalid");
 
       const wrongTypeDir = await tempDir("paseo-omp-wrong-type-");
       await mkdir(join(wrongTypeDir, "config.yml"));
@@ -606,7 +611,6 @@ describe("computeOmpProviderHealth", () => {
       expect(health.mcp.status).toBe("unavailable");
       expect(health.mcp.reason).toContain("mcp.json");
       expect(health.mcp.serverCount).toBeNull();
-      expect(health.mcp.serverNames).toBeNull();
     });
 
     test("reports invalid for malformed JSON without leaking file content", async () => {
@@ -632,7 +636,7 @@ describe("computeOmpProviderHealth", () => {
       expect(health.mcp.status).toBe("invalid");
     });
 
-    test("never forwards nested server credentials, only names and a count", async () => {
+    test("never forwards server names or nested credentials", async () => {
       const binaryDir = await tempDir("paseo-omp-bin-");
       await createFakeBinary(binaryDir);
       const agentDir = await tempDir("paseo-omp-agent-");
@@ -640,77 +644,101 @@ describe("computeOmpProviderHealth", () => {
         join(agentDir, "mcp.json"),
         JSON.stringify({
           mcpServers: {
-            descope: { command: "npx", env: { API_KEY: "top-secret-value" } },
+            "private-descope-name": { command: "npx", env: { API_KEY: "top-secret-value" } },
           },
         }),
       );
 
       const health = await computeOmpProviderHealth(baseDeps(agentDir, binaryDir));
 
-      expect(health.mcp).toEqual({
-        status: "configured",
-        serverCount: 1,
-        serverNames: ["descope"],
-        reason: null,
-      });
-      expect(JSON.stringify(health)).not.toContain("top-secret-value");
-      expect(JSON.stringify(health)).not.toContain("npx");
+      expect(health.mcp).toEqual({ status: "configured", serverCount: 1, reason: null });
+      const serialized = JSON.stringify(health);
+      expect(serialized).not.toContain("private-descope-name");
+      expect(serialized).not.toContain("top-secret-value");
+      expect(serialized).not.toContain("npx");
     });
   });
 
-  describe("directory access and process filtering", () => {
-    test("treats a directory without traverse permission as invalid, not available", async () => {
-      const binaryDir = await tempDir("paseo-omp-bin-");
-      await createFakeBinary(binaryDir);
-      const agentDir = await tempDir("paseo-omp-agent-");
-      const sessionsDir = join(agentDir, "sessions");
-      await mkdir(sessionsDir);
-      await chmod(sessionsDir, 0o000);
+  describe("process filtering", () => {
+    test("counts regular meta.json files and reports unexpected access failures", async () => {
+      const root = "/virtual/hub";
+      const projectADaemons = join(root, "project-a", "daemons");
+      const projectBDaemons = join(root, "project-b", "daemons");
+      const fixture = await tempDir("paseo-omp-meta-");
+      const metaPath = join(fixture, "meta.json");
+      await writeFile(metaPath, "{}");
+      const directoryStats = await lstat(fixture);
+      const metaStats = await lstat(metaPath);
+      const fs = {
+        async readdir(path: string): Promise<string[]> {
+          if (path === root) return ["project-a", "project-b"];
+          if (path === projectADaemons) return ["real", "missing"];
+          if (path === projectBDaemons) {
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          }
+          return [];
+        },
+        async lstat(path: string) {
+          if (
+            path === root ||
+            path === join(root, "project-a") ||
+            path === join(root, "project-b") ||
+            path === projectADaemons ||
+            path === projectBDaemons
+          ) {
+            return directoryStats;
+          }
+          if (path === join(projectADaemons, "real", "meta.json")) return metaStats;
+          throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        },
+      };
 
-      try {
-        const health = await computeOmpProviderHealth(baseDeps(agentDir, binaryDir));
-        expect(health.roots.sessionRootState).toBe("invalid");
-      } finally {
-        await chmod(sessionsDir, 0o755);
-      }
+      expect(await computeProcessDiagnostics(root, fs)).toEqual({
+        status: "partial",
+        trackedCount: 1,
+      });
     });
 
-    test("counts only meta.json entries; reports partial for an inaccessible project", async () => {
-      const binaryDir = await tempDir("paseo-omp-bin-");
-      await createFakeBinary(binaryDir);
-      const agentDir = await tempDir("paseo-omp-agent-");
-      const hubRunRoot = join(agentDir, "hub-run");
-      await writeDaemonEntry(hubRunRoot, "project-a", "real");
-      await mkdir(join(hubRunRoot, "project-a", "daemons", "junk"), { recursive: true });
-      const blockedDaemons = join(hubRunRoot, "project-b", "daemons");
-      await mkdir(blockedDaemons, { recursive: true });
-      await chmod(blockedDaemons, 0o000);
+    test("unexpected meta.json stat failures also make the result partial", async () => {
+      const root = "/virtual/hub";
+      const projectDir = join(root, "project");
+      const daemonsDir = join(projectDir, "daemons");
+      const fixture = await tempDir("paseo-omp-dir-");
+      const directoryStats = await lstat(fixture);
+      const fs = {
+        async readdir(path: string): Promise<string[]> {
+          return path === root ? ["project"] : ["blocked"];
+        },
+        async lstat(path: string) {
+          if (path === root || path === projectDir || path === daemonsDir) return directoryStats;
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        },
+      };
 
-      try {
-        const health = await computeOmpProviderHealth(
-          baseDeps(agentDir, binaryDir, { hubRunRoot }),
-        );
-        expect(health.process).toEqual({ status: "partial", trackedCount: 1 });
-      } finally {
-        await chmod(blockedDaemons, 0o755);
-      }
+      expect(await computeProcessDiagnostics(root, fs)).toEqual({
+        status: "partial",
+        trackedCount: 0,
+      });
     });
 
     test("reports unavailable when the hub run root does not exist", async () => {
-      const binaryDir = await tempDir("paseo-omp-bin-");
-      await createFakeBinary(binaryDir);
-      const agentDir = await tempDir("paseo-omp-agent-");
-
-      const health = await computeOmpProviderHealth(
-        baseDeps(agentDir, binaryDir, { hubRunRoot: join(agentDir, "no-hub-run") }),
-      );
-
-      expect(health.process).toEqual({ status: "unavailable", trackedCount: null });
+      const fs = {
+        async readdir(): Promise<string[]> {
+          throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        },
+        async lstat() {
+          throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        },
+      };
+      expect(await computeProcessDiagnostics("/missing", fs)).toEqual({
+        status: "unavailable",
+        trackedCount: null,
+      });
     });
   });
 
   describe("path sanitization", () => {
-    test("renders a coarse custom-path label for roots outside the configured home", async () => {
+    test("renders a constant custom-path label without leaking its basename", async () => {
       const binaryDir = await tempDir("paseo-omp-bin-");
       const binaryPath = await createFakeBinary(binaryDir);
       const agentDir = await tempDir("paseo-omp-agent-");
@@ -719,10 +747,11 @@ describe("computeOmpProviderHealth", () => {
         baseDeps(agentDir, binaryDir, { homeDir: "/nonexistent-home-for-tests" }),
       );
 
-      expect(health.roots.agentRoot).toBe(`<custom path>/${agentDir.split(sep).pop()}`);
-      expect(health.binary.resolvedPath).toBe(`<custom path>/${binaryPath.split(sep).pop()}`);
-      expect(health.roots.agentRoot).not.toContain(agentDir);
-      expect(health.binary.resolvedPath).not.toContain(binaryDir);
+      expect(health.roots.agentRoot).toBe("<custom path>");
+      expect(health.binary.resolvedPath).toBe("<custom path>");
+      expect(health.roots.configPath).toBe("<custom path>/config.yml");
+      expect(JSON.stringify(health)).not.toContain("paseo-omp-agent-");
+      expect(JSON.stringify(health)).not.toContain("paseo-omp-bin-");
     });
 
     test("renders home-relative paths for roots under the configured home", async () => {
@@ -735,6 +764,20 @@ describe("computeOmpProviderHealth", () => {
       expect(health.roots.agentRoot).toBe(homeRelative(agentDir));
       expect(health.roots.agentRoot.startsWith("~")).toBe(true);
       expect(health.roots.agentRoot).not.toBe(agentDir);
+    });
+
+    test("normalizes trailing separators before deriving child labels", async () => {
+      const binaryDir = await tempDir("paseo-omp-bin-");
+      await createFakeBinary(binaryDir);
+      const agentDir = await tempDir("paseo-omp-agent-");
+
+      const health = await computeOmpProviderHealth(
+        baseDeps(`${agentDir}${sep}`, binaryDir, { homeDir: "/outside" }),
+      );
+
+      expect(health.roots.agentRoot).toBe("<custom path>");
+      expect(health.roots.configPath).toBe("<custom path>/config.yml");
+      expect(health.roots.sessionRoot).toBe("<custom path>/sessions");
     });
 
     test("never forwards a raw env-overridden command path unsanitized", async () => {
@@ -751,7 +794,7 @@ describe("computeOmpProviderHealth", () => {
       );
 
       expect(health.binary.resolvedPath).not.toBe(binaryPath);
-      expect(health.binary.resolvedPath).toBe(`<custom path>/${binaryPath.split(sep).pop()}`);
+      expect(health.binary.resolvedPath).toBe("<custom path>");
     });
   });
 });

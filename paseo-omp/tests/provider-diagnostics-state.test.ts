@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type { PaseoProviderSnapshotResult } from "@getpaseo/client";
 import {
   formatOmpVersion,
+  loadReadyProviderSnapshot,
   lspTone,
   mcpTone,
   processTone,
+  refreshProviderDiagnostics,
   rpcUiTone,
   selectKnownOmpProviders,
   summarizeBinaryHealth,
@@ -13,6 +15,7 @@ import {
   summarizeMemoryBackend,
   summarizePathState,
   summarizeProcessDiagnostics,
+  summarizeProviderStatus,
   summarizeRpcUiSupport,
 } from "../client/provider-diagnostics-state";
 import type { OmpProviderHealth } from "../shared/provider-diagnostics";
@@ -28,7 +31,7 @@ function health(overrides: Partial<OmpProviderHealth> = {}): OmpProviderHealth {
     },
     rpcUi: { checked: true, supported: true },
     lsp: { status: "supported" },
-    mcp: { status: "unavailable", serverCount: null, serverNames: null, reason: "No mcp.json." },
+    mcp: { status: "unavailable", serverCount: null, reason: "No mcp.json." },
     process: { status: "ok", trackedCount: 2 },
     roots: {
       agentRoot: "/home/test/.omp/agent",
@@ -101,7 +104,6 @@ describe("compatibility and process summaries", () => {
       summarizeMcpDiagnostics({
         status: "unavailable",
         serverCount: null,
-        serverNames: null,
         reason: "No signal.",
       }),
     ).toBe("Unavailable (No signal.)");
@@ -109,14 +111,12 @@ describe("compatibility and process summaries", () => {
       summarizeMcpDiagnostics({
         status: "configured",
         serverCount: 2,
-        serverNames: ["alpha", "beta"],
         reason: null,
       }),
-    ).toBe("2 configured (alpha, beta)");
+    ).toBe("2 configured");
     const configuredMcp = {
       status: "configured" as const,
       serverCount: 1,
-      serverNames: ["a"],
       reason: null,
     };
     expect(mcpTone(configuredMcp)).toBe("ok");
@@ -133,12 +133,13 @@ describe("compatibility and process summaries", () => {
 });
 
 describe("storage summaries", () => {
-  test("keeps missing, invalid, and wrong-type states distinct", () => {
+  test("keeps missing, unreadable, invalid, and wrong-type states distinct", () => {
     expect(summarizePathState("missing")).toEqual({ label: "Missing", tone: "danger" });
-    expect(summarizePathState("invalid")).toEqual({
-      label: "Invalid or unreadable",
+    expect(summarizePathState("unreadable")).toEqual({
+      label: "Unreadable",
       tone: "warning",
     });
+    expect(summarizePathState("invalid")).toEqual({ label: "Invalid", tone: "warning" });
     expect(summarizePathState("wrong-type")).toEqual({
       label: "Wrong type on disk",
       tone: "warning",
@@ -154,7 +155,7 @@ describe("storage summaries", () => {
           roots: { ...health().roots, configState: "invalid" },
         }),
       ),
-    ).toBe("Unknown (config invalid or unreadable)");
+    ).toBe("Unknown (config invalid)");
   });
 });
 
@@ -183,5 +184,116 @@ describe("selectKnownOmpProviders", () => {
         enabled: true,
       },
     ]);
+  });
+});
+
+describe("provider status summaries", () => {
+  test("disabled is primary; enabled statuses use explicit labels and tones", () => {
+    expect(summarizeProviderStatus({ enabled: false, status: "ready" })).toEqual({
+      label: "Disabled",
+      tone: "muted",
+    });
+    expect(summarizeProviderStatus({ enabled: true, status: "ready" })).toEqual({
+      label: "Ready",
+      tone: "ok",
+    });
+    expect(summarizeProviderStatus({ enabled: true, status: "loading" })).toEqual({
+      label: "Loading",
+      tone: "warning",
+    });
+    expect(summarizeProviderStatus({ enabled: true, status: "error" })).toEqual({
+      label: "Error",
+      tone: "danger",
+    });
+    expect(summarizeProviderStatus({ enabled: true, status: "unavailable" })).toEqual({
+      label: "Unavailable",
+      tone: "danger",
+    });
+  });
+});
+
+describe("provider snapshot convergence and forced refresh", () => {
+  const snapshot: PaseoProviderSnapshotResult = {
+    entries: [],
+    generatedAt: "2026-09-10T00:00:00.000Z",
+    requestId: "request-1",
+  };
+
+  test("initial discovery waits for ready rather than keeping a loading snapshot", async () => {
+    let waitCalls = 0;
+    const providers = {
+      async waitForReady() {
+        waitCalls += 1;
+        return snapshot;
+      },
+      async snapshot() {
+        throw new Error("snapshot fallback should not run");
+      },
+      async refresh() {
+        return { requestId: "refresh", acknowledged: true };
+      },
+    };
+
+    expect(await loadReadyProviderSnapshot(providers)).toBe(snapshot);
+    expect(waitCalls).toBe(1);
+  });
+
+  test("caches successful forced health even when provider refresh partially fails", async () => {
+    const forcedHealth = health();
+    let cachedHealth: OmpProviderHealth | null = null;
+    let cachedProviders: PaseoProviderSnapshotResult | null = null;
+    const providers = {
+      async waitForReady() {
+        return snapshot;
+      },
+      async snapshot() {
+        return snapshot;
+      },
+      async refresh() {
+        throw new Error("provider refresh failed");
+      },
+    };
+
+    const result = await refreshProviderDiagnostics({
+      providers,
+      async loadForcedHealth() {
+        return forcedHealth;
+      },
+      cacheHealth(value) {
+        cachedHealth = value;
+      },
+      cacheProviders(value) {
+        cachedProviders = value;
+      },
+    });
+
+    expect(result.failed).toBe(true);
+    expect(cachedHealth).toBe(forcedHealth);
+    expect(cachedProviders).toBe(snapshot);
+  });
+
+  test("suppresses only a recognized unsupported-host refresh error", async () => {
+    const providers = {
+      async waitForReady() {
+        return snapshot;
+      },
+      async snapshot() {
+        return snapshot;
+      },
+      async refresh() {
+        throw Object.assign(new Error("update host"), { code: "UPDATE_HOST_REQUIRED" });
+      },
+    };
+
+    const result = await refreshProviderDiagnostics({
+      providers,
+      async loadForcedHealth() {
+        return health();
+      },
+      cacheHealth() {},
+      cacheProviders() {},
+    });
+
+    expect(result.failed).toBe(false);
   });
 });

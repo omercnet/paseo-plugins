@@ -1,8 +1,8 @@
 import { type PluginSurfaceProps, usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
@@ -13,6 +13,7 @@ import {
   mcpTone,
   type PathStateSummary,
   processTone,
+  refreshProviderDiagnostics,
   rpcUiTone,
   selectKnownOmpProviders,
   summarizeBinaryHealth,
@@ -21,11 +22,14 @@ import {
   summarizeMemoryBackend,
   summarizePathState,
   summarizeProcessDiagnostics,
+  summarizeProviderStatus,
   summarizeRpcUiSupport,
+  loadReadyProviderSnapshot,
 } from "./provider-diagnostics-state";
 
 const CONFIG_POLL_MS = 30_000;
-const OMP_PROVIDER_IDS = ["omp", "omp-plugin"] as const;
+const HEALTH_QUERY_KEY = ["paseo-omp", "provider-health"] as const;
+const PROVIDERS_QUERY_KEY = ["paseo-omp", "provider-snapshot"] as const;
 
 export interface OmpConfigStyles {
   root: ViewStyle;
@@ -496,36 +500,27 @@ function ProviderHealthSection({
   const paseo = usePaseo();
   const queryClient = useQueryClient();
   const loadHealth = useRpc(getOmpProviderHealth);
-  const healthQueryKey = ["paseo-omp", "provider-health"];
   const health = useQuery({
-    queryKey: healthQueryKey,
+    queryKey: HEALTH_QUERY_KEY,
     queryFn: () => loadHealth({}),
   });
   const providers = useQuery({
-    queryKey: ["paseo-omp", "provider-snapshot"],
-    queryFn: () => paseo.providers.snapshot({}),
+    queryKey: PROVIDERS_QUERY_KEY,
+    queryFn: () => loadReadyProviderSnapshot(paseo.providers),
   });
-  const [isForcingHealth, setIsForcingHealth] = useState(false);
-  const isRefreshing = isForcingHealth || health.isFetching || providers.isFetching;
+  const refresh = useMutation({
+    mutationFn: async () => {
+      const result = await refreshProviderDiagnostics({
+        providers: paseo.providers,
+        loadForcedHealth: () => loadHealth({ force: true }),
+        cacheHealth: (value) => queryClient.setQueryData(HEALTH_QUERY_KEY, value),
+        cacheProviders: (value) => queryClient.setQueryData(PROVIDERS_QUERY_KEY, value),
+      });
+      if (result.failed) throw new Error("Could not fully refresh OMP provider health.");
+    },
+  });
+  const isRefreshing = refresh.isPending || health.isFetching || providers.isFetching;
   const knownProviders = providers.data ? selectKnownOmpProviders(providers.data.entries) : [];
-
-  async function refreshProviderHealth() {
-    setIsForcingHealth(true);
-    try {
-      try {
-        await paseo.providers.refresh({ providers: [...OMP_PROVIDER_IDS] });
-      } catch {
-        // An older host may not support targeted refresh; still force the health probe below.
-      }
-      const [forcedHealth] = await Promise.all([
-        loadHealth({ force: true }),
-        providers.refetch(),
-      ]);
-      queryClient.setQueryData(healthQueryKey, forcedHealth);
-    } finally {
-      setIsForcingHealth(false);
-    }
-  }
 
   return (
     <>
@@ -537,7 +532,7 @@ function ProviderHealthSection({
             accessibilityLabel="Refresh OMP provider health"
             style={styles.refresh}
             disabled={isRefreshing}
-            onPress={() => void refreshProviderHealth()}
+            onPress={() => refresh.mutate()}
           >
             <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
             <Text style={styles.refreshLabel}>{isRefreshing ? "Refreshing…" : "Refresh"}</Text>
@@ -548,6 +543,9 @@ function ProviderHealthSection({
       {health.isLoading ? <Text style={styles.muted}>Checking the omp installation…</Text> : null}
       {health.error ? (
         <Text style={styles.error}>Could not check the omp installation. Try refreshing.</Text>
+      ) : null}
+      {refresh.error ? (
+        <Text style={styles.error}>Could not fully refresh provider health. Try again.</Text>
       ) : null}
       {health.data ? <BinarySection theme={theme} styles={styles} health={health.data} /> : null}
       {health.data ? (
@@ -565,14 +563,18 @@ function ProviderHealthSection({
       ) : null}
       {knownProviders.length > 0 ? (
         <SectionCard styles={styles} title="Registered providers">
-          {knownProviders.map((provider) => (
-            <KeyValueRow
-              key={provider.id}
-              styles={styles}
-              label={`${provider.label} (${provider.kind})`}
-              value={provider.enabled ? provider.status : `${provider.status}, disabled`}
-            />
-          ))}
+          {knownProviders.map((provider) => {
+            const status = summarizeProviderStatus(provider);
+            return (
+              <KeyValueRow
+                key={provider.id}
+                styles={styles}
+                label={`${provider.label} (${provider.kind})`}
+                value={status.label}
+                valueColor={toneColor(theme, status.tone)}
+              />
+            );
+          })}
         </SectionCard>
       ) : null}
     </>

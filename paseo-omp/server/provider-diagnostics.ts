@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { constants, type Stats } from "node:fs";
 import { access, type FileHandle, lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, delimiter, isAbsolute, join, sep } from "node:path";
+import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -62,7 +62,7 @@ function buildProbeEnv(sourceEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env;
 }
 
-/** The minimal child-process shape a probe needs: readable stdio, exit reporting, and kill. */
+/** The minimal child-process shape a probe needs: readable stdio, exit reporting, and cleanup. */
 export interface ProbeReadable {
   on(event: "data", listener: (chunk: Buffer) => void): void;
   removeAllListeners(): void;
@@ -75,8 +75,8 @@ export interface ProbeChildProcess {
   onError(listener: (error: NodeJS.ErrnoException) => void): void;
   onClose(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
   removeAllListeners(): void;
-  /** Implementations own full process-tree termination (posix process group / Windows taskkill). */
-  kill(signal: NodeJS.Signals): boolean;
+  /** Resolves true only after the complete process tree is confirmed terminated. */
+  terminateTree(graceMs: number): Promise<boolean>;
 }
 
 export type SpawnFn = (
@@ -85,53 +85,79 @@ export type SpawnFn = (
   env: NodeJS.ProcessEnv,
 ) => ProbeChildProcess;
 
-function killPosixProcessGroup(pid: number, signal: NodeJS.Signals): void {
+export type SignalProcess = (pid: number, signal: NodeJS.Signals | 0) => void;
+
+function waitMs(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+function processIsGone(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "ESRCH";
+}
+
+/**
+ * TERM→KILL escalation targets the detached POSIX process group, not just the leader. Both
+ * signals are attempted on schedule even if the leader closes after TERM, then signal 0 verifies
+ * the group is gone within the final bound.
+ */
+export async function terminatePosixProcessTree(
+  pid: number,
+  graceMs: number,
+  signalProcess: SignalProcess = process.kill,
+  wait: (ms: number) => Promise<void> = waitMs,
+): Promise<boolean> {
   try {
-    // The real child is spawned detached (its own process group leader); a negative pid
-    // signals the whole group, catching grandchildren the direct child spawned. This
-    // escalation runs independently of whether the group leader has already closed.
-    process.kill(-pid, signal);
-  } catch {
-    try {
-      process.kill(pid, signal);
-    } catch {
-      // Already exited between the kill attempt and this fallback.
-    }
+    signalProcess(-pid, "SIGTERM");
+  } catch (error) {
+    if (!processIsGone(error)) return false;
+  }
+  await wait(graceMs);
+  try {
+    signalProcess(-pid, "SIGKILL");
+  } catch (error) {
+    if (!processIsGone(error)) return false;
+  }
+  await wait(graceMs);
+  try {
+    signalProcess(-pid, 0);
+    return false;
+  } catch (error) {
+    return processIsGone(error);
   }
 }
 
 /**
- * Terminates a Windows process tree via the resolved absolute `taskkill.exe` (never a bare
- * "taskkill" left to PATH search). `onError`/`onClose` are always attached before this returns,
- * so a missing/failing taskkill can never surface as an unhandled child "error" event; the
- * promise still resolves, bounded by `graceMs`, whichever of close/error/timeout comes first.
+ * Terminates a Windows process tree via absolute System32/taskkill.exe. Error and close handlers
+ * are installed synchronously, and false is returned on spawn error, nonzero exit, or deadline.
  */
 export async function killWindowsProcessTree(
   pid: number,
   spawnFn: SpawnFn,
   systemRoot: string,
-  graceMs: number,
-): Promise<void> {
+  deadlineMs: number,
+): Promise<boolean> {
   const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
-  const { promise, resolve } = Promise.withResolvers<void>();
+  const { promise, resolve } = Promise.withResolvers<boolean>();
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const finish = () => {
+  const finish = (success: boolean) => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
-    resolve();
+    resolve(success);
   };
 
   let child: ProbeChildProcess;
   try {
     child = spawnFn(taskkillPath, ["/pid", String(pid), "/t", "/f"], buildProbeEnv(process.env));
   } catch {
-    return; // Nothing to attach handlers to; best effort ends here.
+    return false;
   }
-  timer = setTimeout(finish, graceMs);
-  child.onError(() => finish());
-  child.onClose(() => finish());
+  child.onError(() => finish(false));
+  child.onClose((code, signal) => finish(code === 0 && signal === null));
+  timer = setTimeout(() => finish(false), deadlineMs);
   return promise;
 }
 
@@ -158,19 +184,17 @@ function defaultSpawn(
     removeAllListeners: () => {
       child.removeAllListeners();
     },
-    kill: (signal) => {
+    terminateTree: async (graceMs) => {
       if (child.pid === undefined) return true;
       if (process.platform === "win32") {
-        void killWindowsProcessTree(
+        return killWindowsProcessTree(
           child.pid,
           defaultSpawn,
           process.env.SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT,
-          KILL_GRACE_MS,
+          graceMs,
         );
-      } else {
-        killPosixProcessGroup(child.pid, signal);
       }
-      return true;
+      return terminatePosixProcessTree(child.pid, graceMs);
     },
   };
 }
@@ -303,7 +327,12 @@ export function runBounded(
   let stdoutBytes = 0;
   let truncated = false;
   let timedOut = false;
-  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  let leaderClosed = false;
+  let leaderExitCode: number | null = null;
+  let leaderSignal: NodeJS.Signals | null = null;
+  let treeCleanupDone = false;
+  let treeCleanupSucceeded = false;
+  let finalLeaderTimer: ReturnType<typeof setTimeout> | undefined;
   const getStdout = () => Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8");
 
   const cleanupListeners = () => {
@@ -311,7 +340,7 @@ export function runBounded(
     child.stderr.removeAllListeners();
     child.removeAllListeners();
     clearTimeout(deadlineTimer);
-    clearTimeout(graceTimer);
+    clearTimeout(finalLeaderTimer);
   };
   const finish = (result: BoundedRun) => {
     if (settled) return;
@@ -319,35 +348,48 @@ export function runBounded(
     cleanupListeners();
     resolve(result);
   };
+  const finishTimedOut = (cleanupFailed: boolean) => {
+    finish({
+      outcome: "timeout",
+      stdout: getStdout(),
+      truncated,
+      exitCode: leaderExitCode,
+      signal: leaderSignal,
+      spawnErrorCode: null,
+      cleanupFailed,
+    });
+  };
+  const settleAfterCleanup = () => {
+    if (!treeCleanupDone) return;
+    if (leaderClosed) {
+      finishTimedOut(!treeCleanupSucceeded);
+      return;
+    }
+    finalLeaderTimer = setTimeout(() => finishTimedOut(true), killGraceMs);
+  };
 
   const deadlineTimer = setTimeout(() => {
     timedOut = true;
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // Already exited between the deadline firing and this call.
-    }
-    graceTimer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // Already exited.
-      }
-      graceTimer = setTimeout(() => {
-        finish({
-          outcome: "timeout",
-          stdout: getStdout(),
-          truncated,
-          exitCode: null,
-          signal: null,
-          spawnErrorCode: null,
-          cleanupFailed: true,
-        });
-      }, killGraceMs);
-    }, killGraceMs);
+    void child
+      .terminateTree(killGraceMs)
+      .then((success) => {
+        treeCleanupSucceeded = success;
+      })
+      .catch(() => {
+        treeCleanupSucceeded = false;
+      })
+      .finally(() => {
+        treeCleanupDone = true;
+        settleAfterCleanup();
+      });
   }, timeoutMs);
 
   child.onError((error) => {
+    if (timedOut) {
+      leaderClosed = true;
+      settleAfterCleanup();
+      return;
+    }
     finish({
       outcome: "spawn-error",
       stdout: getStdout(),
@@ -373,8 +415,15 @@ export function runBounded(
     // Intentionally discarded: never stored, parsed, or forwarded across the RPC boundary.
   });
   child.onClose((code, signal) => {
+    leaderClosed = true;
+    leaderExitCode = code;
+    leaderSignal = signal;
+    if (timedOut) {
+      settleAfterCleanup();
+      return;
+    }
     finish({
-      outcome: timedOut ? "timeout" : "exited",
+      outcome: "exited",
       stdout: getStdout(),
       truncated,
       exitCode: code,
@@ -395,9 +444,9 @@ const VERSION_LINE_PATTERN =
 
 /** Requires the whole trimmed probe output to be exactly one canonical version line. */
 function parseCanonicalVersionLine(stdout: string): OmpVersion | null {
-  const lines = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  if (lines.length !== 1) return null;
-  const match = VERSION_LINE_PATTERN.exec(lines[0].trim());
+  const line = stdout.trim();
+  if (line.includes("\n") || line.includes("\r")) return null;
+  const match = VERSION_LINE_PATTERN.exec(line);
   if (!match) return null;
   const [, major, minor, patch, prerelease] = match;
   return {
@@ -460,6 +509,11 @@ function isEnoent(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
+function isPermissionError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "EACCES" || code === "EPERM";
+}
+
 /**
  * Classifies a known diagnostic path without following symlinks. A symlink is "wrong-type"
  * rather than an invitation to read an arbitrary target outside omp's expected state tree.
@@ -471,7 +525,7 @@ async function classifyPath(path: string, kind: "file" | "directory"): Promise<P
   try {
     pathStats = await lstat(path);
   } catch (error) {
-    return isEnoent(error) ? "missing" : "invalid";
+    return isEnoent(error) ? "missing" : "unreadable";
   }
   if (pathStats.isSymbolicLink()) return "wrong-type";
   const matchesKind = kind === "file" ? pathStats.isFile() : pathStats.isDirectory();
@@ -480,22 +534,21 @@ async function classifyPath(path: string, kind: "file" | "directory"): Promise<P
   try {
     await access(path, mode);
   } catch {
-    return "invalid";
+    return "unreadable";
   }
   return "available";
 }
 
 type BoundedFileRead =
   | { state: "available"; text: string }
-  | { state: "missing" | "wrong-type" | "invalid" };
-
+  | { state: "missing" | "unreadable" | "wrong-type" | "invalid" };
 /** Bounded, no-symlink file read shared by the config and MCP-manifest readers. */
 async function readBoundedNoSymlinkFile(path: string, maxBytes: number): Promise<BoundedFileRead> {
   let pathStats: Stats;
   try {
     pathStats = await lstat(path);
   } catch (error) {
-    return { state: isEnoent(error) ? "missing" : "invalid" };
+    return { state: isEnoent(error) ? "missing" : "unreadable" };
   }
   if (pathStats.isSymbolicLink() || !pathStats.isFile()) return { state: "wrong-type" };
 
@@ -510,8 +563,8 @@ async function readBoundedNoSymlinkFile(path: string, maxBytes: number): Promise
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     if (bytesRead > maxBytes) return { state: "invalid" };
     return { state: "available", text: buffer.subarray(0, bytesRead).toString("utf8") };
-  } catch {
-    return { state: "invalid" };
+  } catch (error) {
+    return { state: isPermissionError(error) ? "unreadable" : "invalid" };
   } finally {
     await handle?.close().catch(() => undefined);
   }
@@ -556,10 +609,8 @@ const McpManifestSchema = z
   .passthrough();
 
 /**
- * Reports configured MCP server count/names from omp's own `mcp.json` manifest (server names
- * are identifiers, never the credentials/headers/URLs nested inside each entry, which are never
- * read past the top-level key). When no manifest exists this reports a specific reason backed by
- * the checked filename rather than a placeholder; there is no fabricated "unknown" default.
+ * Reports only a bounded count from omp's mcp.json manifest. Server identifiers and every nested
+ * command/env/header/URL remain server-side and never cross the RPC boundary.
  */
 async function computeMcpDiagnostics(agentDir: string): Promise<OmpMcpDiagnostics> {
   const fileRead = await readBoundedNoSymlinkFile(
@@ -570,24 +621,28 @@ async function computeMcpDiagnostics(agentDir: string): Promise<OmpMcpDiagnostic
     return {
       status: "unavailable",
       serverCount: null,
-      serverNames: null,
       reason: `No ${MCP_MANIFEST_FILENAME} manifest found under the agent root`,
     };
   }
   if (fileRead.state === "wrong-type") {
     return {
-      status: "invalid",
+      status: "wrong-type",
       serverCount: null,
-      serverNames: null,
       reason: `${MCP_MANIFEST_FILENAME} under the agent root is not a regular file`,
+    };
+  }
+  if (fileRead.state === "unreadable") {
+    return {
+      status: "unreadable",
+      serverCount: null,
+      reason: `${MCP_MANIFEST_FILENAME} under the agent root could not be read`,
     };
   }
   if (fileRead.state === "invalid") {
     return {
       status: "invalid",
       serverCount: null,
-      serverNames: null,
-      reason: `${MCP_MANIFEST_FILENAME} under the agent root could not be read`,
+      reason: `${MCP_MANIFEST_FILENAME} under the agent root is too large or unstable`,
     };
   }
   let raw: unknown;
@@ -597,7 +652,6 @@ async function computeMcpDiagnostics(agentDir: string): Promise<OmpMcpDiagnostic
     return {
       status: "invalid",
       serverCount: null,
-      serverNames: null,
       reason: `${MCP_MANIFEST_FILENAME} under the agent root is not valid JSON`,
     };
   }
@@ -606,64 +660,95 @@ async function computeMcpDiagnostics(agentDir: string): Promise<OmpMcpDiagnostic
     return {
       status: "invalid",
       serverCount: null,
-      serverNames: null,
       reason: `${MCP_MANIFEST_FILENAME} under the agent root does not match the expected shape`,
     };
   }
-  const serverNames = Object.keys(parsed.data.mcpServers ?? {});
-  return { status: "configured", serverCount: serverNames.length, serverNames, reason: null };
+  return {
+    status: "configured",
+    serverCount: Object.keys(parsed.data.mcpServers ?? {}).length,
+    reason: null,
+  };
 }
 
+export interface ProcessDiagnosticsFs {
+  readdir(path: string): Promise<string[]>;
+  lstat(path: string): Promise<Stats>;
+}
+
+const processDiagnosticsFs: ProcessDiagnosticsFs = { readdir, lstat };
+
 /**
- * Counts daemon-supervised process entries recognized by an existing `meta.json` under each
- * project's `daemons/` directory (never their names, cwd, or args). A project scope missing its
- * `daemons/` subdirectory entirely is normal and skipped; any other read failure (e.g. a
- * permission error) is surfaced as "partial" rather than silently undercounting.
+ * Counts only regular, non-symlink meta.json entries. Missing/wrong entries are expected and
+ * ignored; any other read/stat failure makes the result partial rather than silently hiding it.
  */
-async function computeProcessDiagnostics(hubRunRoot: string): Promise<OmpProcessDiagnostics> {
+export async function computeProcessDiagnostics(
+  hubRunRoot: string,
+  fs: ProcessDiagnosticsFs = processDiagnosticsFs,
+): Promise<OmpProcessDiagnostics> {
   let projectHashes: string[];
   try {
-    projectHashes = await readdir(hubRunRoot);
+    const rootStats = await fs.lstat(hubRunRoot);
+    if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+      return { status: "unavailable", trackedCount: null };
+    }
+    projectHashes = await fs.readdir(hubRunRoot);
   } catch (error) {
     return { status: isEnoent(error) ? "unavailable" : "unknown", trackedCount: null };
   }
   let trackedCount = 0;
-  let hadInaccessibleEntries = false;
+  let partial = false;
   for (const hash of projectHashes) {
-    const daemonsDir = join(hubRunRoot, hash, "daemons");
+    const projectDir = join(hubRunRoot, hash);
+    const daemonsDir = join(projectDir, "daemons");
+    try {
+      const projectStats = await fs.lstat(projectDir);
+      if (projectStats.isSymbolicLink() || !projectStats.isDirectory()) continue;
+      const daemonStats = await fs.lstat(daemonsDir);
+      if (daemonStats.isSymbolicLink() || !daemonStats.isDirectory()) continue;
+    } catch (error) {
+      if (!isEnoent(error)) partial = true;
+      continue;
+    }
+
     let daemonNames: string[];
     try {
-      daemonNames = await readdir(daemonsDir);
+      daemonNames = await fs.readdir(daemonsDir);
     } catch (error) {
-      if (!isEnoent(error)) hadInaccessibleEntries = true;
+      if (!isEnoent(error)) partial = true;
       continue;
     }
     for (const name of daemonNames) {
       try {
-        const metaStats = await stat(join(daemonsDir, name, "meta.json"));
-        if (metaStats.isFile()) trackedCount += 1;
-      } catch {
-        // Not a recognizable daemon entry (missing/broken meta.json); do not count it.
+        const metaStats = await fs.lstat(join(daemonsDir, name, "meta.json"));
+        if (!metaStats.isSymbolicLink() && metaStats.isFile()) trackedCount += 1;
+      } catch (error) {
+        if (!isEnoent(error)) partial = true;
       }
     }
   }
-  return { status: hadInaccessibleEntries ? "partial" : "ok", trackedCount };
+  return { status: partial ? "partial" : "ok", trackedCount };
 }
 
 function homeRelative(path: string, homeDir: string): string | null {
   if (path === homeDir) return "~";
-  const prefix = homeDir.endsWith(sep) ? homeDir : `${homeDir}${sep}`;
-  return path.startsWith(prefix) ? `~${sep}${path.slice(prefix.length)}` : null;
+  const suffix = relative(homeDir, path);
+  if (suffix === "" || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
+    return null;
+  }
+  return `~/${suffix.split(sep).join("/")}`;
 }
 
-/** Home-relative when possible; otherwise a coarse label carrying only the basename, so an
- * override root pointed at an arbitrary machine-specific location never leaks its full path. */
+/** External locations always collapse to the same constant; no basename or raw env value leaks. */
 function sanitizeRootPath(path: string, homeDir: string): string {
-  return homeRelative(path, homeDir) ?? `<custom path>/${basename(path)}`;
+  return homeRelative(path, homeDir) ?? "<custom path>";
 }
 
 function sanitizeDerivedPath(rawRoot: string, sanitizedRoot: string, fullPath: string): string {
-  return `${sanitizedRoot}${fullPath.slice(rawRoot.length)}`;
+  const suffix = relative(rawRoot, fullPath);
+  if (suffix === "" || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
+    return sanitizedRoot;
+  }
+  return `${sanitizedRoot}/${suffix.split(sep).join("/")}`;
 }
 
 export interface ProviderDiagnosticsDeps {
@@ -687,6 +772,8 @@ export interface ProviderDiagnosticsDeps {
 export async function computeOmpProviderHealth(
   deps: ProviderDiagnosticsDeps,
 ): Promise<OmpProviderHealth> {
+  const agentDir = resolve(deps.agentDir);
+  const homeDir = resolve(deps.homeDir);
   const versionTimeoutMs = deps.versionTimeoutMs ?? VERSION_TIMEOUT_MS;
   const helpTimeoutMs = deps.helpTimeoutMs ?? HELP_TIMEOUT_MS;
   const killGraceMs = deps.killGraceMs ?? KILL_GRACE_MS;
@@ -733,10 +820,9 @@ export async function computeOmpProviderHealth(
   const lsp = helpRun ? computeLspDiagnostics(helpRun) : { status: "unknown" as const };
   const processCleanupFailed = Boolean(versionRun?.cleanupFailed || helpRun?.cleanupFailed);
 
-  const agentDbPath = join(deps.agentDir, AGENT_DB_FILENAME);
-  const historyDbPath = join(deps.agentDir, HISTORY_DB_FILENAME);
-  const sessionRoot = join(deps.agentDir, SESSION_DIR_NAME);
-
+  const agentDbPath = join(agentDir, AGENT_DB_FILENAME);
+  const historyDbPath = join(agentDir, HISTORY_DB_FILENAME);
+  const sessionRoot = join(agentDir, SESSION_DIR_NAME);
   const [
     configResult,
     agentRootState,
@@ -745,24 +831,22 @@ export async function computeOmpProviderHealth(
     historyDbState,
     mcp,
     processDiagnostics,
-  ] =
-    await Promise.all([
-      readSafeConfig(deps.agentDir),
-      classifyPath(deps.agentDir, "directory"),
-      classifyPath(sessionRoot, "directory"),
-      classifyPath(agentDbPath, "file"),
-      classifyPath(historyDbPath, "file"),
-      computeMcpDiagnostics(deps.agentDir),
-      computeProcessDiagnostics(deps.hubRunRoot),
-    ]);
+  ] = await Promise.all([
+    readSafeConfig(agentDir),
+    classifyPath(agentDir, "directory"),
+    classifyPath(sessionRoot, "directory"),
+    classifyPath(agentDbPath, "file"),
+    classifyPath(historyDbPath, "file"),
+    computeMcpDiagnostics(agentDir),
+    computeProcessDiagnostics(resolve(deps.hubRunRoot)),
+  ]);
   const configState = configResult.state;
-
-  const sanitizedAgentRoot = sanitizeRootPath(deps.agentDir, deps.homeDir);
+  const sanitizedAgentRoot = sanitizeRootPath(agentDir, homeDir);
 
   return {
     binary: {
       installed,
-      resolvedPath: resolvedPath ? sanitizeRootPath(resolvedPath, deps.homeDir) : null,
+      resolvedPath: resolvedPath ? sanitizeRootPath(resolve(resolvedPath), homeDir) : null,
       version: versionOutcome.version,
       versionStatus: versionOutcome.status,
       processCleanupFailed,
@@ -777,9 +861,9 @@ export async function computeOmpProviderHealth(
     roots: {
       agentRoot: sanitizedAgentRoot,
       agentRootState,
-      configPath: sanitizeDerivedPath(deps.agentDir, sanitizedAgentRoot, configResult.path),
+      configPath: sanitizeDerivedPath(agentDir, sanitizedAgentRoot, configResult.path),
       configState,
-      sessionRoot: sanitizeDerivedPath(deps.agentDir, sanitizedAgentRoot, sessionRoot),
+      sessionRoot: sanitizeDerivedPath(agentDir, sanitizedAgentRoot, sessionRoot),
       sessionRootState,
     },
     databases: {

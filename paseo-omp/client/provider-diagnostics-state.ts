@@ -1,4 +1,4 @@
-import type { PaseoProviderSnapshotResult } from "@getpaseo/client";
+import type { PaseoApi, PaseoProviderSnapshotResult } from "@getpaseo/client";
 import type {
   OmpLspDiagnostics,
   OmpMcpDiagnostics,
@@ -10,6 +10,64 @@ import type {
 } from "../shared/provider-diagnostics";
 
 export type ProviderHealthTone = "ok" | "warning" | "danger" | "muted";
+export const OMP_PROVIDER_IDS = ["omp", "omp-plugin"] as const;
+
+export function isUnsupportedHostError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; name?: unknown };
+  return (
+    candidate.name === "PaseoUpdateHostError" ||
+    candidate.code === "UPDATE_HOST_REQUIRED" ||
+    candidate.code === "UNSUPPORTED_FEATURE"
+  );
+}
+
+type ProviderActions = Pick<PaseoApi["providers"], "refresh" | "snapshot" | "waitForReady">;
+
+/** Initial and post-refresh discovery waits for a settled snapshot; only known old-host errors
+ * fall back to the immediate snapshot API. */
+export async function loadReadyProviderSnapshot(
+  providers: ProviderActions,
+): Promise<PaseoProviderSnapshotResult> {
+  try {
+    return await providers.waitForReady({ timeoutMs: 60_000 });
+  } catch (error) {
+    if (!isUnsupportedHostError(error)) throw error;
+    return providers.snapshot({});
+  }
+}
+
+export interface RefreshDiagnosticsOptions {
+  providers: ProviderActions;
+  loadForcedHealth(): Promise<OmpProviderHealth>;
+  cacheHealth(health: OmpProviderHealth): void;
+  cacheProviders(snapshot: PaseoProviderSnapshotResult): void;
+}
+
+/** Provider refresh and forced health run independently. Each successful result reaches its
+ * cache even when another branch fails; the boolean reports any non-suppressed partial failure. */
+export async function refreshProviderDiagnostics(
+  options: RefreshDiagnosticsOptions,
+): Promise<{ failed: boolean }> {
+  const [providerRefresh, forcedHealth] = await Promise.allSettled([
+    options.providers.refresh({ providers: [...OMP_PROVIDER_IDS] }),
+    options.loadForcedHealth(),
+  ]);
+  if (forcedHealth.status === "fulfilled") options.cacheHealth(forcedHealth.value);
+
+  const providerSnapshot = await Promise.allSettled([loadReadyProviderSnapshot(options.providers)]);
+  if (providerSnapshot[0].status === "fulfilled") {
+    options.cacheProviders(providerSnapshot[0].value);
+  }
+  const providerRefreshFailed =
+    providerRefresh.status === "rejected" && !isUnsupportedHostError(providerRefresh.reason);
+  return {
+    failed:
+      providerRefreshFailed ||
+      forcedHealth.status === "rejected" ||
+      providerSnapshot[0].status === "rejected",
+  };
+}
 
 const VERSION_STATUS_LABELS: Record<OmpVersionStatus, string> = {
   ok: "Installed",
@@ -71,18 +129,22 @@ export function lspTone(lsp: OmpLspDiagnostics): ProviderHealthTone {
 }
 
 export function summarizeMcpDiagnostics(mcp: OmpMcpDiagnostics): string {
-  if (mcp.status === "configured") {
-    const names = mcp.serverNames ?? [];
-    if (names.length === 0) return "0 configured";
-    return `${mcp.serverCount} configured (${names.join(", ")})`;
-  }
-  return `${mcp.status === "invalid" ? "Invalid" : "Unavailable"} (${mcp.reason ?? "no detail"})`;
+  if (mcp.status === "configured") return `${mcp.serverCount ?? 0} configured`;
+  const label =
+    mcp.status === "unavailable"
+      ? "Unavailable"
+      : mcp.status === "unreadable"
+        ? "Unreadable"
+        : mcp.status === "wrong-type"
+          ? "Wrong type"
+          : "Invalid";
+  return `${label} (${mcp.reason ?? "no detail"})`;
 }
 
 export function mcpTone(mcp: OmpMcpDiagnostics): ProviderHealthTone {
   if (mcp.status === "configured") return "ok";
-  if (mcp.status === "invalid") return "warning";
-  return "muted";
+  if (mcp.status === "unavailable") return "muted";
+  return "warning";
 }
 
 export function summarizeProcessDiagnostics(diagnostics: OmpProcessDiagnostics): string {
@@ -103,13 +165,15 @@ export function processTone(diagnostics: OmpProcessDiagnostics): ProviderHealthT
 const PATH_STATE_LABELS: Record<PathState, string> = {
   available: "Found",
   missing: "Missing",
-  invalid: "Invalid or unreadable",
+  unreadable: "Unreadable",
+  invalid: "Invalid",
   "wrong-type": "Wrong type on disk",
 };
 
 const PATH_STATE_TONES: Record<PathState, ProviderHealthTone> = {
   available: "ok",
   missing: "danger",
+  unreadable: "warning",
   invalid: "warning",
   "wrong-type": "warning",
 };
@@ -119,7 +183,7 @@ export interface PathStateSummary {
   tone: ProviderHealthTone;
 }
 
-/** Never collapses "invalid"/"wrong-type" into "missing" — each state gets its own label. */
+/** Never collapses unreadable/invalid/wrong-type into missing; each state gets its own label. */
 export function summarizePathState(state: PathState): PathStateSummary {
   return { label: PATH_STATE_LABELS[state], tone: PATH_STATE_TONES[state] };
 }
@@ -157,6 +221,29 @@ export interface KnownOmpProviderSummary {
   kind: KnownOmpProviderKind;
   status: string;
   enabled: boolean;
+}
+
+export interface ProviderStatusSummary {
+  label: string;
+  tone: ProviderHealthTone;
+}
+
+export function summarizeProviderStatus(
+  provider: Pick<KnownOmpProviderSummary, "enabled" | "status">,
+): ProviderStatusSummary {
+  if (!provider.enabled) return { label: "Disabled", tone: "muted" };
+  switch (provider.status) {
+    case "ready":
+      return { label: "Ready", tone: "ok" };
+    case "loading":
+      return { label: "Loading", tone: "warning" };
+    case "error":
+      return { label: "Error", tone: "danger" };
+    case "unavailable":
+      return { label: "Unavailable", tone: "danger" };
+    default:
+      return { label: "Unknown", tone: "muted" };
+  }
 }
 
 /**

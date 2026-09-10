@@ -2,11 +2,11 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 // Health/compatibility facts about the omp CLI itself, surfaced on the global OMP page. This is
-// an explicit allowlist, not a passthrough: every field is either a resolved filesystem path, a
-// classification enum, a bounded/normalized numeric value, or a boolean derived from a positive
+// an explicit allowlist, not a passthrough: filesystem locations are sanitized display labels
+// (`~/...` or the constant `<custom path>`), never raw absolute override values; every remaining
+// field is a classification enum, bounded/normalized number, or boolean derived from a positive
 // documented grammar match. Raw stdout/stderr, environment variables, config file text, and
-// arbitrary provider diagnostics never cross this boundary — see server/provider-diagnostics.ts
-// for the redaction boundary.
+// arbitrary provider diagnostics never cross this boundary.
 
 /** Outcome of the bounded `omp --version` probe. */
 export const OmpVersionStatusSchema = z.enum([
@@ -31,7 +31,13 @@ export const OmpVersionSchema = z.object({
 export type OmpVersion = z.infer<typeof OmpVersionSchema>;
 
 /** Filesystem classification for a diagnostic root/file: distinguishes every failure mode. */
-export const PathStateSchema = z.enum(["available", "missing", "invalid", "wrong-type"]);
+export const PathStateSchema = z.enum([
+  "available",
+  "missing",
+  "unreadable",
+  "invalid",
+  "wrong-type",
+]);
 export type PathState = z.infer<typeof PathStateSchema>;
 
 // Mirrors OmpMemorySectionSchema.backend in shared/omp-config.ts. Duplicated as a literal rather
@@ -48,12 +54,11 @@ export const OmpProcessDiagnosticsSchema = z.object({
 });
 export type OmpProcessDiagnostics = z.infer<typeof OmpProcessDiagnosticsSchema>;
 
-// Reports safe facts from omp's own mcp.json manifest: server identifiers and a parse/access
-// status. Never the credentials, headers, env, URLs, or commands nested inside each entry.
+// Reports safe facts from omp's own mcp.json manifest: bounded server count and parse/access
+// status only. Server names, credentials, headers, env, URLs, and commands never cross the RPC.
 export const OmpMcpDiagnosticsSchema = z.object({
-  status: z.enum(["configured", "unavailable", "invalid"]),
+  status: z.enum(["configured", "unavailable", "unreadable", "invalid", "wrong-type"]),
   serverCount: z.number().int().nonnegative().nullable(),
-  serverNames: z.array(z.string()).nullable(),
   /** Null only when "configured"; otherwise a specific, path-backed explanation. */
   reason: z.string().nullable(),
 });
@@ -69,7 +74,7 @@ export const OmpProviderHealthSchema = z.object({
     /** Whether an executable file was found (env override or PATH), independent of a working
      * `--version`. */
     installed: z.boolean(),
-    /** Absolute resolved (realpath'd) path, or null when nothing executable was found. */
+    /** Sanitized display label (`~/...` or `<custom path>`), never a raw absolute path. */
     resolvedPath: z.string().nullable(),
     version: OmpVersionSchema.nullable(),
     versionStatus: OmpVersionStatusSchema,
