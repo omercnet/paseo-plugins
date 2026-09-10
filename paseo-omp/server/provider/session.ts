@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import type {
   ProviderConfigState,
   ProviderEvent,
@@ -94,13 +93,6 @@ function slashCommandName(text: string): string | undefined {
         : Math.min(firstWhitespace, firstColon);
   const name = separator === -1 ? body : body.slice(0, separator);
   return name || undefined;
-}
-
-function isExistingAbsolutePathProse(text: string): boolean {
-  const firstWhitespace = text.search(/\s/);
-  if (firstWhitespace <= 1) return false;
-  const candidate = text.slice(0, firstWhitespace);
-  return !candidate.includes(":") && existsSync(candidate);
 }
 
 function nativeEntryId(message: OmpMessage): string | undefined {
@@ -469,7 +461,7 @@ export class OmpProviderSession {
     }
     const commandName = slashCommandName(text);
     const slashCommandUnavailable = commandName
-      ? await this.slashSteerUnavailable(commandName, text)
+      ? await this.slashSteerUnavailable(commandName)
       : false;
     if (!this.isSteerableTurn(turn)) {
       this.publishSteerFailure(clientMessageId, "There is no active OMP turn to steer");
@@ -745,7 +737,7 @@ export class OmpProviderSession {
     this.commandDiscoveryAvailable = true;
   }
 
-  private async slashSteerUnavailable(commandName: string, text: string): Promise<boolean> {
+  private async slashSteerUnavailable(commandName: string): Promise<boolean> {
     if (!this.commandDiscoveryAvailable || !this.slashCommands.has(commandName)) {
       try {
         this.replaceSlashCommands(await this.runtime.getAvailableCommands());
@@ -754,7 +746,7 @@ export class OmpProviderSession {
         return true;
       }
     }
-    return this.slashCommands.has(commandName) || !isExistingAbsolutePathProse(text);
+    return this.slashCommands.has(commandName);
   }
 
   private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {

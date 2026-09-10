@@ -1808,13 +1808,14 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("fails closed slash steering until path prose has a fresh catalog", async () => {
+  test("fails closed until a fresh catalog permits nonexistent path prose", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.commandDiscoveryError = new Error("commands unavailable");
     const { connection, events } = await createHarness(runtime);
     await openSession(connection, events);
     const turnId = turnIdFrom(await startPrompt(connection, events));
     const session = sessionAt(runtime);
+    const pathProse = "/definitely/not/a/real/path is missing";
 
     await connection.send({
       type: "session.prompt",
@@ -1834,7 +1835,7 @@ describe("OMP direct provider", () => {
       prompt: {
         clientMessageId: "unavailable-path",
         delivery: "steer",
-        input: { type: "message", content: [{ type: "text", text: "/usr is full" }] },
+        input: { type: "message", content: [{ type: "text", text: pathProse }] },
       },
     });
     const unavailablePath = await events.waitFor(
@@ -1875,7 +1876,7 @@ describe("OMP direct provider", () => {
       prompt: {
         clientMessageId: "path-steer",
         delivery: "steer",
-        input: { type: "message", content: [{ type: "text", text: "/usr is full" }] },
+        input: { type: "message", content: [{ type: "text", text: pathProse }] },
       },
     });
     const pathResult = await events.waitFor(
@@ -1911,12 +1912,12 @@ describe("OMP direct provider", () => {
       },
     });
     expect(session.availableCommandLookups).toBe(4);
-    expect(session.steers).toEqual(["/usr is full"]);
+    expect(session.steers).toEqual([pathProse]);
     await finishTurn(events, session, turnId);
     await connection.close();
   });
 
-  test("refreshes an unknown slash command and fails closed on stale catalogs", async () => {
+  test("refreshes stale catalogs before allowing unknown slash prose", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.availableCommands = [{ name: "old-command" }];
     const { connection, events } = await createHarness(runtime);
@@ -1968,14 +1969,11 @@ describe("OMP direct provider", () => {
         type: "session.prompt_result",
         sessionId: "session-1",
         clientMessageId: "unknown-command",
-        result: {
-          type: "failed",
-          error: { message: "OMP slash commands are unavailable while steering" },
-        },
+        result: { type: "steer", turnId },
       },
     ]);
     expect(session.availableCommandLookups).toBe(3);
-    expect(session.steers).toEqual([]);
+    expect(session.steers).toEqual(["/unknown now"]);
     await finishTurn(events, session, turnId);
     await connection.close();
   });
@@ -1997,7 +1995,10 @@ describe("OMP direct provider", () => {
       prompt: {
         clientMessageId: "delayed-path-steer",
         delivery: "steer",
-        input: { type: "message", content: [{ type: "text", text: "/usr is full" }] },
+        input: {
+          type: "message",
+          content: [{ type: "text", text: "/not-a-command continue" }],
+        },
       },
     });
     await discoveryObserved.promise;
@@ -2025,7 +2026,7 @@ describe("OMP direct provider", () => {
 
   test("replaces the discovered slash catalog authoritatively", async () => {
     const runtime = new FakeOmpRuntime();
-    runtime.availableCommands = [{ name: "usr" }];
+    runtime.availableCommands = [{ name: "retired-command" }];
     const { connection, events } = await createHarness(runtime);
     await openSession(connection, events);
     const turnId = turnIdFrom(await startPrompt(connection, events));
@@ -2040,14 +2041,18 @@ describe("OMP direct provider", () => {
       type: "session.prompt",
       sessionId: "session-1",
       prompt: {
-        clientMessageId: "former-command-path",
+        clientMessageId: "former-command-prose",
         delivery: "steer",
-        input: { type: "message", content: [{ type: "text", text: "/usr is full" }] },
+        input: {
+          type: "message",
+          content: [{ type: "text", text: "/retired-command continue" }],
+        },
       },
     });
     const former = await events.waitFor(
       (event) =>
-        event.type === "session.prompt_result" && event.clientMessageId === "former-command-path",
+        event.type === "session.prompt_result" &&
+        event.clientMessageId === "former-command-prose",
     );
     await connection.send({
       type: "session.prompt",
@@ -2067,7 +2072,7 @@ describe("OMP direct provider", () => {
       {
         type: "session.prompt_result",
         sessionId: "session-1",
-        clientMessageId: "former-command-path",
+        clientMessageId: "former-command-prose",
         result: { type: "steer", turnId },
       },
       {
@@ -2081,7 +2086,7 @@ describe("OMP direct provider", () => {
       },
     ]);
     expect(session.availableCommandLookups).toBe(2);
-    expect(session.steers).toEqual(["/usr is full"]);
+    expect(session.steers).toEqual(["/retired-command continue"]);
     await finishTurn(events, session, turnId);
     await connection.close();
   });
