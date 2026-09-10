@@ -19,6 +19,8 @@ jobs:
         include:
           - plugin: agent-crew
             check: true
+          - plugin: tell-agent
+            check: true
           - plugin: agent-monitor
             check: true
           - plugin: fresh-worktrees
