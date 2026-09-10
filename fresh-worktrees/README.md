@@ -29,7 +29,7 @@ host.
 paseo plugin add omercnet/paseo-plugins:fresh-worktrees
 ```
 
-The plugin requires Paseo `>=0.8.0-beta.1`.
+The plugin requires Paseo `>=0.8.0`.
 
 ## Develop
 

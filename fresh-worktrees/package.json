@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@getpaseo/plugin": "0.8.0-beta.1",
+    "@getpaseo/plugin": "0.8.0",
     "@types/bun": "^1.2.23",
     "@types/node": "^24.5.2",
     "typescript": "^5.9.3"
