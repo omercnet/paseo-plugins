@@ -1,14 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
-import type { ProviderConnection, ProviderEvent } from "@getpaseo/plugin/server/provider";
-import type { Logger } from "pino";
-import { PluginAgentClientRegistry } from "../node_modules/@getpaseo/server/dist/server/server/agent/plugin-provider.js";
 import type {
-  AgentLaunchContext,
-  AgentSession,
-  AgentSessionConfig,
-  AgentStreamEvent,
-} from "../node_modules/@getpaseo/server/dist/server/server/agent/agent-sdk-types.js";
+  ProviderConnection,
+  ProviderEvent,
+  ProviderRegistration,
+} from "@getpaseo/plugin/server/provider";
 import type {
   OmpModel,
   OmpRpcEvent,
@@ -19,11 +15,47 @@ import type {
 import { createOmpProvider } from "../server/provider/registration";
 import type { OmpTimelineScheduler } from "../server/provider/timeline-projector";
 
-type PinoFactory = (options: { enabled: boolean }) => Logger;
+type HostLogger = object;
+type PinoFactory = (options: { enabled: boolean }) => HostLogger;
+type HostTerminalEvent = {
+  type: "turn_failed" | "turn_completed" | "turn_canceled";
+  turnId: string | undefined;
+};
+type HostStreamEvent = { type: string; turnId?: string };
+type HostSession = {
+  readonly id: string | null;
+  startTurn(prompt: string, options?: { clientMessageId?: string }): Promise<{ turnId: string }>;
+  subscribe(callback: (event: HostStreamEvent) => void): () => void;
+  close(): Promise<void>;
+};
+type HostSessionConfig = {
+  provider: string;
+  cwd: string;
+  systemPrompt?: string;
+  mcpServers?: Record<string, unknown>;
+  modeId?: string;
+  model?: string;
+  thinkingOptionId?: string;
+  featureValues?: Record<string, unknown>;
+};
+type HostLaunchContext = { env?: Record<string, string> };
+type HostClient = {
+  createSession(
+    config: HostSessionConfig,
+    launchContext?: HostLaunchContext,
+    options?: { persistSession?: boolean },
+  ): Promise<HostSession>;
+};
+type HostRegistry = {
+  replace(registrations: readonly ProviderRegistration[]): void;
+  clients(): Record<string, HostClient>;
+  shutdown(): Promise<void>;
+};
+type HostRegistryConstructor = new (logger: HostLogger) => HostRegistry;
 
-const hostRequire = createRequire(
-  new URL("../node_modules/@getpaseo/server/dist/server/server/agent/plugin-provider.js", import.meta.url),
-);
+const pluginProviderModulePath: string =
+  "../node_modules/@getpaseo/server/dist/server/server/agent/plugin-provider.js";
+const hostRequire = createRequire(new URL(pluginProviderModulePath, import.meta.url));
 const pino = hostRequire("pino") as PinoFactory;
 
 const MODEL: OmpModel = {
@@ -1689,11 +1721,15 @@ describe("OMP direct provider", () => {
   test("real Paseo provider host keeps a recovered session reachable", async () => {
     const runtime = new FakeOmpRuntime();
     const registration = createOmpProvider({ runtime, timelineScheduler: new ManualScheduler() });
-    const registry = new PluginAgentClientRegistry(pino({ enabled: false }));
+    // Static imports resolve the host's incompatible Node/Zod declaration graph in this package.
+    const adapter = (await import(pluginProviderModulePath)) as unknown as {
+      PluginAgentClientRegistry: HostRegistryConstructor;
+    };
+    const registry = new adapter.PluginAgentClientRegistry(pino({ enabled: false }));
     registry.replace([registration]);
     const client = registry.clients()[registration.id];
     if (!client) throw new Error("registered OMP client is missing");
-    const config: AgentSessionConfig = {
+    const config: HostSessionConfig = {
       provider: registration.id,
       cwd: "/repo",
       systemPrompt: "Be precise",
@@ -1703,22 +1739,15 @@ describe("OMP direct provider", () => {
       thinkingOptionId: "medium",
       featureValues: {},
     };
-    const launchContext: AgentLaunchContext = { env: { TEST_ENV: "1" } };
-    let session: AgentSession | undefined;
+    const launchContext: HostLaunchContext = { env: { TEST_ENV: "1" } };
+    let session: HostSession | undefined;
     let unsubscribe: (() => void) | undefined;
     try {
       session = await client.createSession(config, launchContext, { persistSession: false });
       const sessionId = session.id;
-      const terminals: Extract<
-        AgentStreamEvent,
-        { type: "turn_failed" | "turn_completed" | "turn_canceled" }
-      >[] = [];
-      const firstTerminal = Promise.withResolvers<
-        Extract<AgentStreamEvent, { type: "turn_failed" | "turn_completed" | "turn_canceled" }>
-      >();
-      const secondTerminal = Promise.withResolvers<
-        Extract<AgentStreamEvent, { type: "turn_failed" | "turn_completed" | "turn_canceled" }>
-      >();
+      const terminals: HostTerminalEvent[] = [];
+      const firstTerminal = Promise.withResolvers<HostTerminalEvent>();
+      const secondTerminal = Promise.withResolvers<HostTerminalEvent>();
       let firstTurnId: string | undefined;
       let secondTurnId: string | undefined;
       unsubscribe = session.subscribe((event) => {
@@ -1729,9 +1758,10 @@ describe("OMP direct provider", () => {
         ) {
           return;
         }
-        terminals.push(event);
-        if (event.turnId === firstTurnId) firstTerminal.resolve(event);
-        if (event.turnId === secondTurnId) secondTerminal.resolve(event);
+        const terminal = event as HostTerminalEvent;
+        terminals.push(terminal);
+        if (terminal.turnId === firstTurnId) firstTerminal.resolve(terminal);
+        if (terminal.turnId === secondTurnId) secondTerminal.resolve(terminal);
       });
 
       const first = await session.startTurn("work", { clientMessageId: "host-first" });
