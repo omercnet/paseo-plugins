@@ -45,8 +45,8 @@ export type PathState = z.infer<typeof PathStateSchema>;
 const MemoryBackendSchema = z.enum(["off", "local", "hindsight", "mnemopi", "sharpshooter"]);
 
 export const OmpProcessDiagnosticsSchema = z.object({
-  /** "partial" means at least one project's daemon directory could not be read (e.g.
-   * permission denied) and the count below only reflects the readable subset. */
+  /** "partial" means a project daemon directory or candidate metadata file could not be
+   * inspected; the count reflects only entries whose metadata was confirmed. */
   status: z.enum(["ok", "partial", "unavailable", "unknown"]),
   /** Count of daemon-supervised process entries tracked under the hub run root; null
    * unless "ok" or "partial". */
@@ -78,7 +78,8 @@ export const OmpProviderHealthSchema = z.object({
     resolvedPath: z.string().nullable(),
     version: OmpVersionSchema.nullable(),
     versionStatus: OmpVersionStatusSchema,
-    /** True only when a bounded probe timed out and its process tree never confirmed exit. */
+    /** True when process-tree termination/verification failed or the leader did not close by the
+     * bounded final deadline. */
     processCleanupFailed: z.boolean(),
   }),
   rpcUi: z.object({

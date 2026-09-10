@@ -40,6 +40,7 @@ async function createFakeBinary(dir?: string, name = "omp"): Promise<string> {
 
 class FakeReadable implements ProbeReadable {
   private listeners: Array<(chunk: Buffer) => void> = [];
+  destroyed = false;
 
   on(_event: "data", listener: (chunk: Buffer) => void): void {
     this.listeners.push(listener);
@@ -47,6 +48,10 @@ class FakeReadable implements ProbeReadable {
 
   removeAllListeners(): void {
     this.listeners = [];
+  }
+
+  destroy(): void {
+    this.destroyed = true;
   }
 
   emit(chunk: string | Buffer): void {
@@ -59,6 +64,7 @@ class FakeChild implements ProbeChildProcess {
   readonly pid = 12345;
   readonly stdout = new FakeReadable();
   readonly stderr = new FakeReadable();
+  readonly directKillSignals: NodeJS.Signals[] = [];
   terminateCalls = 0;
   closeEvents = 0;
   onTerminate?: (graceMs: number) => Promise<boolean>;
@@ -76,6 +82,11 @@ class FakeChild implements ProbeChildProcess {
   removeAllListeners(): void {
     this.errorListeners = [];
     this.closeListeners = [];
+  }
+
+  terminateDirect(signal: NodeJS.Signals): boolean {
+    this.directKillSignals.push(signal);
+    return true;
   }
 
   terminateTree(graceMs: number): Promise<boolean> {
@@ -352,6 +363,24 @@ describe("killWindowsProcessTree", () => {
     };
 
     await expect(killWindowsProcessTree(1, spawnFn, SYSTEM_ROOT, 200)).resolves.toBe(false);
+  });
+
+  test("directly terminates a timed-out taskkill helper before final failure", async () => {
+    const child = new FakeChild();
+    const scheduled: Array<() => void> = [];
+    const schedule = (callback: () => void) => {
+      scheduled.push(callback);
+      return () => {};
+    };
+    const resultPromise = killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 100, schedule);
+
+    scheduled.shift()?.();
+    expect(child.directKillSignals).toEqual(["SIGKILL"]);
+    scheduled.shift()?.();
+
+    expect(await resultPromise).toBe(false);
+    expect(child.stdout.destroyed).toBe(true);
+    expect(child.stderr.destroyed).toBe(true);
   });
 });
 

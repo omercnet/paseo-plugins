@@ -66,6 +66,7 @@ function buildProbeEnv(sourceEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export interface ProbeReadable {
   on(event: "data", listener: (chunk: Buffer) => void): void;
   removeAllListeners(): void;
+  destroy(): void;
 }
 
 export interface ProbeChildProcess {
@@ -75,7 +76,9 @@ export interface ProbeChildProcess {
   onError(listener: (error: NodeJS.ErrnoException) => void): void;
   onClose(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
   removeAllListeners(): void;
-  /** Resolves true only after the complete process tree is confirmed terminated. */
+  /** Non-recursive kill for cleaning up helper processes such as taskkill itself. */
+  terminateDirect(signal: NodeJS.Signals): boolean;
+  /** Resolves true only after the complete provider process tree is confirmed terminated. */
   terminateTree(graceMs: number): Promise<boolean>;
 }
 
@@ -86,6 +89,13 @@ export type SpawnFn = (
 ) => ProbeChildProcess;
 
 export type SignalProcess = (pid: number, signal: NodeJS.Signals | 0) => void;
+
+export type DeadlineScheduler = (callback: () => void, delayMs: number) => () => void;
+
+function scheduleDeadline(callback: () => void, delayMs: number): () => void {
+  const timer = setTimeout(callback, delayMs);
+  return () => clearTimeout(timer);
+}
 
 function waitMs(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -129,23 +139,30 @@ export async function terminatePosixProcessTree(
 }
 
 /**
- * Terminates a Windows process tree via absolute System32/taskkill.exe. Error and close handlers
- * are installed synchronously, and false is returned on spawn error, nonzero exit, or deadline.
+ * Terminates a Windows process tree via absolute System32/taskkill.exe. stdout/stderr are drained,
+ * error/close handlers are installed synchronously, and a timed-out taskkill is itself killed
+ * directly (never recursively) before a bounded final close wait. False propagates any failure.
  */
 export async function killWindowsProcessTree(
   pid: number,
   spawnFn: SpawnFn,
   systemRoot: string,
   deadlineMs: number,
+  schedule: DeadlineScheduler = scheduleDeadline,
 ): Promise<boolean> {
   const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
   const { promise, resolve } = Promise.withResolvers<boolean>();
   let settled = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let cancelDeadline = () => {};
+  let cancelFinalDeadline = () => {};
   const finish = (success: boolean) => {
     if (settled) return;
     settled = true;
-    clearTimeout(timer);
+    cancelDeadline();
+    cancelFinalDeadline();
+    child.stdout.destroy();
+    child.stderr.destroy();
     resolve(success);
   };
 
@@ -155,9 +172,20 @@ export async function killWindowsProcessTree(
   } catch {
     return false;
   }
+  child.stdout.on("data", () => {});
+  child.stderr.on("data", () => {});
   child.onError(() => finish(false));
-  child.onClose((code, signal) => finish(code === 0 && signal === null));
-  timer = setTimeout(() => finish(false), deadlineMs);
+  child.onClose((code, signal) => finish(!timedOut && code === 0 && signal === null));
+  cancelDeadline = schedule(() => {
+    timedOut = true;
+    try {
+      child.terminateDirect("SIGKILL");
+    } catch {
+      finish(false);
+      return;
+    }
+    cancelFinalDeadline = schedule(() => finish(false), deadlineMs);
+  }, deadlineMs);
   return promise;
 }
 
@@ -184,6 +212,7 @@ function defaultSpawn(
     removeAllListeners: () => {
       child.removeAllListeners();
     },
+    terminateDirect: (signal) => child.kill(signal),
     terminateTree: async (graceMs) => {
       if (child.pid === undefined) return true;
       if (process.platform === "win32") {
@@ -198,7 +227,6 @@ function defaultSpawn(
     },
   };
 }
-
 async function isRegularExecutableFile(
   candidate: string,
   platform: NodeJS.Platform,
@@ -284,7 +312,7 @@ export interface BoundedRun {
   signal: NodeJS.Signals | null;
   /** ENOENT vs everything else, so "not found" and "found but unrunnable" stay distinct. */
   spawnErrorCode: string | null;
-  /** True only when SIGKILL plus the grace-period wait never produced a close event. */
+  /** True when tree termination/verification failed or the leader missed its final close bound. */
   cleanupFailed: boolean;
 }
 
