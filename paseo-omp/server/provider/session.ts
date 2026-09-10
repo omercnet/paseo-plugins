@@ -61,6 +61,13 @@ type ActiveTurn = {
   userLookups: Set<Promise<void>>;
 };
 
+type PendingAbort = {
+  turn: ActiveTurn;
+  generation: number;
+  runtime: OmpRuntimeSession;
+  promise: Promise<void>;
+};
+
 function providerError(error: unknown, prefix?: string): { message: string } {
   const message = error instanceof Error ? error.message : String(error);
   return { message: prefix ? `${prefix}: ${message}` : message };
@@ -172,7 +179,7 @@ export class OmpProviderSession {
   private runtimeDead: string | null = null;
   private runtimeDisposal: Promise<void> | null = null;
   private recoveryPromise: Promise<void> | null = null;
-  private interruptPromise: Promise<void> | null = null;
+  private activeAbort: PendingAbort | null = null;
 
   private constructor(
     id: string,
@@ -209,15 +216,16 @@ export class OmpProviderSession {
     if (input.config.mode && input.config.mode !== "full") {
       throw new Error(`Unsupported OMP Plugin Preview mode '${input.config.mode}'`);
     }
-    const recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal"> = {
+    const startOptions: OmpStartOptions = {
       cwd: input.config.cwd,
       env: input.config.env,
       model: input.config.model,
       mode: "full",
       thinkingOption: input.config.thinkingOption,
       systemPrompt: input.config.systemPrompt,
+      signal,
     };
-    const native = await runtime.startSession({ ...recoveryOptions, signal });
+    const native = await runtime.startSession(startOptions);
     try {
       const [state, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
@@ -241,6 +249,14 @@ export class OmpProviderSession {
         modes: OMP_MODES,
         thinkingOptions: thinkingForModel(currentModel),
         settings: [],
+      };
+      const recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal"> = {
+        cwd: input.config.cwd,
+        env: input.config.env,
+        mode: "full",
+        systemPrompt: input.config.systemPrompt,
+        ...(state.model ? { model: ompModelId(state.model) } : {}),
+        ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
       };
       return new OmpProviderSession(
         input.sessionId,
@@ -343,6 +359,15 @@ export class OmpProviderSession {
       });
       return;
     }
+    if (this.activeAbort) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId: input.prompt.clientMessageId,
+        result: { type: "failed", error: { message: "OMP interrupt is still settling" } },
+      });
+      return;
+    }
 
     const turn: ActiveTurn = {
       turnId: randomUUID(),
@@ -400,19 +425,35 @@ export class OmpProviderSession {
 
   async interrupt(input: SessionInterruptInput): Promise<void> {
     const turn = this.activeTurn;
-    if (!turn || turn.interrupted) {
+    if (!turn) {
+      this.emit({ type: "request.completed", requestId: input.requestId });
+      return;
+    }
+    const pending = this.activeAbort;
+    if (turn.interrupted) {
+      if (pending?.turn === turn) await pending.promise.catch(() => undefined);
       this.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
     turn.interrupted = true;
+    const runtime = this.runtime;
+    const abort: PendingAbort = {
+      turn,
+      generation: turn.generation,
+      runtime,
+      promise: runtime.abort(),
+    };
+    this.activeAbort = abort;
     try {
-      this.interruptPromise ??= this.runtime.abort().finally(() => {
-        this.interruptPromise = null;
-      });
-      await this.interruptPromise;
+      await abort.promise;
       this.emit({ type: "request.completed", requestId: input.requestId });
     } catch (error) {
-      if (this.runtimeDead || turn.terminal) {
+      if (
+        this.runtimeDead ||
+        turn.terminal ||
+        turn.generation !== this.generation ||
+        this.runtime !== runtime
+      ) {
         await this.runtimeDisposal?.catch(() => undefined);
         this.emit({ type: "request.completed", requestId: input.requestId });
         return;
@@ -423,6 +464,8 @@ export class OmpProviderSession {
         requestId: input.requestId,
         error: providerError(error, "OMP interrupt failed"),
       });
+    } finally {
+      if (this.activeAbort === abort) this.activeAbort = null;
     }
   }
 
@@ -469,7 +512,10 @@ export class OmpProviderSession {
       thinkingOptions: thinkingForModel(state.model),
     };
     this.recoveryOptions = {
-      ...this.recoveryOptions,
+      cwd: this.recoveryOptions.cwd,
+      env: this.recoveryOptions.env,
+      mode: "full",
+      systemPrompt: this.recoveryOptions.systemPrompt,
       ...(this.configState.model ? { model: this.configState.model } : {}),
       ...(this.configState.thinkingOption
         ? { thinkingOption: this.configState.thinkingOption }
@@ -515,12 +561,10 @@ export class OmpProviderSession {
     this.lifetime.abort(new Error("OMP provider session closed"));
     this.projector.close();
     this.unsubscribe();
-    this.runtimeDisposal ??= this.runtime.close();
-    await Promise.allSettled(
-      [this.runtimeDisposal, this.recoveryPromise].filter(
-        (operation): operation is Promise<void> => operation !== null,
-      ),
-    );
+    const runtimeDisposal = (this.runtimeDisposal ??= this.runtime.close());
+    const outcomes = await Promise.allSettled([runtimeDisposal, this.recoveryPromise]);
+    const disposal = outcomes[0];
+    if (disposal?.status === "rejected") throw disposal.reason;
   }
 
   private publishSessionClosed(error?: { message: string }): void {
@@ -528,6 +572,7 @@ export class OmpProviderSession {
     this.sessionClosedPublished = true;
     this.emit({ type: "session.closed", sessionId: this.id, ...(error ? { error } : {}) });
   }
+
   private bindRuntime(runtime: OmpRuntimeSession): void {
     this.unsubscribe();
     this.runtime = runtime;
@@ -553,7 +598,7 @@ export class OmpProviderSession {
     if (!expectedSessionId) {
       throw new Error("OMP cannot recover because the original native session handle is missing");
     }
-    await this.runtimeDisposal?.catch(() => undefined);
+    await this.runtimeDisposal;
     if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
     const recovered = await this.runtimeFactory.startSession({
       ...this.recoveryOptions,
@@ -577,7 +622,6 @@ export class OmpProviderSession {
       throw error;
     }
   }
-
   private async steer(clientMessageId: string, text: string): Promise<void> {
     const commandName = slashCommandName(text);
     const recognizedCommand = commandName ? this.slashCommands.has(commandName) : false;
@@ -891,6 +935,10 @@ export class OmpProviderSession {
   ): void {
     if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) return;
     turn.terminalizing = true;
+    if (turn.userLookups.size === 0 && turn.userEchoes.length === 0) {
+      this.completeAgentEnd(turn, event);
+      return;
+    }
     void this.finishFromAgentEnd(turn, event);
   }
 
@@ -926,18 +974,31 @@ export class OmpProviderSession {
     const state = await this.confirmAgentEndState(turn);
     if (this.closed || turn.terminal || this.activeTurn !== turn) return;
     if (!state) {
-      this.finishTurn(turn, "failed", {
-        message: "OMP agent_end could not be confirmed before the state check timed out",
-      });
+      const message = "OMP agent_end state could not be confirmed";
+      this.completeAgentEnd(turn, event);
+      this.invalidateRuntime(message);
       return;
     }
     if (state.isStreaming || state.isCompacting) {
-      this.finishTurn(turn, "failed", {
-        message: "OMP agent_end arrived while the native runtime remained active",
-      });
+      const message = "OMP agent_end arrived while the native runtime remained active";
+      this.publishPendingUsers(turn);
+      this.invalidateRuntime(message);
+      this.finishTurn(turn, "failed", { message });
       return;
     }
     this.completeAgentEnd(turn, event);
+  }
+
+  private completeAgentEnd(
+    turn: ActiveTurn,
+    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  ): void {
+    if (turn.generation !== this.generation || turn.terminal || this.activeTurn !== turn) return;
+    this.publishPendingUsers(turn);
+    const error = terminalError(event);
+    if (turn.interrupted) this.finishTurn(turn, "canceled");
+    else if (error) this.finishTurn(turn, "failed", { message: error });
+    else this.finishTurn(turn, "completed");
   }
 
   private async confirmAgentEndState(turn: ActiveTurn): Promise<OmpSessionState | undefined> {
@@ -1030,24 +1091,28 @@ export class OmpProviderSession {
     if (this.activeTurn === turn) this.activeTurn = null;
   }
 
-  private handleRuntimeFailure(message: string): void {
+  private invalidateRuntime(message: string): void {
     if (this.closed || this.runtimeDead) return;
+    this.generation += 1;
     this.runtimeDead = message;
-    const turn = this.activeTurn;
-    if (turn) {
-      this.publishPendingUsers(turn);
-      this.publishPromptResult(turn, { type: "failed", error: { message } });
-      if (turn.started) this.finishTurn(turn, "failed", { message });
-      else {
-        turn.terminal = true;
-        this.projector.finishTurn(turn.turnId);
-        if (this.activeTurn === turn) this.activeTurn = null;
-      }
-    }
     this.unsubscribe();
     this.unsubscribe = () => {};
-    this.emit({ type: "session.runtime_failed", sessionId: this.id, error: { message } });
     this.runtimeDisposal ??= this.runtime.close();
     void this.runtimeDisposal.catch(() => undefined);
+  }
+
+  private handleRuntimeFailure(message: string): void {
+    if (this.closed || this.runtimeDead) return;
+    this.invalidateRuntime(message);
+    const turn = this.activeTurn;
+    if (!turn) return;
+    this.publishPendingUsers(turn);
+    this.publishPromptResult(turn, { type: "failed", error: { message } });
+    if (turn.started) this.finishTurn(turn, "failed", { message });
+    else {
+      turn.terminal = true;
+      this.projector.finishTurn(turn.turnId);
+      if (this.activeTurn === turn) this.activeTurn = null;
+    }
   }
 }
