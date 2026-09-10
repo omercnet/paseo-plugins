@@ -105,6 +105,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   closeObserved: (() => void) | null = null;
   abortGate: Promise<void> | null = null;
   abortObserved: (() => void) | null = null;
+  abortError: Error | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
   availableCommandsError: Error | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
@@ -199,6 +200,7 @@ class FakeOmpSession implements OmpRuntimeSession {
     this.aborts += 1;
     this.abortObserved?.();
     if (this.abortGate) await this.abortGate;
+    if (this.abortError) throw this.abortError;
   }
 
   async close() {
@@ -215,6 +217,7 @@ class FakeOmpRuntime implements OmpRuntime {
   readonly sessionIds: string[] = [];
   nextModel: OmpModel | null = null;
   nextThinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null = null;
+  nextCloseError: Error | null = null;
   startGate: Promise<void> | null = null;
   startObserved: (() => void) | null = null;
   commandDiscoveryError: Error | null = null;
@@ -232,6 +235,10 @@ class FakeOmpRuntime implements OmpRuntime {
     if (this.nextThinkingLevel) {
       session.thinkingLevel = this.nextThinkingLevel;
       this.nextThinkingLevel = null;
+    }
+    if (this.nextCloseError) {
+      session.closeError = this.nextCloseError;
+      this.nextCloseError = null;
     }
     this.sessions.push(session);
     return session;
@@ -1663,6 +1670,49 @@ describe("OMP direct provider", () => {
     ).toEqual([expect.objectContaining({ state: "failed" })]);
     await connection.close();
   });
+  test("registered Paseo provider keeps a recoverable session reachable", async () => {
+    const runtime = new FakeOmpRuntime();
+    const scheduler = new ManualScheduler();
+    const provider = createOmpProvider({ runtime, timelineScheduler: scheduler });
+    const connection = await provider.connect({
+      versions: [1],
+      capabilities: ["prompt.message", "prompt.steer", "session.configure"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await openSession(connection, events, "host-open");
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "host-first", "work"));
+
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited" });
+    expect(
+      events.filter(
+        (event) => event.type === "session.closed" || event.type === "session.runtime_failed",
+      ),
+    ).toHaveLength(0);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === firstTurn && event.state !== "started",
+      ),
+    ).toEqual([expect.objectContaining({ state: "failed" })]);
+
+    const recoveredTurn = turnIdFrom(await startPrompt(connection, events, "host-recovered", "continue"));
+    await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
+    for (const turnId of [firstTurn, recoveredTurn]) {
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+        ),
+      ).toHaveLength(1);
+    }
+    expect(
+      events.filter(
+        (event) => event.type === "session.closed" || event.type === "session.runtime_failed",
+      ),
+    ).toHaveLength(0);
+    await connection.close();
+  });
   test("recovers a dead idle runtime by resuming the same native session", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -1927,6 +1977,48 @@ describe("OMP direct provider", () => {
     expect(runtime.starts).toHaveLength(1);
     await connection.close().catch(() => undefined);
   });
+  test("retains failed replacement cleanup until explicit close reports it", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.sessionIds.push("native-session", "wrong-session");
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    runtime.nextCloseError = new Error("candidate close failed");
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    const replacement = await startPrompt(connection, events, "wrong-candidate", "continue");
+    expect(replacement).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: expect.objectContaining({ message: expect.stringContaining("resumed native session") }),
+        }),
+      }),
+    );
+    expect(runtime.starts).toHaveLength(2);
+    const blocked = await startPrompt(connection, events, "blocked-candidate", "continue");
+    expect(blocked).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: expect.objectContaining({ message: expect.stringContaining("candidate close failed") }),
+        }),
+      }),
+    );
+    expect(runtime.starts).toHaveLength(2);
+
+    await connection.send({ type: "session.close", requestId: "candidate-close", sessionId: "session-1" });
+    const closeFailure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "candidate-close",
+    );
+    expect(closeFailure).toEqual(
+      expect.objectContaining({ error: { message: "OMP session close failed: candidate close failed" } }),
+    );
+    const closed = await events.waitFor((event) => event.type === "session.closed");
+    expect(closed).toEqual(
+      expect.objectContaining({ error: { message: "OMP session close failed: candidate close failed" } }),
+    );
+    await connection.close();
+  });
 
   test("fails a degraded terminal frame with no outcome messages", async () => {
     const { connection, events, runtime } = await createHarness();
@@ -2094,6 +2186,36 @@ describe("OMP direct provider", () => {
     );
     await finishTurn(events, session, secondTurn);
     expect(session.aborts).toBe(2);
+    await connection.close();
+  });
+  test("reports the same abort failure to concurrent interrupts", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const abort = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.abortGate = abort.promise;
+    session.abortObserved = observed.resolve;
+    session.abortError = new Error("abort rejected");
+    await startPrompt(connection, events, "abort-error-turn", "work");
+
+    await connection.send({ type: "session.interrupt", requestId: "abort-error-one", sessionId: "session-1" });
+    await observed.promise;
+    await connection.send({ type: "session.interrupt", requestId: "abort-error-two", sessionId: "session-1" });
+    const firstFailure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "abort-error-one",
+    );
+    const secondFailure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "abort-error-two",
+    );
+    abort.resolve();
+    const [first, second] = await Promise.all([firstFailure, secondFailure]);
+    expect(first).toEqual(
+      expect.objectContaining({ error: { message: "OMP interrupt failed: abort rejected" } }),
+    );
+    expect(second).toEqual(
+      expect.objectContaining({ error: { message: "OMP interrupt failed: abort rejected" } }),
+    );
     await connection.close();
   });
   test("serializes interrupt and close while awaiting runtime disposal", async () => {

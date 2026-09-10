@@ -431,8 +431,8 @@ export class OmpProviderSession {
     }
     const pending = this.activeAbort;
     if (turn.interrupted) {
-      if (pending?.turn === turn) await pending.promise.catch(() => undefined);
-      this.emit({ type: "request.completed", requestId: input.requestId });
+      if (pending?.turn === turn) await this.settleInterrupt(input.requestId, pending);
+      else this.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
     turn.interrupted = true;
@@ -444,10 +444,15 @@ export class OmpProviderSession {
       promise: runtime.abort(),
     };
     this.activeAbort = abort;
+    await this.settleInterrupt(input.requestId, abort);
+  }
+
+  private async settleInterrupt(requestId: string, abort: PendingAbort): Promise<void> {
     try {
       await abort.promise;
-      this.emit({ type: "request.completed", requestId: input.requestId });
+      this.emit({ type: "request.completed", requestId });
     } catch (error) {
+      const { runtime, turn } = abort;
       if (
         this.runtimeDead ||
         turn.terminal ||
@@ -455,13 +460,13 @@ export class OmpProviderSession {
         this.runtime !== runtime
       ) {
         await this.runtimeDisposal?.catch(() => undefined);
-        this.emit({ type: "request.completed", requestId: input.requestId });
+        this.emit({ type: "request.completed", requestId });
         return;
       }
       turn.interrupted = false;
       this.emit({
         type: "request.failed",
-        requestId: input.requestId,
+        requestId,
         error: providerError(error, "OMP interrupt failed"),
       });
     } finally {
@@ -562,10 +567,8 @@ export class OmpProviderSession {
     this.projector.close();
     this.unsubscribe();
     this.runtimeDisposal ??= this.runtime.close();
-    const runtimeDisposal = this.runtimeDisposal;
-    const outcomes = await Promise.allSettled([runtimeDisposal, this.recoveryPromise]);
-    const disposal = outcomes[0];
-    if (disposal?.status === "rejected") throw disposal.reason;
+    await Promise.allSettled([this.runtimeDisposal, this.recoveryPromise]);
+    await this.runtimeDisposal;
   }
 
   private publishSessionClosed(error?: { message: string }): void {
@@ -619,7 +622,8 @@ export class OmpProviderSession {
       this.runtimeDisposal = null;
       this.bindRuntime(recovered);
     } catch (error) {
-      await recovered.close().catch(() => undefined);
+      this.runtimeDisposal = recovered.close();
+      void this.runtimeDisposal.catch(() => undefined);
       throw error;
     }
   }
