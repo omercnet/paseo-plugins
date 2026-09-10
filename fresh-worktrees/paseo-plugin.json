@@ -1,6 +1,6 @@
 {
   "id": "fresh-worktrees",
   "requirements": {
-    "paseo": ">=0.8.0-beta.1"
+    "paseo": ">=0.8.0"
   }
 }

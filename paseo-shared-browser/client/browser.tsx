@@ -1,7 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   type PluginClientContext,
-  type PluginComposerPillProps,
   type PluginWorkspacePanelProps,
   useRpc,
 } from "@getpaseo/plugin/client";
@@ -783,30 +782,15 @@ function CanvasPlaceholder({
   );
 }
 
-function SharedBrowserPill({ theme }: PluginComposerPillProps) {
-  const labelStyle = useMemo(
-    () => ({ color: theme.colors.foregroundMuted, flexShrink: 1 }),
-    [theme],
-  );
-  return (
-    <>
-      <Icon name="PanelsTopLeft" size={14} color={theme.colors.foregroundMuted} />
-      <Text numberOfLines={1} style={labelStyle}>
-        Shared Browser
-      </Text>
-    </>
-  );
-}
-
 export function contributeSharedBrowserClient(client: PluginClientContext) {
   const agents = new Map<string, { id: string; workspaceId: string }>();
-  const pills = new Map<string, { workspaceId: string; dispose: () => void }>();
+  const pills = new Map<string, { workspaceId: string; remove: () => void }>();
   let openWorkspaceIds = new Set<string>();
   let refreshing = false;
   let stopped = false;
 
   const removePill = (agentId: string) => {
-    pills.get(agentId)?.dispose();
+    pills.get(agentId)?.remove();
     pills.delete(agentId);
   };
   const syncPill = (agent: { id: string; workspaceId: string }) => {
@@ -818,19 +802,23 @@ export function contributeSharedBrowserClient(client: PluginClientContext) {
     if (current?.workspaceId === agent.workspaceId) return;
     removePill(agent.id);
     const workspaceId = agent.workspaceId;
-    pills.set(agent.id, {
+    const pill = client.addComposerPill({
+      id: "open-shared-browser",
       workspaceId,
-      dispose: client.addComposerPill({
-        id: "open-shared-browser",
+      agentId: agent.id,
+      button: {
         title: "Open Shared Browser",
-        workspaceId,
-        agentId: agent.id,
-        Component: SharedBrowserPill,
-        onPress() {
-          client.openPanel("shared-browser", { workspaceId });
+        icon: "PanelsTopLeft",
+        label: "Shared Browser",
+        behavior: {
+          kind: "action",
+          onPress() {
+            client.openPanel("shared-browser", { workspaceId });
+          },
         },
-      }),
+      },
     });
+    pills.set(agent.id, { workspaceId, remove: pill.remove });
   };
   const syncAllPills = () => {
     for (const agent of agents.values()) syncPill(agent);
@@ -884,7 +872,7 @@ export function contributeSharedBrowserClient(client: PluginClientContext) {
     stopped = true;
     clearInterval(presenceTimer);
     unsubscribe();
-    for (const { dispose } of pills.values()) dispose();
+    for (const { remove } of pills.values()) remove();
     pills.clear();
     agents.clear();
   };
