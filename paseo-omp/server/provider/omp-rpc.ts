@@ -1,8 +1,10 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { OmpPublicDataFilter } from "./security";
+import { boundedJsonBytes, utf8Bytes } from "./security";
 
 const READY_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -24,55 +26,32 @@ const MAX_IMAGE_DATA_LENGTH = 8 * 1024 * 1024;
 const MAX_TOOL_PAYLOAD_LENGTH = 256 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
 const MAX_PENDING_REQUESTS = 256;
+const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const MAX_LINE_PARTS = 4_096;
 const MAX_ARRAY_ITEMS = 512;
 const MAX_CONTENT_PARTS = 64;
 const MAX_TODOS = 256;
 const MAX_ENV_ENTRIES = 256;
 const MAX_ENV_VALUE_LENGTH = 64 * 1024;
+const MAX_MCP_CONFIG_BYTES = 256 * 1024;
 const MAX_ENV_TOTAL_LENGTH = 1024 * 1024;
 const MAX_PATH_LENGTH = 4_096;
 const WINDOWS_DEFAULT_SYSTEM_ROOT = "C:\\Windows";
 
-const IDENTIFIER = z.string().min(1).max(MAX_ID_LENGTH);
-const NAME = z.string().min(1).max(MAX_NAME_LENGTH);
-const TEXT = z.string().max(MAX_TEXT_LENGTH);
+function boundedString(maxBytes: number, minBytes = 0) {
+  return z.string().refine((value) => {
+    const bytes = utf8Bytes(value);
+    return bytes >= minBytes && bytes <= maxBytes;
+  });
+}
+
+const IDENTIFIER = boundedString(MAX_ID_LENGTH, 1);
+const NAME = boundedString(MAX_NAME_LENGTH, 1);
+const TEXT = boundedString(MAX_TEXT_LENGTH);
 const OmpThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-function isBoundedJson(value: unknown, maxTextLength = MAX_TOOL_PAYLOAD_LENGTH): boolean {
-  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
-  let nodes = 0;
-  let textLength = 0;
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (!current) break;
-    nodes += 1;
-    if (nodes > 4_096 || current.depth > 24) return false;
-    const item = current.value;
-    if (item === null || typeof item === "boolean") continue;
-    if (typeof item === "number") {
-      if (!Number.isFinite(item)) return false;
-      continue;
-    }
-    if (typeof item === "string") {
-      if (item.length > MAX_TEXT_LENGTH) return false;
-      textLength += item.length;
-      if (textLength > maxTextLength) return false;
-      continue;
-    }
-    if (typeof item !== "object") return false;
-    const entries = Array.isArray(item)
-      ? item.map((child) => ["", child] as const)
-      : Object.entries(item);
-    if (entries.length > MAX_ARRAY_ITEMS) return false;
-    for (const [key, child] of entries) {
-      if (key.length > MAX_NAME_LENGTH) return false;
-      textLength += key.length;
-      if (textLength > maxTextLength) return false;
-      stack.push({ value: child, depth: current.depth + 1 });
-    }
-  }
-  return true;
+function isBoundedJson(value: unknown, maxBytes = MAX_TOOL_PAYLOAD_LENGTH): boolean {
+  return boundedJsonBytes(value, maxBytes, MAX_ARRAY_ITEMS) !== Number.POSITIVE_INFINITY;
 }
 
 const OmpContentPartSchema = z
@@ -80,8 +59,8 @@ const OmpContentPartSchema = z
     type: NAME,
     text: TEXT.optional(),
     thinking: TEXT.optional(),
-    data: z.string().max(MAX_IMAGE_DATA_LENGTH).optional(),
-    mimeType: z.string().max(128).optional(),
+    data: boundedString(MAX_IMAGE_DATA_LENGTH).optional(),
+    mimeType: boundedString(128).optional(),
   })
   .superRefine((part, context) => {
     if (part.type !== "image") return;
@@ -107,7 +86,7 @@ const OmpAssistantMessageEventSchema = z
     delta: TEXT.optional(),
     content: z
       .unknown()
-      .refine((value) => isBoundedJson(value))
+      .refine((value) => isBoundedJson(value, MAX_IMAGE_DATA_LENGTH + 1_024))
       .optional(),
   })
   .superRefine((event, context) => {
@@ -118,13 +97,13 @@ const OmpAssistantMessageEventSchema = z
     }
   });
 const OmpMessageSchema = z.object({
-  role: z.string().min(1).max(32),
+  role: boundedString(32, 1),
   content: z.union([TEXT, z.array(OmpContentPartSchema).max(MAX_CONTENT_PARTS)]).optional(),
   id: IDENTIFIER.optional(),
   entryId: IDENTIFIER.optional(),
   responseId: IDENTIFIER.optional(),
-  errorMessage: z.string().max(4_096).nullable().optional(),
-  stopReason: z.string().max(64).optional(),
+  errorMessage: boundedString(4_096).nullable().optional(),
+  stopReason: boundedString(64).optional(),
 });
 const OmpAvailableCommandSchema = z.object({
   name: NAME,
@@ -133,12 +112,12 @@ const OmpAvailableCommandSchema = z.object({
 const OmpModelSchema = z.object({
   provider: NAME,
   id: NAME,
-  name: z.string().max(MAX_NAME_LENGTH).optional(),
+  name: boundedString(MAX_NAME_LENGTH).optional(),
   reasoning: z.boolean().optional(),
   thinking: z
     .object({
-      efforts: z.array(z.string().max(32)).max(16).optional(),
-      defaultLevel: z.string().max(32).optional(),
+      efforts: z.array(boundedString(32)).max(16).optional(),
+      defaultLevel: boundedString(32).optional(),
     })
     .optional(),
   contextWindow: z.number().int().nonnegative().max(100_000_000).nullable().optional(),
@@ -165,7 +144,7 @@ const OmpResponseFrameSchema = z.object({
     .unknown()
     .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES))
     .optional(),
-  error: z.string().max(4_096).optional(),
+  error: boundedString(4_096).optional(),
 });
 const OmpChunkFrameSchema = z.object({
   type: z.literal("rpc_chunk"),
@@ -173,7 +152,7 @@ const OmpChunkFrameSchema = z.object({
   index: z.number().int().nonnegative(),
   count: z.number().int().positive().max(MAX_CHUNK_COUNT),
   byteLength: z.number().int().nonnegative().max(MAX_REASSEMBLED_FRAME_BYTES),
-  data: z.string().max(MAX_ENCODED_CHUNK_BYTES),
+  data: boundedString(MAX_ENCODED_CHUNK_BYTES),
 });
 const BoundedToolPayloadSchema = z.unknown().refine((value) => isBoundedJson(value));
 const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
@@ -219,7 +198,7 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
       .array(
         z.object({
           id: IDENTIFIER.optional(),
-          content: z.string().max(16_384),
+          content: boundedString(16_384),
           status: z.enum(["pending", "in_progress", "blocked", "completed", "abandoned"]),
         }),
       )
@@ -233,19 +212,16 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     type: z.literal("notice"),
     id: IDENTIFIER.optional(),
     level: z.enum(["info", "warning", "error"]),
-    message: z.string().max(64 * 1024),
-    source: z.string().max(MAX_NAME_LENGTH).optional(),
+    message: boundedString(64 * 1024),
+    source: boundedString(MAX_NAME_LENGTH).optional(),
   }),
   z.object({ type: z.literal("command_output"), text: TEXT.optional() }),
   z.object({
     type: z.literal("extension_ui_request"),
     id: IDENTIFIER,
-    method: z.string().min(1).max(64),
-    title: z.string().max(4_096).optional(),
-    message: z
-      .string()
-      .max(64 * 1024)
-      .optional(),
+    method: boundedString(64, 1),
+    title: boundedString(4_096).optional(),
+    message: boundedString(64 * 1024).optional(),
     notifyType: z.enum(["info", "warning", "error"]).optional(),
   }),
   z.object({
@@ -288,6 +264,7 @@ export interface OmpStartOptions {
 }
 
 export interface OmpRuntimeSession {
+  readonly redactionValues?: readonly string[];
   onEvent(listener: (event: OmpRpcEvent) => void): () => void;
   getState(): Promise<OmpSessionState>;
   getAvailableModels(): Promise<OmpModel[]>;
@@ -311,16 +288,19 @@ export interface OmpSpawnRequest {
   cwd: string;
   env: NodeJS.ProcessEnv;
   detached: boolean;
+  sensitiveValues: string[];
 }
 
 export interface OmpRpcRuntimeOptions {
   spawnProcess?: (request: OmpSpawnRequest) => ChildProcessWithoutNullStreams;
+  terminateProcessTree?: (pid: number) => Promise<boolean>;
 }
 
 type PendingRequest = {
   resolve(value: unknown): void;
   reject(error: Error): void;
   timer: NodeJS.Timeout;
+  bytes: number;
 };
 type StartedRequest = { id: string; promise: Promise<unknown> };
 
@@ -340,7 +320,7 @@ type ChunkState = {
 // families. Session-scoped values are explicit host input and are overlaid after rejecting loader
 // and executable-resolution controls; this keeps provider credentials available without copying
 // the daemon's unrelated environment into OMP.
-const INHERITED_RUNTIME_ENV = {
+const INHERITED_RUNTIME_ENV: Readonly<Record<string, true>> = {
   APPDATA: true,
   COLORTERM: true,
   HOME: true,
@@ -349,43 +329,69 @@ const INHERITED_RUNTIME_ENV = {
   LANG: true,
   LC_ALL: true,
   LC_CTYPE: true,
-  LOGNAME: true,
   LOCALAPPDATA: true,
+  LOGNAME: true,
   NO_PROXY: true,
+  OMP_PROFILE: true,
   PATH: true,
   PATHEXT: true,
+  PI_CODING_AGENT_DIR: true,
+  PI_CONFIG_DIR: true,
+  PI_PROFILE: true,
+  SHELL: true,
+  SSH_AUTH_SOCK: true,
   SSL_CERT_DIR: true,
   SSL_CERT_FILE: true,
-  SSH_AUTH_SOCK: true,
-  SHELL: true,
-  SystemRoot: true,
+  SYSTEMROOT: true,
   TEMP: true,
   TMP: true,
   TMPDIR: true,
-  USERPROFILE: true,
   TZ: true,
   USER: true,
+  USERPROFILE: true,
   XDG_CACHE_HOME: true,
   XDG_CONFIG_HOME: true,
   XDG_DATA_HOME: true,
   XDG_RUNTIME_DIR: true,
-  http_proxy: true,
-  https_proxy: true,
-  no_proxy: true,
-} satisfies Readonly<Record<string, true>>;
-const INHERITED_PROVIDER_ENV =
-  /^(?:ANTHROPIC|AWS|AZURE|BEDROCK|CLAUDE|CODEX|GEMINI|GITHUB|GITLAB|GOOGLE|GROQ|MISTRAL|OLLAMA|OMP|OPENAI|OPENROUTER|VERTEX|XAI)_[A-Z0-9_]+$/u;
-const INHERITED_CREDENTIAL_ENV =
-  /(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|CREDENTIALS|PRIVATE_KEY|SECRET|SESSION_TOKEN|TOKEN)$/u;
+};
+const INHERITED_PROVIDER_AUTH_ENV: Readonly<Record<string, true>> = {
+  ANTHROPIC_API_KEY: true,
+  AWS_ACCESS_KEY_ID: true,
+  AWS_DEFAULT_REGION: true,
+  AWS_PROFILE: true,
+  AWS_REGION: true,
+  AWS_SECRET_ACCESS_KEY: true,
+  AWS_SESSION_TOKEN: true,
+  AZURE_CLIENT_ID: true,
+  AZURE_CLIENT_SECRET: true,
+  AZURE_OPENAI_API_KEY: true,
+  AZURE_OPENAI_ENDPOINT: true,
+  AZURE_TENANT_ID: true,
+  COHERE_API_KEY: true,
+  DEEPSEEK_API_KEY: true,
+  FIREWORKS_API_KEY: true,
+  GEMINI_API_KEY: true,
+  GOOGLE_API_KEY: true,
+  GOOGLE_APPLICATION_CREDENTIALS: true,
+  GROQ_API_KEY: true,
+  MISTRAL_API_KEY: true,
+  OLLAMA_HOST: true,
+  OMP_AUTH_BROKER_TOKEN: true,
+  OMP_AUTH_BROKER_URL: true,
+  OPENAI_API_KEY: true,
+  OPENROUTER_API_KEY: true,
+  TOGETHER_API_KEY: true,
+  XAI_API_KEY: true,
+};
 const BLOCKED_SESSION_ENV =
-  /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|DYLD_.*|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|PATH|PATHEXT|PERL5LIB|PERL5OPT|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SystemRoot|USERPROFILE|_JAVA_OPTIONS)$/u;
+  /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|DYLD_.*|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|OMP_COMMAND|PATH|PATHEXT|PERL5LIB|PERL5OPT|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SYSTEMROOT|USERPROFILE|_JAVA_OPTIONS)$/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 
-function validateBoundedText(value: unknown, field: string, maxLength: number): string {
+function validateBoundedText(value: unknown, field: string, maxBytes: number): string {
   if (
     typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > maxLength ||
+    utf8Bytes(value) === 0 ||
+    utf8Bytes(value) > maxBytes ||
     value.includes("\0")
   ) {
     throw new Error(`Invalid OMP ${field}`);
@@ -396,7 +402,7 @@ function validateBoundedText(value: unknown, field: string, maxLength: number): 
 function buildOmpEnvironment(
   sessionEnv: Readonly<Record<string, string>> | undefined,
   sourceEnv: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
+): { env: NodeJS.ProcessEnv; sensitiveValues: string[] } {
   if (
     sessionEnv !== undefined &&
     (sessionEnv === null || typeof sessionEnv !== "object" || Array.isArray(sessionEnv))
@@ -404,38 +410,116 @@ function buildOmpEnvironment(
     throw new Error("OMP session environment is invalid");
   }
   const env: NodeJS.ProcessEnv = {};
-  let totalLength = 0;
+  const sensitiveValues: string[] = [];
+  let totalBytes = 0;
   for (const [name, value] of Object.entries(sourceEnv)) {
-    if (value === undefined || name === "OMP_COMMAND") continue;
-    if (
-      !(name in INHERITED_RUNTIME_ENV) &&
-      !INHERITED_PROVIDER_ENV.test(name) &&
-      !INHERITED_CREDENTIAL_ENV.test(name)
-    ) {
-      continue;
+    if (value === undefined || name.toUpperCase() === "OMP_COMMAND") continue;
+    const normalizedName = name.toUpperCase();
+    const isRuntime = normalizedName in INHERITED_RUNTIME_ENV;
+    const isProviderAuth = normalizedName in INHERITED_PROVIDER_AUTH_ENV;
+    if (!isRuntime && !isProviderAuth) continue;
+    const valueBytes = utf8Bytes(value);
+    if (!ENV_NAME.test(name) || valueBytes > MAX_ENV_VALUE_LENGTH || value.includes("\0")) continue;
+    if (isProviderAuth && valueBytes > 0 && valueBytes < 4) {
+      throw new Error("OMP provider credential is too short for safe redaction");
     }
-    if (!ENV_NAME.test(name) || value.length > MAX_ENV_VALUE_LENGTH || value.includes("\0"))
-      continue;
-    totalLength += name.length + value.length;
-    if (totalLength > MAX_ENV_TOTAL_LENGTH)
-      throw new Error("OMP inherited environment is too large");
+    totalBytes += utf8Bytes(name) + valueBytes;
+    if (totalBytes > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP inherited environment is too large");
     env[name] = value;
+    if (isProviderAuth && value.length > 0) sensitiveValues.push(value);
   }
-  const entries = Object.entries(sessionEnv ?? {});
-  if (entries.length > MAX_ENV_ENTRIES)
-    throw new Error("OMP session environment has too many entries");
-  for (const [name, value] of entries) {
-    if (!ENV_NAME.test(name) || BLOCKED_SESSION_ENV.test(name)) {
+  let entryCount = 0;
+  for (const name in sessionEnv ?? {}) {
+    if (!Object.hasOwn(sessionEnv ?? {}, name)) continue;
+    entryCount += 1;
+    if (entryCount > MAX_ENV_ENTRIES) throw new Error("OMP session environment has too many entries");
+    const value = (sessionEnv as Readonly<Record<string, string>>)[name];
+    if (!ENV_NAME.test(name) || BLOCKED_SESSION_ENV.test(name.toUpperCase())) {
       throw new Error("OMP session environment contains a forbidden variable");
     }
-    if (typeof value !== "string" || value.length > MAX_ENV_VALUE_LENGTH || value.includes("\0")) {
+    if (typeof value !== "string" || utf8Bytes(value) > MAX_ENV_VALUE_LENGTH || value.includes("\0")) {
       throw new Error("OMP session environment contains an invalid value");
     }
-    totalLength += name.length + value.length;
-    if (totalLength > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP session environment is too large");
+    if (value.length > 0 && utf8Bytes(value) < 4) {
+      throw new Error("OMP session environment contains a value too short for safe redaction");
+    }
+    totalBytes += utf8Bytes(name) + utf8Bytes(value);
+    if (totalBytes > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP session environment is too large");
     env[name] = value;
+    if (value.length > 0) sensitiveValues.push(value);
   }
-  return env;
+  return { env, sensitiveValues };
+}
+
+function collectAmbientMcpSecrets(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  const home = env.HOME ?? env.USERPROFILE ?? homedir();
+  const agentDir = env.PI_CODING_AGENT_DIR ?? join(home, env.PI_CONFIG_DIR ?? ".omp", "agent");
+  const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
+  const secrets: string[] = [];
+  const sensitiveContainers: Readonly<Record<string, true>> = {
+    auth: true,
+    env: true,
+    headers: true,
+    oauth: true,
+    url: true,
+  };
+  const collectStrings = (root: unknown) => {
+    const stack: unknown[] = [root];
+    while (stack.length > 0) {
+      const value = stack.pop();
+      if (typeof value === "string") {
+        if (value.length > 0 && utf8Bytes(value) < 4) {
+          throw new Error("OMP MCP configuration contains a value too short for safe redaction");
+        }
+        if (value.length > 0) secrets.push(value);
+      } else if (Array.isArray(value)) {
+        if (value.length > MAX_ARRAY_ITEMS) throw new Error("OMP MCP configuration is too large");
+        for (let index = value.length - 1; index >= 0; index -= 1) stack.push(value[index]);
+      } else if (value && typeof value === "object") {
+        for (const key in value) {
+          if (Object.hasOwn(value, key)) stack.push((value as Record<string, unknown>)[key]);
+        }
+      }
+    }
+  };
+  for (const path of paths) {
+    let raw: string;
+    try {
+      const stats = statSync(path);
+      if (!stats.isFile() || stats.size > MAX_MCP_CONFIG_BYTES) {
+        throw new Error("OMP MCP configuration cannot be secured");
+      }
+      raw = readFileSync(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
+      throw new Error("OMP MCP configuration cannot be secured");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("OMP MCP configuration cannot be secured");
+    }
+    if (boundedJsonBytes(parsed, MAX_MCP_CONFIG_BYTES, MAX_ARRAY_ITEMS) === Number.POSITIVE_INFINITY) {
+      throw new Error("OMP MCP configuration cannot be secured");
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const stack: unknown[] = [parsed];
+    while (stack.length > 0) {
+      const value = stack.pop();
+      if (!value || typeof value !== "object") continue;
+      for (const key in value) {
+        if (!Object.hasOwn(value, key)) continue;
+        const child = (value as Record<string, unknown>)[key];
+        if (sensitiveContainers[key.toLowerCase()]) collectStrings(child);
+        else if (child && typeof child === "object") stack.push(child);
+      }
+    }
+  }
+  return secrets;
 }
 
 export function buildOmpSpawnRequest(
@@ -473,12 +557,18 @@ export function buildOmpSpawnRequest(
       validateBoundedText(systemPrompt, "system prompt", MAX_SYSTEM_PROMPT_LENGTH),
     );
   }
+  const environment = buildOmpEnvironment(options.env, sourceEnv);
+  const sensitiveValues = [
+    ...environment.sensitiveValues,
+    ...collectAmbientMcpSecrets(cwd, environment.env),
+  ];
   return {
     command,
     args,
     cwd,
-    env: buildOmpEnvironment(options.env, sourceEnv),
+    env: environment.env,
     detached: process.platform !== "win32",
+    sensitiveValues,
   };
 }
 
@@ -508,6 +598,11 @@ function processIsGone(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === "ESRCH";
 }
 
+/**
+ * Terminates the detached process group created for OMP. This covers descendants that remain in
+ * that group after the leader exits; descendants that deliberately re-parent into another process
+ * group are outside this transport's containment boundary.
+ */
 export async function terminatePosixProcessTree(
   pid: number,
   graceMs: number,
@@ -579,13 +674,14 @@ async function stopWindowsTree(pid: number): Promise<boolean> {
   }, PROCESS_STOP_TIMEOUT_MS);
   taskkill.once("error", () => finish(false));
   taskkill.once("close", (code, signal) => {
-    finish((code === 0 || code === 128) && signal === null);
+    finish(code === 0 && signal === null);
   });
   return result.promise;
 }
 
 class OmpRpcProcess {
   readonly ready: Promise<ReadyFrame>;
+  readonly redactionValues: readonly string[];
 
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly listeners = new Set<(event: OmpRpcEvent) => void>();
@@ -593,9 +689,10 @@ class OmpRpcProcess {
   private readonly exitPromise: Promise<void>;
   private readonly resolveReady: (frame: ReadyFrame) => void;
   private readonly rejectReady: (error: Error) => void;
-  private readonly dataFilter: OmpPublicDataFilter;
+  private readonly terminateProcessTree: (pid: number) => Promise<boolean>;
   private readonly streamedBlocks = new Map<number, string>();
   private readonly activeToolCallIds = new Set<string>();
+  private pendingWriteBytes = 0;
   private unknownDiagnosticCount = 0;
   private commandTextLength = 0;
   private lineParts: Buffer[] = [];
@@ -610,15 +707,23 @@ class OmpRpcProcess {
   private closePromise: Promise<void> | null = null;
   private readyReceived = false;
 
-  constructor(options: OmpStartOptions, spawnProcess?: OmpRpcRuntimeOptions["spawnProcess"]) {
+  constructor(
+    options: OmpStartOptions,
+    spawnProcess?: OmpRpcRuntimeOptions["spawnProcess"],
+    terminateProcessTree?: OmpRpcRuntimeOptions["terminateProcessTree"],
+  ) {
     const ready = Promise.withResolvers<ReadyFrame>();
     this.rejectReady = ready.reject;
     this.ready = ready.promise;
     this.resolveReady = ready.resolve;
     const request = buildOmpSpawnRequest(options);
-    this.dataFilter = new OmpPublicDataFilter(
-      Object.values(request.env).filter((value): value is string => value !== undefined),
-    );
+    this.redactionValues = request.sensitiveValues;
+    this.terminateProcessTree =
+      terminateProcessTree ??
+      (async (pid) =>
+        process.platform === "win32"
+          ? stopWindowsTree(pid)
+          : terminatePosixProcessTree(pid, PROCESS_STOP_TIMEOUT_MS));
     try {
       this.child = spawnProcess
         ? spawnProcess(request)
@@ -695,32 +800,40 @@ class OmpRpcProcess {
     if (this.closed || this.exited || !this.child.stdin.writable) {
       return { id, promise: Promise.reject(new Error("OMP RPC process is closed")) };
     }
-    if (this.pending.size >= MAX_PENDING_REQUESTS) {
-      return { id, promise: Promise.reject(new Error("OMP RPC has too many pending requests")) };
-    }
-    const result = Promise.withResolvers<unknown>();
-    const timer = setTimeout(() => {
-      this.pending.delete(id);
-      result.reject(new Error("OMP RPC request timed out"));
-    }, timeoutMs);
-    this.pending.set(id, { resolve: result.resolve, reject: result.reject, timer });
     let payload: Buffer;
     try {
       payload = Buffer.from(`${JSON.stringify({ ...command, id })}\n`);
     } catch {
-      clearTimeout(timer);
-      this.pending.delete(id);
-      result.reject(new Error("OMP RPC request could not be encoded"));
-      return { id, promise: result.promise };
+      return { id, promise: Promise.reject(new Error("OMP RPC request could not be encoded")) };
     }
     if (payload.byteLength > this.physicalFrameLimit) {
-      clearTimeout(timer);
-      this.pending.delete(id);
-      result.reject(new Error("OMP RPC request exceeds the negotiated frame limit"));
-      return { id, promise: result.promise };
+      return {
+        id,
+        promise: Promise.reject(new Error("OMP RPC request exceeds the negotiated frame limit")),
+      };
     }
+    if (
+      this.pending.size >= MAX_PENDING_REQUESTS ||
+      this.pendingWriteBytes + payload.byteLength > MAX_PENDING_WRITE_BYTES
+    ) {
+      return { id, promise: Promise.reject(new Error("OMP RPC has too many pending requests")) };
+    }
+    const result = Promise.withResolvers<unknown>();
+    const timer = setTimeout(() => {
+      const pending = this.pending.get(id);
+      if (pending) this.pendingWriteBytes -= pending.bytes;
+      this.pending.delete(id);
+      result.reject(new Error("OMP RPC request timed out"));
+    }, timeoutMs);
+    this.pending.set(id, { resolve: result.resolve, reject: result.reject, timer, bytes: payload.byteLength });
+    this.pendingWriteBytes += payload.byteLength;
     try {
       this.child.stdin.write(payload, (cause) => {
+        const pending = this.pending.get(id);
+        if (pending?.bytes) {
+          this.pendingWriteBytes -= pending.bytes;
+          pending.bytes = 0;
+        }
         if (cause) this.fail(new Error("OMP RPC input channel failed"));
       });
     } catch {
@@ -752,10 +865,7 @@ class OmpRpcProcess {
     }
     const pid = this.child.pid;
     if (pid !== undefined) {
-      const treeStopped =
-        process.platform === "win32"
-          ? await stopWindowsTree(pid).catch(() => false)
-          : await terminatePosixProcessTree(pid, PROCESS_STOP_TIMEOUT_MS).catch(() => false);
+      const treeStopped = await this.terminateProcessTree(pid).catch(() => false);
       if (!treeStopped) throw new Error("OMP RPC process tree cleanup failed");
     }
     if (!this.exited && !(await this.waitForExit(PROCESS_STOP_TIMEOUT_MS))) {
@@ -942,13 +1052,9 @@ class OmpRpcProcess {
       if (!pending) return;
       clearTimeout(pending.timer);
       this.pending.delete(response.data.id);
-      if (response.data.success) {
-        pending.resolve(
-          response.data.data === undefined ? undefined : this.dataFilter.json(response.data.data),
-        );
-      } else {
-        pending.reject(new Error("OMP RPC request failed"));
-      }
+      this.pendingWriteBytes -= pending.bytes;
+      if (response.data.success) pending.resolve(response.data.data);
+      else pending.reject(new Error("OMP RPC request failed"));
       return;
     }
     const event = OmpRuntimeEventSchema.safeParse(frame);
@@ -960,23 +1066,15 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    const publicEvent = OmpRuntimeEventSchema.safeParse(
-      this.dataFilter.json(event.data, MAX_IMAGE_DATA_LENGTH),
-    );
-    if (!publicEvent.success) {
-      this.recordProtocolViolation();
-      return;
-    }
-    const sanitized = publicEvent.data;
-    this.emit(sanitized);
+    this.emit(event.data);
     if (
-      sanitized.type === "message_end" ||
-      sanitized.type === "turn_end" ||
-      sanitized.type === "agent_end"
+      event.data.type === "message_end" ||
+      event.data.type === "turn_end" ||
+      event.data.type === "agent_end"
     ) {
       this.streamedBlocks.clear();
     }
-    if (sanitized.type === "turn_end" || sanitized.type === "agent_end") {
+    if (event.data.type === "turn_end" || event.data.type === "agent_end") {
       this.commandTextLength = 0;
       this.activeToolCallIds.clear();
     }
@@ -990,7 +1088,7 @@ class OmpRpcProcess {
       return true;
     }
     if (event.type === "command_output") {
-      const nextLength = this.commandTextLength + (event.text?.length ?? 0);
+      const nextLength = this.commandTextLength + utf8Bytes(event.text ?? "");
       if (nextLength > MAX_STREAM_TEXT_LENGTH) return false;
       this.commandTextLength = nextLength;
       return true;
@@ -1045,7 +1143,7 @@ class OmpRpcProcess {
     }
     let totalLength = 0;
     for (const text of nextBlocks.values()) {
-      totalLength += text.length;
+      totalLength += utf8Bytes(text);
       if (totalLength > MAX_STREAM_TEXT_LENGTH) return false;
     }
     this.streamedBlocks.clear();
@@ -1083,6 +1181,7 @@ class OmpRpcProcess {
       pending.reject(error);
     }
     this.pending.clear();
+    this.pendingWriteBytes = 0;
   }
 
   private emit(event: OmpRpcEvent): void {
@@ -1116,10 +1215,14 @@ function validateReadyMetadata(frame: ReadyFrame): "legacy-v1" | "v1" | "v2" {
 }
 
 class OmpRpcSession implements OmpRuntimeSession {
+  readonly redactionValues: readonly string[];
+
   constructor(
     private readonly process: OmpRpcProcess,
     private readonly removeAbortListener: () => void,
-  ) {}
+  ) {
+    this.redactionValues = process.redactionValues;
+  }
 
   onEvent(listener: (event: OmpRpcEvent) => void): () => void {
     return this.process.onEvent(listener);
@@ -1195,7 +1298,11 @@ export class OmpRpcRuntime implements OmpRuntime {
 
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     options.signal?.throwIfAborted();
-    const process = new OmpRpcProcess(options, this.options.spawnProcess);
+    const process = new OmpRpcProcess(
+      options,
+      this.options.spawnProcess,
+      this.options.terminateProcessTree,
+    );
     const abort = () => void process.close().catch(() => undefined);
     options.signal?.addEventListener("abort", abort, { once: true });
     const removeAbortListener = () => options.signal?.removeEventListener("abort", abort);

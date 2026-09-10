@@ -7,7 +7,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { discoverOmpCatalog } from "./catalog";
 import type { OmpRuntime } from "./omp-rpc";
-import { OmpPublicError } from "./security";
+import { boundedJsonBytes, OmpPublicError, utf8Bytes } from "./security";
 import { OmpProviderSession } from "./session";
 import type { OmpTimelineScheduler } from "./timeline-projector";
 
@@ -25,6 +25,76 @@ const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   "session.interrupt": true,
   "session.close": true,
 };
+const MAX_CONNECTION_SESSIONS = 32;
+const MAX_ACTIVE_OPERATIONS = 128;
+const MAX_PROVIDER_INPUT_BYTES = 2 * 1024 * 1024;
+const MAX_NESTED_OPTION_BYTES = 256 * 1024;
+
+function hasOwnEntries(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  for (const key in value) {
+    if (Object.hasOwn(value, key)) return true;
+  }
+  return false;
+}
+
+function preflightProviderInput(input: unknown): void {
+  if (!input || typeof input !== "object") throw new OmpPublicError("Invalid provider request");
+  const record = input as Record<string, unknown>;
+  if (boundedJsonBytes(record, MAX_PROVIDER_INPUT_BYTES, 512) === Number.POSITIVE_INFINITY) {
+    throw new OmpPublicError("Provider request is too large");
+  }
+  if (record.type === "session.open") {
+    if (
+      record.persistence !== undefined &&
+      boundedJsonBytes(record.persistence, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
+    ) {
+      throw new OmpPublicError("Session persistence input is too large");
+    }
+    if (record.persistence !== undefined) {
+      throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
+    }
+    const config = record.config as Record<string, unknown> | undefined;
+    for (const value of [config?.mcpServers, config?.providerOptions, config?.settings]) {
+      if (
+        value !== undefined &&
+        boundedJsonBytes(value, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
+      ) {
+        throw new OmpPublicError("Session configuration is too large");
+      }
+    }
+    if (hasOwnEntries(config?.mcpServers)) {
+      throw new OmpPublicError("OMP Plugin Preview does not support host MCP servers");
+    }
+    if (config?.toolPolicy !== undefined) {
+      throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
+    }
+    if (hasOwnEntries(config?.providerOptions) || hasOwnEntries(config?.settings)) {
+      throw new OmpPublicError("OMP Plugin Preview does not support provider options");
+    }
+  }
+  if (record.type === "session.prompt") {
+    const prompt = record.prompt as Record<string, unknown> | undefined;
+    if (
+      prompt?.outputSchema !== undefined &&
+      boundedJsonBytes(prompt.outputSchema, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
+    ) {
+      throw new OmpPublicError("Prompt output schema is too large");
+    }
+    if (prompt?.outputSchema !== undefined || prompt?.clearPendingPermissions === true) {
+      throw new OmpPublicError("OMP does not support structured output or permission controls");
+    }
+  }
+  if (record.type === "session.permission") {
+    const response = record.response as Record<string, unknown> | undefined;
+    if (
+      response !== undefined &&
+      boundedJsonBytes(response, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
+    ) {
+      throw new OmpPublicError("Permission response is too large");
+    }
+  }
+}
 
 function isBoundedIdentifier(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(value);
@@ -41,7 +111,7 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
       throw new OmpPublicError("Invalid provider request");
     if (
       record.cwd !== undefined &&
-      (typeof record.cwd !== "string" || record.cwd.length > 4_096 || record.cwd.includes("\0"))
+      (typeof record.cwd !== "string" || utf8Bytes(record.cwd) > 4_096 || record.cwd.includes("\0"))
     ) {
       throw new OmpPublicError("Invalid provider request");
     }
@@ -79,9 +149,6 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
     if (Array.isArray(response.updatedPermissions) && response.updatedPermissions.length > 64) {
       throw new OmpPublicError("Invalid permission response");
     }
-    if (JSON.stringify(response).length > 256 * 1024) {
-      throw new OmpPublicError("Invalid permission response");
-    }
     return;
   }
   if (!isBoundedIdentifier(record.requestId)) throw new OmpPublicError("Invalid provider request");
@@ -109,8 +176,11 @@ export function createOmpConnection(
     (capability) => SUPPORTED_CAPABILITIES[capability],
   );
   const listeners = new Set<(event: ProviderEvent) => void>();
-  const sessions = new Map<string, OmpProviderSession>();
-  const opening = new Map<string, Promise<OmpProviderSession>>();
+  const sessions = new Map<string, { token: symbol; session: OmpProviderSession }>();
+  const opening = new Map<
+    string,
+    { token: symbol; promise: Promise<OmpProviderSession> }
+  >();
   const shutdown = new AbortController();
   const activeOperations = new Set<Promise<void>>();
   let closing = false;
@@ -148,34 +218,51 @@ export function createOmpConnection(
           requestFailure(input.requestId, new OmpPublicError("OMP session already exists"));
           return;
         }
+        if (sessions.size + opening.size >= MAX_CONNECTION_SESSIONS) {
+          requestFailure(input.requestId, new OmpPublicError("OMP session limit reached"));
+          return;
+        }
+        const token = Symbol(input.sessionId);
+        const sessionEmit = (event: ProviderEvent) => {
+          if (
+            opening.get(input.sessionId)?.token !== token &&
+            sessions.get(input.sessionId)?.token !== token
+          ) {
+            return;
+          }
+          emit(event);
+        };
         const pending = OmpProviderSession.open(
           input,
           runtime,
           safeCapabilities,
-          emit,
+          sessionEmit,
           scheduler,
           shutdown.signal,
         );
-        opening.set(input.sessionId, pending);
+        opening.set(input.sessionId, { token, promise: pending });
         try {
           const session = await pending;
-          if (closing) {
+          if (closing || opening.get(input.sessionId)?.token !== token) {
             await session.close();
             return;
           }
-          sessions.set(input.sessionId, session);
+          sessions.set(input.sessionId, { token, session });
           session.publishOpened(input.requestId);
         } catch (error) {
-          const details = errorDetails(error, "OMP session failed to open");
-          emit({ type: "request.failed", requestId: input.requestId, error: details });
-          emit({ type: "session.closed", sessionId: input.sessionId, error: details });
+          if (opening.get(input.sessionId)?.token === token) {
+            const details = errorDetails(error, "OMP session failed to open");
+            emit({ type: "request.failed", requestId: input.requestId, error: details });
+            emit({ type: "session.closed", sessionId: input.sessionId, error: details });
+          }
         } finally {
-          opening.delete(input.sessionId);
+          if (opening.get(input.sessionId)?.token === token) opening.delete(input.sessionId);
+          if (!sessions.has(input.sessionId)) opening.delete(input.sessionId);
         }
         return;
       }
       case "session.prompt": {
-        const session = sessions.get(input.sessionId);
+        const session = sessions.get(input.sessionId)?.session;
         if (!session) {
           emit({
             type: "session.prompt_result",
@@ -192,7 +279,7 @@ export function createOmpConnection(
         return;
       }
       case "session.configure": {
-        const session = sessions.get(input.sessionId);
+        const session = sessions.get(input.sessionId)?.session;
         if (!session) {
           requestFailure(input.requestId, new OmpPublicError("Unknown OMP session"));
           return;
@@ -201,7 +288,7 @@ export function createOmpConnection(
         return;
       }
       case "session.interrupt": {
-        const session = sessions.get(input.sessionId);
+        const session = sessions.get(input.sessionId)?.session;
         if (!session) {
           requestFailure(input.requestId, new OmpPublicError("Unknown OMP session"));
           return;
@@ -210,13 +297,14 @@ export function createOmpConnection(
         return;
       }
       case "session.close": {
-        const session = sessions.get(input.sessionId);
-        if (!session) {
+        const slot = sessions.get(input.sessionId);
+        if (!slot) {
           requestFailure(input.requestId, new OmpPublicError("Unknown OMP session"));
           return;
         }
-        sessions.delete(input.sessionId);
-        await session.close(input);
+        await slot.session.close();
+        if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
+        emit({ type: "request.completed", requestId: input.requestId });
         return;
       }
       default:
@@ -229,9 +317,11 @@ export function createOmpConnection(
   const disposeConnection = async (): Promise<void> => {
     closing = true;
     shutdown.abort(new Error("OMP provider connection closed"));
-    const sessionClosures = Promise.all([...sessions.values()].map((session) => session.close()));
+    const sessionClosures = Promise.all(
+      [...sessions.values()].map(({ session }) => session.close()),
+    );
     await Promise.all([Promise.all(activeOperations), sessionClosures]);
-    const pending = await Promise.allSettled(opening.values());
+    const pending = await Promise.allSettled([...opening.values()].map((slot) => slot.promise));
     for (const result of pending) {
       if (result.status === "fulfilled" && !sessions.has(result.value.id)) {
         await result.value.close();
@@ -247,14 +337,21 @@ export function createOmpConnection(
     capabilities: safeCapabilities,
     async send(input) {
       if (closing || closed) throw new Error("OMP provider connection is closed");
+      if (activeOperations.size >= MAX_ACTIVE_OPERATIONS) {
+        throw new OmpPublicError("OMP provider is busy");
+      }
+      preflightProviderInput(input);
       const parsed = ProviderInputSchema.safeParse(input);
       if (!parsed.success) throw new OmpPublicError("Invalid provider request");
       input = parsed.data;
       validateInputEnvelope(input);
       requireProviderCapabilities(safeCapabilities, input);
-      queueMicrotask(() => {
-        if (closing || closed) return;
-        const operation = dispatch(input).catch((error) => {
+      const operation = Promise.resolve()
+        .then(async () => {
+          if (closing || closed) return;
+          await dispatch(input);
+        })
+        .catch((error) => {
           if (input.type === "session.prompt") {
             emit({
               type: "session.prompt_result",
@@ -266,9 +363,8 @@ export function createOmpConnection(
             requestFailure(input.requestId, error, "OMP provider request failed");
           }
         });
-        activeOperations.add(operation);
-        void operation.finally(() => activeOperations.delete(operation));
-      });
+      activeOperations.add(operation);
+      void operation.finally(() => activeOperations.delete(operation));
     },
     onEvent(listener) {
       listeners.add(listener);

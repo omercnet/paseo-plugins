@@ -5,13 +5,14 @@ import type {
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
-import { type JsonValue, OmpPublicDataFilter } from "./security";
+import { type JsonValue, OmpPublicDataFilter, utf8Bytes } from "./security";
 
 const STREAM_FRAME_MS = 32;
 const MAX_STREAM_CONTENT_BLOCKS = 64;
 const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
 const MAX_TODOS = 256;
+const MAX_TURN_NATIVE_IDENTITIES = 1_024;
 
 type Emit = (event: ProviderEvent) => void;
 
@@ -77,6 +78,7 @@ export class OmpTimelineProjector {
   private currentTurnId: string | null = null;
   private assistantSequence = 0;
   private readonly turnNativeMessageIds = new Map<string, string>();
+  private nativeIdentitySaturated = false;
   private assistantIdentitySequence = 0;
   private noticeSequence = 0;
   private toolSequence = 0;
@@ -94,6 +96,10 @@ export class OmpTimelineProjector {
   }
 
   private readonly dataFilter: OmpPublicDataFilter;
+  addSensitiveValues(values: Iterable<string>): void {
+    this.dataFilter.addSensitiveValues(values);
+  }
+
 
   project(event: OmpRpcEvent, turnId: string): void {
     if (this.closed) return;
@@ -174,14 +180,14 @@ export class OmpTimelineProjector {
       }
       case "command_output": {
         if (!event.text) return;
-        const next = `${this.commandText}${this.dataFilter.text(event.text)}`;
-        if (next.length > MAX_STREAM_TEXT_LENGTH) return;
+        const next = `${this.commandText}${event.text}`;
+        if (utf8Bytes(next) > MAX_STREAM_TEXT_LENGTH) return;
         this.commandText = next;
         this.publish({
           type: "assistant_message",
           id: `omp:command:${turnId}`,
           messageId: `omp:command:${turnId}`,
-          text: this.commandText,
+          text: this.dataFilter.text(this.commandText),
         });
         return;
       }
@@ -281,6 +287,7 @@ export class OmpTimelineProjector {
     this.currentTurnId = null;
     this.assistantSequence = 0;
     this.turnNativeMessageIds.clear();
+    this.nativeIdentitySaturated = false;
   }
 
   close(): void {
@@ -299,12 +306,13 @@ export class OmpTimelineProjector {
     this.commandText = "";
   }
 
-  private beginStream(message: OmpMessage, turnId: string): StreamSnapshot {
+  private beginStream(message: OmpMessage, turnId: string): StreamSnapshot | null {
     this.assistantSequence += 1;
     const nativeIdentity = assistantIdentity(message);
     const messageId = nativeIdentity
       ? this.messageIdForNativeIdentity(nativeIdentity)
       : this.nextAssistantMessageId(`turn:${turnId}:${this.assistantSequence}`);
+    if (!messageId) return null;
     this.stream = {
       messageId,
       ...(nativeIdentity ? { nativeIdentity } : {}),
@@ -315,9 +323,13 @@ export class OmpTimelineProjector {
     return this.stream;
   }
 
-  private messageIdForNativeIdentity(nativeIdentity: string): string {
+  private messageIdForNativeIdentity(nativeIdentity: string): string | undefined {
     const existing = this.turnNativeMessageIds.get(nativeIdentity);
     if (existing) return existing;
+    if (this.nativeIdentitySaturated || this.turnNativeMessageIds.size >= MAX_TURN_NATIVE_IDENTITIES) {
+      this.nativeIdentitySaturated = true;
+      return undefined;
+    }
     const messageId = this.nextAssistantMessageId(nativeIdentity);
     this.turnNativeMessageIds.set(nativeIdentity, messageId);
     return messageId;
@@ -343,6 +355,7 @@ export class OmpTimelineProjector {
       }
     }
     const stream = this.stream ?? this.beginStream(message, turnId);
+    if (!stream) return;
     if (update?.contentIndex !== undefined) {
       this.updateBlock(stream, message, update.contentIndex, update);
       return;
@@ -400,9 +413,9 @@ export class OmpTimelineProjector {
   ): void {
     if (!this.isValidContentIndex(contentIndex)) return;
     const sanitized = { ...snapshot, text: this.dataFilter.text(snapshot.text) };
-    let totalLength = sanitized.text.length;
+    let totalLength = utf8Bytes(sanitized.text);
     for (const [index, block] of stream.blocks) {
-      if (index !== contentIndex) totalLength += block.text.length;
+      if (index !== contentIndex) totalLength += utf8Bytes(block.text);
       if (totalLength > MAX_STREAM_TEXT_LENGTH) return;
     }
     const previous = stream.blocks.get(contentIndex);

@@ -15,7 +15,13 @@ import type {
   OmpStartOptions,
 } from "./omp-rpc";
 import { buildOmpSpawnRequest } from "./omp-rpc";
-import { BoundedStringSet, OmpPublicDataFilter, OmpPublicError } from "./security";
+import {
+  boundedJsonBytes,
+  BoundedStringSet,
+  OmpPublicDataFilter,
+  OmpPublicError,
+  utf8Bytes,
+} from "./security";
 import {
   defaultOmpTimelineScheduler,
   OmpTimelineProjector,
@@ -37,6 +43,21 @@ const MAX_UNCLAIMED_BRANCH_ENTRIES = 1_024;
 const MAX_PENDING_USERS = 256;
 const MAX_USER_ECHOES = 512;
 const MAX_BUFFERED_TURN_EVENTS = 512;
+const MAX_BUFFERED_TURN_BYTES = 4 * 1024 * 1024;
+const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
+const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
+const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
+
+function retainedBytes(values: readonly unknown[], maxBytes: number): number {
+  let total = 0;
+  for (const value of values) {
+    const bytes = boundedJsonBytes(value, maxBytes, 512);
+    if (bytes === Number.POSITIVE_INFINITY) return bytes;
+    total += bytes;
+    if (total > maxBytes) return Number.POSITIVE_INFINITY;
+  }
+  return total;
+}
 
 type PendingUser = {
   clientMessageId: string;
@@ -97,7 +118,7 @@ function textPrompt(input: SessionPromptInput): string {
     if (part.type !== "text" || typeof part.text !== "string") {
       throw new OmpPublicError("OMP supports text messages only");
     }
-    length += part.text.length;
+    length += utf8Bytes(part.text) + (parts.length > 0 ? 2 : 0);
     if (length > MAX_PROMPT_TEXT_LENGTH) throw new OmpPublicError("OMP prompt is too large");
     parts.push(part.text);
   }
@@ -212,7 +233,10 @@ export class OmpProviderSession {
     this.id = id;
     this.cwd = config.cwd;
     this.scheduler = scheduler;
-    const sensitiveValues = Object.values(config.env ?? {});
+    const sensitiveValues = [
+      ...Object.values(config.env ?? {}),
+      ...(runtime.redactionValues ?? []),
+    ];
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
     this.bindRuntime(runtime);
@@ -247,7 +271,7 @@ export class OmpProviderSession {
     if (Object.keys(input.config.settings ?? {}).length > 0) {
       throw new OmpPublicError("OMP Plugin Preview does not support provider settings");
     }
-    if (input.config.title && input.config.title.length > 256) {
+    if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
     const startOptions: OmpStartOptions = {
@@ -653,6 +677,8 @@ export class OmpProviderSession {
         );
       }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
+      this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
+      this.projector.addSensitiveValues(recovered.redactionValues ?? []);
       this.generation += 1;
       this.runtimeDead = null;
       this.runtimeDisposal = null;
@@ -692,7 +718,12 @@ export class OmpProviderSession {
       fallbackOnFinish: false,
       bufferedEchoes: [],
     };
-    if (turn.pendingUsers.length >= MAX_PENDING_USERS) {
+    if (
+      turn.pendingUsers.length >= MAX_PENDING_USERS ||
+      retainedBytes(turn.pendingUsers, MAX_PENDING_USER_BYTES) +
+        boundedJsonBytes(pending, MAX_PENDING_USER_BYTES, MAX_USER_ECHOES) >
+        MAX_PENDING_USER_BYTES
+    ) {
       this.publishSteerFailure(clientMessageId, "OMP has too many pending steer messages");
       return;
     }
@@ -763,7 +794,12 @@ export class OmpProviderSession {
     const turn = this.activeTurn;
     if (!turn) return;
     if (turn.starting) {
-      if (turn.bufferedEvents.length >= MAX_BUFFERED_TURN_EVENTS) {
+      if (
+        turn.bufferedEvents.length >= MAX_BUFFERED_TURN_EVENTS ||
+        retainedBytes(turn.bufferedEvents, MAX_BUFFERED_TURN_BYTES) +
+          boundedJsonBytes(event, MAX_BUFFERED_TURN_BYTES, MAX_BUFFERED_TURN_EVENTS) >
+          MAX_BUFFERED_TURN_BYTES
+      ) {
         this.handleRuntimeFailure();
         return;
       }
@@ -822,7 +858,12 @@ export class OmpProviderSession {
     ) {
       return;
     }
-    if (turn.userEchoes.length >= MAX_USER_ECHOES) {
+    if (
+      turn.userEchoes.length >= MAX_USER_ECHOES ||
+      retainedBytes(turn.userEchoes, MAX_USER_ECHO_BYTES) +
+        boundedJsonBytes(message, MAX_USER_ECHO_BYTES, MAX_USER_ECHOES) >
+        MAX_USER_ECHO_BYTES
+    ) {
       this.handleRuntimeFailure();
       return;
     }
@@ -863,7 +904,12 @@ export class OmpProviderSession {
         continue;
       }
       if (!pending.accepted) {
-        if (pending.bufferedEchoes.length + turn.userEchoes.length > MAX_USER_ECHOES) {
+        if (
+          pending.bufferedEchoes.length + turn.userEchoes.length > MAX_USER_ECHOES ||
+          retainedBytes(pending.bufferedEchoes, MAX_USER_ECHO_BYTES) +
+            retainedBytes(turn.userEchoes, MAX_USER_ECHO_BYTES) >
+            MAX_USER_ECHO_BYTES
+        ) {
           this.handleRuntimeFailure();
           return;
         }
@@ -882,15 +928,24 @@ export class OmpProviderSession {
           ) {
             return;
           }
-          const unseen = messages.filter(
-            (branchMessage) => !this.seenEntryIds.has(branchMessage.entryId),
-          );
+          if (
+            retainedBytes(messages, MAX_UNCLAIMED_BRANCH_BYTES) === Number.POSITIVE_INFINITY
+          ) {
+            this.quarantineBranchEntries();
+            return;
+          }
+          const unseen: Array<{ entryId: string; text: string }> = [];
+          for (const branchMessage of messages) {
+            if (!this.seenEntryIds.has(branchMessage.entryId)) unseen.push(branchMessage);
+          }
           if (!this.branchWatermarkValid) {
             this.unclaimedBranchEntries.length = 0;
             this.branchWatermarkValid = true;
           } else if (
-            unseen.length <=
-            MAX_UNCLAIMED_BRANCH_ENTRIES - this.unclaimedBranchEntries.length
+            unseen.length <= MAX_UNCLAIMED_BRANCH_ENTRIES - this.unclaimedBranchEntries.length &&
+            retainedBytes(this.unclaimedBranchEntries, MAX_UNCLAIMED_BRANCH_BYTES) +
+              retainedBytes(unseen, MAX_UNCLAIMED_BRANCH_BYTES) <=
+              MAX_UNCLAIMED_BRANCH_BYTES
           ) {
             this.unclaimedBranchEntries.push(...unseen);
           } else {

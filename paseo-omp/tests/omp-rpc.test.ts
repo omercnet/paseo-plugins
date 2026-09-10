@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
@@ -79,6 +82,7 @@ function runtimeFor(child: FakeRpcChild, launches: OmpSpawnRequest[] = []): OmpR
       launches.push(request);
       return child.asChildProcess();
     },
+    terminateProcessTree: () => Promise.resolve(true),
   });
 }
 
@@ -422,7 +426,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("redacts stderr, environment values, credentials, and absolute paths", async () => {
+  test("preserves validated events internally while keeping stderr out of failures", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
@@ -450,7 +454,7 @@ describe("OMP RPC transport", () => {
     expect(await notice).toEqual({
       type: "notice",
       level: "error",
-      message: "OPENAI_API_KEY=<redacted> at <absolute path>",
+      message: "OPENAI_API_KEY=credential-value-1234 at /home/private/config",
     });
 
     const exit = nextEvent((listener) => session.onEvent(listener));
@@ -594,6 +598,8 @@ describe("OMP RPC transport", () => {
         OPENAI_API_KEY: "daemon-secret",
         UNRELATED_DAEMON_VALUE: "must-not-pass",
         NODE_OPTIONS: "--require attacker.js",
+        RANDOM_TOKEN: "must-not-pass-either",
+        node_options: "--require lower-case-attacker.js",
       },
     );
 
@@ -608,6 +614,8 @@ describe("OMP RPC transport", () => {
     });
     expect(request.env.UNRELATED_DAEMON_VALUE).toBeUndefined();
     expect(request.env.NODE_OPTIONS).toBeUndefined();
+    expect(request.env.RANDOM_TOKEN).toBeUndefined();
+    expect(request.env.node_options).toBeUndefined();
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", env: { LD_PRELOAD: "/tmp/evil.so" } },
@@ -616,13 +624,65 @@ describe("OMP RPC transport", () => {
     ).toThrow("forbidden variable");
     expect(() =>
       buildOmpSpawnRequest(
+        { cwd: "/repo", mode: "full", env: { node_options: "--require attacker.js" } },
+        { PATH: "/usr/bin" },
+      ),
+    ).toThrow("forbidden variable");
+    expect(() =>
+      buildOmpSpawnRequest(
+        { cwd: "/repo", mode: "full" },
+        { PATH: "/usr/bin", OPENAI_API_KEY: "x" },
+      ),
+    ).toThrow("too short");
+    expect(() =>
+      buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", systemPrompt: "x".repeat(64 * 1024 + 1) },
+        { PATH: "/usr/bin" },
+      ),
+    ).toThrow("system prompt");
+    expect(() =>
+      buildOmpSpawnRequest(
+        { cwd: "/repo", mode: "full", systemPrompt: "é".repeat(40_000) },
         { PATH: "/usr/bin" },
       ),
     ).toThrow("system prompt");
     expect(() =>
       buildOmpSpawnRequest({ cwd: "relative", mode: "full" }, { PATH: "/usr/bin" }),
     ).toThrow("absolute");
+  });
+
+  test("collects ambient MCP URL, header, and environment secrets for redaction", () => {
+    const root = mkdtempSync(join(tmpdir(), "paseo-omp-mcp-"));
+    const agentDir = join(root, "agent");
+    mkdirSync(agentDir);
+    writeFileSync(
+      join(agentDir, "mcp.json"),
+      JSON.stringify({
+        servers: {
+          remote: {
+            type: "http",
+            url: "https://example.test/mcp?token=url-secret",
+            headers: { Authorization: "Bearer header-secret" },
+          },
+          local: { type: "stdio", command: "server", env: { API_KEY: "env-secret" } },
+        },
+      }),
+    );
+    try {
+      const request = buildOmpSpawnRequest(
+        { cwd: root, mode: "full" },
+        { PATH: "/usr/bin", HOME: root, PI_CODING_AGENT_DIR: agentDir },
+      );
+      expect(request.sensitiveValues).toEqual(
+        expect.arrayContaining([
+          "https://example.test/mcp?token=url-secret",
+          "Bearer header-secret",
+          "env-secret",
+        ]),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("terminates a surviving POSIX process group after its leader exited", async () => {
@@ -644,6 +704,82 @@ describe("OMP RPC transport", () => {
     expect(stopped).toBe(true);
     expect(signals).toEqual([0, "SIGTERM", 0, "SIGKILL", 0]);
   });
+
+  test("surfaces unverified process-tree cleanup", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => Promise.resolve(false),
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    await expect(session.close()).rejects.toThrow("cleanup failed");
+  });
+
+  if (process.platform !== "win32") {
+    test("session close terminates descendants left by an exited POSIX leader", async () => {
+      const script = `
+        const { spawn } = require("node:child_process");
+        const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+          detached: false,
+          stdio: "ignore",
+        });
+        descendant.unref();
+        process.stdout.write(JSON.stringify({
+          type: "ready",
+          protocolVersion: 1,
+          supportedProtocolVersions: [1],
+          maxFrameBytes: 1048576,
+          maxReassembledFrameBytes: 67108864,
+        }) + "\\n");
+        let input = "";
+        process.stdin.on("data", chunk => {
+          input += String(chunk);
+          const newline = input.indexOf("\\n");
+          if (newline < 0) return;
+          const command = JSON.parse(input.slice(0, newline));
+          process.stdout.write(JSON.stringify({ type: "notice", level: "info", message: String(descendant.pid) }) + "\\n");
+          process.stdout.write(JSON.stringify({
+            type: "response",
+            id: command.id,
+            success: true,
+            data: { model: null, isStreaming: false, isCompacting: false, sessionId: "tree" },
+          }) + "\\n");
+        });
+        process.stdin.on("end", () => process.exit(0));
+      `;
+      const runtime = new OmpRpcRuntime({
+        spawnProcess(request) {
+          return spawn(process.execPath, ["-e", script], {
+            cwd: request.cwd,
+            env: request.env,
+            detached: request.detached,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+        },
+      });
+      const session = await runtime.startSession({ cwd: process.cwd(), mode: "full" });
+      const descendantPid = nextEvent((listener) => session.onEvent(listener));
+      await session.getState();
+      const notice = await descendantPid;
+      if (notice.type !== "notice") throw new Error("Expected descendant PID notice");
+      const pid = Number(notice.message);
+      try {
+        await session.close();
+        expect(() => process.kill(pid, 0)).toThrow();
+      } finally {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {}
+      }
+    });
+  }
 
   test("fails the session once when child stdin closes with EPIPE", async () => {
     const child = new FakeRpcChild();

@@ -341,7 +341,7 @@ async function openSession(
   events: EventLog,
   requestId = "open-1",
   sessionId = "session-1",
-  env: Record<string, string> = { TEST_ENV: "1" },
+  env: Record<string, string> = { TEST_ENV: "test-value" },
 ) {
   await connection.send({
     type: "session.open",
@@ -2631,7 +2631,7 @@ describe("OMP direct provider", () => {
       thinkingOptionId: "medium",
       featureValues: {},
     };
-    const launchContext: HostLaunchContext = { env: { TEST_ENV: "1" } };
+    const launchContext: HostLaunchContext = { env: { TEST_ENV: "test-value" } };
     let session: HostSession | undefined;
     let unsubscribe: (() => void) | undefined;
     try {
@@ -2697,7 +2697,7 @@ describe("OMP direct provider", () => {
     expect(runtime.starts[1]).toEqual(
       expect.objectContaining({
         cwd: "/repo",
-        env: { TEST_ENV: "1" },
+        env: { TEST_ENV: "test-value" },
         model: "anthropic/claude-sonnet-4-5",
         mode: "full",
         thinkingOption: "medium",
@@ -2721,7 +2721,7 @@ describe("OMP direct provider", () => {
       sessionId: "session-1",
       config: {
         cwd: "/repo",
-        env: { TEST_ENV: "1" },
+        env: { TEST_ENV: "test-value" },
         mcpServers: {},
         mode: "full",
         settings: {},
@@ -3115,8 +3115,23 @@ describe("OMP direct provider", () => {
       type: "tool_execution_start",
       toolCallId: "provider-internal-tool-id",
       toolName: "read",
-      args: { apiKey: "another-secret", path: "/home/private/file" },
+      args: JSON.parse(
+        '{"__proto__":{"polluted":"yes"},"apiKey":"another-secret","/home/private":"first","<absolute path>":"second"}',
+      ),
     });
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "credential-value-1234",
+      toolName: "write",
+      args: { value: "safe" },
+    });
+    session.emit({
+      type: "notice",
+      level: "warning",
+      message: "Authorization: Bearer token-not-from-env",
+    });
+    session.emit({ type: "command_output", text: "credential-value-" });
+    session.emit({ type: "command_output", text: "1234" });
     session.emit({
       type: "message_update",
       assistantMessageEvent: {
@@ -3139,11 +3154,72 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("provider-internal-notice-id");
     expect(visible).not.toContain("provider-internal-tool-id");
     expect(visible).not.toContain("provider-internal-response-id");
+    expect(visible).not.toContain("token-not-from-env");
+    const toolIds = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "tool_call"
+        ? [event.item.callId]
+        : [],
+    );
+    expect(new Set(toolIds).size).toBe(2);
+    const firstTool = events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "tool_call",
+    );
+    if (firstTool?.type !== "timeline.item" || firstTool.item.type !== "tool_call") {
+      throw new Error("Expected sanitized tool item");
+    }
+    const detailInput = firstTool.item.detail.input;
+    if (!detailInput || typeof detailInput !== "object" || Array.isArray(detailInput)) {
+      throw new Error("Expected sanitized tool input object");
+    }
+    expect(Object.getPrototypeOf(detailInput)).toBeNull();
+    expect(Object.prototype.hasOwnProperty.call({}, "polluted")).toBe(false);
+    expect(Object.keys(detailInput)).toEqual(["apiKey", "<absolute path>"]);
     expect(visible).toContain("<redacted>");
     expect(visible).toContain("<absolute path>");
     await finishTurn(events, session, turnId);
     await connection.close();
   });
+  test("preserves a one-MiB UTF-8 snapshot and marks an over-limit display", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "byte-limit", "work"));
+    const session = sessionAt(runtime);
+    const nearLimit = "é".repeat((1024 * 1024) / 2);
+    session.emit({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        responseId: "near-limit",
+        content: [{ type: "text", text: nearLimit }],
+      },
+    });
+    await scheduler.flush();
+    const nearEvent = events.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "assistant_message" &&
+        event.item.text === nearLimit,
+    );
+    expect(nearEvent).toBeDefined();
+    session.emit({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        responseId: "near-limit",
+        content: [{ type: "text", text: `${nearLimit}é` }],
+      },
+    });
+    await scheduler.flush();
+    const latest = events.findLast(
+      (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+    );
+    expect(latest?.type === "timeline.item" && latest.item.type === "assistant_message"
+      ? latest.item.text.endsWith("<truncated>")
+      : false).toBe(true);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
 
   test("fails unsupported interactive permission UI without reflecting its payload", async () => {
     const { connection, events, runtime } = await createHarness();
@@ -3477,6 +3553,202 @@ describe("OMP direct provider", () => {
     expect(result).toEqual(
       expect.objectContaining({ result: expect.objectContaining({ type: "failed" }) }),
     );
+    await connection.close();
+  });
+
+  test("bounds concurrent session opens before starting excess runtimes", async () => {
+    const runtime = new FakeOmpRuntime();
+    const gate = Promise.withResolvers<void>();
+    runtime.startGate = gate.promise;
+    const { connection, events } = await createHarness(runtime);
+    for (let index = 0; index < 33; index += 1) {
+      await connection.send({
+        type: "session.open",
+        requestId: `bounded-open-${index}`,
+        sessionId: `bounded-session-${index}`,
+        config: {
+          cwd: "/repo",
+          env: { TEST_ENV: "test-value" },
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: false,
+        },
+        history: "skip",
+      });
+    }
+    const rejected = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "bounded-open-32",
+    );
+    expect(rejected).toEqual(expect.objectContaining({ error: { message: "OMP session limit reached" } }));
+    expect(runtime.starts).toHaveLength(32);
+    gate.resolve();
+    await connection.close();
+  });
+  test("bounds connection-wide active operations before dispatch", async () => {
+    const runtime = new FakeOmpRuntime();
+    const gate = Promise.withResolvers<void>();
+    runtime.startGate = gate.promise;
+    const { connection } = await createHarness(runtime);
+    for (let index = 0; index < 128; index += 1) {
+      await connection.send({ type: "catalog", requestId: `catalog-${index}`, cwd: "/repo" });
+    }
+    await expect(
+      connection.send({ type: "catalog", requestId: "catalog-overflow", cwd: "/repo" }),
+    ).rejects.toThrow("busy");
+    gate.resolve();
+    await connection.close();
+  });
+
+
+  test("retains a closing session ID and fences its late events", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const oldSession = sessionAt(runtime);
+    const staleListener = [...oldSession.listeners][0];
+    if (!staleListener) throw new Error("Expected native event listener");
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    oldSession.closeGate = gate.promise;
+    oldSession.closeObserved = observed.resolve;
+    await connection.send({ type: "session.close", requestId: "close-old", sessionId: "session-1" });
+    await observed.promise;
+    await connection.send({
+      type: "session.open",
+      requestId: "open-too-early",
+      sessionId: "session-1",
+      config: {
+        cwd: "/repo",
+        env: { TEST_ENV: "test-value" },
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "open-too-early",
+    );
+    gate.resolve();
+    await events.waitFor((event) => event.type === "request.completed" && event.requestId === "close-old");
+    await openSession(connection, events, "open-replacement", "session-1");
+    const baseline = events.length;
+    staleListener({ type: "notice", level: "error", message: "stale-secret" });
+    expect(events).toHaveLength(baseline);
+    expect(runtime.starts).toHaveLength(2);
+    await connection.close();
+  });
+
+  test("preserves late terminal data and isolates secret native IDs", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.availableCommands = Array.from({ length: 129 }, (_, index) => ({
+      name: `command-${index}`,
+    }));
+    const { connection, events, scheduler } = await createHarness(runtime);
+    await openSession(connection, events, "secret-open", "session-1", {
+      FIRST_SECRET: "secret-native-a",
+      SECOND_SECRET: "secret-native-b",
+    });
+    const turnId = turnIdFrom(await startPrompt(connection, events, "late-terminal", "work"));
+    const session = sessionAt(runtime);
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "late-command",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/command-128" }] },
+      },
+    });
+    const commandResult = await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "late-command",
+    );
+    expect(commandResult).toEqual(expect.objectContaining({ result: { type: "steer", turnId } }));
+    for (const [index, nativeId] of ["secret-native-a", "secret-native-b"].entries()) {
+      session.emit({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: `answer-${index}` },
+        message: {
+          role: "assistant",
+          responseId: nativeId,
+          content: [{ type: "text", text: `answer-${index}` }],
+        },
+      });
+      await scheduler.flush();
+    }
+    session.emit({
+      type: "agent_end",
+      messages: [
+        ...Array.from({ length: 128 }, () => ({ role: "assistant", content: "ok" })),
+        { role: "assistant", content: "failed", stopReason: "error", errorMessage: "private" },
+      ],
+      isTerminal: true,
+    });
+    const terminal = await events.waitFor(
+      (event) => event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+    const assistantIds = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "assistant_message"
+        ? [event.item.messageId]
+        : [],
+    );
+    expect(new Set(assistantIds).size).toBe(2);
+    expect(JSON.stringify(assistantIds)).not.toContain("secret-native");
+    expect(terminal).toEqual(
+      expect.objectContaining({ state: "failed", error: { message: "OMP assistant turn failed" } }),
+    );
+    await connection.close();
+  });
+
+  test("fails closed after one-turn native identity saturation and recovers next turn", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "saturated-turn", "work"));
+    for (let index = 0; index < 1_025; index += 1) {
+      session.emit({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          responseId: `native-${index}`,
+          content: [{ type: "text", text: `answer-${index}` }],
+        },
+      });
+      await scheduler.flush();
+      session.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          responseId: `native-${index}`,
+          content: [{ type: "text", text: `answer-${index}` }],
+        },
+      });
+    }
+    expect(
+      events.filter(
+        (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+      ),
+    ).toHaveLength(1_024);
+    await finishTurn(events, session, firstTurn);
+
+    const nextTurn = turnIdFrom(await startPrompt(connection, events, "after-saturation", "continue"));
+    session.emit({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        responseId: "native-after-saturation",
+        content: [{ type: "text", text: "recovered" }],
+      },
+    });
+    await scheduler.flush();
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({ type: "assistant_message", text: "recovered" }),
+      }),
+    );
+    await finishTurn(events, session, nextTurn);
     await connection.close();
   });
 
