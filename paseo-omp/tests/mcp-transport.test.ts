@@ -15,7 +15,6 @@ class FakeMcpChild extends EventEmitter {
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
   readonly pid = 424_243;
-
   asChildProcess(): ChildProcessWithoutNullStreams {
     return this as unknown as ChildProcessWithoutNullStreams;
   }
@@ -57,6 +56,29 @@ describe("MCP transport boundaries", () => {
 
     await expect(connecting).rejects.toThrow("initialization was interrupted");
     expect(closes).toBe(1);
+  });
+
+  test("does not require tree cleanup when stdio spawn fails before owning a PID", async () => {
+    const child = new FakeMcpChild();
+    Object.defineProperty(child, "pid", { value: undefined });
+    const terminations: number[] = [];
+    const transport = new SupervisedStdioClientTransport(
+      { command: "missing-mcp-server", cwd: "/workspace" },
+      {
+        platform: "linux",
+        spawnProcess: () => child.asChildProcess(),
+        terminateProcessTree: async (pid) => {
+          terminations.push(pid);
+          return false;
+        },
+      },
+    );
+    const starting = transport.start();
+    child.emit("error", Object.assign(new Error("spawn failed"), { code: "ENOENT" }));
+
+    await expect(starting).rejects.toThrow("spawn failed");
+    await expect(transport.close()).resolves.toBeUndefined();
+    expect(terminations).toEqual([]);
   });
 
   test("supervises the stdio process group and rejects oversized frames before JSON parsing", async () => {

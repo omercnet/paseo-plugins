@@ -1006,14 +1006,24 @@ export class OmpProviderSession {
     this.hostTools.detach();
     this.runtimeDisposal ??= this.runtime.close();
     this.hostToolsDisposal ??= this.hostTools.close();
-    const [runtimeResult, hostToolsResult] = await Promise.allSettled([
-      this.runtimeDisposal,
-      this.hostToolsDisposal,
-    ]);
-    await Promise.allSettled([this.recoveryPromise, ...(configRefresh ? [configRefresh] : [])]);
-    const cleanupErrors = [runtimeResult, hostToolsResult]
-      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-      .map((result) => result.reason);
+    const cleanupErrors: unknown[] = [];
+    const seenCleanup = new Set<Promise<void>>();
+    const seenCoordination = new Set<Promise<void>>();
+    while (true) {
+      const cleanup = [this.runtimeDisposal, this.hostToolsDisposal].filter(
+        (promise): promise is Promise<void> => promise !== null && !seenCleanup.has(promise),
+      );
+      const coordination = [this.recoveryPromise, configRefresh, this.configRefreshInFlight].filter(
+        (promise): promise is Promise<void> => promise !== null && !seenCoordination.has(promise),
+      );
+      if (cleanup.length === 0 && coordination.length === 0) break;
+      for (const promise of cleanup) seenCleanup.add(promise);
+      for (const promise of coordination) seenCoordination.add(promise);
+      const results = await Promise.allSettled([...cleanup, ...coordination]);
+      for (const result of results.slice(0, cleanup.length)) {
+        if (result.status === "rejected") cleanupErrors.push(result.reason);
+      }
+    }
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, "OMP session cleanup failed");
     }

@@ -101,6 +101,11 @@ jobs:
           bun-version: 1.4.0
       - name: Install Windows dependencies
         run: bun install --frozen-lockfile
+      - name: Provision WSL distribution
+        uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7
+        with:
+          distribution: Ubuntu-24.04
+          set-as-default: "true"
       - name: Require an available WSL distribution
         shell: pwsh
         working-directory: .

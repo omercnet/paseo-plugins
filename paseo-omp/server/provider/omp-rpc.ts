@@ -881,6 +881,11 @@ function processIsGone(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === "ESRCH";
 }
 
+function isConfirmedNoProcessSpawnFailure(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "ENOENT" || code === "EACCES" || code === "EPERM";
+}
+
 /**
  * Terminates the detached process group created for OMP. This covers descendants that remain in
  * that group after the leader exits; descendants that deliberately re-parent into another process
@@ -1007,6 +1012,7 @@ class OmpRpcProcess {
   private fatalError: Error | null = null;
   private closePromise: Promise<void> | null = null;
   private treeCleanupPromise: Promise<ProcessTreeCleanup> | null = null;
+  private spawnFailedWithoutProcess = false;
   private readyReceived = false;
   private outputSettled = false;
 
@@ -1068,6 +1074,9 @@ class OmpRpcProcess {
     this.child.once("close", () => this.settleOutput());
     this.child.once("error", (cause) => {
       const code = (cause as NodeJS.ErrnoException)?.code;
+      if (this.child.pid === undefined && isConfirmedNoProcessSpawnFailure(cause)) {
+        this.spawnFailedWithoutProcess = true;
+      }
       this.fail(
         new Error(
           code === "ENOENT"
@@ -1229,7 +1238,11 @@ class OmpRpcProcess {
     const cleanupPromise = this.startTreeCleanup();
     const cleanup = await cleanupPromise;
     if (cleanup !== "verified") throw new Error("OMP RPC process tree cleanup failed");
-    if (!this.exited && !(await this.waitForExit(PROCESS_STOP_TIMEOUT_MS))) {
+    if (
+      !this.spawnFailedWithoutProcess &&
+      !this.exited &&
+      !(await this.waitForExit(PROCESS_STOP_TIMEOUT_MS))
+    ) {
       throw new Error("OMP RPC process did not close after tree cleanup");
     }
   }
@@ -1239,7 +1252,9 @@ class OmpRpcProcess {
     const pid = this.child.pid;
     this.treeCleanupPromise = (
       pid === undefined
-        ? Promise.resolve<ProcessTreeCleanup>("uncertain")
+        ? Promise.resolve<ProcessTreeCleanup>(
+            this.spawnFailedWithoutProcess ? "verified" : "uncertain",
+          )
         : this.terminateProcessTree(pid)
     ).catch(() => "failed");
     return this.treeCleanupPromise;

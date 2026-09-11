@@ -15,6 +15,11 @@ const PROCESS_EXIT_TIMEOUT_MS = 750;
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
+function isConfirmedNoProcessSpawnFailure(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "ENOENT" || code === "EACCES" || code === "EPERM";
+}
+
 type StdioTransportDependencies = {
   spawnProcess?: (
     command: string,
@@ -77,6 +82,7 @@ export class SupervisedStdioClientTransport implements Transport {
   private readonly exit = Promise.withResolvers<void>();
   private treeCleanup: Promise<boolean> | null = null;
   private closePromise: Promise<void> | null = null;
+  private spawnFailedWithoutProcess = false;
   private readonly platform: NodeJS.Platform;
 
   constructor(
@@ -125,6 +131,9 @@ export class SupervisedStdioClientTransport implements Transport {
     const started = Promise.withResolvers<void>();
     child.once("spawn", started.resolve);
     child.once("error", (error) => {
+      if (child.pid === undefined && isConfirmedNoProcessSpawnFailure(error)) {
+        this.spawnFailedWithoutProcess = true;
+      }
       started.reject(error);
       this.fail(error);
     });
@@ -201,7 +210,7 @@ export class SupervisedStdioClientTransport implements Transport {
     const pid = this.child?.pid;
     this.treeCleanup =
       pid === undefined
-        ? Promise.resolve(false)
+        ? Promise.resolve(this.spawnFailedWithoutProcess)
         : (this.dependencies.terminateProcessTree ?? terminateSpawnedProcessTree)(
             pid,
             this.platform,
@@ -223,7 +232,10 @@ export class SupervisedStdioClientTransport implements Transport {
       }
     }
     const terminated = await this.startTreeCleanup();
-    const exited = this.exited || (await waitForExit(this.exit.promise, PROCESS_EXIT_TIMEOUT_MS));
+    const exited =
+      this.spawnFailedWithoutProcess ||
+      this.exited ||
+      (await waitForExit(this.exit.promise, PROCESS_EXIT_TIMEOUT_MS));
     this.notifyClose();
     if (!terminated || !exited) throw new Error("MCP stdio process tree cleanup failed");
   }

@@ -254,7 +254,10 @@ export function createOmpConnection(
         try {
           const session = await pending;
           if (closing || opening.get(input.sessionId)?.token !== token) {
-            await session.close();
+            const cleanup = session.close();
+            void cleanup.catch(() => undefined);
+            failedCleanup.set(input.sessionId, { token, cleanup });
+            await cleanup;
             return;
           }
           sessions.set(input.sessionId, { token, session });
