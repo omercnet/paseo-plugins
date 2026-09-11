@@ -374,6 +374,7 @@ const INHERITED_RUNTIME_ENV: Readonly<Record<string, true>> = {
   XDG_CACHE_HOME: true,
   XDG_CONFIG_HOME: true,
   XDG_DATA_HOME: true,
+  XDG_STATE_HOME: true,
   XDG_RUNTIME_DIR: true,
 };
 const INHERITED_PROVIDER_AUTH_ENV: Readonly<Record<string, true>> = {
@@ -406,13 +407,13 @@ const INHERITED_PROVIDER_AUTH_ENV: Readonly<Record<string, true>> = {
   XAI_API_KEY: true,
 };
 const BLOCKED_SESSION_ENV =
-  /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|CLAUDE_CODE_SHELL_PREFIX|DYLD_.*|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|OMP_COMMAND|OMP_PROFILE|OMP_WORKTREE_DIR|PATH|PATHEXT|PERL5LIB|PERL5OPT|PI_CODING_AGENT_DIR|PI_CODING_AGENT_SESSION_DIR|PI_CONFIG_DIR|PI_CONFIG_FILES|PI_PROFILE|PI_SHELL_PREFIX|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SYSTEMROOT|USERPROFILE|XDG_CONFIG_HOME|XDG_DATA_HOME|_JAVA_OPTIONS)$/u;
+  /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|CLAUDE_BASH_NO_CI|CLAUDE_BASH_NO_LOGIN|CLAUDE_CODE_SHELL_PREFIX|DYLD_.*|EDITOR|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|OMP_AUTORESEARCH_DB_DIR|OMP_COMMAND|OMP_GITHUB_CACHE_DB|OMP_PROFILE|OMP_WORKTREE_DIR|PATH|PATHEXT|PERL5LIB|PERL5OPT|PI_BASH_NO_CI|PI_BASH_NO_LOGIN|PI_CODING_AGENT_DIR|PI_CODING_AGENT_SESSION_DIR|PI_CONFIG_DIR|PI_CONFIG_FILES|PI_GIT_COMMON_DIR|PI_PACKAGE_DIR|PI_PROFILE|PI_PROJECT_DIR|PI_SESSION_ID|PI_SHELL_PREFIX|PI_SUBPROCESS_CMD|PI_WORKTREE_DIR|PWD|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SYSTEMROOT|USERPROFILE|VISUAL|XDG_CACHE_HOME|XDG_CONFIG_HOME|XDG_DATA_HOME|XDG_RUNTIME_DIR|XDG_STATE_HOME|_JAVA_OPTIONS)$/u;
 const SESSION_CREDENTIAL_ENV =
-  /(?:^|_)(?:API_KEY|ACCESS_KEY|AUTH|AUTHORIZATION|COOKIE|CREDENTIALS|PASSWORD|PRIVATE_KEY|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/u;
+  /(?:^|_)(?:API_KEY|ACCESS_KEY|AUTH|AUTHORIZATION|COOKIE|CREDENTIALS|OAUTH|PASSWORD|PRIVATE_KEY|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/iu;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 function collectUrlComponents(
   value: string,
-  credentialKey: RegExp,
+  isCredentialKey: (key: string) => boolean,
   collect: (component: string, required: boolean) => void,
   invalidMessage: string,
 ): void {
@@ -440,7 +441,7 @@ function collectUrlComponents(
       const rawName = separator < 0 ? field : field.slice(0, separator);
       const rawValue = separator < 0 ? "" : field.slice(separator + 1);
       const name = decodeURIComponent(rawName.replace(/\+/gu, " "));
-      collectRawAndDecoded(rawValue, credentialKey.test(name), true);
+      collectRawAndDecoded(rawValue, isCredentialKey(name), true);
     }
     const fragment = url.hash.slice(1);
     collectRawAndDecoded(fragment, false);
@@ -454,7 +455,7 @@ function collectUrlComponents(
       const rawName = field.slice(0, separator);
       const rawValue = field.slice(separator + 1);
       const name = decodeURIComponent(rawName);
-      collectRawAndDecoded(rawValue, credentialKey.test(name));
+      collectRawAndDecoded(rawValue, isCredentialKey(name));
     }
   } catch (error) {
     if (error instanceof OmpPublicError) throw error;
@@ -489,7 +490,6 @@ function buildOmpEnvironment(
   let totalBytes = 0;
   const collectProxyCredentials = (value: string) => {
     if (utf8Bytes(value) >= 4) sensitiveValues.push(value);
-    const proxyCredentialKey = SESSION_CREDENTIAL_ENV;
     const collectComponent = (component: string, required: boolean) => {
       if (!component) return;
       if (utf8Bytes(component) < 4) {
@@ -502,7 +502,7 @@ function buildOmpEnvironment(
     };
     collectUrlComponents(
       value,
-      proxyCredentialKey,
+      (key) => SESSION_CREDENTIAL_ENV.test(key),
       collectComponent,
       "OMP proxy URL components cannot be decoded safely",
     );
@@ -600,7 +600,15 @@ export function collectAmbientMcpSecrets(
   const agentDir = env.PI_CODING_AGENT_DIR ?? join(home, env.PI_CONFIG_DIR ?? ".omp", "agent");
   const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
   const secrets: string[] = [];
-  const credentialKey = /(?:auth|authorization|cookie|credential|api.?key|oauth|token|secret|password)/iu;
+  const credentialKey =
+    /(?:^|_)(?:API_KEY|ACCESS_KEY|ACCESS_TOKEN|AUTH|AUTHORIZATION|COOKIE|CREDENTIAL|CREDENTIALS|OAUTH|PASSWORD|PRIVATE_KEY|REFRESH_TOKEN|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/u;
+  const isCredentialKey = (key: string) =>
+    credentialKey.test(
+      key
+        .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+        .replace(/[^A-Za-z0-9]+/gu, "_")
+        .toUpperCase(),
+    );
   const collectCredential = (value: string) => {
     if (value.length === 0) return;
     if (utf8Bytes(value) < 4) {
@@ -633,7 +641,7 @@ export function collectAmbientMcpSecrets(
       if (!current.value || typeof current.value !== "object") continue;
       for (const key in current.value) {
         if (!Object.hasOwn(current.value, key)) continue;
-        const sensitive = current.sensitive || credentialKey.test(key);
+        const sensitive = current.sensitive || isCredentialKey(key);
         stack.push({
           value: (current.value as Record<string, unknown>)[key],
           sensitive,
@@ -645,7 +653,7 @@ export function collectAmbientMcpSecrets(
     if (utf8Bytes(value) >= 4) secrets.push(value);
     collectUrlComponents(
       value,
-      credentialKey,
+      isCredentialKey,
       (component, required) => {
         if (utf8Bytes(component) >= 4 || required) collectCredential(component);
       },
@@ -1325,7 +1333,16 @@ class OmpRpcProcess {
           MAX_TEXT_LENGTH,
           4_096,
         ) !== Number.POSITIVE_INFINITY);
-    if (onlyUnsafePayload && messagesAreSafe) return false;
+    const payloadIsSafe =
+      messagesAreSafe &&
+      boundedJsonBytes(
+        frame,
+        MAX_SEMANTIC_FRAME_BYTES,
+        1_024,
+        MAX_IMAGE_DATA_LENGTH,
+        4_096,
+      ) !== Number.POSITIVE_INFINITY;
+    if (onlyUnsafePayload && payloadIsSafe) return false;
     if (envelope.data.isTerminal === false) {
       this.fail(new Error("OMP emitted an invalid nonterminal agent_end payload"));
       return true;
@@ -1334,10 +1351,14 @@ class OmpRpcProcess {
       ? frame.messages.length
       : Object.hasOwn(frame, "messages")
         ? 1
-        : 0;
+        : undefined;
+    const messageCount =
+      observedCount === undefined
+        ? envelope.data.messageCount
+        : Math.max(envelope.data.messageCount ?? 0, observedCount);
     this.emit({
       ...envelope.data,
-      messageCount: Math.max(envelope.data.messageCount ?? 0, observedCount),
+      ...(messageCount === undefined ? {} : { messageCount }),
     });
     this.streamedBlocks.clear();
     this.commandTextLength = 0;

@@ -905,14 +905,38 @@ describe("OMP RPC transport", () => {
       ),
     ).toThrow("forbidden variable");
     for (const name of [
+      "PI_CONFIG_DIR",
+      "PI_CODING_AGENT_DIR",
       "PI_CONFIG_FILES",
       "PI_SHELL_PREFIX",
-      "CLAUDE_CODE_SHELL_PREFIX",
+      "PI_BASH_NO_CI",
+      "PI_BASH_NO_LOGIN",
+      "PI_SUBPROCESS_CMD",
+      "PI_PACKAGE_DIR",
+      "PI_PROFILE",
       "PI_CODING_AGENT_SESSION_DIR",
+      "PI_PROJECT_DIR",
+      "PI_WORKTREE_DIR",
+      "PI_SESSION_ID",
+      "PI_GIT_COMMON_DIR",
+      "CLAUDE_BASH_NO_CI",
+      "CLAUDE_BASH_NO_LOGIN",
+      "CLAUDE_CODE_SHELL_PREFIX",
+      "OMP_PROFILE",
+      "OMP_AUTORESEARCH_DB_DIR",
+      "OMP_GITHUB_CACHE_DB",
       "OMP_WORKTREE_DIR",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
+      "XDG_RUNTIME_DIR",
+      "XDG_STATE_HOME",
+      "PWD",
       "PATH",
       "HOME",
+      "SHELL",
+      "VISUAL",
+      "EDITOR",
       "LD_PRELOAD",
       "NODE_OPTIONS",
     ].flatMap((name) => [name, name.toLowerCase()])) {
@@ -1015,8 +1039,8 @@ describe("OMP RPC transport", () => {
         join(agentDir, "mcp.json"),
         JSON.stringify({
           servers: {
-            remote: { type: "http", url: "x:", headers: { "X-License": "éx" } },
-            local: { type: "stdio", command: "server", env: { PIN: "123" } },
+            remote: { type: "http", url: "x:", headers: { "X-License": "éx", Author: "abc" } },
+            local: { type: "stdio", command: "server", env: { PIN: "123", AUTHOR: "abc" } },
           },
         }),
       );
@@ -1025,7 +1049,7 @@ describe("OMP RPC transport", () => {
         { PATH: "/usr/bin", HOME: root, PI_CODING_AGENT_DIR: agentDir },
       );
       expect(benignShortConfig.sensitiveValues).not.toEqual(
-        expect.arrayContaining(["éx", "123"]),
+        expect.arrayContaining(["éx", "123", "abc"]),
       );
       for (const config of [
         {
@@ -1035,6 +1059,7 @@ describe("OMP RPC transport", () => {
         },
         { servers: { unsafe: { type: "stdio", command: "server", env: { API_TOKEN: "xyz" } } } },
         { servers: { unsafe: { type: "stdio", command: "server", env: { AUTH: "abc" } } } },
+        { servers: { unsafe: { type: "stdio", command: "server", env: { clientSecret: "abc" } } } },
         { servers: { unsafe: { type: "http", auth: "abc" } } },
         { servers: { unsafe: { type: "http", auth: { custom: "abc" } } } },
         { servers: { unsafe: { type: "http", oauth: { nested: { custom: "abc" } } } } },

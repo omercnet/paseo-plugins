@@ -4530,6 +4530,28 @@ describe("OMP direct provider", () => {
           event.type === "session.turn" && event.turnId === nestedTurn && event.state !== "started",
       ),
     ).toHaveLength(1);
+    const oversizedEnvelopeTurn = turnIdFrom(
+      await startPrompt(connection, events, "oversized-terminal-envelope", "continue"),
+    );
+    children[1]?.write({
+      type: "agent_end",
+      metadata: Array.from({ length: 1_025 }, () => "x"),
+      isTerminal: true,
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === oversizedEnvelopeTurn &&
+        event.state === "failed",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === oversizedEnvelopeTurn &&
+          event.state !== "started",
+      ),
+    ).toEqual([expect.objectContaining({ state: "failed" })]);
     for (const [index, messages] of ["bad", null].entries()) {
       const malformedTurn = turnIdFrom(
         await startPrompt(connection, events, `malformed-terminal-${index}`, "continue"),
