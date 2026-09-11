@@ -293,15 +293,16 @@ class FakeOmpSession implements OmpRuntimeSession {
   async getState() {
     this.stateLookups += 1;
     this.stateObserved?.();
-    if (this.stateGate) await this.stateGate;
-    if (this.stateError) throw this.stateError;
-    return {
+    const state = {
       model: this.stateModelOverride !== undefined ? this.stateModelOverride : this.currentModel,
       thinkingLevel: this.thinkingLevel,
       isStreaming: this.isStreaming,
       isCompacting: this.isCompacting,
       sessionId: this.nativeSessionId,
     };
+    if (this.stateGate) await this.stateGate;
+    if (this.stateError) throw this.stateError;
+    return state;
   }
 
   getAvailableModels() {
@@ -1149,6 +1150,9 @@ describe("OMP direct provider", () => {
         event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
     );
     session.emit({ type: "model_changed" });
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.pendingCount).toBe(1);
+    await scheduler.flush();
     await fallback;
     expect(session.stateLookups).toBe(baselineLookups + 2);
 
@@ -1382,6 +1386,73 @@ describe("OMP direct provider", () => {
     expect(scheduler.delays.filter((delay) => delay < 2_000)).toEqual([250, 250]);
 
     await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("retries after a never-settling refresh request times out", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const neverSettles = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = neverSettles.promise;
+    session.stateObserved = observed.resolve;
+
+    session.emit({ type: "model_changed" });
+    await observed.promise;
+    await scheduler.flush();
+    expect(scheduler.pendingCount).toBe(1);
+
+    session.stateGate = null;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    await scheduler.flush();
+    await refreshed;
+
+    expect(session.stateLookups).toBe(3);
+    await connection.close();
+  });
+
+  test("ignores a late timed-out state result after a newer refresh commits", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineConfigs = events.filter((event) => event.type === "session.config").length;
+    const late = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+    session.stateGate = late.promise;
+    session.stateObserved = observed.resolve;
+
+    session.emit({ type: "model_changed" });
+    await observed.promise;
+    await scheduler.flush();
+
+    session.stateGate = null;
+    session.currentModel = MODEL;
+    session.thinkingLevel = "low";
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "low",
+    );
+    await scheduler.flush();
+    await refreshed;
+    const committedConfigs = events.filter((event) => event.type === "session.config").length;
+
+    late.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events.filter((event) => event.type === "session.config")).toHaveLength(
+      committedConfigs,
+    );
+    expect(committedConfigs).toBe(baselineConfigs + 1);
     await connection.close();
   });
 

@@ -721,20 +721,33 @@ export class OmpProviderSession {
 
   private scheduleCommittedConfigRefresh(): void {
     this.configRefreshDirty = true;
-    if (this.configRefreshInFlight || this.configMutationInFlight) return;
+    if (
+      this.configRefreshInFlight ||
+      this.configRefreshRetryResolve ||
+      this.configMutationInFlight
+    ) {
+      return;
+    }
     const runtime = this.runtime;
     const generation = this.generation;
     const refresh = this.refreshCommittedConfig(runtime, generation);
     this.configRefreshInFlight = refresh;
     const settleRefresh = (failed: boolean) => {
       if (this.configRefreshInFlight !== refresh) return;
-      if (failed) this.configRefreshDirty = true;
       this.configRefreshInFlight = null;
-      if (this.configRefreshDirty && !this.closed && this.runtimeDead === null) {
-        try {
+      try {
+        if (failed) this.scheduleConfigRefreshRetry(runtime, generation);
+        else if (this.configRefreshDirty && this.isCurrentRuntime(runtime, generation)) {
           this.scheduleCommittedConfigRefresh();
-        } catch {
-          this.configRefreshDirty = true;
+        }
+      } catch {
+        this.configRefreshDirty = false;
+        if (this.isCurrentRuntime(runtime, generation)) {
+          try {
+            this.handleRuntimeFailure("OMP runtime configuration refresh failed");
+          } catch {
+            // The runtime was already invalidated; detached refresh failures are contained.
+          }
         }
       }
     };
@@ -748,55 +761,58 @@ export class OmpProviderSession {
     runtime: OmpRuntimeSession,
     generation: number,
   ): Promise<void> {
-    do {
-      this.configRefreshDirty = false;
-      const revision = this.configRevision;
-      const state = await this.readRuntimeStateWithTimeout(runtime, true);
-      if (!this.isCurrentRuntime(runtime, generation)) return;
-      if (revision !== this.configRevision) {
-        this.configRefreshDirty = true;
+    this.configRefreshDirty = false;
+    const revision = this.configRevision;
+    const state = await this.readRuntimeStateWithTimeout(runtime);
+    if (!this.isCurrentRuntime(runtime, generation)) return;
+    if (revision !== this.configRevision) {
+      this.configRefreshDirty = true;
+      return;
+    }
+    if (!state) {
+      this.scheduleConfigRefreshRetry(runtime, generation);
+      return;
+    }
+    try {
+      this.publishCommittedConfig(state, runtime, generation);
+    } catch (error) {
+      if (error instanceof OmpCatalogEscape) {
+        this.handleRuntimeFailure(error.message);
         return;
       }
-      let refreshFailed = state === undefined;
-      if (state) {
-        try {
-          this.publishCommittedConfig(state, runtime, generation);
-        } catch (error) {
-          if (error instanceof OmpCatalogEscape) {
-            this.handleRuntimeFailure(error.message);
-            return;
-          }
-          refreshFailed = true;
-        }
+      this.scheduleConfigRefreshRetry(runtime, generation);
+    }
+  }
+
+  private scheduleConfigRefreshRetry(runtime: OmpRuntimeSession, generation: number): void {
+    if (!this.isCurrentRuntime(runtime, generation)) return;
+    this.configRefreshDirty = true;
+    this.configRefreshAttempts += 1;
+    if (this.configRefreshAttempts >= CONFIG_REFRESH_MAX_ATTEMPTS) {
+      this.configRefreshDirty = false;
+      this.handleRuntimeFailure("OMP runtime configuration state remained unavailable");
+      return;
+    }
+    if (this.configRefreshRetryResolve) return;
+    const retry = Promise.withResolvers<void>();
+    const delayMs = CONFIG_REFRESH_RETRY_BASE_MS * 2 ** (this.configRefreshAttempts - 1);
+    const timer = this.scheduler.set(retry.resolve, delayMs);
+    this.configRefreshRetryHandle = timer;
+    this.configRefreshRetryResolve = retry.resolve;
+    const finishRetry = () => {
+      if (this.configRefreshRetryResolve !== retry.resolve) return;
+      this.configRefreshRetryHandle = null;
+      this.configRefreshRetryResolve = null;
+      try {
+        this.scheduler.clear(timer);
+      } catch {
+        // The one-shot callback already fired; a cleanup failure must not wedge refreshes.
       }
-      if (refreshFailed) {
-        this.configRefreshAttempts += 1;
-        if (this.configRefreshAttempts >= CONFIG_REFRESH_MAX_ATTEMPTS) {
-          this.configRefreshDirty = false;
-          this.handleRuntimeFailure("OMP runtime configuration state remained unavailable");
-          return;
-        }
-        this.configRefreshDirty = true;
-        const retry = Promise.withResolvers<void>();
-        const delayMs = CONFIG_REFRESH_RETRY_BASE_MS * 2 ** (this.configRefreshAttempts - 1);
-        const timer = this.scheduler.set(retry.resolve, delayMs);
-        this.configRefreshRetryHandle = timer;
-        this.configRefreshRetryResolve = retry.resolve;
-        await retry.promise;
-        if (this.configRefreshRetryResolve === retry.resolve) {
-          this.configRefreshRetryHandle = null;
-          this.configRefreshRetryResolve = null;
-          try {
-            this.scheduler.clear(timer);
-          } catch {
-            // The one-shot callback already fired; a cleanup failure must not wedge refreshes.
-          }
-        }
-        if (!this.isCurrentRuntime(runtime, generation)) return;
-      } else {
-        this.configRefreshAttempts = 0;
+      if (this.configRefreshDirty && this.isCurrentRuntime(runtime, generation)) {
+        this.scheduleCommittedConfigRefresh();
       }
-    } while (this.configRefreshDirty && this.isCurrentRuntime(runtime, generation));
+    };
+    void retry.promise.then(finishRetry, finishRetry);
   }
 
   private cancelConfigRefreshRetry(): void {
@@ -817,16 +833,13 @@ export class OmpProviderSession {
 
   private async readRuntimeStateWithTimeout(
     runtime: OmpRuntimeSession,
-    awaitLateSettlement = false,
   ): Promise<OmpSessionState | undefined> {
     const stateRequest = runtime.getState();
+    void stateRequest.catch(() => undefined);
     const timeout = Promise.withResolvers<null>();
     const timer = this.scheduler.set(() => timeout.resolve(null), AGENT_END_STATE_TIMEOUT_MS);
     try {
-      const state = await Promise.race([stateRequest, timeout.promise]);
-      if (state) return state;
-      if (awaitLateSettlement) await stateRequest.catch(() => undefined);
-      return undefined;
+      return (await Promise.race([stateRequest, timeout.promise])) ?? undefined;
     } catch {
       return undefined;
     } finally {
