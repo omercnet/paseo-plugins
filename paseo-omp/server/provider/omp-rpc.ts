@@ -6,6 +6,7 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import {
   boundedJsonBytes,
+  isOmpPublicError,
   OmpCleanupFailure,
   OmpPublicDataFilter,
   OmpPublicError,
@@ -488,7 +489,7 @@ function collectUrlComponents(
       collectRawAndDecoded(rawValue, isCredentialKey(name));
     }
   } catch (error) {
-    if (error instanceof OmpPublicError) throw error;
+    if (isOmpPublicError(error)) throw error;
     throw new OmpPublicError(invalidMessage);
   }
 }
@@ -1265,6 +1266,13 @@ class OmpRpcProcess {
   }
 
   private receiveChunk(frame: ChunkFrame): void {
+    if (
+      frame.byteLength > MAX_SEMANTIC_FRAME_BYTES &&
+      ![...this.pending.values()].some((pending) => pending.command === "get_messages")
+    ) {
+      this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
+      return;
+    }
     if (
       frame.index >= frame.count ||
       frame.byteLength > this.reassembledFrameLimit ||

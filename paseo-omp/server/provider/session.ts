@@ -19,6 +19,8 @@ import { buildOmpSpawnRequest } from "./omp-rpc";
 import {
   BoundedStringSet,
   boundedJsonBytes,
+  isOmpCleanupFailure,
+  isOmpPublicError,
   OmpCleanupFailure,
   OmpPublicDataFilter,
   OmpPublicError,
@@ -151,7 +153,7 @@ type PendingAbort = {
 };
 
 function providerError(error: unknown, fallback: string): { message: string } {
-  return { message: error instanceof OmpPublicError ? error.message : fallback };
+  return { message: isOmpPublicError(error) ? error.message : fallback };
 }
 
 function textPrompt(input: SessionPromptInput): string {
@@ -1103,8 +1105,15 @@ export class OmpProviderSession {
         signal: this.lifetime.signal,
       });
     } catch (error) {
-      if (error instanceof OmpCleanupFailure) {
-        this.runtimeDisposal = error.cleanup;
+      if (isOmpCleanupFailure(error)) {
+        this.runtimeDisposal = error.cleanup.then(
+          () => {
+            throw new Error("OMP recovery cleanup failed");
+          },
+          () => {
+            throw new Error("OMP recovery cleanup failed");
+          },
+        );
         void this.runtimeDisposal.catch(() => undefined);
       }
       throw error;

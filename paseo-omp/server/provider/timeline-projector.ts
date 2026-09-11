@@ -58,9 +58,9 @@ type AssistantMessageEvent = Extract<
   { type: "message_update" }
 >["assistantMessageEvent"];
 
-function assistantIdentity(message: OmpMessage): string | undefined {
+function assistantIdentity(message: OmpMessage, allowMessageId = false): string | undefined {
   if (message.role !== "assistant") return;
-  return message.responseId ?? message.entryId ?? message.id;
+  return message.responseId ?? message.entryId ?? (allowMessageId ? message.id : undefined);
 }
 
 function blockText(
@@ -85,6 +85,7 @@ export class OmpTimelineProjector {
   private assistantSequence = 0;
   private readonly turnNativeMessageIds = new Map<string, string>();
   private nativeIdentitySaturated = false;
+  private assistantIdentitySequence = 0;
   private noticeSequence = 0;
   private toolSequence = 0;
   private userSequence = 0;
@@ -301,7 +302,7 @@ export class OmpTimelineProjector {
 
   projectReplayMessage(message: OmpMessage): void {
     if (this.closed) return;
-    const nativeIdentity = assistantIdentity(message);
+    const nativeIdentity = assistantIdentity(message, true);
     if (nativeIdentity && this.replayedNativeMessageIds.has(nativeIdentity)) return;
     this.replaySequence += 1;
     if (message.role === "user") {
@@ -425,15 +426,15 @@ export class OmpTimelineProjector {
       this.nativeIdentitySaturated = true;
       return undefined;
     }
-    const digest = createHash("sha256").update(nativeIdentity).digest("base64url").slice(0, 12);
-    const messageId = `omp:assistant:${digest}`;
+    const messageId = this.nextAssistantMessageId(nativeIdentity);
     this.turnNativeMessageIds.set(nativeIdentity, messageId);
     return messageId;
   }
 
   private nextAssistantMessageId(source: string): string {
+    this.assistantIdentitySequence += 1;
     const digest = createHash("sha256").update(source).digest("base64url").slice(0, 12);
-    return `omp:assistant:local:${digest}`;
+    return `omp:assistant:${this.assistantIdentitySequence}:${digest}`;
   }
 
   private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {

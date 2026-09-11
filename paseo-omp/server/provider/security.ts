@@ -196,14 +196,35 @@ export class BoundedStringSet {
   }
 }
 
-export class OmpPublicError extends Error {}
+export class OmpPublicError extends Error {
+  override readonly name = "OmpPublicError";
+}
+
+export function isOmpPublicError(error: unknown): error is OmpPublicError {
+  return (
+    error instanceof OmpPublicError || (error instanceof Error && error.name === "OmpPublicError")
+  );
+}
+
 export class OmpCleanupFailure extends Error {
+  override readonly name = "OmpCleanupFailure";
+
   constructor(
     message: string,
     readonly cleanup: Promise<void>,
   ) {
     super(message);
   }
+}
+
+export function isOmpCleanupFailure(error: unknown): error is OmpCleanupFailure {
+  return (
+    error instanceof OmpCleanupFailure ||
+    (error instanceof Error &&
+      error.name === "OmpCleanupFailure" &&
+      "cleanup" in error &&
+      error.cleanup instanceof Promise)
+  );
 }
 
 export class OmpPublicDataFilter {

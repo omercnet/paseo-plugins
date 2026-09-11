@@ -8,7 +8,13 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { discoverOmpCatalog } from "./catalog";
 import type { OmpRuntime } from "./omp-rpc";
-import { boundedJsonBytes, OmpCleanupFailure, OmpPublicError, utf8Bytes } from "./security";
+import {
+  boundedJsonBytes,
+  isOmpCleanupFailure,
+  isOmpPublicError,
+  OmpPublicError,
+  utf8Bytes,
+} from "./security";
 import { OmpProviderSession } from "./session";
 import type { OmpTimelineScheduler } from "./timeline-projector";
 
@@ -193,7 +199,7 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
 }
 
 function errorDetails(error: unknown, fallback: string): { message: string } {
-  return { message: error instanceof OmpPublicError ? error.message : fallback };
+  return { message: isOmpPublicError(error) ? error.message : fallback };
 }
 
 export function createOmpConnection(
@@ -245,7 +251,7 @@ export function createOmpConnection(
             catalog: await discoverOmpCatalog(runtime, input.cwd, shutdown.signal, environment),
           });
         } catch (error) {
-          if (error instanceof OmpCleanupFailure) catalogCleanup = error.cleanup;
+          if (isOmpCleanupFailure(error)) catalogCleanup = error.cleanup;
           if (!closing) requestFailure(input.requestId, error, "OMP catalog discovery failed");
         }
         return;
@@ -324,7 +330,7 @@ export function createOmpConnection(
             await session.close();
           }
         } catch (error) {
-          if (error instanceof OmpCleanupFailure) {
+          if (isOmpCleanupFailure(error)) {
             failedCleanup.set(input.sessionId, { token, error });
           }
           if (opening.get(input.sessionId)?.token === token) {

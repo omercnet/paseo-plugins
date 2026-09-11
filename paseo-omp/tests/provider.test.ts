@@ -465,6 +465,7 @@ class FakeOmpRuntime implements OmpRuntime {
     session.nativeSessionId =
       this.sessionIds.shift() ?? options.resumeSessionId ?? session.nativeSessionId;
     session.canReplayHistory = this.nextCanReplayHistory;
+    session.availableModels = this.availableModels.map((model) => ({ ...model }));
     session.historyGate = this.nextHistoryGate;
     session.historyObserved = this.nextHistoryObserved;
     session.historyError = this.nextHistoryError;
@@ -958,22 +959,25 @@ describe("OMP direct provider", () => {
     ).toEqual(["message 0", "message 1", "message 2", "message 3"]);
     expect(timelineItems).toHaveLength(260);
     expect(new Set(timelineItems.map((item) => item.id)).size).toBe(260);
-    const replayedDuplicate = timelineItems.find(
-      (item) => item.type === "assistant_message" && item.text === "message 1",
-    );
     const liveTurn = turnIdFrom(
       await startPrompt(connection, events, "live-after-replay", "next", "resumed-session"),
     );
-    sessionAt(runtime, 1).emit({
-      type: "message_end",
-      message: { role: "assistant", id: "history-1", content: "message 1" },
-    });
-    const liveDuplicate = events.findLast(
-      (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
-    );
-    expect(liveDuplicate).toEqual(
-      expect.objectContaining({ item: expect.objectContaining({ id: replayedDuplicate?.id }) }),
-    );
+    const liveBaseline = events.length;
+    for (const text of ["live", "live updated"]) {
+      sessionAt(runtime, 1).emit({
+        type: "message_end",
+        message: { role: "assistant", responseId: "live-duplicate", content: text },
+      });
+    }
+    const liveDuplicates = events
+      .slice(liveBaseline)
+      .flatMap((event) =>
+        event.type === "timeline.item" && event.item.type === "assistant_message"
+          ? [event.item]
+          : [],
+      );
+    expect(liveDuplicates).toHaveLength(2);
+    expect(new Set(liveDuplicates.map((item) => item.id)).size).toBe(1);
     await finishTurn(events, sessionAt(runtime, 1), liveTurn);
     expect(runtime.starts[1]).toEqual(
       expect.objectContaining({
