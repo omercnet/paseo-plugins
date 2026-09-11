@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import type {
   ProviderCatalog,
@@ -5,7 +6,8 @@ import type {
   ProviderModel,
   ProviderThinkingOption,
 } from "@getpaseo/plugin/server/provider";
-import type { OmpModel, OmpRuntime } from "./omp-rpc";
+import type { OmpModel, OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
+import { OmpCleanupFailure, OmpPublicDataFilter, OmpPublicError } from "./security";
 
 export const OMP_MODES: readonly ProviderMode[] = [
   {
@@ -28,25 +30,40 @@ const THINKING_OPTIONS: readonly ProviderThinkingOption[] = [
   { id: "max", label: "Max", description: "Maximum reasoning" },
 ];
 
-export function ompModelId(model: OmpModel): string {
+export function nativeOmpModelId(model: OmpModel): string {
+  if (model.provider.includes("/")) {
+    throw new OmpPublicError("OMP reported an invalid model provider");
+  }
   return `${model.provider}/${model.id}`;
 }
-export function parseOmpModelId(id: string): { provider: string; modelId: string } {
-  const separator = id.indexOf("/");
-  if (separator <= 0 || separator === id.length - 1) {
-    throw new Error(`OMP model '${id}' must use provider/model format`);
-  }
-  return { provider: id.slice(0, separator), modelId: id.slice(separator + 1) };
+
+export function ompModelId(model: OmpModel): string {
+  const nativeIdentity = `${Buffer.byteLength(model.provider, "utf8")}:${model.provider}${Buffer.byteLength(model.id, "utf8")}:${model.id}`;
+  return `omp:model:${createHash("sha256").update(nativeIdentity).digest("hex")}`;
 }
 
-export function mapOmpModels(models: readonly OmpModel[]): ProviderModel[] {
+export function mapOmpModels(
+  models: readonly OmpModel[],
+  filter = new OmpPublicDataFilter(),
+): ProviderModel[] {
+  const seenIds = new Map<string, string>();
   return models.map((model) => {
     const thinkingOptions = model.reasoning ? thinkingForModel(model) : undefined;
     const id = ompModelId(model);
+    const nativeIdentity = nativeOmpModelId(model);
+    const existing = seenIds.get(id);
+    if (existing !== undefined && existing !== nativeIdentity) {
+      throw new Error("OMP model identity collision");
+    }
+    if (existing !== undefined) throw new Error("OMP reported a duplicate model identity");
+    seenIds.set(id, nativeIdentity);
+    const provider = filter.text(model.provider, 256);
+    const modelId = filter.text(model.id, 256);
+    const name = model.name ? filter.text(model.name, 256) : modelId;
     return {
       id,
-      label: model.name ? `${model.provider}/${model.name}` : id,
-      description: id,
+      label: `${provider}/${name}`,
+      description: `${provider}/${modelId}`,
       ...(typeof model.contextWindow === "number"
         ? { contextWindowMaxTokens: model.contextWindow }
         : {}),
@@ -57,7 +74,7 @@ export function mapOmpModels(models: readonly OmpModel[]): ProviderModel[] {
               thinkingOptions.find((option) => option.isDefault)?.id ?? thinkingOptions[0]?.id,
           }
         : {}),
-      metadata: { provider: model.provider, modelId: model.id },
+      metadata: { provider, modelId },
     };
   });
 }
@@ -75,23 +92,38 @@ export function thinkingForModel(model: OmpModel | null | undefined): ProviderTh
   return supported.map((option) => ({ ...option, isDefault: option.id === selectedDefault }));
 }
 
+async function closeCatalogSession(session: OmpRuntimeSession): Promise<void> {
+  const cleanup = session.close();
+  try {
+    await cleanup;
+  } catch {
+    throw new OmpCleanupFailure(
+      "OMP catalog cleanup failed",
+      cleanup.catch(() => undefined),
+    );
+  }
+}
+
 export async function discoverOmpCatalog(
   runtime: OmpRuntime,
   cwd?: string,
   signal?: AbortSignal,
+  environment?: NodeJS.ProcessEnv,
 ): Promise<ProviderCatalog> {
   const session = await runtime.startSession({
     cwd: cwd ?? homedir(),
     mode: "full",
     noSession: true,
     signal,
+    environment,
   });
   try {
     const [nativeModels, state] = await Promise.all([
       session.getAvailableModels(),
       session.getState(),
     ]);
-    const models = mapOmpModels(nativeModels);
+    const filter = new OmpPublicDataFilter(session.redactionValues ?? []);
+    const models = mapOmpModels(nativeModels, filter);
     if (models.length === 0) throw new Error("OMP reported no available models");
     const defaultModel = state.model ? ompModelId(state.model) : models[0]?.id;
     const currentModel = state.model
@@ -99,6 +131,7 @@ export async function discoverOmpCatalog(
           (model) => model.provider === state.model?.provider && model.id === state.model.id,
         )
       : nativeModels[0];
+    if (state.model && !currentModel) throw new Error("OMP reported an unadvertised active model");
     const thinkingOptions = thinkingForModel(currentModel);
     return {
       models,
@@ -109,6 +142,6 @@ export async function discoverOmpCatalog(
       ...(state.thinkingLevel ? { defaultThinkingOption: state.thinkingLevel } : {}),
     };
   } finally {
-    await session.close();
+    await closeCatalogSession(session);
   }
 }

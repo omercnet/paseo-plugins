@@ -5,15 +5,25 @@ import type {
   ProviderInput,
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
-import { mapOmpModels, OMP_MODES, ompModelId, parseOmpModelId, thinkingForModel } from "./catalog";
+import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
 import type {
   OmpMessage,
+  OmpModel,
   OmpRpcEvent,
   OmpRuntime,
   OmpRuntimeSession,
   OmpSessionState,
   OmpStartOptions,
 } from "./omp-rpc";
+import { buildOmpSpawnRequest } from "./omp-rpc";
+import {
+  BoundedStringSet,
+  boundedJsonBytes,
+  OmpCleanupFailure,
+  OmpPublicDataFilter,
+  OmpPublicError,
+  utf8Bytes,
+} from "./security";
 import {
   defaultOmpTimelineScheduler,
   OmpTimelineProjector,
@@ -28,6 +38,36 @@ type SessionCloseInput = Extract<ProviderInput, { type: "session.close" }>;
 type Emit = (event: ProviderEvent) => void;
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
+const MAX_PROMPT_PARTS = 64;
+const MAX_PROMPT_TEXT_LENGTH = 1024 * 1024;
+const MAX_TRACKED_ENTRY_IDS = 1_024;
+const MAX_UNCLAIMED_BRANCH_ENTRIES = 1_024;
+const MAX_PENDING_USERS = 256;
+const MAX_USER_ECHOES = 512;
+const MAX_BUFFERED_TURN_EVENTS = 512;
+const MAX_BUFFERED_VALUE_ITEMS = 1_024;
+const MAX_BUFFERED_VALUE_NODES = 4_096;
+const MAX_BUFFERED_TURN_BYTES = 4 * 1024 * 1024;
+const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
+const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
+const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
+
+function retainedBytes(values: readonly unknown[], maxBytes: number): number {
+  let total = 0;
+  for (const value of values) {
+    const bytes = boundedJsonBytes(
+      value,
+      maxBytes,
+      MAX_BUFFERED_VALUE_ITEMS,
+      maxBytes,
+      MAX_BUFFERED_VALUE_NODES,
+    );
+    if (bytes === Number.POSITIVE_INFINITY) return bytes;
+    total += bytes;
+    if (total > maxBytes) return Number.POSITIVE_INFINITY;
+  }
+  return total;
+}
 
 type PendingUser = {
   clientMessageId: string;
@@ -68,24 +108,32 @@ type PendingAbort = {
   promise: Promise<void>;
 };
 
-function providerError(error: unknown, prefix?: string): { message: string } {
-  const message = error instanceof Error ? error.message : String(error);
-  return { message: prefix ? `${prefix}: ${message}` : message };
+function providerError(error: unknown, fallback: string): { message: string } {
+  return { message: error instanceof OmpPublicError ? error.message : fallback };
 }
 
 function textPrompt(input: SessionPromptInput): string {
+  if (input.prompt.outputSchema !== undefined || input.prompt.clearPendingPermissions) {
+    throw new OmpPublicError("OMP does not support structured output or permission controls");
+  }
   if (input.prompt.input.type !== "message") {
-    throw new Error("OMP Plugin Preview supports text messages only");
+    throw new OmpPublicError("OMP supports text messages only");
+  }
+  if (input.prompt.input.content.length > MAX_PROMPT_PARTS) {
+    throw new OmpPublicError("OMP prompt has too many content parts");
   }
   const parts: string[] = [];
+  let length = 0;
   for (const part of input.prompt.input.content) {
-    if (part.type !== "text") {
-      throw new Error(`OMP Plugin Preview does not support prompt content type '${part.type}'`);
+    if (part.type !== "text" || typeof part.text !== "string") {
+      throw new OmpPublicError("OMP supports text messages only");
     }
+    length += utf8Bytes(part.text) + (parts.length > 0 ? 2 : 0);
+    if (length > MAX_PROMPT_TEXT_LENGTH) throw new OmpPublicError("OMP prompt is too large");
     parts.push(part.text);
   }
   const text = parts.join("\n\n").trim();
-  if (!text) throw new Error("OMP prompt text cannot be empty");
+  if (!text) throw new OmpPublicError("OMP prompt text cannot be empty");
   return text;
 }
 
@@ -120,7 +168,7 @@ function terminalError(event: Extract<OmpRpcEvent, { type: "agent_end" }>): stri
     const message = messages[index];
     if (message?.role !== "assistant") continue;
     if (message.stopReason === "error" || message.errorMessage) {
-      return message.errorMessage ?? "OMP assistant turn failed";
+      return "OMP assistant turn failed";
     }
   }
   return undefined;
@@ -165,11 +213,13 @@ export class OmpProviderSession {
   private closed = false;
   private disposalPromise: Promise<void> | null = null;
   private sessionClosedPublished = false;
-  private readonly emittedEntryIds = new Set<string>();
-  private readonly seenEntryIds = new Set<string>();
+  private readonly emittedEntryIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
+  private readonly seenEntryIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
   private branchWatermarkValid = true;
   private readonly unclaimedBranchEntries: Array<{ entryId: string; text: string }> = [];
   private readonly scheduler: OmpTimelineScheduler;
+  private readonly dataFilter: OmpPublicDataFilter;
+  private readonly nativeModelsByPublicId: ReadonlyMap<string, OmpModel>;
   private readonly lifetime = new AbortController();
   private generation = 0;
   private runtimeDead: string | null = null;
@@ -185,6 +235,7 @@ export class OmpProviderSession {
     private nativeSessionId: string,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
+    nativeModelsByPublicId: ReadonlyMap<string, OmpModel>,
     private readonly capabilities: readonly string[],
     private readonly slashCommands: Set<string>,
     private commandDiscoveryAvailable: boolean,
@@ -194,7 +245,13 @@ export class OmpProviderSession {
     this.id = id;
     this.cwd = config.cwd;
     this.scheduler = scheduler;
-    this.projector = new OmpTimelineProjector(id, emit, scheduler);
+    const sensitiveValues = [
+      ...Object.values(config.env ?? {}),
+      ...(runtime.redactionValues ?? []),
+    ];
+    this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
+    this.nativeModelsByPublicId = nativeModelsByPublicId;
+    this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
     this.bindRuntime(runtime);
   }
 
@@ -205,25 +262,46 @@ export class OmpProviderSession {
     emit: Emit,
     scheduler?: OmpTimelineScheduler,
     signal?: AbortSignal,
+    environment?: NodeJS.ProcessEnv,
   ): Promise<OmpProviderSession> {
     if (input.persistence) {
-      throw new Error("OMP Plugin Preview does not support session persistence");
+      throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
+    }
+    if (input.history !== "skip") {
+      throw new OmpPublicError("OMP Plugin Preview does not support history replay");
     }
     if (input.config.mode && input.config.mode !== "full") {
-      throw new Error(`Unsupported OMP Plugin Preview mode '${input.config.mode}'`);
+      throw new OmpPublicError("OMP Plugin Preview supports Full Access mode only");
+    }
+    if (Object.keys(input.config.mcpServers ?? {}).length > 0) {
+      throw new OmpPublicError("OMP Plugin Preview does not support host MCP servers");
+    }
+    if (input.config.toolPolicy) {
+      throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
+    }
+    if (input.config.providerOptions && Object.keys(input.config.providerOptions).length > 0) {
+      throw new OmpPublicError("OMP Plugin Preview does not support provider options");
+    }
+    if (Object.keys(input.config.settings ?? {}).length > 0) {
+      throw new OmpPublicError("OMP Plugin Preview does not support provider settings");
+    }
+    if (input.config.title && utf8Bytes(input.config.title) > 256) {
+      throw new OmpPublicError("OMP session title is too large");
     }
     const startOptions: OmpStartOptions = {
       cwd: input.config.cwd,
       env: input.config.env,
-      model: input.config.model,
+      // Model selection is authorized only after this runtime reports its exact catalog.
       mode: "full",
       thinkingOption: input.config.thinkingOption,
       systemPrompt: input.config.systemPrompt,
       signal,
+      environment,
     };
+    buildOmpSpawnRequest(startOptions);
     const native = await runtime.startSession(startOptions);
     try {
-      const [state, nativeModels, commandDiscovery] = await Promise.all([
+      const [initialState, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
         native.getAvailableModels(),
         native.getAvailableCommands().then(
@@ -231,12 +309,31 @@ export class OmpProviderSession {
           () => ({ available: false, commands: [] }),
         ),
       ]);
-      const models = mapOmpModels(nativeModels);
+      let state = initialState;
+      const filter = new OmpPublicDataFilter([
+        ...Object.values(input.config.env ?? {}),
+        ...(native.redactionValues ?? []),
+      ]);
+      const models = mapOmpModels(nativeModels, filter);
+      const nativeModelsByPublicId = new Map(
+        nativeModels.map((model) => [ompModelId(model), model] as const),
+      );
+      if (input.config.model) {
+        const selected = nativeModelsByPublicId.get(input.config.model);
+        if (!selected) throw new OmpPublicError("OMP model selection is unavailable");
+        if (state.model?.provider !== selected.provider || state.model.id !== selected.id) {
+          await native.setModel(selected.provider, selected.id);
+          state = await native.getState();
+        }
+      }
       const currentModel = state.model
         ? nativeModels.find(
             (model) => model.provider === state.model?.provider && model.id === state.model.id,
           )
         : undefined;
+      if (state.model && !currentModel) {
+        throw new OmpPublicError("OMP runtime selected an unadvertised model");
+      }
       const configState: ProviderConfigState = {
         ...(state.model ? { model: ompModelId(state.model) } : {}),
         mode: "full",
@@ -251,7 +348,8 @@ export class OmpProviderSession {
         env: input.config.env,
         mode: "full",
         systemPrompt: input.config.systemPrompt,
-        ...(state.model ? { model: ompModelId(state.model) } : {}),
+        ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
+        environment,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
       };
       return new OmpProviderSession(
@@ -262,6 +360,7 @@ export class OmpProviderSession {
         state.sessionId,
         input.config,
         configState,
+        nativeModelsByPublicId,
         capabilities,
         new Set(
           commandDiscovery.commands.flatMap((command) => [
@@ -274,7 +373,15 @@ export class OmpProviderSession {
         scheduler,
       );
     } catch (error) {
-      await native.close().catch(() => undefined);
+      const cleanup = native.close();
+      try {
+        await cleanup;
+      } catch {
+        throw new OmpCleanupFailure(
+          "OMP session initialization cleanup failed",
+          cleanup.catch(() => undefined),
+        );
+      }
       throw error;
     }
   }
@@ -286,8 +393,8 @@ export class OmpProviderSession {
       sessionId: this.id,
       capabilities: this.capabilities,
       restoration: "core",
-      cwd: this.cwd,
-      ...(this.config.title ? { title: this.config.title } : {}),
+      cwd: "<workspace>",
+      ...(this.config.title ? { title: this.dataFilter.text(this.config.title, 256) } : {}),
     });
     this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
     this.emit({ type: "session.ready", requestId, sessionId: this.id });
@@ -302,7 +409,7 @@ export class OmpProviderSession {
         type: "session.prompt_result",
         sessionId: this.id,
         clientMessageId: input.prompt.clientMessageId,
-        result: { type: "failed", error: providerError(error) },
+        result: { type: "failed", error: providerError(error, "OMP prompt was rejected") },
       });
       return;
     }
@@ -409,8 +516,9 @@ export class OmpProviderSession {
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
     } catch (error) {
       this.publishPendingUsers(turn);
-      this.publishPromptResult(turn, { type: "failed", error: providerError(error) });
-      if (turn.started) this.finishTurn(turn, "failed", providerError(error));
+      const failure = providerError(error, "OMP prompt failed");
+      this.publishPromptResult(turn, { type: "failed", error: failure });
+      if (turn.started) this.finishTurn(turn, "failed", failure);
       else {
         turn.terminal = true;
         this.projector.finishTurn(turn.turnId);
@@ -482,8 +590,9 @@ export class OmpProviderSession {
         throw new Error("OMP model and thinking selections cannot be cleared");
       }
       if (input.changes.model) {
-        const model = parseOmpModelId(input.changes.model);
-        await this.runtime.setModel(model.provider, model.modelId);
+        const nativeModel = this.nativeModelsByPublicId.get(input.changes.model);
+        if (!nativeModel) throw new OmpPublicError("OMP model selection is unavailable");
+        await this.runtime.setModel(nativeModel.provider, nativeModel.id);
       }
       if (input.changes.thinkingOption) {
         await this.runtime.setThinkingLevel(input.changes.thinkingOption);
@@ -504,20 +613,28 @@ export class OmpProviderSession {
   }
 
   private publishCommittedConfig(state: OmpSessionState): void {
+    const publicModelId = state.model ? ompModelId(state.model) : undefined;
+    const advertisedModel = publicModelId
+      ? this.nativeModelsByPublicId.get(publicModelId)
+      : undefined;
+    if (state.model && !advertisedModel) {
+      throw new OmpPublicError("OMP runtime selected an unadvertised model");
+    }
     this.configState = {
       ...this.configState,
-      ...(state.model ? { model: ompModelId(state.model) } : { model: undefined }),
+      ...(publicModelId ? { model: publicModelId } : { model: undefined }),
       ...(state.thinkingLevel
         ? { thinkingOption: state.thinkingLevel }
         : { thinkingOption: undefined }),
-      thinkingOptions: thinkingForModel(state.model),
+      thinkingOptions: thinkingForModel(advertisedModel),
     };
     this.recoveryOptions = {
       cwd: this.recoveryOptions.cwd,
       env: this.recoveryOptions.env,
       mode: "full",
       systemPrompt: this.recoveryOptions.systemPrompt,
-      ...(this.configState.model ? { model: this.configState.model } : {}),
+      environment: this.recoveryOptions.environment,
+      ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
       ...(this.configState.thinkingOption
         ? { thinkingOption: this.configState.thinkingOption }
         : {}),
@@ -600,11 +717,27 @@ export class OmpProviderSession {
     }
     await this.runtimeDisposal;
     if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
-    const recovered = await this.runtimeFactory.startSession({
-      ...this.recoveryOptions,
-      resumeSessionId: expectedSessionId,
-      signal: this.lifetime.signal,
-    });
+    let recovered: OmpRuntimeSession;
+    try {
+      recovered = await this.runtimeFactory.startSession({
+        ...this.recoveryOptions,
+        resumeSessionId: expectedSessionId,
+        signal: this.lifetime.signal,
+      });
+    } catch (error) {
+      if (error instanceof OmpCleanupFailure) {
+        this.runtimeDisposal = error.cleanup.then(
+          () => {
+            throw new Error("OMP recovery cleanup failed");
+          },
+          () => {
+            throw new Error("OMP recovery cleanup failed");
+          },
+        );
+        void this.runtimeDisposal.catch(() => undefined);
+      }
+      throw error;
+    }
     try {
       const state = await recovered.getState();
       if (state.sessionId !== expectedSessionId) {
@@ -612,7 +745,17 @@ export class OmpProviderSession {
           `OMP resumed native session '${state.sessionId}' instead of '${expectedSessionId}'`,
         );
       }
+      const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
+      if (recoveredModel !== this.recoveryOptions.model) {
+        throw new Error("OMP recovered with a different model");
+      }
+      if (state.model && !this.nativeModelsByPublicId.has(ompModelId(state.model))) {
+        throw new Error("OMP recovered with an unadvertised model");
+      }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
+      this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
+      this.projector.addSensitiveValues(recovered.redactionValues ?? []);
+      this.publishCommittedConfig(state);
       this.generation += 1;
       this.runtimeDead = null;
       this.runtimeDisposal = null;
@@ -652,6 +795,15 @@ export class OmpProviderSession {
       fallbackOnFinish: false,
       bufferedEchoes: [],
     };
+    if (
+      turn.pendingUsers.length >= MAX_PENDING_USERS ||
+      retainedBytes(turn.pendingUsers, MAX_PENDING_USER_BYTES) +
+        boundedJsonBytes(pending, MAX_PENDING_USER_BYTES, MAX_USER_ECHOES) >
+        MAX_PENDING_USER_BYTES
+    ) {
+      this.publishSteerFailure(clientMessageId, "OMP has too many pending steer messages");
+      return;
+    }
     turn.pendingUsers.push(pending);
     turn.steersInFlight += 1;
     this.cancelLocalOnlyCompletion(turn);
@@ -705,10 +857,7 @@ export class OmpProviderSession {
         this.projector.projectPassive(event);
         return;
       }
-      const detail = event.title ?? event.message ?? event.method;
-      this.handleRuntimeFailure(
-        `OMP requested unsupported interactive UI (${detail}); use Full Access mode`,
-      );
+      this.handleRuntimeFailure();
       return;
     }
     if (event.type === "notice" || event.type === "todo_reminder") {
@@ -716,12 +865,27 @@ export class OmpProviderSession {
       return;
     }
     if (event.type === "process_exit") {
-      this.handleRuntimeFailure(event.error);
+      this.handleRuntimeFailure();
       return;
     }
     const turn = this.activeTurn;
     if (!turn) return;
     if (turn.starting) {
+      if (
+        turn.bufferedEvents.length >= MAX_BUFFERED_TURN_EVENTS ||
+        retainedBytes(turn.bufferedEvents, MAX_BUFFERED_TURN_BYTES) +
+          boundedJsonBytes(
+            event,
+            MAX_BUFFERED_TURN_BYTES,
+            MAX_BUFFERED_VALUE_ITEMS,
+            MAX_BUFFERED_TURN_BYTES,
+            MAX_BUFFERED_VALUE_NODES,
+          ) >
+          MAX_BUFFERED_TURN_BYTES
+      ) {
+        this.handleRuntimeFailure();
+        return;
+      }
       turn.bufferedEvents.push(event);
       return;
     }
@@ -777,6 +941,15 @@ export class OmpProviderSession {
     ) {
       return;
     }
+    if (
+      turn.userEchoes.length >= MAX_USER_ECHOES ||
+      retainedBytes(turn.userEchoes, MAX_USER_ECHO_BYTES) +
+        boundedJsonBytes(message, MAX_USER_ECHO_BYTES, MAX_USER_ECHOES) >
+        MAX_USER_ECHO_BYTES
+    ) {
+      this.handleRuntimeFailure();
+      return;
+    }
     turn.userEchoes.push(message);
     this.drainUserEchoes(turn);
   }
@@ -814,6 +987,15 @@ export class OmpProviderSession {
         continue;
       }
       if (!pending.accepted) {
+        if (
+          pending.bufferedEchoes.length + turn.userEchoes.length > MAX_USER_ECHOES ||
+          retainedBytes(pending.bufferedEchoes, MAX_USER_ECHO_BYTES) +
+            retainedBytes(turn.userEchoes, MAX_USER_ECHO_BYTES) >
+            MAX_USER_ECHO_BYTES
+        ) {
+          this.handleRuntimeFailure();
+          return;
+        }
         pending.bufferedEchoes.push(...turn.userEchoes.splice(0));
         return;
       }
@@ -829,14 +1011,26 @@ export class OmpProviderSession {
           ) {
             return;
           }
-          const unseen = messages.filter(
-            (branchMessage) => !this.seenEntryIds.has(branchMessage.entryId),
-          );
+          if (retainedBytes(messages, MAX_UNCLAIMED_BRANCH_BYTES) === Number.POSITIVE_INFINITY) {
+            this.quarantineBranchEntries();
+            return;
+          }
+          const unseen: Array<{ entryId: string; text: string }> = [];
+          for (const branchMessage of messages) {
+            if (!this.seenEntryIds.has(branchMessage.entryId)) unseen.push(branchMessage);
+          }
           if (!this.branchWatermarkValid) {
             this.unclaimedBranchEntries.length = 0;
             this.branchWatermarkValid = true;
-          } else {
+          } else if (
+            unseen.length <= MAX_UNCLAIMED_BRANCH_ENTRIES - this.unclaimedBranchEntries.length &&
+            retainedBytes(this.unclaimedBranchEntries, MAX_UNCLAIMED_BRANCH_BYTES) +
+              retainedBytes(unseen, MAX_UNCLAIMED_BRANCH_BYTES) <=
+              MAX_UNCLAIMED_BRANCH_BYTES
+          ) {
             this.unclaimedBranchEntries.push(...unseen);
+          } else {
+            this.quarantineBranchEntries();
           }
           for (const branchMessage of messages) this.seenEntryIds.add(branchMessage.entryId);
           resolvedId = this.claimUnclaimedBranchEntry(pending.text);
@@ -1137,8 +1331,9 @@ export class OmpProviderSession {
     void this.runtimeDisposal.catch(() => undefined);
   }
 
-  private handleRuntimeFailure(message: string): void {
+  private handleRuntimeFailure(): void {
     if (this.closed || this.runtimeDead) return;
+    const message = "OMP runtime failed";
     this.invalidateRuntime(message);
     const turn = this.activeTurn;
     if (!turn) return;
