@@ -541,7 +541,6 @@ export function CityOperations({
     },
   });
 
-
   async function refreshAll() {
     await Promise.all([
       snapshotQuery.refetch(),
