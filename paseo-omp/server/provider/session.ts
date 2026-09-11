@@ -139,6 +139,7 @@ type ActiveTurn = {
   interrupted: boolean;
   starting: boolean;
   nativeActivity: boolean;
+  userEchoObserved: boolean;
   localOnlyDisabled: boolean;
   localOnlyEligible: boolean;
   nativeRequestId?: string;
@@ -926,6 +927,7 @@ export class OmpProviderSession {
       interrupted: false,
       starting: true,
       nativeActivity: false,
+      userEchoObserved: false,
       localOnlyDisabled: false,
       localOnlyEligible: false,
       usageSampleFloor: 0,
@@ -1769,6 +1771,7 @@ export class OmpProviderSession {
   }
 
   private projectUserEcho(turn: ActiveTurn, message: OmpMessage): void {
+    turn.userEchoObserved = true;
     const entryId = nativeEntryId(message);
     if (
       entryId &&
@@ -2011,7 +2014,8 @@ export class OmpProviderSession {
     turn.agentEndDeadlineTimer = this.scheduler.set(() => {
       turn.agentEndDeadlineTimer = undefined;
       if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
-      void this.completeAgentEnd(turn, event);
+      if (turn.userEchoObserved) void this.completeAgentEndAndRetire(turn, event);
+      else void this.completeAgentEnd(turn, event);
     }, AGENT_END_SETTLE_MS);
     this.finishFromAgentEnd(turn, event);
   }
@@ -2069,6 +2073,10 @@ export class OmpProviderSession {
       await this.finishTurn(turn, "failed", { message }, true, true);
       return;
     }
+    if (turn.userEchoObserved) {
+      await this.completeAgentEndAndRetire(turn, event);
+      return;
+    }
     if (turn.agentEndRetryTimer === undefined) {
       turn.agentEndRetryTimer = this.scheduler.set(() => {
         turn.agentEndRetryTimer = undefined;
@@ -2087,6 +2095,17 @@ export class OmpProviderSession {
     if (turn.interrupted) await this.finishTurn(turn, "canceled", undefined, usageSampled);
     else if (error) await this.finishTurn(turn, "failed", { message: error }, usageSampled);
     else await this.finishTurn(turn, "completed", undefined, usageSampled);
+  }
+
+  private async completeAgentEndAndRetire(
+    turn: ActiveTurn,
+    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  ): Promise<void> {
+    const completion = this.completeAgentEnd(turn, event, true);
+    if (!this.closed && !this.runtimeDead) {
+      this.invalidateRuntime("OMP terminal state could not be confirmed");
+    }
+    await completion;
   }
 
   private publishPendingUsers(turn: ActiveTurn): void {
