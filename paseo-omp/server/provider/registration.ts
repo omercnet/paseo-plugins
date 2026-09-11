@@ -1,6 +1,7 @@
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import { createOmpConnection, OmpNativeSessionReservations } from "./connection";
+import type { OmpMcpConnector } from "./host-tools";
 import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
 import { boundedJsonBytes } from "./security";
 import type { OmpTimelineScheduler } from "./timeline-projector";
@@ -21,6 +22,8 @@ export interface OmpProviderOptions {
   runtime?: OmpRuntime;
   timelineScheduler?: OmpTimelineScheduler;
   environment?: NodeJS.ProcessEnv;
+  mcpInitializationTimeoutMs?: number;
+  mcpConnector?: OmpMcpConnector;
 }
 
 export function createOmpProvider(options: OmpProviderOptions = {}): ProviderRegistration {
@@ -49,6 +52,8 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         options.timelineScheduler,
         options.environment,
         nativeReservations,
+        options.mcpConnector,
+        options.mcpInitializationTimeoutMs,
       );
     },
   };

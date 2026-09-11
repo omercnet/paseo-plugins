@@ -7,6 +7,7 @@ import {
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import { discoverOmpCatalog } from "./catalog";
+import type { OmpMcpConnector } from "./host-tools";
 import type { OmpRuntime } from "./omp-rpc";
 import {
   boundedJsonBytes,
@@ -70,12 +71,6 @@ function preflightProviderInput(input: unknown): void {
       ) {
         throw new OmpPublicError("Session configuration is too large");
       }
-    }
-    if (hasOwnEntries(config?.mcpServers)) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host MCP servers");
-    }
-    if (config?.toolPolicy !== undefined) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
     }
     if (hasOwnEntries(config?.providerOptions) || hasOwnEntries(config?.settings)) {
       throw new OmpPublicError("OMP Plugin Preview does not support provider options");
@@ -336,6 +331,8 @@ export function createOmpConnection(
   scheduler?: OmpTimelineScheduler,
   environment?: NodeJS.ProcessEnv,
   nativeReservations = new OmpNativeSessionReservations(),
+  mcpConnector?: OmpMcpConnector,
+  mcpInitializationTimeoutMs?: number,
 ): ProviderConnection {
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) =>
@@ -348,7 +345,10 @@ export function createOmpConnection(
     { token: symbol; session: OmpProviderSession; nativeSessionId?: string }
   >();
   const opening = new Map<string, { token: symbol; promise: Promise<OmpProviderSession> }>();
-  const failedCleanup = new Map<string, { token: symbol; nativeSessionId?: string }>();
+  const failedCleanup = new Map<
+    string,
+    { token: symbol; nativeSessionId?: string; cleanup?: Promise<void> }
+  >();
   const shutdown = new AbortController();
   let catalogCleanup: Promise<void> | null = null;
   const activeOperations = new Set<Promise<void>>();
@@ -375,19 +375,17 @@ export function createOmpConnection(
     nativeSessionId?: string,
   ) => {
     const cleanupFailure = isOmpCleanupFailure(error) ? error : undefined;
+    const cleanup = cleanupFailure?.cleanup ?? Promise.reject(error);
+    void cleanup.catch(() => undefined);
     const quarantinedNativeSessionId = nativeSessionId ?? cleanupFailure?.nativeSessionId;
     failedCleanup.set(sessionId, {
       token,
+      cleanup,
       ...(quarantinedNativeSessionId ? { nativeSessionId: quarantinedNativeSessionId } : {}),
     });
-    nativeReservations.quarantine(
-      quarantinedNativeSessionId,
-      token,
-      cleanupFailure?.cleanup,
-      () => {
-        if (failedCleanup.get(sessionId)?.token === token) failedCleanup.delete(sessionId);
-      },
-    );
+    nativeReservations.quarantine(quarantinedNativeSessionId, token, cleanup, () => {
+      if (failedCleanup.get(sessionId)?.token === token) failedCleanup.delete(sessionId);
+    });
   };
 
   const dispatch = async (input: ProviderInput): Promise<void> => {
@@ -474,6 +472,8 @@ export function createOmpConnection(
           scheduler,
           shutdown.signal,
           environment,
+          mcpConnector,
+          mcpInitializationTimeoutMs,
         );
         opening.set(input.sessionId, { token, promise: pending });
         let session: OmpProviderSession | undefined;
@@ -595,22 +595,73 @@ export function createOmpConnection(
   const disposeConnection = async (): Promise<void> => {
     closing = true;
     shutdown.abort(new Error("OMP provider connection closed"));
-    const sessionClosures = Promise.allSettled([
-      ...[...sessions.entries()].map(async ([sessionId, { session, nativeSessionId, token }]) => {
-        try {
-          await session.close();
-          nativeReservations.release(nativeSessionId, token);
-        } catch (error) {
-          quarantineFailedCleanup(sessionId, token, error, nativeSessionId);
-        }
-      }),
-      ...(catalogCleanup ? [catalogCleanup] : []),
-    ]);
-    await Promise.all([Promise.all(activeOperations), sessionClosures]);
-    sessions.clear();
-    failedCleanup.clear();
+    for (const { session } of sessions.values()) session.beginConnectionShutdown();
+    const failures: unknown[] = [];
+    const operationBatch = [...activeOperations];
+    const operationResults = await Promise.allSettled(operationBatch);
+    for (const operation of operationBatch) activeOperations.delete(operation);
+    for (const result of operationResults) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
+    const seenSessions = new Set<OmpProviderSession>();
+    const seenOpenings = new Set<Promise<OmpProviderSession>>();
+    const seenCleanups = new Set<Promise<void>>();
+      const cleanupBatch: Promise<void>[] = [];
+      for (const [sessionId, { session, nativeSessionId, token }] of sessions) {
+        if (seenSessions.has(session)) continue;
+        seenSessions.add(session);
+        cleanupBatch.push(
+          Promise.resolve().then(async () => {
+            try {
+              await session.close();
+              nativeReservations.release(nativeSessionId, token);
+            } catch (error) {
+              quarantineFailedCleanup(sessionId, token, error, nativeSessionId);
+              throw error;
+            }
+          }),
+        );
+      }
+      for (const [sessionId, { token, promise }] of opening) {
+        if (seenOpenings.has(promise)) continue;
+        seenOpenings.add(promise);
+        cleanupBatch.push(
+          promise.then(async (session) => {
+            if (seenSessions.has(session)) return;
+            seenSessions.add(session);
+            const nativeSessionId = session.persistenceSessionId;
+            try {
+              await session.abortOpen();
+              nativeReservations.release(nativeSessionId, token);
+            } catch (error) {
+              quarantineFailedCleanup(sessionId, token, error, nativeSessionId);
+              throw error;
+            }
+          }),
+        );
+      }
+      for (const { cleanup } of failedCleanup.values()) {
+        if (!cleanup || seenCleanups.has(cleanup)) continue;
+        seenCleanups.add(cleanup);
+        cleanupBatch.push(cleanup);
+      }
+      if (catalogCleanup && !seenCleanups.has(catalogCleanup)) {
+        seenCleanups.add(catalogCleanup);
+        cleanupBatch.push(catalogCleanup);
+      }
+      const results = await Promise.allSettled(cleanupBatch);
+      for (const result of results) {
+        if (result.status === "rejected") failures.push(result.reason);
+      }
     listeners.clear();
     closed = true;
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "OMP provider connection cleanup failed");
+    }
+    sessions.clear();
+    opening.clear();
+    failedCleanup.clear();
+    catalogCleanup = null;
   };
   return {
     version: 1,
@@ -678,7 +729,7 @@ export function createOmpConnection(
       return () => listeners.delete(listener);
     },
     close() {
-      closePromise ??= disposeConnection();
+      closePromise ??= Promise.resolve().then(disposeConnection);
       return closePromise;
     },
   };

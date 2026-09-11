@@ -214,6 +214,7 @@ export class OmpCleanupFailure extends Error {
     readonly cleanup: Promise<void>,
     readonly nativeSessionId?: string,
   ) {
+    void cleanup.catch(() => undefined);
     super(message);
   }
 }

@@ -220,6 +220,74 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("registers essential host tools and returns host call frames", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => {
+      commands.push(command);
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "set_host_tools") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "set_host_tools",
+          success: true,
+          data: { toolNames: ["mcp__paseo_read"] },
+        });
+      }
+    });
+    const sessionOpening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await sessionOpening;
+
+    await expect(
+      session.setHostTools([
+        {
+          name: "mcp__paseo_read",
+          label: "Read",
+          description: "Read a caller-scoped workspace file",
+          loadMode: "essential",
+          parameters: { type: "object", properties: { path: { type: "string" } } },
+        },
+      ]),
+    ).resolves.toEqual(["mcp__paseo_read"]);
+    session.sendHostToolUpdate({
+      type: "host_tool_update",
+      id: "host-call-1",
+      partialResult: { content: [], details: { progress: 1 } },
+    });
+    session.sendHostToolResult({
+      type: "host_tool_result",
+      id: "host-call-1",
+      result: { content: [{ type: "text", text: "done" }] },
+    });
+    await Promise.resolve();
+
+    expect(commands).toContainEqual({
+      type: "set_host_tools",
+      tools: [expect.objectContaining({ name: "mcp__paseo_read", loadMode: "essential" })],
+      id: expect.any(String),
+    });
+    expect(commands).toContainEqual({
+      type: "host_tool_update",
+      id: "host-call-1",
+      partialResult: { content: [], details: { progress: 1 } },
+    });
+    expect(commands).toContainEqual({
+      type: "host_tool_result",
+      id: "host-call-1",
+      result: { content: [{ type: "text", text: "done" }] },
+    });
+    await session.close();
+  });
+
   test("passes an exact native session handle to OMP resume", async () => {
     const child = new FakeRpcChild();
     const launches: OmpSpawnRequest[] = [];
@@ -391,6 +459,18 @@ describe("OMP RPC transport", () => {
     child.write({ type: "ready", protocolVersion: 1 });
 
     await expect(opening).rejects.toThrow("incomplete protocol metadata");
+  });
+
+  test("rejects a frame limit too small for a maximum-ID terminal host result", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => commands.push(command));
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ ...READY_FRAME, maxFrameBytes: 400 });
+
+    await expect(opening).rejects.toThrow("cannot carry terminal host tool results");
+    expect(commands).toEqual([]);
+    expect(child.stdin.writableEnded).toBe(true);
   });
 
   test("rejects an invalid v2 negotiation result", async () => {

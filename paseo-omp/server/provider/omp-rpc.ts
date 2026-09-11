@@ -39,6 +39,8 @@ const MAX_SYSTEM_PROMPT_LENGTH = 64 * 1024;
 const MAX_IMAGE_DATA_LENGTH = 8 * 1024 * 1024;
 const MAX_TOOL_PAYLOAD_LENGTH = 256 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
+const MAX_HOST_TOOLS = 256;
+type TimerHandle = ReturnType<typeof setTimeout>;
 const MAX_PENDING_REQUESTS = 256;
 const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const MAX_LINE_PARTS = 4_096;
@@ -55,6 +57,20 @@ const MAX_TOKEN_COUNT = Number.MAX_SAFE_INTEGER;
 const MAX_COST_USD = 1_000_000_000;
 const MAX_CONTEXT_PERCENT = 1_000_000;
 
+export const OMP_HOST_TOOL_FRAME_LIMIT_ERROR =
+  "MCP host tool result exceeds the OMP RPC frame limit";
+const MIN_HOST_TOOL_RESULT_FRAME_BYTES = Buffer.byteLength(
+  `${JSON.stringify({
+    type: "host_tool_result",
+    id: "\0".repeat(MAX_ID_LENGTH),
+    result: {
+      content: [{ type: "text", text: OMP_HOST_TOOL_FRAME_LIMIT_ERROR }],
+      details: {},
+      isError: true,
+    },
+    isError: true,
+  })}\n`,
+);
 function boundedString(maxBytes: number, minBytes = 0) {
   return z.string().refine((value) => {
     const bytes = utf8Bytes(value);
@@ -304,9 +320,46 @@ const OmpChunkFrameSchema = z.object({
   byteLength: z.number().int().nonnegative().max(MAX_REASSEMBLED_FRAME_BYTES),
   data: boundedString(MAX_ENCODED_CHUNK_BYTES),
 });
+const JsonObjectSchema = z.record(z.string(), z.unknown());
 const BoundedToolPayloadSchema = z
   .unknown()
   .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096));
+const OmpHostToolDefinitionSchema = z.object({
+  name: NAME,
+  label: NAME.optional(),
+  description: boundedString(MAX_TEXT_LENGTH),
+  loadMode: z.enum(["essential", "discoverable"]).optional(),
+  parameters: JsonObjectSchema,
+});
+const OmpHostToolCallSchema = z.object({
+  type: z.literal("host_tool_call"),
+  id: IDENTIFIER,
+  toolCallId: IDENTIFIER,
+  toolName: NAME,
+  arguments: JsonObjectSchema,
+});
+const OmpHostToolCancelSchema = z.object({
+  type: z.literal("host_tool_cancel"),
+  id: IDENTIFIER,
+  targetId: IDENTIFIER,
+});
+const OmpHostToolContentSchema = z.object({ type: NAME, text: TEXT.optional() }).passthrough();
+const OmpHostToolAgentResultSchema = z.object({
+  content: z.array(OmpHostToolContentSchema).max(MAX_ARRAY_ITEMS),
+  details: BoundedToolPayloadSchema.optional(),
+  isError: z.boolean().optional(),
+});
+const OmpHostToolResultSchema = z.object({
+  type: z.literal("host_tool_result"),
+  id: IDENTIFIER,
+  result: OmpHostToolAgentResultSchema,
+  isError: z.boolean().optional(),
+});
+const OmpHostToolUpdateSchema = z.object({
+  type: z.literal("host_tool_update"),
+  id: IDENTIFIER,
+  partialResult: OmpHostToolAgentResultSchema,
+});
 const OmpAgentEndEnvelopeSchema = z.object({
   type: z.literal("agent_end"),
   messageCount: z.number().int().nonnegative().optional(),
@@ -416,8 +469,9 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     id: IDENTIFIER.optional(),
     agentInvoked: z.boolean(),
   }),
+  OmpHostToolCallSchema,
+  OmpHostToolCancelSchema,
 ]);
-const JsonObjectSchema = z.record(z.string(), z.unknown());
 const OmpModelsResultSchema = z.object({
   models: z.array(OmpModelSchema).min(1).max(256),
 });
@@ -437,6 +491,13 @@ export type OmpModel = z.infer<typeof OmpModelSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
 export type OmpSessionStats = z.infer<typeof OmpSessionStatsSchema>;
 export type OmpCompactionResult = z.infer<typeof OmpCompactionResultSchema>;
+export type OmpHostToolDefinition = z.infer<typeof OmpHostToolDefinitionSchema>;
+export type OmpHostToolCall = z.infer<typeof OmpHostToolCallSchema>;
+export type OmpHostToolResult = z.infer<typeof OmpHostToolResultSchema>;
+export type OmpHostToolUpdate = z.infer<typeof OmpHostToolUpdateSchema>;
+export function parseOmpHostToolAgentResult(value: unknown): OmpHostToolResult["result"] {
+  return OmpHostToolAgentResultSchema.parse(value);
+}
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
   | { type: "process_exit"; error: string };
@@ -458,6 +519,7 @@ export interface OmpStartOptions {
 
 export interface OmpRuntimeSession {
   readonly redactionValues?: readonly string[];
+  readonly maxHostToolFrameBytes?: number;
   onEvent(listener: (event: OmpRpcEvent) => void): () => void;
   getState(): Promise<OmpSessionState>;
   getSessionStats(): Promise<OmpSessionStats>;
@@ -475,6 +537,9 @@ export interface OmpRuntimeSession {
   readonly canReplayHistory: boolean;
   getMessages(): Promise<OmpMessage[]>;
   abort(): Promise<void>;
+  setHostTools(tools: readonly OmpHostToolDefinition[]): Promise<string[]>;
+  sendHostToolResult(result: OmpHostToolResult): void;
+  sendHostToolUpdate(update: OmpHostToolUpdate): void;
   close(): Promise<void>;
 }
 
@@ -506,7 +571,7 @@ export interface OmpRpcRuntimeOptions {
 type PendingRequest = {
   resolve(value: unknown): void;
   reject(error: Error): void;
-  timer?: NodeJS.Timeout;
+  timer?: TimerHandle;
   command: string;
   beforeResolve?: (value: unknown) => void;
 };
@@ -521,7 +586,7 @@ type ChunkState = {
   byteLength: number;
   parts: Buffer[];
   receivedBytes: number;
-  timer: NodeJS.Timeout;
+  timer: TimerHandle;
 };
 
 // The daemon contributes only process/runtime discovery variables plus provider authentication
@@ -996,6 +1061,11 @@ function processIsGone(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === "ESRCH";
 }
 
+function isConfirmedNoProcessSpawnFailure(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "ENOENT" || code === "EACCES" || code === "EPERM";
+}
+
 /**
  * Terminates the detached process group created for OMP. This covers descendants that remain in
  * that group after the leader exits; descendants that deliberately re-parent into another process
@@ -1059,8 +1129,8 @@ async function stopWindowsTree(pid: number): Promise<ProcessTreeCleanup> {
   taskkill.stdout.resume();
   taskkill.stderr.resume();
   let settled = false;
-  let deadline: NodeJS.Timeout | undefined;
-  let finalDeadline: NodeJS.Timeout | undefined;
+  let deadline: TimerHandle | undefined;
+  let finalDeadline: TimerHandle | undefined;
   const finish = (outcome: ProcessTreeCleanup) => {
     if (settled) return;
     settled = true;
@@ -1083,6 +1153,14 @@ async function stopWindowsTree(pid: number): Promise<ProcessTreeCleanup> {
     );
   });
   return result.promise;
+}
+
+export async function terminateSpawnedProcessTree(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  if (platform === "win32") return (await stopWindowsTree(pid)) === "verified";
+  return await terminatePosixProcessTree(pid, PROCESS_STOP_TIMEOUT_MS);
 }
 
 class OmpRpcProcess {
@@ -1114,6 +1192,7 @@ class OmpRpcProcess {
   private fatalError: Error | null = null;
   private closePromise: Promise<void> | null = null;
   private treeCleanupPromise: Promise<ProcessTreeCleanup> | null = null;
+  private spawnFailedWithoutProcess = false;
   private readyReceived = false;
   private outputSettled = false;
 
@@ -1175,6 +1254,9 @@ class OmpRpcProcess {
     this.child.once("close", () => this.settleOutput());
     this.child.once("error", (cause) => {
       const code = (cause as NodeJS.ErrnoException)?.code;
+      if (this.child.pid === undefined && isConfirmedNoProcessSpawnFailure(cause)) {
+        this.spawnFailedWithoutProcess = true;
+      }
       this.fail(
         new Error(
           code === "ENOENT"
@@ -1212,6 +1294,10 @@ class OmpRpcProcess {
     this.lineBytes = 0;
     this.discardingLine = false;
     this.discardedLineBytes = 0;
+  }
+
+  get outboundFrameLimit(): number {
+    return this.physicalFrameLimit;
   }
 
   onEvent(listener: (event: OmpRpcEvent) => void): () => void {
@@ -1290,6 +1376,37 @@ class OmpRpcProcess {
     return this.startRequest(command, timeoutMs).promise;
   }
 
+  send(frame: OmpHostToolResult | OmpHostToolUpdate): void {
+    if (this.fatalError) throw this.fatalError;
+    if (this.closed || this.exited || !this.child.stdin.writable) {
+      throw new Error("OMP RPC process is closed");
+    }
+    const parsed =
+      frame.type === "host_tool_result"
+        ? OmpHostToolResultSchema.parse(frame)
+        : OmpHostToolUpdateSchema.parse(frame);
+    const payload = Buffer.from(`${JSON.stringify(parsed)}\n`);
+    if (payload.byteLength > this.physicalFrameLimit) {
+      throw new Error("OMP host tool frame exceeds the negotiated frame limit");
+    }
+    if (this.pendingWriteBytes + payload.byteLength > MAX_PENDING_WRITE_BYTES) {
+      throw new Error("OMP RPC has too many pending writes");
+    }
+    const writeId = randomUUID();
+    this.queuedWrites.set(writeId, payload.byteLength);
+    this.pendingWriteBytes += payload.byteLength;
+    try {
+      this.child.stdin.write(payload, (cause) => {
+        this.releaseQueuedWrite(writeId);
+        if (cause) this.fail(new Error("OMP RPC input channel failed"));
+      });
+    } catch {
+      this.releaseQueuedWrite(writeId);
+      this.fail(new Error("OMP RPC input channel failed"));
+      throw new Error("OMP RPC input channel failed");
+    }
+  }
+
   close(): Promise<void> {
     this.closePromise ??= this.closeProcess();
     return this.closePromise;
@@ -1309,7 +1426,11 @@ class OmpRpcProcess {
     const cleanupPromise = this.startTreeCleanup();
     const cleanup = await cleanupPromise;
     if (cleanup !== "verified") throw new Error("OMP RPC process tree cleanup failed");
-    if (!this.exited && !(await this.waitForExit(PROCESS_STOP_TIMEOUT_MS))) {
+    if (
+      !this.spawnFailedWithoutProcess &&
+      !this.exited &&
+      !(await this.waitForExit(PROCESS_STOP_TIMEOUT_MS))
+    ) {
       throw new Error("OMP RPC process did not close after tree cleanup");
     }
   }
@@ -1319,7 +1440,9 @@ class OmpRpcProcess {
     const pid = this.child.pid;
     this.treeCleanupPromise = (
       pid === undefined
-        ? Promise.resolve<ProcessTreeCleanup>("uncertain")
+        ? Promise.resolve<ProcessTreeCleanup>(
+            this.spawnFailedWithoutProcess ? "verified" : "uncertain",
+          )
         : this.terminateProcessTree(pid)
     ).catch(() => "failed");
     return this.treeCleanupPromise;
@@ -1834,11 +1957,18 @@ function validateReadyMetadata(frame: ReadyFrame): "legacy-v1" | "v1" | "v2" {
   ) {
     throw new Error("OMP ready frame advertises unsupported protocol limits");
   }
+  if (frame.maxFrameBytes < MIN_HOST_TOOL_RESULT_FRAME_BYTES) {
+    throw new Error("OMP ready frame cannot carry terminal host tool results");
+  }
   return frame.supportedProtocolVersions.includes(2) ? "v2" : "v1";
 }
 
 class OmpRpcSession implements OmpRuntimeSession {
   readonly redactionValues: readonly string[];
+
+  get maxHostToolFrameBytes(): number {
+    return this.process.outboundFrameLimit;
+  }
 
   constructor(
     private readonly process: OmpRpcProcess,
@@ -1922,6 +2052,23 @@ class OmpRpcSession implements OmpRuntimeSession {
       await this.process.request({ type: "get_messages" }),
     );
     return result.messages;
+  }
+
+  async setHostTools(tools: readonly OmpHostToolDefinition[]): Promise<string[]> {
+    const safeTools = z.array(OmpHostToolDefinitionSchema).max(MAX_HOST_TOOLS).parse(tools);
+    if (safeTools.length === 0) return [];
+    const result = z
+      .object({ toolNames: z.array(NAME).max(MAX_HOST_TOOLS).optional() })
+      .parse(await this.process.request({ type: "set_host_tools", tools: safeTools }));
+    return result.toolNames ?? [];
+  }
+
+  sendHostToolResult(result: OmpHostToolResult): void {
+    this.process.send(result);
+  }
+
+  sendHostToolUpdate(update: OmpHostToolUpdate): void {
+    this.process.send(update);
   }
 
   async prompt(

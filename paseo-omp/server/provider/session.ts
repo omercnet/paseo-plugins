@@ -7,6 +7,7 @@ import type {
   ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
+import { OmpHostToolsBridge, type OmpMcpConnector, validateOmpHostToolConfig } from "./host-tools";
 import type {
   OmpCompactionResult,
   OmpMessage,
@@ -199,6 +200,27 @@ type ActiveCompaction = {
 function providerError(error: unknown, fallback: string): { message: string } {
   return { message: isOmpPublicError(error) ? error.message : fallback };
 }
+async function settleSessionCleanup(promises: readonly Promise<void>[]): Promise<void> {
+  const pending = [...promises];
+  const seen = new Set<Promise<void>>();
+  const failures: unknown[] = [];
+  while (pending.length > 0) {
+    const batch = pending.splice(0).filter((promise) => !seen.has(promise));
+    for (const promise of batch) seen.add(promise);
+    const results = await Promise.allSettled(batch);
+    for (const result of results) {
+      if (result.status !== "rejected") continue;
+      if (isOmpCleanupFailure(result.reason)) {
+        if (!seen.has(result.reason.cleanup)) pending.push(result.reason.cleanup);
+        continue;
+      }
+      failures.push(result.reason);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "OMP session initialization cleanup failed");
+  }
+}
 
 function textPrompt(input: SessionPromptInput): string {
   if (input.prompt.outputSchema !== undefined || input.prompt.clearPendingPermissions) {
@@ -282,6 +304,15 @@ function isNativeTurnActivity(event: OmpRpcEvent): boolean {
   }
   return event.type.startsWith("tool_execution_");
 }
+function isRuntimeConfigEvent(event: OmpRpcEvent): boolean {
+  return (
+    event.type === "model_changed" ||
+    event.type === "thinking_level_changed" ||
+    event.type === "retry_fallback_applied" ||
+    event.type === "retry_fallback_succeeded"
+  );
+}
+
 function isPassiveUiMethod(method: string): boolean {
   return (
     method === "cancel" ||
@@ -303,6 +334,7 @@ export class OmpProviderSession {
   private closed = false;
   private disposalPromise: Promise<void> | null = null;
   private sessionClosedPublished = false;
+  private readyPublished = false;
   private readonly emittedEntryIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
   private readonly seenEntryIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
   private branchWatermarkValid = true;
@@ -314,6 +346,7 @@ export class OmpProviderSession {
   private generation = 0;
   private runtimeDead: string | null = null;
   private runtimeDisposal: Promise<void> | null = null;
+  private hostToolsDisposal: Promise<void> | null = null;
   private recoveryPromise: Promise<void> | null = null;
   private configRefreshInFlight: Promise<void> | null = null;
   private configRefreshDirty = false;
@@ -342,6 +375,7 @@ export class OmpProviderSession {
     private runtime: OmpRuntimeSession,
     private readonly runtimeFactory: OmpRuntime,
     private recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal">,
+    private readonly hostTools: OmpHostToolsBridge,
     private nativeSessionId: string,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
@@ -363,6 +397,7 @@ export class OmpProviderSession {
     ];
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
+    this.hostTools.onFatal(() => this.handleRuntimeFailure());
     this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
     this.bindRuntime(runtime);
   }
@@ -378,6 +413,8 @@ export class OmpProviderSession {
     scheduler?: OmpTimelineScheduler,
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
+    mcpConnector?: OmpMcpConnector,
+    mcpInitializationTimeoutMs?: number,
   ): Promise<OmpProviderSession> {
     const resumeSessionId = ompPersistenceSessionId(input);
     if (resumeSessionId && !input.config.persist) {
@@ -392,12 +429,6 @@ export class OmpProviderSession {
     if (input.config.mode && input.config.mode !== "full") {
       throw new OmpPublicError("OMP Plugin Preview supports Full Access mode only");
     }
-    if (Object.keys(input.config.mcpServers ?? {}).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host MCP servers");
-    }
-    if (input.config.toolPolicy) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
-    }
     if (input.config.providerOptions && Object.keys(input.config.providerOptions).length > 0) {
       throw new OmpPublicError("OMP Plugin Preview does not support provider options");
     }
@@ -411,6 +442,7 @@ export class OmpProviderSession {
       await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd);
     }
     const effectiveConfig: ProviderSessionConfig = { ...input.config };
+    validateOmpHostToolConfig(effectiveConfig);
     const startOptions: OmpStartOptions = {
       cwd: effectiveConfig.cwd,
       env: effectiveConfig.env,
@@ -427,9 +459,25 @@ export class OmpProviderSession {
       environment,
     };
     buildOmpSpawnRequest(startOptions);
-    const native = await runtime.startSession(startOptions);
+    const hostTools = await OmpHostToolsBridge.open(effectiveConfig, {
+      connectMcp: mcpConnector,
+      signal,
+      initializationTimeoutMs: mcpInitializationTimeoutMs,
+    });
+    let native: OmpRuntimeSession | undefined;
     let cleanupNativeSessionId: string | undefined;
+    let unsubscribeBootstrap = () => {};
+    let bootstrapConfigRevision = 0;
     try {
+      native = await runtime.startSession(startOptions);
+      unsubscribeBootstrap = native.onEvent((event) => {
+        if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+          hostTools.handle(event);
+          return;
+        }
+        if (isRuntimeConfigEvent(event)) bootstrapConfigRevision += 1;
+      });
+      await hostTools.bind(native);
       const [initialState, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
         native.getAvailableModels(),
@@ -464,6 +512,8 @@ export class OmpProviderSession {
           state = await native.getState();
         }
       }
+      const reconciledConfigRevision = bootstrapConfigRevision;
+      state = await native.getState();
       const currentModel = state.model
         ? nativeModels.find(
             (model) => model.provider === state.model?.provider && model.id === state.model.id,
@@ -507,11 +557,17 @@ export class OmpProviderSession {
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
         ...(!effectiveConfig.persist ? { noSession: true } : {}),
       };
-      return new OmpProviderSession(
+      if (!hostTools.isBoundTo(native)) {
+        throw new Error("OMP host tool bridge detached during session initialization");
+      }
+      unsubscribeBootstrap();
+      unsubscribeBootstrap = () => {};
+      const session = new OmpProviderSession(
         input.sessionId,
         native,
         runtime,
         recoveryOptions,
+        hostTools,
         state.sessionId,
         effectiveConfig,
         configState,
@@ -529,14 +585,38 @@ export class OmpProviderSession {
         effectiveConfig.persist,
         scheduler,
       );
+
+      if (bootstrapConfigRevision !== reconciledConfigRevision) {
+        session.configRefreshDirty = true;
+      }
+      return session;
     } catch (error) {
-      const cleanup = native.close();
-      try {
-        await cleanup;
-      } catch (cleanupError) {
+      unsubscribeBootstrap();
+      const directCleanup = [
+        Promise.resolve().then(() => hostTools.close()),
+        ...(native ? [native] : []).map((session) => Promise.resolve().then(() => session.close())),
+      ];
+      const directResults = await Promise.allSettled(directCleanup);
+      const nestedCleanup = error instanceof OmpCleanupFailure ? [error.cleanup] : [];
+      const cleanupFailures: unknown[] = [];
+      for (const result of directResults) {
+        if (result.status !== "rejected") continue;
+        if (isOmpCleanupFailure(result.reason)) nestedCleanup.push(result.reason.cleanup);
+        else cleanupFailures.push(result.reason);
+      }
+      if (nestedCleanup.length > 0 || cleanupFailures.length > 0) {
+        const failed =
+          cleanupFailures.length > 0
+            ? [
+                Promise.reject(
+                  new AggregateError(cleanupFailures, "OMP session initialization cleanup failed"),
+                ),
+              ]
+            : [];
+        const cleanup = settleSessionCleanup([...nestedCleanup, ...failed]);
         throw new OmpCleanupFailure(
-          "OMP session initialization cleanup failed",
-          isOmpCleanupFailure(cleanupError) ? cleanupError.cleanup : cleanup,
+          "OMP session initialization cleanup pending",
+          cleanup,
           cleanupNativeSessionId,
         );
       }
@@ -560,6 +640,8 @@ export class OmpProviderSession {
     this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
     if (this.replayHistoryOnOpen) await this.replayHistory();
     this.emit({ type: "session.ready", requestId, sessionId: this.id });
+    this.readyPublished = true;
+    if (this.configRefreshDirty) this.scheduleCommittedConfigRefresh();
   }
 
   private usageFrom(
@@ -1097,6 +1179,13 @@ export class OmpProviderSession {
     }
   }
 
+  beginConnectionShutdown(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.lifetime.abort(new Error("OMP provider connection closed"));
+    this.unsubscribe();
+    this.unsubscribe = () => {};
+  }
   async configure(input: SessionConfigureInput): Promise<void> {
     if (this.configMutationInFlight) {
       this.emit({
@@ -1216,6 +1305,7 @@ export class OmpProviderSession {
 
   private scheduleCommittedConfigRefresh(): void {
     this.configRefreshDirty = true;
+    if (!this.readyPublished) return;
     if (
       this.configRefreshInFlight ||
       this.configRefreshRetryResolve ||
@@ -1456,13 +1546,38 @@ export class OmpProviderSession {
     this.lifetime.abort(new Error("OMP provider session closed"));
     this.projector.close();
     this.unsubscribe();
+    this.hostTools.detach();
     this.runtimeDisposal ??= this.runtime.close();
-    await Promise.allSettled([
-      this.runtimeDisposal,
-      this.recoveryPromise,
-      ...(configRefresh ? [configRefresh] : []),
-    ]);
-    await this.runtimeDisposal;
+    this.hostToolsDisposal ??= this.hostTools.close();
+    const cleanupErrors: unknown[] = [];
+    const pendingCleanup: Promise<void>[] = [];
+    const seenCleanup = new Set<Promise<void>>();
+    const seenCoordination = new Set<Promise<void>>();
+    while (true) {
+      const cleanup = [
+        ...pendingCleanup.splice(0),
+        this.runtimeDisposal,
+        this.hostToolsDisposal,
+      ].filter((promise): promise is Promise<void> => promise !== null && !seenCleanup.has(promise));
+      const coordination = [this.recoveryPromise, configRefresh, this.configRefreshInFlight].filter(
+        (promise): promise is Promise<void> => promise !== null && !seenCoordination.has(promise),
+      );
+      if (cleanup.length === 0 && coordination.length === 0) break;
+      for (const promise of cleanup) seenCleanup.add(promise);
+      for (const promise of coordination) seenCoordination.add(promise);
+      const results = await Promise.allSettled([...cleanup, ...coordination]);
+      for (const result of results.slice(0, cleanup.length)) {
+        if (result.status !== "rejected") continue;
+        if (isOmpCleanupFailure(result.reason)) {
+          if (!seenCleanup.has(result.reason.cleanup)) pendingCleanup.push(result.reason.cleanup);
+          continue;
+        }
+        cleanupErrors.push(result.reason);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "OMP session cleanup failed");
+    }
   }
 
   private publishSessionClosed(error?: { message: string }): void {
@@ -1478,6 +1593,10 @@ export class OmpProviderSession {
     const generation = this.generation;
     this.unsubscribe = runtime.onEvent((event) => {
       if (generation !== this.generation) return;
+      if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+        this.hostTools.handle(event);
+        return;
+      }
       this.handleRuntimeEvent(event);
     });
   }
@@ -1515,8 +1634,20 @@ export class OmpProviderSession {
       }
       throw error;
     }
+    let unsubscribeBootstrap = () => {};
+    let bootstrapConfigRevision = 0;
     try {
-      const state = await recovered.getState();
+      unsubscribeBootstrap = recovered.onEvent((event) => {
+        if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+          this.hostTools.handle(event);
+          return;
+        }
+        if (isRuntimeConfigEvent(event)) bootstrapConfigRevision += 1;
+      });
+      await this.hostTools.bind(recovered);
+      let state = await recovered.getState();
+      const reconciledConfigRevision = bootstrapConfigRevision;
+      state = await recovered.getState();
       if (expectedSessionId && state.sessionId !== expectedSessionId) {
         throw new Error(
           `OMP resumed native session '${state.sessionId}' instead of '${expectedSessionId}'`,
@@ -1524,7 +1655,11 @@ export class OmpProviderSession {
       }
       if (!expectedSessionId) this.nativeSessionId = state.sessionId;
       const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
-      if (!recoverFromNativeConfig && recoveredModel !== this.recoveryOptions.model) {
+      if (
+        !recoverFromNativeConfig &&
+        bootstrapConfigRevision === 0 &&
+        recoveredModel !== this.recoveryOptions.model
+      ) {
         throw new Error("OMP recovered with a different model");
       }
       const advertisedModel = state.model
@@ -1540,18 +1675,29 @@ export class OmpProviderSession {
         throw new Error("OMP recovered with an unsupported thinking level");
       }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
+      if (!this.hostTools.isBoundTo(recovered)) {
+        throw new Error("OMP host tool bridge detached during recovery");
+      }
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
       this.projector.addSensitiveValues(recovered.redactionValues ?? []);
       this.generation += 1;
       this.lastUsage = null;
       this.runtimeDead = null;
       this.runtimeDisposal = null;
+      unsubscribeBootstrap();
+      unsubscribeBootstrap = () => {};
       this.bindRuntime(recovered);
       if (!this.publishCommittedConfig(state, recovered, this.generation, true)) {
         throw new Error("OMP session changed while recovery configuration was pending");
       }
       this.recoveryUsesNativeConfig = false;
+
+      if (bootstrapConfigRevision !== reconciledConfigRevision) {
+        this.scheduleCommittedConfigRefresh();
+      }
     } catch (error) {
+      unsubscribeBootstrap();
+      this.hostTools.detach();
       this.runtimeDisposal = recovered.close();
       void this.runtimeDisposal.catch(() => undefined);
       throw error;
@@ -1659,12 +1805,7 @@ export class OmpProviderSession {
       this.handleRuntimeFailure();
       return;
     }
-    if (
-      event.type === "model_changed" ||
-      event.type === "thinking_level_changed" ||
-      event.type === "retry_fallback_applied" ||
-      event.type === "retry_fallback_succeeded"
-    ) {
+    if (isRuntimeConfigEvent(event)) {
       this.scheduleCommittedConfigRefresh();
       return;
     }
@@ -2274,6 +2415,7 @@ export class OmpProviderSession {
     const configRefresh = this.configRefreshInFlight;
     this.cancelConfigRefreshRetry();
     this.unsubscribe();
+    this.hostTools.detach();
     this.unsubscribe = () => {};
     const runtimeDisposal = this.runtimeDisposal ?? this.runtime.close();
     this.runtimeDisposal = configRefresh
