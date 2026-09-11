@@ -1036,11 +1036,7 @@ describe("OMP direct provider", () => {
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
     runtime.nextHistoryMessages = Array.from({ length: 1_025 }, (_, index): OmpMessage[] => [
       { role: "user", id: `large-user-${index}`, content: `prompt ${index}` },
-      {
-        role: "assistant",
-        responseId: "shared-replay-response",
-        content: `answer ${index}`,
-      },
+      { role: "assistant", id: "shared-replay-id", content: "same answer" },
     ]).flat();
     const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
       "prompt.message",
@@ -1075,19 +1071,55 @@ describe("OMP direct provider", () => {
     );
     const baseline = events.length;
     sessionAt(runtime).emit({
-      type: "message_end",
-      message: {
-        role: "assistant",
-        responseId: "shared-replay-response",
-        content: "answer 0",
-      },
+      type: "message_start",
+      message: { role: "assistant", id: "shared-replay-id", content: [] },
     });
-    expect(
-      events
-        .slice(baseline)
-        .some((event) => event.type === "timeline.item" && event.item.type === "assistant_message"),
-    ).toBe(false);
+    sessionAt(runtime).emit({
+      type: "message_update",
+      message: { role: "assistant", id: "shared-replay-id", content: "same" },
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "same" },
+    });
+    expect(events.slice(baseline).some((event) => event.type === "timeline.item")).toBe(false);
+    sessionAt(runtime).emit({
+      type: "message_end",
+      message: { role: "assistant", id: "shared-replay-id", content: "same answer" },
+    });
+    expect(events.slice(baseline).some((event) => event.type === "timeline.item")).toBe(false);
     await finishTurn(events, sessionAt(runtime), liveTurn);
+
+    const divergentTurn = turnIdFrom(
+      await startPrompt(
+        connection,
+        events,
+        "large-dedup-divergent",
+        "continue",
+        "large-dedup-session",
+      ),
+    );
+    const divergentBaseline = events.length;
+    sessionAt(runtime).emit({
+      type: "message_start",
+      message: { role: "assistant", id: "shared-replay-id", content: [] },
+    });
+    sessionAt(runtime).emit({
+      type: "message_update",
+      message: { role: "assistant", id: "shared-replay-id", content: "different" },
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "different" },
+    });
+    expect(events.slice(divergentBaseline).some((event) => event.type === "timeline.item")).toBe(
+      false,
+    );
+    sessionAt(runtime).emit({
+      type: "message_end",
+      message: { role: "assistant", id: "shared-replay-id", content: "different answer" },
+    });
+    expect(events.slice(divergentBaseline)).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({ type: "assistant_message", text: "different answer" }),
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime), divergentTurn);
     await connection.close();
   });
   test("ignores stale resume thinking and rejects unsupported restored thinking", async () => {
@@ -1197,6 +1229,155 @@ describe("OMP direct provider", () => {
     );
     expect(runtime.sessionListRequests).toEqual([]);
     expect(runtime.starts).toEqual([]);
+    await connection.close();
+  });
+  test("reserves one native transcript across concurrent public opens", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const gate = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    runtime.startGate = gate.promise;
+    runtime.startObserved = started.resolve;
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    const sendResume = (requestId: string, sessionId: string) =>
+      connection.send({
+        type: "session.open",
+        requestId,
+        sessionId,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+    await sendResume("first-native-open", "public-one");
+    await started.promise;
+    await sendResume("second-native-open", "public-two");
+    const rejected = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "second-native-open",
+    );
+    expect(rejected).toEqual(
+      expect.objectContaining({ error: { message: "OMP native session is already open" } }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    runtime.startGate = null;
+    gate.resolve();
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "first-native-open",
+    );
+    await connection.send({
+      type: "session.close",
+      requestId: "close-first",
+      sessionId: "public-one",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "close-first",
+    );
+    await sendResume("third-native-open", "public-three");
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "third-native-open",
+    );
+    expect(runtime.starts).toHaveLength(2);
+    await connection.close();
+  });
+
+  test("keeps the native transcript reserved while its session recovers", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    const openResume = (requestId: string, sessionId: string) =>
+      connection.send({
+        type: "session.open",
+        requestId,
+        sessionId,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+    await openResume("recovery-owner-open", "recovery-owner");
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "recovery-owner-open",
+    );
+    const gate = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    runtime.startGate = gate.promise;
+    runtime.startObserved = started.resolve;
+    sessionAt(runtime).emit({ type: "process_exit", error: "recover" });
+    const recovering = startPrompt(
+      connection,
+      events,
+      "recovery-owner-prompt",
+      "continue",
+      "recovery-owner",
+    );
+    await started.promise;
+    await openResume("recovery-contender-open", "recovery-contender");
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "recovery-contender-open",
+    );
+    expect(runtime.starts).toHaveLength(2);
+    runtime.startGate = null;
+    gate.resolve();
+    const turnId = turnIdFrom(await recovering);
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("keeps a native transcript reserved after unverified open cleanup", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryError = new Error("history failed");
+    runtime.nextCloseError = new Error("cleanup failed");
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    const openResume = (requestId: string, sessionId: string) =>
+      connection.send({
+        type: "session.open",
+        requestId,
+        sessionId,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+    await openResume("tombstone-owner-open", "tombstone-owner");
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "tombstone-owner-open",
+    );
+    await openResume("tombstone-contender-open", "tombstone-contender");
+    const rejected = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "tombstone-contender-open",
+    );
+    expect(rejected).toEqual(
+      expect.objectContaining({ error: { message: "OMP native session is already open" } }),
+    );
+    expect(runtime.starts).toHaveLength(1);
     await connection.close();
   });
 

@@ -60,7 +60,7 @@ class OmpCatalogEscape extends OmpPublicError {}
 const MAX_REPLAY_MESSAGES = 100_000;
 const REPLAY_TIMEOUT_MS = 20_000;
 
-function persistedSessionId(input: SessionOpenInput): string | undefined {
+export function ompPersistenceSessionId(input: SessionOpenInput): string | undefined {
   if (!input.persistence) return;
   if (input.persistence.version !== 1) {
     throw new OmpPublicError("Unsupported OMP persistence version");
@@ -308,6 +308,9 @@ export class OmpProviderSession {
     this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
     this.bindRuntime(runtime);
   }
+  get persistenceSessionId(): string | undefined {
+    return this.persistSession ? this.nativeSessionId : undefined;
+  }
 
   static async open(
     input: SessionOpenInput,
@@ -318,7 +321,7 @@ export class OmpProviderSession {
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
   ): Promise<OmpProviderSession> {
-    const resumeSessionId = persistedSessionId(input);
+    const resumeSessionId = ompPersistenceSessionId(input);
     if (resumeSessionId && !input.config.persist) {
       throw new OmpPublicError("OMP persisted sessions require persist: true");
     }
