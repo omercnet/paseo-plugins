@@ -202,6 +202,7 @@ export class OmpCleanupFailure extends Error {
     message: string,
     readonly cleanup: Promise<void>,
   ) {
+    void cleanup.catch(() => undefined);
     super(message);
   }
 }

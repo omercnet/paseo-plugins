@@ -325,6 +325,9 @@ export type OmpHostToolDefinition = z.infer<typeof OmpHostToolDefinitionSchema>;
 export type OmpHostToolCall = z.infer<typeof OmpHostToolCallSchema>;
 export type OmpHostToolResult = z.infer<typeof OmpHostToolResultSchema>;
 export type OmpHostToolUpdate = z.infer<typeof OmpHostToolUpdateSchema>;
+export function parseOmpHostToolAgentResult(value: unknown): OmpHostToolResult["result"] {
+  return OmpHostToolAgentResultSchema.parse(value);
+}
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
   | { type: "process_exit"; error: string };
@@ -1879,10 +1882,7 @@ export class OmpRpcRuntime implements OmpRuntime {
       try {
         await cleanup;
       } catch {
-        throw new OmpCleanupFailure(
-          "OMP runtime startup cleanup failed",
-          cleanup.catch(() => undefined),
-        );
+        throw new OmpCleanupFailure("OMP runtime startup cleanup failed", cleanup);
       }
       throw error;
     }

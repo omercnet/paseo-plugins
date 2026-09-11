@@ -671,7 +671,7 @@ describe("OMP direct provider", () => {
       );
     }
     expect(runtime.starts).toHaveLength(1);
-    await expect(connection.close()).resolves.toBeUndefined();
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 
   test("rejects unadvertised catalog and session state models", async () => {
@@ -1129,18 +1129,91 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "request.failed" && event.requestId === "mcp-timeout-reopen-closing",
     );
-    releaseLateClose.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await open("mcp-timeout-reopen-failed");
-    await events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "mcp-timeout-reopen-failed",
+    let closeSettled = false;
+    const closing = connection.close();
+    void closing.then(
+      () => {
+        closeSettled = true;
+      },
+      () => {
+        closeSettled = true;
+      },
     );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(closeSettled).toBe(false);
+    releaseLateClose.resolve();
+    await expect(closing).rejects.toThrow("provider connection cleanup failed");
+    expect(closeSettled).toBe(true);
     expect(connectorCalls).toBe(2);
-    await connection.close();
   });
 
-  test("rejects unsupported exact MCP preapproval and dangerous environment before spawn", async () => {
+  test("drains a cleanup tombstone created by an active open during shutdown", async () => {
+    const runtime = new FakeOmpRuntime();
+    const secondConnectStarted = Promise.withResolvers<void>();
+    const firstCloseStarted = Promise.withResolvers<void>();
+    const releaseFirstClose = Promise.withResolvers<void>();
+    let connectorCalls = 0;
+    const connection = await createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async (_name, _config, _cwd, signal) => {
+        connectorCalls += 1;
+        if (connectorCalls === 1) {
+          return {
+            listTools: async () => ({ tools: [] }),
+            callTool: async () => ({ content: [] }),
+            close: async () => {
+              firstCloseStarted.resolve();
+              await releaseFirstClose.promise;
+              throw new Error("first cleanup failed");
+            },
+          };
+        }
+        secondConnectStarted.resolve();
+        return await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("shutdown")), { once: true });
+        });
+      },
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    await connection.send({
+      type: "session.open",
+      requestId: "shutdown-open",
+      sessionId: "shutdown-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {
+          first: { type: "stdio", command: "first" },
+          second: { type: "stdio", command: "second" },
+        },
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await secondConnectStarted.promise;
+    const closing = connection.close();
+    await firstCloseStarted.promise;
+    let settled = false;
+    void closing.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseFirstClose.resolve();
+    await expect(closing).rejects.toThrow("provider connection cleanup failed");
+    expect(runtime.starts).toHaveLength(0);
+  });
+
+  test("rejects every exact MCP policy and dangerous environment before spawn", async () => {
     const runtime = new FakeOmpRuntime();
     const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
       versions: [1],
@@ -1150,15 +1223,13 @@ describe("OMP direct provider", () => {
     connection.onEvent((event) => events.push(event));
     await connection.send({
       type: "session.open",
-      requestId: "unsupported-preapproval",
+      requestId: "unsupported-policy",
       sessionId: "session-mcp",
       config: {
         cwd: "/repo",
         env: { API_TOKEN: "credential-value" },
         mcpServers: { filesystem: { type: "stdio", command: "cat", args: ["/etc/passwd"] } },
-        toolPolicy: {
-          preapproved: [{ kind: "mcp", server: "filesystem", tool: "read_file" }],
-        },
+        toolPolicy: { preapproved: [] },
         mode: "full",
         settings: {},
         persist: false,
@@ -1166,12 +1237,12 @@ describe("OMP direct provider", () => {
       history: "skip",
     });
     const preapprovalFailure = await events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "unsupported-preapproval",
+      (event) => event.type === "request.failed" && event.requestId === "unsupported-policy",
     );
     expect(preapprovalFailure).toEqual(
       expect.objectContaining({
         error: expect.objectContaining({
-          message: expect.stringContaining("exact MCP preapproval"),
+          message: expect.stringContaining("exact MCP policy"),
         }),
       }),
     );
@@ -4743,7 +4814,7 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "candidate-reopen",
     );
     expect(runtime.starts).toHaveLength(2);
-    await expect(connection.close()).resolves.toBeUndefined();
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 
   test("retains failed recovery startup cleanup until explicit close", async () => {
@@ -4781,7 +4852,7 @@ describe("OMP direct provider", () => {
       expect.objectContaining({ error: { message: "OMP session close failed" } }),
     );
     expect(runtime.starts).toHaveLength(2);
-    await expect(connection.close()).resolves.toBeUndefined();
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 
   test("fails a degraded terminal frame with no outcome messages", async () => {
@@ -5548,7 +5619,7 @@ describe("OMP direct provider", () => {
         event.type === "request.failed" && event.requestId === "reopen-after-close-failure",
     );
     expect(runtime.starts).toHaveLength(1);
-    await expect(connection.close()).resolves.toBeUndefined();
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
   test("tombstones failed MCP host cleanup independently of runtime disposal", async () => {
     const runtime = new FakeOmpRuntime();
@@ -5613,7 +5684,7 @@ describe("OMP direct provider", () => {
     );
     expect(runtime.starts).toHaveLength(1);
     expect(hostCloses).toBe(1);
-    await connection.close();
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 
   test("aggregates host and incoming startup cleanup before releasing ownership", async () => {
@@ -5682,7 +5753,7 @@ describe("OMP direct provider", () => {
         event.type === "request.failed" && event.requestId === "aggregate-cleanup-reopen-failed",
     );
     expect(runtime.starts).toHaveLength(1);
-    await connection.close();
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 
   test("retains failed initialization cleanup ownership and blocks same-ID reopen", async () => {
@@ -5727,7 +5798,7 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "blocked-reopen",
     );
     expect(runtime.starts).toHaveLength(1);
-    await expect(connection.close()).resolves.toBeUndefined();
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
   test("tombstones OmpRpcRuntime startup cleanup failures", async () => {
     let starts = 0;
@@ -5768,7 +5839,7 @@ describe("OMP direct provider", () => {
       );
     }
     expect(starts).toBe(1);
-    await expect(connection.close()).resolves.toBeUndefined();
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 
   test("close during open waits for the created runtime session cleanup", async () => {

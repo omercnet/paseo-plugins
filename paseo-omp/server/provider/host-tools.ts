@@ -9,11 +9,12 @@ import {
   type ConnectedMcpToolPage,
   connectMcpServer,
 } from "./mcp-transport";
-import type {
-  OmpHostToolCall,
-  OmpHostToolDefinition,
-  OmpHostToolResult,
-  OmpRuntimeSession,
+import {
+  type OmpHostToolCall,
+  type OmpHostToolDefinition,
+  type OmpHostToolResult,
+  type OmpRuntimeSession,
+  parseOmpHostToolAgentResult,
 } from "./omp-rpc";
 import { boundedJsonBytes, OmpCleanupFailure, OmpPublicError, utf8Bytes } from "./security";
 
@@ -32,6 +33,7 @@ const MAX_HOST_TOOL_RESULT_BYTES = 12 * 1024 * 1024;
 const MAX_PENDING_HOST_TOOL_CALLS = 64;
 const MAX_PENDING_HOST_TOOL_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 20_000;
+const DEFAULT_MCP_CALL_LIFETIME_MS = 5 * 60 * 1000;
 
 export type OmpMcpTool = ConnectedMcpTool;
 export type OmpMcpToolPage = ConnectedMcpToolPage;
@@ -44,10 +46,22 @@ export type OmpMcpConnector = (
   signal: AbortSignal,
 ) => Promise<OmpMcpConnection>;
 
+export interface OmpHostToolScheduler {
+  set(callback: () => void, delayMs: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const DEFAULT_CALL_SCHEDULER: OmpHostToolScheduler = {
+  set: (callback, delayMs) => setTimeout(callback, delayMs),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 export interface OmpHostToolsOpenOptions {
   connectMcp?: OmpMcpConnector;
   signal?: AbortSignal;
   initializationTimeoutMs?: number;
+  callTimeoutMs?: number;
+  callScheduler?: OmpHostToolScheduler;
 }
 
 type ClassifiedServer = {
@@ -67,6 +81,7 @@ type PendingCall = {
   runtime: OmpRuntimeSession;
   generation: number;
   retainedBytes: number;
+  deadline: unknown | null;
 };
 
 function safeName(value: string, fallback: string): string {
@@ -189,9 +204,9 @@ export function validateOmpHostToolConfig(config: ProviderSessionConfig): void {
   if (Object.keys(config.mcpServers).length > MAX_MCP_SERVERS) {
     throw new OmpPublicError("OMP MCP server count exceeds the supported limit");
   }
-  if ((config.toolPolicy?.preapproved.length ?? 0) > 0) {
+  if (config.toolPolicy !== undefined) {
     throw new OmpPublicError(
-      "OMP set_host_tools cannot preserve exact MCP preapproval; refusing to broaden access",
+      "OMP set_host_tools cannot preserve exact MCP policy; refusing to broaden access",
     );
   }
 }
@@ -255,17 +270,17 @@ function normalizeResult(result: unknown): OmpHostToolResult["result"] {
   }
   const record = result as Record<string, unknown>;
   if (Array.isArray(record.content)) {
-    return {
-      content: record.content as OmpHostToolResult["result"]["content"],
+    return parseOmpHostToolAgentResult({
+      content: record.content,
       ...(record.structuredContent !== undefined ? { details: record.structuredContent } : {}),
       ...(typeof record.isError === "boolean" ? { isError: record.isError } : {}),
-    };
+    });
   }
   if (Object.hasOwn(record, "toolResult")) {
-    return {
+    return parseOmpHostToolAgentResult({
       content: [{ type: "text", text: "MCP tool completed" }],
       details: record.toolResult,
-    };
+    });
   }
   throw new Error("MCP tool returned an unsupported result");
 }
@@ -302,8 +317,9 @@ export class OmpHostToolsBridge {
     private readonly connections: readonly OmpMcpConnection[],
     private readonly definitions: readonly OmpHostToolDefinition[],
     private readonly targets: ReadonlyMap<string, ToolTarget>,
+    private readonly callTimeoutMs: number,
+    private readonly callScheduler: OmpHostToolScheduler,
   ) {}
-
   static async open(
     config: ProviderSessionConfig,
     options: OmpHostToolsOpenOptions = {},
@@ -312,6 +328,11 @@ export class OmpHostToolsBridge {
     const servers = classifyServers(config);
     const namespaces = serverNamespaces(servers);
     const connectMcp = options.connectMcp ?? connectMcpServer;
+    const callTimeoutMs = options.callTimeoutMs ?? DEFAULT_MCP_CALL_LIFETIME_MS;
+    if (!Number.isInteger(callTimeoutMs) || callTimeoutMs <= 0 || callTimeoutMs > 60 * 60 * 1000) {
+      throw new OmpPublicError("OMP MCP call lifetime is invalid");
+    }
+    const callScheduler = options.callScheduler ?? DEFAULT_CALL_SCHEDULER;
     const initialization = new AbortController();
     const abortFromCaller = () => initialization.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abortFromCaller, { once: true });
@@ -401,7 +422,13 @@ export class OmpHostToolsBridge {
       ) {
         throw new OmpPublicError("OMP host tool catalog exceeds the RPC frame limit");
       }
-      return new OmpHostToolsBridge(connections, definitions, targets);
+      return new OmpHostToolsBridge(
+        connections,
+        definitions,
+        targets,
+        callTimeoutMs,
+        callScheduler,
+      );
     } catch (error) {
       const cleanupTasks = [
         ...connections.map((connection) => Promise.resolve().then(() => connection.close())),
@@ -485,12 +512,18 @@ export class OmpHostToolsBridge {
       runtime,
       generation: this.generation,
       retainedBytes,
+      deadline: null,
     };
+    pending.deadline = this.callScheduler.set(
+      () => this.expirePending(event.id, pending),
+      this.callTimeoutMs,
+    );
     this.pending.set(event.id, pending);
     this.pendingBytes += retainedBytes;
     void target.connection
       .callTool(target.toolName, event.arguments, {
         signal: pending.controller.signal,
+        maxTotalTimeoutMs: this.callTimeoutMs,
         onProgress: (progress) => {
           if (!this.isCurrent(event.id, pending)) return;
           if (boundedJsonBytes(progress, MAX_HOST_TOOL_RESULT_BYTES) === Number.POSITIVE_INFINITY) {
@@ -595,10 +628,19 @@ export class OmpHostToolsBridge {
     );
   }
 
+  private expirePending(id: string, pending: PendingCall): void {
+    if (!this.isCurrent(id, pending)) return;
+    this.releasePending(id, pending);
+    pending.controller.abort(new Error("OMP MCP host tool call timed out"));
+    this.sendTerminal(pending.runtime, errorResult(id, "OMP MCP host tool call timed out"));
+  }
+
   private releasePending(id: string, pending: PendingCall): void {
     if (this.pending.get(id) !== pending) return;
     this.pending.delete(id);
     this.pendingBytes -= pending.retainedBytes;
+    if (pending.deadline !== null) this.callScheduler.clear(pending.deadline);
+    pending.deadline = null;
   }
 
   private async closeConnections(): Promise<void> {

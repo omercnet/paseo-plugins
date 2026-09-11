@@ -650,6 +650,13 @@ export class OmpProviderSession {
     }
   }
 
+  beginConnectionShutdown(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.lifetime.abort(new Error("OMP provider connection closed"));
+    this.unsubscribe();
+    this.unsubscribe = () => {};
+  }
   async configure(input: SessionConfigureInput): Promise<void> {
     if (this.configMutationInFlight) {
       this.emit({

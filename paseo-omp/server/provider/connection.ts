@@ -318,10 +318,9 @@ export function createOmpConnection(
           await slot.session.close();
         } catch {
           if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
-          failedCleanup.set(input.sessionId, {
-            token: slot.token,
-            cleanup: slot.session.close().catch(() => undefined),
-          });
+          const cleanup = slot.session.close();
+          void cleanup.catch(() => undefined);
+          failedCleanup.set(input.sessionId, { token: slot.token, cleanup });
           throw new OmpPublicError("OMP session close failed");
         }
         if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
@@ -337,24 +336,61 @@ export function createOmpConnection(
   const disposeConnection = async (): Promise<void> => {
     closing = true;
     shutdown.abort(new Error("OMP provider connection closed"));
-    const sessionClosures = Promise.allSettled([
-      ...[...sessions.values()].map(({ session }) => session.close()),
-      ...[...failedCleanup.values()].map(({ cleanup }) => cleanup),
-      ...(catalogCleanup ? [catalogCleanup] : []),
-    ]);
-    await Promise.all([Promise.all(activeOperations), sessionClosures]);
-    const pending = await Promise.allSettled([...opening.values()].map((slot) => slot.promise));
-    const orphanClosures: Promise<void>[] = [];
-    for (const result of pending) {
-      if (result.status === "fulfilled" && !sessions.has(result.value.id)) {
-        orphanClosures.push(result.value.close());
+    for (const { session } of sessions.values()) session.beginConnectionShutdown();
+    const failures: unknown[] = [];
+    while (activeOperations.size > 0) {
+      const results = await Promise.allSettled([...activeOperations]);
+      for (const result of results) {
+        if (result.status === "rejected") failures.push(result.reason);
       }
     }
-    await Promise.allSettled(orphanClosures);
-    sessions.clear();
-    failedCleanup.clear();
+
+    const seenSessions = new Set<OmpProviderSession>();
+    const seenOpenings = new Set<Promise<OmpProviderSession>>();
+    const seenCleanups = new Set<Promise<void>>();
+    while (true) {
+      const cleanupBatch: Promise<void>[] = [];
+      for (const { session } of sessions.values()) {
+        if (seenSessions.has(session)) continue;
+        seenSessions.add(session);
+        cleanupBatch.push(Promise.resolve().then(() => session.close()));
+      }
+      for (const { promise } of opening.values()) {
+        if (seenOpenings.has(promise)) continue;
+        seenOpenings.add(promise);
+        cleanupBatch.push(
+          promise.then((session) => {
+            if (!seenSessions.has(session)) {
+              seenSessions.add(session);
+              return session.close();
+            }
+          }),
+        );
+      }
+      for (const { cleanup } of failedCleanup.values()) {
+        if (seenCleanups.has(cleanup)) continue;
+        seenCleanups.add(cleanup);
+        cleanupBatch.push(cleanup);
+      }
+      if (catalogCleanup && !seenCleanups.has(catalogCleanup)) {
+        seenCleanups.add(catalogCleanup);
+        cleanupBatch.push(catalogCleanup);
+      }
+      if (cleanupBatch.length === 0) break;
+      const results = await Promise.allSettled(cleanupBatch);
+      for (const result of results) {
+        if (result.status === "rejected") failures.push(result.reason);
+      }
+    }
     listeners.clear();
     closed = true;
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "OMP provider connection cleanup failed");
+    }
+    sessions.clear();
+    opening.clear();
+    failedCleanup.clear();
+    catalogCleanup = null;
   };
   return {
     version: 1,

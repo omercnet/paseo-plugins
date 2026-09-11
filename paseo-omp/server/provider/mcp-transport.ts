@@ -48,7 +48,11 @@ export interface ConnectedMcpClient {
   callTool(
     name: string,
     input: Record<string, unknown>,
-    options: { signal: AbortSignal; onProgress: (progress: unknown) => void },
+    options: {
+      signal: AbortSignal;
+      onProgress: (progress: unknown) => void;
+      maxTotalTimeoutMs: number;
+    },
   ): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -321,10 +325,7 @@ export async function connectMcpTransport(
     try {
       await cleanup;
     } catch {
-      throw new OmpCleanupFailure(
-        "OMP MCP connection cleanup failed",
-        cleanup.catch(() => undefined),
-      );
+      throw new OmpCleanupFailure("OMP MCP connection cleanup failed", cleanup);
     }
     throw error;
   } finally {
@@ -371,6 +372,7 @@ export async function connectMcpServer(
         signal: options.signal,
         onprogress: (progress) => options.onProgress(progress),
         resetTimeoutOnProgress: true,
+        maxTotalTimeout: options.maxTotalTimeoutMs,
       });
     },
     async close() {

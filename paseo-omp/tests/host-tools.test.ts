@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import {
+  type OmpHostToolScheduler,
   OmpHostToolsBridge,
   type OmpMcpConnection,
   type OmpMcpConnector,
@@ -13,6 +14,7 @@ import type {
   OmpHostToolUpdate,
   OmpRuntimeSession,
 } from "../server/provider/omp-rpc";
+import { OmpCleanupFailure } from "../server/provider/security";
 
 function sessionConfig(overrides: Partial<ProviderSessionConfig> = {}): ProviderSessionConfig {
   return {
@@ -61,7 +63,11 @@ class FakeRuntime
 type CallImplementation = (
   name: string,
   input: Record<string, unknown>,
-  options: { signal: AbortSignal; onProgress: (progress: unknown) => void },
+  options: {
+    signal: AbortSignal;
+    onProgress: (progress: unknown) => void;
+    maxTotalTimeoutMs: number;
+  },
 ) => Promise<unknown>;
 
 class FakeConnection implements OmpMcpConnection {
@@ -84,7 +90,11 @@ class FakeConnection implements OmpMcpConnection {
   async callTool(
     name: string,
     input: Record<string, unknown>,
-    options: { signal: AbortSignal; onProgress: (progress: unknown) => void },
+    options: {
+      signal: AbortSignal;
+      onProgress: (progress: unknown) => void;
+      maxTotalTimeoutMs: number;
+    },
   ) {
     this.calls.push({ name, input, signal: options.signal });
     if (this.callImplementation) return await this.callImplementation(name, input, options);
@@ -95,6 +105,27 @@ class FakeConnection implements OmpMcpConnection {
   async close() {
     this.closes += 1;
     if (this.closeError) throw this.closeError;
+  }
+}
+
+class ManualCallScheduler implements OmpHostToolScheduler {
+  callback: (() => void) | null = null;
+  delayMs: number | null = null;
+
+  set(callback: () => void, delayMs: number): unknown {
+    this.callback = callback;
+    this.delayMs = delayMs;
+    return callback;
+  }
+
+  clear(handle: unknown): void {
+    if (this.callback === handle) this.callback = null;
+  }
+
+  fire(): void {
+    const callback = this.callback;
+    this.callback = null;
+    callback?.();
   }
 }
 
@@ -274,15 +305,20 @@ describe("OMP host tool bridge", () => {
       connections += 1;
       return new FakeConnection([], { content: [] });
     };
-    await expect(
-      OmpHostToolsBridge.open(
-        sessionConfig({
-          mcpServers: { repo: { type: "stdio", command: "repo-mcp" } },
-          toolPolicy: { preapproved: [{ kind: "mcp", server: "repo", tool: "read" }] },
-        }),
-        { connectMcp: connector },
-      ),
-    ).rejects.toThrow("cannot preserve exact MCP preapproval");
+    for (const toolPolicy of [
+      { preapproved: [] },
+      { preapproved: [{ kind: "mcp" as const, server: "repo", tool: "read" }] },
+    ]) {
+      await expect(
+        OmpHostToolsBridge.open(
+          sessionConfig({
+            mcpServers: { repo: { type: "stdio", command: "repo-mcp" } },
+            toolPolicy,
+          }),
+          { connectMcp: connector },
+        ),
+      ).rejects.toThrow("cannot preserve exact MCP policy");
+    }
     expect(connections).toBe(0);
   });
 
@@ -402,6 +438,65 @@ describe("OMP host tool bridge", () => {
     await bridge.close();
   });
 
+  test("expires MCP calls on an absolute deadline despite progress", async () => {
+    let configuredLifetime = 0;
+    const progressCallbacks: Array<(value: unknown) => void> = [];
+    const connection = new FakeConnection(
+      [{ name: "long", inputSchema: { type: "object" } }],
+      { content: [] },
+      async (_name, _input, options) => {
+        configuredLifetime = options.maxTotalTimeoutMs;
+        progressCallbacks.push(options.onProgress);
+        return await new Promise<unknown>((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        });
+      },
+    );
+    const scheduler = new ManualCallScheduler();
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+      { connectMcp: async () => connection, callTimeoutMs: 10, callScheduler: scheduler },
+    );
+    const runtime = new FakeRuntime();
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+    bridge.handle({
+      type: "host_tool_call",
+      id: "absolute-timeout",
+      toolCallId: "tool-absolute-timeout",
+      toolName: "mcp__repo_long",
+      arguments: {},
+    });
+    progressCallbacks[0]?.({ progress: 1 });
+    progressCallbacks[0]?.({ progress: 2 });
+    expect(scheduler.delayMs).toBe(10);
+    scheduler.fire();
+    await flushMicrotasks();
+
+    expect(configuredLifetime).toBe(10);
+    expect(connection.calls[0]?.signal.aborted).toBe(true);
+    expect(runtime.updates).toHaveLength(2);
+    expect(runtime.results).toEqual([
+      expect.objectContaining({
+        id: "absolute-timeout",
+        isError: true,
+        result: expect.objectContaining({
+          content: [expect.objectContaining({ text: expect.stringContaining("timed out") })],
+        }),
+      }),
+    ]);
+    bridge.handle({
+      type: "host_tool_call",
+      id: "after-timeout",
+      toolCallId: "tool-after-timeout",
+      toolName: "mcp__repo_long",
+      arguments: {},
+    });
+    expect(connection.calls).toHaveLength(2);
+    await bridge.close();
+  });
+
   test("rejects excessive server counts before classification or connection", async () => {
     let connections = 0;
     const mcpServers = Object.fromEntries(
@@ -421,6 +516,49 @@ describe("OMP host tool bridge", () => {
     expect(connections).toBe(0);
   });
 
+  test("degrades malformed and schema-oversized MCP content without invalidating runtime", async () => {
+    for (const malformed of [
+      { content: [{ type: "text", text: 42 }] },
+      { content: "not-an-array" },
+      { content: [{ type: "text", text: "x".repeat(1024 * 1024 + 1) }] },
+    ]) {
+      const connection = new FakeConnection(
+        [{ name: "read", inputSchema: { type: "object" } }],
+        malformed,
+      );
+      const bridge = await OmpHostToolsBridge.open(
+        sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+        { connectMcp: async () => connection },
+      );
+      const runtime = new FakeRuntime();
+      runtime.maxHostToolFrameBytes = 12 * 1024 * 1024;
+      let fatalErrors = 0;
+      bridge.onFatal(() => {
+        fatalErrors += 1;
+      });
+      await bridge.bind(runtime as unknown as OmpRuntimeSession);
+      bridge.handle({
+        type: "host_tool_call",
+        id: "malformed",
+        toolCallId: "tool-malformed",
+        toolName: "mcp__repo_read",
+        arguments: {},
+      });
+      await flushMicrotasks();
+
+      expect(runtime.results).toEqual([
+        expect.objectContaining({
+          id: "malformed",
+          isError: true,
+          result: expect.objectContaining({
+            content: [expect.objectContaining({ text: "MCP host tool execution failed" })],
+          }),
+        }),
+      ]);
+      expect(fatalErrors).toBe(0);
+      await bridge.close();
+    }
+  });
   test("follows bounded tool pages and rejects repeated cursors", async () => {
     const cursors: Array<string | undefined> = [];
     const connection: OmpMcpConnection = {
@@ -604,6 +742,22 @@ describe("OMP host tool bridge", () => {
       expect.objectContaining({ type: "host_tool_result", id: "after-drain" }),
     ]);
     await bridge.close();
+  });
+
+  test("observes cleanup rejection without consuming the ownership barrier", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const cleanup = Promise.withResolvers<void>();
+      const failure = new OmpCleanupFailure("cleanup pending", cleanup.promise);
+      cleanup.reject(new Error("cleanup failed"));
+      await flushMicrotasks();
+      expect(unhandled).toEqual([]);
+      await expect(failure.cleanup).rejects.toThrow("cleanup failed");
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
   });
 
   test("keeps failed close ownership and rejects a mismatched OMP catalog", async () => {
