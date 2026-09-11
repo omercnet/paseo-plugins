@@ -284,12 +284,10 @@ class FakeOmpSession implements OmpRuntimeSession {
   stateGate: Promise<void> | null = null;
   stateModelOverride: OmpModel | null | undefined;
   stateLookups = 0;
-  stateObserved: (() => void) | null = null;
   stateError: Error | null = null;
   usageAvailable = false;
   stateContextNull = false;
   captureUsageOnRequest = false;
-  stateLookups = 0;
   statsGate: Promise<void> | null = null;
   statsError: Error | null = null;
   statsLookups = 0;
@@ -339,7 +337,8 @@ class FakeOmpSession implements OmpRuntimeSession {
       const value = this.captureUsageOnRequest
         ? requested
         : {
-            model: this.stateModelOverride !== undefined ? this.stateModelOverride : this.currentModel,
+            model:
+              this.stateModelOverride !== undefined ? this.stateModelOverride : this.currentModel,
             thinkingLevel: this.thinkingLevel,
             isStreaming: this.isStreaming,
             isCompacting: this.isCompacting,
@@ -1460,7 +1459,7 @@ describe("OMP direct provider", () => {
     session.currentModel = ALTERNATE_MODEL;
     session.thinkingLevel = "high";
     for (let index = 0; index < 8; index += 1) await Promise.resolve();
-    expect(scheduler.delays.at(-1)).toBe(250);
+    expect(scheduler.delays.filter((delay) => delay === 250)).toHaveLength(1);
     const afterRejection = events.waitFor(
       (event) =>
         event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
@@ -1500,10 +1499,10 @@ describe("OMP direct provider", () => {
     session.stateGate = null;
     gate.resolve();
     for (let index = 0; index < 8; index += 1) await Promise.resolve();
-    expect(scheduler.delays.at(-1)).toBe(250);
+    expect(scheduler.delays.filter((delay) => delay === 250)).toHaveLength(2);
     await scheduler.flush();
     await afterTimeout;
-    expect(scheduler.delays.filter((delay) => delay < 2_000)).toEqual([250, 250]);
+    expect(scheduler.delays.filter((delay) => delay === 250)).toEqual([250, 250]);
 
     await finishTurn(events, session, turnId);
     await connection.close();

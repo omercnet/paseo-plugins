@@ -1916,7 +1916,6 @@ export class OmpProviderSession {
     else await this.finishTurn(turn, "completed", undefined, usageSampled);
   }
 
-
   private publishPendingUsers(turn: ActiveTurn): void {
     for (const pending of turn.pendingUsers.splice(0)) {
       for (const echo of pending.bufferedEchoes) {
