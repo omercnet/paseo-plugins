@@ -4525,7 +4525,44 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("reconciles configuration events while binding a recovered runtime", async () => {
+  test("reconciles configuration events during recovered host-tool binding", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const initial = sessionAt(runtime);
+    const bindGate = Promise.withResolvers<void>();
+    const bindObserved = Promise.withResolvers<void>();
+    runtime.sessionCreated = (recovered) => {
+      recovered.hostToolBindGate = bindGate.promise;
+      recovered.hostToolBindObserved = bindObserved.resolve;
+    };
+
+    initial.emit({ type: "process_exit", error: "OMP exited between turns" });
+    const prompt = startPrompt(connection, events, "recovery-bind-config-race", "continue");
+    await bindObserved.promise;
+    const recovered = sessionAt(runtime, 1);
+    recovered.currentModel = ALTERNATE_MODEL;
+    recovered.thinkingLevel = "high";
+    recovered.emit({
+      type: "retry_fallback_succeeded",
+      model: "openai/gpt-5.4:high",
+      role: "default",
+    });
+    recovered.hostToolBindGate = null;
+    bindGate.resolve();
+
+    const turnId = turnIdFrom(await prompt);
+    expect(events.findLast((event) => event.type === "session.config")).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
+      }),
+    );
+    await finishTurn(events, recovered, turnId);
+    await connection.close();
+  });
+  test("reconciles configuration events during recovered state reads", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const initial = sessionAt(runtime);

@@ -1091,12 +1091,12 @@ export class OmpProviderSession {
       throw error;
     }
     let unsubscribeBootstrap = () => {};
+    let bootstrapConfigRevision = 0;
     try {
-      await this.hostTools.bind(recovered);
-      let bootstrapConfigRevision = 0;
       unsubscribeBootstrap = recovered.onEvent((event) => {
         if (isRuntimeConfigEvent(event)) bootstrapConfigRevision += 1;
       });
+      await this.hostTools.bind(recovered);
       let state = await recovered.getState();
       const reconciledConfigRevision = bootstrapConfigRevision;
       state = await recovered.getState();
