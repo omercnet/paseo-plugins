@@ -76,7 +76,6 @@ function writeChunked(child: FakeRpcChild, frame: Record<string, unknown>, chunk
   }
 }
 
-
 function observeCommands(
   child: FakeRpcChild,
   handler: (command: Record<string, unknown>) => void,
@@ -446,7 +445,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
@@ -457,11 +461,16 @@ describe("OMP RPC transport", () => {
     const textEvent = nextEvent((listener) => session.onEvent(listener));
     writeChunked(
       child,
-      { type: "message_update", message: { role: "assistant", responseId: "text", content: nearText } },
+      {
+        type: "message_update",
+        message: { role: "assistant", responseId: "text", content: nearText },
+      },
       "near-text",
     );
     const receivedText = await textEvent;
-    expect(receivedText.type === "message_update" ? receivedText.message.content : null).toBe(nearText);
+    expect(receivedText.type === "message_update" ? receivedText.message.content : null).toBe(
+      nearText,
+    );
 
     writeChunked(
       child,
@@ -610,7 +619,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("rejects frame-valid semantic overflows without poisoning later events", async () => {
+  test("preserves frame-valid tool payloads and isolates malformed events", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
@@ -625,7 +634,12 @@ describe("OMP RPC transport", () => {
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
-    const recovered = nextEvent((listener) => session.onEvent(listener));
+    const events: OmpRpcEvent[] = [];
+    const noticeDelivered = Promise.withResolvers<void>();
+    session.onEvent((event) => {
+      events.push(event);
+      if (event.type === "notice") noticeDelivered.resolve();
+    });
 
     child.write({
       type: "todo_reminder",
@@ -637,9 +651,9 @@ describe("OMP RPC transport", () => {
     });
     child.write({
       type: "tool_execution_start",
-      toolCallId: "oversized-tool",
+      toolCallId: "large-tool",
       toolName: "read",
-      args: Array.from({ length: 513 }, () => null),
+      args: Array.from({ length: 513 }, (_, index) => `value-${index}`),
     });
     child.write({
       type: "message_update",
@@ -650,8 +664,15 @@ describe("OMP RPC transport", () => {
       assistantMessageEvent: { type: "image_end", contentIndex: 0 },
     });
     child.write({ type: "notice", level: "warning", message: "valid after rejected frames" });
+    await noticeDelivered.promise;
 
-    await expect(recovered).resolves.toEqual({
+    expect(events).toHaveLength(2);
+    const toolEvent = events[0];
+    if (toolEvent?.type !== "tool_execution_start" || !Array.isArray(toolEvent.args)) {
+      throw new Error("Expected preserved tool event");
+    }
+    expect(toolEvent.args).toHaveLength(513);
+    expect(events[1]).toEqual({
       type: "notice",
       level: "warning",
       message: "valid after rejected frames",
@@ -918,7 +939,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const runtime = new OmpRpcRuntime({
@@ -930,7 +956,6 @@ describe("OMP RPC transport", () => {
     const session = await opening;
     await expect(session.close()).rejects.toThrow("cleanup failed");
   });
-
 
   if (process.platform !== "win32") {
     test("session close terminates descendants left by an exited POSIX leader", async () => {

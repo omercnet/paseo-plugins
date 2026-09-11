@@ -56,7 +56,9 @@ function isBoundedJson(
   maxItems = MAX_ARRAY_ITEMS,
   maxNodes = 2_048,
 ): boolean {
-  return boundedJsonBytes(value, maxBytes, maxItems, maxBytes, maxNodes) !== Number.POSITIVE_INFINITY;
+  return (
+    boundedJsonBytes(value, maxBytes, maxItems, maxBytes, maxNodes) !== Number.POSITIVE_INFINITY
+  );
 }
 
 const OmpContentPartSchema = z
@@ -156,9 +158,9 @@ const OmpChunkFrameSchema = z.object({
   byteLength: z.number().int().nonnegative().max(MAX_REASSEMBLED_FRAME_BYTES),
   data: boundedString(MAX_ENCODED_CHUNK_BYTES),
 });
-const BoundedToolPayloadSchema = z.unknown().refine((value) =>
-  isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096),
-);
+const BoundedToolPayloadSchema = z
+  .unknown()
+  .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096));
 const OmpAgentEndEnvelopeSchema = z.object({
   type: z.literal("agent_end"),
   messageCount: z.number().int().nonnegative().optional(),
@@ -1138,7 +1140,11 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    if (type === "agent_end" && Array.isArray(frame.messages) && frame.messages.length > MAX_ARRAY_ITEMS) {
+    if (
+      type === "agent_end" &&
+      Array.isArray(frame.messages) &&
+      frame.messages.length > MAX_ARRAY_ITEMS
+    ) {
       const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
       if (!envelope.success || envelope.data.isTerminal === false) {
         this.recordProtocolViolation();

@@ -2,8 +2,8 @@ import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import { createOmpConnection } from "./connection";
 import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
-import type { OmpTimelineScheduler } from "./timeline-projector";
 import { boundedJsonBytes } from "./security";
+import type { OmpTimelineScheduler } from "./timeline-projector";
 
 const CAPABILITIES = ["prompt.message", "prompt.steer", "session.configure"] as const;
 const ConnectRequestSchema = z.object({

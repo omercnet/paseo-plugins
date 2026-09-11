@@ -747,7 +747,10 @@ describe("OMP direct provider", () => {
     expect(events.slice(baseline)).toEqual([
       expect.objectContaining({
         type: "session.config",
-        config: expect.objectContaining({ model: ALTERNATE_MODEL_PUBLIC_ID, thinkingOption: "high" }),
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
       }),
       { type: "request.completed", requestId: "configure-1" },
     ]);
@@ -2739,7 +2742,6 @@ describe("OMP direct provider", () => {
       model: MODEL_PUBLIC_ID,
       mcpServers: {},
       modeId: "full",
-      model: "anthropic/claude-sonnet-4-5",
       thinkingOptionId: "medium",
       featureValues: {},
     };
