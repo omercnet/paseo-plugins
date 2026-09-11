@@ -73,7 +73,7 @@ type AssistantMessageEvent = Extract<
 
 function assistantIdentity(message: OmpMessage): string | undefined {
   if (message.role !== "assistant") return;
-  return message.responseId ?? message.entryId ?? message.id;
+  return message.entryId ?? message.responseId ?? message.id;
 }
 function assistantContentFingerprint(message: OmpAssistantMessage): string {
   const encoded =
@@ -114,7 +114,7 @@ export class OmpTimelineProjector {
   private readonly replayedAssistantSignatures = new Map<string, Map<string, number>>();
   private replayedAssistantOccurrences = 0;
   private readonly replayCandidates = new Map<string, ReplayCandidate>();
-  private readonly replayBypassTurns = new Set<string>();
+  private readonly replayOverflowCandidates = new Map<string, string>();
   private projectingReplay = false;
   private activeToolBytes = 0;
   private commandText = "";
@@ -448,11 +448,17 @@ export class OmpTimelineProjector {
     turnId: string,
   ): AssistantStreamEvent[] | undefined {
     if (event.message.role !== "assistant") return undefined;
-    if (this.replayBypassTurns.has(turnId)) {
-      if (event.type === "message_end") this.replayBypassTurns.delete(turnId);
-      return undefined;
-    }
     const identity = assistantIdentity(event.message);
+    const overflowIdentity = this.replayOverflowCandidates.get(turnId);
+    if (overflowIdentity) {
+      if (identity !== overflowIdentity) {
+        this.replayOverflowCandidates.delete(turnId);
+        return this.filterReplayDelivery(event, turnId);
+      }
+      if (event.type !== "message_end") return [];
+      this.replayOverflowCandidates.delete(turnId);
+      return this.consumeReplayOccurrence(identity, event.message) ? [] : [event];
+    }
     if (!identity || !this.replayedAssistantSignatures.has(identity)) return undefined;
     const existing = this.replayCandidates.get(turnId);
     if (existing && existing.identity !== identity) {
@@ -468,8 +474,11 @@ export class OmpTimelineProjector {
       candidate.retainedBytes + eventBytes > MAX_REPLAY_CANDIDATE_BYTES
     ) {
       this.replayCandidates.delete(turnId);
-      if (event.type !== "message_end") this.replayBypassTurns.add(turnId);
-      return [...candidate.events, event];
+      if (event.type === "message_end") {
+        return this.consumeReplayOccurrence(identity, event.message) ? [] : [event];
+      }
+      this.replayOverflowCandidates.set(turnId, identity);
+      return [];
     }
     candidate.events.push(event);
     candidate.retainedBytes += eventBytes;
@@ -515,7 +524,7 @@ export class OmpTimelineProjector {
       this.replayCandidates.delete(turnId);
       for (const event of replayCandidate.events) this.project(event, turnId, true);
     }
-    this.replayBypassTurns.delete(turnId);
+    this.replayOverflowCandidates.delete(turnId);
     if (this.currentTurnId !== turnId) return;
     this.flush(true);
     this.publishCommand(turnId, true);
@@ -538,7 +547,7 @@ export class OmpTimelineProjector {
     this.tools.clear();
     this.activeToolBytes = 0;
     this.replayCandidates.clear();
-    this.replayBypassTurns.clear();
+    this.replayOverflowCandidates.clear();
   }
 
   private ensureTurn(turnId: string): void {

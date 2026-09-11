@@ -1122,6 +1122,185 @@ describe("OMP direct provider", () => {
     await finishTurn(events, sessionAt(runtime), divergentTurn);
     await connection.close();
   });
+  test("distinguishes replay occurrences that share response identity and content", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = [
+      { role: "user", entryId: "replay-user-1", content: "first" },
+      {
+        role: "assistant",
+        entryId: "replay-assistant-1",
+        responseId: "shared-response",
+        content: "same answer",
+      },
+      { role: "user", entryId: "replay-user-2", content: "second" },
+      {
+        role: "assistant",
+        entryId: "replay-assistant-2",
+        responseId: "shared-response",
+        content: "same answer",
+      },
+    ];
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "occurrence-open",
+      sessionId: "occurrence-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "occurrence-open",
+    );
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "occurrence-live", "continue", "occurrence-session"),
+    );
+    const baseline = events.length;
+    sessionAt(runtime).emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        entryId: "new-assistant-entry",
+        responseId: "shared-response",
+        content: "same answer",
+      },
+    });
+    expect(
+      events
+        .slice(baseline)
+        .filter(
+          (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+        ),
+    ).toHaveLength(1);
+    const afterDistinct = events.length;
+    sessionAt(runtime).emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        entryId: "replay-assistant-1",
+        responseId: "shared-response",
+        content: "same answer",
+      },
+    });
+    expect(events.slice(afterDistinct).some((event) => event.type === "timeline.item")).toBe(false);
+    await finishTurn(events, sessionAt(runtime), turnId);
+    await connection.close();
+  });
+
+  test("suppresses a replay duplicate after buffering 512 stream events", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = [
+      {
+        role: "assistant",
+        entryId: "event-limit-entry",
+        content: "same answer",
+      },
+    ];
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "event-limit-open",
+      sessionId: "event-limit-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "event-limit-open",
+    );
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "event-limit-live", "continue", "event-limit-session"),
+    );
+    const session = sessionAt(runtime);
+    const duplicate = {
+      role: "assistant" as const,
+      entryId: "event-limit-entry",
+      content: "same answer",
+    };
+    const baseline = events.length;
+    session.emit({ type: "message_start", message: duplicate });
+    for (let index = 0; index < 511; index += 1) {
+      session.emit({
+        type: "message_update",
+        message: duplicate,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
+      });
+    }
+    session.emit({ type: "message_end", message: duplicate });
+    expect(events.slice(baseline).some((event) => event.type === "timeline.item")).toBe(false);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("suppresses a replay duplicate after buffering four MiB", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const content = "x".repeat(1024 * 1024);
+    runtime.nextHistoryMessages = [{ role: "assistant", entryId: "byte-limit-entry", content }];
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "byte-limit-open",
+      sessionId: "byte-limit-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "byte-limit-open",
+    );
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "byte-limit-live", "continue", "byte-limit-session"),
+    );
+    const session = sessionAt(runtime);
+    const duplicate = { role: "assistant" as const, entryId: "byte-limit-entry", content };
+    const baseline = events.length;
+    session.emit({ type: "message_start", message: { ...duplicate, content: [] } });
+    for (let index = 0; index < 4; index += 1) {
+      session.emit({
+        type: "message_update",
+        message: duplicate,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
+      });
+    }
+    session.emit({ type: "message_end", message: duplicate });
+    expect(events.slice(baseline).some((event) => event.type === "timeline.item")).toBe(false);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
   test("ignores stale resume thinking and rejects unsupported restored thinking", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
@@ -1288,6 +1467,69 @@ describe("OMP direct provider", () => {
     expect(runtime.starts).toHaveLength(2);
     await connection.close();
   });
+  test("reserves native transcripts across provider connections until disposal", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const gate = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    runtime.startGate = gate.promise;
+    runtime.startObserved = started.resolve;
+    const provider = createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV });
+    const connect = async () => {
+      const connection = await provider.connect({
+        versions: [1],
+        capabilities: ["prompt.message", "session.persistence"],
+      });
+      const events = new EventLog();
+      connection.onEvent((event) => events.push(event));
+      return { connection, events };
+    };
+    const first = await connect();
+    const second = await connect();
+    const openResume = (connection: ProviderConnection, requestId: string, sessionId: string) =>
+      connection.send({
+        type: "session.open",
+        requestId,
+        sessionId,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+    await openResume(first.connection, "cross-connection-first", "cross-connection-owner");
+    await started.promise;
+    runtime.startGate = null;
+    await openResume(second.connection, "cross-connection-second", "cross-connection-contender");
+    const rejected = await second.events.waitFor(
+      (event) =>
+        (event.type === "request.failed" || event.type === "session.ready") &&
+        event.requestId === "cross-connection-second",
+    );
+    expect(rejected).toEqual(
+      expect.objectContaining({
+        type: "request.failed",
+        error: { message: "OMP native session is already open" },
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    gate.resolve();
+    await first.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "cross-connection-first",
+    );
+    await first.connection.close();
+    await openResume(second.connection, "cross-connection-third", "cross-connection-successor");
+    await second.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "cross-connection-third",
+    );
+    expect(runtime.starts).toHaveLength(2);
+    await second.connection.close();
+  });
 
   test("keeps the native transcript reserved while its session recovers", async () => {
     const runtime = new FakeOmpRuntime();
@@ -1379,6 +1621,59 @@ describe("OMP direct provider", () => {
     );
     expect(runtime.starts).toHaveLength(1);
     await connection.close();
+  });
+  test("keeps failed-cleanup tombstones across provider connections", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryError = new Error("history failed");
+    runtime.nextCloseError = new Error("cleanup failed");
+    const provider = createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV });
+    const connect = async () => {
+      const connection = await provider.connect({
+        versions: [1],
+        capabilities: ["prompt.message", "session.persistence"],
+      });
+      const events = new EventLog();
+      connection.onEvent((event) => events.push(event));
+      return { connection, events };
+    };
+    const first = await connect();
+    const second = await connect();
+    const openResume = (connection: ProviderConnection, requestId: string, sessionId: string) =>
+      connection.send({
+        type: "session.open",
+        requestId,
+        sessionId,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+    await openResume(first.connection, "failed-cleanup-first", "failed-cleanup-owner");
+    await first.events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "failed-cleanup-first",
+    );
+    await first.connection.close();
+    await openResume(second.connection, "failed-cleanup-second", "failed-cleanup-contender");
+    const rejected = await second.events.waitFor(
+      (event) =>
+        (event.type === "request.failed" || event.type === "session.ready") &&
+        event.requestId === "failed-cleanup-second",
+    );
+    expect(rejected).toEqual(
+      expect.objectContaining({
+        type: "request.failed",
+        error: { message: "OMP native session is already open" },
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    await second.connection.close();
   });
 
   test("publishes selected branch history from chunked OMP RPC before ready", async () => {

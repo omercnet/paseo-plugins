@@ -202,11 +202,30 @@ function errorDetails(error: unknown, fallback: string): { message: string } {
   return { message: isOmpPublicError(error) ? error.message : fallback };
 }
 
+export class OmpNativeSessionReservations {
+  private readonly owners = new Map<string, symbol>();
+
+  reserve(nativeSessionId: string, owner: symbol): void {
+    const existingOwner = this.owners.get(nativeSessionId);
+    if (existingOwner && existingOwner !== owner) {
+      throw new OmpPublicError("OMP native session is already open");
+    }
+    this.owners.set(nativeSessionId, owner);
+  }
+
+  release(nativeSessionId: string | undefined, owner: symbol): void {
+    if (nativeSessionId && this.owners.get(nativeSessionId) === owner) {
+      this.owners.delete(nativeSessionId);
+    }
+  }
+}
+
 export function createOmpConnection(
   runtime: OmpRuntime,
   capabilities: readonly string[],
   scheduler?: OmpTimelineScheduler,
   environment?: NodeJS.ProcessEnv,
+  nativeReservations = new OmpNativeSessionReservations(),
 ): ProviderConnection {
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) =>
@@ -223,25 +242,12 @@ export function createOmpConnection(
     string,
     { token: symbol; error: unknown; nativeSessionId?: string }
   >();
-  const nativeReservations = new Map<string, symbol>();
   const shutdown = new AbortController();
   let catalogCleanup: Promise<void> | null = null;
   const activeOperations = new Set<Promise<void>>();
   let closing = false;
   let closed = false;
   let closePromise: Promise<void> | null = null;
-  const reserveNativeSession = (nativeSessionId: string, token: symbol): void => {
-    const owner = nativeReservations.get(nativeSessionId);
-    if (owner && owner !== token) {
-      throw new OmpPublicError("OMP native session is already open");
-    }
-    nativeReservations.set(nativeSessionId, token);
-  };
-  const releaseNativeSession = (nativeSessionId: string | undefined, token: symbol): void => {
-    if (nativeSessionId && nativeReservations.get(nativeSessionId) === token) {
-      nativeReservations.delete(nativeSessionId);
-    }
-  };
 
   const emit = (event: ProviderEvent) => {
     if (closed) return;
@@ -309,7 +315,7 @@ export function createOmpConnection(
         let nativeSessionId: string | undefined;
         try {
           nativeSessionId = ompPersistenceSessionId(input);
-          if (nativeSessionId) reserveNativeSession(nativeSessionId, token);
+          if (nativeSessionId) nativeReservations.reserve(nativeSessionId, token);
         } catch (error) {
           const details = errorDetails(error, "OMP session failed to open");
           emit({ type: "request.failed", requestId: input.requestId, error: details });
@@ -341,12 +347,12 @@ export function createOmpConnection(
           session = await pending;
           const discoveredNativeSessionId = session.persistenceSessionId;
           if (discoveredNativeSessionId && discoveredNativeSessionId !== nativeSessionId) {
-            reserveNativeSession(discoveredNativeSessionId, token);
+            nativeReservations.reserve(discoveredNativeSessionId, token);
             nativeSessionId = discoveredNativeSessionId;
           }
           if (closing || opening.get(input.sessionId)?.token !== token) {
             await session.abortOpen();
-            releaseNativeSession(nativeSessionId, token);
+            nativeReservations.release(nativeSessionId, token);
             return;
           }
           sessions.set(input.sessionId, { token, session, nativeSessionId });
@@ -354,7 +360,7 @@ export function createOmpConnection(
           if (closing || opening.get(input.sessionId)?.token !== token) {
             if (sessions.get(input.sessionId)?.token === token) sessions.delete(input.sessionId);
             await session.close();
-            releaseNativeSession(nativeSessionId, token);
+            nativeReservations.release(nativeSessionId, token);
           }
         } catch (error) {
           if (sessions.get(input.sessionId)?.token === token) sessions.delete(input.sessionId);
@@ -369,7 +375,7 @@ export function createOmpConnection(
             cleanupFailed = true;
             failedCleanup.set(input.sessionId, { token, error, nativeSessionId });
           }
-          if (!cleanupFailed) releaseNativeSession(nativeSessionId, token);
+          if (!cleanupFailed) nativeReservations.release(nativeSessionId, token);
           if (opening.get(input.sessionId)?.token === token) {
             const details = errorDetails(error, "OMP session failed to open");
             emit({ type: "request.failed", requestId: input.requestId, error: details });
@@ -433,7 +439,7 @@ export function createOmpConnection(
           throw new OmpPublicError("OMP session close failed");
         }
         if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
-        releaseNativeSession(slot.nativeSessionId, slot.token);
+        nativeReservations.release(slot.nativeSessionId, slot.token);
         emit({ type: "request.completed", requestId: input.requestId });
         return;
       }
@@ -449,7 +455,7 @@ export function createOmpConnection(
     const sessionClosures = Promise.allSettled([
       ...[...sessions.values()].map(async ({ session, nativeSessionId, token }) => {
         await session.close();
-        releaseNativeSession(nativeSessionId, token);
+        nativeReservations.release(nativeSessionId, token);
       }),
       ...(catalogCleanup ? [catalogCleanup] : []),
     ]);
