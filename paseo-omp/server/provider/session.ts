@@ -7,6 +7,11 @@ import type {
   ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
+import {
+  normalizeOmpSessionConfig,
+  type OmpRecoveryOptions,
+  withCommittedOmpSelection,
+} from "./config-normalization";
 import { OmpHostToolsBridge, type OmpMcpConnector, validateOmpHostToolConfig } from "./host-tools";
 import type {
   OmpCompactionResult,
@@ -374,7 +379,7 @@ export class OmpProviderSession {
     id: string,
     private runtime: OmpRuntimeSession,
     private readonly runtimeFactory: OmpRuntime,
-    private recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal">,
+    private recoveryOptions: OmpRecoveryOptions,
     private readonly hostTools: OmpHostToolsBridge,
     private nativeSessionId: string,
     private readonly config: ProviderSessionConfig,
@@ -426,35 +431,21 @@ export class OmpProviderSession {
     if (input.history === "skip" && resumeSessionId) {
       throw new OmpPublicError("OMP persisted sessions require history replay");
     }
-    if (input.config.mode && input.config.mode !== "full") {
-      throw new OmpPublicError("OMP Plugin Preview supports Full Access mode only");
-    }
-    if (input.config.providerOptions && Object.keys(input.config.providerOptions).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support provider options");
-    }
-    if (Object.keys(input.config.settings ?? {}).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support provider settings");
-    }
-    if (input.config.title && utf8Bytes(input.config.title) > 256) {
-      throw new OmpPublicError("OMP session title is too large");
-    }
     if (resumeSessionId) {
       await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd);
     }
     const effectiveConfig: ProviderSessionConfig = { ...input.config };
+    const normalizedConfig = normalizeOmpSessionConfig(effectiveConfig);
     validateOmpHostToolConfig(effectiveConfig);
+    if (input.config.title && utf8Bytes(input.config.title) > 256) {
+      throw new OmpPublicError("OMP session title is too large");
+    }
     const startOptions: OmpStartOptions = {
-      cwd: effectiveConfig.cwd,
-      env: effectiveConfig.env,
-      mode: "full",
-      ...(!resumeSessionId && effectiveConfig.thinkingOption
-        ? { thinkingOption: effectiveConfig.thinkingOption }
+      ...normalizedConfig,
+      // Model selection is authorized only after this runtime reports its exact catalog.
+      ...(resumeSessionId
+        ? { thinkingOption: undefined, systemPrompt: undefined, resumeSessionId }
         : {}),
-      ...(!resumeSessionId && effectiveConfig.systemPrompt
-        ? { systemPrompt: effectiveConfig.systemPrompt }
-        : {}),
-      ...(resumeSessionId ? { resumeSessionId } : {}),
-      ...(!effectiveConfig.persist ? { noSession: true } : {}),
       signal,
       environment,
     };
@@ -497,7 +488,7 @@ export class OmpProviderSession {
         throw new OmpPublicError("OMP resumed a different native session");
       }
       const filter = new OmpPublicDataFilter([
-        ...Object.values(input.config.env ?? {}),
+        ...Object.values(startOptions.env ?? {}),
         ...(native.redactionValues ?? []),
       ]);
       const models = mapOmpModels(nativeModels, filter);
@@ -506,7 +497,9 @@ export class OmpProviderSession {
       );
       if (!resumeSessionId && input.config.model) {
         const selected = nativeModelsByPublicId.get(input.config.model);
-        if (!selected) throw new OmpPublicError("OMP model selection is unavailable");
+        if (!selected) {
+          throw new OmpPublicError("OMP model is not advertised by the configured session runtime");
+        }
         if (state.model?.provider !== selected.provider || state.model.id !== selected.id) {
           await native.setModel(selected.provider, selected.id);
           state = await native.getState();
@@ -538,25 +531,18 @@ export class OmpProviderSession {
       }
       const configState: ProviderConfigState = {
         ...(state.model ? { model: ompModelId(state.model) } : {}),
-        mode: "full",
+        mode: normalizedConfig.mode,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
         models,
         modes: OMP_MODES,
         thinkingOptions,
         settings: [],
       };
-      const recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal"> = {
-        cwd: effectiveConfig.cwd,
-        env: effectiveConfig.env,
-        mode: "full",
-        ...(!effectiveConfig.persist && effectiveConfig.systemPrompt
-          ? { systemPrompt: effectiveConfig.systemPrompt }
-          : {}),
-        ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
-        environment,
-        ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
-        ...(!effectiveConfig.persist ? { noSession: true } : {}),
-      };
+      const { signal: _signal, ...recoveryTemplate } = startOptions;
+      const recoveryOptions = withCommittedOmpSelection(recoveryTemplate, {
+        model: state.model ? nativeOmpModelId(state.model) : undefined,
+        thinkingOption: state.thinkingLevel,
+      });
       if (!hostTools.isBoundTo(native)) {
         throw new Error("OMP host tool bridge detached during session initialization");
       }
@@ -1474,21 +1460,10 @@ export class OmpProviderSession {
           option.isDefault !== this.configState.thinkingOptions[index]?.isDefault,
       );
     this.configState = nextConfig;
-    this.recoveryOptions = {
-      cwd: this.recoveryOptions.cwd,
-      env: this.recoveryOptions.env,
-      noSession: this.recoveryOptions.noSession,
-      mode: "full",
-
-      ...(!this.persistSession && this.recoveryOptions.systemPrompt
-        ? { systemPrompt: this.recoveryOptions.systemPrompt }
-        : {}),
-      environment: this.recoveryOptions.environment,
-      ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
-      ...(this.configState.thinkingOption
-        ? { thinkingOption: this.configState.thinkingOption }
-        : {}),
-    };
+    this.recoveryOptions = withCommittedOmpSelection(this.recoveryOptions, {
+      model: state.model ? nativeOmpModelId(state.model) : undefined,
+      thinkingOption: this.configState.thinkingOption,
+    });
     if (changed) {
       this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
     }

@@ -582,6 +582,7 @@ class FakeOmpRuntime implements OmpRuntime {
   commandDiscoveryError: Error | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
+  nextAvailableModels: OmpModel[] | null = null;
   redactionValues: readonly string[] = [];
   readonly descriptors: Array<{ id: string; cwd: string; title?: string; updatedAt?: string }> = [];
   resolveSessions = true;
@@ -632,7 +633,10 @@ class FakeOmpRuntime implements OmpRuntime {
     session.nativeSessionId =
       this.sessionIds.shift() ?? options.resumeSessionId ?? session.nativeSessionId;
     session.canReplayHistory = this.nextCanReplayHistory;
-    session.availableModels = this.availableModels.map((model) => ({ ...model }));
+    session.availableModels = (this.nextAvailableModels ?? this.availableModels).map((model) => ({
+      ...model,
+    }));
+    this.nextAvailableModels = null;
     session.historyGate = this.nextHistoryGate;
     session.historyObserved = this.nextHistoryObserved;
     session.historyError = this.nextHistoryError;
@@ -782,10 +786,10 @@ async function openSession(
       systemPrompt: "Be precise",
       mcpServers: {},
       model,
+      persist: true,
       mode: "full",
       ...(thinkingOption ? { thinkingOption } : {}),
       settings: {},
-      persist: false,
     },
     history: "skip",
   });
@@ -861,6 +865,243 @@ describe("OMP direct provider", () => {
       expect.objectContaining({ cwd: "/repo", noSession: true, environment: TEST_RUNTIME_ENV }),
     );
     expect(sessionAt(runtime).closes).toBe(1);
+    await connection.close();
+  });
+
+  test("preserves the complete profile through refresh and repeated recovery", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await connection.send({
+      type: "session.open",
+      requestId: "profile-open",
+      sessionId: "profile-session",
+      config: {
+        cwd: "/repo",
+        env: { SESSION_VALUE: "session" },
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        providerOptions: {
+          command: ["/opt/omp-wrapper", "omp"],
+          env: { PROFILE_VALUE: "profile" },
+          params: {
+            sessionDir: "/sessions/custom",
+            rpcTimeoutMs: 8_000,
+            smolModel: "openai/gpt-5-mini",
+          },
+        },
+        systemPrompt: "profile system prompt",
+        persist: true,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "profile-open",
+    );
+    const expectedTemplate = {
+      command: ["/opt/omp-wrapper", "omp"],
+      env: { PROFILE_VALUE: "profile", SESSION_VALUE: "session" },
+      mode: "full",
+      noSession: false,
+      readyTimeoutMs: 8_000,
+      requestTimeoutMs: 8_000,
+      roleModels: { smol: "openai/gpt-5-mini" },
+      sessionDir: "/sessions/custom",
+      systemPrompt: "profile system prompt",
+    } as const;
+    expect(runtime.starts[0]).toEqual(expect.objectContaining(expectedTemplate));
+
+    const initial = sessionAt(runtime);
+    initial.currentModel = ALTERNATE_MODEL;
+    initial.thinkingLevel = "high";
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.sessionId === "profile-session" &&
+        event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    initial.emit({ type: "model_changed" });
+    await refreshed;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    for (let recovery = 1; recovery <= 2; recovery += 1) {
+      runtime.nextModel = ALTERNATE_MODEL;
+      runtime.nextThinkingLevel = "high";
+      sessionAt(runtime, recovery - 1).emit({ type: "process_exit", error: "restart profile" });
+      const turnId = turnIdFrom(
+        await startPrompt(
+          connection,
+          events,
+          `profile-recovery-${recovery}`,
+          "continue",
+          "profile-session",
+        ),
+      );
+      expect(runtime.starts[recovery]).toEqual(
+        expect.objectContaining({
+          ...expectedTemplate,
+          model: "openai/gpt-5.4",
+          thinkingOption: "high",
+          resumeSessionId: "native-session",
+        }),
+      );
+      await finishTurn(events, sessionAt(runtime, recovery), turnId);
+    }
+    await connection.close();
+  });
+
+  test("fails recovery without resuming an ephemeral native session", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await connection.send({
+      type: "session.open",
+      requestId: "ephemeral-open",
+      sessionId: "ephemeral-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        providerOptions: { command: ["/opt/ephemeral-omp"] },
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "ephemeral-open",
+    );
+    expect(runtime.starts[0]).toEqual(
+      expect.objectContaining({ command: ["/opt/ephemeral-omp"], noSession: true }),
+    );
+
+    sessionAt(runtime).emit({ type: "process_exit", error: "ephemeral runtime stopped" });
+    const result = await startPrompt(
+      connection,
+      events,
+      "ephemeral-recovery",
+      "continue",
+      "ephemeral-session",
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        result: {
+          type: "failed",
+          error: {
+            message: "OMP cannot recover a non-persisted session; create a new session instead",
+          },
+        },
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("validates model selection against the configured session runtime catalog", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextAvailableModels = [ALTERNATE_MODEL];
+    runtime.nextModel = ALTERNATE_MODEL;
+    const { connection, events } = await createHarness(runtime);
+    await connection.send({
+      type: "session.open",
+      requestId: "custom-runtime-model",
+      sessionId: "custom-runtime-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        providerOptions: {
+          command: ["/opt/custom-omp"],
+          env: { PROFILE_NAME: "custom" },
+          params: { sessionDir: "/sessions/custom" },
+        },
+        persist: true,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "custom-runtime-model",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP model is not advertised by the configured session runtime" },
+      }),
+    );
+    expect(runtime.starts[0]).toEqual(
+      expect.objectContaining({
+        command: ["/opt/custom-omp"],
+        env: { PROFILE_NAME: "custom" },
+        sessionDir: "/sessions/custom",
+      }),
+    );
+    expect(sessionAt(runtime).modelChanges).toHaveLength(0);
+    expect(sessionAt(runtime).closes).toBe(1);
+    await connection.close();
+  });
+
+  test("rejects approval-requiring modes before spawning without permission support", async () => {
+    const { connection, events, runtime } = await createHarness();
+    for (const mode of ["write", "ask"] as const) {
+      const requestId = `unsupported-${mode}-mode`;
+      await connection.send({
+        type: "session.open",
+        requestId,
+        sessionId: `${mode}-session`,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode,
+          settings: {},
+          persist: true,
+        },
+        history: "skip",
+      });
+      const failure = await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === requestId,
+      );
+      expect(failure).toEqual(
+        expect.objectContaining({
+          error: expect.objectContaining({
+            message: expect.stringContaining("requires interactive permission support"),
+          }),
+        }),
+      );
+    }
+    expect(runtime.starts).toHaveLength(0);
+    await connection.close();
+  });
+
+  test("reports unsupported legacy profile fields before spawning OMP", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await connection.send({
+      type: "session.open",
+      requestId: "unsupported-profile",
+      sessionId: "unsupported-profile-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        providerOptions: { disallowedTools: ["bash"] },
+        persist: true,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unsupported-profile",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: expect.objectContaining({ message: expect.stringContaining("disallowedTools") }),
+      }),
+    );
+    expect(runtime.starts).toHaveLength(0);
     await connection.close();
   });
   test("omits thinking options without recognized effort metadata", () => {
@@ -2574,7 +2815,9 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "raw-model-open",
     );
     expect(failure).toEqual(
-      expect.objectContaining({ error: { message: "OMP model selection is unavailable" } }),
+      expect.objectContaining({
+        error: { message: "OMP model is not advertised by the configured session runtime" },
+      }),
     );
     expect(events.some((event) => event.type === "session.ready")).toBe(false);
     expect(sessionAt(runtime).modelChanges).toHaveLength(0);
@@ -5857,7 +6100,8 @@ describe("OMP direct provider", () => {
     let session: HostSession | undefined;
     let unsubscribe: (() => void) | undefined;
     try {
-      session = await client.createSession(config, launchContext, { persistSession: false });
+      session = await client.createSession(config, launchContext, { persistSession: true });
+      expect(runtime.starts[0]?.noSession).toBe(false);
       const sessionId = session.id;
       const terminals: HostTerminalEvent[] = [];
       const firstTerminal = Promise.withResolvers<HostTerminalEvent>();
@@ -7572,7 +7816,7 @@ describe("OMP direct provider", () => {
         mcpServers: {},
         mode: "full",
         settings: {},
-        persist: false,
+        persist: true,
       },
       history: "skip",
     });
