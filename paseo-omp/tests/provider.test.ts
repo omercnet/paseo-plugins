@@ -488,6 +488,7 @@ async function createHarness(runtime = new FakeOmpRuntime(), scheduler = new Man
       "prompt.steer",
       "session.configure",
       "permission",
+      "timeline.plugin",
     ],
   });
   const events = new EventLog();
@@ -809,6 +810,7 @@ describe("OMP direct provider", () => {
       "prompt.steer",
       "session.configure",
       "permission",
+      "timeline.plugin",
     ]);
     await connection.close();
   });
@@ -3775,6 +3777,24 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("fails an acknowledged turn on a late correlated scheduling error", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.promptEvents = [
+      { type: "prompt_error", id: "rpc-prompt-1", error: "OMP prompt scheduling failed" },
+    ];
+    const result = await startPrompt(connection, events, "late-error", "work");
+    const turnId = turnIdFrom(result);
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    expect(terminal).toEqual(
+      expect.objectContaining({ error: { message: "OMP prompt scheduling failed" } }),
+    );
+    await connection.close();
+  });
   test("cancels local-only completion when native activity starts", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
@@ -6043,6 +6063,18 @@ describe("OMP direct provider", () => {
       type: "session.permission",
       sessionId: "session-1",
       permissionId: permission.request.id,
+      response: { behavior: "deny", selectedActionId: productionAction.id },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.notice" &&
+        event.notice.id === `omp:permission-error:${permission.request.id}`,
+    );
+    expect(session.extensionUiResponses).toHaveLength(0);
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
       response: {
         behavior: "allow",
         selectedActionId: productionAction.id,
@@ -6319,6 +6351,7 @@ describe("OMP direct provider", () => {
     const timed = await events.waitFor(
       (event) => event.type === "session.permission" && event.request.title === "Timed input",
     );
+
     if (timed.type !== "session.permission") throw new Error("Expected timed permission");
     const responsesBeforeTimeout = session.extensionUiResponses.length;
     expect(scheduler.delays).toContain(250);
@@ -6335,6 +6368,58 @@ describe("OMP direct provider", () => {
       timedOut: true,
     });
 
+    await connection.close();
+  });
+  test("fails closed when an in-flight native permission changes semantics", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "changed-in-flight", "work"));
+    session.emit({
+      type: "extension_ui_request",
+      id: "changing-native",
+      method: "confirm",
+      title: "Original",
+      message: "Proceed?",
+    });
+    const permission = events.findLast((event) => event.type === "session.permission");
+    if (permission?.type !== "session.permission") throw new Error("Expected permission");
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.extensionUiResponseGate = gate.promise;
+    session.extensionUiResponseObserved = observed.resolve;
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+      response: { behavior: "allow", selectedActionId: "submit" },
+    });
+    await observed.promise;
+    session.emit({
+      type: "extension_ui_request",
+      id: "changing-native",
+      method: "confirm",
+      title: "Replacement",
+      message: "Different request",
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    expect(
+      events.filter(
+        (event) => event.type === "session.permission" && event.request.title === "Replacement",
+      ),
+    ).toHaveLength(0);
+    gate.resolve();
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.permission_resolved" &&
+          event.permissionId === permission.request.id,
+      ),
+    ).toHaveLength(1);
     await connection.close();
   });
   test("scopes permission evidence to its turn and never reuses public ids", async () => {
@@ -6436,6 +6521,38 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("bounds cumulative pending permission bytes", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const options = Array.from({ length: 128 }, (_, index) => `${index}:${"x".repeat(2_040)}`);
+    for (let index = 0; index < 10; index += 1) {
+      session.emit({
+        type: "extension_ui_request",
+        id: `large-${index}`,
+        method: "select",
+        title: `Large ${index}`,
+        options,
+      });
+      if (
+        events.some(
+          (event) =>
+            event.type === "session.notice" &&
+            event.notice.description === "OMP question data exceeded the pending input budget",
+        )
+      ) {
+        break;
+      }
+    }
+    const permissions = events.filter((event) => event.type === "session.permission");
+    expect(permissions.length).toBeGreaterThan(0);
+    expect(permissions.length).toBeLessThan(10);
+    await Promise.resolve();
+    expect(session.extensionUiResponses.at(-1)).toEqual(
+      expect.objectContaining({ type: "extension_ui_response", cancelled: true }),
+    );
+    await connection.close();
+  });
   test("accepts null command input and redacts published command and custom names", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.redactionValues = ["secret-command"];
@@ -6515,6 +6632,43 @@ describe("OMP direct provider", () => {
       expect(new Set(snapshots.map((item) => item.id)).size).toBe(1);
       expect(snapshots.at(-1)?.detail.type).toBe(detailType);
     }
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "edit-default-input",
+      toolName: "edit",
+      args: { input: "apply prepared edit" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "edit-default-input",
+      toolName: "edit",
+      result: {
+        content: [{ type: "text", text: "updated" }],
+        details: {
+          path: "src/derived.ts",
+          perFileResults: [
+            { path: "src/derived.ts", diff: "-old\n+new" },
+            { path: "src/other.ts", diff: "-before\n+after" },
+          ],
+        },
+      },
+    });
+    const derivedEdit = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.id === "omp:tool:9" &&
+        event.item.status === "completed",
+    );
+    expect(
+      derivedEdit?.type === "timeline.item" && derivedEdit.item.type === "tool_call"
+        ? derivedEdit.item.detail
+        : undefined,
+    ).toEqual({
+      type: "edit",
+      filePath: "src/derived.ts",
+      unifiedDiff: "-old\n+new\n-before\n+after",
+    });
     const screenshotBytes = "a".repeat(300 * 1024);
     session.emit({
       type: "tool_execution_start",
@@ -6537,26 +6691,60 @@ describe("OMP direct provider", () => {
     const browserScreenshot = events.findLast(
       (event) =>
         event.type === "timeline.item" &&
-        event.item.type === "tool_call" &&
-        event.item.name === "browser_screenshot" &&
-        event.item.status === "completed",
+        event.item.type === "plugin" &&
+        event.item.kind === "omp-images",
     );
-    if (
-      browserScreenshot?.type !== "timeline.item" ||
-      browserScreenshot.item.type !== "tool_call" ||
-      browserScreenshot.item.detail.type !== "unknown"
-    ) {
-      throw new Error("Expected browser screenshot tool output");
+    if (browserScreenshot?.type !== "timeline.item" || browserScreenshot.item.type !== "plugin") {
+      throw new Error("Expected browser screenshot image item");
     }
-    const screenshotOutput = browserScreenshot.item.detail.output;
-    expect(JSON.stringify(screenshotOutput).length).toBeGreaterThan(256 * 1024);
-    expect(screenshotOutput).toEqual({
-      content: [
-        { type: "text", text: "token <redacted>" },
-        { type: "image", data: screenshotBytes, mimeType: "image/png" },
+    expect(JSON.stringify(browserScreenshot.item.data).length).toBeGreaterThan(256 * 1024);
+    expect(browserScreenshot.item.data).toEqual({
+      label: "browser_screenshot",
+      images: [
+        {
+          id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
+          data: screenshotBytes,
+          mimeType: "image/png",
+        },
       ],
+      text: "token <redacted>",
       details: { width: 1280, height: 720, authorization: "<redacted>" },
     });
+    session.emit({
+      type: "message_end",
+      message: {
+        role: "custom",
+        id: "custom-image",
+        customType: "gallery",
+        display: true,
+        content: [
+          { type: "text", text: "caption test-value" },
+          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        ],
+        details: { token: "test-value" },
+      },
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({
+          type: "plugin",
+          kind: "omp-images",
+          data: {
+            label: "gallery",
+            images: [
+              {
+                id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
+                data: "aW1hZ2U=",
+                mimeType: "image/png",
+              },
+            ],
+            text: "caption <redacted>",
+            details: { token: "<redacted>" },
+          },
+        }),
+      }),
+    );
     const completedMappedTools = events.flatMap((event) =>
       event.type === "timeline.item" &&
       event.item.type === "tool_call" &&
@@ -6849,6 +7037,7 @@ describe("OMP direct provider", () => {
     );
     session.emit({
       type: "extension_ui_request",
+
       id: "interrupt-ui",
       method: "confirm",
       title: "Continue",
@@ -6939,6 +7128,52 @@ describe("OMP direct provider", () => {
         message: "OMP compaction ended when the session closed",
       },
     });
+    await connection.close();
+  });
+  test("resolves turnless permissions on direct runtime invalidation", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "extension_ui_request",
+      id: "idle-before-invalidation",
+      method: "confirm",
+      title: "Idle",
+      message: "Continue?",
+    });
+    const permission = events.findLast((event) => event.type === "session.permission");
+    if (permission?.type !== "session.permission") throw new Error("Expected idle permission");
+    const turnId = turnIdFrom(await startPrompt(connection, events, "invalidate-state", "work"));
+    session.emit({
+      type: "extension_ui_request",
+      id: "turn-before-invalidation",
+      method: "confirm",
+      title: "Turn",
+      message: "Continue?",
+    });
+    session.extensionUiResponseError = new Error("cancel failed");
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "invalidate-interrupt",
+      sessionId: "session-1",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "invalidate-interrupt",
+    );
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "canceled",
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.permission_resolved" &&
+          event.permissionId === permission.request.id,
+      ),
+    ).toHaveLength(1);
     await connection.close();
   });
   test("keeps compaction active through local-only completion", async () => {

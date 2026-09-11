@@ -12,6 +12,7 @@ const CAPABILITIES = [
   "prompt.steer",
   "session.configure",
   "permission",
+  "timeline.plugin",
 ] as const;
 const ConnectRequestSchema = z.object({
   versions: z.array(z.number().int().positive().max(16)).min(1).max(8),

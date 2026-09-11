@@ -18,6 +18,7 @@ const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.steer": true,
   "session.configure": true,
   permission: true,
+  "timeline.plugin": true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   catalog: true,

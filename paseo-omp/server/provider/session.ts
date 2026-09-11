@@ -51,6 +51,7 @@ const MAX_TRACKED_ENTRY_IDS = 1_024;
 const MAX_UNCLAIMED_BRANCH_ENTRIES = 1_024;
 const MAX_PENDING_USERS = 256;
 const MAX_PENDING_PERMISSIONS = 32;
+const MAX_PENDING_PERMISSION_BYTES = 2 * 1024 * 1024;
 const MAX_USER_ECHOES = 512;
 const MAX_BUFFERED_TURN_EVENTS = 512;
 const MAX_BUFFERED_VALUE_ITEMS = 1_024;
@@ -123,6 +124,7 @@ type PendingPermission = {
   header: string;
   fingerprint: string;
   optionValues: ReadonlyMap<string, string>;
+  retainedBytes: number;
   displayValues: ReadonlyMap<string, readonly string[]>;
   generation: number;
   runtime: OmpRuntimeSession;
@@ -312,7 +314,13 @@ export class OmpProviderSession {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.commandCatalog = commandCatalog;
-    this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
+    this.projector = new OmpTimelineProjector(
+      id,
+      emit,
+      scheduler,
+      capabilities.includes("timeline.plugin"),
+      sensitiveValues,
+    );
     this.bindRuntime(runtime);
   }
 
@@ -1333,6 +1341,13 @@ export class OmpProviderSession {
 
   private handleTurnEvent(turn: ActiveTurn, event: OmpRpcEvent): void {
     if (turn.generation !== this.generation || turn.terminal || this.activeTurn !== turn) return;
+    if (event.type === "prompt_error") {
+      if (event.id !== turn.nativeRequestId) return;
+      const error = { message: event.error };
+      this.publishPendingUsers(turn);
+      this.finishTurn(turn, "failed", error);
+      return;
+    }
     if (event.type === "prompt_result") {
       if (
         !event.id ||
@@ -1601,23 +1616,7 @@ export class OmpProviderSession {
       !existingId &&
       this.pendingPermissions.size + this.inFlightPermissions.size >= MAX_PENDING_PERMISSIONS
     ) {
-      this.emit({
-        type: "session.notice",
-        sessionId: this.id,
-        notice: {
-          id: `omp:permission-saturated:${this.permissionSequence + 1}`,
-          severity: "warning",
-          title: "OMP question canceled",
-          description: "Too many OMP questions are already pending",
-        },
-      });
-      void this.runtime
-        .respondToExtensionUi({
-          type: "extension_ui_response",
-          id: request.id,
-          cancelled: true,
-        })
-        .catch(() => this.handleRuntimeFailure());
+      this.rejectPermissionRequest(request, "Too many OMP questions are already pending");
       return;
     }
     if (existingPending?.timer !== undefined) this.scheduler.clear(existingPending.timer);
@@ -1655,9 +1654,38 @@ export class OmpProviderSession {
       generation: this.generation,
       runtime: this.runtime,
       request,
+      retainedBytes: boundedJsonBytes(
+        { request, header, options: options ?? [] },
+        MAX_PENDING_PERMISSION_BYTES,
+        512,
+        MAX_PENDING_PERMISSION_BYTES,
+        4_096,
+      ),
       ...(this.activeTurn ? { turnId: this.activeTurn.turnId } : {}),
       ...(request.timeout !== undefined ? { expiresAt: Date.now() + request.timeout } : {}),
     };
+    let retainedPermissionBytes = pending.retainedBytes;
+    for (const [permissionId, retained] of this.pendingPermissions) {
+      if (permissionId !== existingId) retainedPermissionBytes += retained.retainedBytes;
+    }
+    for (const retained of this.inFlightPermissions.values()) {
+      retainedPermissionBytes += retained.retainedBytes;
+    }
+    if (
+      pending.retainedBytes === Number.POSITIVE_INFINITY ||
+      retainedPermissionBytes > MAX_PENDING_PERMISSION_BYTES
+    ) {
+      if (existingId) {
+        this.pendingPermissions.delete(existingId);
+        this.emit({
+          type: "session.permission_resolved",
+          sessionId: this.id,
+          permissionId: existingId,
+        });
+      }
+      this.rejectPermissionRequest(request, "OMP question data exceeded the pending input budget");
+      return;
+    }
     this.pendingPermissions.set(id, pending);
     this.armPermissionTimeout(id, pending);
     this.projector.markAskPermissionRendered();
@@ -1730,10 +1758,42 @@ export class OmpProviderSession {
     });
   }
 
+  private rejectPermissionRequest(
+    request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>,
+    description: string,
+  ): void {
+    this.emit({
+      type: "session.notice",
+      sessionId: this.id,
+      notice: {
+        id: `omp:permission-rejected:${this.permissionSequence + 1}`,
+        severity: "warning",
+        title: "OMP question canceled",
+        description,
+      },
+    });
+    void this.runtime
+      .respondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true })
+      .catch(() => this.handleRuntimeFailure());
+    this.clearPermissionEvidenceIfSettled();
+  }
+
   private extensionUiResponse(
     pending: PendingPermission,
     response: ProviderPermissionResponse,
   ): OmpExtensionUiResponse {
+    if (response.selectedActionId !== undefined) {
+      const expectedBehavior =
+        response.selectedActionId === "cancel"
+          ? "deny"
+          : response.selectedActionId === "submit" ||
+              pending.optionValues.has(response.selectedActionId)
+            ? "allow"
+            : undefined;
+      if (expectedBehavior === undefined || expectedBehavior !== response.behavior) {
+        throw new OmpPublicError("OMP permission action is invalid");
+      }
+    }
     const { nativeId, request, header } = pending;
     if (request.method === "confirm") {
       return {
@@ -2104,6 +2164,7 @@ export class OmpProviderSession {
 
   private invalidateRuntime(message: string): void {
     if (this.closed || this.runtimeDead) return;
+    this.resolveAllPermissions();
     this.recoveryUsesNativeConfig ||=
       this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
     this.generation += 1;
@@ -2124,7 +2185,6 @@ export class OmpProviderSession {
 
   private handleRuntimeFailure(message = "OMP runtime failed"): void {
     if (this.closed || this.runtimeDead) return;
-    this.resolveAllPermissions();
     this.invalidateRuntime(message);
     const turn = this.activeTurn;
     if (!turn) return;

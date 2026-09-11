@@ -176,6 +176,90 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("emits a late same-id prompt scheduling failure after success acknowledgement", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+      if (command.type === "prompt") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "prompt",
+          success: true,
+          data: { agentInvoked: true },
+        });
+        queueMicrotask(() => {
+          child.write({
+            type: "response",
+            id: command.id,
+            command: "prompt",
+            success: false,
+            error: "secret scheduling failure",
+          });
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const failure = nextEvent((listener) => session.onEvent(listener));
+    const acknowledgement = await session.prompt("work");
+    await expect(failure).resolves.toEqual({
+      type: "prompt_error",
+      id: acknowledgement.requestId,
+      error: "OMP prompt scheduling failed",
+    });
+    await session.close();
+  });
+
+  test("retains active tool correlation across agent_end", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const received: OmpRpcEvent[] = [];
+    session.onEvent((event) => received.push(event));
+    child.write({
+      type: "tool_execution_start",
+      toolCallId: "ask-1",
+      toolName: "ask_user",
+      args: { questions: [] },
+    });
+    child.write({ type: "agent_end", messages: [], isTerminal: true });
+    child.write({
+      type: "tool_execution_end",
+      toolCallId: "ask-1",
+      toolName: "ask_user",
+      result: { content: [{ type: "text", text: "done" }] },
+    });
+    await Promise.resolve();
+    expect(received.map((event) => event.type)).toEqual([
+      "tool_execution_start",
+      "agent_end",
+      "tool_execution_end",
+    ]);
+    await session.close();
+  });
+
   test("accepts model, thinking, and fallback session events", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {

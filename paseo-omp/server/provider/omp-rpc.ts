@@ -391,6 +391,7 @@ export type OmpModel = z.infer<typeof OmpModelSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
+  | { type: "prompt_error"; id: string; error: string }
   | { type: "process_exit"; error: string };
 
 export interface OmpStartOptions {
@@ -1050,6 +1051,7 @@ class OmpRpcProcess {
     string,
     { reject(error: Error): void; timer: NodeJS.Timeout }
   >();
+  private readonly acceptedPromptIds = new Set<string>();
   private readonly exitPromise: Promise<void>;
   private readonly resolveExit: () => void;
   private readonly resolveReady: (frame: ReadyFrame) => void;
@@ -1538,7 +1540,16 @@ class OmpRpcProcess {
       return;
     }
     const pending = this.pending.get(response.data.id);
-    if (!pending) return;
+    if (!pending) {
+      if (!response.data.success && this.acceptedPromptIds.delete(response.data.id)) {
+        this.emit({
+          type: "prompt_error",
+          id: response.data.id,
+          error: "OMP prompt scheduling failed",
+        });
+      }
+      return;
+    }
     const responseItemLimit = pending.command === "get_branch_messages" ? 1_024 : MAX_ARRAY_ITEMS;
     const responseByteLimit =
       pending.command === "get_branch_messages" ? MAX_SEMANTIC_FRAME_BYTES : 2 * 1024 * 1024;
@@ -1558,8 +1569,18 @@ class OmpRpcProcess {
     }
     const settled = this.takePending(response.data.id);
     if (!settled) return;
-    if (response.data.success) settled.resolve(response.data.data);
-    else settled.reject(new Error("OMP RPC request failed"));
+    if (response.data.success) {
+      if (settled.command === "prompt") {
+        if (this.acceptedPromptIds.size >= MAX_PENDING_REQUESTS) {
+          const oldest = this.acceptedPromptIds.values().next().value;
+          if (oldest !== undefined) this.acceptedPromptIds.delete(oldest);
+        }
+        this.acceptedPromptIds.add(response.data.id);
+      }
+      settled.resolve(response.data.data);
+    } else {
+      settled.reject(new Error("OMP RPC request failed"));
+    }
   }
 
   private takePending(id: string): PendingRequest | undefined {
@@ -1618,7 +1639,6 @@ class OmpRpcProcess {
     });
     this.streamedBlocks.clear();
     this.commandTextLength = 0;
-    this.activeToolCallIds.clear();
     return true;
   }
 
@@ -1679,6 +1699,9 @@ class OmpRpcProcess {
       return;
     }
     this.emit(event.data);
+    if (event.data.type === "prompt_result" && event.data.id) {
+      this.acceptedPromptIds.delete(event.data.id);
+    }
     if (
       event.data.type === "message_end" ||
       event.data.type === "turn_end" ||
@@ -1686,7 +1709,7 @@ class OmpRpcProcess {
     ) {
       this.streamedBlocks.clear();
     }
-    if (event.data.type === "turn_end" || event.data.type === "agent_end") {
+    if (event.data.type === "turn_end") {
       this.commandTextLength = 0;
       this.activeToolCallIds.clear();
     }
@@ -1797,6 +1820,7 @@ class OmpRpcProcess {
       clearTimeout(pending.timer);
       pending.reject(error);
     }
+    this.acceptedPromptIds.clear();
     this.pendingOneWayWrites.clear();
     this.queuedWrites.clear();
     this.pendingWriteBytes = 0;

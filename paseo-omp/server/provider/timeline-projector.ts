@@ -135,7 +135,20 @@ function resultDetails(value: JsonValue): Record<string, JsonValue> | undefined 
   return jsonRecord(envelope?.details);
 }
 
-function nativeImageResult(value: unknown, filter: OmpPublicDataFilter): JsonValue | undefined {
+type NativeImageEnvelope = {
+  images: Array<{
+    id: string;
+    data: string;
+    mimeType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+  }>;
+  text?: string;
+  details?: JsonValue;
+};
+
+function nativeImageResult(
+  value: unknown,
+  filter: OmpPublicDataFilter,
+): NativeImageEnvelope | undefined {
   if (
     boundedJsonBytes(
       value,
@@ -151,8 +164,8 @@ function nativeImageResult(value: unknown, filter: OmpPublicDataFilter): JsonVal
     return undefined;
   }
   if (!Array.isArray(value.content)) return undefined;
-  let hasImage = false;
-  const content: JsonValue[] = [];
+  const images: NativeImageEnvelope["images"] = [];
+  const text: string[] = [];
   for (const part of value.content) {
     if (
       part &&
@@ -173,18 +186,36 @@ function nativeImageResult(value: unknown, filter: OmpPublicDataFilter): JsonVal
       ) {
         return undefined;
       }
-      hasImage = true;
-      content.push({ type: "image", data: part.data, mimeType: part.mimeType });
+      images.push({
+        id: createHash("sha256")
+          .update(part.mimeType)
+          .update("\n")
+          .update(part.data)
+          .digest("base64url")
+          .slice(0, 16),
+        data: part.data,
+        mimeType: part.mimeType as NativeImageEnvelope["images"][number]["mimeType"],
+      });
       continue;
     }
-    content.push(filter.json(part, MAX_PUBLIC_TOOL_PAYLOAD_BYTES, MAX_PUBLIC_TOOL_PAYLOAD_BYTES));
+    const sanitized = filter.json(
+      part,
+      MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+      MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+    );
+    const rendered = displayText(sanitized);
+    if (rendered) text.push(rendered);
   }
-  if (!hasImage) return undefined;
+  if (images.length === 0) return undefined;
   const details =
     "details" in value
       ? filter.json(value.details, MAX_PUBLIC_TOOL_PAYLOAD_BYTES, MAX_PUBLIC_TOOL_PAYLOAD_BYTES)
       : undefined;
-  return { content, ...(details !== undefined ? { details } : {}) };
+  return {
+    images,
+    ...(text.length > 0 ? { text: text.join("\n") } : {}),
+    ...(details !== undefined ? { details } : {}),
+  };
 }
 
 type CompactionSlot = { id: string; retrying: boolean };
@@ -216,6 +247,7 @@ export class OmpTimelineProjector {
     private readonly sessionId: string,
     private readonly emit: Emit,
     private readonly scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
+    private readonly supportsPluginImages = false,
     sensitiveValues: Iterable<string> = [],
   ) {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
@@ -334,18 +366,25 @@ export class OmpTimelineProjector {
         const preservedImage = previous.nativeName.startsWith("browser_")
           ? nativeImageResult(event.result, this.dataFilter)
           : undefined;
-        const output =
-          preservedImage ??
-          (previous.unsafePartialOutput
-            ? "<redacted>"
-            : this.dataFilter.json(
-                event.result,
-                MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
-                MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
-              ));
-        const snapshot: ToolSnapshot = { ...previous, output };
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
+        if (preservedImage && !event.isError) {
+          if (this.publishImages(previous.publicId, previous.name, preservedImage)) return;
+          this.publishTool(
+            { ...previous, output: null },
+            "failed",
+            "Paseo image timeline rendering is unavailable",
+          );
+          return;
+        }
+        const output = previous.unsafePartialOutput
+          ? "<redacted>"
+          : this.dataFilter.json(
+              event.result,
+              MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+              MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+            );
+        const snapshot: ToolSnapshot = { ...previous, output };
         const specializedRendered =
           previous.nativeName.toLowerCase() === "todo" && !event.isError
             ? this.publishTodoResult(snapshot)
@@ -814,26 +853,32 @@ export class OmpTimelineProjector {
     const publicType = this.dataFilter.text(rawType, 256);
     const lowerType = rawType.toLowerCase();
     const details = jsonRecord(this.dataFilter.json(message.details ?? null));
-    const content =
-      typeof message.content === "string"
-        ? message.content
-        : Array.isArray(message.content)
-          ? message.content
-              .map((part) =>
-                part.type === "text"
-                  ? part.text
-                  : part.type === "image" && part.data && part.mimeType
-                    ? `![OMP image](data:${part.mimeType};base64,${part.data})`
-                    : undefined,
-              )
-              .filter((part): part is string => part !== undefined)
-              .join("\n\n")
-          : "";
     const nativeIdentity = message.id ?? message.entryId ?? message.responseId;
     if (!nativeIdentity) this.customSequence += 1;
     const id = nativeIdentity
       ? `omp:custom:${createHash("sha256").update(nativeIdentity).digest("base64url").slice(0, 12)}`
       : `omp:custom:${this.customSequence}`;
+    const image = nativeImageResult(
+      { content: Array.isArray(message.content) ? message.content : [], details: message.details },
+      this.dataFilter,
+    );
+    if (image) {
+      if (this.publishImages(id, publicType, image)) return;
+      this.publish({
+        type: "error",
+        id,
+        message: "Paseo image timeline rendering is unavailable",
+      });
+      return;
+    }
+    const content =
+      typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content
+              .flatMap((part) => (part.type === "text" && part.text ? [part.text] : []))
+              .join("\n\n")
+          : "";
     if (message.role === "bashExecution" || /bash|shell|python/u.test(lowerType)) {
       const command = this.dataFilter.text(
         message.command ?? firstString(details, "command", "input") ?? publicType,
@@ -949,6 +994,7 @@ export class OmpTimelineProjector {
 
   private toolDetail(snapshot: ToolSnapshot): ProviderToolCallDetail {
     const input = jsonRecord(snapshot.input);
+    const nestedInput = jsonRecord(input?.input) ?? input;
     const output = jsonRecord(snapshot.output);
     const details = resultDetails(snapshot.output);
     const resultText = displayText(snapshot.output);
@@ -957,14 +1003,14 @@ export class OmpTimelineProjector {
       const exitCode = details?.exitCode ?? output?.exitCode;
       return {
         type: "shell",
-        command: firstString(input, "command", "cmd") ?? snapshot.name,
-        ...(firstString(input, "cwd") ? { cwd: firstString(input, "cwd") } : {}),
+        command: firstString(nestedInput, "command", "cmd") ?? snapshot.name,
+        ...(firstString(nestedInput, "cwd") ? { cwd: firstString(nestedInput, "cwd") } : {}),
         ...(resultText !== undefined ? { output: resultText } : {}),
         ...(typeof exitCode === "number" || exitCode === null ? { exitCode } : {}),
       };
     }
     if (name === "read") {
-      const filePath = firstString(input, "path", "filePath", "url");
+      const filePath = firstString(nestedInput, "path", "filePath", "url");
       if (!filePath) return { type: "unknown", input: snapshot.input, output: snapshot.output };
       if (/^https?:\/\//u.test(filePath)) {
         return {
@@ -977,35 +1023,53 @@ export class OmpTimelineProjector {
         type: "read",
         filePath,
         ...(resultText !== undefined ? { content: resultText } : {}),
-        ...(typeof input?.offset === "number" ? { offset: input.offset } : {}),
-        ...(typeof input?.limit === "number" ? { limit: input.limit } : {}),
+        ...(typeof nestedInput?.offset === "number" ? { offset: nestedInput.offset } : {}),
+        ...(typeof nestedInput?.limit === "number" ? { limit: nestedInput.limit } : {}),
       };
     }
     if (name === "edit" || name === "apply_patch") {
-      const filePath = firstString(input, "path", "filePath");
+      const perFileResults = Array.isArray(details?.perFileResults)
+        ? details.perFileResults.flatMap((result) => {
+            const record = jsonRecord(result);
+            return record ? [record] : [];
+          })
+        : [];
+      const filePath =
+        firstString(nestedInput, "path", "filePath") ??
+        firstString(details, "path", "filePath") ??
+        firstString(perFileResults[0], "path", "filePath");
       if (!filePath) return { type: "unknown", input: snapshot.input, output: snapshot.output };
+      const perFileDiff = perFileResults
+        .flatMap((result) => {
+          const diff = firstString(result, "unifiedDiff", "diff", "patch");
+          return diff ? [diff] : [];
+        })
+        .join("\n");
       const unifiedDiff =
         firstString(details, "unifiedDiff", "diff", "patch") ??
-        firstString(output, "unifiedDiff", "diff", "patch");
+        firstString(output, "unifiedDiff", "diff", "patch") ??
+        (perFileDiff || undefined);
       return {
         type: "edit",
         filePath,
-        ...(firstString(input, "oldString", "old_text")
-          ? { oldString: firstString(input, "oldString", "old_text") }
+        ...(firstString(nestedInput, "oldString", "old_text")
+          ? { oldString: firstString(nestedInput, "oldString", "old_text") }
           : {}),
-        ...(firstString(input, "newString", "new_text")
-          ? { newString: firstString(input, "newString", "new_text") }
+        ...(firstString(nestedInput, "newString", "new_text")
+          ? { newString: firstString(nestedInput, "newString", "new_text") }
           : {}),
         ...(unifiedDiff ? { unifiedDiff } : {}),
       };
     }
     if (name === "write") {
-      const filePath = firstString(input, "path", "filePath");
+      const filePath = firstString(nestedInput, "path", "filePath");
       if (!filePath) return { type: "unknown", input: snapshot.input, output: snapshot.output };
       return {
         type: "write",
         filePath,
-        ...(firstString(input, "content") ? { content: firstString(input, "content") } : {}),
+        ...(firstString(nestedInput, "content")
+          ? { content: firstString(nestedInput, "content") }
+          : {}),
       };
     }
     if (["grep", "glob", "search", "web_search"].includes(name)) {
@@ -1019,7 +1083,7 @@ export class OmpTimelineProjector {
               : "search";
       return {
         type: "search",
-        query: firstString(input, "query", "pattern", "path") ?? "",
+        query: firstString(nestedInput, "query", "pattern", "path") ?? "",
         toolName,
         ...(resultText !== undefined ? { content: resultText } : {}),
       };
@@ -1027,19 +1091,21 @@ export class OmpTimelineProjector {
     if (name === "fetch" || name === "web_fetch") {
       return {
         type: "fetch",
-        url: firstString(input, "url") ?? "",
-        ...(firstString(input, "prompt") ? { prompt: firstString(input, "prompt") } : {}),
+        url: firstString(nestedInput, "url") ?? "",
+        ...(firstString(nestedInput, "prompt")
+          ? { prompt: firstString(nestedInput, "prompt") }
+          : {}),
         ...(resultText !== undefined ? { result: resultText } : {}),
       };
     }
     if (["task", "agent", "subagent"].includes(name)) {
       return {
         type: "sub_agent",
-        ...(firstString(input, "agent", "name")
-          ? { subAgentType: firstString(input, "agent", "name") }
+        ...(firstString(nestedInput, "agent", "name")
+          ? { subAgentType: firstString(nestedInput, "agent", "name") }
           : {}),
-        ...(firstString(input, "description", "task")
-          ? { description: firstString(input, "description", "task") }
+        ...(firstString(nestedInput, "description", "task")
+          ? { description: firstString(nestedInput, "description", "task") }
           : {}),
         log: resultText ?? "",
       };
@@ -1051,6 +1117,19 @@ export class OmpTimelineProjector {
       return { type: "plan", text: resultText ?? JSON.stringify(snapshot.input) };
     }
     return { type: "unknown", input: snapshot.input, output: snapshot.output };
+  }
+
+  private publishImages(id: string, label: string, image: NativeImageEnvelope): boolean {
+    if (!this.supportsPluginImages) return false;
+    this.publish({
+      type: "plugin",
+      id,
+      pluginId: "paseo-omp",
+      kind: "omp-images",
+      version: 1,
+      data: { label, ...image },
+    });
+    return true;
   }
 
   private publishTool(snapshot: ToolSnapshot, status: "running" | "completed"): void;
