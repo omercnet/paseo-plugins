@@ -7,6 +7,7 @@ import type {
   ProviderConnection,
   ProviderEvent,
   ProviderRegistration,
+  ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
 import {
@@ -23,7 +24,7 @@ import {
 import { createOmpProvider } from "../server/provider/registration";
 import { OmpCleanupFailure, OmpPublicDataFilter } from "../server/provider/security";
 import type { OmpTimelineScheduler } from "../server/provider/timeline-projector";
-import { transformOmpImageToolItem } from "../shared/provider-image";
+import { ompImageTimelineSchema, transformOmpImageToolItem } from "../shared/provider-image";
 
 type HostLogger = object;
 type PinoFactory = (options: { enabled: boolean }) => HostLogger;
@@ -31,7 +32,14 @@ type HostTerminalEvent = {
   type: "turn_failed" | "turn_completed" | "turn_canceled";
   turnId: string | undefined;
 };
-type HostStreamEvent = { type: string; turnId?: string };
+type HostTimelineItem = {
+  type: string;
+  status?: string;
+  trigger?: string;
+  message?: string;
+  [key: string]: unknown;
+};
+type HostStreamEvent = { type: string; turnId?: string; item?: HostTimelineItem };
 type HostSession = {
   readonly id: string | null;
   startTurn(prompt: string, options?: { clientMessageId?: string }): Promise<{ turnId: string }>;
@@ -65,6 +73,8 @@ type HostRegistryConstructor = new (logger: HostLogger) => HostRegistry;
 
 const pluginProviderModulePath: string =
   "../node_modules/@getpaseo/server/dist/server/server/agent/plugin-provider.js";
+const timelineContentModulePath: string =
+  "../node_modules/@getpaseo/server/dist/server/server/agent/agent-timeline-content.js";
 const hostRequire = createRequire(new URL(pluginProviderModulePath, import.meta.url));
 const pino = hostRequire("pino") as PinoFactory;
 
@@ -2378,24 +2388,67 @@ describe("OMP direct provider", () => {
     });
     await scheduler.flush();
 
+    const imageCarrier = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "Assistant image images",
+    );
+    if (imageCarrier?.type !== "timeline.item" || imageCarrier.item.type !== "tool_call") {
+      throw new Error("Expected assistant image carrier");
+    }
+    expect(transformOmpImageToolItem(imageCarrier.item)?.items[0]).toEqual({
+      type: "plugin",
+      id: imageCarrier.item.callId,
+      kind: "omp-images",
+      version: 1,
+      data: {
+        label: "Assistant image",
+        images: [
+          {
+            id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
+            data: "iVBORw0KGgo=",
+            mimeType: "image/png",
+          },
+        ],
+      },
+    });
     expect(
-      events.filter(
-        (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+      events.flatMap((event) =>
+        event.type === "timeline.item" && event.item.type === "assistant_message"
+          ? [event.item.text]
+          : [],
       ),
-    ).toEqual([
-      expect.objectContaining({
-        item: expect.objectContaining({
-          id: "omp:assistant:1:-588CG_nYBzM:content:0:text",
-          text: "![OMP image](data:image/png;base64,iVBORw0KGgo=)",
-        }),
-      }),
-      expect.objectContaining({
-        item: expect.objectContaining({
-          id: "omp:assistant:1:-588CG_nYBzM:content:1:text",
-          text: "after image",
-        }),
-      }),
-    ]);
+    ).toEqual(["after image"]);
+    expect(JSON.stringify(events)).not.toContain("data:image");
+    const webpData = Buffer.from("RIFF\0\0\0\0WEBP", "binary").toString("base64");
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "image_end",
+        contentIndex: 2,
+        content: { type: "image", data: webpData, mimeType: "image/webp" },
+      },
+      message: {
+        role: "assistant",
+        responseId: "response-image",
+        content: [
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+          { type: "text", text: "after image" },
+          { type: "image", data: webpData, mimeType: "image/webp" },
+        ],
+      },
+    });
+    await scheduler.flush();
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-1",
+      item: {
+        type: "error",
+        id: "omp:assistant:1:-588CG_nYBzM:content:2:image:error",
+        message: "OMP image uses WebP, which is not supported on every Paseo client",
+      },
+    });
     await finishTurn(events, session, turnId);
     await connection.close();
   });
@@ -3973,6 +4026,76 @@ describe("OMP direct provider", () => {
         expect(terminals.filter((event) => event.turnId === turnId)).toHaveLength(1);
       }
       expect(terminals.some((event) => event.turnId === undefined)).toBe(false);
+    } finally {
+      unsubscribe?.();
+      await session?.close();
+      await registry.shutdown();
+    }
+  });
+  test("serializes anonymous compactions through the Paseo provider reducer", async () => {
+    const runtime = new FakeOmpRuntime();
+    const registration = createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV });
+    // Static imports resolve the host's incompatible Node/Zod declaration graph in this package.
+    const adapter = (await import(pluginProviderModulePath)) as unknown as {
+      PluginAgentClientRegistry: HostRegistryConstructor;
+    };
+    const registry = new adapter.PluginAgentClientRegistry(pino({ enabled: false }));
+    registry.replace([registration]);
+    const client = registry.clients()[registration.id];
+    if (!client) throw new Error("registered OMP client is missing");
+    let session: HostSession | undefined;
+    let unsubscribe: (() => void) | undefined;
+    try {
+      session = await client.createSession(
+        {
+          provider: registration.id,
+          cwd: "/repo",
+          model: MODEL_PUBLIC_ID,
+          mcpServers: {},
+          modeId: "full",
+          thinkingOptionId: "medium",
+          featureValues: {},
+        },
+        { env: { TEST_ENV: "test-value" } },
+        { persistSession: false },
+      );
+      const timeline: HostTimelineItem[] = [];
+      unsubscribe = session.subscribe((event) => {
+        if (event.type === "timeline" && event.item) timeline.push(event.item);
+      });
+      const native = sessionAt(runtime);
+      native.emit({ type: "auto_compaction_start", reason: "overflow", action: "remote" });
+      native.emit({
+        type: "auto_compaction_start",
+        reason: "threshold",
+        action: "context-full",
+      });
+      native.emit({
+        type: "auto_compaction_end",
+        action: "context-full",
+        aborted: false,
+        willRetry: false,
+      });
+      native.emit({
+        type: "auto_compaction_end",
+        action: "remote",
+        aborted: false,
+        willRetry: false,
+      });
+      native.emit({ type: "compaction_start" });
+      native.emit({ type: "compaction_end", aborted: false, willRetry: false });
+      await Promise.resolve();
+
+      expect(timeline.filter((item) => item.type === "compaction")).toEqual([
+        { type: "compaction", status: "loading", trigger: "auto" },
+        { type: "compaction", status: "completed", trigger: "auto" },
+        { type: "compaction", status: "loading", trigger: "manual" },
+        { type: "compaction", status: "completed", trigger: "manual" },
+      ]);
+      expect(timeline).toContainEqual({
+        type: "error",
+        message: "OMP emitted overlapping compactions",
+      });
     } finally {
       unsubscribe?.();
       await session?.close();
@@ -6132,7 +6255,7 @@ describe("OMP direct provider", () => {
       type: "session.permission",
       sessionId: "session-1",
       permissionId: permission.request.id,
-      response: { behavior: "deny", selectedActionId: productionAction.id },
+      response: { behavior: "allow", selectedActionId: "submit" },
     });
     await events.waitFor(
       (event) =>
@@ -6158,6 +6281,18 @@ describe("OMP direct provider", () => {
     expect(session.extensionUiResponses).toEqual([
       { type: "extension_ui_response", id: "native-select", value: "Production" },
     ]);
+    const postResponseTerminalCount = events.filter(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    ).length;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toHaveLength(postResponseTerminalCount);
     session.emit({
       type: "tool_execution_end",
       toolCallId: "ask-tool",
@@ -6522,6 +6657,10 @@ describe("OMP direct provider", () => {
       response: { behavior: "allow", selectedActionId: "submit" },
     });
     await Promise.resolve();
+    firstSession.emit({
+      type: "message_end",
+      message: { role: "assistant", responseId: "permission-answer", content: "Continuing" },
+    });
     firstSession.emit({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
       (event) =>
@@ -6779,9 +6918,16 @@ describe("OMP direct provider", () => {
     if (browserCarrier?.type !== "timeline.item" || browserCarrier.item.type !== "tool_call") {
       throw new Error("Expected browser screenshot image carrier");
     }
-    const browserTransform = transformOmpImageToolItem(browserCarrier.item);
+    // Static imports pull the host's incompatible Node/Zod declaration graph into this package.
+    const timelineContent = (await import(timelineContentModulePath)) as unknown as {
+      limitAgentTimelineItemContent(item: ProviderTimelineItem): ProviderTimelineItem;
+    };
+    const reducedCarrier = timelineContent.limitAgentTimelineItemContent(browserCarrier.item);
+    if (reducedCarrier.type !== "tool_call") throw new Error("Expected reduced image carrier");
+    const browserTransform = transformOmpImageToolItem(reducedCarrier);
     const browserImage = browserTransform?.items[0];
     expect(JSON.stringify(browserImage?.data).length).toBeGreaterThan(256 * 1024);
+    expect(ompImageTimelineSchema.parse(browserImage?.data).images[0]?.data).toBe(screenshotBytes);
     expect(browserImage).toEqual({
       type: "plugin",
       id: browserCarrier.item.id,
@@ -7071,6 +7217,7 @@ describe("OMP direct provider", () => {
       aborted: false,
       willRetry: false,
     });
+    const overlapBaseline = events.length;
     session.emit({ type: "auto_compaction_start", reason: "overflow", action: "remote" });
     session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
     session.emit({
@@ -7085,23 +7232,28 @@ describe("OMP direct provider", () => {
       aborted: false,
       willRetry: false,
     });
-    const overlapBaseline = events.length;
-    for (let index = 0; index < 9; index += 1) session.emit({ type: "compaction_start" });
     const overlapEvents = events
       .slice(overlapBaseline)
       .flatMap((event) => (event.type === "timeline.item" ? [event.item] : []));
-    const overlapLoading = overlapEvents.filter(
-      (item) => item.type === "compaction" && item.status === "loading",
-    );
-    const overlapRetired = overlapEvents.filter(
-      (item) =>
-        item.type === "error" && item.message === "OMP emitted too many overlapping compactions",
-    );
-    expect(overlapLoading).toHaveLength(8);
-    expect(overlapRetired).toHaveLength(8);
-    expect(new Set(overlapLoading.map((item) => `${item.id}:error`))).toEqual(
-      new Set(overlapRetired.map((item) => item.id)),
-    );
+    expect(overlapEvents).toEqual([
+      {
+        type: "compaction",
+        id: "omp:compaction:5",
+        status: "loading",
+        trigger: "auto",
+      },
+      {
+        type: "compaction",
+        id: "omp:compaction:5",
+        status: "completed",
+        trigger: "auto",
+      },
+      {
+        type: "error",
+        id: "omp:compaction:5:error",
+        message: "OMP emitted overlapping compactions",
+      },
+    ]);
     session.emit({ type: "advisor_yielded" });
     const rendered = events.slice(beforeCustom).filter((event) => event.type === "timeline.item");
     expect(JSON.stringify(rendered)).not.toContain("hidden");
@@ -7456,17 +7608,24 @@ describe("OMP direct provider", () => {
       });
     }
     await scheduler.flush();
-    const renderedImages = events.flatMap((event) =>
-      event.type === "timeline.item" &&
-      event.item.type === "assistant_message" &&
-      event.item.text.startsWith("![OMP image]")
-        ? [event.item.text]
-        : [],
-    );
+    const renderedImages = events.flatMap((event) => {
+      if (event.type !== "timeline.item" || event.item.type !== "tool_call") return [];
+      const transformed = transformOmpImageToolItem(event.item)?.items[0];
+      if (!transformed) return [];
+      return ompImageTimelineSchema.parse(transformed.data).images.map((image) => image.data);
+    });
     expect(renderedImages.length).toBeLessThan(64);
-    expect(renderedImages.reduce((total, text) => total + Buffer.byteLength(text), 0)).toBeLessThan(
+    expect(renderedImages.reduce((total, data) => total + Buffer.byteLength(data), 0)).toBeLessThan(
       9 * 1024 * 1024,
     );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "assistant_message" &&
+          event.item.text.includes("data:image"),
+      ),
+    ).toBe(false);
     await finishTurn(events, sessionAt(runtime), turnId);
     await connection.close();
   });

@@ -125,6 +125,7 @@ type PendingPermission = {
   header: string;
   fingerprint: string;
   optionValues: ReadonlyMap<string, string>;
+  actionBehaviors: ReadonlyMap<string, "allow" | "deny">;
   retainedBytes: number;
   displayValues: ReadonlyMap<string, readonly string[]>;
   generation: number;
@@ -1015,7 +1016,6 @@ export class OmpProviderSession {
     }
     if (this.inFlightPermissions.get(input.permissionId) !== pending) return;
     this.inFlightPermissions.delete(input.permissionId);
-    this.clearPermissionEvidenceIfSettled();
     this.emit({
       type: "session.permission_resolved",
       sessionId: this.id,
@@ -1643,18 +1643,49 @@ export class OmpProviderSession {
           : {}),
       };
     });
+    const actions =
+      request.method === "select"
+        ? [
+            ...(options ?? []).map((option) => ({
+              id: option.value,
+              label: option.label,
+              behavior: "allow" as const,
+              variant: "secondary" as const,
+            })),
+            {
+              id: "cancel",
+              label: "Cancel",
+              behavior: "deny" as const,
+              variant: "secondary" as const,
+            },
+          ]
+        : [
+            {
+              id: "submit",
+              label: request.method === "confirm" ? "Confirm" : "Submit",
+              behavior: "allow" as const,
+              variant: "primary" as const,
+            },
+            {
+              id: "cancel",
+              label: "Cancel",
+              behavior: "deny" as const,
+              variant: "secondary" as const,
+            },
+          ];
     // OMP passes rpc-ui dialog timeouts directly to setTimeout, so the wire unit is milliseconds.
     const pending: PendingPermission = {
       nativeId: request.id,
       header,
       fingerprint,
       optionValues,
+      actionBehaviors: new Map(actions.map((action) => [action.id, action.behavior])),
       displayValues,
       generation: this.generation,
       runtime: this.runtime,
       request,
       retainedBytes: boundedJsonBytes(
-        { request, header, options: options ?? [] },
+        { request, header, options: options ?? [], actions },
         MAX_PENDING_PERMISSION_BYTES,
         512,
         MAX_PENDING_PERMISSION_BYTES,
@@ -1689,36 +1720,6 @@ export class OmpProviderSession {
     this.armPermissionTimeout(id, pending);
     this.projector.markAskPermissionRendered();
     if (this.activeTurn) this.activeTurn.awaitingPermissionEvidence = true;
-    const actions =
-      request.method === "select"
-        ? [
-            ...(options ?? []).map((option) => ({
-              id: option.value,
-              label: option.label,
-              behavior: "allow" as const,
-              variant: "secondary" as const,
-            })),
-            {
-              id: "cancel",
-              label: "Cancel",
-              behavior: "deny" as const,
-              variant: "secondary" as const,
-            },
-          ]
-        : [
-            {
-              id: "submit",
-              label: request.method === "confirm" ? "Confirm" : "Submit",
-              behavior: "allow" as const,
-              variant: "primary" as const,
-            },
-            {
-              id: "cancel",
-              label: "Cancel",
-              behavior: "deny" as const,
-              variant: "secondary" as const,
-            },
-          ];
     this.emit({
       type: "session.permission",
       sessionId: this.id,
@@ -1774,7 +1775,6 @@ export class OmpProviderSession {
     void this.runtime
       .respondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true })
       .catch(() => this.handleRuntimeFailure());
-    this.clearPermissionEvidenceIfSettled();
   }
 
   private extensionUiResponse(
@@ -1782,13 +1782,7 @@ export class OmpProviderSession {
     response: ProviderPermissionResponse,
   ): OmpExtensionUiResponse {
     if (response.selectedActionId !== undefined) {
-      const expectedBehavior =
-        response.selectedActionId === "cancel"
-          ? "deny"
-          : response.selectedActionId === "submit" ||
-              pending.optionValues.has(response.selectedActionId)
-            ? "allow"
-            : undefined;
+      const expectedBehavior = pending.actionBehaviors.get(response.selectedActionId);
       if (expectedBehavior === undefined || expectedBehavior !== response.behavior) {
         throw new OmpPublicError("OMP permission action is invalid");
       }
@@ -1845,7 +1839,6 @@ export class OmpProviderSession {
         if (pending.nativeId !== nativeId) continue;
         permissions.delete(permissionId);
         if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
-        this.clearPermissionEvidenceIfSettled();
         this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
         return;
       }
@@ -1889,7 +1882,6 @@ export class OmpProviderSession {
     for (const permissionId of permissionIds) {
       this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
     }
-    this.clearPermissionEvidenceIfSettled();
   }
 
   private armPermissionTimeout(permissionId: string, pending: PendingPermission): void {
@@ -1899,7 +1891,6 @@ export class OmpProviderSession {
       if (this.pendingPermissions.get(permissionId) !== pending) return;
       this.pendingPermissions.delete(permissionId);
       if (!this.permissionOwnerIsCurrent(pending)) {
-        this.clearPermissionEvidenceIfSettled();
         this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
         return;
       }
@@ -1915,7 +1906,6 @@ export class OmpProviderSession {
           () => {
             if (this.inFlightPermissions.get(permissionId) !== pending) return;
             this.inFlightPermissions.delete(permissionId);
-            this.clearPermissionEvidenceIfSettled();
             this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
           },
           () => this.handleRuntimeFailure(),
@@ -1934,18 +1924,6 @@ export class OmpProviderSession {
     }
     if (pending.turnId === undefined) return true;
     return this.activeTurn?.turnId === pending.turnId && !this.activeTurn.terminal;
-  }
-
-  private clearPermissionEvidenceIfSettled(): void {
-    const turn = this.activeTurn;
-    if (!turn) return;
-    const ownsTurn = (pending: PendingPermission) => pending.turnId === turn.turnId;
-    if (
-      ![...this.pendingPermissions.values()].some(ownsTurn) &&
-      ![...this.inFlightPermissions.values()].some(ownsTurn)
-    ) {
-      turn.awaitingPermissionEvidence = false;
-    }
   }
 
   private async slashSteerUnavailable(commandName: string): Promise<boolean> {

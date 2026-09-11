@@ -7,7 +7,7 @@ export const ompImageTimelineSchema = z.object({
       z.object({
         id: z.string(),
         data: z.string(),
-        mimeType: z.enum(["image/gif", "image/jpeg", "image/png", "image/webp"]),
+        mimeType: z.enum(["image/gif", "image/jpeg", "image/png"]),
       }),
     )
     .min(1)

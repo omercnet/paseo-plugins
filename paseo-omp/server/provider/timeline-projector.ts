@@ -4,7 +4,7 @@ import type {
   ProviderTimelineItem,
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
-import { isOmpImageMimeType, isValidImagePayload } from "./image";
+import { isOmpImageMimeType, isValidImagePayload, type OmpImageMimeType } from "./image";
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
 import { boundedJsonBytes, type JsonValue, OmpPublicDataFilter, utf8Bytes } from "./security";
 
@@ -16,12 +16,21 @@ const MAX_TODOS = 256;
 const MAX_TURN_NATIVE_IDENTITIES = 1_024;
 const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
 const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
-const MAX_IMAGE_MARKDOWN_LENGTH = 8 * 1024 * 1024 + 256;
-const MAX_STREAM_TOTAL_BYTES = MAX_IMAGE_MARKDOWN_LENGTH * 2;
+const MAX_IMAGE_ENCODED_LENGTH = 8 * 1024 * 1024;
+const MAX_STREAM_TOTAL_BYTES = (MAX_IMAGE_ENCODED_LENGTH + 256) * 2;
 const MAX_NATIVE_IMAGE_RESULT_BYTES = 12 * 1024 * 1024;
-const MAX_ACTIVE_COMPACTIONS = 8;
 
 type Emit = (event: ProviderEvent) => void;
+type NativeImageMimeType = Exclude<OmpImageMimeType, "image/webp">;
+
+type NativeImage = {
+  id: string;
+  data: string;
+  mimeType: NativeImageMimeType;
+};
+
+const UNSUPPORTED_WEBP_MESSAGE =
+  "OMP image uses WebP, which is not supported on every Paseo client";
 
 type StreamBlockKind = "assistant_message" | "reasoning" | "image";
 
@@ -29,6 +38,8 @@ type StreamBlockSnapshot = {
   kind: StreamBlockKind;
   text: string;
   publishedText?: string;
+  image?: NativeImage;
+  error?: string;
 };
 
 type StreamSnapshot = {
@@ -71,11 +82,29 @@ type AssistantMessageEvent = Extract<
 function assistantIdentity(message: OmpMessage): string | undefined {
   return message.responseId ?? message.entryId;
 }
+function imageBlock(data: string, mimeType: string): StreamBlockSnapshot | undefined {
+  if (!isValidImagePayload(data, mimeType, MAX_IMAGE_ENCODED_LENGTH)) return undefined;
+  if (!isOmpImageMimeType(mimeType)) return undefined;
+  if (mimeType === "image/webp") {
+    return { kind: "image", text: mimeType, error: UNSUPPORTED_WEBP_MESSAGE };
+  }
+  return {
+    kind: "image",
+    text: `${mimeType}\n${data}`,
+    image: {
+      id: createHash("sha256")
+        .update(mimeType)
+        .update("\n")
+        .update(data)
+        .digest("base64url")
+        .slice(0, 16),
+      data,
+      mimeType,
+    },
+  };
+}
 
-function blockText(
-  message: OmpMessage,
-  contentIndex: number,
-): { kind: StreamBlockKind; text: string } | undefined {
+function blockText(message: OmpMessage, contentIndex: number): StreamBlockSnapshot | undefined {
   if (typeof message.content === "string") {
     return contentIndex === 0 ? { kind: "assistant_message", text: message.content } : undefined;
   }
@@ -84,7 +113,7 @@ function blockText(
   if (part?.type === "text") return { kind: "assistant_message", text: part.text ?? "" };
   if (part?.type === "thinking") return { kind: "reasoning", text: part.thinking ?? "" };
   if (part?.type === "image" && part.data && part.mimeType) {
-    return { kind: "image", text: `![OMP image](data:${part.mimeType};base64,${part.data})` };
+    return imageBlock(part.data, part.mimeType);
   }
   return undefined;
 }
@@ -137,19 +166,17 @@ function resultDetails(value: JsonValue): Record<string, JsonValue> | undefined 
 }
 
 type NativeImageEnvelope = {
-  images: Array<{
-    id: string;
-    data: string;
-    mimeType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
-  }>;
+  images: NativeImage[];
   text?: string;
   details?: JsonValue;
 };
 
+type NativeImageResult = { image: NativeImageEnvelope } | { error: string };
+
 function nativeImageResult(
   value: unknown,
   filter: OmpPublicDataFilter,
-): NativeImageEnvelope | undefined {
+): NativeImageResult | undefined {
   if (
     boundedJsonBytes(
       value,
@@ -180,11 +207,12 @@ function nativeImageResult(
         typeof part.data !== "string" ||
         !("mimeType" in part) ||
         typeof part.mimeType !== "string" ||
-        !isValidImagePayload(part.data, part.mimeType, 8 * 1024 * 1024) ||
+        !isValidImagePayload(part.data, part.mimeType, MAX_IMAGE_ENCODED_LENGTH) ||
         !isOmpImageMimeType(part.mimeType)
       ) {
         return undefined;
       }
+      if (part.mimeType === "image/webp") return { error: UNSUPPORTED_WEBP_MESSAGE };
       images.push({
         id: createHash("sha256")
           .update(part.mimeType)
@@ -211,13 +239,20 @@ function nativeImageResult(
       ? filter.json(value.details, MAX_PUBLIC_TOOL_PAYLOAD_BYTES, MAX_PUBLIC_TOOL_PAYLOAD_BYTES)
       : undefined;
   return {
-    images,
-    ...(text.length > 0 ? { text: text.join("\n") } : {}),
-    ...(details !== undefined ? { details } : {}),
+    image: {
+      images,
+      ...(text.length > 0 ? { text: text.join("\n") } : {}),
+      ...(details !== undefined ? { details } : {}),
+    },
   };
 }
 
-type CompactionSlot = { id: string; retrying: boolean; action?: string };
+type CompactionSlot = {
+  id: string;
+  trigger: "auto" | "manual";
+  retrying: boolean;
+  action?: string;
+};
 
 export class OmpTimelineProjector {
   private readonly tools = new Map<string, ToolSnapshot>();
@@ -233,10 +268,8 @@ export class OmpTimelineProjector {
   private userSequence = 0;
   private customSequence = 0;
   private compactionSequence = 0;
-  private readonly compactions: Record<"auto" | "manual", CompactionSlot[]> = {
-    auto: [],
-    manual: [],
-  };
+  private activeCompaction: CompactionSlot | null = null;
+  private discardedCompactionEnds = 0;
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -365,14 +398,23 @@ export class OmpTimelineProjector {
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
         if (preservedImage && !event.isError) {
+          if ("error" in preservedImage) {
+            const output = this.dataFilter.json(
+              event.result,
+              MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+              MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+            );
+            this.publishTool({ ...previous, output }, "completed");
+            this.publishImageError(`${previous.publicId}:images`, preservedImage.error);
+            return;
+          }
+          const { image } = preservedImage;
           const output: JsonValue = {
-            ...(preservedImage.text
-              ? { content: [{ type: "text", text: preservedImage.text }] }
-              : {}),
-            ...(preservedImage.details !== undefined ? { details: preservedImage.details } : {}),
+            ...(image.text ? { content: [{ type: "text", text: image.text }] } : {}),
+            ...(image.details !== undefined ? { details: image.details } : {}),
           };
           this.publishTool({ ...previous, output }, "completed");
-          this.publishImages(previous.publicId, previous.name, preservedImage);
+          this.publishImages(previous.publicId, previous.name, image);
           return;
         }
         const output = previous.unsafePartialOutput
@@ -479,37 +521,40 @@ export class OmpTimelineProjector {
     if (event.type === "auto_compaction_start" || event.type === "compaction_start") {
       const trigger = event.type === "auto_compaction_start" ? "auto" : "manual";
       const action = event.type === "auto_compaction_start" ? event.action : undefined;
-      const active = this.compactions[trigger];
-      const retrying = active.filter((slot) => slot.retrying && slot.action === action);
-      if (retrying.length > 1) {
-        this.retireCompactions("OMP emitted ambiguous compaction retries");
+      if (this.discardedCompactionEnds > 0) {
+        this.discardedCompactionEnds += 1;
         return;
       }
-      if (retrying[0]) {
-        retrying[0].retrying = false;
+      const active = this.activeCompaction;
+      if (active?.retrying && active.trigger === trigger && active.action === action) {
+        active.retrying = false;
         return;
       }
-      const activeCount = this.compactions.auto.length + this.compactions.manual.length;
-      if (activeCount >= MAX_ACTIVE_COMPACTIONS) {
-        this.retireCompactions("OMP emitted too many overlapping compactions");
+      if (active) {
+        this.retireCompactions("OMP emitted overlapping compactions");
+        this.discardedCompactionEnds = 2;
         return;
       }
       this.compactionSequence += 1;
       const slot: CompactionSlot = {
         id: `omp:compaction:${this.compactionSequence}`,
+        trigger,
         retrying: false,
         ...(action ? { action } : {}),
       };
-      active.push(slot);
+      this.activeCompaction = slot;
       this.publish({ type: "compaction", id: slot.id, status: "loading", trigger });
       return;
     }
     if (event.type === "auto_compaction_end" || event.type === "compaction_end") {
+      if (this.discardedCompactionEnds > 0) {
+        this.discardedCompactionEnds -= 1;
+        return;
+      }
       const trigger = event.type === "auto_compaction_end" ? "auto" : "manual";
       const action = event.type === "auto_compaction_end" ? event.action : undefined;
-      const active = this.compactions[trigger];
-      const candidates = active.filter((slot) => slot.action === action);
-      if (candidates.length === 0) {
+      const slot = this.activeCompaction;
+      if (!slot) {
         this.compactionSequence += 1;
         this.publish({
           type: "error",
@@ -518,16 +563,16 @@ export class OmpTimelineProjector {
         });
         return;
       }
-      if (candidates.length > 1) {
-        this.retireCompactions("OMP emitted ambiguous overlapping compactions");
+      if (slot.trigger !== trigger || slot.action !== action) {
+        this.retireCompactions("OMP emitted overlapping compactions");
+        this.discardedCompactionEnds = 1;
         return;
       }
-      const slot = candidates[0] as CompactionSlot;
       if (event.willRetry) {
         slot.retrying = true;
         return;
       }
-      active.splice(active.indexOf(slot), 1);
+      this.activeCompaction = null;
       const result = jsonRecord(this.dataFilter.json(event.result ?? null));
       const rawPreTokens = result?.preTokens ?? result?.tokensBefore;
       const preTokens =
@@ -604,10 +649,14 @@ export class OmpTimelineProjector {
       ) {
         continue;
       }
-      const suffix = block.kind === "reasoning" ? "reasoning" : "text";
+      const suffix =
+        block.kind === "reasoning" ? "reasoning" : block.kind === "image" ? "image" : "text";
       const id = `${stream.messageId}:content:${contentIndex}:${suffix}`;
       if (block.kind === "reasoning") {
         this.publish({ type: "reasoning", id, text: publicText.text });
+      } else if (block.kind === "image") {
+        if (block.image) this.publishImages(id, "Assistant image", { images: [block.image] });
+        else if (block.error) this.publishImageError(id, block.error);
       } else {
         this.publish({
           type: "assistant_message",
@@ -649,12 +698,11 @@ export class OmpTimelineProjector {
   }
 
   retireCompactions(message: string): void {
-    for (const trigger of ["auto", "manual"] as const) {
-      for (const slot of this.compactions[trigger].splice(0)) {
-        this.publish({ type: "compaction", id: slot.id, status: "completed", trigger });
-        this.publish({ type: "error", id: `${slot.id}:error`, message });
-      }
-    }
+    const slot = this.activeCompaction;
+    if (!slot) return;
+    this.activeCompaction = null;
+    this.publish({ type: "compaction", id: slot.id, status: "completed", trigger: slot.trigger });
+    this.publish({ type: "error", id: `${slot.id}:error`, message });
   }
 
   private ensureTurn(turnId: string): void {
@@ -758,17 +806,7 @@ export class OmpTimelineProjector {
       this.setBlock(stream, contentIndex, snapshot);
       return;
     }
-    const kind = update.type.startsWith("thinking_")
-      ? "reasoning"
-      : update.type.startsWith("text_")
-        ? "assistant_message"
-        : update.type.startsWith("image_")
-          ? "image"
-          : undefined;
-    if (!kind) return;
-    const previous = stream.blocks.get(contentIndex);
     const content = update.content;
-    let eventContent = typeof content === "string" ? content : undefined;
     if (
       content &&
       typeof content === "object" &&
@@ -780,8 +818,18 @@ export class OmpTimelineProjector {
       "mimeType" in content &&
       typeof content.mimeType === "string"
     ) {
-      eventContent = `![OMP image](data:${content.mimeType};base64,${content.data})`;
+      const image = imageBlock(content.data, content.mimeType);
+      if (image) this.setBlock(stream, contentIndex, image);
+      return;
     }
+    const kind = update.type.startsWith("thinking_")
+      ? "reasoning"
+      : update.type.startsWith("text_")
+        ? "assistant_message"
+        : undefined;
+    if (!kind) return;
+    const previous = stream.blocks.get(contentIndex);
+    const eventContent = typeof content === "string" ? content : undefined;
     const text =
       eventContent ??
       (update.delta !== undefined && previous?.kind === kind
@@ -796,7 +844,8 @@ export class OmpTimelineProjector {
     snapshot: StreamBlockSnapshot,
   ): void {
     if (!this.isValidContentIndex(contentIndex)) return;
-    if (snapshot.kind === "image" && utf8Bytes(snapshot.text) > MAX_IMAGE_MARKDOWN_LENGTH) return;
+    if (snapshot.kind === "image" && utf8Bytes(snapshot.text) > MAX_IMAGE_ENCODED_LENGTH + 256)
+      return;
     const previous = stream.blocks.get(contentIndex);
     let retainedBytes = utf8Bytes(snapshot.text);
     let textBytes = snapshot.kind === "image" ? 0 : retainedBytes;
@@ -873,12 +922,13 @@ export class OmpTimelineProjector {
     const id = nativeIdentity
       ? `omp:custom:${createHash("sha256").update(nativeIdentity).digest("base64url").slice(0, 12)}`
       : `omp:custom:${this.customSequence}`;
-    const image = nativeImageResult(
+    const imageResult = nativeImageResult(
       { content: Array.isArray(message.content) ? message.content : [], details: message.details },
       this.dataFilter,
     );
-    if (image) {
-      this.publishImages(id, publicType, image);
+    if (imageResult) {
+      if ("error" in imageResult) this.publishImageError(`${id}:images`, imageResult.error);
+      else this.publishImages(id, publicType, imageResult.image);
       return;
     }
     const content =
@@ -1127,6 +1177,10 @@ export class OmpTimelineProjector {
       return { type: "plan", text: resultText ?? JSON.stringify(snapshot.input) };
     }
     return { type: "unknown", input: snapshot.input, output: snapshot.output };
+  }
+
+  private publishImageError(id: string, message: string): void {
+    this.publish({ type: "error", id: `${id}:error`, message });
   }
 
   private publishImages(id: string, label: string, image: NativeImageEnvelope): void {
