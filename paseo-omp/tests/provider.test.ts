@@ -576,7 +576,16 @@ function turnIdFrom(result: ProviderEvent): string {
   return result.result.turnId;
 }
 
+function establishTerminalOwnership(session: FakeOmpSession): void {
+  session.emit({
+    type: "prompt_result",
+    id: `rpc-prompt-${session.promptCount}`,
+    agentInvoked: true,
+  });
+}
+
 function finishTurn(events: EventLog, session: FakeOmpSession, turnId: string) {
+  establishTerminalOwnership(session);
   session.emit({ type: "agent_end", messages: [], isTerminal: true });
   return events.waitFor(
     (event) =>
@@ -3147,82 +3156,25 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("does not complete after a suspended local timer loses to steering", async () => {
+  test("cancels local-only completion when the current-turn user echo arrives", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
     session.promptAgentInvoked = false;
-    const branchGate = Promise.withResolvers<void>();
-    session.branchMessagesGate = branchGate.promise;
-    session.branchMessages = [{ entryId: "entry-suspended-local", text: "work" }];
-    const turnId = turnIdFrom(await startPrompt(connection, events, "suspended-local", "work"));
-    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
-
-    const [localCompletion] = scheduler.runPending();
-    if (!localCompletion) throw new Error("Expected the local completion timer to start");
-    const steerGate = Promise.withResolvers<void>();
-    const steerObserved = Promise.withResolvers<void>();
-    session.steerGate = steerGate.promise;
-    session.steerObserved = steerObserved.resolve;
-    await connection.send({
-      type: "session.prompt",
-      sessionId: "session-1",
-      prompt: {
-        clientMessageId: "steer-after-timer",
-        delivery: "steer",
-        input: { type: "message", content: [{ type: "text", text: "continue" }] },
-      },
-    });
-    await steerObserved.promise;
+    session.branchMessages = [{ entryId: "entry-local-evidence", text: "work" }];
+    const turnId = turnIdFrom(await startPrompt(connection, events, "local-evidence", "work"));
     session.emit({
       type: "message_end",
-      message: { role: "user", content: "continue", entryId: "entry-after-timer" },
+      message: { role: "user", content: "work", entryId: "entry-local-evidence" },
     });
-
-    branchGate.resolve();
-    await localCompletion;
+    await scheduler.flush();
     expect(
       events.filter(
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
     ).toEqual([]);
-
-    steerGate.resolve();
-    const steerResult = await events.waitFor(
-      (event) =>
-        event.type === "session.prompt_result" && event.clientMessageId === "steer-after-timer",
-    );
-    expect(steerResult).toEqual({
-      type: "session.prompt_result",
-      sessionId: "session-1",
-      clientMessageId: "steer-after-timer",
-      result: { type: "steer", turnId },
-    });
-    expect(
-      events.filter(
-        (event) =>
-          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-      ),
-    ).toEqual([]);
-
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    const terminal = await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-    );
-    expect(terminal).toEqual({
-      type: "session.turn",
-      sessionId: "session-1",
-      turnId,
-      state: "completed",
-    });
-    expect(
-      events.filter(
-        (event) =>
-          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-      ),
-    ).toEqual([terminal]);
+    await finishTurn(events, session, turnId);
     await connection.close();
   });
 
@@ -4093,6 +4045,57 @@ describe("OMP direct provider", () => {
     await finishTurn(events, session, turnId);
     await connection.close();
   });
+  test("reconciles complete buffered turns before true false and missing acknowledgements", async () => {
+    for (const acknowledgement of [true, false, undefined]) {
+      const { connection, events, runtime } = await createHarness();
+      await openSession(connection, events);
+      const session = sessionAt(runtime);
+      session.promptAgentInvoked = acknowledgement;
+      session.promptEvents = [
+        {
+          type: "message_end",
+          message: {
+            role: "user",
+            content: "work",
+            entryId: `buffered-user-${String(acknowledgement)}`,
+          },
+        },
+        {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            responseId: `buffered-${String(acknowledgement)}`,
+            content: "Buffered response",
+          },
+        },
+        {
+          type: "agent_end",
+          messages: [{ role: "assistant", content: "Buffered response" }],
+          isTerminal: true,
+        },
+      ];
+      const result = await startPrompt(
+        connection,
+        events,
+        `buffered-${String(acknowledgement)}`,
+        "work",
+      );
+      const turnId = turnIdFrom(result);
+      const terminal = await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      );
+      expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+        ),
+      ).toHaveLength(1);
+      await connection.close();
+    }
+  });
+
   test("cleans pending and in-flight permissions when prompt acknowledgement rejects", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -4331,6 +4334,7 @@ describe("OMP direct provider", () => {
       expect(runtime.starts[1]).toEqual(
         expect.objectContaining({ resumeSessionId: "native-session" }),
       );
+      establishTerminalOwnership(sessionAt(runtime, 1));
       sessionAt(runtime, 1).emit({ type: "agent_end", messages: [], isTerminal: true });
       await expect(secondTerminal.promise).resolves.toEqual(
         expect.objectContaining({ type: "turn_completed", turnId: second.turnId }),
@@ -4605,19 +4609,68 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("ignores a delayed prior-turn agent_end while the current turn remains busy", async () => {
+  test("rejects delayed prior-turn activity after true and false B acknowledgements", async () => {
+    for (const acknowledgement of [true, false]) {
+      const { connection, events, runtime } = await createHarness();
+      await openSession(connection, events);
+      const session = sessionAt(runtime);
+      const firstTurn = turnIdFrom(
+        await startPrompt(connection, events, "terminal-owner-a", "first"),
+      );
+      await finishTurn(events, session, firstTurn);
+
+      session.promptAgentInvoked = acknowledgement;
+      const secondTurn = turnIdFrom(
+        await startPrompt(connection, events, "terminal-owner-b", "second"),
+      );
+      const stateLookups = session.stateLookups;
+      session.emit({ type: "turn_end" });
+      session.emit({
+        type: "message_end",
+        message: { role: "assistant", responseId: "stale-a", content: "late first output" },
+      });
+      session.emit({ type: "agent_end", messages: [], isTerminal: true });
+      for (let index = 0; index < 4; index += 1) await Promise.resolve();
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "session.turn" &&
+            event.turnId === secondTurn &&
+            event.state !== "started",
+        ),
+      ).toHaveLength(0);
+      expect(session.stateLookups).toBe(stateLookups + 1);
+
+      session.emit({ type: "prompt_result", id: "rpc-prompt-2", agentInvoked: true });
+      session.emit({
+        type: "agent_end",
+        messages: [{ role: "assistant", content: "second complete" }],
+        isTerminal: true,
+      });
+      const terminal = await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      );
+      expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+      await connection.close();
+    }
+  });
+
+  test("does not grant terminal ownership to a buffered positive prompt result", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
     const firstTurn = turnIdFrom(
-      await startPrompt(connection, events, "terminal-owner-a", "first"),
+      await startPrompt(connection, events, "buffered-owner-a", "first"),
     );
     await finishTurn(events, session, firstTurn);
 
+    session.promptAgentInvoked = true;
+    session.promptEvents = [{ type: "prompt_result", id: "rpc-prompt-2", agentInvoked: true }];
     const secondTurn = turnIdFrom(
-      await startPrompt(connection, events, "terminal-owner-b", "second"),
+      await startPrompt(connection, events, "buffered-owner-b", "second"),
     );
-    session.isStreaming = true;
+    session.promptEvents = [];
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     for (let index = 0; index < 4; index += 1) await Promise.resolve();
     expect(
@@ -4627,12 +4680,43 @@ describe("OMP direct provider", () => {
       ),
     ).toHaveLength(0);
 
-    session.isStreaming = false;
+    session.emit({ type: "prompt_result", id: "rpc-prompt-2", agentInvoked: true });
     session.emit({
       type: "agent_end",
       messages: [{ role: "assistant", content: "second complete" }],
       isTerminal: true,
     });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    await connection.close();
+  });
+
+  test("does not derive terminal ownership from a busy stale agent_end", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "busy-owner-a", "first"));
+    await finishTurn(events, session, firstTurn);
+
+    const secondTurn = turnIdFrom(await startPrompt(connection, events, "busy-owner-b", "second"));
+    session.isStreaming = true;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    session.isStreaming = false;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      ),
+    ).toHaveLength(0);
+
+    establishTerminalOwnership(session);
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
     const terminal = await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
@@ -4673,10 +4757,7 @@ describe("OMP direct provider", () => {
     await Promise.resolve();
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     branch.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
     await scheduler.flush();
     const terminal = await events.waitFor(
       (event) =>
@@ -4753,7 +4834,10 @@ describe("OMP direct provider", () => {
     session.isStreaming = true;
     const turnId = turnIdFrom(await startPrompt(connection, events, "active-state", "work"));
 
-    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "work", entryId: "active-user" },
+    });
     await Promise.resolve();
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     branch.resolve();
@@ -4766,6 +4850,7 @@ describe("OMP direct provider", () => {
     ).toHaveLength(0);
 
     session.isStreaming = false;
+    establishTerminalOwnership(session);
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     const terminal = await events.waitFor(
       (event) =>
@@ -4938,6 +5023,7 @@ describe("OMP direct provider", () => {
     await openSession(connection, events);
     const result = await startPrompt(connection, events, "degraded-1", "work");
     const turnId = turnIdFrom(result);
+    establishTerminalOwnership(sessionAt(runtime));
     sessionAt(runtime).emit({ type: "agent_end", messageCount: 1, isTerminal: true });
     const terminal = await events.waitFor(
       (event) =>
@@ -4979,7 +5065,57 @@ describe("OMP direct provider", () => {
       type: "extension_ui_request",
       id: "widget-idle",
       method: "setWidget",
+      widgetKey: "status",
     });
+    const urlBaseline = events.length;
+    session.emit({
+      type: "extension_ui_request",
+      id: "oauth-url",
+      method: "open_url",
+      url: "https://auth.example.com/callback?token=secret-token&code=secret-code&state=query-state#secret-fragment",
+      instructions: "Authenticate",
+    });
+    session.emit({
+      type: "extension_ui_request",
+      id: "safe-url",
+      method: "open_url",
+      url: "https://docs.example.com/guide",
+      instructions: "Documentation",
+    });
+    session.emit({
+      type: "extension_ui_request",
+      id: "malformed-url",
+      method: "open_url",
+      url: "not a URL",
+    });
+    session.emit({
+      type: "extension_ui_request",
+      id: "credential-url",
+      method: "open_url",
+      url: "https://user:password@example.com/private",
+    });
+    const urlItems = events
+      .slice(urlBaseline)
+      .flatMap((event) =>
+        event.type === "timeline.item" && event.item.type === "notification" ? [event.item] : [],
+      );
+    expect(urlItems).toEqual([
+      {
+        type: "notification",
+        id: "omp:ui:3",
+        level: "info",
+        message: "Authenticate\nhttps://auth.example.com/callback",
+      },
+      {
+        type: "notification",
+        id: "omp:ui:4",
+        level: "info",
+        message: "Documentation\nhttps://docs.example.com/guide",
+      },
+    ]);
+    expect(JSON.stringify(urlItems)).not.toMatch(
+      /secret-token|secret-code|query-state|secret-fragment|password/u,
+    );
 
     expect(events).toContainEqual({
       type: "timeline.item",
@@ -5021,6 +5157,22 @@ describe("OMP direct provider", () => {
         }),
       }),
     );
+    const unsafeLaunchBaseline = events.length;
+    session.emit({
+      type: "extension_ui_request",
+      id: "script-launch-url",
+      method: "open_url",
+      url: "https://safe.example.com/callback",
+      launchUrl: "javascript:alert(1)",
+    });
+    session.emit({
+      type: "extension_ui_request",
+      id: "file-launch-url",
+      method: "open_url",
+      url: "https://safe.example.com/callback",
+      launchUrl: "file:///private/oauth-token",
+    });
+    expect(events).toHaveLength(unsafeLaunchBaseline);
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
 
     const turnId = turnIdFrom(await startPrompt(connection, events, "after-passive", "continue"));
@@ -5555,11 +5707,7 @@ describe("OMP direct provider", () => {
       sessionId: "session-1",
     });
     await observed.promise;
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === firstTurn && event.state === "canceled",
-    );
+    await finishTurn(events, session, firstTurn);
     const blocked = await startPrompt(connection, events, "abort-blocked", "second");
     expect(blocked).toEqual(
       expect.objectContaining({
@@ -6054,6 +6202,7 @@ describe("OMP direct provider", () => {
       });
       await scheduler.flush();
     }
+    session.emit({ type: "prompt_result", id: "rpc-prompt-1", agentInvoked: true });
     session.emit({
       type: "agent_end",
       messages: [
@@ -6086,6 +6235,7 @@ describe("OMP direct provider", () => {
       "https://session%2Duser:p%40ss@example.test/session%2Dpath?code=token%2Dvalue#secret%2Dfragment";
     const children: ProviderRpcChild[] = [];
     const launchArgs: string[][] = [];
+    const promptRequestIds: string[] = [];
     const runtime = new OmpRpcRuntime({
       spawnProcess(request) {
         launchArgs.push([...request.args]);
@@ -6138,6 +6288,8 @@ describe("OMP direct provider", () => {
               data: { agentInvoked: true },
             });
             if (type === "prompt") {
+              if (typeof command.id === "string") promptRequestIds.push(command.id);
+              child.write({ type: "prompt_result", id: command.id, agentInvoked: true });
               child.write({
                 type: "tool_execution_start",
                 toolCallId: "buffered-large-tool",
@@ -6286,6 +6438,11 @@ describe("OMP direct provider", () => {
     }
     expect(completedTool.item.detail.output).toHaveLength(128);
     children[0]?.write({
+      type: "prompt_result",
+      id: promptRequestIds[0],
+      agentInvoked: true,
+    });
+    children[0]?.write({
       type: "agent_end",
       messages: [
         ...Array.from({ length: 128 }, () => ({ role: "assistant", content: "ok" })),
@@ -6313,6 +6470,12 @@ describe("OMP direct provider", () => {
       expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
     );
     const recoveredTurnId = turnIdFrom(recovered);
+    children[1]?.write({
+      type: "prompt_result",
+      id: promptRequestIds.at(-1),
+      agentInvoked: true,
+    });
+    children[1]?.write({ type: "agent_start" });
     children[1]?.writeChunked(
       {
         type: "agent_end",
@@ -6339,6 +6502,12 @@ describe("OMP direct provider", () => {
       await startPrompt(connection, events, "nested-terminal", "continue"),
     );
     children[1]?.write({
+      type: "prompt_result",
+      id: promptRequestIds.at(-1),
+      agentInvoked: true,
+    });
+    children[1]?.write({ type: "agent_start" });
+    children[1]?.write({
       type: "agent_end",
       messages: Array.from({ length: 400 }, () => ({
         role: "assistant",
@@ -6359,6 +6528,12 @@ describe("OMP direct provider", () => {
     const oversizedEnvelopeTurn = turnIdFrom(
       await startPrompt(connection, events, "oversized-terminal-envelope", "continue"),
     );
+    children[1]?.write({
+      type: "prompt_result",
+      id: promptRequestIds.at(-1),
+      agentInvoked: true,
+    });
+    children[1]?.write({ type: "agent_start" });
     children[1]?.write({
       type: "agent_end",
       metadata: Array.from({ length: 1_025 }, () => "x"),
@@ -6382,6 +6557,12 @@ describe("OMP direct provider", () => {
       const malformedTurn = turnIdFrom(
         await startPrompt(connection, events, `malformed-terminal-${index}`, "continue"),
       );
+      children[1]?.write({
+        type: "prompt_result",
+        id: promptRequestIds.at(-1),
+        agentInvoked: true,
+      });
+      children[1]?.write({ type: "agent_start" });
       children[1]?.write({ type: "agent_end", messages, isTerminal: true });
       await events.waitFor(
         (event) =>
@@ -6460,6 +6641,12 @@ describe("OMP direct provider", () => {
       await startPrompt(connection, events, "after-invalid-nonterminal", "continue"),
     );
     expect(launchArgs[5]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
+    children.at(-1)?.write({
+      type: "prompt_result",
+      id: promptRequestIds.at(-1),
+      agentInvoked: true,
+    });
+    children.at(-1)?.write({ type: "agent_start" });
     children.at(-1)?.write({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
       (event) =>
@@ -7145,6 +7332,7 @@ describe("OMP direct provider", () => {
       type: "message_end",
       message: { role: "assistant", responseId: "permission-answer", content: "Continuing" },
     });
+    firstSession.emit({ type: "prompt_result", id: "rpc-prompt-1", agentInvoked: true });
     firstSession.emit({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
       (event) =>
@@ -7348,6 +7536,57 @@ describe("OMP direct provider", () => {
     }
     session.emit({
       type: "tool_execution_start",
+      toolCallId: "sensitive-fetch",
+      toolName: "web_fetch",
+      args: { url: "https://example.com/page?token=model-secret#fragment" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "sensitive-fetch",
+      toolName: "web_fetch",
+      result: { content: "page" },
+    });
+    const sanitizedFetch = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "web_fetch" &&
+        event.item.status === "completed",
+    );
+    expect(
+      sanitizedFetch?.type === "timeline.item" && sanitizedFetch.item.type === "tool_call"
+        ? sanitizedFetch.item.detail
+        : undefined,
+    ).toEqual({ type: "fetch", url: "https://example.com/page", result: "page" });
+    expect(JSON.stringify(sanitizedFetch)).not.toContain("model-secret");
+
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "unsafe-fetch",
+      toolName: "web_fetch",
+      args: { url: "javascript:alert('secret')" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "unsafe-fetch",
+      toolName: "web_fetch",
+      result: { content: "ignored" },
+    });
+    const unsafeFetch = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "web_fetch" &&
+        event.item.status === "completed",
+    );
+    expect(
+      unsafeFetch?.type === "timeline.item" && unsafeFetch.item.type === "tool_call"
+        ? unsafeFetch.item.detail
+        : undefined,
+    ).toEqual({ type: "plain_text", label: "web_fetch", text: "ignored" });
+    expect(JSON.stringify(unsafeFetch)).not.toContain("javascript");
+    session.emit({
+      type: "tool_execution_start",
       toolCallId: "edit-default-input",
       toolName: "edit",
       args: { input: "apply prepared edit" },
@@ -7371,8 +7610,9 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "timeline.item" &&
         event.item.type === "tool_call" &&
-        event.item.id === "omp:tool:9" &&
-        event.item.status === "completed",
+        event.item.status === "completed" &&
+        event.item.detail.type === "edit" &&
+        event.item.detail.filePath === "src/derived.ts",
     );
     expect(
       derivedEdit?.type === "timeline.item" && derivedEdit.item.type === "tool_call"
@@ -7485,6 +7725,41 @@ describe("OMP direct provider", () => {
     expect(transformOmpImageToolItem(readCarrier.item)?.items[0]).toEqual(
       expect.objectContaining({ type: "plugin", kind: "omp-images" }),
     );
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "image-with-large-text",
+      toolName: "multi_image",
+      args: {},
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "image-with-large-text",
+      toolName: "multi_image",
+      result: {
+        content: [
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+          { type: "text", text: "a".repeat(150 * 1024) },
+          { type: "text", text: "b".repeat(150 * 1024) },
+          { type: "text", text: "c".repeat(150 * 1024) },
+        ],
+      },
+    });
+    const boundedTextCarrier = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "multi_image images",
+    );
+    if (
+      boundedTextCarrier?.type !== "timeline.item" ||
+      boundedTextCarrier.item.type !== "tool_call"
+    ) {
+      throw new Error("Expected bounded image text carrier");
+    }
+    const boundedImage = transformOmpImageToolItem(boundedTextCarrier.item)?.items[0];
+    const boundedImageData = ompImageTimelineSchema.parse(boundedImage?.data);
+    expect(Buffer.byteLength(boundedImageData.text ?? "", "utf8")).toBeLessThanOrEqual(256 * 1024);
+    expect(boundedImageData.images).toHaveLength(1);
     session.emit({
       type: "message_end",
       message: {
@@ -7834,6 +8109,16 @@ describe("OMP direct provider", () => {
       status: "completed",
       trigger: "manual",
     });
+    expect(rendered).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-1",
+      item: {
+        type: "notification",
+        id: "omp:compaction:2:skipped",
+        level: "warning",
+        message: "OMP compaction was skipped",
+      },
+    });
     expect(compactionResults).toContainEqual({
       type: "compaction",
       id: "omp:compaction:3",
@@ -7870,13 +8155,7 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "request.completed" && event.requestId === "interrupt-question-request",
     );
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    await events.waitFor(
-      (event) =>
-        event.type === "session.turn" &&
-        event.turnId === interruptedTurn &&
-        event.state === "canceled",
-    );
+    await finishTurn(events, session, interruptedTurn);
     await Promise.resolve();
     expect(session.extensionUiResponses).toContainEqual({
       type: "extension_ui_response",
@@ -7971,11 +8250,7 @@ describe("OMP direct provider", () => {
     await events.waitFor(
       (event) => event.type === "request.completed" && event.requestId === "invalidate-interrupt",
     );
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state === "canceled",
-    );
+    await finishTurn(events, session, turnId);
     await Promise.resolve();
     await Promise.resolve();
     expect(

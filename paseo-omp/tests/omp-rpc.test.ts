@@ -397,6 +397,66 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("rejects cross-kind extension UI fields", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const received: OmpRpcEvent[] = [];
+    session.onEvent((event) => received.push(event));
+
+    for (const frame of [
+      {
+        type: "extension_ui_request",
+        id: "bad-select",
+        method: "select",
+        title: "Select",
+        options: ["one"],
+        url: "https://example.com/?token=secret",
+      },
+      {
+        type: "extension_ui_request",
+        id: "bad-confirm",
+        method: "confirm",
+        title: "Confirm",
+        message: "Proceed?",
+        launchUrl: "javascript:alert(1)",
+      },
+      {
+        type: "extension_ui_request",
+        id: "bad-input",
+        method: "input",
+        title: "Input",
+        url: "file:///private/token",
+      },
+      {
+        type: "extension_ui_request",
+        id: "bad-editor",
+        method: "editor",
+        title: "Editor",
+        launchUrl: "https://example.com/?code=secret",
+      },
+    ]) {
+      child.write(frame);
+    }
+    child.write({ type: "notice", level: "info", message: "after invalid UI frames" });
+    await Promise.resolve();
+    expect(received).toEqual([
+      { type: "notice", level: "info", message: "after invalid UI frames" },
+    ]);
+    await session.close();
+  });
+
   test("passes an exact native session handle to OMP resume", async () => {
     const child = new FakeRpcChild();
     const launches: OmpSpawnRequest[] = [];

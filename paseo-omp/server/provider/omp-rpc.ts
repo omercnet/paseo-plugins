@@ -317,6 +317,96 @@ const OmpSubagentProgressPayloadSchema = z.object({
   sessionFile: boundedString(16_384).optional(),
   detached: z.boolean().optional(),
 });
+const ExtensionUiBase = { type: z.literal("extension_ui_request"), id: IDENTIFIER };
+const OmpExtensionUiRequestSchema = z.discriminatedUnion("method", [
+  z
+    .object({
+      ...ExtensionUiBase,
+      method: z.literal("select"),
+      title: boundedString(4_096),
+      options: z.array(boundedString(4_096)).min(1).max(128),
+      optionDetails: z
+        .array(z.object({ description: boundedString(16_384).optional() }).strict())
+        .max(128)
+        .optional(),
+      timeout: z.number().nonnegative().finite().optional(),
+    })
+    .strict()
+    .superRefine((request, context) => {
+      if (request.optionDetails && request.optionDetails.length !== request.options.length) {
+        context.addIssue({ code: "custom", message: "invalid extension UI request" });
+      }
+    }),
+  z
+    .object({
+      ...ExtensionUiBase,
+      method: z.literal("confirm"),
+      title: boundedString(4_096),
+      message: boundedString(64 * 1024),
+      timeout: z.number().nonnegative().finite().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...ExtensionUiBase,
+      method: z.literal("input"),
+      title: boundedString(4_096),
+      placeholder: boundedString(4_096).optional(),
+      prefill: TEXT.optional(),
+      timeout: z.number().nonnegative().finite().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...ExtensionUiBase,
+      method: z.literal("editor"),
+      title: boundedString(4_096),
+      prefill: TEXT.optional(),
+      promptStyle: z.boolean().optional(),
+      timeout: z.number().nonnegative().finite().optional(),
+    })
+    .strict(),
+  z.object({ ...ExtensionUiBase, method: z.literal("cancel"), targetId: IDENTIFIER }).strict(),
+  z
+    .object({
+      ...ExtensionUiBase,
+      method: z.literal("notify"),
+      message: boundedString(64 * 1024),
+      notifyType: z.enum(["info", "warning", "error"]).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...ExtensionUiBase,
+      method: z.literal("setStatus"),
+      statusKey: NAME,
+      statusText: boundedString(16_384).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...ExtensionUiBase,
+      method: z.literal("setWidget"),
+      widgetKey: NAME,
+      widgetLines: z.array(boundedString(16_384)).max(128).optional(),
+      widgetPlacement: z.enum(["aboveEditor", "belowEditor"]).optional(),
+    })
+    .strict(),
+  z
+    .object({ ...ExtensionUiBase, method: z.literal("setTitle"), title: boundedString(4_096) })
+    .strict(),
+  z.object({ ...ExtensionUiBase, method: z.literal("set_editor_text"), text: TEXT }).strict(),
+  z
+    .object({
+      ...ExtensionUiBase,
+      method: z.literal("open_url"),
+      url: boundedString(16_384),
+      launchUrl: boundedString(16_384).optional(),
+      instructions: boundedString(64 * 1024).optional(),
+    })
+    .strict(),
+]);
+
 const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
   ...OmpAgentSessionEventSchema.options,
   z.object({
@@ -392,63 +482,7 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     source: boundedString(MAX_NAME_LENGTH).optional(),
   }),
   z.object({ type: z.literal("command_output"), text: TEXT.optional() }),
-  z
-    .object({
-      type: z.literal("extension_ui_request"),
-      id: IDENTIFIER,
-      method: z.enum([
-        "select",
-        "confirm",
-        "input",
-        "editor",
-        "cancel",
-        "notify",
-        "setStatus",
-        "setWidget",
-        "setTitle",
-        "set_editor_text",
-        "open_url",
-      ]),
-      title: boundedString(4_096).optional(),
-      message: boundedString(64 * 1024).optional(),
-      options: z.array(boundedString(4_096)).max(128).optional(),
-      optionDetails: z
-        .array(z.object({ description: boundedString(16_384).optional() }))
-        .max(128)
-        .optional(),
-      timeout: z.number().nonnegative().finite().optional(),
-      placeholder: boundedString(4_096).optional(),
-      prefill: TEXT.optional(),
-      promptStyle: z.boolean().optional(),
-      targetId: IDENTIFIER.optional(),
-      notifyType: z.enum(["info", "warning", "error"]).optional(),
-      statusKey: NAME.optional(),
-      statusText: boundedString(16_384).optional(),
-      widgetKey: NAME.optional(),
-      widgetLines: z.array(boundedString(16_384)).max(128).optional(),
-      widgetPlacement: z.enum(["aboveEditor", "belowEditor"]).optional(),
-      text: TEXT.optional(),
-      url: boundedString(16_384).optional(),
-      launchUrl: boundedString(16_384).optional(),
-      instructions: boundedString(64 * 1024).optional(),
-    })
-    .superRefine((request, context) => {
-      const invalid = () =>
-        context.addIssue({ code: "custom", message: "invalid extension UI request" });
-      if (request.method === "select" && (!request.title || !request.options?.length)) invalid();
-      if (request.method === "confirm" && (!request.title || request.message === undefined))
-        invalid();
-      if ((request.method === "input" || request.method === "editor") && !request.title) invalid();
-      if (request.method === "cancel" && !request.targetId) invalid();
-      if (request.method === "notify" && request.message === undefined) invalid();
-      if (request.method === "setStatus" && !request.statusKey) invalid();
-      if (request.method === "setWidget" && !request.widgetKey) invalid();
-      if (request.method === "setTitle" && !request.title) invalid();
-      if (request.method === "set_editor_text" && request.text === undefined) invalid();
-      if (request.method === "open_url" && !request.url) invalid();
-      if (request.optionDetails && request.options?.length !== request.optionDetails.length)
-        invalid();
-    }),
+  OmpExtensionUiRequestSchema,
   z.object({
     type: z.literal("prompt_result"),
     id: IDENTIFIER.optional(),

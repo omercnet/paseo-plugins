@@ -137,6 +137,22 @@ function firstString(
   }
   return undefined;
 }
+function sanitizePublishedUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = new URL(value);
+    if (
+      (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+      parsed.username ||
+      parsed.password
+    ) {
+      return undefined;
+    }
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
 
 function todoPublicId(nativeId: string | undefined, index: number): string {
   if (!nativeId) return `omp:todo:${index}`;
@@ -197,6 +213,7 @@ function nativeImageResult(
   if (!Array.isArray(value.content)) return undefined;
   const images: NativeImageEnvelope["images"] = [];
   const text: string[] = [];
+  let textBytes = 0;
   for (const part of value.content) {
     if (
       part &&
@@ -234,7 +251,14 @@ function nativeImageResult(
       MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
     );
     const rendered = displayText(sanitized);
-    if (rendered) text.push(rendered);
+    if (!rendered) continue;
+    const separatorBytes = text.length > 0 ? 1 : 0;
+    const remainingBytes = MAX_PUBLIC_TOOL_PAYLOAD_BYTES - textBytes - separatorBytes;
+    if (remainingBytes <= 0) continue;
+    const bounded = filter.text(rendered, remainingBytes);
+    if (!bounded) continue;
+    text.push(bounded);
+    textBytes += separatorBytes + utf8Bytes(bounded);
   }
   if (images.length === 0) return undefined;
   const details =
@@ -521,8 +545,9 @@ export class OmpTimelineProjector {
       return;
     }
     if (event.type === "extension_ui_request" && event.method === "open_url") {
+      const url = sanitizePublishedUrl(event.launchUrl ?? event.url);
+      if (!url) return;
       this.noticeSequence += 1;
-      const url = event.launchUrl ?? event.url;
       const message = [event.instructions, url].filter(Boolean).join("\n");
       this.publish({
         type: "notification",
@@ -610,6 +635,14 @@ export class OmpTimelineProjector {
         trigger,
         ...(preTokens !== undefined ? { preTokens } : {}),
       });
+      if (event.skipped) {
+        this.publish({
+          type: "notification",
+          id: `${slot.id}:skipped`,
+          level: "warning",
+          message: "OMP compaction was skipped",
+        });
+      }
       if (event.aborted || event.errorMessage) {
         this.publish({
           type: "error",
@@ -1146,10 +1179,14 @@ export class OmpTimelineProjector {
     if (name === "read") {
       const filePath = firstString(nestedInput, "path", "filePath", "url");
       if (!filePath) return { type: "unknown", input: snapshot.input, output: snapshot.output };
-      if (/^https?:\/\//u.test(filePath)) {
+      if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(filePath)) {
+        const url = sanitizePublishedUrl(filePath);
+        if (!url) {
+          return { type: "plain_text", label: snapshot.name, text: resultText };
+        }
         return {
           type: "fetch",
-          url: filePath,
+          url,
           ...(resultText !== undefined ? { result: resultText } : {}),
         };
       }
@@ -1223,9 +1260,11 @@ export class OmpTimelineProjector {
       };
     }
     if (name === "fetch" || name === "web_fetch") {
+      const url = sanitizePublishedUrl(firstString(nestedInput, "url"));
+      if (!url) return { type: "plain_text", label: snapshot.name, text: resultText };
       return {
         type: "fetch",
-        url: firstString(nestedInput, "url") ?? "",
+        url,
         ...(firstString(nestedInput, "prompt")
           ? { prompt: firstString(nestedInput, "prompt") }
           : {}),
@@ -1393,7 +1432,7 @@ export class OmpTimelineProjector {
       callId: `${id}:images`,
       name: `${label} images`,
       detail: { type: "plain_text", label },
-      metadata: { ompImage: { label, ...image } },
+      metadata: { ompImageOwner: "omp-plugin", ompImage: { label, ...image } },
       status: "completed",
       error: null,
     });

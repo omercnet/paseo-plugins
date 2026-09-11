@@ -41,6 +41,10 @@ type SessionInterruptInput = Extract<ProviderInput, { type: "session.interrupt" 
 type SessionConfigureInput = Extract<ProviderInput, { type: "session.configure" }>;
 type SessionCloseInput = Extract<ProviderInput, { type: "session.close" }>;
 type SessionPermissionInput = Extract<ProviderInput, { type: "session.permission" }>;
+type OmpQuestionRequest = Extract<
+  Extract<OmpRpcEvent, { type: "extension_ui_request" }>,
+  { method: "select" | "confirm" | "input" | "editor" }
+>;
 type Emit = (event: ProviderEvent) => void;
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
@@ -102,9 +106,13 @@ type ActiveTurn = {
   localOnlyEligible: boolean;
   awaitingPermissionEvidence: boolean;
   activitySequence: number;
+  acknowledged: boolean;
+  terminalOwnershipEvidence: boolean;
+  replayingBufferedEvents: boolean;
   agentInvoked?: boolean;
   nativeRequestId?: string;
   localOnlyTimer?: unknown;
+  terminalOwnershipTimer?: unknown;
   terminalizing: boolean;
   steersInFlight: number;
   deferredAgentEnd?: Extract<OmpRpcEvent, { type: "agent_end" }>;
@@ -134,12 +142,10 @@ type PendingPermission = {
   expiresAt?: number;
   timer?: unknown;
   turnId?: string;
-  request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>;
+  request: OmpQuestionRequest;
 };
 
-function permissionFingerprint(
-  request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>,
-): string {
+function permissionFingerprint(request: OmpQuestionRequest): string {
   return createHash("sha256").update(JSON.stringify(request)).digest("base64url");
 }
 
@@ -577,6 +583,9 @@ export class OmpProviderSession {
       localOnlyEligible: false,
       terminalizing: false,
       activitySequence: 0,
+      acknowledged: false,
+      terminalOwnershipEvidence: false,
+      replayingBufferedEvents: false,
       steersInFlight: 0,
       userCorrelationActive: false,
       userLookups: new Set(),
@@ -601,17 +610,22 @@ export class OmpProviderSession {
       this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
       this.startTurn(turn);
       turn.starting = false;
-      const bufferedEvents = turn.bufferedEvents.splice(0);
-      for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
+      turn.acknowledged = true;
       if (acknowledgement.agentInvoked === true) this.markAgentEvidence(turn);
+      if (acknowledgement.agentInvoked === false && turn.agentInvoked !== true) {
+        turn.agentInvoked = false;
+        turn.localOnlyEligible = true;
+      }
+      const bufferedEvents = turn.bufferedEvents.splice(0);
+      turn.replayingBufferedEvents = true;
+      for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
+      turn.replayingBufferedEvents = false;
       if (
         acknowledgement.agentInvoked === false &&
         turn.agentInvoked !== true &&
         !turn.nativeActivity &&
         !turn.awaitingPermissionEvidence
       ) {
-        turn.agentInvoked = false;
-        turn.localOnlyEligible = true;
         this.scheduleLocalOnlyCompletion(turn);
       }
     } catch (error) {
@@ -1377,17 +1391,14 @@ export class OmpProviderSession {
       return;
     }
     if (event.type === "prompt_result") {
-      if (
-        !event.id ||
-        event.id !== turn.nativeRequestId ||
-        turn.localOnlyDisabled ||
-        turn.steersInFlight > 0
-      ) {
-        return;
-      }
+      if (!event.id || event.id !== turn.nativeRequestId) return;
       if (event.agentInvoked) {
         this.markAgentEvidence(turn);
-      } else if (!turn.nativeActivity && !turn.awaitingPermissionEvidence) {
+        if (!turn.replayingBufferedEvents) this.markTerminalOwnershipEvidence(turn);
+        return;
+      }
+      if (turn.localOnlyDisabled || turn.steersInFlight > 0) return;
+      if (!turn.nativeActivity && !turn.awaitingPermissionEvidence) {
         turn.agentInvoked = false;
         turn.localOnlyEligible = true;
         this.scheduleLocalOnlyCompletion(turn);
@@ -1424,6 +1435,7 @@ export class OmpProviderSession {
     }
     if (isNativeTurnActivity(event)) this.markAgentEvidence(turn);
     if (event.type === "message_end" && event.message.role === "user") {
+      this.markAgentEvidence(turn);
       this.projectUserEcho(turn, event.message);
       return;
     }
@@ -1555,7 +1567,7 @@ export class OmpProviderSession {
       turn.userEchoes.shift();
       if (!resolvedId) return;
       turn.pendingUsers.shift();
-      this.publishCorrelatedUser(pending, resolvedId);
+      this.publishCorrelatedUser(turn, pending, resolvedId);
     }
   }
 
@@ -1619,7 +1631,7 @@ export class OmpProviderSession {
         }),
     });
   }
-  private publishPermission(request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>): void {
+  private publishPermission(request: OmpQuestionRequest): void {
     if (request.method === "select" && !request.options?.length) {
       this.handleRuntimeFailure();
       return;
@@ -1661,31 +1673,35 @@ export class OmpProviderSession {
     const optionValues = new Map<string, string>();
     const displayValues = new Map<string, string>();
     const usedOptionLabels = new Set<string>();
-    const options = request.options?.map((nativeValue, index) => {
-      const baseLabel = this.dataFilter.text(nativeValue, 4_096);
-      let label = baseLabel;
-      let suffix = 2;
-      while (usedOptionLabels.has(label)) {
-        label = `${baseLabel} (${suffix})`;
-        suffix += 1;
-      }
-      usedOptionLabels.add(label);
-      const value = `${id}:option:${index}`;
-      optionValues.set(value, nativeValue);
-      displayValues.set(label, nativeValue);
-      return {
-        label,
-        value,
-        ...(request.optionDetails?.[index]?.description
-          ? {
-              description: this.dataFilter.text(
-                request.optionDetails[index]?.description ?? "",
-                16_384,
-              ),
+    const optionDetails = request.method === "select" ? request.optionDetails : undefined;
+    const options =
+      request.method === "select"
+        ? request.options.map((nativeValue, index) => {
+            const baseLabel = this.dataFilter.text(nativeValue, 4_096);
+            let label = baseLabel;
+            let suffix = 2;
+            while (usedOptionLabels.has(label)) {
+              label = `${baseLabel} (${suffix})`;
+              suffix += 1;
             }
-          : {}),
-      };
-    });
+            usedOptionLabels.add(label);
+            const value = `${id}:option:${index}`;
+            optionValues.set(value, nativeValue);
+            displayValues.set(label, nativeValue);
+            return {
+              label,
+              value,
+              ...(optionDetails?.[index]?.description
+                ? {
+                    description: this.dataFilter.text(
+                      optionDetails[index]?.description ?? "",
+                      16_384,
+                    ),
+                  }
+                : {}),
+            };
+          })
+        : undefined;
     const questionOptions =
       request.method === "confirm" ? [{ label: "Yes" }, { label: "No" }] : (options ?? []);
     const actions =
@@ -1776,7 +1792,7 @@ export class OmpProviderSession {
         name: `omp.${request.method}`,
         kind: "question",
         title: header,
-        ...(request.message
+        ...(request.method === "confirm"
           ? { description: this.dataFilter.text(request.message, 64 * 1024) }
           : {}),
         input: {
@@ -1784,33 +1800,26 @@ export class OmpProviderSession {
             {
               header,
               question: this.dataFilter.text(
-                request.message ?? request.title ?? "OMP input",
+                request.method === "confirm" ? request.message : request.title,
                 64 * 1024,
               ),
               options: questionOptions,
               multiSelect: false,
-              ...(request.placeholder
+              ...(request.method === "input" && request.placeholder
                 ? { placeholder: this.dataFilter.text(request.placeholder, 4_096) }
                 : {}),
-              ...(request.prefill ? { prefill: this.dataFilter.text(request.prefill) } : {}),
+              ...((request.method === "input" || request.method === "editor") && request.prefill
+                ? { prefill: this.dataFilter.text(request.prefill) }
+                : {}),
             },
           ],
-          ...(request.url
-            ? { url: this.dataFilter.text(request.launchUrl ?? request.url, 16_384) }
-            : {}),
-          ...(request.instructions
-            ? { instructions: this.dataFilter.text(request.instructions, 64 * 1024) }
-            : {}),
         },
         actions,
       },
     });
   }
 
-  private rejectPermissionRequest(
-    request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>,
-    description: string,
-  ): void {
+  private rejectPermissionRequest(request: OmpQuestionRequest, description: string): void {
     this.emit({
       type: "session.notice",
       sessionId: this.id,
@@ -1855,13 +1864,6 @@ export class OmpProviderSession {
     this.reevaluateDeferredPermissionTerminal();
     if (response.behavior === "deny") {
       return { type: "extension_ui_response", id: nativeId, cancelled: true };
-    }
-    if (request.method === "open_url") {
-      return {
-        type: "extension_ui_response",
-        id: nativeId,
-        value: request.launchUrl ?? request.url ?? "",
-      };
     }
     const selectedValue = response.selectedActionId
       ? pending.optionValues.get(response.selectedActionId)
@@ -2016,11 +2018,12 @@ export class OmpProviderSession {
     return this.slashCommands.has(commandName);
   }
 
-  private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {
+  private publishCorrelatedUser(turn: ActiveTurn, pending: PendingUser, entryId?: string): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
       this.seenEntryIds.add(entryId);
       this.emittedEntryIds.add(entryId);
+      this.markTerminalOwnershipEvidence(turn);
       const unclaimedIndex = this.unclaimedBranchEntries.findIndex(
         (entry) => entry.entryId === entryId,
       );
@@ -2036,6 +2039,11 @@ export class OmpProviderSession {
     turn.localOnlyEligible = false;
     this.cancelLocalOnlyCompletion(turn);
     if (!turn.awaitingPermissionEvidence) turn.deferredAgentEnd = undefined;
+  }
+
+  private markTerminalOwnershipEvidence(turn: ActiveTurn): void {
+    turn.terminalOwnershipEvidence = true;
+    this.cancelTerminalOwnershipTimeout(turn);
   }
 
   private scheduleLocalOnlyCompletion(turn: ActiveTurn): void {
@@ -2059,6 +2067,34 @@ export class OmpProviderSession {
     if (turn.localOnlyTimer === undefined) return;
     this.scheduler.clear(turn.localOnlyTimer);
     turn.localOnlyTimer = undefined;
+  }
+
+  private scheduleTerminalOwnershipTimeout(turn: ActiveTurn): void {
+    if (
+      turn.terminalOwnershipTimer !== undefined ||
+      turn.terminalOwnershipEvidence ||
+      (turn.agentInvoked === false && turn.localOnlyEligible)
+    ) {
+      return;
+    }
+    turn.terminalOwnershipTimer = this.scheduler.set(() => {
+      turn.terminalOwnershipTimer = undefined;
+      if (
+        this.closed ||
+        turn.terminal ||
+        this.activeTurn !== turn ||
+        turn.terminalOwnershipEvidence
+      ) {
+        return;
+      }
+      this.handleRuntimeFailure("OMP terminal ownership could not be confirmed");
+    }, AGENT_END_STATE_TIMEOUT_MS);
+  }
+
+  private cancelTerminalOwnershipTimeout(turn: ActiveTurn): void {
+    if (turn.terminalOwnershipTimer === undefined) return;
+    this.scheduler.clear(turn.terminalOwnershipTimer);
+    turn.terminalOwnershipTimer = undefined;
   }
 
   private async completeLocalOnlyTurn(turn: ActiveTurn): Promise<void> {
@@ -2121,7 +2157,8 @@ export class OmpProviderSession {
       turn.terminalizing = false;
       const deferred = turn.deferredAgentEnd;
       turn.deferredAgentEnd = undefined;
-      if (deferred) this.beginTerminalization(turn, deferred);
+      const retry = deferred ?? (turn.terminalOwnershipEvidence ? event : undefined);
+      if (retry) this.beginTerminalization(turn, retry);
       return;
     }
     if (!state) {
@@ -2130,9 +2167,13 @@ export class OmpProviderSession {
     }
     if (state.isStreaming || state.isCompacting) {
       turn.terminalizing = false;
-      const deferred = turn.deferredAgentEnd;
       turn.deferredAgentEnd = undefined;
-      if (deferred) this.beginTerminalization(turn, deferred);
+      return;
+    }
+    if (!turn.terminalOwnershipEvidence) {
+      turn.terminalizing = false;
+      turn.deferredAgentEnd = undefined;
+      this.scheduleTerminalOwnershipTimeout(turn);
       return;
     }
     const terminalEvent = turn.deferredAgentEnd ?? event;
@@ -2224,6 +2265,7 @@ export class OmpProviderSession {
     if (turn.terminal) return;
     turn.terminal = true;
     this.cancelLocalOnlyCompletion(turn);
+    this.cancelTerminalOwnershipTimeout(turn);
     this.resolveTurnPermissions(turn.turnId);
     this.projector.finishTurn(turn.turnId, preserveCompactions);
     this.unclaimedBranchEntries.length = 0;
