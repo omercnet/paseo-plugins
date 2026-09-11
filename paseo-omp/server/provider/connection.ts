@@ -18,7 +18,6 @@ const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.steer": true,
   "session.configure": true,
   permission: true,
-  "timeline.plugin": true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   catalog: true,
@@ -176,7 +175,6 @@ export function createOmpConnection(
   capabilities: readonly string[],
   scheduler?: OmpTimelineScheduler,
   environment?: NodeJS.ProcessEnv,
-  pluginId?: string,
 ): ProviderConnection {
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) => SUPPORTED_CAPABILITIES[capability],
@@ -254,7 +252,6 @@ export function createOmpConnection(
           scheduler,
           shutdown.signal,
           environment,
-          pluginId,
         );
         opening.set(input.sessionId, { token, promise: pending });
         try {

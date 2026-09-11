@@ -23,6 +23,7 @@ import {
 import { createOmpProvider } from "../server/provider/registration";
 import { OmpCleanupFailure, OmpPublicDataFilter } from "../server/provider/security";
 import type { OmpTimelineScheduler } from "../server/provider/timeline-projector";
+import { transformOmpImageToolItem } from "../shared/provider-image";
 
 type HostLogger = object;
 type PinoFactory = (options: { enabled: boolean }) => HostLogger;
@@ -480,7 +481,6 @@ async function createHarness(runtime = new FakeOmpRuntime(), scheduler = new Man
   const connection = await createOmpProvider({
     runtime,
     timelineScheduler: scheduler,
-    pluginId: "test-installation",
     environment: TEST_RUNTIME_ENV,
   }).connect({
     versions: [1],
@@ -491,7 +491,6 @@ async function createHarness(runtime = new FakeOmpRuntime(), scheduler = new Man
       "prompt.steer",
       "session.configure",
       "permission",
-      "timeline.plugin",
     ],
   });
   const events = new EventLog();
@@ -813,7 +812,6 @@ describe("OMP direct provider", () => {
       "prompt.steer",
       "session.configure",
       "permission",
-      "timeline.plugin",
     ]);
     await connection.close();
   });
@@ -6762,39 +6760,53 @@ describe("OMP direct provider", () => {
         details: { width: 1280, height: 720, authorization: "test-value" },
       },
     });
-    const browserScreenshot = events.findLast(
+    const browserTool = events.findLast(
       (event) =>
         event.type === "timeline.item" &&
-        event.item.type === "plugin" &&
-        event.item.kind === "omp-images",
+        event.item.type === "tool_call" &&
+        event.item.name === "browser_screenshot" &&
+        event.item.status === "completed",
     );
-    if (browserScreenshot?.type !== "timeline.item" || browserScreenshot.item.type !== "plugin") {
-      throw new Error("Expected browser screenshot image item");
+    if (browserTool?.type !== "timeline.item" || browserTool.item.type !== "tool_call") {
+      throw new Error("Expected terminal browser screenshot tool");
     }
-    expect(browserScreenshot.item.pluginId).toBe("test-installation");
+    const browserCarrier = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.id === `${browserTool.item.id}:images`,
+    );
+    if (browserCarrier?.type !== "timeline.item" || browserCarrier.item.type !== "tool_call") {
+      throw new Error("Expected browser screenshot image carrier");
+    }
+    const browserTransform = transformOmpImageToolItem(browserCarrier.item);
+    const browserImage = browserTransform?.items[0];
+    expect(JSON.stringify(browserImage?.data).length).toBeGreaterThan(256 * 1024);
+    expect(browserImage).toEqual({
+      type: "plugin",
+      id: browserCarrier.item.id,
+      kind: "omp-images",
+      version: 1,
+      data: {
+        label: "browser_screenshot",
+        images: [
+          {
+            id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
+            data: screenshotBytes,
+            mimeType: "image/png",
+          },
+        ],
+        text: "token <redacted>",
+        details: { width: 1280, height: 720, authorization: "<redacted>" },
+      },
+    });
     const screenshotLifecycle = events.flatMap((event) =>
-      event.type === "timeline.item" && event.item.id === browserScreenshot.item.id
-        ? [event.item]
-        : [],
+      event.type === "timeline.item" && event.item.id === browserTool.item.id ? [event.item] : [],
     );
     expect(screenshotLifecycle[0]?.type).toBe("tool_call");
     expect(
-      new Map(screenshotLifecycle.map((item) => [item.id, item])).get(browserScreenshot.item.id)
-        ?.type,
-    ).toBe("plugin");
-    expect(JSON.stringify(browserScreenshot.item.data).length).toBeGreaterThan(256 * 1024);
-    expect(browserScreenshot.item.data).toEqual({
-      label: "browser_screenshot",
-      images: [
-        {
-          id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-          data: screenshotBytes,
-          mimeType: "image/png",
-        },
-      ],
-      text: "token <redacted>",
-      details: { width: 1280, height: 720, authorization: "<redacted>" },
-    });
+      new Map(screenshotLifecycle.map((item) => [item.id, item])).get(browserTool.item.id),
+    ).toEqual(expect.objectContaining({ type: "tool_call", status: "completed" }));
     session.emit({
       type: "tool_execution_start",
       toolCallId: "read-image",
@@ -6809,15 +6821,17 @@ describe("OMP direct provider", () => {
         content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
       },
     });
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "timeline.item",
-        item: expect.objectContaining({
-          type: "plugin",
-          kind: "omp-images",
-          data: expect.objectContaining({ label: "read" }),
-        }),
-      }),
+    const readCarrier = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "read images",
+    );
+    if (readCarrier?.type !== "timeline.item" || readCarrier.item.type !== "tool_call") {
+      throw new Error("Expected read image carrier");
+    }
+    expect(transformOmpImageToolItem(readCarrier.item)?.items[0]).toEqual(
+      expect.objectContaining({ type: "plugin", kind: "omp-images" }),
     );
     session.emit({
       type: "message_end",
@@ -6833,27 +6847,33 @@ describe("OMP direct provider", () => {
         details: { token: "test-value" },
       },
     });
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "timeline.item",
-        item: expect.objectContaining({
-          type: "plugin",
-          kind: "omp-images",
-          data: {
-            label: "gallery",
-            images: [
-              {
-                id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-                data: "iVBORw0KGgo=",
-                mimeType: "image/png",
-              },
-            ],
-            text: "caption <redacted>",
-            details: { token: "<redacted>" },
-          },
-        }),
-      }),
+    const customCarrier = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "gallery images",
     );
+    if (customCarrier?.type !== "timeline.item" || customCarrier.item.type !== "tool_call") {
+      throw new Error("Expected custom image carrier");
+    }
+    expect(transformOmpImageToolItem(customCarrier.item)?.items[0]).toEqual({
+      type: "plugin",
+      id: customCarrier.item.id,
+      kind: "omp-images",
+      version: 1,
+      data: {
+        label: "gallery",
+        images: [
+          {
+            id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
+            data: "iVBORw0KGgo=",
+            mimeType: "image/png",
+          },
+        ],
+        text: "caption <redacted>",
+        details: { token: "<redacted>" },
+      },
+    });
     const completedMappedTools = events.flatMap((event) =>
       event.type === "timeline.item" &&
       event.item.type === "tool_call" &&

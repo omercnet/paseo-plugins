@@ -13,10 +13,6 @@ import { getOmpProviderHealth } from "./shared/provider-diagnostics";
 import { listOmpQuotas } from "./shared/quota";
 import { listOmpSessions } from "./shared/sessions";
 
-type IdentifiedPluginServerContext = PluginServerContext & {
-  pluginId?: string;
-  installationId?: string;
-};
 export default function contribute(server: PluginServerContext) {
   server.handle(listHubProcesses, resolveListHubProcesses);
   server.handle(tailHubLog, resolveTailHubLog);
@@ -25,9 +21,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpSessions, resolveListOmpSessions);
   server.handle(listOmpConfig, resolveListOmpConfig);
   server.handle(getOmpProviderHealth, resolveGetOmpProviderHealth);
-  const identified = server as IdentifiedPluginServerContext;
-  server.registerProvider(
-    createOmpProvider({ pluginId: identified.pluginId ?? identified.installationId }),
-  );
+  server.registerProvider(createOmpProvider());
   return () => {};
 }

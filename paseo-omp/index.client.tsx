@@ -17,7 +17,7 @@ import {
 } from "./client/quota-state";
 import { SessionsPopover } from "./client/sessions-popover";
 import { listHubProcesses } from "./shared/hub";
-import { ompImageTimelineSchema } from "./shared/provider-image";
+import { ompImageTimelineSchema, transformOmpImageToolItem } from "./shared/provider-image";
 import { listOmpQuotas } from "./shared/quota";
 
 const PAGE_LIMIT = 200;
@@ -95,6 +95,13 @@ export default function contribute(client: PluginClientContext) {
     version: 1,
     schema: ompImageTimelineSchema,
     Component: OmpImageTimeline,
+  });
+  const removeImageTransformer = client.addTimelineTransformer({
+    id: "omp-images",
+    query: { itemType: "tool_call" },
+    transform({ item }) {
+      return transformOmpImageToolItem(item);
+    },
   });
   const pills = new Map<string, PillEntry>();
   let disposed = false;
@@ -255,6 +262,7 @@ export default function contribute(client: PluginClientContext) {
     }
     pills.clear();
     removeImageRenderer();
+    removeImageTransformer();
     removeOpenConfig();
     removeConfigSidebarItem();
     removeConfigSurface();

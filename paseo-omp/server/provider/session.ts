@@ -306,7 +306,6 @@ export class OmpProviderSession {
     commandCatalog: OmpAvailableCommand[],
     private commandDiscoveryAvailable: boolean,
     private readonly emit: Emit,
-    pluginId: string | undefined,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -319,13 +318,7 @@ export class OmpProviderSession {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.commandCatalog = commandCatalog;
-    this.projector = new OmpTimelineProjector(
-      id,
-      emit,
-      scheduler,
-      capabilities.includes("timeline.plugin") ? pluginId : undefined,
-      sensitiveValues,
-    );
+    this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
     this.bindRuntime(runtime);
   }
 
@@ -337,7 +330,6 @@ export class OmpProviderSession {
     scheduler?: OmpTimelineScheduler,
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
-    pluginId?: string,
   ): Promise<OmpProviderSession> {
     if (input.persistence) {
       throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
@@ -459,7 +451,6 @@ export class OmpProviderSession {
         commandDiscovery.commands,
         commandDiscovery.available,
         emit,
-        pluginId,
         scheduler,
       );
     } catch (error) {

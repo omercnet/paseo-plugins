@@ -12,7 +12,6 @@ const CAPABILITIES = [
   "prompt.steer",
   "session.configure",
   "permission",
-  "timeline.plugin",
 ] as const;
 const ConnectRequestSchema = z.object({
   versions: z.array(z.number().int().positive().max(16)).min(1).max(8),
@@ -23,7 +22,6 @@ export interface OmpProviderOptions {
   runtime?: OmpRuntime;
   timelineScheduler?: OmpTimelineScheduler;
   environment?: NodeJS.ProcessEnv;
-  pluginId?: string;
 }
 
 export function createOmpProvider(options: OmpProviderOptions = {}): ProviderRegistration {
@@ -41,17 +39,14 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         throw new Error("OMP Plugin Preview requires a valid provider protocol version 1 request");
       }
       const requestedCapabilities = new Set(parsed.data.capabilities);
-      const capabilities = CAPABILITIES.filter(
-        (capability) =>
-          requestedCapabilities.has(capability) &&
-          (capability !== "timeline.plugin" || options.pluginId !== undefined),
+      const capabilities = CAPABILITIES.filter((capability) =>
+        requestedCapabilities.has(capability),
       );
       return createOmpConnection(
         options.runtime ?? new OmpRpcRuntime({ environment: options.environment }),
         capabilities,
         options.timelineScheduler,
         options.environment,
-        options.pluginId,
       );
     },
   };

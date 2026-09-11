@@ -246,7 +246,6 @@ export class OmpTimelineProjector {
     private readonly sessionId: string,
     private readonly emit: Emit,
     private readonly scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
-    private readonly pluginId: string | undefined = undefined,
     sensitiveValues: Iterable<string> = [],
   ) {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
@@ -366,12 +365,14 @@ export class OmpTimelineProjector {
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
         if (preservedImage && !event.isError) {
-          if (this.publishImages(previous.publicId, previous.name, preservedImage)) return;
-          this.publishTool(
-            { ...previous, output: null },
-            "failed",
-            "Paseo image timeline rendering is unavailable",
-          );
+          const output: JsonValue = {
+            ...(preservedImage.text
+              ? { content: [{ type: "text", text: preservedImage.text }] }
+              : {}),
+            ...(preservedImage.details !== undefined ? { details: preservedImage.details } : {}),
+          };
+          this.publishTool({ ...previous, output }, "completed");
+          this.publishImages(previous.publicId, previous.name, preservedImage);
           return;
         }
         const output = previous.unsafePartialOutput
@@ -877,12 +878,7 @@ export class OmpTimelineProjector {
       this.dataFilter,
     );
     if (image) {
-      if (this.publishImages(id, publicType, image)) return;
-      this.publish({
-        type: "error",
-        id,
-        message: "Paseo image timeline rendering is unavailable",
-      });
+      this.publishImages(id, publicType, image);
       return;
     }
     const content =
@@ -1133,17 +1129,17 @@ export class OmpTimelineProjector {
     return { type: "unknown", input: snapshot.input, output: snapshot.output };
   }
 
-  private publishImages(id: string, label: string, image: NativeImageEnvelope): boolean {
-    if (!this.pluginId) return false;
+  private publishImages(id: string, label: string, image: NativeImageEnvelope): void {
     this.publish({
-      type: "plugin",
-      id,
-      pluginId: this.pluginId,
-      kind: "omp-images",
-      version: 1,
-      data: { label, ...image },
+      type: "tool_call",
+      id: `${id}:images`,
+      callId: `${id}:images`,
+      name: `${label} images`,
+      detail: { type: "plain_text", label },
+      metadata: { ompImage: { label, ...image } },
+      status: "completed",
+      error: null,
     });
-    return true;
   }
 
   private publishTool(snapshot: ToolSnapshot, status: "running" | "completed"): void;
