@@ -101,6 +101,7 @@ type ActiveTurn = {
   localOnlyDisabled: boolean;
   localOnlyEligible: boolean;
   awaitingPermissionEvidence: boolean;
+  activitySequence: number;
   agentInvoked?: boolean;
   nativeRequestId?: string;
   localOnlyTimer?: unknown;
@@ -575,6 +576,7 @@ export class OmpProviderSession {
       localOnlyDisabled: false,
       localOnlyEligible: false,
       terminalizing: false,
+      activitySequence: 0,
       steersInFlight: 0,
       userCorrelationActive: false,
       userLookups: new Set(),
@@ -1408,7 +1410,11 @@ export class OmpProviderSession {
         return;
       }
       if (hasAssistantEvidence) turn.awaitingPermissionEvidence = false;
-      if (event.isTerminal === false || turn.terminalizing) return;
+      if (event.isTerminal === false) return;
+      if (turn.terminalizing) {
+        turn.deferredAgentEnd = event;
+        return;
+      }
       if (turn.steersInFlight > 0) {
         turn.deferredAgentEnd = event;
         return;
@@ -2026,6 +2032,7 @@ export class OmpProviderSession {
   private markAgentEvidence(turn: ActiveTurn): void {
     turn.agentInvoked = true;
     turn.nativeActivity = true;
+    turn.activitySequence += 1;
     turn.localOnlyEligible = false;
     this.cancelLocalOnlyCompletion(turn);
     if (!turn.awaitingPermissionEvidence) turn.deferredAgentEnd = undefined;
@@ -2079,11 +2086,7 @@ export class OmpProviderSession {
   ): void {
     if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) return;
     turn.terminalizing = true;
-    if (turn.userLookups.size === 0 && turn.userEchoes.length === 0) {
-      this.completeAgentEnd(turn, event);
-      return;
-    }
-    void this.finishFromAgentEnd(turn, event);
+    void this.finishFromAgentEnd(turn, event, turn.activitySequence);
   }
 
   private resumeAfterFailedSteer(turn: ActiveTurn): void {
@@ -2102,6 +2105,7 @@ export class OmpProviderSession {
   private async finishFromAgentEnd(
     turn: ActiveTurn,
     event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+    activitySequence: number,
   ): Promise<void> {
     while (true) {
       await Promise.allSettled(turn.userLookups);
@@ -2111,26 +2115,29 @@ export class OmpProviderSession {
       if (turn.userLookups.size === 0) break;
     }
     if (this.closed || turn.terminal || this.activeTurn !== turn) return;
-    if (turn.interrupted) {
-      this.completeAgentEnd(turn, event);
-      return;
-    }
     const state = await this.confirmAgentEndState(turn);
     if (this.closed || turn.terminal || this.activeTurn !== turn) return;
+    if (turn.activitySequence !== activitySequence) {
+      turn.terminalizing = false;
+      const deferred = turn.deferredAgentEnd;
+      turn.deferredAgentEnd = undefined;
+      if (deferred) this.beginTerminalization(turn, deferred);
+      return;
+    }
     if (!state) {
-      const message = "OMP agent_end state could not be confirmed";
-      this.completeAgentEnd(turn, event);
-      this.invalidateRuntime(message);
+      this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
       return;
     }
     if (state.isStreaming || state.isCompacting) {
-      const message = "OMP agent_end arrived while the native runtime remained active";
-      this.publishPendingUsers(turn);
-      this.invalidateRuntime(message);
-      this.finishTurn(turn, "failed", { message });
+      turn.terminalizing = false;
+      const deferred = turn.deferredAgentEnd;
+      turn.deferredAgentEnd = undefined;
+      if (deferred) this.beginTerminalization(turn, deferred);
       return;
     }
-    this.completeAgentEnd(turn, event);
+    const terminalEvent = turn.deferredAgentEnd ?? event;
+    turn.deferredAgentEnd = undefined;
+    this.completeAgentEnd(turn, terminalEvent);
   }
 
   private completeAgentEnd(

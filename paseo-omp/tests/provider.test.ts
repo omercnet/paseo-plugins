@@ -4605,6 +4605,42 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("ignores a delayed prior-turn agent_end while the current turn remains busy", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(
+      await startPrompt(connection, events, "terminal-owner-a", "first"),
+    );
+    await finishTurn(events, session, firstTurn);
+
+    const secondTurn = turnIdFrom(
+      await startPrompt(connection, events, "terminal-owner-b", "second"),
+    );
+    session.isStreaming = true;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      ),
+    ).toHaveLength(0);
+
+    session.isStreaming = false;
+    session.emit({
+      type: "agent_end",
+      messages: [{ role: "assistant", content: "second complete" }],
+      isTerminal: true,
+    });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    await connection.close();
+  });
+
   test("fails an EPIPE turn once without terminalizing the host session", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -4621,7 +4657,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("retires timed-out state confirmation after completing the authoritative agent_end", async () => {
+  test("fails a turn when terminal state confirmation times out", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -4646,7 +4682,12 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
-    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        state: "failed",
+        error: { message: "OMP agent_end state could not be confirmed" },
+      }),
+    );
     expect(session.closes).toBe(1);
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
 
@@ -4669,7 +4710,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("retires unavailable state confirmation after completing agent_end", async () => {
+  test("fails a turn when terminal state confirmation is unavailable", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -4686,7 +4727,12 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
-    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        state: "failed",
+        error: { message: "OMP agent_end state could not be confirmed" },
+      }),
+    );
     expect(session.closes).toBe(1);
     const recoveredTurn = turnIdFrom(
       await startPrompt(connection, events, "after-unavailable", "continue"),
@@ -4698,7 +4744,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("fails and retires a still-active completion state", async () => {
+  test("discards an agent_end while the native runtime remains active", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -4711,24 +4757,25 @@ describe("OMP direct provider", () => {
     await Promise.resolve();
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     branch.resolve();
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toHaveLength(0);
+
+    session.isStreaming = false;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
     const terminal = await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: { message: "OMP agent_end arrived while the native runtime remained active" },
-      }),
-    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
     expect(
       events.some((event) => event.type === "timeline.item" && event.item.type === "user_message"),
     ).toBe(true);
-    expect(session.closes).toBe(1);
-    await startPrompt(connection, events, "after-active", "continue");
-    expect(runtime.starts[1]).toEqual(
-      expect.objectContaining({ resumeSessionId: "native-session" }),
-    );
+    expect(session.closes).toBe(0);
     await connection.close();
   });
 
