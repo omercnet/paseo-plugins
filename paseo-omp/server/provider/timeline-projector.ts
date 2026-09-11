@@ -101,6 +101,7 @@ export class OmpTimelineProjector {
   private replaySequence = 0;
   private readonly replayedAssistantSignatures = new Map<string, Set<string>>();
   private replayedAssistantOccurrences = 0;
+  private projectingReplay = false;
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -128,7 +129,12 @@ export class OmpTimelineProjector {
       event.type === "message_end"
         ? event.message
         : undefined;
-    if (replayedMessage?.role === "assistant" && this.isReplayDuplicate(replayedMessage)) return;
+    if (
+      !this.projectingReplay &&
+      replayedMessage?.role === "assistant" &&
+      this.isReplayDuplicate(replayedMessage)
+    )
+      return;
     if (
       event.type === "todo_reminder" ||
       event.type === "notice" ||
@@ -334,22 +340,44 @@ export class OmpTimelineProjector {
     }
     if (message.role === "assistant") {
       this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
-      this.project({ type: "message_start", message }, this.replayTurnId);
-      this.project({ type: "message_end", message }, this.replayTurnId);
+      this.projectingReplay = true;
+      try {
+        this.project({ type: "message_start", message }, this.replayTurnId);
+        this.project({ type: "message_end", message }, this.replayTurnId);
+        if (Array.isArray(message.content)) {
+          for (const part of message.content) {
+            if (part.type !== "toolCall" || !part.id || !part.name || part.arguments === undefined)
+              continue;
+            this.project(
+              {
+                type: "tool_execution_start",
+                toolCallId: part.id,
+                toolName: part.name,
+                args: part.arguments,
+              },
+              this.replayTurnId,
+            );
+          }
+        }
+      } finally {
+        this.projectingReplay = false;
+      }
       if (nativeIdentity) this.rememberReplayOccurrence(nativeIdentity, message);
       return;
     }
     this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
     if (message.role === "toolResult") {
-      this.project(
-        {
-          type: "tool_execution_start",
-          toolCallId: message.toolCallId,
-          toolName: message.toolName,
-          args: null,
-        },
-        this.replayTurnId,
-      );
+      if (!this.tools.has(message.toolCallId)) {
+        this.project(
+          {
+            type: "tool_execution_start",
+            toolCallId: message.toolCallId,
+            toolName: message.toolName,
+            args: null,
+          },
+          this.replayTurnId,
+        );
+      }
       this.project(
         {
           type: "tool_execution_end",

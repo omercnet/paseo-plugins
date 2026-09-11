@@ -1250,7 +1250,15 @@ describe("OMP direct provider", () => {
                 {
                   role: "assistant",
                   responseId: "selected-assistant-1",
-                  content: largeText,
+                  content: [
+                    { type: "text", text: largeText },
+                    {
+                      type: "toolCall",
+                      id: "selected-tool",
+                      name: "read",
+                      arguments: { path: "selected.ts" },
+                    },
+                  ],
                 },
                 {
                   role: "toolResult",
@@ -1325,6 +1333,14 @@ describe("OMP direct provider", () => {
     ]);
     expect(timeline.filter((entry) => entry.item.type === "assistant_message")[0]?.item).toEqual(
       expect.objectContaining({ text: largeText }),
+    );
+    expect(
+      timeline.find((entry) => entry.item.type === "tool_call" && entry.item.status === "completed")
+        ?.item,
+    ).toEqual(
+      expect.objectContaining({
+        detail: expect.objectContaining({ input: { path: "selected.ts" } }),
+      }),
     );
     await connection.close();
   });

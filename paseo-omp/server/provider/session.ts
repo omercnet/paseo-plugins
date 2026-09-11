@@ -1001,7 +1001,9 @@ export class OmpProviderSession {
       noSession: this.recoveryOptions.noSession,
       mode: "full",
 
-      systemPrompt: this.recoveryOptions.systemPrompt,
+      ...(!this.persistSession && this.recoveryOptions.systemPrompt
+        ? { systemPrompt: this.recoveryOptions.systemPrompt }
+        : {}),
       environment: this.recoveryOptions.environment,
       ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
       ...(this.configState.thinkingOption

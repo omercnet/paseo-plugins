@@ -83,8 +83,18 @@ const OmpContentPartSchema = z
     thinking: TEXT.optional(),
     data: boundedString(MAX_IMAGE_DATA_LENGTH).optional(),
     mimeType: boundedString(128).optional(),
+    id: IDENTIFIER.optional(),
+    name: NAME.optional(),
+    arguments: z
+      .unknown()
+      .refine((value) => isBoundedJson(value, MAX_TOOL_PAYLOAD_LENGTH, 1_024, 4_096))
+      .optional(),
   })
   .superRefine((part, context) => {
+    if (part.type === "toolCall" && (!part.id || !part.name || part.arguments === undefined)) {
+      context.addIssue({ code: "custom", message: "invalid tool call payload" });
+      return;
+    }
     if (part.type !== "image") return;
     if (
       part.data === undefined ||
