@@ -594,6 +594,43 @@ describe("OMP RPC transport", () => {
     });
     await session.close();
   });
+  for (const chunking of ["same stdout chunk", "separate stdout chunks"] as const) {
+    test(`isolates a complete oversized physical line from a valid frame in ${chunking}`, async () => {
+      const child = new FakeRpcChild();
+      observeCommands(child, (command) => {
+        if (command.type === "negotiate_protocol") {
+          child.write({
+            type: "response",
+            id: command.id,
+            success: true,
+            data: { protocolVersion: 2 },
+          });
+        }
+      });
+      const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+      child.write(READY_FRAME);
+      const session = await opening;
+      const observed: OmpRpcEvent[] = [];
+      const unsubscribe = session.onEvent((event) => observed.push(event));
+      const oversized = "x".repeat(1_048_577);
+      const valid = JSON.stringify({ type: "notice", level: "info", message: "still healthy" });
+
+      if (chunking === "same stdout chunk") child.writeRaw(`${oversized}\n${valid}\n`);
+      else {
+        child.writeRaw(`${oversized}\n`);
+        child.writeRaw(`${valid}\n`);
+      }
+
+      expect(observed).toContainEqual({
+        type: "notice",
+        level: "info",
+        message: "still healthy",
+      });
+      unsubscribe();
+      await session.close();
+    });
+  }
+
   test("fails the runtime on a complete oversized physical frame", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {

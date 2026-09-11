@@ -1068,14 +1068,12 @@ class OmpRpcProcess {
           this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
           return;
         }
-        this.discardingLine = false;
-        this.discardedLineBytes = 0;
-        this.lineParts = [];
-        this.lineBytes = 0;
+        this.resetDiscardedLine();
       } else {
         this.appendLinePart(part);
         if (this.fatalError) return;
-        if (!this.discardingLine) this.completeLine();
+        if (this.discardingLine) this.resetDiscardedLine();
+        else this.completeLine();
       }
       start = index + 1;
     }
@@ -1089,6 +1087,13 @@ class OmpRpcProcess {
     } else {
       this.appendLinePart(trailing);
     }
+  }
+
+  private resetDiscardedLine(): void {
+    this.discardingLine = false;
+    this.discardedLineBytes = 0;
+    this.lineParts = [];
+    this.lineBytes = 0;
   }
 
   private appendLinePart(part: Buffer): void {
@@ -1241,9 +1246,13 @@ class OmpRpcProcess {
           4_096,
         ) !== Number.POSITIVE_INFINITY);
     if (onlyUnsafePayload && messagesAreSafe) return false;
-    const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
-    if (!envelope.success || envelope.data.isTerminal === false) {
+    if (frame.isTerminal === false) {
       this.recordProtocolViolation();
+      return true;
+    }
+    const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
+    if (!envelope.success) {
+      this.fail(new Error("OMP emitted invalid terminal metadata"));
       return true;
     }
     const observedCount = Array.isArray(frame.messages)

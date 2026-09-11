@@ -4454,13 +4454,67 @@ describe("OMP direct provider", () => {
       expect(terminalEvents).toHaveLength(1);
       expect(terminalEvents[0]).toEqual(expect.objectContaining({ state: "failed" }));
     }
-    const later = await startPrompt(connection, events, "after-degraded-terminal", "continue");
-    expect(later).toEqual(
-      expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
+    let recoverableTurn = turnIdFrom(
+      await startPrompt(connection, events, "invalid-terminal-scalars-0", "continue"),
     );
-    expect(launchArgs[1]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
+    const invalidTerminalFrames = [
+      { type: "agent_end", messages: [], isTerminal: 5 },
+      { type: "agent_end", messages: [], messageCount: -1, isTerminal: true },
+      { type: "agent_end", messages: [], messageCount: "1", isTerminal: true },
+    ];
+    for (const [index, frame] of invalidTerminalFrames.entries()) {
+      children.at(-1)?.write(frame);
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === recoverableTurn &&
+          event.state === "failed",
+      );
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "session.turn" &&
+            event.turnId === recoverableTurn &&
+            event.state !== "started",
+        ),
+      ).toEqual([expect.objectContaining({ state: "failed" })]);
+
+      const recovered = await startPrompt(
+        connection,
+        events,
+        `after-invalid-terminal-scalars-${index}`,
+        "continue",
+      );
+      recoverableTurn = turnIdFrom(recovered);
+      expect(recovered).toEqual(
+        expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
+      );
+      expect(launchArgs[index + 2]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
+    }
+
+    children.at(-1)?.write({
+      type: "agent_end",
+      messages: [],
+      messageCount: "invalid-but-nonterminal",
+      isTerminal: false,
+    });
+    children.at(-1)?.write({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === recoverableTurn &&
+        event.state === "completed",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === recoverableTurn &&
+          event.state !== "started",
+      ),
+    ).toEqual([expect.objectContaining({ state: "completed" })]);
     expect(JSON.stringify(events)).not.toContain(nativeSessionId);
-    expect(children).toHaveLength(2);
+    expect(children).toHaveLength(5);
     await connection.close();
   });
 
