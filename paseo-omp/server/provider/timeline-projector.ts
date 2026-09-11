@@ -140,7 +140,10 @@ function imageBlock(data: string, mimeType: string): StreamBlockSnapshot | undef
 
 type OmpAssistantMessage = Extract<OmpMessage, { role: "assistant" }>;
 
-function blockText(message: OmpAssistantMessage, contentIndex: number): StreamBlockSnapshot | undefined {
+function blockText(
+  message: OmpAssistantMessage,
+  contentIndex: number,
+): StreamBlockSnapshot | undefined {
   if (typeof message.content === "string") {
     return contentIndex === 0 ? { kind: "assistant_message", text: message.content } : undefined;
   }

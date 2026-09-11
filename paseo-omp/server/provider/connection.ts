@@ -679,53 +679,53 @@ export function createOmpConnection(
     const seenSessions = new Set<OmpProviderSession>();
     const seenOpenings = new Set<Promise<OmpProviderSession>>();
     const seenCleanups = new Set<Promise<void>>();
-      const cleanupBatch: Promise<void>[] = [];
-      for (const [sessionId, { session, nativeSessionId, token }] of sessions) {
-        if (seenSessions.has(session)) continue;
-        seenSessions.add(session);
-        cleanupBatch.push(
-          Promise.resolve().then(async () => {
-            try {
-              await session.close();
-              nativeReservations.release(nativeSessionId, token);
-            } catch (error) {
-              quarantineFailedCleanup(sessionId, token, error, nativeSessionId);
-              throw error;
-            }
-          }),
-        );
-      }
-      for (const [sessionId, { token, promise }] of opening) {
-        if (seenOpenings.has(promise)) continue;
-        seenOpenings.add(promise);
-        cleanupBatch.push(
-          promise.then(async (session) => {
-            if (seenSessions.has(session)) return;
-            seenSessions.add(session);
-            const nativeSessionId = session.persistenceSessionId;
-            try {
-              await session.abortOpen();
-              nativeReservations.release(nativeSessionId, token);
-            } catch (error) {
-              quarantineFailedCleanup(sessionId, token, error, nativeSessionId);
-              throw error;
-            }
-          }),
-        );
-      }
-      for (const { cleanup } of failedCleanup.values()) {
-        if (!cleanup || seenCleanups.has(cleanup)) continue;
-        seenCleanups.add(cleanup);
-        cleanupBatch.push(cleanup);
-      }
-      if (catalogCleanup && !seenCleanups.has(catalogCleanup)) {
-        seenCleanups.add(catalogCleanup);
-        cleanupBatch.push(catalogCleanup);
-      }
-      const results = await Promise.allSettled(cleanupBatch);
-      for (const result of results) {
-        if (result.status === "rejected") failures.push(result.reason);
-      }
+    const cleanupBatch: Promise<void>[] = [];
+    for (const [sessionId, { session, nativeSessionId, token }] of sessions) {
+      if (seenSessions.has(session)) continue;
+      seenSessions.add(session);
+      cleanupBatch.push(
+        Promise.resolve().then(async () => {
+          try {
+            await session.close();
+            nativeReservations.release(nativeSessionId, token);
+          } catch (error) {
+            quarantineFailedCleanup(sessionId, token, error, nativeSessionId);
+            throw error;
+          }
+        }),
+      );
+    }
+    for (const [sessionId, { token, promise }] of opening) {
+      if (seenOpenings.has(promise)) continue;
+      seenOpenings.add(promise);
+      cleanupBatch.push(
+        promise.then(async (session) => {
+          if (seenSessions.has(session)) return;
+          seenSessions.add(session);
+          const nativeSessionId = session.persistenceSessionId;
+          try {
+            await session.abortOpen();
+            nativeReservations.release(nativeSessionId, token);
+          } catch (error) {
+            quarantineFailedCleanup(sessionId, token, error, nativeSessionId);
+            throw error;
+          }
+        }),
+      );
+    }
+    for (const { cleanup } of failedCleanup.values()) {
+      if (!cleanup || seenCleanups.has(cleanup)) continue;
+      seenCleanups.add(cleanup);
+      cleanupBatch.push(cleanup);
+    }
+    if (catalogCleanup && !seenCleanups.has(catalogCleanup)) {
+      seenCleanups.add(catalogCleanup);
+      cleanupBatch.push(catalogCleanup);
+    }
+    const results = await Promise.allSettled(cleanupBatch);
+    for (const result of results) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
     listeners.clear();
     closed = true;
     if (failures.length > 0) {

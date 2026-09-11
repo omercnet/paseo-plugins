@@ -1363,7 +1363,8 @@ export class OmpProviderSession {
             this.activeTurn !== turn ||
             turn.generation !== this.generation ||
             !turn.manualCompactionPending
-          ) return;
+          )
+            return;
           const message = "OMP compaction was canceled after it stopped responding";
           turn.manualCompactionPending = false;
           this.invalidateRuntime(message, "canceled");
@@ -1930,7 +1931,9 @@ export class OmpProviderSession {
         ...pendingCleanup.splice(0),
         this.runtimeDisposal,
         this.hostToolsDisposal,
-      ].filter((promise): promise is Promise<void> => promise !== null && !seenCleanup.has(promise));
+      ].filter(
+        (promise): promise is Promise<void> => promise !== null && !seenCleanup.has(promise),
+      );
       const coordination = [this.recoveryPromise, configRefresh, this.configRefreshInFlight].filter(
         (promise): promise is Promise<void> => promise !== null && !seenCoordination.has(promise),
       );
@@ -2261,15 +2264,6 @@ export class OmpProviderSession {
       return;
     }
     this.handleTurnEvent(turn, event);
-  }
-
-  private handleSubagentEvent(
-    event: Extract<
-      OmpRpcEvent,
-      { type: "subagent_lifecycle" | "subagent_progress" | "subagent_event" }
-    >,
-  ): void {
-    this.projector.projectSubagent(event);
   }
 
   private handleTurnEvent(turn: ActiveTurn, event: OmpRpcEvent): void {

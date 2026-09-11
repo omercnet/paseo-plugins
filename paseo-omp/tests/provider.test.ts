@@ -14,13 +14,13 @@ import { mapOmpModels, ompModelId } from "../server/provider/catalog";
 import { OmpNativeSessionReservations } from "../server/provider/connection";
 import { withOmpWorkspaceIdentity } from "../server/provider/host-tools";
 import {
+  type OmpAvailableCommand,
+  type OmpExtensionUiResponse,
   type OmpHostToolDefinition,
   type OmpHostToolResult,
   type OmpHostToolUpdate,
-  type OmpMessage,
-  type OmpAvailableCommand,
-  type OmpExtensionUiResponse,
   type OmpImage,
+  type OmpMessage,
   type OmpModel,
   type OmpPersistedSubagentMessages,
   type OmpRpcEvent,
@@ -530,11 +530,7 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (!result) return Promise.reject(new Error("missing fake subagent transcript"));
     return Promise.resolve(result);
   }
-  async prompt(
-    message: string,
-    images: readonly OmpImage[] = [],
-    onAccepted?: () => void,
-  ) {
+  async prompt(message: string, images: readonly OmpImage[] = [], onAccepted?: () => void) {
     this.prompts.push(message);
     this.promptImages.push([...images]);
     this.promptCount += 1;
@@ -3433,7 +3429,6 @@ describe("OMP direct provider", () => {
     expect(events.some((event) => event.type === "session.ready")).toBe(false);
     await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
-
 
   test("reconciles config events emitted after the final opening state snapshot", async () => {
     const runtime = new FakeOmpRuntime();

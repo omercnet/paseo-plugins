@@ -2079,12 +2079,17 @@ class OmpRpcProcess {
     const pending = this.pending.get(response.data.id);
     if (!pending) {
       if (!response.data.success && this.acceptedPromptIds.delete(response.data.id)) {
-        this.emit({ type: "prompt_error", id: response.data.id, error: "OMP prompt scheduling failed" });
+        this.emit({
+          type: "prompt_error",
+          id: response.data.id,
+          error: "OMP prompt scheduling failed",
+        });
       }
       return;
     }
     const isBranchHistory = pending.command === "get_branch_messages";
-    const isHistory = pending.command === "get_messages" || pending.command === "get_subagent_messages";
+    const isHistory =
+      pending.command === "get_messages" || pending.command === "get_subagent_messages";
     const responseItemLimit = isBranchHistory ? 1_024 : isHistory ? 100_000 : MAX_ARRAY_ITEMS;
     const responseByteLimit =
       isBranchHistory || isHistory
