@@ -145,7 +145,9 @@ type TurnOutcome = {
 type ActiveCompaction = {
   id: string;
   trigger: "auto" | "manual";
-  turnId?: string;
+  turnId: string;
+  generation: number;
+  action?: string;
   preTokens?: number;
 };
 
@@ -589,12 +591,14 @@ export class OmpProviderSession {
     turn.usagePollTimer = undefined;
   }
 
-  private startCompaction(turn: ActiveTurn, trigger: "auto" | "manual"): void {
+  private startCompaction(turn: ActiveTurn, trigger: "auto" | "manual", action?: string): void {
     if (this.activeCompaction) return;
     const operation: ActiveCompaction = {
       id: randomUUID(),
       trigger,
       turnId: turn.turnId,
+      generation: turn.generation,
+      action,
       preTokens: this.lastUsage?.contextWindowUsedTokens,
     };
     this.activeCompaction = operation;
@@ -770,7 +774,14 @@ export class OmpProviderSession {
         void this.settleManualCompaction(turn, compaction);
         turn.manualCompactionDeadlineTimer = this.scheduler.set(() => {
           turn.manualCompactionDeadlineTimer = undefined;
-          if (turn.terminal || this.activeCompaction?.turnId !== turn.turnId) return;
+          if (
+            turn.terminal ||
+            this.activeTurn !== turn ||
+            turn.generation !== this.generation ||
+            !turn.manualCompaction
+          ) {
+            return;
+          }
           const message = "OMP compaction was canceled after it stopped responding";
           this.invalidateRuntime(message, "canceled");
           void this.finishTurn(turn, "canceled", undefined, true, true);
@@ -1502,10 +1513,19 @@ export class OmpProviderSession {
     if (event.type === "auto_compaction_start") {
       turn.nativeActivity = true;
       this.cancelLocalOnlyCompletion(turn);
-      this.startCompaction(turn, "auto");
+      this.startCompaction(turn, "auto", event.action);
       return;
     }
     if (event.type === "auto_compaction_end") {
+      const operation = this.activeCompaction;
+      if (
+        operation?.trigger !== "auto" ||
+        operation.turnId !== turn.turnId ||
+        operation.generation !== turn.generation ||
+        (event.action !== undefined && operation.action !== event.action)
+      ) {
+        return;
+      }
       const state = event.aborted
         ? "canceled"
         : event.errorMessage

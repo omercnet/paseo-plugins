@@ -4258,7 +4258,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("cancels a wedged manual compaction at the provider deadline", async () => {
+  test("ignores a spoofed auto end while a manual compact waiter is unresolved", async () => {
     const runtime = new FakeOmpRuntime();
     const compact = Promise.withResolvers<void>();
     const { connection, events, scheduler } = await createHarness(runtime);
@@ -4267,12 +4267,44 @@ describe("OMP direct provider", () => {
     session.compactGate = compact.promise;
     session.isCompacting = true;
     const turnId = turnIdFrom(await startPrompt(connection, events, "wedged-compact", "/compact"));
+    const loading = events.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "compaction" &&
+        event.item.status === "loading",
+    );
+    if (loading?.type !== "timeline.item") throw new Error("Expected compaction loading update");
+
+    session.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      result: { tokensBefore: 1_000 },
+      aborted: false,
+      willRetry: false,
+    });
+    expect(
+      events.filter((event) => event.type === "timeline.item" && event.item.id === loading.item.id),
+    ).toHaveLength(1);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
 
     await scheduler.flush(300_000);
     await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state === "canceled",
     );
+    expect(
+      events.find(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "notification" &&
+          event.item.id === loading.item.id,
+      ),
+    ).toEqual(expect.objectContaining({ item: expect.objectContaining({ level: "info" }) }));
     expect(
       events.some(
         (event) =>
