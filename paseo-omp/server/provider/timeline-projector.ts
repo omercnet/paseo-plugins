@@ -16,6 +16,7 @@ const MAX_TURN_NATIVE_IDENTITIES = 1_024;
 const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
 const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGE_MARKDOWN_LENGTH = 8 * 1024 * 1024 + 256;
+const MAX_STREAM_TOTAL_BYTES = MAX_IMAGE_MARKDOWN_LENGTH * 2;
 
 type Emit = (event: ProviderEvent) => void;
 
@@ -31,6 +32,8 @@ type StreamSnapshot = {
   messageId: string;
   nativeIdentity?: string;
   published: boolean;
+  retainedBytes: number;
+  publishedBytes: number;
   blocks: Map<number, StreamBlockSnapshot>;
   dirtyBlocks: Set<number>;
 };
@@ -41,6 +44,7 @@ type ToolSnapshot = {
   input: JsonValue;
   output: JsonValue;
   retainedBytes: number;
+  specializedRendered: boolean;
   unsafePartialOutput: boolean;
   silent: boolean;
 };
@@ -171,7 +175,8 @@ export class OmpTimelineProjector {
       event.type === "auto_compaction_start" ||
       event.type === "auto_compaction_end" ||
       event.type === "compaction_start" ||
-      event.type === "compaction_end"
+      event.type === "compaction_end" ||
+      event.type === "advisor_yielded"
     ) {
       this.projectPassive(event);
       return;
@@ -227,6 +232,7 @@ export class OmpTimelineProjector {
           output: null,
           retainedBytes,
           unsafePartialOutput: previous?.unsafePartialOutput ?? false,
+          specializedRendered: previous?.specializedRendered ?? false,
           silent: ["ask_user", "todo"].includes(event.toolName.toLowerCase()),
         };
         this.activeToolBytes += retainedBytes - (previous?.retainedBytes ?? 0);
@@ -273,8 +279,19 @@ export class OmpTimelineProjector {
         const snapshot: ToolSnapshot = { ...previous, output };
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
-        if (snapshot.name.toLowerCase() === "todo") this.publishTodoResult(snapshot);
-        if (!snapshot.silent) {
+        const specializedRendered =
+          snapshot.name.toLowerCase() === "todo" && !event.isError
+            ? this.publishTodoResult(snapshot)
+            : snapshot.specializedRendered;
+        if (snapshot.silent && (event.isError || !specializedRendered)) {
+          this.publishTool(
+            snapshot,
+            "failed",
+            event.isError
+              ? snapshot.output
+              : `${snapshot.name} completed without a supported native rendering`,
+          );
+        } else if (!snapshot.silent) {
           if (event.isError) this.publishTool(snapshot, "failed", snapshot.output);
           else this.publishTool(snapshot, "completed");
         }
@@ -333,6 +350,16 @@ export class OmpTimelineProjector {
       });
       return;
     }
+    if (event.type === "advisor_yielded") {
+      this.noticeSequence += 1;
+      this.publish({
+        type: "notification",
+        id: `omp:advisor:${this.noticeSequence}`,
+        level: "info",
+        message: "Advisor review completed",
+      });
+      return;
+    }
     if (event.type === "auto_compaction_start" || event.type === "compaction_start") {
       const trigger = event.type === "auto_compaction_start" ? "auto" : "manual";
       const active = this.compactions[trigger];
@@ -386,6 +413,16 @@ export class OmpTimelineProjector {
     }
   }
 
+  markAskPermissionRendered(): void {
+    const snapshots = [...this.tools.values()];
+    for (let index = snapshots.length - 1; index >= 0; index -= 1) {
+      const snapshot = snapshots[index];
+      if (snapshot?.name.toLowerCase() !== "ask_user") continue;
+      snapshot.specializedRendered = true;
+      return;
+    }
+  }
+
   publishUser(text: string, clientMessageId: string, nativeId?: string): void {
     this.userSequence += 1;
     const nativeHash = nativeId
@@ -417,6 +454,14 @@ export class OmpTimelineProjector {
           : this.dataFilter.streamText(block.text, finalizeFallback);
       if (publicText.pending) stream.dirtyBlocks.add(contentIndex);
       if (!publicText.text || block.publishedText === publicText.text) continue;
+      const previousPublishedBytes = utf8Bytes(block.publishedText ?? "");
+      const nextPublishedBytes = utf8Bytes(publicText.text);
+      if (
+        stream.retainedBytes + stream.publishedBytes - previousPublishedBytes + nextPublishedBytes >
+        MAX_STREAM_TOTAL_BYTES
+      ) {
+        continue;
+      }
       const suffix = block.kind === "reasoning" ? "reasoning" : "text";
       const id = `${stream.messageId}:content:${contentIndex}:${suffix}`;
       if (block.kind === "reasoning") {
@@ -429,12 +474,14 @@ export class OmpTimelineProjector {
           text: publicText.text,
         });
       }
+      stream.publishedBytes += nextPublishedBytes - previousPublishedBytes;
       block.publishedText = publicText.text;
       stream.published = true;
     }
   }
 
   finishTurn(turnId: string): void {
+    this.retireCompactions("OMP compaction ended with the turn");
     if (this.currentTurnId !== turnId) return;
     this.flush(true);
     this.publishCommand(turnId, true);
@@ -451,11 +498,20 @@ export class OmpTimelineProjector {
   close(): void {
     this.flush(true);
     if (this.currentTurnId) this.publishCommand(this.currentTurnId, true);
+    this.retireCompactions("OMP compaction ended when the session closed");
     this.closed = true;
     this.clearFlushTimer();
     this.stream = null;
     this.tools.clear();
     this.activeToolBytes = 0;
+  }
+
+  retireCompactions(message: string): void {
+    for (const trigger of ["auto", "manual"] as const) {
+      for (const slot of this.compactions[trigger].splice(0)) {
+        this.publish({ type: "error", id: slot.id, message });
+      }
+    }
   }
 
   private ensureTurn(turnId: string): void {
@@ -478,6 +534,8 @@ export class OmpTimelineProjector {
       messageId,
       ...(nativeIdentity ? { nativeIdentity } : {}),
       published: false,
+      retainedBytes: 0,
+      publishedBytes: 0,
       blocks: new Map(),
       dirtyBlocks: new Set(),
     };
@@ -567,19 +625,20 @@ export class OmpTimelineProjector {
     if (!kind) return;
     const previous = stream.blocks.get(contentIndex);
     const content = update.content;
-    const eventContent =
-      typeof content === "string"
-        ? content
-        : content && typeof content === "object" && !Array.isArray(content)
-          ? (() => {
-              const image = content as { type?: unknown; data?: unknown; mimeType?: unknown };
-              return image.type === "image" &&
-                typeof image.data === "string" &&
-                typeof image.mimeType === "string"
-                ? `![OMP image](data:${image.mimeType};base64,${image.data})`
-                : undefined;
-            })()
-          : undefined;
+    let eventContent = typeof content === "string" ? content : undefined;
+    if (
+      content &&
+      typeof content === "object" &&
+      !Array.isArray(content) &&
+      "type" in content &&
+      content.type === "image" &&
+      "data" in content &&
+      typeof content.data === "string" &&
+      "mimeType" in content &&
+      typeof content.mimeType === "string"
+    ) {
+      eventContent = `![OMP image](data:${content.mimeType};base64,${content.data})`;
+    }
     const text =
       eventContent ??
       (update.delta !== undefined && previous?.kind === kind
@@ -594,17 +653,30 @@ export class OmpTimelineProjector {
     snapshot: StreamBlockSnapshot,
   ): void {
     if (!this.isValidContentIndex(contentIndex)) return;
-    if (snapshot.kind === "image") {
-      if (utf8Bytes(snapshot.text) > MAX_IMAGE_MARKDOWN_LENGTH) return;
-    } else {
-      let totalLength = utf8Bytes(snapshot.text);
-      for (const [index, block] of stream.blocks) {
-        if (index !== contentIndex && block.kind !== "image") totalLength += utf8Bytes(block.text);
-        if (totalLength > MAX_STREAM_TEXT_LENGTH) return;
+    if (snapshot.kind === "image" && utf8Bytes(snapshot.text) > MAX_IMAGE_MARKDOWN_LENGTH) return;
+    const previous = stream.blocks.get(contentIndex);
+    let retainedBytes = utf8Bytes(snapshot.text);
+    let textBytes = snapshot.kind === "image" ? 0 : retainedBytes;
+    for (const [index, block] of stream.blocks) {
+      if (index === contentIndex) continue;
+      const blockBytes = utf8Bytes(block.text);
+      retainedBytes += blockBytes;
+      if (block.kind !== "image") textBytes += blockBytes;
+      if (
+        retainedBytes + stream.publishedBytes > MAX_STREAM_TOTAL_BYTES ||
+        textBytes > MAX_STREAM_TEXT_LENGTH
+      ) {
+        return;
       }
     }
-    const previous = stream.blocks.get(contentIndex);
+    if (
+      retainedBytes + stream.publishedBytes > MAX_STREAM_TOTAL_BYTES ||
+      textBytes > MAX_STREAM_TEXT_LENGTH
+    ) {
+      return;
+    }
     if (previous?.kind === snapshot.kind && previous.text === snapshot.text) return;
+    stream.retainedBytes = retainedBytes;
     stream.blocks.set(contentIndex, {
       ...snapshot,
       ...(previous?.kind === snapshot.kind ? { publishedText: previous.publishedText } : {}),

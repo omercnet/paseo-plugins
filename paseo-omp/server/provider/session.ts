@@ -99,6 +99,7 @@ type ActiveTurn = {
   localOnlyDisabled: boolean;
   localOnlyEligible: boolean;
   awaitingPermissionEvidence: boolean;
+  agentInvoked?: boolean;
   nativeRequestId?: string;
   localOnlyTimer?: unknown;
   terminalizing: boolean;
@@ -116,6 +117,13 @@ type PendingAbort = {
   generation: number;
   runtime: OmpRuntimeSession;
   promise: Promise<void>;
+};
+type PendingPermission = {
+  nativeId: string;
+  header: string;
+  expiresAt?: number;
+  timer?: unknown;
+  request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>;
 };
 
 function providerError(error: unknown, fallback: string): { message: string } {
@@ -260,15 +268,8 @@ export class OmpProviderSession {
   private activeAbort: PendingAbort | null = null;
   private commandCatalog: OmpAvailableCommand[];
   private permissionSequence = 0;
-  private readonly pendingPermissions = new Map<
-    string,
-    {
-      nativeId: string;
-      header: string;
-      timer?: unknown;
-      request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>;
-    }
-  >();
+  private readonly pendingPermissions = new Map<string, PendingPermission>();
+  private readonly inFlightPermissions = new Map<string, PendingPermission>();
 
   private constructor(
     id: string,
@@ -544,6 +545,7 @@ export class OmpProviderSession {
     const turn: ActiveTurn = {
       turnId: randomUUID(),
       clientMessageId: input.prompt.clientMessageId,
+      agentInvoked: undefined,
       generation: this.generation,
       promptResultEmitted: false,
       started: false,
@@ -580,7 +582,9 @@ export class OmpProviderSession {
       turn.starting = false;
       const bufferedEvents = turn.bufferedEvents.splice(0);
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
-      if (acknowledgement.agentInvoked === false) {
+      if (acknowledgement.agentInvoked === true) turn.agentInvoked = true;
+      if (acknowledgement.agentInvoked === false && turn.agentInvoked !== true) {
+        turn.agentInvoked = false;
         turn.localOnlyEligible = true;
         this.scheduleLocalOnlyCompletion(turn);
       }
@@ -603,6 +607,7 @@ export class OmpProviderSession {
       this.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
+    turn.awaitingPermissionEvidence = false;
     const pending = this.activeAbort;
     if (turn.interrupted) {
       if (pending?.turn === turn) await this.settleInterrupt(input.requestId, pending);
@@ -955,18 +960,33 @@ export class OmpProviderSession {
   async permission(input: SessionPermissionInput): Promise<void> {
     const pending = this.pendingPermissions.get(input.permissionId);
     if (!pending) throw new OmpPublicError("Unknown OMP permission request");
+    const generation = this.generation;
+    const runtime = this.runtime;
     this.pendingPermissions.delete(input.permissionId);
+    this.inFlightPermissions.set(input.permissionId, pending);
     if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
     try {
       const response = this.extensionUiResponse(pending, input.response);
-      await this.runtime.respondToExtensionUi(response);
+      await runtime.respondToExtensionUi(response);
     } catch (error) {
-      if (!this.closed && !this.pendingPermissions.has(input.permissionId)) {
-        pending.timer = undefined;
+      if (this.inFlightPermissions.get(input.permissionId) !== pending) return;
+      this.inFlightPermissions.delete(input.permissionId);
+      if (
+        !this.closed &&
+        !this.runtimeDead &&
+        !this.activeTurn?.terminal &&
+        generation === this.generation &&
+        runtime === this.runtime
+      ) {
         this.pendingPermissions.set(input.permissionId, pending);
+        this.armPermissionTimeout(input.permissionId, pending);
+        throw error;
       }
-      throw error;
+      return;
     }
+    if (this.inFlightPermissions.get(input.permissionId) !== pending) return;
+    this.inFlightPermissions.delete(input.permissionId);
+    this.clearPermissionEvidenceIfSettled();
     this.emit({
       type: "session.permission_resolved",
       sessionId: this.id,
@@ -1247,7 +1267,8 @@ export class OmpProviderSession {
       event.type === "auto_compaction_start" ||
       event.type === "auto_compaction_end" ||
       event.type === "compaction_start" ||
-      event.type === "compaction_end"
+      event.type === "compaction_end" ||
+      event.type === "advisor_yielded"
     ) {
       this.projector.projectPassive(event);
       return;
@@ -1301,9 +1322,11 @@ export class OmpProviderSession {
         return;
       }
       if (event.agentInvoked) {
+        turn.agentInvoked = true;
         turn.localOnlyEligible = false;
         this.cancelLocalOnlyCompletion(turn);
       } else if (!turn.nativeActivity) {
+        turn.agentInvoked = false;
         turn.localOnlyEligible = true;
         this.scheduleLocalOnlyCompletion(turn);
       }
@@ -1566,20 +1589,16 @@ export class OmpProviderSession {
           }
         : {}),
     }));
-    const pending: {
-      nativeId: string;
-      header: string;
-      timer?: unknown;
-      request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>;
-    } = { nativeId: request.id, header, request };
-    if (request.timeout !== undefined && request.timeout > 0) {
-      pending.timer = this.scheduler.set(() => {
-        if (this.pendingPermissions.get(id) !== pending) return;
-        this.pendingPermissions.delete(id);
-        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId: id });
-      }, request.timeout);
-    }
+    // OMP passes rpc-ui dialog timeouts directly to setTimeout, so the wire unit is milliseconds.
+    const pending: PendingPermission = {
+      nativeId: request.id,
+      header,
+      request,
+      ...(request.timeout !== undefined ? { expiresAt: Date.now() + request.timeout } : {}),
+    };
     this.pendingPermissions.set(id, pending);
+    this.armPermissionTimeout(id, pending);
+    this.projector.markAskPermissionRendered();
     if (this.activeTurn) this.activeTurn.awaitingPermissionEvidence = true;
     this.emit({
       type: "session.permission",
@@ -1667,21 +1686,66 @@ export class OmpProviderSession {
   }
 
   private resolvePermissionByNativeId(nativeId: string): void {
-    for (const [permissionId, pending] of this.pendingPermissions) {
-      if (pending.nativeId !== nativeId) continue;
-      this.pendingPermissions.delete(permissionId);
-      if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
-      this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
-      return;
+    for (const permissions of [this.pendingPermissions, this.inFlightPermissions]) {
+      for (const [permissionId, pending] of permissions) {
+        if (pending.nativeId !== nativeId) continue;
+        permissions.delete(permissionId);
+        if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+        this.clearPermissionEvidenceIfSettled();
+        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+        return;
+      }
     }
   }
 
   private resolveAllPermissions(): void {
-    for (const [permissionId, pending] of this.pendingPermissions) {
-      if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+    const permissionIds = new Set<string>();
+    for (const permissions of [this.pendingPermissions, this.inFlightPermissions]) {
+      for (const [permissionId, pending] of permissions) {
+        if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+        permissionIds.add(permissionId);
+      }
+      permissions.clear();
+    }
+    for (const permissionId of permissionIds) {
       this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
     }
-    this.pendingPermissions.clear();
+    this.clearPermissionEvidenceIfSettled();
+  }
+
+  private armPermissionTimeout(permissionId: string, pending: PendingPermission): void {
+    if (pending.expiresAt === undefined) return;
+    const remainingMs = Math.max(0, pending.expiresAt - Date.now());
+    pending.timer = this.scheduler.set(() => {
+      if (this.pendingPermissions.get(permissionId) !== pending) return;
+      this.pendingPermissions.delete(permissionId);
+      this.inFlightPermissions.set(permissionId, pending);
+      void this.runtime
+        .respondToExtensionUi({
+          type: "extension_ui_response",
+          id: pending.nativeId,
+          cancelled: true,
+        })
+        .then(
+          () => {
+            if (this.inFlightPermissions.get(permissionId) !== pending) return;
+            this.inFlightPermissions.delete(permissionId);
+            this.clearPermissionEvidenceIfSettled();
+            this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+          },
+          () => this.handleRuntimeFailure(),
+        );
+    }, remainingMs);
+  }
+
+  private clearPermissionEvidenceIfSettled(): void {
+    if (
+      this.pendingPermissions.size === 0 &&
+      this.inFlightPermissions.size === 0 &&
+      this.activeTurn
+    ) {
+      this.activeTurn.awaitingPermissionEvidence = false;
+    }
   }
 
   private async slashSteerUnavailable(commandName: string): Promise<boolean> {
@@ -1901,6 +1965,7 @@ export class OmpProviderSession {
     this.recoveryUsesNativeConfig ||=
       this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
     this.generation += 1;
+    this.projector.retireCompactions("OMP runtime ended during compaction");
     this.runtimeDead = message;
     this.configRefreshAttempts = 0;
     this.configRefreshDirty = false;

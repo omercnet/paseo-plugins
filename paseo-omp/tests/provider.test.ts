@@ -6190,6 +6190,7 @@ describe("OMP direct provider", () => {
       id: "native-retry",
       method: "input",
       title: "Retry input",
+      timeout: 1_000,
     });
     const retryPermission = await events.waitFor(
       (event) => event.type === "session.permission" && event.request.id !== permission.request.id,
@@ -6210,6 +6211,7 @@ describe("OMP direct provider", () => {
         event.type === "session.notice" &&
         event.notice.id === `omp:permission-error:${retryPermission.request.id}`,
     );
+    expect(scheduler.delays.at(-1)).toBeLessThanOrEqual(1_000);
     session.extensionUiResponseError = null;
     await connection.send({
       type: "session.permission",
@@ -6237,13 +6239,18 @@ describe("OMP direct provider", () => {
     );
     if (timed.type !== "session.permission") throw new Error("Expected timed permission");
     const responsesBeforeTimeout = session.extensionUiResponses.length;
+    expect(scheduler.delays).toContain(250);
     await scheduler.flush();
-    expect(events).toContainEqual({
-      type: "session.permission_resolved",
-      sessionId: "session-1",
-      permissionId: timed.request.id,
+    await events.waitFor(
+      (event) =>
+        event.type === "session.permission_resolved" && event.permissionId === timed.request.id,
+    );
+    expect(session.extensionUiResponses).toHaveLength(responsesBeforeTimeout + 1);
+    expect(session.extensionUiResponses.at(-1)).toEqual({
+      type: "extension_ui_response",
+      id: "native-timeout",
+      cancelled: true,
     });
-    expect(session.extensionUiResponses).toHaveLength(responsesBeforeTimeout);
     await connection.close();
   });
 
@@ -6433,6 +6440,42 @@ describe("OMP direct provider", () => {
       },
     });
     session.emit({
+      type: "tool_execution_start",
+      toolCallId: "failed-ask",
+      toolName: "ask_user",
+      args: { questions: [] },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "failed-ask",
+      toolName: "ask_user",
+      result: { content: [{ type: "text", text: "question failed" }] },
+      isError: true,
+    });
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "failed-todo",
+      toolName: "todo",
+      args: { op: "view" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "failed-todo",
+      toolName: "todo",
+      result: { content: [{ type: "text", text: "missing phases" }] },
+    });
+    for (const name of ["ask_user", "todo"]) {
+      const fallback = events.flatMap((event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === name
+          ? [event.item]
+          : [],
+      );
+      expect(fallback).toHaveLength(1);
+      expect(fallback[0]?.status).toBe("failed");
+    }
+    session.emit({
       type: "todo_reminder",
       todos: [{ id: "task-1", content: "Map events", status: "in_progress" }],
     });
@@ -6519,6 +6562,7 @@ describe("OMP direct provider", () => {
       aborted: false,
       willRetry: false,
     });
+    session.emit({ type: "advisor_yielded" });
     const rendered = events.slice(beforeCustom).filter((event) => event.type === "timeline.item");
     expect(JSON.stringify(rendered)).not.toContain("hidden");
     const customItems = rendered.flatMap((event) =>
@@ -6527,6 +6571,16 @@ describe("OMP direct provider", () => {
     expect(customItems).toHaveLength(3);
     expect(new Set(customItems.map((item) => item.id)).size).toBe(2);
     expect(JSON.stringify(customItems)).toContain("[error] reviewer: Race confirmed");
+    expect(rendered).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-1",
+      item: {
+        type: "notification",
+        id: expect.stringMatching(/^omp:advisor:/u),
+        level: "info",
+        message: "Advisor review completed",
+      },
+    });
     expect(customItems.at(-1)?.detail).toEqual({
       type: "shell",
       command: "pwd",
@@ -6574,6 +6628,217 @@ describe("OMP direct provider", () => {
       preTokens: 8_000,
     });
     await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("honors interrupts after questions and retires compactions across recovery", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const interruptedTurn = turnIdFrom(
+      await startPrompt(connection, events, "interrupt-question", "work"),
+    );
+    session.emit({
+      type: "extension_ui_request",
+      id: "interrupt-ui",
+      method: "confirm",
+      title: "Continue",
+      message: "Proceed?",
+    });
+    await events.waitFor((event) => event.type === "session.permission");
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "interrupt-question-request",
+      sessionId: "session-1",
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "request.completed" && event.requestId === "interrupt-question-request",
+    );
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === interruptedTurn &&
+        event.state === "canceled",
+    );
+
+    const recoveryTurn = turnIdFrom(
+      await startPrompt(connection, events, "compaction-death", "continue"),
+    );
+    const recoveredSource = sessionAt(runtime);
+    recoveredSource.emit({ type: "compaction_start" });
+    recoveredSource.emit({ type: "process_exit", error: "transport died" });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === recoveryTurn && event.state === "failed",
+    );
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-1",
+      item: {
+        type: "error",
+        id: "omp:compaction:1",
+        message: "OMP runtime ended during compaction",
+      },
+    });
+
+    const finalTurn = turnIdFrom(
+      await startPrompt(connection, events, "after-compaction-death", "again"),
+    );
+    const recovered = sessionAt(runtime, 1);
+    recovered.emit({ type: "compaction_end", aborted: false, willRetry: false });
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-1",
+      item: {
+        type: "compaction",
+        id: "omp:compaction:2",
+        status: "completed",
+        trigger: "manual",
+      },
+    });
+    recovered.emit({ type: "compaction_start" });
+    await finishTurn(events, recovered, finalTurn);
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-1",
+      item: {
+        type: "error",
+        id: "omp:compaction:3",
+        message: "OMP compaction ended with the turn",
+      },
+    });
+    await openSession(connection, events, "open-2", "session-2");
+    sessionAt(runtime, 2).emit({ type: "compaction_start" });
+    await connection.send({ type: "session.close", requestId: "close-2", sessionId: "session-2" });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "close-2",
+    );
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-2",
+      item: {
+        type: "error",
+        id: "omp:compaction:1",
+        message: "OMP compaction ended when the session closed",
+      },
+    });
+    await openSession(connection, events, "open-close-compaction", "session-2");
+    sessionAt(runtime, 2).emit({ type: "compaction_start" });
+    await connection.send({
+      type: "session.close",
+      requestId: "close-compaction",
+      sessionId: "session-2",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "close-compaction",
+    );
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-2",
+      item: {
+        type: "error",
+        id: "omp:compaction:1",
+        message: "OMP compaction ended when the session closed",
+      },
+    });
+    await connection.close();
+  });
+
+  test("does not restore claimed permissions after transport death", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "permission-death", "work"));
+    session.emit({
+      type: "extension_ui_request",
+      id: "dying-ui",
+      method: "confirm",
+      title: "Continue",
+      message: "Proceed?",
+    });
+    const permission = await events.waitFor((event) => event.type === "session.permission");
+    if (permission.type !== "session.permission") throw new Error("Expected permission");
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.extensionUiResponseGate = gate.promise;
+    session.extensionUiResponseObserved = observed.resolve;
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+      response: { behavior: "allow", selectedActionId: "submit" },
+    });
+    await observed.promise;
+    session.extensionUiResponseError = new Error("transport died");
+    session.emit({ type: "process_exit", error: "transport died" });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    gate.resolve();
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.permission_resolved" &&
+          event.permissionId === permission.request.id,
+      ),
+    ).toHaveLength(1);
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+      response: { behavior: "deny" },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.notice" &&
+        event.notice.id === `omp:permission-error:${permission.request.id}`,
+    );
+    const recoveredTurn = turnIdFrom(
+      await startPrompt(connection, events, "after-permission-death", "continue"),
+    );
+    expect(runtime.sessions).toHaveLength(2);
+    await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
+    await connection.close();
+  });
+
+  test("bounds aggregate text reasoning and image stream output", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "image-flood", "render"));
+    const imageData = "a".repeat(8 * 1024 * 1024);
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "message_start",
+      message: { role: "assistant", responseId: "image-flood-response", content: [] },
+    });
+    for (let contentIndex = 0; contentIndex < 64; contentIndex += 1) {
+      session.emit({
+        type: "message_update",
+        message: { role: "assistant", responseId: "image-flood-response", content: [] },
+        assistantMessageEvent: {
+          type: "image_end",
+          contentIndex,
+          content: { type: "image", data: imageData, mimeType: "image/png" },
+        },
+      });
+    }
+    await scheduler.flush();
+    const renderedImages = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "assistant_message" &&
+      event.item.text.startsWith("![OMP image]")
+        ? [event.item.text]
+        : [],
+    );
+    expect(renderedImages.length).toBeLessThan(64);
+    expect(renderedImages.reduce((total, text) => total + Buffer.byteLength(text), 0)).toBeLessThan(
+      9 * 1024 * 1024,
+    );
+    await finishTurn(events, sessionAt(runtime), turnId);
     await connection.close();
   });
 });
