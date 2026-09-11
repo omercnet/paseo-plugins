@@ -12,6 +12,7 @@ import {
   boundedJsonBytes,
   isOmpCleanupFailure,
   isOmpPublicError,
+  OmpCleanupFailure,
   OmpPublicError,
   utf8Bytes,
 } from "./security";
@@ -262,6 +263,22 @@ export class OmpNativeSessionReservations {
     this.reservations.set(nativeSessionId, { owner, quarantined: false });
     this.openingOwner = null;
   }
+  transition(previousSessionId: string, nextSessionId: string, owner: symbol): void {
+    if (this.openingOwner && this.openingOwner !== owner) {
+      throw new OmpPublicError("OMP persistent session registration is in progress");
+    }
+    if (previousSessionId === nextSessionId) return;
+    const previous = this.reservations.get(previousSessionId);
+    if (!previous || previous.owner !== owner || previous.quarantined) {
+      throw new OmpPublicError("OMP native session ownership changed during rewind");
+    }
+    const next = this.reservations.get(nextSessionId);
+    if (next && next.owner !== owner) {
+      throw new OmpPublicError("OMP branched into a native session that is already open");
+    }
+    this.reservations.set(nextSessionId, { owner, quarantined: false });
+    this.reservations.delete(previousSessionId);
+  }
 
   cancelPersistentOpen(owner: symbol): void {
     if (this.openingOwner === owner) this.openingOwner = null;
@@ -469,11 +486,40 @@ export function createOmpConnection(
           }
           emit(event);
         };
+        const transitionNativeSession = (previousSessionId: string, nextSessionId: string) => {
+          if (input.config.persist) {
+            if (nativeSessionId !== previousSessionId) {
+              throw new OmpPublicError("OMP native session ownership changed during rewind");
+            }
+            nativeReservations.transition(previousSessionId, nextSessionId, token);
+          }
+          nativeSessionId = nextSessionId;
+          const slot = sessions.get(input.sessionId);
+          if (slot?.token === token) slot.nativeSessionId = nextSessionId;
+        };
+        const quarantineRewindCleanup = (cleanup: Promise<void>) => {
+          quarantineFailedCleanup(
+            input.sessionId,
+            token,
+            new OmpCleanupFailure(
+              "OMP rewind left native session cleanup unresolved",
+              cleanup,
+              nativeSessionId,
+            ),
+            nativeSessionId,
+          );
+        };
+        const retireRewindSession = () => {
+          if (sessions.get(input.sessionId)?.token === token) sessions.delete(input.sessionId);
+        };
         const pending = OmpProviderSession.open(
           input,
           runtime,
           safeCapabilities,
           sessionEmit,
+          transitionNativeSession,
+          quarantineRewindCleanup,
+          retireRewindSession,
           scheduler,
           shutdown.signal,
           environment,

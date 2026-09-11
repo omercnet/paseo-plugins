@@ -618,6 +618,8 @@ export class OmpTimelineProjector {
     this.replayOverflowCandidates.clear();
     this.replayBoundaryOccurrences.clear();
     this.replayBoundaryOccurrenceCount = 0;
+    this.revertEntryByToken.clear();
+    this.revertTokenByEntry.clear();
   }
 
   private ensureTurn(turnId: string): void {

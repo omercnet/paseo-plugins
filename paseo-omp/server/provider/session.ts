@@ -39,6 +39,9 @@ type SessionInterruptInput = Extract<ProviderInput, { type: "session.interrupt" 
 type SessionConfigureInput = Extract<ProviderInput, { type: "session.configure" }>;
 type SessionRevertInput = Extract<ProviderInput, { type: "session.revert" }>;
 type SessionCloseInput = Extract<ProviderInput, { type: "session.close" }>;
+type NativeSessionTransition = (previousSessionId: string, nextSessionId: string) => void;
+type RewindCleanupQuarantine = (cleanup: Promise<void>) => void;
+type RewindSessionRetirement = () => void;
 type Emit = (event: ProviderEvent) => void;
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
@@ -297,6 +300,9 @@ export class OmpProviderSession {
     private readonly emit: Emit,
     private readonly replayHistoryOnOpen: boolean,
     private readonly persistSession: boolean,
+    private readonly transitionNativeSession: NativeSessionTransition,
+    private readonly quarantineRewindCleanup: RewindCleanupQuarantine,
+    private readonly retireRewindSession: RewindSessionRetirement,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -326,6 +332,9 @@ export class OmpProviderSession {
     runtime: OmpRuntime,
     capabilities: readonly string[],
     emit: Emit,
+    transitionNativeSession: NativeSessionTransition,
+    quarantineRewindCleanup: RewindCleanupQuarantine,
+    retireRewindSession: RewindSessionRetirement,
     scheduler?: OmpTimelineScheduler,
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
@@ -481,6 +490,9 @@ export class OmpProviderSession {
         emit,
         input.history === "replay",
         effectiveConfig.persist,
+        transitionNativeSession,
+        quarantineRewindCleanup,
+        retireRewindSession,
         scheduler,
       );
     } catch (error) {
@@ -577,14 +589,20 @@ export class OmpProviderSession {
     }
 
     this.revertInFlight = true;
+    let branchMutationPossible = false;
+    let runtime = this.runtime;
+    let generation = this.generation;
     try {
       await this.recoverRuntime();
       if (this.closed) throw new OmpPublicError("OMP session is closed");
       if (this.activeTurn) {
         throw new OmpPublicError("Cannot rewind the OMP conversation while a turn is active");
       }
-      const runtime = this.runtime;
-      const generation = this.generation;
+      runtime = this.runtime;
+      generation = this.generation;
+      if (!runtime.canReplayHistory) {
+        throw new OmpPublicError("OMP conversation rewind requires negotiated RPC protocol v2");
+      }
       const entryId = this.projector.resolveRevertToken(input.token);
       const [branchMessages, beforeState] = await Promise.all([
         runtime.getBranchMessages(),
@@ -597,14 +615,29 @@ export class OmpProviderSession {
       if (!branchMessages.some((message) => message.entryId === entryId)) {
         throw new OmpPublicError("OMP conversation rewind token is stale");
       }
+      branchMutationPossible = true;
       const result = await runtime.branch(entryId);
       this.requireCurrentRuntime(runtime, generation);
-      if (result.cancelled) throw new OmpPublicError("OMP conversation rewind was cancelled");
+      if (result.cancelled) {
+        branchMutationPossible = false;
+        throw new OmpPublicError("OMP conversation rewind was cancelled");
+      }
 
-      this.projector.resetForRewindReplay();
-      this.quarantineBranchEntries();
       let state = await runtime.getState();
       this.requireCurrentRuntime(runtime, generation);
+      const nextNativeSessionId = validateNativeSessionId(state.sessionId);
+      if (nextNativeSessionId !== this.nativeSessionId) {
+        this.transitionNativeSession(this.nativeSessionId, nextNativeSessionId);
+        this.nativeSessionId = nextNativeSessionId;
+        if (this.persistSession) {
+          this.emit({
+            type: "session.persistence",
+            sessionId: this.id,
+            persistence: { version: 1, data: { sessionId: nextNativeSessionId } },
+          });
+        }
+      }
+
       const modelChanged =
         beforeState.model?.provider !== state.model?.provider ||
         beforeState.model?.id !== state.model?.id;
@@ -626,29 +659,65 @@ export class OmpProviderSession {
         this.requireCurrentRuntime(runtime, generation);
       }
       if (
-        state.sessionId !== beforeState.sessionId ||
+        state.sessionId !== this.nativeSessionId ||
         state.model?.provider !== beforeState.model?.provider ||
         state.model?.id !== beforeState.model?.id ||
         state.thinkingLevel !== beforeState.thinkingLevel
       ) {
         throw new OmpPublicError("OMP did not preserve session configuration while rewinding");
       }
+
+      this.projector.resetForRewindReplay();
+      this.quarantineBranchEntries();
       await this.replayHistory();
       this.requireCurrentRuntime(runtime, generation);
       this.publishCommittedConfig(state, runtime, generation);
       this.emit({ type: "request.completed", requestId: input.requestId });
     } catch (error) {
-      this.emit({
-        type: "request.failed",
-        requestId: input.requestId,
-        error: providerError(error, "OMP conversation rewind failed"),
-      });
+      const failure = branchMutationPossible
+        ? { message: "OMP conversation rewind left native state indeterminate" }
+        : providerError(error, "OMP conversation rewind failed");
+      if (branchMutationPossible) {
+        await this.closeAfterCommittedRewindFailure(runtime, failure.message);
+      }
+      this.emit({ type: "request.failed", requestId: input.requestId, error: failure });
+      if (branchMutationPossible) {
+        this.publishSessionClosed(failure);
+        this.retireRewindSession();
+      }
     } finally {
       this.revertInFlight = false;
-      if (this.configRefreshDirty && !this.configMutationInFlight) {
+      if (this.configRefreshDirty && !this.configMutationInFlight && !this.closed) {
         this.scheduleCommittedConfigRefresh();
       }
     }
+  }
+  private async closeAfterCommittedRewindFailure(
+    runtime: OmpRuntimeSession,
+    message: string,
+  ): Promise<void> {
+    this.closed = true;
+    this.generation += 1;
+    this.runtimeDead = message;
+    this.configRefreshAttempts = 0;
+    this.configRefreshDirty = false;
+    const configRefresh = this.configRefreshInFlight;
+    this.cancelConfigRefreshRetry();
+    this.lifetime.abort(new Error(message));
+    this.projector.close();
+    this.unsubscribe();
+    this.unsubscribe = () => {};
+    const runtimeCleanup = this.runtimeDisposal ?? runtime.close();
+    this.runtimeDisposal = configRefresh
+      ? Promise.all([runtimeCleanup, configRefresh]).then(() => undefined)
+      : runtimeCleanup;
+    this.disposalPromise = this.runtimeDisposal;
+    this.quarantineRewindCleanup(this.runtimeDisposal);
+    await Promise.allSettled([
+      this.runtimeDisposal,
+      this.recoveryPromise,
+      ...(configRefresh ? [configRefresh] : []),
+    ]);
   }
 
   async prompt(input: SessionPromptInput): Promise<void> {

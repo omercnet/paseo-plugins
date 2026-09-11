@@ -88,6 +88,7 @@ const ALTERNATE_MODEL: OmpModel = {
 const MODEL_PUBLIC_ID = ompModelId(MODEL);
 const ALTERNATE_MODEL_PUBLIC_ID = ompModelId(ALTERNATE_MODEL);
 const NATIVE_SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";
+const BRANCHED_NATIVE_SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfcc";
 const TEST_RUNTIME_ENV: NodeJS.ProcessEnv = {
   HOME: "/__paseo_omp_test_no_home__",
   PATH: "/usr/bin",
@@ -265,6 +266,9 @@ class FakeOmpSession implements OmpRuntimeSession {
   abortObserved: (() => void) | null = null;
   abortError: Error | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
+  branchSessionIdAfter: string | null = null;
+  branchStateErrorAfter: Error | null = null;
+  branchHistoryErrorAfter: Error | null = null;
   availableCommandsError: Error | null = null;
   availableCommandLookups = 0;
   availableCommandsGate: Promise<void> | null = null;
@@ -399,6 +403,15 @@ class FakeOmpSession implements OmpRuntimeSession {
     }
     if (!this.branchCancelled && this.branchThinkingAfter) {
       this.thinkingLevel = this.branchThinkingAfter;
+    }
+    if (!this.branchCancelled && this.branchSessionIdAfter) {
+      this.nativeSessionId = this.branchSessionIdAfter;
+    }
+    if (!this.branchCancelled && this.branchStateErrorAfter) {
+      this.stateError = this.branchStateErrorAfter;
+    }
+    if (!this.branchCancelled && this.branchHistoryErrorAfter) {
+      this.historyError = this.branchHistoryErrorAfter;
     }
     return {
       text: this.branchMessages.find((message) => message.entryId === entryId)?.text ?? "",
@@ -1133,6 +1146,7 @@ describe("OMP direct provider", () => {
     session.branchHistoryAfter = [firstUser, firstAssistant];
     session.branchModelAfter = ALTERNATE_MODEL;
     session.branchThinkingAfter = "high";
+    session.branchSessionIdAfter = BRANCHED_NATIVE_SESSION_ID;
     const baseline = events.length;
     await connection.send({
       type: "session.revert",
@@ -1154,6 +1168,11 @@ describe("OMP direct provider", () => {
     expect(session.thinkingChanges).toEqual(["medium"]);
     expect(session.currentModel).toEqual(MODEL);
     expect(session.thinkingLevel).toBe("medium");
+    expect(events.slice(baseline)).toContainEqual({
+      type: "session.persistence",
+      sessionId: "rewind-session",
+      persistence: { version: 1, data: { sessionId: BRANCHED_NATIVE_SESSION_ID } },
+    });
     expect(
       events
         .slice(baseline)
@@ -1313,11 +1332,30 @@ describe("OMP direct provider", () => {
         (event) => event.type === "request.failed" && event.requestId === requestId,
       );
     }
-    expect(sessionAt(runtime).branches).toEqual([]);
+    const session = sessionAt(runtime);
+    expect(session.branches).toEqual([]);
+    session.canReplayHistory = false;
+    await connection.send({
+      type: "session.revert",
+      requestId: "replay-capability-lost",
+      sessionId: "token-session",
+      token: foreign.item.revertToken ?? null,
+      scope: "conversation",
+    });
+    await expect(
+      events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === "replay-capability-lost",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        error: { message: "OMP conversation rewind requires negotiated RPC protocol v2" },
+      }),
+    );
+    expect(session.branches).toEqual([]);
     await connection.close();
   });
 
-  test("contains native branch failures and remains closable", async () => {
+  test("closes after an indeterminate native branch failure", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
     runtime.nextHistoryMessages = [{ role: "user", entryId: "failure-entry", content: "earlier" }];
@@ -1364,12 +1402,181 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "failed-native-rewind",
     );
     expect(failure).toEqual(
-      expect.objectContaining({ error: { message: "OMP conversation rewind failed" } }),
+      expect.objectContaining({
+        error: { message: "OMP conversation rewind left native state indeterminate" },
+      }),
     );
     expect(JSON.stringify(failure)).not.toContain("native branch secret");
     expect(session.historyRequests).toBe(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "session.closed", sessionId: "failure-session" }),
+    );
     await expect(connection.close()).resolves.toBeUndefined();
     expect(session.closes).toBe(1);
+  });
+  test("closes the mutated runtime after post-branch state, restore, or replay failure", async () => {
+    const cases: Array<{
+      stage: string;
+      nativeSessionId: string;
+      cleanupFails?: boolean;
+      fail(session: FakeOmpSession): void;
+    }> = [
+      {
+        stage: "state",
+        nativeSessionId: "01a08f6b-8da9-72cb-9080-fc50139bdfd1",
+        fail(session) {
+          session.branchStateErrorAfter = new Error("state failed");
+        },
+      },
+      {
+        stage: "config",
+        nativeSessionId: "01a08f6b-8da9-72cb-9080-fc50139bdfd2",
+        fail(session) {
+          session.branchModelAfter = ALTERNATE_MODEL;
+          session.modelChangeError = new Error("restore failed");
+        },
+      },
+      {
+        stage: "replay",
+        nativeSessionId: "01a08f6b-8da9-72cb-9080-fc50139bdfd3",
+        cleanupFails: true,
+        fail(session) {
+          session.branchHistoryErrorAfter = new Error("replay failed");
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const runtime = new FakeOmpRuntime();
+      runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+      runtime.nextHistoryMessages = [
+        { role: "user", entryId: `${testCase.stage}-entry`, content: "earlier" },
+      ];
+      const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+        "prompt.message",
+        "session.list",
+        "session.persistence",
+        "session.revert.conversation",
+      ]);
+      const sessionId = `${testCase.stage}-failure-session`;
+      await connection.send({
+        type: "session.open",
+        requestId: `${testCase.stage}-failure-open`,
+        sessionId,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+      await events.waitFor(
+        (event) =>
+          event.type === "session.ready" && event.requestId === `${testCase.stage}-failure-open`,
+      );
+      const user = events.find(
+        (event) => event.type === "timeline.item" && event.item.type === "user_message",
+      );
+      if (user?.type !== "timeline.item" || user.item.type !== "user_message") {
+        throw new Error(`Missing ${testCase.stage} failure rewind token`);
+      }
+      const session = sessionAt(runtime);
+      if (testCase.cleanupFails) session.closeError = new Error("cleanup failed");
+      session.branchMessages = [{ entryId: `${testCase.stage}-entry`, text: "earlier" }];
+      session.branchSessionIdAfter = testCase.nativeSessionId;
+      testCase.fail(session);
+      const cleanup = Promise.withResolvers<void>();
+      const cleanupStarted = Promise.withResolvers<void>();
+      session.closeGate = cleanup.promise;
+      session.closeObserved = cleanupStarted.resolve;
+      const requestId = `${testCase.stage}-post-branch-failure`;
+      await connection.send({
+        type: "session.revert",
+        requestId,
+        sessionId,
+        token: user.item.revertToken ?? null,
+        scope: "conversation",
+      });
+      await cleanupStarted.promise;
+      expect(
+        events.some((event) => event.type === "request.failed" && event.requestId === requestId),
+      ).toBe(false);
+      cleanup.resolve();
+      const failure = await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === requestId,
+      );
+      expect(failure).toEqual(
+        expect.objectContaining({
+          error: { message: "OMP conversation rewind left native state indeterminate" },
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session.closed",
+          sessionId,
+          error: { message: "OMP conversation rewind left native state indeterminate" },
+        }),
+      );
+      expect(session.closes).toBe(1);
+
+      await connection.send({
+        type: "session.prompt",
+        sessionId,
+        prompt: {
+          clientMessageId: `${testCase.stage}-after-failure`,
+          delivery: "auto",
+          input: { type: "message", content: [{ type: "text", text: "must not run" }] },
+        },
+      });
+      await expect(
+        events.waitFor(
+          (event) =>
+            event.type === "session.prompt_result" &&
+            event.clientMessageId === `${testCase.stage}-after-failure`,
+        ),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          result: { type: "failed", error: { message: "Unknown OMP session" } },
+        }),
+      );
+      expect(session.prompts).toEqual([]);
+      if (testCase.cleanupFails) {
+        await connection.send({
+          type: "sessions",
+          requestId: "list-after-failed-rewind-cleanup",
+          cwd: "/repo",
+        });
+        await expect(
+          events.waitFor(
+            (event) =>
+              event.type === "request.failed" &&
+              event.requestId === "list-after-failed-rewind-cleanup",
+          ),
+        ).resolves.toEqual(
+          expect.objectContaining({
+            error: { message: "OMP native session cleanup quarantine is active" },
+          }),
+        );
+      }
+      await connection.close();
+    }
+  });
+
+  test("moves persistent reservation ownership to the branched native session", () => {
+    const reservations = new OmpNativeSessionReservations();
+    const owner = Symbol("owner");
+    const contender = Symbol("contender");
+    reservations.reserve(NATIVE_SESSION_ID, owner);
+    reservations.transition(NATIVE_SESSION_ID, BRANCHED_NATIVE_SESSION_ID, owner);
+
+    expect(() => reservations.reserve(NATIVE_SESSION_ID, contender)).not.toThrow();
+    expect(() => reservations.reserve(BRANCHED_NATIVE_SESSION_ID, contender)).toThrow(
+      "OMP native session is already open",
+    );
   });
   test("keeps replay-boundary counts beyond 1,024 occurrences", async () => {
     const runtime = new FakeOmpRuntime();
