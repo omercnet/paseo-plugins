@@ -20,8 +20,8 @@ export const FIXTURE_TIMESTAMP = "2026-09-11T06:00:00Z";
 export const supervisorDiscoveryFixture = {
   state: "available",
   supervisor: {
-    endpointUrl: "http://127.0.0.1:7375",
-    version: "1.1.1",
+    endpointUrl: "http://127.0.0.1:8372",
+    version: "1.4.1",
     buildId: "abc1234",
     uptimeSeconds: 3_600,
     cityCount: 1,
@@ -212,7 +212,7 @@ export const dispatchResultFixture = {
   formula: null,
   workflowId: null,
   rootBeadId: null,
-  dashboardUrl: "http://127.0.0.1:7375/cities/alpha-city/runs",
+  dashboardUrl: "http://127.0.0.1:8372/cities/alpha-city/runs",
   warnings: [],
 } satisfies DispatchResult;
 
@@ -305,7 +305,7 @@ export const providerSelectionsFixture = {
 } satisfies ProviderSelectionList;
 
 export const settingsFixture = {
-  endpointUrl: "http://127.0.0.1:7375",
+  endpointUrl: "http://127.0.0.1:8372",
   allowRemoteEndpoint: false,
   mutationsEnabled: false,
   refreshIntervalMs: 10_000,
