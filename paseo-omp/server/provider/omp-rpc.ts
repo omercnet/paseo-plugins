@@ -44,6 +44,9 @@ const MAX_MCP_CONFIG_BYTES = 256 * 1024;
 const MAX_ENV_TOTAL_LENGTH = 1024 * 1024;
 const MAX_PATH_LENGTH = 4_096;
 const WINDOWS_DEFAULT_SYSTEM_ROOT = "C:\\Windows";
+const MAX_TOKEN_COUNT = Number.MAX_SAFE_INTEGER;
+const MAX_COST_USD = 1_000_000_000;
+const MAX_CONTEXT_PERCENT = 1_000_000;
 
 function boundedString(maxBytes: number, minBytes = 0) {
   return z.string().refine((value) => {
@@ -137,12 +140,58 @@ const OmpModelSchema = z.object({
     .optional(),
   contextWindow: z.number().int().nonnegative().max(100_000_000).nullable().optional(),
 });
+const TokenCountSchema = z.number().int().nonnegative().max(MAX_TOKEN_COUNT);
+const OptionalTokenCountSchema = TokenCountSchema.nullable().optional();
+const OptionalCostSchema = z
+  .number()
+  .finite()
+  .nonnegative()
+  .max(MAX_COST_USD)
+  .nullable()
+  .optional();
+const OmpContextUsageSchema = z.object({
+  tokens: OptionalTokenCountSchema,
+  contextWindow: TokenCountSchema.max(100_000_000).nullable().optional(),
+  percent: z.number().finite().nonnegative().max(MAX_CONTEXT_PERCENT).nullable().optional(),
+});
+const OmpSessionStatsSchema = z.object({
+  userMessages: OptionalTokenCountSchema,
+  assistantMessages: OptionalTokenCountSchema,
+  toolCalls: OptionalTokenCountSchema,
+  toolResults: OptionalTokenCountSchema,
+  totalMessages: OptionalTokenCountSchema,
+  tokens: z
+    .object({
+      input: OptionalTokenCountSchema,
+      output: OptionalTokenCountSchema,
+      reasoning: OptionalTokenCountSchema,
+      cacheRead: OptionalTokenCountSchema,
+      cacheWrite: OptionalTokenCountSchema,
+      total: OptionalTokenCountSchema,
+    })
+    .nullable()
+    .optional(),
+  cost: OptionalCostSchema,
+  premiumRequests: OptionalTokenCountSchema,
+  credits: z
+    .object({
+      cost: OptionalCostSchema,
+      committedCost: OptionalCostSchema,
+      acuCost: OptionalCostSchema,
+    })
+    .nullable()
+    .optional(),
+  routedModels: z.record(NAME, OptionalTokenCountSchema).nullable().optional(),
+  contextUsage: OmpContextUsageSchema.nullable().optional(),
+});
+const OmpCompactionResultSchema = z.object({ tokensBefore: OptionalTokenCountSchema });
 const OmpSessionStateSchema = z.object({
   model: OmpModelSchema.nullable().optional(),
   thinkingLevel: OmpThinkingLevelSchema.optional(),
   isStreaming: z.boolean(),
   isCompacting: z.boolean(),
   sessionId: IDENTIFIER,
+  contextUsage: OmpContextUsageSchema.nullable().optional(),
 });
 const OmpReadyFrameSchema = z.object({
   type: z.literal("ready"),
@@ -240,6 +289,20 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
   }),
   z.object({
+    type: z.literal("auto_compaction_start"),
+    reason: NAME,
+    action: NAME,
+  }),
+  z.object({
+    type: z.literal("auto_compaction_end"),
+    action: NAME.optional(),
+    result: OmpCompactionResultSchema.nullable().optional(),
+    aborted: z.boolean().optional(),
+    willRetry: z.boolean().optional(),
+    errorMessage: boundedString(64 * 1024).optional(),
+    skipped: z.boolean().optional(),
+  }),
+  z.object({
     type: z.literal("available_commands_update"),
     commands: z.array(OmpAvailableCommandSchema).max(MAX_ARRAY_ITEMS),
   }),
@@ -281,6 +344,8 @@ const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2)
 export type OmpMessage = z.infer<typeof OmpMessageSchema>;
 export type OmpModel = z.infer<typeof OmpModelSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
+export type OmpSessionStats = z.infer<typeof OmpSessionStatsSchema>;
+export type OmpCompactionResult = z.infer<typeof OmpCompactionResultSchema>;
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
   | { type: "process_exit"; error: string };
@@ -304,9 +369,11 @@ export interface OmpRuntimeSession {
   readonly redactionValues?: readonly string[];
   onEvent(listener: (event: OmpRpcEvent) => void): () => void;
   getState(): Promise<OmpSessionState>;
+  getSessionStats(): Promise<OmpSessionStats>;
   getAvailableModels(): Promise<OmpModel[]>;
   getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>>;
   prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }>;
+  compact(customInstructions?: string): Promise<OmpCompactionResult>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: string): Promise<void>;
   steer(message: string): Promise<void>;
@@ -338,7 +405,7 @@ export interface OmpRpcRuntimeOptions {
 type PendingRequest = {
   resolve(value: unknown): void;
   reject(error: Error): void;
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
   command: string;
 };
 type StartedRequest = { id: string; promise: Promise<unknown> };
@@ -1062,7 +1129,7 @@ class OmpRpcProcess {
 
   startRequest(
     command: Record<string, unknown>,
-    timeoutMs = this.requestTimeoutMs,
+    timeoutMs: number | null = this.requestTimeoutMs,
   ): StartedRequest {
     const id = randomUUID();
     if (this.fatalError) return { id, promise: Promise.reject(this.fatalError) };
@@ -1088,10 +1155,13 @@ class OmpRpcProcess {
       return { id, promise: Promise.reject(new Error("OMP RPC has too many pending requests")) };
     }
     const result = Promise.withResolvers<unknown>();
-    const timer = setTimeout(() => {
-      this.pending.delete(id);
-      result.reject(new Error("OMP RPC request timed out"));
-    }, timeoutMs);
+    const timer =
+      timeoutMs === null
+        ? undefined
+        : setTimeout(() => {
+            this.pending.delete(id);
+            result.reject(new Error("OMP RPC request timed out"));
+          }, timeoutMs);
     this.pending.set(id, {
       resolve: result.resolve,
       reject: result.reject,
@@ -1112,7 +1182,10 @@ class OmpRpcProcess {
     return { id, promise: result.promise };
   }
 
-  request(command: Record<string, unknown>, timeoutMs = this.requestTimeoutMs): Promise<unknown> {
+  request(
+    command: Record<string, unknown>,
+    timeoutMs: number | null = this.requestTimeoutMs,
+  ): Promise<unknown> {
     return this.startRequest(command, timeoutMs).promise;
   }
 
@@ -1665,6 +1738,26 @@ class OmpRpcSession implements OmpRuntimeSession {
 
   async getState(): Promise<OmpSessionState> {
     return OmpSessionStateSchema.parse(await this.process.request({ type: "get_state" }));
+  }
+
+  async getSessionStats(): Promise<OmpSessionStats> {
+    return OmpSessionStatsSchema.parse(await this.process.request({ type: "get_session_stats" }));
+  }
+
+  async compact(customInstructions?: string): Promise<OmpCompactionResult> {
+    const instructions =
+      customInstructions === undefined
+        ? undefined
+        : validateBoundedText(customInstructions, "compaction instructions", MAX_TEXT_LENGTH);
+    return OmpCompactionResultSchema.parse(
+      await this.process.request(
+        {
+          type: "compact",
+          ...(instructions ? { customInstructions: instructions } : {}),
+        },
+        null,
+      ),
+    );
   }
 
   async getAvailableModels(): Promise<OmpModel[]> {

@@ -428,7 +428,30 @@ describe("OMP RPC transport", () => {
             isStreaming: false,
             isCompacting: false,
             sessionId: "legacy",
+            contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
           },
+        });
+      }
+      if (command.type === "get_session_stats") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "get_session_stats",
+          success: true,
+          data: {
+            tokens: { input: 120, output: 30, cacheRead: 40 },
+            cost: 0.12,
+            contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
+          },
+        });
+      }
+      if (command.type === "compact") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "compact",
+          success: true,
+          data: { tokensBefore: 1_500, summary: "not exposed" },
         });
       }
     });
@@ -439,7 +462,111 @@ describe("OMP RPC transport", () => {
     expect(await session.getState()).toEqual(
       expect.objectContaining({ sessionId: "legacy", isStreaming: false }),
     );
+    expect(await session.getSessionStats()).toEqual({
+      tokens: { input: 120, output: 30, cacheRead: 40 },
+      cost: 0.12,
+      contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
+    });
+    expect(await session.compact("focus")).toEqual({ tokensBefore: 1_500 });
+    expect(commands).toContainEqual(
+      expect.objectContaining({ type: "compact", customInstructions: "focus" }),
+    );
     expect(commands.some((command) => command.type === "negotiate_protocol")).toBe(false);
+    await session.close();
+  });
+
+  test("accepts nullable usage and sparse compaction payloads", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      const response = {
+        type: "response",
+        id: command.id,
+        command: command.type,
+        success: true,
+      };
+      if (command.type === "get_state") {
+        child.write({
+          ...response,
+          data: {
+            model: null,
+            isStreaming: false,
+            isCompacting: false,
+            sessionId: "nullable-usage",
+            contextUsage: { tokens: null, contextWindow: null, percent: null },
+          },
+        });
+      } else if (command.type === "get_session_stats") {
+        child.write({
+          ...response,
+          data: {
+            tokens: { input: null, output: null, cacheRead: null },
+            cost: null,
+            contextUsage: null,
+          },
+        });
+      } else if (command.type === "compact") {
+        child.write({ ...response, data: {} });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ type: "ready" });
+    const session = await opening;
+    const compactionEvent = nextEvent((listener) => session.onEvent(listener));
+
+    expect(await session.getState()).toEqual(
+      expect.objectContaining({
+        contextUsage: { tokens: null, contextWindow: null, percent: null },
+      }),
+    );
+    expect(await session.getSessionStats()).toEqual({
+      tokens: { input: null, output: null, cacheRead: null },
+      cost: null,
+      contextUsage: null,
+    });
+    expect(await session.compact()).toEqual({});
+    child.write({ type: "auto_compaction_end", aborted: false, willRetry: false });
+    await expect(compactionEvent).resolves.toEqual(
+      expect.objectContaining({ type: "auto_compaction_end" }),
+    );
+    await session.close();
+  });
+
+  test("rejects fractional and unbounded usage numerics", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      const response = {
+        type: "response",
+        id: command.id,
+        command: command.type,
+        success: true,
+      };
+      if (command.type === "get_state") {
+        child.write({
+          ...response,
+          data: {
+            model: null,
+            isStreaming: false,
+            isCompacting: false,
+            sessionId: "invalid-usage",
+            contextUsage: { tokens: 1.5, contextWindow: 200_000, percent: 0.1 },
+          },
+        });
+      } else if (command.type === "get_session_stats") {
+        child.write({
+          ...response,
+          data: {
+            tokens: { input: Number.MAX_SAFE_INTEGER + 1, output: 0, cacheRead: 0 },
+            cost: 0,
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ type: "ready" });
+    const session = await opening;
+
+    await expect(session.getState()).rejects.toThrow();
+    await expect(session.getSessionStats()).rejects.toThrow();
     await session.close();
   });
 

@@ -4,15 +4,18 @@ import type {
   ProviderEvent,
   ProviderInput,
   ProviderSessionConfig,
+  ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
 import type {
+  OmpCompactionResult,
   OmpMessage,
   OmpModel,
   OmpRpcEvent,
   OmpRuntime,
   OmpRuntimeSession,
   OmpSessionState,
+  OmpSessionStats,
   OmpStartOptions,
 } from "./omp-rpc";
 import { buildOmpSpawnRequest } from "./omp-rpc";
@@ -40,6 +43,11 @@ const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
 const CONFIG_REFRESH_RETRY_BASE_MS = 250;
 const CONFIG_REFRESH_MAX_ATTEMPTS = 3;
+const USAGE_POLL_MS = 1_000;
+const USAGE_REFRESH_MS = 100;
+const FINAL_USAGE_WAIT_MS = 250;
+const COMPACTION_MAX_WAIT_MS = 5 * 60_000;
+const AGENT_END_SETTLE_MS = 5_000;
 const MAX_PROMPT_PARTS = 64;
 const MAX_PROMPT_TEXT_LENGTH = 1024 * 1024;
 const MAX_TRACKED_ENTRY_IDS = 1_024;
@@ -94,7 +102,20 @@ type ActiveTurn = {
   localOnlyEligible: boolean;
   nativeRequestId?: string;
   localOnlyTimer?: unknown;
+  usagePollTimer?: unknown;
+  usagePoll?: Promise<void>;
+  usageSampleFloor: number;
+  manualCompaction: boolean;
+  manualCompactionPending: boolean;
+  manualCompactionDeadlineTimer?: unknown;
+  agentEndPending: boolean;
+  agentEndRetryTimer?: unknown;
+  agentEndDeadlineTimer?: unknown;
+  agentEndCheck?: Promise<void>;
   terminalizing: boolean;
+  terminalization?: Promise<void>;
+  terminalOutcome?: TurnOutcome;
+  terminalWake?: VoidDeferred;
   steersInFlight: number;
   deferredAgentEnd?: Extract<OmpRpcEvent, { type: "agent_end" }>;
   bufferedEvents: OmpRpcEvent[];
@@ -109,6 +130,27 @@ type PendingAbort = {
   generation: number;
   runtime: OmpRuntimeSession;
   promise: Promise<void>;
+};
+
+type VoidDeferred = {
+  promise: Promise<void>;
+  resolve(value?: void | PromiseLike<void>): void;
+  reject(reason?: unknown): void;
+};
+
+type TurnOutcome = {
+  state: "completed" | "failed" | "canceled";
+  error?: { message: string };
+  usageSampled: boolean;
+};
+
+type ActiveCompaction = {
+  id: string;
+  trigger: "auto" | "manual";
+  turnId: string;
+  generation: number;
+  action?: string;
+  preTokens?: number;
 };
 
 function providerError(error: unknown, fallback: string): { message: string } {
@@ -182,7 +224,9 @@ function isNativeTurnActivity(event: OmpRpcEvent): boolean {
     event.type === "agent_start" ||
     event.type === "turn_start" ||
     event.type === "turn_end" ||
-    event.type === "agent_end"
+    event.type === "agent_end" ||
+    event.type === "auto_compaction_start" ||
+    event.type === "auto_compaction_end"
   ) {
     return true;
   }
@@ -237,6 +281,18 @@ export class OmpProviderSession {
   private configRevision = 0;
   private recoveryUsesNativeConfig = false;
   private activeAbort: PendingAbort | null = null;
+  private usageEpoch = 0;
+  private usageSequence = 0;
+  private usageSample: {
+    turn: ActiveTurn;
+    generation: number;
+    runtime: OmpRuntimeSession;
+    epoch: number;
+    sequence: number;
+    promise: Promise<OmpSessionState | undefined>;
+  } | null = null;
+  private activeCompaction: ActiveCompaction | null = null;
+  private lastUsage: ProviderUsage | null = null;
 
   private constructor(
     id: string,
@@ -424,6 +480,254 @@ export class OmpProviderSession {
     this.emit({ type: "session.ready", requestId, sessionId: this.id });
   }
 
+  private usageFrom(
+    state: OmpSessionState | undefined,
+    stats: OmpSessionStats | undefined,
+  ): ProviderUsage | undefined {
+    if (!state?.contextUsage && !stats) return undefined;
+    const stateContext = state?.contextUsage;
+    const statsContext = stats?.contextUsage;
+    const modelCapacity = state?.model?.contextWindow;
+    const inputTokens = stats?.tokens?.input;
+    const cachedInputTokens = stats?.tokens?.cacheRead;
+    const outputTokens = stats?.tokens?.output;
+    const totalCostUsd = stats?.cost;
+    const contextTokens =
+      typeof stateContext?.tokens === "number"
+        ? stateContext.tokens
+        : typeof statsContext?.tokens === "number"
+          ? statsContext.tokens
+          : undefined;
+    const contextWindow =
+      typeof stateContext?.contextWindow === "number" && stateContext.contextWindow > 0
+        ? stateContext.contextWindow
+        : typeof statsContext?.contextWindow === "number" && statsContext.contextWindow > 0
+          ? statsContext.contextWindow
+          : typeof modelCapacity === "number" && modelCapacity > 0
+            ? modelCapacity
+            : undefined;
+    const usage: ProviderUsage = {
+      ...(typeof inputTokens === "number" ? { inputTokens } : {}),
+      ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+      ...(typeof outputTokens === "number" ? { outputTokens } : {}),
+      ...(typeof totalCostUsd === "number" ? { totalCostUsd } : {}),
+      ...(contextTokens !== undefined ? { contextWindowUsedTokens: contextTokens } : {}),
+      ...(contextWindow !== undefined ? { contextWindowMaxTokens: contextWindow } : {}),
+    };
+    return Object.keys(usage).length > 0 ? usage : undefined;
+  }
+
+  private ownsUsageSample(
+    turn: ActiveTurn,
+    generation: number,
+    runtime: OmpRuntimeSession,
+  ): boolean {
+    return (
+      !this.closed &&
+      !this.runtimeDead &&
+      !turn.terminal &&
+      generation === this.generation &&
+      runtime === this.runtime &&
+      this.activeTurn === turn
+    );
+  }
+
+  private publishUsageSnapshot(
+    turn: ActiveTurn,
+    minimumEpoch = this.usageEpoch,
+    minimumSequence = turn.usageSampleFloor,
+  ): Promise<OmpSessionState | undefined> {
+    const generation = turn.generation;
+    const runtime = this.runtime;
+    if (!this.ownsUsageSample(turn, generation, runtime)) return Promise.resolve(undefined);
+    const current = this.usageSample;
+    if (current) {
+      if (
+        current.turn === turn &&
+        current.generation === generation &&
+        current.runtime === runtime &&
+        current.epoch >= minimumEpoch &&
+        current.sequence >= minimumSequence
+      ) {
+        return current.promise;
+      }
+      return current.promise.then(() => {
+        if (!this.ownsUsageSample(turn, generation, runtime)) return undefined;
+        return this.publishUsageSnapshot(turn, minimumEpoch, minimumSequence);
+      });
+    }
+    const epoch = this.usageEpoch;
+    const sequence = ++this.usageSequence;
+    const promise = Promise.allSettled([runtime.getState(), runtime.getSessionStats()]).then(
+      ([stateResult, statsResult]) => {
+        if (
+          !this.ownsUsageSample(turn, generation, runtime) ||
+          epoch !== this.usageEpoch ||
+          epoch < minimumEpoch ||
+          sequence < turn.usageSampleFloor ||
+          sequence < minimumSequence
+        ) {
+          return undefined;
+        }
+        const state = stateResult.status === "fulfilled" ? stateResult.value : undefined;
+        const stats = statsResult.status === "fulfilled" ? statsResult.value : undefined;
+        const usage = this.usageFrom(state, stats);
+        if (usage) {
+          this.lastUsage = usage;
+          this.emit({ type: "session.usage", sessionId: this.id, turnId: turn.turnId, usage });
+        }
+        return state;
+      },
+    );
+    this.usageSample = { turn, generation, runtime, epoch, sequence, promise };
+    void promise.finally(() => {
+      if (this.usageSample?.promise === promise) this.usageSample = null;
+    });
+    return promise;
+  }
+
+  private async boundedUsageSnapshot(
+    turn: ActiveTurn,
+    timeoutMs: number,
+  ): Promise<OmpSessionState | undefined> {
+    const timeout = Promise.withResolvers<undefined>();
+    const timer = this.scheduler.set(() => timeout.resolve(undefined), timeoutMs);
+    try {
+      return await Promise.race([this.publishUsageSnapshot(turn), timeout.promise]);
+    } finally {
+      this.scheduler.clear(timer);
+    }
+  }
+
+  private async boundedTerminalState(
+    turn: ActiveTurn,
+    timeoutMs: number,
+  ): Promise<OmpSessionState | undefined> {
+    const generation = turn.generation;
+    const runtime = this.runtime;
+    const timeout = Promise.withResolvers<undefined>();
+    const timer = this.scheduler.set(() => timeout.resolve(undefined), timeoutMs);
+    try {
+      const state = await Promise.race([runtime.getState(), timeout.promise]);
+      return this.ownsUsageSample(turn, generation, runtime) ? state : undefined;
+    } catch {
+      return undefined;
+    } finally {
+      this.scheduler.clear(timer);
+    }
+  }
+
+  private isActiveTurn(turn: ActiveTurn): boolean {
+    return (
+      !this.closed &&
+      !this.runtimeDead &&
+      !turn.terminal &&
+      !turn.terminalizing &&
+      !turn.agentEndPending &&
+      turn.generation === this.generation &&
+      this.activeTurn === turn
+    );
+  }
+
+  private scheduleUsagePoll(turn: ActiveTurn, delayMs = USAGE_POLL_MS): void {
+    if (!this.isActiveTurn(turn) || turn.usagePollTimer !== undefined) return;
+    turn.usagePollTimer = this.scheduler.set(() => {
+      turn.usagePollTimer = undefined;
+      this.pollUsage(turn);
+    }, delayMs);
+  }
+
+  private pollUsage(turn: ActiveTurn): void {
+    if (!this.isActiveTurn(turn) || turn.usagePoll) return;
+    const poll = this.publishUsageSnapshot(turn).then(() => undefined);
+    turn.usagePoll = poll;
+    void poll.finally(() => {
+      if (turn.usagePoll === poll) turn.usagePoll = undefined;
+      this.scheduleUsagePoll(turn);
+    });
+  }
+
+  private stopUsagePoll(turn: ActiveTurn): void {
+    if (turn.usagePollTimer === undefined) return;
+    this.scheduler.clear(turn.usagePollTimer);
+    turn.usagePollTimer = undefined;
+  }
+
+  private startCompaction(turn: ActiveTurn, trigger: "auto" | "manual", action?: string): void {
+    if (this.activeCompaction) return;
+    const operation: ActiveCompaction = {
+      id: randomUUID(),
+      trigger,
+      turnId: turn.turnId,
+      generation: turn.generation,
+      action,
+      preTokens: this.lastUsage?.contextWindowUsedTokens,
+    };
+    this.activeCompaction = operation;
+    this.projector.flush(true);
+    this.emit({
+      type: "timeline.item",
+      sessionId: this.id,
+      item: {
+        id: operation.id,
+        type: "compaction",
+        status: "loading",
+        trigger,
+        ...(operation.preTokens !== undefined ? { preTokens: operation.preTokens } : {}),
+      },
+    });
+  }
+
+  private finishCompaction(
+    state: "completed" | "failed" | "canceled" | "skipped",
+    options: { tokensBefore?: number | null; message?: string } = {},
+  ): void {
+    const operation = this.activeCompaction;
+    if (!operation) return;
+    this.activeCompaction = null;
+    this.projector.flush(true);
+    if (state === "completed") {
+      this.usageEpoch += 1;
+      const staleSample = this.usageSample;
+      if (staleSample && staleSample.epoch < this.usageEpoch) {
+        this.usageSample = null;
+        staleSample.turn.usagePoll = undefined;
+      }
+      this.lastUsage = null;
+    }
+    if (state !== "completed") {
+      const defaultMessage =
+        state === "failed"
+          ? "OMP compaction failed"
+          : state === "canceled"
+            ? "OMP compaction canceled"
+            : "OMP compaction skipped";
+      this.emit({
+        type: "timeline.item",
+        sessionId: this.id,
+        item: {
+          id: operation.id,
+          type: "notification",
+          level: state === "failed" ? "error" : "info",
+          message: this.dataFilter.text(options.message ?? defaultMessage, 4_096),
+        },
+      });
+      return;
+    }
+    const tokensBefore = options.tokensBefore ?? operation.preTokens;
+    this.emit({
+      type: "timeline.item",
+      sessionId: this.id,
+      item: {
+        id: operation.id,
+        type: "compaction",
+        status: "completed",
+        trigger: operation.trigger,
+        ...(tokensBefore !== undefined ? { preTokens: tokensBefore } : {}),
+      },
+    });
+  }
+
   async prompt(input: SessionPromptInput): Promise<void> {
     let text: string;
     try {
@@ -508,7 +812,11 @@ export class OmpProviderSession {
       nativeActivity: false,
       localOnlyDisabled: false,
       localOnlyEligible: false,
+      usageSampleFloor: 0,
+      agentEndPending: false,
       terminalizing: false,
+      manualCompactionPending: slashCommandName(text) === "compact",
+      manualCompaction: slashCommandName(text) === "compact",
       steersInFlight: 0,
       userCorrelationActive: false,
       userLookups: new Set(),
@@ -526,6 +834,34 @@ export class OmpProviderSession {
     };
     this.activeTurn = turn;
     try {
+      if (turn.manualCompaction) {
+        const instructions = text.slice("/compact".length).trim() || undefined;
+        const compaction = this.runtime.compact(instructions);
+        this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
+        turn.starting = false;
+        this.startTurn(turn, false);
+        this.startCompaction(turn, "manual");
+        this.pollUsage(turn);
+        const bufferedEvents = turn.bufferedEvents.splice(0);
+        for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
+        void this.settleManualCompaction(turn, compaction);
+        turn.manualCompactionDeadlineTimer = this.scheduler.set(() => {
+          turn.manualCompactionDeadlineTimer = undefined;
+          if (
+            turn.terminal ||
+            this.activeTurn !== turn ||
+            turn.generation !== this.generation ||
+            !turn.manualCompactionPending
+          ) {
+            return;
+          }
+          const message = "OMP compaction was canceled after it stopped responding";
+          turn.manualCompactionPending = false;
+          this.invalidateRuntime(message, "canceled");
+          void this.finishTurn(turn, "canceled", undefined, true, true);
+        }, COMPACTION_MAX_WAIT_MS);
+        return;
+      }
       const acknowledgement = await this.runtime.prompt(text);
       if (this.closed || turn.terminal) return;
       turn.nativeRequestId = acknowledgement.requestId;
@@ -542,18 +878,48 @@ export class OmpProviderSession {
       this.publishPendingUsers(turn);
       const failure = providerError(error, "OMP prompt failed");
       this.publishPromptResult(turn, { type: "failed", error: failure });
-      if (turn.started) this.finishTurn(turn, "failed", failure);
+      if (turn.started) await this.finishTurn(turn, "failed", failure);
       else {
         turn.terminal = true;
+        this.finishCompaction("failed", { message: "OMP prompt failed" });
         this.projector.finishTurn(turn.turnId);
         if (this.activeTurn === turn) this.activeTurn = null;
       }
     }
   }
 
+  private async settleManualCompaction(
+    turn: ActiveTurn,
+    compaction: Promise<OmpCompactionResult>,
+  ): Promise<void> {
+    try {
+      const result = await compaction;
+      turn.manualCompactionPending = false;
+      if (this.closed || this.runtimeDead || turn.generation !== this.generation) return;
+      this.finishCompaction("completed", { tokensBefore: result.tokensBefore });
+      await this.finishTurn(turn, turn.interrupted ? "canceled" : "completed");
+    } catch (error) {
+      if (this.closed || this.runtimeDead || turn.generation !== this.generation) return;
+      turn.manualCompactionPending = false;
+      const raw = providerError(error, "OMP compaction failed");
+      const failure = { message: this.dataFilter.text(raw.message, 4_096) };
+      const state = turn.interrupted ? "canceled" : "failed";
+      this.finishCompaction(state, { message: failure.message });
+      await this.finishTurn(turn, state, state === "failed" ? failure : undefined, true, true);
+    }
+  }
+
   async interrupt(input: SessionInterruptInput): Promise<void> {
     const turn = this.activeTurn;
     if (!turn) {
+      this.emit({ type: "request.completed", requestId: input.requestId });
+      return;
+    }
+    if (turn.manualCompaction) {
+      turn.interrupted = true;
+      turn.manualCompactionPending = false;
+      this.invalidateRuntime("OMP compaction interrupted", "canceled");
+      await this.finishTurn(turn, "canceled", undefined, true, true);
       this.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
@@ -578,6 +944,9 @@ export class OmpProviderSession {
   private async settleInterrupt(requestId: string, abort: PendingAbort): Promise<void> {
     try {
       await abort.promise;
+      if (abort.turn.terminalizing && !abort.turn.terminal && this.activeTurn === abort.turn) {
+        await this.finishTurn(abort.turn, "canceled", undefined, true, true);
+      }
       this.emit({ type: "request.completed", requestId });
     } catch (error) {
       const { runtime, turn } = abort;
@@ -926,19 +1295,24 @@ export class OmpProviderSession {
   }
 
   private async disposeSession(): Promise<void> {
+    this.closed = true;
+    this.lifetime.abort(new Error("OMP provider session closed"));
     const turn = this.activeTurn;
     if (turn) {
-      this.publishPendingUsers(turn);
       this.publishPromptResult(turn, {
         type: "failed",
         error: { message: "OMP session closed before the prompt was accepted" },
       });
-      if (turn.started) this.finishTurn(turn, "canceled");
+      if (turn.started) await this.finishTurn(turn, "canceled", undefined, true, true);
       else {
         turn.terminal = true;
+        this.stopUsagePoll(turn);
+        this.finishCompaction("canceled");
         this.projector.finishTurn(turn.turnId);
+        if (this.activeTurn === turn) this.activeTurn = null;
       }
     }
+    this.finishCompaction("canceled");
     this.closed = true;
     this.configRefreshAttempts = 0;
     this.configRefreshDirty = false;
@@ -1040,6 +1414,7 @@ export class OmpProviderSession {
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
       this.projector.addSensitiveValues(recovered.redactionValues ?? []);
       this.generation += 1;
+      this.lastUsage = null;
       this.runtimeDead = null;
       this.runtimeDisposal = null;
       this.bindRuntime(recovered);
@@ -1189,7 +1564,14 @@ export class OmpProviderSession {
   }
 
   private handleTurnEvent(turn: ActiveTurn, event: OmpRpcEvent): void {
-    if (turn.generation !== this.generation || turn.terminal || this.activeTurn !== turn) return;
+    if (
+      turn.generation !== this.generation ||
+      turn.terminal ||
+      turn.terminalizing ||
+      this.activeTurn !== turn
+    ) {
+      return;
+    }
     if (event.type === "prompt_result") {
       if (
         !event.id ||
@@ -1208,6 +1590,37 @@ export class OmpProviderSession {
       }
       return;
     }
+    if (event.type === "auto_compaction_start") {
+      turn.nativeActivity = true;
+      this.cancelLocalOnlyCompletion(turn);
+      this.startCompaction(turn, "auto", event.action);
+      return;
+    }
+    if (event.type === "auto_compaction_end") {
+      const operation = this.activeCompaction;
+      if (
+        operation?.trigger !== "auto" ||
+        operation.turnId !== turn.turnId ||
+        operation.generation !== turn.generation ||
+        (event.action !== undefined && operation.action !== event.action)
+      ) {
+        return;
+      }
+      const state = event.aborted
+        ? "canceled"
+        : event.errorMessage
+          ? "failed"
+          : event.skipped
+            ? "skipped"
+            : "completed";
+      this.finishCompaction(state, {
+        tokensBefore: event.result?.tokensBefore,
+        message: event.errorMessage,
+      });
+      this.scheduleUsagePoll(turn, USAGE_REFRESH_MS);
+      return;
+    }
+    if (event.type === "agent_end" && turn.manualCompactionPending) return;
     if (isNativeTurnActivity(event)) {
       turn.nativeActivity = true;
       this.cancelLocalOnlyCompletion(turn);
@@ -1375,6 +1788,8 @@ export class OmpProviderSession {
       !turn.terminal &&
       !turn.terminalizing &&
       !turn.deferredAgentEnd &&
+      !turn.agentEndPending &&
+      !turn.manualCompactionPending &&
       turn.started
     );
   }
@@ -1450,20 +1865,28 @@ export class OmpProviderSession {
       return;
     }
     this.publishPendingUsers(turn);
-    this.finishTurn(turn, "completed");
+    await this.finishTurn(turn, "completed");
   }
 
   private beginTerminalization(
     turn: ActiveTurn,
     event: Extract<OmpRpcEvent, { type: "agent_end" }>,
   ): void {
-    if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) return;
-    turn.terminalizing = true;
-    if (turn.userLookups.size === 0 && turn.userEchoes.length === 0) {
-      this.completeAgentEnd(turn, event);
+    if (turn.terminal || turn.terminalizing || turn.agentEndPending || this.activeTurn !== turn) {
       return;
     }
-    void this.finishFromAgentEnd(turn, event);
+    turn.agentEndPending = true;
+    turn.usageSampleFloor = this.usageSequence + 1;
+    if (this.usageSample?.turn === turn && this.usageSample.sequence < turn.usageSampleFloor) {
+      this.usageSample = null;
+    }
+    this.stopUsagePoll(turn);
+    turn.agentEndDeadlineTimer = this.scheduler.set(() => {
+      turn.agentEndDeadlineTimer = undefined;
+      if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
+      void this.completeAgentEnd(turn, event);
+    }, AGENT_END_SETTLE_MS);
+    this.finishFromAgentEnd(turn, event);
   }
 
   private resumeAfterFailedSteer(turn: ActiveTurn): void {
@@ -1479,59 +1902,66 @@ export class OmpProviderSession {
     }
   }
 
-  private async finishFromAgentEnd(
-    turn: ActiveTurn,
-    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  ): Promise<void> {
-    while (true) {
-      await Promise.allSettled(turn.userLookups);
-      if (this.closed || turn.terminal || this.activeTurn !== turn) return;
-      if (turn.userEchoes.length === 0) break;
-      this.drainUserEchoes(turn);
-      if (turn.userLookups.size === 0) break;
-    }
-    if (this.closed || turn.terminal || this.activeTurn !== turn) return;
-    if (turn.interrupted) {
-      this.completeAgentEnd(turn, event);
-      return;
-    }
-    const state = await this.confirmAgentEndState(turn);
-    if (this.closed || turn.terminal || this.activeTurn !== turn) return;
-    if (!state) {
-      const message = "OMP agent_end state could not be confirmed";
-      this.completeAgentEnd(turn, event);
-      this.invalidateRuntime(message);
-      return;
-    }
-    if (state.isStreaming || state.isCompacting) {
-      const message = "OMP agent_end arrived while the native runtime remained active";
-      this.publishPendingUsers(turn);
-      this.invalidateRuntime(message);
-      this.finishTurn(turn, "failed", { message });
-      return;
-    }
-    this.completeAgentEnd(turn, event);
-  }
-
-  private completeAgentEnd(
+  private finishFromAgentEnd(
     turn: ActiveTurn,
     event: Extract<OmpRpcEvent, { type: "agent_end" }>,
   ): void {
-    if (turn.generation !== this.generation || turn.terminal || this.activeTurn !== turn) return;
-    this.publishPendingUsers(turn);
-    const error = terminalError(event);
-    if (turn.interrupted) this.finishTurn(turn, "canceled");
-    else if (error) this.finishTurn(turn, "failed", { message: error });
-    else this.finishTurn(turn, "completed");
+    if (turn.agentEndCheck || !turn.agentEndPending || turn.terminal) return;
+    const check = this.checkAgentEndState(turn, event);
+    turn.agentEndCheck = check;
+    void check.finally(() => {
+      if (turn.agentEndCheck === check) turn.agentEndCheck = undefined;
+    });
   }
 
-  private async confirmAgentEndState(turn: ActiveTurn): Promise<OmpSessionState | undefined> {
-    const generation = turn.generation;
-    const runtime = this.runtime;
-    const state = await this.readRuntimeStateWithTimeout(runtime);
-    if (!this.isCurrentRuntime(runtime, generation)) return undefined;
-    return state;
+  private async checkAgentEndState(
+    turn: ActiveTurn,
+    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  ): Promise<void> {
+    await Promise.allSettled(turn.userLookups);
+    if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
+    while (turn.userEchoes.length > 0) {
+      this.drainUserEchoes(turn);
+      if (turn.userLookups.size === 0) break;
+      await Promise.allSettled(turn.userLookups);
+      if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
+    }
+    if (turn.interrupted) {
+      await this.completeAgentEnd(turn, event);
+      return;
+    }
+    const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
+    if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
+    if (state) {
+      if (!state.isStreaming && !state.isCompacting) {
+        await this.completeAgentEnd(turn, event);
+        return;
+      }
+      const message = "OMP agent_end arrived while the native runtime remained active";
+      this.invalidateRuntime(message);
+      await this.finishTurn(turn, "failed", { message }, true, true);
+      return;
+    }
+    if (turn.agentEndRetryTimer === undefined) {
+      turn.agentEndRetryTimer = this.scheduler.set(() => {
+        turn.agentEndRetryTimer = undefined;
+        this.finishFromAgentEnd(turn, event);
+      }, USAGE_POLL_MS);
+    }
   }
+
+  private async completeAgentEnd(
+    turn: ActiveTurn,
+    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+    usageSampled = false,
+  ): Promise<void> {
+    if (turn.terminal || this.activeTurn !== turn) return;
+    const error = terminalError(event);
+    if (turn.interrupted) await this.finishTurn(turn, "canceled", undefined, usageSampled);
+    else if (error) await this.finishTurn(turn, "failed", { message: error }, usageSampled);
+    else await this.finishTurn(turn, "completed", undefined, usageSampled);
+  }
+
   private publishPendingUsers(turn: ActiveTurn): void {
     for (const pending of turn.pendingUsers.splice(0)) {
       for (const echo of pending.bufferedEchoes) {
@@ -1583,36 +2013,114 @@ export class OmpProviderSession {
     });
   }
 
-  private startTurn(turn: ActiveTurn): void {
+  private startTurn(turn: ActiveTurn, pollUsage = true): void {
     if (turn.started || turn.terminal) return;
     turn.started = true;
     this.emit({ type: "session.turn", sessionId: this.id, turnId: turn.turnId, state: "started" });
+    if (pollUsage) this.pollUsage(turn);
   }
 
   private finishTurn(
     turn: ActiveTurn,
     state: "completed" | "failed" | "canceled",
     error?: { message: string },
-  ): void {
-    if (turn.terminal) return;
-    turn.terminal = true;
+    usageSampled = false,
+    override = false,
+  ): Promise<void> {
+    if (turn.terminal) return Promise.resolve();
+    const current = turn.terminalOutcome;
+    if (
+      !current ||
+      override ||
+      state === "failed" ||
+      (state === "canceled" && current.state === "completed")
+    ) {
+      turn.terminalOutcome = { state, ...(error ? { error } : {}), usageSampled };
+    }
+    if (turn.terminalization) {
+      if (override) turn.terminalWake?.resolve();
+      return turn.terminalization;
+    }
+    turn.terminalizing = true;
+    turn.manualCompactionPending = false;
+    turn.agentEndPending = false;
     this.cancelLocalOnlyCompletion(turn);
-    this.projector.finishTurn(turn.turnId);
-    this.unclaimedBranchEntries.length = 0;
-    this.emit({
-      type: "session.turn",
-      sessionId: this.id,
-      turnId: turn.turnId,
-      state,
-      ...(error ? { error } : {}),
-    });
-    if (this.activeTurn === turn) this.activeTurn = null;
+    this.stopUsagePoll(turn);
+    if (turn.manualCompactionDeadlineTimer !== undefined) {
+      this.scheduler.clear(turn.manualCompactionDeadlineTimer);
+      turn.manualCompactionDeadlineTimer = undefined;
+    }
+    if (turn.agentEndRetryTimer !== undefined) {
+      this.scheduler.clear(turn.agentEndRetryTimer);
+      turn.agentEndRetryTimer = undefined;
+    }
+    if (turn.agentEndDeadlineTimer !== undefined) {
+      this.scheduler.clear(turn.agentEndDeadlineTimer);
+      turn.agentEndDeadlineTimer = undefined;
+    }
+    const wake = Promise.withResolvers<void>();
+    turn.terminalWake = wake;
+    const generation = turn.generation;
+    const terminalization = (async () => {
+      if (!turn.terminalOutcome?.usageSampled && !this.closed && !this.runtimeDead) {
+        await Promise.race([
+          this.boundedUsageSnapshot(turn, FINAL_USAGE_WAIT_MS),
+          wake.promise.then(() => undefined),
+        ]);
+      }
+      if (turn.terminal || this.activeTurn !== turn) return;
+      let outcome = turn.terminalOutcome;
+      if (!outcome) return;
+      if (this.closed && outcome.state === "completed") {
+        outcome = { state: "canceled", usageSampled: true };
+      } else if (
+        (this.runtimeDead || generation !== this.generation) &&
+        outcome.state === "completed"
+      ) {
+        outcome = {
+          state: "failed",
+          error: { message: "OMP runtime failed" },
+          usageSampled: true,
+        };
+      }
+      turn.terminal = true;
+      if (this.usageSample?.turn === turn) this.usageSample = null;
+      if (this.activeCompaction) {
+        if (outcome.state === "canceled") this.finishCompaction("canceled");
+        else {
+          this.finishCompaction("failed", {
+            message: outcome.error?.message ?? "OMP compaction ended without a terminal result",
+          });
+        }
+      }
+      this.publishPendingUsers(turn);
+      this.projector.finishTurn(turn.turnId);
+      this.unclaimedBranchEntries.length = 0;
+      this.emit({
+        type: "session.turn",
+        sessionId: this.id,
+        turnId: turn.turnId,
+        state: outcome.state,
+        ...(outcome.error ? { error: outcome.error } : {}),
+      });
+      if (this.activeTurn === turn) this.activeTurn = null;
+    })();
+    turn.terminalization = terminalization;
+    return terminalization;
   }
 
-  private invalidateRuntime(message: string): void {
+  private invalidateRuntime(
+    message: string,
+    compactionState: "failed" | "canceled" = "failed",
+  ): void {
     if (this.closed || this.runtimeDead) return;
     this.recoveryUsesNativeConfig ||=
       this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
+    const turn = this.activeTurn;
+    if (turn) this.stopUsagePoll(turn);
+    this.usageSample = null;
+    this.finishCompaction(compactionState, { message });
+    this.lastUsage = null;
     this.generation += 1;
     this.runtimeDead = message;
     this.configRefreshAttempts = 0;
@@ -1635,7 +2143,7 @@ export class OmpProviderSession {
     if (!turn) return;
     this.publishPendingUsers(turn);
     this.publishPromptResult(turn, { type: "failed", error: { message } });
-    if (turn.started) this.finishTurn(turn, "failed", { message });
+    if (turn.started) void this.finishTurn(turn, "failed", { message }, true, true);
     else {
       turn.terminal = true;
       this.projector.finishTurn(turn.turnId);
