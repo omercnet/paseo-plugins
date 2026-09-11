@@ -4367,7 +4367,7 @@ describe("OMP direct provider", () => {
           id: "omp:todos",
           items: [
             {
-              id: "omp:todo:0",
+              id: expect.stringMatching(/^omp:todo:/u),
               text: "Wait for background task",
               completed: false,
               status: "pending",
@@ -5985,7 +5985,9 @@ describe("OMP direct provider", () => {
   });
 
   test("continues extension questions through native permissions", async () => {
-    const { connection, events, runtime } = await createHarness();
+    const runtime = new FakeOmpRuntime();
+    runtime.redactionValues = ["Preview", "Production"];
+    const { connection, events } = await createHarness(runtime);
     await openSession(connection, events);
     const session = sessionAt(runtime);
     const turnId = turnIdFrom(await startPrompt(connection, events, "ask-turn", "choose"));
@@ -6005,16 +6007,30 @@ describe("OMP direct provider", () => {
     });
     const permission = await events.waitFor((event) => event.type === "session.permission");
     if (permission.type !== "session.permission") throw new Error("Expected permission event");
-    expect(permission.request.input?.questions).toEqual([
+    const questions = permission.request.input?.questions;
+    expect(questions).toEqual([
       {
         header: "Deployment",
         question: "Deployment",
         options: [
-          { label: "Preview", description: "Safe sandbox" },
-          { label: "Production", description: "Live traffic" },
+          {
+            label: "<redacted>",
+            value: expect.stringMatching(/^option:0:/u),
+            description: "Safe sandbox",
+          },
+          {
+            label: "<redacted>",
+            value: expect.stringMatching(/^option:1:/u),
+            description: "Live traffic",
+          },
         ],
       },
     ]);
+    const optionActions =
+      permission.request.actions?.filter((action) => action.id.startsWith("option:")) ?? [];
+    expect(new Set(optionActions.map((action) => action.id)).size).toBe(2);
+    const productionAction = optionActions[1];
+    if (!productionAction) throw new Error("Expected production action");
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     expect(
       events.some(
@@ -6029,8 +6045,8 @@ describe("OMP direct provider", () => {
       permissionId: permission.request.id,
       response: {
         behavior: "allow",
-        selectedActionId: "submit",
-        updatedInput: { answers: { Deployment: "Production" } },
+        selectedActionId: productionAction.id,
+        updatedInput: { answers: { Deployment: productionAction.id } },
       },
     });
     await events.waitFor(
@@ -6125,6 +6141,29 @@ describe("OMP direct provider", () => {
       id: "native-editor",
       value: "Final notes",
     });
+    const permissionCount = events.filter((event) => event.type === "session.permission").length;
+    const responseCount = session.extensionUiResponses.length;
+    session.emit({
+      type: "extension_ui_request",
+      id: "open-url",
+      method: "open_url",
+      url: "https://example.com/oauth?token=public",
+      launchUrl: "http://127.0.0.1:4321/launch",
+      instructions: "Open this link",
+    });
+    expect(events.filter((event) => event.type === "session.permission")).toHaveLength(
+      permissionCount,
+    );
+    expect(session.extensionUiResponses).toHaveLength(responseCount);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({
+          type: "notification",
+          message: "Open this link\nhttp://127.0.0.1:4321/launch",
+        }),
+      }),
+    );
     session.emit({
       type: "message_end",
       message: {
@@ -6150,6 +6189,21 @@ describe("OMP direct provider", () => {
     });
     const permission = await events.waitFor((event) => event.type === "session.permission");
     if (permission.type !== "session.permission") throw new Error("Expected permission");
+    const permissionCountBeforeUpdate = events.filter(
+      (event) => event.type === "session.permission",
+    ).length;
+    session.emit({
+      type: "extension_ui_request",
+      id: "native-race",
+      method: "confirm",
+      title: "Continue updated",
+      message: "Proceed now?",
+    });
+    const updatedPermissions = events.filter((event) => event.type === "session.permission");
+    expect(updatedPermissions).toHaveLength(permissionCountBeforeUpdate + 1);
+    expect(updatedPermissions.at(-1)).toEqual(
+      expect.objectContaining({ request: expect.objectContaining({ id: permission.request.id }) }),
+    );
     const gate = Promise.withResolvers<void>();
     const observed = Promise.withResolvers<void>();
     session.extensionUiResponseGate = gate.promise;
@@ -6161,6 +6215,19 @@ describe("OMP direct provider", () => {
       response: { behavior: "allow", selectedActionId: "submit" },
     });
     await observed.promise;
+    const permissionCountInFlight = events.filter(
+      (event) => event.type === "session.permission",
+    ).length;
+    session.emit({
+      type: "extension_ui_request",
+      id: "native-race",
+      method: "confirm",
+      title: "Ignored in flight",
+      message: "Duplicate",
+    });
+    expect(events.filter((event) => event.type === "session.permission")).toHaveLength(
+      permissionCountInFlight,
+    );
     await connection.send({
       type: "session.permission",
       sessionId: "session-1",
@@ -6250,6 +6317,7 @@ describe("OMP direct provider", () => {
       type: "extension_ui_response",
       id: "native-timeout",
       cancelled: true,
+      timedOut: true,
     });
     await connection.close();
   });
@@ -6370,6 +6438,42 @@ describe("OMP direct provider", () => {
       expect(new Set(snapshots.map((item) => item.id)).size).toBe(1);
       expect(snapshots.at(-1)?.detail.type).toBe(detailType);
     }
+    const screenshotBytes = "a".repeat(300 * 1024);
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "browser-shot",
+      toolName: "browser_screenshot",
+      args: { browserId: "browser-1" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "browser-shot",
+      toolName: "browser_screenshot",
+      result: {
+        content: [{ type: "image", data: screenshotBytes, mimeType: "image/png" }],
+        details: { width: 1280, height: 720 },
+      },
+    });
+    const browserScreenshot = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "browser_screenshot" &&
+        event.item.status === "completed",
+    );
+    if (
+      browserScreenshot?.type !== "timeline.item" ||
+      browserScreenshot.item.type !== "tool_call" ||
+      browserScreenshot.item.detail.type !== "unknown"
+    ) {
+      throw new Error("Expected browser screenshot tool output");
+    }
+    const screenshotOutput = browserScreenshot.item.detail.output;
+    expect(JSON.stringify(screenshotOutput).length).toBeGreaterThan(256 * 1024);
+    expect(screenshotOutput).toEqual({
+      content: [{ type: "image", data: screenshotBytes, mimeType: "image/png" }],
+      details: { width: 1280, height: 720 },
+    });
     const completedMappedTools = events.flatMap((event) =>
       event.type === "timeline.item" &&
       event.item.type === "tool_call" &&
@@ -6430,7 +6534,7 @@ describe("OMP direct provider", () => {
         id: "omp:todos",
         items: [
           {
-            id: "task-1",
+            id: expect.stringMatching(/^omp:todo:/u),
             text: "Map events",
             completed: false,
             status: "in_progress",
@@ -6482,6 +6586,11 @@ describe("OMP direct provider", () => {
     const todoRows = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "todo" ? [event.item] : [],
     );
+    expect(todoRows.map((item) => item.items[0]?.id)).toEqual([
+      expect.stringMatching(/^omp:todo:/u),
+      expect.stringMatching(/^omp:todo:/u),
+    ]);
+    expect(todoRows[0]?.items[0]?.id).toBe(todoRows[1]?.items[0]?.id);
     expect(new Set(todoRows.map((item) => item.id))).toEqual(new Set(["omp:todos"]));
 
     const beforeCustom = events.length;
@@ -6562,6 +6671,23 @@ describe("OMP direct provider", () => {
       aborted: false,
       willRetry: false,
     });
+    const overlapBaseline = events.length;
+    for (let index = 0; index < 9; index += 1) session.emit({ type: "compaction_start" });
+    const overlapEvents = events
+      .slice(overlapBaseline)
+      .flatMap((event) => (event.type === "timeline.item" ? [event.item] : []));
+    const overlapLoading = overlapEvents.filter(
+      (item) => item.type === "compaction" && item.status === "loading",
+    );
+    const overlapRetired = overlapEvents.filter(
+      (item) =>
+        item.type === "error" && item.message === "OMP emitted too many overlapping compactions",
+    );
+    expect(overlapLoading).toHaveLength(8);
+    expect(overlapRetired).toHaveLength(8);
+    expect(new Set(overlapLoading.map((item) => item.id))).toEqual(
+      new Set(overlapRetired.map((item) => item.id)),
+    );
     session.emit({ type: "advisor_yielded" });
     const rendered = events.slice(beforeCustom).filter((event) => event.type === "timeline.item");
     expect(JSON.stringify(rendered)).not.toContain("hidden");
@@ -6662,6 +6788,13 @@ describe("OMP direct provider", () => {
         event.turnId === interruptedTurn &&
         event.state === "canceled",
     );
+    await Promise.resolve();
+    expect(session.extensionUiResponses).toContainEqual({
+      type: "extension_ui_response",
+      id: "interrupt-ui",
+      cancelled: true,
+    });
+    expect(events.filter((event) => event.type === "session.permission_resolved")).toHaveLength(1);
 
     const recoveryTurn = turnIdFrom(
       await startPrompt(connection, events, "compaction-death", "continue"),
@@ -6692,10 +6825,9 @@ describe("OMP direct provider", () => {
       type: "timeline.item",
       sessionId: "session-1",
       item: {
-        type: "compaction",
+        type: "error",
         id: "omp:compaction:2",
-        status: "completed",
-        trigger: "manual",
+        message: "OMP compaction ended without a matching start",
       },
     });
     recovered.emit({ type: "compaction_start" });
@@ -6724,23 +6856,45 @@ describe("OMP direct provider", () => {
         message: "OMP compaction ended when the session closed",
       },
     });
-    await openSession(connection, events, "open-close-compaction", "session-2");
-    sessionAt(runtime, 2).emit({ type: "compaction_start" });
-    await connection.send({
-      type: "session.close",
-      requestId: "close-compaction",
-      sessionId: "session-2",
-    });
-    await events.waitFor(
-      (event) => event.type === "request.completed" && event.requestId === "close-compaction",
+    await connection.close();
+  });
+  test("keeps compaction active through local-only completion", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.promptAgentInvoked = false;
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "local-compaction", "/compact"),
     );
+    session.emit({ type: "compaction_start" });
+    await scheduler.flush();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "error" &&
+          event.item.id === "omp:compaction:1",
+      ),
+    ).toBe(false);
+    session.emit({
+      type: "compaction_end",
+      result: { preTokens: 4_000 },
+      aborted: false,
+      willRetry: false,
+    });
     expect(events).toContainEqual({
       type: "timeline.item",
-      sessionId: "session-2",
+      sessionId: "session-1",
       item: {
-        type: "error",
+        type: "compaction",
         id: "omp:compaction:1",
-        message: "OMP compaction ended when the session closed",
+        status: "completed",
+        trigger: "manual",
+        preTokens: 4_000,
       },
     });
     await connection.close();

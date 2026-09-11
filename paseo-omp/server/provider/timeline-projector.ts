@@ -17,6 +17,8 @@ const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
 const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGE_MARKDOWN_LENGTH = 8 * 1024 * 1024 + 256;
 const MAX_STREAM_TOTAL_BYTES = MAX_IMAGE_MARKDOWN_LENGTH * 2;
+const MAX_NATIVE_IMAGE_RESULT_BYTES = 12 * 1024 * 1024;
+const MAX_ACTIVE_COMPACTIONS = 8;
 
 type Emit = (event: ProviderEvent) => void;
 
@@ -102,6 +104,12 @@ function firstString(
   return undefined;
 }
 
+function todoPublicId(nativeId: string | undefined, index: number): string {
+  if (!nativeId) return `omp:todo:${index}`;
+  const digest = createHash("sha256").update(nativeId).digest("base64url").slice(0, 12);
+  return `omp:todo:${digest}`;
+}
+
 function displayText(value: JsonValue): string | undefined {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
@@ -124,6 +132,46 @@ function displayText(value: JsonValue): string | undefined {
 function resultDetails(value: JsonValue): Record<string, JsonValue> | undefined {
   const envelope = jsonRecord(value);
   return jsonRecord(envelope?.details);
+}
+
+function nativeImageResult(value: unknown): JsonValue | undefined {
+  if (
+    boundedJsonBytes(
+      value,
+      MAX_NATIVE_IMAGE_RESULT_BYTES,
+      MAX_STREAM_CONTENT_BLOCKS,
+      8 * 1024 * 1024,
+      512,
+    ) === Number.POSITIVE_INFINITY
+  ) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value) || !("content" in value)) {
+    return undefined;
+  }
+  const content = value.content;
+  if (!Array.isArray(content)) return undefined;
+  let hasImage = false;
+  for (const part of content) {
+    if (!part || typeof part !== "object" || Array.isArray(part) || !("type" in part)) continue;
+    if (part.type !== "image") continue;
+    if (
+      !("data" in part) ||
+      typeof part.data !== "string" ||
+      part.data.length === 0 ||
+      part.data.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/u.test(part.data) ||
+      !("mimeType" in part) ||
+      typeof part.mimeType !== "string" ||
+      !/^image\/(?:gif|jpeg|png|webp)$/u.test(part.mimeType)
+    ) {
+      return undefined;
+    }
+    hasImage = true;
+  }
+  if (!hasImage) return undefined;
+  // The bounded recursive check above proves this transport value is JSON-compatible.
+  return structuredClone(value) as JsonValue;
 }
 
 type CompactionSlot = { id: string; retrying: boolean };
@@ -269,13 +317,18 @@ export class OmpTimelineProjector {
       case "tool_execution_end": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
-        const output = previous.unsafePartialOutput
-          ? "<redacted>"
-          : this.dataFilter.json(
-              event.result,
-              MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
-              MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
-            );
+        const preservedImage = previous.name.startsWith("browser_")
+          ? nativeImageResult(event.result)
+          : undefined;
+        const output =
+          preservedImage ??
+          (previous.unsafePartialOutput
+            ? "<redacted>"
+            : this.dataFilter.json(
+                event.result,
+                MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+                MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+              ));
         const snapshot: ToolSnapshot = { ...previous, output };
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
@@ -316,7 +369,7 @@ export class OmpTimelineProjector {
         type: "todo",
         id: "omp:todos",
         items: todos.slice(0, MAX_TODOS).map((todo, index) => ({
-          id: `omp:todo:${index}`,
+          id: todoPublicId(todo.id, index),
           text: this.dataFilter.text(todo.content, 16_384),
           completed: todo.status === "completed" || todo.status === "abandoned",
           status:
@@ -350,6 +403,18 @@ export class OmpTimelineProjector {
       });
       return;
     }
+    if (event.type === "extension_ui_request" && event.method === "open_url") {
+      this.noticeSequence += 1;
+      const url = event.launchUrl ?? event.url;
+      const message = [event.instructions, url].filter(Boolean).join("\n");
+      this.publish({
+        type: "notification",
+        id: `omp:ui:${this.noticeSequence}`,
+        level: "info",
+        message: this.dataFilter.text(message, 64 * 1024),
+      });
+      return;
+    }
     if (event.type === "advisor_yielded") {
       this.noticeSequence += 1;
       this.publish({
@@ -363,9 +428,14 @@ export class OmpTimelineProjector {
     if (event.type === "auto_compaction_start" || event.type === "compaction_start") {
       const trigger = event.type === "auto_compaction_start" ? "auto" : "manual";
       const active = this.compactions[trigger];
-      const retrying = active.at(-1);
+      const retrying = active[0];
       if (retrying?.retrying) {
         retrying.retrying = false;
+        return;
+      }
+      const activeCount = this.compactions.auto.length + this.compactions.manual.length;
+      if (activeCount >= MAX_ACTIVE_COMPACTIONS) {
+        this.retireCompactions("OMP emitted too many overlapping compactions");
         return;
       }
       this.compactionSequence += 1;
@@ -377,16 +447,21 @@ export class OmpTimelineProjector {
     if (event.type === "auto_compaction_end" || event.type === "compaction_end") {
       const trigger = event.type === "auto_compaction_end" ? "auto" : "manual";
       const active = this.compactions[trigger];
-      const slot = active[0] ?? {
-        id: `omp:compaction:${++this.compactionSequence}`,
-        retrying: false,
-      };
-      if (event.willRetry) {
-        slot.retrying = true;
-        if (active.length === 0) active.push(slot);
+      const slot = active[0];
+      if (!slot) {
+        this.compactionSequence += 1;
+        this.publish({
+          type: "error",
+          id: `omp:compaction:${this.compactionSequence}`,
+          message: "OMP compaction ended without a matching start",
+        });
         return;
       }
-      if (active[0] === slot) active.shift();
+      if (event.willRetry) {
+        slot.retrying = true;
+        return;
+      }
+      active.shift();
       const result = jsonRecord(this.dataFilter.json(event.result ?? null));
       const rawPreTokens = result?.preTokens ?? result?.tokensBefore;
       if (event.aborted || event.errorMessage) {
@@ -480,8 +555,8 @@ export class OmpTimelineProjector {
     }
   }
 
-  finishTurn(turnId: string): void {
-    this.retireCompactions("OMP compaction ended with the turn");
+  finishTurn(turnId: string, preserveCompactions = false): void {
+    if (!preserveCompactions) this.retireCompactions("OMP compaction ended with the turn");
     if (this.currentTurnId !== turnId) return;
     this.flush(true);
     this.publishCommand(turnId, true);
@@ -846,7 +921,7 @@ export class OmpTimelineProjector {
         const status = firstString(taskRecord, "status");
         const completed = status === "completed" || status === "abandoned";
         items.push({
-          id: firstString(taskRecord, "id") ?? `omp:todo:${items.length}`,
+          id: todoPublicId(firstString(taskRecord, "id"), items.length),
           text: this.dataFilter.text(text, 16_384),
           completed,
           status: completed ? "completed" : status === "in_progress" ? "in_progress" : "pending",

@@ -413,7 +413,7 @@ export type OmpImage = { type: "image"; data: string; mimeType: string };
 export type OmpExtensionUiResponse =
   | { type: "extension_ui_response"; id: string; value: string }
   | { type: "extension_ui_response"; id: string; confirmed: boolean }
-  | { type: "extension_ui_response"; id: string; cancelled: true };
+  | { type: "extension_ui_response"; id: string; cancelled: true; timedOut?: boolean };
 
 export interface OmpRuntimeSession {
   readonly redactionValues?: readonly string[];
