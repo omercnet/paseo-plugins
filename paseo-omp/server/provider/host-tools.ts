@@ -550,14 +550,28 @@ export class OmpHostToolsBridge {
     return this.closePromise;
   }
 
+  private boundedTerminal(
+    runtime: OmpRuntimeSession,
+    result: OmpHostToolResult,
+  ): OmpHostToolResult {
+    const limit = runtime.maxHostToolFrameBytes ?? 1024 * 1024;
+    try {
+      if (Buffer.byteLength(`${JSON.stringify(result)}\n`) <= limit) return result;
+    } catch {
+      // Fall through to the bounded error result.
+    }
+    return errorResult(result.id, "MCP host tool result exceeds the OMP RPC frame limit");
+  }
+
   private sendTerminal(
     runtime: OmpRuntimeSession,
     result: OmpHostToolResult,
     pending?: PendingCall,
   ): void {
-    if (pending && !this.isCurrent(result.id, pending)) return;
+    const bounded = this.boundedTerminal(runtime, result);
+    if (pending && !this.isCurrent(bounded.id, pending)) return;
     try {
-      runtime.sendHostToolResult(result);
+      runtime.sendHostToolResult(bounded);
     } catch (error) {
       this.failRuntime(runtime, error);
     }

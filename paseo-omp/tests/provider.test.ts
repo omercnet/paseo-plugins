@@ -435,6 +435,7 @@ class FakeOmpRuntime implements OmpRuntime {
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   redactionValues: readonly string[] = [];
+  sessionCreated: ((session: FakeOmpSession) => void) | null = null;
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     this.starts.push(options);
     this.startObserved?.();
@@ -470,6 +471,7 @@ class FakeOmpRuntime implements OmpRuntime {
       this.nextCloseError = null;
     }
     this.sessions.push(session);
+    this.sessionCreated?.(session);
     return session;
   }
 }
@@ -811,6 +813,42 @@ describe("OMP direct provider", () => {
       "prompt.steer",
       "session.configure",
     ]);
+    await connection.close();
+  });
+
+  test("reconciles config events emitted after the final opening state snapshot", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.sessionCreated = (session) => {
+      session.stateObserved = () => {
+        if (session.stateLookups !== 2) return;
+        queueMicrotask(() => {
+          session.currentModel = ALTERNATE_MODEL;
+          session.thinkingLevel = "high";
+          session.emit({ type: "model_changed" });
+        });
+      };
+    };
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    const reconciled = await events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+
+    expect(events.slice(0, 3).map((event) => event.type)).toEqual([
+      "session.opened",
+      "session.config",
+      "session.ready",
+    ]);
+    expect(reconciled).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
+      }),
+    );
+    expect(sessionAt(runtime).stateLookups).toBeGreaterThanOrEqual(3);
     await connection.close();
   });
   test("rejects unadvertised raw model identifiers", async () => {
@@ -1632,7 +1670,7 @@ describe("OMP direct provider", () => {
     await scheduler.flush();
     await refreshed;
 
-    expect(session.stateLookups).toBe(3);
+    expect(session.stateLookups).toBe(4);
     await connection.close();
   });
 
@@ -5575,6 +5613,75 @@ describe("OMP direct provider", () => {
     );
     expect(runtime.starts).toHaveLength(1);
     expect(hostCloses).toBe(1);
+    await connection.close();
+  });
+
+  test("aggregates host and incoming startup cleanup before releasing ownership", async () => {
+    const runtime = new FakeOmpRuntime();
+    const runtimeCleanup = Promise.withResolvers<void>();
+    const hostCloseStarted = Promise.withResolvers<void>();
+    const releaseHostClose = Promise.withResolvers<void>();
+    let hostCloses = 0;
+    runtime.nextStartError = new OmpCleanupFailure(
+      "runtime startup cleanup pending",
+      runtimeCleanup.promise,
+    );
+    const connection = await createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async () => ({
+        listTools: async () => ({ tools: [] }),
+        callTool: async () => ({ content: [] }),
+        close: async () => {
+          hostCloses += 1;
+          hostCloseStarted.resolve();
+          await releaseHostClose.promise;
+          throw new Error("host close failed");
+        },
+      }),
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    const open = (requestId: string) =>
+      connection.send({
+        type: "session.open",
+        requestId,
+        sessionId: "aggregate-cleanup-session",
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: { repo: { type: "stdio", command: "repo" } },
+          model: MODEL_PUBLIC_ID,
+          mode: "full",
+          settings: {},
+          persist: false,
+        },
+        history: "skip",
+      });
+
+    await open("aggregate-cleanup-open");
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "aggregate-cleanup-open",
+    );
+    await hostCloseStarted.promise;
+    expect(hostCloses).toBe(1);
+    await open("aggregate-cleanup-reopen-pending");
+    await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "aggregate-cleanup-reopen-pending",
+    );
+    expect(runtime.starts).toHaveLength(1);
+
+    runtimeCleanup.reject(new Error("runtime cleanup failed"));
+    releaseHostClose.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await open("aggregate-cleanup-reopen-failed");
+    await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "aggregate-cleanup-reopen-failed",
+    );
+    expect(runtime.starts).toHaveLength(1);
     await connection.close();
   });
 

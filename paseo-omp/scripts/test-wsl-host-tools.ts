@@ -1,4 +1,5 @@
 import {
+  buildWslClientCommand,
   parseEvidence,
   pluginRoot,
   runCaptured,
@@ -14,7 +15,7 @@ if (!Bun.which("wsl.exe")) {
   process.exit(0);
 }
 
-const wslBun = process.env.PASEO_OMP_WSL_BUN ?? "$HOME/.bun/bin/bun";
+const wslBun = process.env.PASEO_OMP_WSL_BUN ?? "~/.bun/bin/bun";
 try {
   await runCaptured(["wsl.exe", "--exec", "sh", "-lc", `test -x ${wslBun}`]);
 } catch (error) {
@@ -46,17 +47,16 @@ try {
   const failures: unknown[] = [];
   let verified = false;
   for (const host of hostCandidates) {
-    const command = [
-      `cd ${shellQuote(wslPluginRoot)}`,
-      `MCP_HOST_URL=${shellQuote(`http://${host}:${server.port}/mcp/agents?callerAgentId=${callerAgentId}`)}`,
-      `EXPECTED_HOST_CWD=${shellQuote(pluginRoot)}`,
-      `EXPECTED_HOST_PID=${server.pid}`,
-      `EXPECTED_CALLER_AGENT_ID=${callerAgentId}`,
-      `EXPECTED_WORKSPACE_ID=${workspaceId}`,
-      `EXPECTED_OWNER_MARKER=${ownerMarker}`,
+    const command = buildWslClientCommand({
+      wslPluginRoot,
+      hostUrl: `http://${host}:${server.port}/mcp/agents?callerAgentId=${callerAgentId}`,
+      expectedHostCwd: pluginRoot,
+      expectedHostPid: server.pid,
+      expectedCallerAgentId: callerAgentId,
+      expectedWorkspaceId: workspaceId,
+      expectedOwnerMarker: ownerMarker,
       wslBun,
-      "tests/fixtures/mcp-container-client.ts",
-    ].join(" ");
+    });
     try {
       const output = await runCaptured(["wsl.exe", "--exec", "sh", "-lc", command]);
       const evidence = parseEvidence(output);

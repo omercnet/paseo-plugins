@@ -115,7 +115,7 @@ export class SupervisedStdioClientTransport implements Transport {
     child.once("exit", () => {
       this.exited = true;
       this.exit.resolve();
-      void this.startTreeCleanup();
+      void this.startTreeCleanup().catch((error) => this.onerror?.(error));
       this.notifyClose();
     });
     const started = Promise.withResolvers<void>();
@@ -278,6 +278,20 @@ export interface McpConnectingClient {
   connect(transport: Transport, options?: { signal?: AbortSignal }): Promise<void>;
 }
 
+export async function closeMcpOwnership(
+  client: Pick<Client, "close">,
+  transport: Transport,
+): Promise<void> {
+  const results = await Promise.allSettled([
+    Promise.resolve().then(() => client.close()),
+    Promise.resolve().then(() => transport.close()),
+  ]);
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (failures.length > 0) throw new AggregateError(failures, "OMP MCP transport cleanup failed");
+}
+
 export async function connectMcpTransport(
   client: McpConnectingClient,
   transport: Transport,
@@ -360,7 +374,7 @@ export async function connectMcpServer(
       });
     },
     async close() {
-      await client.close();
+      await closeMcpOwnership(client, transport);
     },
   };
 }

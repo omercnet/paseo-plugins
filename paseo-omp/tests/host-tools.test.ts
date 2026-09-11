@@ -40,6 +40,7 @@ class FakeRuntime
   acceptedNames: string[] | null = null;
   throwUpdates = false;
   throwResults = false;
+  maxHostToolFrameBytes: number | undefined;
 
   setHostTools(tools: readonly OmpHostToolDefinition[]): Promise<string[]> {
     this.catalogs.push(structuredClone([...tools]));
@@ -514,6 +515,54 @@ describe("OMP host tool bridge", () => {
       await bridge.close();
     }
     expect(observed).toEqual(["C:\\Users\\agent\\repo", "/mnt/c/Users/agent/repo"]);
+  });
+
+  test("returns a small error when valid MCP output exceeds the negotiated frame", async () => {
+    const connection = new FakeConnection([{ name: "read", inputSchema: { type: "object" } }], {
+      content: [{ type: "text", text: "x".repeat(4_096) }],
+    });
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+      { connectMcp: async () => connection },
+    );
+    const runtime = new FakeRuntime();
+    runtime.maxHostToolFrameBytes = 512;
+    let fatalErrors = 0;
+    bridge.onFatal(() => {
+      fatalErrors += 1;
+    });
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+    for (const id of ["oversized-one", "oversized-two"]) {
+      bridge.handle({
+        type: "host_tool_call",
+        id,
+        toolCallId: `tool-${id}`,
+        toolName: "mcp__repo_read",
+        arguments: {},
+      });
+      await flushMicrotasks();
+    }
+
+    expect(connection.calls).toHaveLength(2);
+    expect(runtime.results).toHaveLength(2);
+    for (const result of runtime.results) {
+      expect(result).toEqual(
+        expect.objectContaining({
+          isError: true,
+          result: expect.objectContaining({
+            isError: true,
+            content: [
+              expect.objectContaining({
+                text: expect.stringContaining("exceeds the OMP RPC frame"),
+              }),
+            ],
+          }),
+        }),
+      );
+      expect(Buffer.byteLength(`${JSON.stringify(result)}\n`)).toBeLessThanOrEqual(512);
+    }
+    expect(fatalErrors).toBe(0);
+    await bridge.close();
   });
 
   test("invalidates and drains when terminal result delivery saturates the RPC writer", async () => {

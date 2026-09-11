@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  closeMcpOwnership,
   connectMcpTransport,
   createBoundedMcpFetch,
   SupervisedStdioClientTransport,
@@ -94,6 +95,38 @@ describe("MCP transport boundaries", () => {
     expect(terminations).toEqual([{ pid: child.pid, platform: "linux" }]);
     expect(errors.some((error) => error.message.includes("transport frame limit"))).toBe(true);
     expect(messages).toBe(0);
+  });
+
+  test("awaits spontaneous stdio tree cleanup after the SDK client clears its transport", async () => {
+    const child = new FakeMcpChild();
+    const treeCleanup = Promise.withResolvers<boolean>();
+    const transport = new SupervisedStdioClientTransport(
+      { command: "mcp-server", cwd: "/workspace" },
+      {
+        platform: "linux",
+        spawnProcess: () => child.asChildProcess(),
+        terminateProcessTree: async () => await treeCleanup.promise,
+      },
+    );
+    const starting = transport.start();
+    child.emit("spawn");
+    await starting;
+    child.emit("exit", 1, null);
+
+    const closing = closeMcpOwnership({ close: async () => {} }, transport);
+    let settled = false;
+    void closing.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+    treeCleanup.resolve(false);
+    await expect(closing).rejects.toThrow("transport cleanup failed");
   });
 
   test("fails cleanup when stdio process-tree termination is not verified", async () => {

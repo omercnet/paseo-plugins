@@ -346,6 +346,7 @@ export interface OmpStartOptions {
 
 export interface OmpRuntimeSession {
   readonly redactionValues?: readonly string[];
+  readonly maxHostToolFrameBytes?: number;
   onEvent(listener: (event: OmpRpcEvent) => void): () => void;
   getState(): Promise<OmpSessionState>;
   getAvailableModels(): Promise<OmpModel[]>;
@@ -1103,6 +1104,10 @@ class OmpRpcProcess {
     this.discardedLineBytes = 0;
   }
 
+  get outboundFrameLimit(): number {
+    return this.physicalFrameLimit;
+  }
+
   onEvent(listener: (event: OmpRpcEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -1737,6 +1742,10 @@ function validateReadyMetadata(frame: ReadyFrame): "legacy-v1" | "v1" | "v2" {
 
 class OmpRpcSession implements OmpRuntimeSession {
   readonly redactionValues: readonly string[];
+
+  get maxHostToolFrameBytes(): number {
+    return this.process.outboundFrameLimit;
+  }
 
   constructor(
     private readonly process: OmpRpcProcess,

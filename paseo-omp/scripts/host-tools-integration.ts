@@ -116,3 +116,27 @@ export function parseEvidence(output: string): OwnershipEvidence {
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
+
+export function buildWslClientCommand(input: {
+  wslPluginRoot: string;
+  hostUrl: string;
+  expectedHostCwd: string;
+  expectedHostPid: number;
+  expectedCallerAgentId: string;
+  expectedWorkspaceId: string;
+  expectedOwnerMarker: string;
+  wslBun: string;
+}): string {
+  if (!/^[A-Za-z0-9_./~$-]+$/u.test(input.wslBun)) {
+    throw new Error("WSL Bun path contains unsupported shell characters");
+  }
+  const environment = [
+    `MCP_HOST_URL=${shellQuote(input.hostUrl)}`,
+    `EXPECTED_HOST_CWD=${shellQuote(input.expectedHostCwd)}`,
+    `EXPECTED_HOST_PID=${input.expectedHostPid}`,
+    `EXPECTED_CALLER_AGENT_ID=${shellQuote(input.expectedCallerAgentId)}`,
+    `EXPECTED_WORKSPACE_ID=${shellQuote(input.expectedWorkspaceId)}`,
+    `EXPECTED_OWNER_MARKER=${shellQuote(input.expectedOwnerMarker)}`,
+  ].join(" ");
+  return `cd ${shellQuote(input.wslPluginRoot)} && env ${environment} ${input.wslBun} tests/fixtures/mcp-container-client.ts`;
+}
