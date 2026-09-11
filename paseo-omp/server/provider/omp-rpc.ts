@@ -6,11 +6,18 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import {
   boundedJsonBytes,
+  isOmpPublicError,
   OmpCleanupFailure,
   OmpPublicDataFilter,
   OmpPublicError,
   utf8Bytes,
 } from "./security";
+import {
+  listOmpSessionDescriptors,
+  type OmpSessionDescriptor,
+  type OmpSessionListOptions,
+  validateNativeSessionId,
+} from "./session-descriptors";
 
 const READY_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -79,8 +86,18 @@ const OmpContentPartSchema = z
     thinking: TEXT.optional(),
     data: boundedString(MAX_IMAGE_DATA_LENGTH).optional(),
     mimeType: boundedString(128).optional(),
+    id: IDENTIFIER.optional(),
+    name: NAME.optional(),
+    arguments: z
+      .unknown()
+      .refine((value) => isBoundedJson(value, MAX_TOOL_PAYLOAD_LENGTH, 1_024, 4_096))
+      .optional(),
   })
   .superRefine((part, context) => {
+    if (part.type === "toolCall" && (!part.id || !part.name || part.arguments === undefined)) {
+      context.addIssue({ code: "custom", message: "invalid tool call payload" });
+      return;
+    }
     if (part.type !== "image") return;
     if (
       part.data === undefined ||
@@ -92,6 +109,87 @@ const OmpContentPartSchema = z
       context.addIssue({ code: "custom", message: "invalid image payload" });
     }
   });
+const OmpDisplayContentSchema = z.union([
+  TEXT,
+  z.array(OmpContentPartSchema).max(MAX_CONTENT_PARTS),
+]);
+const OmpMessageIdentityShape = {
+  id: IDENTIFIER.optional(),
+  entryId: IDENTIFIER.optional(),
+  responseId: IDENTIFIER.optional(),
+};
+type OmpContentPart = z.infer<typeof OmpContentPartSchema>;
+type OmpMessageIdentity = { id?: string; entryId?: string; responseId?: string };
+export type OmpMessage = OmpMessageIdentity &
+  (
+    | {
+        role: "assistant";
+        content?: string | OmpContentPart[];
+        errorMessage?: string | null;
+        stopReason?: string;
+      }
+    | { role: "user"; content: string | OmpContentPart[] }
+    | {
+        role: "toolResult";
+        toolCallId: string;
+        toolName: string;
+        content: unknown;
+        isError?: boolean;
+      }
+    | {
+        role: "bashExecution";
+        command: string;
+        output?: string;
+        exitCode?: number | null;
+        cancelled?: boolean;
+        truncated?: boolean;
+      }
+    | { role: "custom"; customType?: string; content?: unknown; display?: boolean }
+  );
+
+const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
+  z.object({
+    role: z.literal("assistant"),
+    content: OmpDisplayContentSchema.optional(),
+    ...OmpMessageIdentityShape,
+    errorMessage: boundedString(4_096).nullable().optional(),
+    stopReason: boundedString(64).optional(),
+  }),
+  z.object({
+    role: z.literal("user"),
+    content: OmpDisplayContentSchema,
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("toolResult"),
+    toolCallId: IDENTIFIER,
+    toolName: NAME,
+    content: z
+      .unknown()
+      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192)),
+    isError: z.boolean().optional(),
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("bashExecution"),
+    command: TEXT,
+    output: TEXT.optional(),
+    exitCode: z.number().int().nullable().optional(),
+    cancelled: z.boolean().optional(),
+    truncated: z.boolean().optional(),
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("custom"),
+    customType: NAME.optional(),
+    content: z
+      .unknown()
+      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192))
+      .optional(),
+    display: z.boolean().optional(),
+    ...OmpMessageIdentityShape,
+  }),
+]);
 const OmpAssistantMessageEventSchema = z
   .object({
     type: NAME,
@@ -114,15 +212,6 @@ const OmpAssistantMessageEventSchema = z
       context.addIssue({ code: "custom", message: "invalid image event" });
     }
   });
-const OmpMessageSchema = z.object({
-  role: boundedString(32, 1),
-  content: z.union([TEXT, z.array(OmpContentPartSchema).max(MAX_CONTENT_PARTS)]).optional(),
-  id: IDENTIFIER.optional(),
-  entryId: IDENTIFIER.optional(),
-  responseId: IDENTIFIER.optional(),
-  errorMessage: boundedString(4_096).nullable().optional(),
-  stopReason: boundedString(64).optional(),
-});
 const OmpAvailableCommandSchema = z.object({
   name: NAME,
   aliases: z.array(NAME).max(32).optional(),
@@ -339,9 +428,11 @@ const OmpAvailableCommandsResultSchema = z.object({
 const OmpBranchMessagesResultSchema = z.object({
   messages: z.array(z.object({ entryId: IDENTIFIER, text: TEXT })).max(1_024),
 });
+const OmpMessagesResultSchema = z.object({
+  messages: z.array(OmpMessageSchema).max(100_000),
+});
 const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2) });
 
-export type OmpMessage = z.infer<typeof OmpMessageSchema>;
 export type OmpModel = z.infer<typeof OmpModelSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
 export type OmpSessionStats = z.infer<typeof OmpSessionStatsSchema>;
@@ -372,18 +463,25 @@ export interface OmpRuntimeSession {
   getSessionStats(): Promise<OmpSessionStats>;
   getAvailableModels(): Promise<OmpModel[]>;
   getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>>;
-  prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }>;
+  prompt(
+    message: string,
+    onAccepted?: () => void,
+  ): Promise<{ requestId: string; agentInvoked?: boolean }>;
   compact(customInstructions?: string): Promise<OmpCompactionResult>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: string): Promise<void>;
   steer(message: string): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
+  readonly canReplayHistory: boolean;
+  getMessages(): Promise<OmpMessage[]>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface OmpRuntime {
+  readonly supportsPersistence: boolean;
   startSession(options: OmpStartOptions): Promise<OmpRuntimeSession>;
+  listSessions(options: OmpSessionListOptions): Promise<OmpSessionDescriptor[]>;
 }
 
 export interface OmpSpawnRequest {
@@ -400,6 +498,9 @@ export interface OmpRpcRuntimeOptions {
   terminateProcessTree?: (pid: number) => Promise<boolean | "uncertain">;
   environment?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
+  listSessions?: (
+    options: OmpSessionListOptions,
+  ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
 }
 
 type PendingRequest = {
@@ -407,6 +508,7 @@ type PendingRequest = {
   reject(error: Error): void;
   timer?: NodeJS.Timeout;
   command: string;
+  beforeResolve?: (value: unknown) => void;
 };
 type StartedRequest = { id: string; promise: Promise<unknown> };
 
@@ -542,7 +644,7 @@ function collectUrlComponents(
       collectRawAndDecoded(rawValue, isCredentialKey(name));
     }
   } catch (error) {
-    if (error instanceof OmpPublicError) throw error;
+    if (isOmpPublicError(error)) throw error;
     throw new OmpPublicError(invalidMessage);
   }
 }
@@ -842,10 +944,7 @@ export function buildOmpSpawnRequest(
     args.push("--thinking", thinking.data);
   }
   if (options.resumeSessionId !== undefined) {
-    args.push(
-      "--resume",
-      validateBoundedText(options.resumeSessionId, "resume session identifier", MAX_ID_LENGTH),
-    );
+    args.push("--resume", validateNativeSessionId(options.resumeSessionId));
   }
   if (options.noSession) args.push("--no-session");
   const systemPrompt = options.systemPrompt?.trim();
@@ -1130,6 +1229,7 @@ class OmpRpcProcess {
   startRequest(
     command: Record<string, unknown>,
     timeoutMs: number | null = this.requestTimeoutMs,
+    beforeResolve?: (value: unknown) => void,
   ): StartedRequest {
     const id = randomUUID();
     if (this.fatalError) return { id, promise: Promise.reject(this.fatalError) };
@@ -1167,6 +1267,7 @@ class OmpRpcProcess {
       reject: result.reject,
       timer,
       command: typeof command.type === "string" ? command.type : "unknown",
+      ...(beforeResolve ? { beforeResolve } : {}),
     });
     this.queuedWrites.set(id, payload.byteLength);
     this.pendingWriteBytes += payload.byteLength;
@@ -1328,7 +1429,10 @@ class OmpRpcProcess {
   }
 
   private receiveChunk(frame: ChunkFrame): void {
-    if (frame.byteLength > MAX_SEMANTIC_FRAME_BYTES) {
+    if (
+      frame.byteLength > MAX_SEMANTIC_FRAME_BYTES &&
+      ![...this.pending.values()].some((pending) => pending.command === "get_messages")
+    ) {
       this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
       return;
     }
@@ -1434,16 +1538,21 @@ class OmpRpcProcess {
     }
     const pending = this.pending.get(response.data.id);
     if (!pending) return;
-    const responseItemLimit = pending.command === "get_branch_messages" ? 1_024 : MAX_ARRAY_ITEMS;
+    const isBranchHistory = pending.command === "get_branch_messages";
+    const isHistory = pending.command === "get_messages";
+    const responseItemLimit = isBranchHistory ? 1_024 : isHistory ? 100_000 : MAX_ARRAY_ITEMS;
     const responseByteLimit =
-      pending.command === "get_branch_messages" ? MAX_SEMANTIC_FRAME_BYTES : 2 * 1024 * 1024;
+      isBranchHistory || isHistory
+        ? Math.min(MAX_REASSEMBLED_FRAME_BYTES, this.reassembledFrameLimit)
+        : 2 * 1024 * 1024;
+    const responseNodeLimit = isBranchHistory ? 4_096 : isHistory ? 400_000 : 2_048;
     if (
       boundedJsonBytes(
         frame,
         responseByteLimit,
         responseItemLimit,
         MAX_IMAGE_DATA_LENGTH,
-        responseItemLimit === 1_024 ? 4_096 : 2_048,
+        responseNodeLimit,
       ) === Number.POSITIVE_INFINITY
     ) {
       this.takePending(response.data.id)?.reject(
@@ -1453,8 +1562,14 @@ class OmpRpcProcess {
     }
     const settled = this.takePending(response.data.id);
     if (!settled) return;
-    if (response.data.success) settled.resolve(response.data.data);
-    else settled.reject(new Error("OMP RPC request failed"));
+    if (response.data.success) {
+      try {
+        settled.beforeResolve?.(response.data.data);
+        settled.resolve(response.data.data);
+      } catch {
+        settled.reject(new Error("OMP RPC response is invalid"));
+      }
+    } else settled.reject(new Error("OMP RPC request failed"));
   }
 
   private takePending(id: string): PendingRequest | undefined {
@@ -1728,6 +1843,7 @@ class OmpRpcSession implements OmpRuntimeSession {
   constructor(
     private readonly process: OmpRpcProcess,
     private readonly removeAbortListener: () => void,
+    readonly canReplayHistory: boolean,
   ) {
     this.redactionValues = process.redactionValues;
   }
@@ -1798,11 +1914,31 @@ class OmpRpcSession implements OmpRuntimeSession {
     );
     return result.messages;
   }
+  async getMessages(): Promise<OmpMessage[]> {
+    if (!this.canReplayHistory) {
+      throw new Error("OMP history replay requires negotiated RPC protocol v2");
+    }
+    const result = OmpMessagesResultSchema.parse(
+      await this.process.request({ type: "get_messages" }),
+    );
+    return result.messages;
+  }
 
-  async prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }> {
+  async prompt(
+    message: string,
+    onAccepted?: () => void,
+  ): Promise<{ requestId: string; agentInvoked?: boolean }> {
     const safeMessage = validateBoundedText(message, "prompt", MAX_TEXT_LENGTH);
-    const request = this.process.startRequest({ type: "prompt", message: safeMessage });
-    const acknowledgement = OmpPromptAckSchema.parse(await request.promise) ?? {};
+    let acknowledgement: z.infer<typeof OmpPromptAckSchema> | undefined;
+    const request = this.process.startRequest(
+      { type: "prompt", message: safeMessage },
+      undefined,
+      (value) => {
+        acknowledgement = OmpPromptAckSchema.parse(value) ?? {};
+        onAccepted?.();
+      },
+    );
+    await request.promise;
     return { requestId: request.id, ...acknowledgement };
   }
 
@@ -1822,7 +1958,14 @@ class OmpRpcSession implements OmpRuntimeSession {
 }
 
 export class OmpRpcRuntime implements OmpRuntime {
+  readonly supportsPersistence = true;
   constructor(private readonly options: OmpRpcRuntimeOptions = {}) {}
+  listSessions(options: OmpSessionListOptions): Promise<OmpSessionDescriptor[]> {
+    return Promise.resolve(
+      this.options.listSessions?.(options) ??
+        listOmpSessionDescriptors(options, this.options.environment ?? process.env),
+    );
+  }
 
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     options.signal?.throwIfAborted();
@@ -1854,17 +1997,14 @@ export class OmpRpcRuntime implements OmpRuntime {
         );
       }
       options.signal?.throwIfAborted();
-      return new OmpRpcSession(process, removeAbortListener);
+      return new OmpRpcSession(process, removeAbortListener, protocol === "v2");
     } catch (error) {
       removeAbortListener();
       const cleanup = process.close();
       try {
         await cleanup;
       } catch {
-        throw new OmpCleanupFailure(
-          "OMP runtime startup cleanup failed",
-          cleanup.catch(() => undefined),
-        );
+        throw new OmpCleanupFailure("OMP runtime startup cleanup failed", cleanup);
       }
       throw error;
     }

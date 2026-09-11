@@ -13,6 +13,7 @@ const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
 const MAX_TODOS = 256;
 const MAX_TURN_NATIVE_IDENTITIES = 1_024;
+const MAX_REPLAY_NATIVE_IDENTITIES = 100_000;
 const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
 const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
 
@@ -20,6 +21,8 @@ type Emit = (event: ProviderEvent) => void;
 
 type StreamBlockKind = "assistant_message" | "reasoning";
 
+const MAX_REPLAY_CANDIDATE_EVENTS = 512;
+const MAX_REPLAY_CANDIDATE_BYTES = 4 * 1024 * 1024;
 type StreamBlockSnapshot = {
   kind: StreamBlockKind;
   text: string;
@@ -47,6 +50,20 @@ export interface OmpTimelineScheduler {
   set(callback: () => void | Promise<void>, delayMs: number): unknown;
   clear(handle: unknown): void;
 }
+type AssistantStreamEvent = Extract<
+  OmpRpcEvent,
+  { type: "message_start" | "message_update" | "message_end" }
+>;
+
+type ReplayCandidate = {
+  identity: string;
+  events: AssistantStreamEvent[];
+  retainedBytes: number;
+};
+type ReplayOccurrenceQueue = {
+  ordinals: number[];
+  consumed: number;
+};
 
 export const defaultOmpTimelineScheduler: OmpTimelineScheduler = {
   set: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -59,11 +76,19 @@ type AssistantMessageEvent = Extract<
 >["assistantMessageEvent"];
 
 function assistantIdentity(message: OmpMessage): string | undefined {
-  return message.responseId ?? message.entryId;
+  if (message.role !== "assistant") return;
+  return message.entryId ?? message.responseId ?? message.id;
+}
+function assistantContentFingerprint(message: OmpAssistantMessage): string {
+  const encoded =
+    typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? null);
+  return createHash("sha256").update(encoded).digest("base64url");
 }
 
+type OmpAssistantMessage = Extract<OmpMessage, { role: "assistant" }>;
+
 function blockText(
-  message: OmpMessage,
+  message: OmpAssistantMessage,
   contentIndex: number,
 ): { kind: StreamBlockKind; text: string } | undefined {
   if (typeof message.content === "string") {
@@ -88,6 +113,16 @@ export class OmpTimelineProjector {
   private noticeSequence = 0;
   private toolSequence = 0;
   private userSequence = 0;
+  private replayTurnId: string | null = null;
+  private replaySequence = 0;
+  private readonly replayBoundaryOccurrences = new Map<
+    string,
+    Map<string, ReplayOccurrenceQueue>
+  >();
+  private replayBoundaryOccurrenceCount = 0;
+  private readonly replayCandidates = new Map<string, ReplayCandidate>();
+  private readonly replayOverflowCandidates = new Map<string, string>();
+  private projectingReplay = false;
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -107,8 +142,24 @@ export class OmpTimelineProjector {
     this.dataFilter.addSensitiveValues(values);
   }
 
-  project(event: OmpRpcEvent, turnId: string): void {
+  project(event: OmpRpcEvent, turnId: string, bypassReplayFilter = false): void {
     if (this.closed) return;
+    if (
+      !bypassReplayFilter &&
+      !this.projectingReplay &&
+      (event.type === "message_start" ||
+        event.type === "message_update" ||
+        event.type === "message_end") &&
+      event.message.role === "assistant"
+    ) {
+      const accepted = this.filterReplayDelivery(event, turnId);
+      if (accepted === undefined) {
+        // This occurrence does not match replay history; project it normally.
+      } else {
+        for (const buffered of accepted) this.project(buffered, turnId, true);
+        return;
+      }
+    }
     if (
       event.type === "todo_reminder" ||
       event.type === "notice" ||
@@ -289,6 +340,175 @@ export class OmpTimelineProjector {
     });
   }
 
+  projectReplayMessage(message: OmpMessage): void {
+    if (this.closed) return;
+    const nativeIdentity = assistantIdentity(message);
+    this.replaySequence += 1;
+    if (message.role === "user") {
+      if (this.replayTurnId) this.finishTurn(this.replayTurnId);
+      this.replayTurnId = `omp:replay-turn:${this.replaySequence}`;
+      const text =
+        typeof message.content === "string"
+          ? message.content
+          : message.content
+              .filter((part) => part.type === "text" && typeof part.text === "string")
+              .map((part) => part.text ?? "")
+              .join("\n\n");
+      if (text) {
+        this.publishUser(
+          text,
+          `omp:replay-user:${this.replaySequence}`,
+          message.entryId ?? message.id,
+        );
+      }
+      return;
+    }
+    if (message.role === "assistant") {
+      this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
+      this.projectingReplay = true;
+      try {
+        this.project({ type: "message_start", message }, this.replayTurnId);
+        this.project({ type: "message_end", message }, this.replayTurnId);
+        if (Array.isArray(message.content)) {
+          for (const part of message.content) {
+            if (part.type !== "toolCall" || !part.id || !part.name || part.arguments === undefined)
+              continue;
+            this.project(
+              {
+                type: "tool_execution_start",
+                toolCallId: part.id,
+                toolName: part.name,
+                args: part.arguments,
+              },
+              this.replayTurnId,
+            );
+          }
+        }
+      } finally {
+        this.projectingReplay = false;
+      }
+      if (nativeIdentity) this.rememberReplayOccurrence(nativeIdentity, message);
+      return;
+    }
+    this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
+    if (message.role === "toolResult") {
+      if (!this.tools.has(message.toolCallId)) {
+        this.project(
+          {
+            type: "tool_execution_start",
+            toolCallId: message.toolCallId,
+            toolName: message.toolName,
+            args: null,
+          },
+          this.replayTurnId,
+        );
+      }
+      this.project(
+        {
+          type: "tool_execution_end",
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          result: message.content,
+          isError: message.isError,
+        },
+        this.replayTurnId,
+      );
+      return;
+    }
+    if (message.role === "bashExecution") {
+      const text = message.output
+        ? `$ ${message.command}\n${message.output}`
+        : `$ ${message.command}`;
+      this.project({ type: "command_output", text }, this.replayTurnId);
+      this.finishTurn(this.replayTurnId);
+      this.replayTurnId = null;
+    }
+  }
+
+  finishReplay(): void {
+    if (this.replayTurnId) this.finishTurn(this.replayTurnId);
+    this.replayTurnId = null;
+  }
+  acceptLiveTurn(turnId: string): void {
+    const candidate = this.replayCandidates.get(turnId);
+    if (candidate) {
+      this.replayCandidates.delete(turnId);
+      for (const event of candidate.events) this.project(event, turnId, true);
+    }
+    this.replayOverflowCandidates.delete(turnId);
+    this.replayBoundaryOccurrences.clear();
+    this.replayBoundaryOccurrenceCount = 0;
+  }
+
+  private rememberReplayOccurrence(identity: string, message: OmpAssistantMessage): void {
+    if (this.replayBoundaryOccurrenceCount >= MAX_REPLAY_NATIVE_IDENTITIES) return;
+    const ordinal = this.replayBoundaryOccurrenceCount;
+    this.replayBoundaryOccurrenceCount += 1;
+    const fingerprint = assistantContentFingerprint(message);
+    const signatures = this.replayBoundaryOccurrences.get(identity) ?? new Map();
+    const occurrences = signatures.get(fingerprint) ?? { ordinals: [], consumed: 0 };
+    occurrences.ordinals.push(ordinal);
+    signatures.set(fingerprint, occurrences);
+    this.replayBoundaryOccurrences.set(identity, signatures);
+  }
+
+  private consumeReplayOccurrence(identity: string, message: OmpAssistantMessage): boolean {
+    const signatures = this.replayBoundaryOccurrences.get(identity);
+    if (!signatures) return false;
+    const fingerprint = assistantContentFingerprint(message);
+    const occurrences = signatures.get(fingerprint);
+    if (!occurrences || occurrences.consumed >= occurrences.ordinals.length) return false;
+    occurrences.consumed += 1;
+    if (occurrences.consumed === occurrences.ordinals.length) signatures.delete(fingerprint);
+    if (signatures.size === 0) this.replayBoundaryOccurrences.delete(identity);
+    return true;
+  }
+
+  private filterReplayDelivery(
+    event: AssistantStreamEvent,
+    turnId: string,
+  ): AssistantStreamEvent[] | undefined {
+    if (event.message.role !== "assistant") return undefined;
+    const identity = assistantIdentity(event.message);
+    const overflowIdentity = this.replayOverflowCandidates.get(turnId);
+    if (overflowIdentity) {
+      if (identity !== overflowIdentity) {
+        this.replayOverflowCandidates.delete(turnId);
+        return this.filterReplayDelivery(event, turnId);
+      }
+      if (event.type !== "message_end") return [];
+      this.replayOverflowCandidates.delete(turnId);
+      return this.consumeReplayOccurrence(identity, event.message) ? [] : [event];
+    }
+    if (!identity || !this.replayBoundaryOccurrences.has(identity)) return undefined;
+    const existing = this.replayCandidates.get(turnId);
+    if (existing && existing.identity !== identity) {
+      this.replayCandidates.delete(turnId);
+      const next = this.filterReplayDelivery(event, turnId);
+      return next === undefined ? [...existing.events, event] : [...existing.events, ...next];
+    }
+    const candidate = existing ?? { identity, events: [], retainedBytes: 0 };
+    const eventBytes = boundedJsonBytes(event, MAX_REPLAY_CANDIDATE_BYTES);
+    if (
+      eventBytes === Number.POSITIVE_INFINITY ||
+      candidate.events.length >= MAX_REPLAY_CANDIDATE_EVENTS ||
+      candidate.retainedBytes + eventBytes > MAX_REPLAY_CANDIDATE_BYTES
+    ) {
+      this.replayCandidates.delete(turnId);
+      if (event.type === "message_end") {
+        return this.consumeReplayOccurrence(identity, event.message) ? [] : [event];
+      }
+      this.replayOverflowCandidates.set(turnId, identity);
+      return [];
+    }
+    candidate.events.push(event);
+    candidate.retainedBytes += eventBytes;
+    this.replayCandidates.set(turnId, candidate);
+    if (event.type !== "message_end") return [];
+    this.replayCandidates.delete(turnId);
+    return this.consumeReplayOccurrence(identity, event.message) ? [] : candidate.events;
+  }
+
   flush(finalizeFallback = false): void {
     this.clearFlushTimer();
     if (!this.stream || this.closed || this.stream.dirtyBlocks.size === 0) return;
@@ -320,6 +540,12 @@ export class OmpTimelineProjector {
   }
 
   finishTurn(turnId: string): void {
+    const replayCandidate = this.replayCandidates.get(turnId);
+    if (replayCandidate) {
+      this.replayCandidates.delete(turnId);
+      for (const event of replayCandidate.events) this.project(event, turnId, true);
+    }
+    this.replayOverflowCandidates.delete(turnId);
     if (this.currentTurnId !== turnId) return;
     this.flush(true);
     this.publishCommand(turnId, true);
@@ -341,6 +567,10 @@ export class OmpTimelineProjector {
     this.stream = null;
     this.tools.clear();
     this.activeToolBytes = 0;
+    this.replayCandidates.clear();
+    this.replayOverflowCandidates.clear();
+    this.replayBoundaryOccurrences.clear();
+    this.replayBoundaryOccurrenceCount = 0;
   }
 
   private ensureTurn(turnId: string): void {
@@ -352,7 +582,7 @@ export class OmpTimelineProjector {
     this.commandPublishedText = "";
   }
 
-  private beginStream(message: OmpMessage, turnId: string): StreamSnapshot | null {
+  private beginStream(message: OmpAssistantMessage, turnId: string): StreamSnapshot | null {
     this.assistantSequence += 1;
     const nativeIdentity = assistantIdentity(message);
     const messageId = nativeIdentity
@@ -368,7 +598,6 @@ export class OmpTimelineProjector {
     };
     return this.stream;
   }
-
   private messageIdForNativeIdentity(nativeIdentity: string): string | undefined {
     const existing = this.turnNativeMessageIds.get(nativeIdentity);
     if (existing) return existing;
@@ -390,7 +619,11 @@ export class OmpTimelineProjector {
     return `omp:assistant:${this.assistantIdentitySequence}:${digest}`;
   }
 
-  private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {
+  private updateStream(
+    message: OmpAssistantMessage,
+    turnId: string,
+    update?: AssistantMessageEvent,
+  ): void {
     const nativeIdentity = assistantIdentity(message);
     if (this.stream && nativeIdentity && this.stream.nativeIdentity !== nativeIdentity) {
       if (!this.stream.nativeIdentity && !this.stream.published) {
@@ -415,7 +648,7 @@ export class OmpTimelineProjector {
     this.updateAllBlocks(message);
   }
 
-  private updateAllBlocks(message: OmpMessage): void {
+  private updateAllBlocks(message: OmpAssistantMessage): void {
     const stream = this.stream;
     if (!stream) return;
     if (typeof message.content === "string") {
@@ -432,7 +665,7 @@ export class OmpTimelineProjector {
 
   private updateBlock(
     stream: StreamSnapshot,
-    message: OmpMessage,
+    message: OmpAssistantMessage,
     contentIndex: number,
     update: NonNullable<AssistantMessageEvent>,
   ): void {

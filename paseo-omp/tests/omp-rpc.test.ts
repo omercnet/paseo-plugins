@@ -618,6 +618,79 @@ describe("OMP RPC transport", () => {
     expect(await session.getState()).toEqual(expect.objectContaining({ sessionId: "chunked" }));
     await session.close();
   });
+  test("reads byte-heavy history through negotiated v2 chunking", async () => {
+    const child = new FakeRpcChild();
+    const text = "é".repeat(350_000);
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type === "get_messages") {
+        writeChunked(
+          child,
+          {
+            type: "response",
+            id: command.id,
+            success: true,
+            data: {
+              messages: [
+                { role: "user", id: "history-user", content: text },
+                {
+                  role: "toolResult",
+                  toolCallId: "call-1",
+                  toolName: "read",
+                  content: { content: [{ type: "text", text: "result" }], details: { count: 1 } },
+                },
+                { role: "bashExecution", command: "pwd", exitCode: 0, cancelled: false },
+                { role: "assistant", id: "history-assistant", content: text },
+                { role: "user", id: "history-user-2", content: text },
+              ],
+            },
+          },
+          "history-chunks",
+        );
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    expect(session.canReplayHistory).toBe(true);
+    const messages = await session.getMessages();
+    expect(messages.map((message) => message.role)).toEqual([
+      "user",
+      "toolResult",
+      "bashExecution",
+      "assistant",
+      "user",
+    ]);
+    expect(messages[1]).toEqual(
+      expect.objectContaining({ role: "toolResult", toolCallId: "call-1", toolName: "read" }),
+    );
+    expect(messages[2]).toEqual(expect.objectContaining({ role: "bashExecution", command: "pwd" }));
+    expect(messages[2]).not.toHaveProperty("content");
+    const assistant = messages[3];
+    expect(assistant && "content" in assistant ? assistant.content : undefined).toHaveLength(
+      350_000,
+    );
+    await session.close();
+  });
+
+  test("does not expose history replay on legacy RPC framing", async () => {
+    const child = new FakeRpcChild();
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ type: "ready" });
+    const session = await opening;
+    expect(session.canReplayHistory).toBe(false);
+    await expect(session.getMessages()).rejects.toThrow("requires negotiated RPC protocol v2");
+    await session.close();
+  });
 
   test("rejects invalid branch responses immediately and accepts the next valid response", async () => {
     const child = new FakeRpcChild();
@@ -762,9 +835,11 @@ describe("OMP RPC transport", () => {
 
     expect(events).toHaveLength(3);
     const receivedText = events[0];
-    expect(receivedText?.type === "message_update" ? receivedText.message.content : null).toBe(
-      nearText,
-    );
+    expect(
+      receivedText?.type === "message_update" && receivedText.message.role === "assistant"
+        ? receivedText.message.content
+        : null,
+    ).toBe(nearText);
     const receivedImage = events[1];
     expect(
       receivedImage?.type === "message_update" &&
@@ -1626,7 +1701,7 @@ describe("OMP RPC transport", () => {
         const recovered = await runtime.startSession({
           cwd: process.cwd(),
           mode: "full",
-          resumeSessionId: "tree",
+          resumeSessionId: "tree-session",
         });
         const recoveredPidEvent = nextEvent((listener) => recovered.onEvent(listener));
         await recovered.getState();
