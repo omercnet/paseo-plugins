@@ -24,7 +24,7 @@ import {
   OmpPublicError,
   utf8Bytes,
 } from "./security";
-import { type OmpSessionDescriptor, validateNativeSessionId } from "./session-descriptors";
+import { validateNativeSessionId } from "./session-descriptors";
 import {
   defaultOmpTimelineScheduler,
   OmpTimelineProjector,
@@ -55,8 +55,8 @@ const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
 const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
 class OmpCatalogEscape extends OmpPublicError {}
-const REPLAY_PAGE_SIZE = 128;
 const MAX_REPLAY_MESSAGES = 100_000;
+const REPLAY_TIMEOUT_MS = 20_000;
 
 function persistedSessionId(input: SessionOpenInput): string | undefined {
   if (!input.persistence) return;
@@ -80,15 +80,18 @@ function persistedSessionId(input: SessionOpenInput): string | undefined {
   }
 }
 
-async function resolveNativeSession(
+async function authorizeNativeSession(
   runtime: OmpRuntime,
   sessionId: string,
-): Promise<OmpSessionDescriptor> {
-  const matches = await runtime.listSessions({ sessionId, limit: 2 });
+  cwd: string,
+): Promise<void> {
+  const matches = await runtime.listSessions({ sessionId, cwd, limit: 2 });
   if (matches.length !== 1 || matches[0]?.id !== sessionId) {
-    throw new OmpPublicError("OMP session could not be resolved");
+    throw new OmpPublicError("OMP session could not be resolved in this workspace");
   }
-  return matches[0];
+  if (matches[0].cwd !== cwd) {
+    throw new OmpPublicError("OMP session belongs to a different working directory");
+  }
 }
 
 function retainedBytes(values: readonly unknown[], maxBytes: number): number {
@@ -338,13 +341,10 @@ export class OmpProviderSession {
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
-    const descriptor = resumeSessionId
-      ? await resolveNativeSession(runtime, resumeSessionId)
-      : undefined;
-    const effectiveConfig: ProviderSessionConfig = {
-      ...input.config,
-      cwd: descriptor?.cwd ?? input.config.cwd,
-    };
+    if (resumeSessionId) {
+      await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd);
+    }
+    const effectiveConfig: ProviderSessionConfig = { ...input.config };
     const startOptions: OmpStartOptions = {
       cwd: effectiveConfig.cwd,
       env: effectiveConfig.env,
@@ -371,6 +371,9 @@ export class OmpProviderSession {
           () => ({ available: false, commands: [] }),
         ),
       ]);
+      if (effectiveConfig.persist && !native.canReplayHistory) {
+        throw new OmpPublicError("OMP session persistence requires negotiated RPC protocol v2");
+      }
       let state = initialState;
       if (effectiveConfig.persist || resumeSessionId)
         validateNativeSessionId(initialState.sessionId);
@@ -459,10 +462,7 @@ export class OmpProviderSession {
       try {
         await cleanup;
       } catch {
-        throw new OmpCleanupFailure(
-          "OMP session initialization cleanup failed",
-          cleanup.catch(() => undefined),
-        );
+        throw new OmpCleanupFailure("OMP session initialization cleanup failed", cleanup);
       }
       throw error;
     }
@@ -487,28 +487,38 @@ export class OmpProviderSession {
   }
 
   private async replayHistory(): Promise<void> {
-    let cursor: string | undefined;
-    let replayed = 0;
-    const cursors = new Set<string>();
-    let hasMore = true;
-    while (hasMore) {
-      const page = await this.runtime.getMessagesPage(cursor, REPLAY_PAGE_SIZE);
-      if (replayed + page.messages.length > MAX_REPLAY_MESSAGES) {
+    if (!this.runtime.canReplayHistory) {
+      throw new OmpPublicError("OMP session history cannot be replayed safely");
+    }
+    this.lifetime.signal.throwIfAborted();
+    const timeout = Promise.withResolvers<never>();
+    const timeoutHandle = setTimeout(
+      () => timeout.reject(new OmpPublicError("OMP session history replay timed out")),
+      REPLAY_TIMEOUT_MS,
+    );
+    const aborted = Promise.withResolvers<never>();
+    const onAbort = () =>
+      aborted.reject(new OmpPublicError("OMP session history replay was canceled"));
+    this.lifetime.signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const messages = await Promise.race([
+        this.runtime.getMessages(),
+        timeout.promise,
+        aborted.promise,
+      ]);
+      this.lifetime.signal.throwIfAborted();
+      if (messages.length > MAX_REPLAY_MESSAGES) {
         throw new OmpPublicError("OMP session history exceeds replay limits");
       }
-      for (const message of page.messages) this.projector.projectReplayMessage(message);
-      replayed += page.messages.length;
-      if (!page.nextCursor) {
-        hasMore = false;
-        continue;
+      for (const message of messages) {
+        this.lifetime.signal.throwIfAborted();
+        this.projector.projectReplayMessage(message);
       }
-      if (page.messages.length === 0 || cursors.has(page.nextCursor)) {
-        throw new OmpPublicError("OMP session history pagination is invalid");
-      }
-      cursors.add(page.nextCursor);
-      cursor = page.nextCursor;
+      this.projector.finishReplay();
+    } finally {
+      clearTimeout(timeoutHandle);
+      this.lifetime.signal.removeEventListener("abort", onAbort);
     }
-    this.projector.finishReplay();
   }
 
   async prompt(input: SessionPromptInput): Promise<void> {
@@ -1094,14 +1104,7 @@ export class OmpProviderSession {
       });
     } catch (error) {
       if (error instanceof OmpCleanupFailure) {
-        this.runtimeDisposal = error.cleanup.then(
-          () => {
-            throw new Error("OMP recovery cleanup failed");
-          },
-          () => {
-            throw new Error("OMP recovery cleanup failed");
-          },
-        );
+        this.runtimeDisposal = error.cleanup;
         void this.runtimeDisposal.catch(() => undefined);
       }
       throw error;

@@ -7,10 +7,11 @@ import {
   readdirSync,
   readSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
+import { ompSessionDir } from "../paths";
 
-const MAX_DESCRIPTOR_PREFIX_BYTES = 16 * 1024;
+const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
+const MAX_DIRECTORY_DEPTH = 8;
 const MAX_SESSION_DIRECTORIES = 16_384;
 const MAX_SESSION_FILES = 100_000;
 const MAX_LIST_RESULTS = 500;
@@ -24,7 +25,7 @@ export interface OmpSessionDescriptor {
 }
 
 export interface OmpSessionListOptions {
-  cwd?: string;
+  cwd: string;
   query?: string;
   limit?: number;
   sessionId?: string;
@@ -52,6 +53,18 @@ function safeText(value: unknown, maxBytes: number): string | undefined {
   return sanitized.trim() || undefined;
 }
 
+function completePrefixLines(buffer: Buffer): Buffer[] {
+  const lines: Buffer[] = [];
+  let start = 0;
+  for (let index = 0; index < buffer.length; index += 1) {
+    if (buffer[index] !== 10) continue;
+    const end = index > start && buffer[index - 1] === 13 ? index - 1 : index;
+    lines.push(buffer.subarray(start, end));
+    start = index + 1;
+  }
+  return lines;
+}
+
 function parseDescriptor(file: string): OmpSessionDescriptor | undefined {
   let descriptor: number;
   try {
@@ -67,22 +80,23 @@ function parseDescriptor(file: string): OmpSessionDescriptor | undefined {
     if (!stat.isFile()) return;
     const buffer = Buffer.allocUnsafe(Math.min(MAX_DESCRIPTOR_PREFIX_BYTES, stat.size));
     const length = readSync(descriptor, buffer, 0, buffer.length, 0);
-    const lines = new TextDecoder("utf-8", { fatal: true })
-      .decode(buffer.subarray(0, length))
-      .split(/\r?\n/u);
     let title: string | undefined;
-    for (const line of lines.slice(0, 3)) {
-      if (!line) continue;
+    for (const bytes of completePrefixLines(buffer.subarray(0, length))) {
+      if (bytes.length === 0) continue;
       let value: unknown;
       try {
-        value = JSON.parse(line);
+        value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
       } catch {
         continue;
       }
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const record = value as Record<string, unknown>;
       if (record.type === "title") {
-        title = safeText(record.title, 512);
+        title = safeText(record.title, 512) ?? title;
+        continue;
+      }
+      if (record.type === "session_info") {
+        title ??= safeText(record.title ?? record.sessionName ?? record.name, 512);
         continue;
       }
       if (record.type !== "session") continue;
@@ -104,56 +118,58 @@ function parseDescriptor(file: string): OmpSessionDescriptor | undefined {
   }
 }
 
-function sessionRoot(environment: NodeJS.ProcessEnv): string {
-  const configured = environment.PASEO_OMP_AGENT_DIR ?? environment.PI_CODING_AGENT_DIR;
-  return configured ? join(configured, "sessions") : join(homedir(), ".omp", "agent", "sessions");
+function sessionFiles(root: string): string[] {
+  const files: string[] = [];
+  const pending: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
+  let visitedDirectories = 0;
+  while (pending.length > 0 && visitedDirectories < MAX_SESSION_DIRECTORIES) {
+    const current = pending.pop();
+    if (!current) break;
+    visitedDirectories += 1;
+    let entries: Dirent<string>[];
+    try {
+      entries = readdirSync(current.path, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (files.length >= MAX_SESSION_FILES) return files;
+      const path = join(current.path, entry.name);
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+      else if (entry.isDirectory() && current.depth < MAX_DIRECTORY_DEPTH) {
+        pending.push({ path, depth: current.depth + 1 });
+      }
+    }
+  }
+  return files;
 }
 
 export function listOmpSessionDescriptors(
-  options: OmpSessionListOptions = {},
+  options: OmpSessionListOptions,
   environment: NodeJS.ProcessEnv = process.env,
 ): OmpSessionDescriptor[] {
+  if (!options.cwd || !isAbsolute(options.cwd) || options.cwd.includes("\0")) {
+    throw new Error("OMP session listing requires an absolute working directory");
+  }
   const requestedId = options.sessionId ? validateNativeSessionId(options.sessionId) : undefined;
   const limit = Math.min(Math.max(options.limit ?? 100, 1), MAX_LIST_RESULTS);
   const query = options.query?.trim().toLowerCase();
   const matches: OmpSessionDescriptor[] = [];
-  let fileCount = 0;
-  let directories: Dirent<string>[];
-  try {
-    directories = readdirSync(sessionRoot(environment), { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  for (const directory of directories.slice(0, MAX_SESSION_DIRECTORIES)) {
-    if (!directory.isDirectory()) continue;
-    const directoryPath = join(directory.parentPath, directory.name);
-    let files: Dirent<string>[];
-    try {
-      files = readdirSync(directoryPath, { withFileTypes: true });
-    } catch {
+  for (const file of sessionFiles(ompSessionDir(environment))) {
+    const fileName = basename(file);
+    const candidateId = fileName.slice(fileName.lastIndexOf("_") + 1, -".jsonl".length);
+    if (!NATIVE_SESSION_ID.test(candidateId) || (requestedId && candidateId !== requestedId))
+      continue;
+    const descriptor = parseDescriptor(file);
+    if (!descriptor || descriptor.id !== candidateId || descriptor.cwd !== options.cwd) continue;
+    if (
+      query &&
+      !descriptor.id.toLowerCase().includes(query) &&
+      !descriptor.title?.toLowerCase().includes(query)
+    ) {
       continue;
     }
-    for (const file of files) {
-      if (fileCount >= MAX_SESSION_FILES) break;
-      if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
-      fileCount += 1;
-      const candidateId = file.name.slice(file.name.lastIndexOf("_") + 1, -".jsonl".length);
-      if (!NATIVE_SESSION_ID.test(candidateId) || (requestedId && candidateId !== requestedId))
-        continue;
-      const descriptor = parseDescriptor(join(file.parentPath, file.name));
-      if (!descriptor || descriptor.id !== candidateId) continue;
-      if (options.cwd && descriptor.cwd !== options.cwd) continue;
-      if (
-        query &&
-        !descriptor.id.toLowerCase().includes(query) &&
-        !descriptor.cwd.toLowerCase().includes(query) &&
-        !descriptor.title?.toLowerCase().includes(query)
-      ) {
-        continue;
-      }
-      matches.push(descriptor);
-    }
-    if (fileCount >= MAX_SESSION_FILES) break;
+    matches.push(descriptor);
   }
   matches.sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
   return matches.slice(0, requestedId ? 2 : limit);

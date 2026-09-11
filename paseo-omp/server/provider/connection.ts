@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import {
   type ProviderConnection,
   type ProviderEvent,
@@ -121,10 +122,13 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
     if (!isBoundedIdentifier(record.requestId))
       throw new OmpPublicError("Invalid provider request");
     if (
-      record.cwd !== undefined &&
-      (typeof record.cwd !== "string" || utf8Bytes(record.cwd) > 4_096 || record.cwd.includes("\0"))
+      typeof record.cwd !== "string" ||
+      record.cwd.length === 0 ||
+      !isAbsolute(record.cwd) ||
+      utf8Bytes(record.cwd) > 4_096 ||
+      record.cwd.includes("\0")
     ) {
-      throw new OmpPublicError("Invalid provider request");
+      throw new OmpPublicError("OMP session listing requires an absolute working directory");
     }
     if (
       record.query !== undefined &&
@@ -199,12 +203,14 @@ export function createOmpConnection(
   environment?: NodeJS.ProcessEnv,
 ): ProviderConnection {
   const safeCapabilities = [...new Set(capabilities)].filter(
-    (capability) => SUPPORTED_CAPABILITIES[capability],
+    (capability) =>
+      SUPPORTED_CAPABILITIES[capability] &&
+      (capability !== "session.persistence" || runtime.supportsPersistence),
   );
   const listeners = new Set<(event: ProviderEvent) => void>();
   const sessions = new Map<string, { token: symbol; session: OmpProviderSession }>();
   const opening = new Map<string, { token: symbol; promise: Promise<OmpProviderSession> }>();
-  const failedCleanup = new Map<string, { token: symbol; cleanup: Promise<void> }>();
+  const failedCleanup = new Map<string, { token: symbol; error: unknown }>();
   const shutdown = new AbortController();
   let catalogCleanup: Promise<void> | null = null;
   const activeOperations = new Set<Promise<void>>();
@@ -245,10 +251,12 @@ export function createOmpConnection(
         return;
       case "sessions":
         try {
+          if (!input.cwd)
+            throw new OmpPublicError("OMP session listing requires a working directory");
           emit({
             type: "sessions",
             requestId: input.requestId,
-            sessions: (await runtime.listSessions(input)).map((session) => ({
+            sessions: (await runtime.listSessions({ ...input, cwd: input.cwd })).map((session) => ({
               persistence: { version: 1, data: { sessionId: session.id } },
               cwd: session.cwd,
               ...(session.title ? { title: session.title } : {}),
@@ -296,29 +304,30 @@ export function createOmpConnection(
         try {
           session = await pending;
           if (closing || opening.get(input.sessionId)?.token !== token) {
-            await session.close();
-            return;
-          }
-          await session.publishOpened(input.requestId);
-          if (closing || opening.get(input.sessionId)?.token !== token) {
-            await session.close();
+            await session.abortOpen();
             return;
           }
           sessions.set(input.sessionId, { token, session });
-        } catch (error) {
-          let cleanupFailure = error instanceof OmpCleanupFailure ? error : undefined;
-          if (session) {
+          try {
+            await session.publishOpened(input.requestId);
+          } catch (error) {
+            if (sessions.get(input.sessionId)?.token === token) sessions.delete(input.sessionId);
             try {
               await session.abortOpen();
-            } catch {
-              const cleanup = session.abortOpen().catch(() => undefined);
-              cleanupFailure = new OmpCleanupFailure("OMP session cleanup failed", cleanup);
+            } catch (cleanupError) {
+              failedCleanup.set(input.sessionId, { token, error: cleanupError });
             }
+            throw error;
+          }
+          if (closing || opening.get(input.sessionId)?.token !== token) {
+            if (sessions.get(input.sessionId)?.token === token) sessions.delete(input.sessionId);
+            await session.close();
+          }
+        } catch (error) {
+          if (error instanceof OmpCleanupFailure) {
+            failedCleanup.set(input.sessionId, { token, error });
           }
           if (opening.get(input.sessionId)?.token === token) {
-            if (cleanupFailure) {
-              failedCleanup.set(input.sessionId, { token, cleanup: cleanupFailure.cleanup });
-            }
             const details = errorDetails(error, "OMP session failed to open");
             emit({ type: "request.failed", requestId: input.requestId, error: details });
             emit({ type: "session.closed", sessionId: input.sessionId, error: details });
@@ -371,12 +380,9 @@ export function createOmpConnection(
         }
         try {
           await slot.session.close();
-        } catch {
+        } catch (error) {
           if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
-          failedCleanup.set(input.sessionId, {
-            token: slot.token,
-            cleanup: slot.session.close().catch(() => undefined),
-          });
+          failedCleanup.set(input.sessionId, { token: slot.token, error });
           throw new OmpPublicError("OMP session close failed");
         }
         if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
@@ -394,7 +400,6 @@ export function createOmpConnection(
     shutdown.abort(new Error("OMP provider connection closed"));
     const sessionClosures = Promise.allSettled([
       ...[...sessions.values()].map(({ session }) => session.close()),
-      ...[...failedCleanup.values()].map(({ cleanup }) => cleanup),
       ...(catalogCleanup ? [catalogCleanup] : []),
     ]);
     await Promise.all([Promise.all(activeOperations), sessionClosures]);

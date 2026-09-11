@@ -282,10 +282,8 @@ const OmpAvailableCommandsResultSchema = z.object({
 const OmpBranchMessagesResultSchema = z.object({
   messages: z.array(z.object({ entryId: IDENTIFIER, text: TEXT })).max(1_024),
 });
-const OmpMessagesPageResultSchema = z.object({
-  messages: z.array(OmpMessageSchema).max(256),
-  totalMessages: z.number().int().nonnegative(),
-  nextCursor: IDENTIFIER.nullable().optional(),
+const OmpMessagesResultSchema = z.object({
+  messages: z.array(OmpMessageSchema).max(100_000),
 });
 const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2) });
 
@@ -295,11 +293,6 @@ export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
   | { type: "process_exit"; error: string };
-export interface OmpMessagesPage {
-  messages: OmpMessage[];
-  totalMessages: number;
-  nextCursor?: string;
-}
 
 export interface OmpStartOptions {
   cwd: string;
@@ -327,14 +320,16 @@ export interface OmpRuntimeSession {
   setThinkingLevel(level: string): Promise<void>;
   steer(message: string): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
-  getMessagesPage(cursor?: string, limit?: number): Promise<OmpMessagesPage>;
+  readonly canReplayHistory: boolean;
+  getMessages(): Promise<OmpMessage[]>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface OmpRuntime {
+  readonly supportsPersistence: boolean;
   startSession(options: OmpStartOptions): Promise<OmpRuntimeSession>;
-  listSessions(options?: OmpSessionListOptions): Promise<OmpSessionDescriptor[]>;
+  listSessions(options: OmpSessionListOptions): Promise<OmpSessionDescriptor[]>;
 }
 
 export interface OmpSpawnRequest {
@@ -1270,10 +1265,6 @@ class OmpRpcProcess {
   }
 
   private receiveChunk(frame: ChunkFrame): void {
-    if (frame.byteLength > MAX_SEMANTIC_FRAME_BYTES) {
-      this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
-      return;
-    }
     if (
       frame.index >= frame.count ||
       frame.byteLength > this.reassembledFrameLimit ||
@@ -1377,13 +1368,13 @@ class OmpRpcProcess {
     const pending = this.pending.get(response.data.id);
     if (!pending) return;
     const isBranchHistory = pending.command === "get_branch_messages";
-    const isPagedHistory = pending.command === "get_messages_page";
-    const responseItemLimit = isBranchHistory ? 1_024 : isPagedHistory ? 256 : MAX_ARRAY_ITEMS;
+    const isHistory = pending.command === "get_messages";
+    const responseItemLimit = isBranchHistory ? 1_024 : isHistory ? 100_000 : MAX_ARRAY_ITEMS;
     const responseByteLimit =
-      isBranchHistory || isPagedHistory
-        ? Math.min(MAX_SEMANTIC_FRAME_BYTES, this.reassembledFrameLimit)
+      isBranchHistory || isHistory
+        ? Math.min(MAX_REASSEMBLED_FRAME_BYTES, this.reassembledFrameLimit)
         : 2 * 1024 * 1024;
-    const responseNodeLimit = isBranchHistory || isPagedHistory ? 4_096 : 2_048;
+    const responseNodeLimit = isBranchHistory ? 4_096 : isHistory ? 400_000 : 2_048;
     if (
       boundedJsonBytes(
         frame,
@@ -1675,6 +1666,7 @@ class OmpRpcSession implements OmpRuntimeSession {
   constructor(
     private readonly process: OmpRpcProcess,
     private readonly removeAbortListener: () => void,
+    readonly canReplayHistory: boolean,
   ) {
     this.redactionValues = process.redactionValues;
   }
@@ -1725,19 +1717,14 @@ class OmpRpcSession implements OmpRuntimeSession {
     );
     return result.messages;
   }
-  async getMessagesPage(cursor?: string, limit = 128): Promise<OmpMessagesPage> {
-    const result = OmpMessagesPageResultSchema.parse(
-      await this.process.request({
-        type: "get_messages_page",
-        ...(cursor ? { cursor: validateBoundedText(cursor, "history cursor", MAX_ID_LENGTH) } : {}),
-        limit: Math.min(Math.max(limit, 1), 256),
-      }),
+  async getMessages(): Promise<OmpMessage[]> {
+    if (!this.canReplayHistory) {
+      throw new Error("OMP history replay requires negotiated RPC protocol v2");
+    }
+    const result = OmpMessagesResultSchema.parse(
+      await this.process.request({ type: "get_messages" }),
     );
-    return {
-      messages: result.messages,
-      totalMessages: result.totalMessages,
-      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
-    };
+    return result.messages;
   }
 
   async prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }> {
@@ -1763,8 +1750,9 @@ class OmpRpcSession implements OmpRuntimeSession {
 }
 
 export class OmpRpcRuntime implements OmpRuntime {
+  readonly supportsPersistence = true;
   constructor(private readonly options: OmpRpcRuntimeOptions = {}) {}
-  listSessions(options?: OmpSessionListOptions): Promise<OmpSessionDescriptor[]> {
+  listSessions(options: OmpSessionListOptions): Promise<OmpSessionDescriptor[]> {
     return Promise.resolve(
       listOmpSessionDescriptors(options, this.options.environment ?? process.env),
     );
@@ -1800,17 +1788,14 @@ export class OmpRpcRuntime implements OmpRuntime {
         );
       }
       options.signal?.throwIfAborted();
-      return new OmpRpcSession(process, removeAbortListener);
+      return new OmpRpcSession(process, removeAbortListener, protocol === "v2");
     } catch (error) {
       removeAbortListener();
       const cleanup = process.close();
       try {
         await cleanup;
       } catch {
-        throw new OmpCleanupFailure(
-          "OMP runtime startup cleanup failed",
-          cleanup.catch(() => undefined),
-        );
+        throw new OmpCleanupFailure("OMP runtime startup cleanup failed", cleanup);
       }
       throw error;
     }

@@ -491,6 +491,62 @@ describe("OMP RPC transport", () => {
     expect(await session.getState()).toEqual(expect.objectContaining({ sessionId: "chunked" }));
     await session.close();
   });
+  test("reads byte-heavy history through negotiated v2 chunking", async () => {
+    const child = new FakeRpcChild();
+    const text = "é".repeat(350_000);
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type === "get_messages") {
+        writeChunked(
+          child,
+          {
+            type: "response",
+            id: command.id,
+            success: true,
+            data: {
+              messages: [
+                { role: "user", id: "history-user", content: text },
+                { role: "assistant", id: "history-assistant", content: text },
+                { role: "user", id: "history-user-2", content: text },
+              ],
+            },
+          },
+          "history-chunks",
+        );
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    expect(session.canReplayHistory).toBe(true);
+    const messages = await session.getMessages();
+    expect(messages.map((message) => message.id)).toEqual([
+      "history-user",
+      "history-assistant",
+      "history-user-2",
+    ]);
+    expect(messages[1]?.content).toHaveLength(350_000);
+    await session.close();
+  });
+
+  test("does not expose history replay on legacy RPC framing", async () => {
+    const child = new FakeRpcChild();
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ type: "ready" });
+    const session = await opening;
+    expect(session.canReplayHistory).toBe(false);
+    await expect(session.getMessages()).rejects.toThrow("requires negotiated RPC protocol v2");
+    await session.close();
+  });
 
   test("rejects invalid branch responses immediately and accepts the next valid response", async () => {
     const child = new FakeRpcChild();

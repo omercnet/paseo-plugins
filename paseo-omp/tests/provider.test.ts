@@ -234,6 +234,7 @@ class ManualScheduler implements OmpTimelineScheduler {
 }
 
 class FakeOmpSession implements OmpRuntimeSession {
+  canReplayHistory = true;
   readonly listeners = new Set<(event: OmpRpcEvent) => void>();
   redactionValues: readonly string[] = [];
   readonly prompts: string[] = [];
@@ -266,7 +267,10 @@ class FakeOmpSession implements OmpRuntimeSession {
   modelChangeError: Error | null = null;
   branchMessages: Array<{ entryId: string; text: string }> = [];
   historyMessages: OmpMessage[] = [];
-  readonly historyPageRequests: Array<{ cursor?: string; limit?: number }> = [];
+  historyRequests = 0;
+  historyGate: Promise<void> | null = null;
+  historyError: Error | null = null;
+  historyObserved: (() => void) | null = null;
   currentModel = MODEL;
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   nativeSessionId = NATIVE_SESSION_ID;
@@ -374,16 +378,12 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (this.branchMessagesGate) await this.branchMessagesGate;
     return this.branchMessages;
   }
-  getMessagesPage(cursor?: string, limit = 128) {
-    this.historyPageRequests.push({ ...(cursor ? { cursor } : {}), limit });
-    const offset = cursor ? Number.parseInt(cursor, 10) : 0;
-    const messages = this.historyMessages.slice(offset, offset + limit);
-    const nextOffset = offset + messages.length;
-    return Promise.resolve({
-      messages,
-      totalMessages: this.historyMessages.length,
-      ...(nextOffset < this.historyMessages.length ? { nextCursor: String(nextOffset) } : {}),
-    });
+  async getMessages() {
+    this.historyRequests += 1;
+    this.historyObserved?.();
+    if (this.historyGate) await this.historyGate;
+    if (this.historyError) throw this.historyError;
+    return this.historyMessages;
   }
 
   async abort() {
@@ -403,6 +403,7 @@ class FakeOmpSession implements OmpRuntimeSession {
 
 class FakeOmpRuntime implements OmpRuntime {
   readonly sessions: FakeOmpSession[] = [];
+  supportsPersistence = true;
   readonly starts: OmpStartOptions[] = [];
   readonly sessionIds: string[] = [];
   nextModel: OmpModel | null = null;
@@ -418,26 +419,30 @@ class FakeOmpRuntime implements OmpRuntime {
   redactionValues: readonly string[] = [];
   readonly descriptors: Array<{ id: string; cwd: string; title?: string; updatedAt?: string }> = [];
   resolveSessions = true;
+  nextCanReplayHistory = true;
+  nextHistoryGate: Promise<void> | null = null;
+  nextHistoryObserved: (() => void) | null = null;
+  nextHistoryError: Error | null = null;
   nextHistoryMessages: OmpMessage[] = [];
   readonly sessionListRequests: Array<{
-    cwd?: string;
+    cwd: string;
     query?: string;
     limit?: number;
     sessionId?: string;
   }> = [];
-  listSessions(options: { cwd?: string; query?: string; limit?: number; sessionId?: string } = {}) {
+  listSessions(options: { cwd: string; query?: string; limit?: number; sessionId?: string }) {
     this.sessionListRequests.push(options);
     const source =
       this.descriptors.length > 0
         ? this.descriptors
         : this.resolveSessions && options.sessionId
-          ? [{ id: options.sessionId, cwd: "/repo" }]
+          ? [{ id: options.sessionId, cwd: options.cwd }]
           : [];
     return Promise.resolve(
       source.filter(
         (descriptor) =>
           (!options.sessionId || descriptor.id === options.sessionId) &&
-          (!options.cwd || descriptor.cwd === options.cwd),
+          descriptor.cwd === options.cwd,
       ),
     );
   }
@@ -459,7 +464,15 @@ class FakeOmpRuntime implements OmpRuntime {
     session.redactionValues = this.redactionValues;
     session.nativeSessionId =
       this.sessionIds.shift() ?? options.resumeSessionId ?? session.nativeSessionId;
+    session.canReplayHistory = this.nextCanReplayHistory;
+    session.historyGate = this.nextHistoryGate;
+    session.historyObserved = this.nextHistoryObserved;
+    session.historyError = this.nextHistoryError;
     session.historyMessages = this.nextHistoryMessages;
+    this.nextCanReplayHistory = true;
+    this.nextHistoryGate = null;
+    this.nextHistoryObserved = null;
+    this.nextHistoryError = null;
     this.nextHistoryMessages = [];
     if (this.nextModel) {
       session.currentModel = this.nextModel;
@@ -822,7 +835,7 @@ describe("OMP direct provider", () => {
     ]);
     await connection.close();
   });
-  test("persists, lists, and resumes the same native session with paged replay before ready", async () => {
+  test("persists, lists, and resumes the same native session with bounded replay before ready", async () => {
     const runtime = new FakeOmpRuntime();
     const capabilities = [
       "prompt.message",
@@ -911,7 +924,7 @@ describe("OMP direct provider", () => {
       requestId: "resume-persisted",
       sessionId: "resumed-session",
       config: {
-        cwd: "/caller-controlled-cwd",
+        cwd: "/repo",
         env: {},
         systemPrompt: "must not be reapplied",
         mcpServers: {},
@@ -936,13 +949,32 @@ describe("OMP direct provider", () => {
     const timelineItems = replayEvents.flatMap((event) =>
       event.type === "timeline.item" ? [event.item] : [],
     );
+    expect(
+      timelineItems
+        .slice(0, 4)
+        .map((item) =>
+          item.type === "user_message" || item.type === "assistant_message" ? item.text : null,
+        ),
+    ).toEqual(["message 0", "message 1", "message 2", "message 3"]);
     expect(timelineItems).toHaveLength(260);
     expect(new Set(timelineItems.map((item) => item.id)).size).toBe(260);
+    const replayedDuplicate = timelineItems.find(
+      (item) => item.type === "assistant_message" && item.text === "message 1",
+    );
+    const liveTurn = turnIdFrom(
+      await startPrompt(connection, events, "live-after-replay", "next", "resumed-session"),
+    );
     sessionAt(runtime, 1).emit({
       type: "message_end",
       message: { role: "assistant", id: "history-1", content: "message 1" },
     });
-    expect(events.filter((event) => event.type === "timeline.item")).toHaveLength(260);
+    const liveDuplicate = events.findLast(
+      (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+    );
+    expect(liveDuplicate).toEqual(
+      expect.objectContaining({ item: expect.objectContaining({ id: replayedDuplicate?.id }) }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), liveTurn);
     expect(runtime.starts[1]).toEqual(
       expect.objectContaining({
         cwd: "/repo",
@@ -952,11 +984,7 @@ describe("OMP direct provider", () => {
     expect(runtime.starts[1]?.model).toBeUndefined();
     expect(runtime.starts[1]?.thinkingOption).toBeUndefined();
     expect(runtime.starts[1]?.systemPrompt).toBeUndefined();
-    expect(sessionAt(runtime, 1).historyPageRequests).toEqual([
-      { limit: 128 },
-      { cursor: "128", limit: 128 },
-      { cursor: "256", limit: 128 },
-    ]);
+    expect(sessionAt(runtime, 1).historyRequests).toBe(1);
     expect(replayEvents).toContainEqual(
       expect.objectContaining({
         type: "session.config",
@@ -1000,9 +1028,168 @@ describe("OMP direct provider", () => {
       );
     }
     expect(runtime.starts).toHaveLength(0);
-    expect(runtime.sessionListRequests).toEqual([{ sessionId: NATIVE_SESSION_ID, limit: 2 }]);
+    expect(runtime.sessionListRequests).toEqual([
+      { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2 },
+    ]);
     await connection.close();
   });
+  test("rejects cwd relocation and unscoped listing before touching OMP", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/other" });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.list",
+      "session.persistence",
+    ]);
+    await connection.send({ type: "sessions", requestId: "unscoped-list" });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unscoped-list",
+    );
+    await connection.send({
+      type: "session.open",
+      requestId: "wrong-cwd",
+      sessionId: "wrong-cwd-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "wrong-cwd",
+    );
+    expect(runtime.starts).toHaveLength(0);
+    expect(runtime.sessionListRequests).toEqual([
+      { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2 },
+    ]);
+    await connection.close();
+  });
+
+  test("makes replaying sessions closable and routes a ready-callback prompt", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const historyStarted = Promise.withResolvers<void>();
+    runtime.nextHistoryObserved = historyStarted.resolve;
+    runtime.nextHistoryGate = Promise.withResolvers<void>().promise;
+    const stalled = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await stalled.connection.send({
+      type: "session.open",
+      requestId: "stalled-replay",
+      sessionId: "stalled-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await historyStarted.promise;
+    await expect(stalled.connection.close()).resolves.toBeUndefined();
+    expect(stalled.events.some((event) => event.type === "session.ready")).toBe(false);
+
+    const readyRuntime = new FakeOmpRuntime();
+    readyRuntime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const ready = await createHarness(readyRuntime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    ready.connection.onEvent((event) => {
+      if (event.type !== "session.ready") return;
+      void ready.connection.send({
+        type: "session.prompt",
+        sessionId: "ready-race-session",
+        prompt: {
+          clientMessageId: "ready-race-prompt",
+          delivery: "auto",
+          input: { type: "message", content: [{ type: "text", text: "continue" }] },
+        },
+      });
+    });
+    await ready.connection.send({
+      type: "session.open",
+      requestId: "ready-race",
+      sessionId: "ready-race-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    const result = await ready.events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "ready-race-prompt",
+    );
+    expect(result).toEqual(
+      expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
+    );
+    await ready.connection.close();
+  });
+
+  test("does not negotiate persistence when history replay is unavailable", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.supportsPersistence = false;
+    const { connection } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    expect(connection.capabilities).toEqual(["prompt.message"]);
+    await connection.close();
+  });
+  test("tombstones an unreaped session after history replay fails", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryError = new Error("invalid chunked history");
+    runtime.nextCloseError = new Error("process tree not reaped");
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    const open = (requestId: string) =>
+      connection.send({
+        type: "session.open",
+        requestId,
+        sessionId: "replay-failure-session",
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+    await open("replay-failure");
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "replay-failure",
+    );
+    await open("replay-reopen");
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "replay-reopen",
+    );
+    expect(runtime.starts).toHaveLength(1);
+    expect(events.some((event) => event.type === "session.ready")).toBe(false);
+    await expect(connection.close()).resolves.toBeUndefined();
+  });
+
   test("rejects unadvertised raw model identifiers", async () => {
     const runtime = new FakeOmpRuntime();
     const { connection, events } = await createHarness(runtime);

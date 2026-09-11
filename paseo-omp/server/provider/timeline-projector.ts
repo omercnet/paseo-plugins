@@ -59,7 +59,8 @@ type AssistantMessageEvent = Extract<
 >["assistantMessageEvent"];
 
 function assistantIdentity(message: OmpMessage): string | undefined {
-  return message.responseId ?? message.entryId;
+  if (message.role !== "assistant") return;
+  return message.responseId ?? message.entryId ?? message.id;
 }
 
 function blockText(
@@ -84,7 +85,6 @@ export class OmpTimelineProjector {
   private assistantSequence = 0;
   private readonly turnNativeMessageIds = new Map<string, string>();
   private nativeIdentitySaturated = false;
-  private assistantIdentitySequence = 0;
   private noticeSequence = 0;
   private toolSequence = 0;
   private userSequence = 0;
@@ -112,15 +112,13 @@ export class OmpTimelineProjector {
 
   project(event: OmpRpcEvent, turnId: string): void {
     if (this.closed) return;
-    if (
-      (event.type === "message_start" ||
-        event.type === "message_update" ||
-        event.type === "message_end") &&
-      assistantIdentity(event.message) &&
-      this.replayedNativeMessageIds.has(assistantIdentity(event.message) as string)
-    ) {
-      return;
-    }
+    const replayedIdentity =
+      event.type === "message_start" ||
+      event.type === "message_update" ||
+      event.type === "message_end"
+        ? assistantIdentity(event.message)
+        : undefined;
+    if (replayedIdentity && this.replayedNativeMessageIds.has(replayedIdentity)) return;
     if (
       event.type === "todo_reminder" ||
       event.type === "notice" ||
@@ -303,7 +301,7 @@ export class OmpTimelineProjector {
 
   projectReplayMessage(message: OmpMessage): void {
     if (this.closed) return;
-    const nativeIdentity = assistantIdentity(message) ?? message.id;
+    const nativeIdentity = assistantIdentity(message);
     if (nativeIdentity && this.replayedNativeMessageIds.has(nativeIdentity)) return;
     this.replaySequence += 1;
     if (message.role === "user") {
@@ -320,10 +318,9 @@ export class OmpTimelineProjector {
         this.publishUser(
           text,
           `omp:replay-user:${this.replaySequence}`,
-          message.id ?? message.entryId,
+          message.entryId ?? message.id,
         );
       }
-      if (nativeIdentity) this.replayedNativeMessageIds.add(nativeIdentity);
       return;
     }
     if (message.role !== "assistant") return;
@@ -334,9 +331,9 @@ export class OmpTimelineProjector {
   }
 
   finishReplay(): void {
-    if (!this.replayTurnId) return;
-    this.finishTurn(this.replayTurnId);
+    if (this.replayTurnId) this.finishTurn(this.replayTurnId);
     this.replayTurnId = null;
+    this.replayedNativeMessageIds.clear();
   }
 
   flush(finalizeFallback = false): void {
@@ -418,7 +415,6 @@ export class OmpTimelineProjector {
     };
     return this.stream;
   }
-
   private messageIdForNativeIdentity(nativeIdentity: string): string | undefined {
     const existing = this.turnNativeMessageIds.get(nativeIdentity);
     if (existing) return existing;
@@ -429,15 +425,15 @@ export class OmpTimelineProjector {
       this.nativeIdentitySaturated = true;
       return undefined;
     }
-    const messageId = this.nextAssistantMessageId(nativeIdentity);
+    const digest = createHash("sha256").update(nativeIdentity).digest("base64url").slice(0, 12);
+    const messageId = `omp:assistant:${digest}`;
     this.turnNativeMessageIds.set(nativeIdentity, messageId);
     return messageId;
   }
 
   private nextAssistantMessageId(source: string): string {
-    this.assistantIdentitySequence += 1;
     const digest = createHash("sha256").update(source).digest("base64url").slice(0, 12);
-    return `omp:assistant:${this.assistantIdentitySequence}:${digest}`;
+    return `omp:assistant:local:${digest}`;
   }
 
   private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {

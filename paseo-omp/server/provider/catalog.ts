@@ -95,10 +95,7 @@ async function closeCatalogSession(session: OmpRuntimeSession): Promise<void> {
   try {
     await cleanup;
   } catch {
-    throw new OmpCleanupFailure(
-      "OMP catalog cleanup failed",
-      cleanup.catch(() => undefined),
-    );
+    throw new OmpCleanupFailure("OMP catalog cleanup failed", cleanup);
   }
 }
 
