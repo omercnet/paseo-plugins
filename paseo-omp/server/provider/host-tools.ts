@@ -16,7 +16,13 @@ import {
   type OmpRuntimeSession,
   parseOmpHostToolAgentResult,
 } from "./omp-rpc";
-import { boundedJsonBytes, OmpCleanupFailure, OmpPublicError, utf8Bytes } from "./security";
+import {
+  boundedJsonBytes,
+  OmpCleanupFailure,
+  OmpPublicError,
+  truncateUtf8,
+  utf8Bytes,
+} from "./security";
 
 const INTERNAL_PASEO_MCP_PATH = "/mcp/agents";
 const RESERVED_PASEO_NAMESPACE = "paseo";
@@ -30,6 +36,7 @@ const MAX_HOST_TOOL_DESCRIPTION_BYTES = 64 * 1024;
 const MAX_HOST_TOOL_SCHEMA_BYTES = 256 * 1024;
 const MAX_HOST_TOOL_CATALOG_BYTES = 768 * 1024;
 const MAX_HOST_TOOL_RESULT_BYTES = 12 * 1024 * 1024;
+const MAX_STRUCTURED_CONTENT_FALLBACK_BYTES = 1024 * 1024;
 const MAX_PENDING_HOST_TOOL_CALLS = 64;
 const MAX_PENDING_HOST_TOOL_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 20_000;
@@ -270,9 +277,19 @@ function normalizeResult(result: unknown): OmpHostToolResult["result"] {
   }
   const record = result as Record<string, unknown>;
   if (Array.isArray(record.content)) {
+    const details = record.structuredContent;
+    const content =
+      record.content.length === 0 && details !== undefined
+        ? [
+            {
+              type: "text",
+              text: truncateUtf8(JSON.stringify(details), MAX_STRUCTURED_CONTENT_FALLBACK_BYTES),
+            },
+          ]
+        : record.content;
     return parseOmpHostToolAgentResult({
-      content: record.content,
-      ...(record.structuredContent !== undefined ? { details: record.structuredContent } : {}),
+      content,
+      ...(details !== undefined ? { details } : {}),
       ...(typeof record.isError === "boolean" ? { isError: record.isError } : {}),
     });
   }

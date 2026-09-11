@@ -9,11 +9,19 @@ import type {
 const url = process.env.MCP_HOST_URL;
 const expectedHostCwd = process.env.EXPECTED_HOST_CWD;
 const expectedHostPid = Number(process.env.EXPECTED_HOST_PID);
-const expectedCallerAgentId = process.env.EXPECTED_CALLER_AGENT_ID ?? "docker-agent";
-const expectedWorkspaceId = process.env.EXPECTED_WORKSPACE_ID ?? "docker-workspace";
+const callerAgentId = process.env.PASEO_AGENT_ID;
+const workspaceId = process.env.PASEO_WORKSPACE_ID;
 const expectedOwnerMarker = process.env.EXPECTED_OWNER_MARKER ?? "host-daemon";
-if (!url || !expectedHostCwd || !Number.isInteger(expectedHostPid)) {
-  throw new Error("MCP_HOST_URL, EXPECTED_HOST_CWD, and EXPECTED_HOST_PID are required");
+if (
+  !url ||
+  !expectedHostCwd ||
+  !Number.isInteger(expectedHostPid) ||
+  !callerAgentId ||
+  !workspaceId
+) {
+  throw new Error(
+    "MCP_HOST_URL, EXPECTED_HOST_CWD, EXPECTED_HOST_PID, PASEO_AGENT_ID, and PASEO_WORKSPACE_ID are required",
+  );
 }
 
 const results: OmpHostToolResult[] = [];
@@ -31,7 +39,7 @@ const runtime = {
 
 const bridge = await OmpHostToolsBridge.open({
   cwd: process.cwd(),
-  env: { PASEO_AGENT_ID: expectedCallerAgentId, PASEO_WORKSPACE_ID: expectedWorkspaceId },
+  env: { PASEO_AGENT_ID: callerAgentId, PASEO_WORKSPACE_ID: workspaceId },
   mcpServers: { bridge: { type: "http", url } },
   settings: {},
   persist: false,
@@ -46,7 +54,7 @@ try {
     id: "docker-call",
     toolCallId: "docker-tool-call",
     toolName: "mcp__paseo_workspace_probe",
-    arguments: { workspaceId: expectedWorkspaceId },
+    arguments: {},
   });
   const deadline = Date.now() + 5_000;
   while (results.length === 0 && Date.now() < deadline) {
@@ -62,8 +70,8 @@ try {
     ownerCwd?: string;
   };
   if (
-    evidence.callerAgentId !== expectedCallerAgentId ||
-    evidence.workspaceId !== expectedWorkspaceId ||
+    evidence.callerAgentId !== callerAgentId ||
+    typeof evidence.workspaceId !== "string" ||
     evidence.ownerMarker !== expectedOwnerMarker ||
     evidence.ownerPid !== expectedHostPid ||
     evidence.ownerPid === process.pid ||

@@ -1,6 +1,18 @@
 const port = Number(process.env.MCP_HOST_PORT);
 if (!Number.isInteger(port) || port < 0) throw new Error("MCP_HOST_PORT is required");
 
+const callerSessions: Record<string, { workspaceId: string }> = {
+  "docker-agent": { workspaceId: "docker-workspace" },
+  "wsl-agent": { workspaceId: "wsl-workspace" },
+};
+
+function resolveCallerSession(request: Request): { callerAgentId: string; workspaceId: string } {
+  const callerAgentId = new URL(request.url).searchParams.get("callerAgentId");
+  const session = callerAgentId ? callerSessions[callerAgentId] : undefined;
+  if (!callerAgentId || !session) throw new Error("Unknown caller session");
+  return { callerAgentId, workspaceId: session.workspaceId };
+}
+
 const server = Bun.serve({
   hostname: "0.0.0.0",
   port,
@@ -28,23 +40,21 @@ const server = Bun.serve({
           {
             name: "workspace_probe",
             description: "Report the MCP execution owner",
-            inputSchema: { type: "object" },
+            inputSchema: { type: "object", additionalProperties: false },
           },
         ],
       };
     } else if (payload.method === "tools/call") {
+      const session = resolveCallerSession(request);
       result = {
         content: [
           {
             type: "text",
             text: JSON.stringify({
-              callerAgentId: new URL(request.url).searchParams.get("callerAgentId"),
-              workspaceId: (payload.params as { arguments?: { workspaceId?: string } } | undefined)
-                ?.arguments?.workspaceId,
+              ...session,
               ownerMarker: process.env.OWNER_MARKER,
               ownerPid: process.pid,
               ownerCwd: process.cwd(),
-              input: payload.params,
             }),
           },
         ],

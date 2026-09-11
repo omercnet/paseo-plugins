@@ -8,15 +8,16 @@ describe("host-tool integration scripts", () => {
       hostUrl: "http://172.20.0.1:4567/mcp/agents?callerAgentId=wsl-agent",
       expectedHostCwd: "C:\\repo path\\paseo-omp",
       expectedHostPid: 1234,
-      expectedCallerAgentId: "wsl-agent",
-      expectedWorkspaceId: "wsl-workspace",
+      callerAgentId: "wsl-agent",
+      workspaceId: "wsl-workspace",
       expectedOwnerMarker: "windows-host",
       wslBun: "~/.bun/bin/bun",
     });
 
     expect(command).toStartWith("cd '/mnt/c/repo path/paseo-omp' && env ");
-    expect(command).toContain("EXPECTED_CALLER_AGENT_ID='wsl-agent'");
-    expect(command).toContain("EXPECTED_WORKSPACE_ID='wsl-workspace'");
+    expect(command).toContain("PASEO_AGENT_ID='wsl-agent'");
+    expect(command).toContain("PASEO_WORKSPACE_ID='wsl-workspace'");
+    expect(command).not.toContain("EXPECTED_WORKSPACE_ID");
     expect(command).toEndWith("~/.bun/bin/bun tests/fixtures/mcp-container-client.ts");
   });
 });

@@ -52,8 +52,8 @@ try {
       hostUrl: `http://${host}:${server.port}/mcp/agents?callerAgentId=${callerAgentId}`,
       expectedHostCwd: pluginRoot,
       expectedHostPid: server.pid,
-      expectedCallerAgentId: callerAgentId,
-      expectedWorkspaceId: workspaceId,
+      callerAgentId,
+      workspaceId,
       expectedOwnerMarker: ownerMarker,
       wslBun,
     });

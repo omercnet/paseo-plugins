@@ -122,8 +122,8 @@ export function buildWslClientCommand(input: {
   hostUrl: string;
   expectedHostCwd: string;
   expectedHostPid: number;
-  expectedCallerAgentId: string;
-  expectedWorkspaceId: string;
+  callerAgentId: string;
+  workspaceId: string;
   expectedOwnerMarker: string;
   wslBun: string;
 }): string {
@@ -134,8 +134,8 @@ export function buildWslClientCommand(input: {
     `MCP_HOST_URL=${shellQuote(input.hostUrl)}`,
     `EXPECTED_HOST_CWD=${shellQuote(input.expectedHostCwd)}`,
     `EXPECTED_HOST_PID=${input.expectedHostPid}`,
-    `EXPECTED_CALLER_AGENT_ID=${shellQuote(input.expectedCallerAgentId)}`,
-    `EXPECTED_WORKSPACE_ID=${shellQuote(input.expectedWorkspaceId)}`,
+    `PASEO_AGENT_ID=${shellQuote(input.callerAgentId)}`,
+    `PASEO_WORKSPACE_ID=${shellQuote(input.workspaceId)}`,
     `EXPECTED_OWNER_MARKER=${shellQuote(input.expectedOwnerMarker)}`,
   ].join(" ");
   return `cd ${shellQuote(input.wslPluginRoot)} && env ${environment} ${input.wslBun} tests/fixtures/mcp-container-client.ts`;

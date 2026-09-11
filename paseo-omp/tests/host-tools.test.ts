@@ -214,6 +214,38 @@ describe("OMP host tool bridge", () => {
     await bridge.close();
   });
 
+  test("renders bounded structured content when MCP content is empty", async () => {
+    const details = { summary: "model-visible", payload: "x".repeat(1_100_000) };
+    const connection = new FakeConnection([{ name: "inspect", inputSchema: { type: "object" } }], {
+      content: [],
+      structuredContent: details,
+    });
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+      { connectMcp: async () => connection },
+    );
+    const runtime = new FakeRuntime();
+    runtime.maxHostToolFrameBytes = 4 * 1024 * 1024;
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+
+    bridge.handle({
+      type: "host_tool_call",
+      id: "structured-result",
+      toolCallId: "tool-structured-result",
+      toolName: "mcp__repo_inspect",
+      arguments: {},
+    });
+    await flushMicrotasks();
+
+    const result = runtime.results[0]?.result;
+    expect(result?.details).toEqual(details);
+    expect(result?.content).toHaveLength(1);
+    expect(result?.content[0]?.text).toStartWith('{"summary":"model-visible","payload":"');
+    expect(result?.content[0]?.text).toEndWith("<truncated>");
+    expect(Buffer.byteLength(result?.content[0]?.text ?? "")).toBeLessThanOrEqual(1024 * 1024);
+    await bridge.close();
+  });
+
   test("classifies every same-origin daemon endpoint and rejects identity mismatches", async () => {
     let connections = 0;
     const connector: OmpMcpConnector = async () => {
