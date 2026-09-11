@@ -11,6 +11,5 @@
     "noEmit": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true
-  },
-  "include": ["**/*.ts", "**/*.tsx"]
+  }
 }

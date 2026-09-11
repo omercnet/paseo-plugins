@@ -30,7 +30,10 @@
   ],
   "files": [
     "bun.lock",
+    "CHANGELOG.md",
+    "icon.svg",
     "LICENSE",
+    "README.md",
     "index.client.tsx",
     "index.server.ts",
     "client",
@@ -43,7 +46,9 @@
     "check:write": "biome check --write .",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.server.json",
+    "package:release": "bun scripts/package-release.ts",
+    "verify:package": "bun scripts/verify-package.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",

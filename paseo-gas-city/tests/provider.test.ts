@@ -10,12 +10,14 @@ import {
   type GasCitySchedule,
 } from "../server/provider";
 import {
+  FetchGasCityTransport,
   type GasCityInboundAck,
   type GasCityRegistration,
   type GasCitySseFrame,
   type GasCityStreamCallbacks,
   type GasCitySubscription,
   type GasCityTransport,
+  GasCityTransportError,
   parseSseFrames,
 } from "../server/provider-transport";
 
@@ -53,6 +55,12 @@ class FakeGasCityTransport implements GasCityTransport {
   frame(frame: GasCitySseFrame): void {
     this.subscriptions.at(-1)?.callbacks.onFrame(frame);
   }
+}
+
+function mockFetch(
+  implementation: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+): typeof fetch {
+  return Object.assign(implementation, { preconnect() {} });
 }
 
 const connectionRequest: ProviderConnectRequest = {
@@ -264,5 +272,109 @@ describe("Gas City Paseo provider", () => {
     await parseSseFrames(stream, (frame) => frames.push(frame));
 
     expect(frames).toEqual([{ id: "replay-1", event: "message", data: '{"type":"message"}' }]);
+  });
+});
+
+describe("Gas City external messaging transport", () => {
+  test("registers and sends inbound messages against the selected endpoint", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetcher = mockFetch(async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      const body = url.endsWith("/register")
+        ? { clientId: "client-1", conversationId: "conversation-1" }
+        : { turnId: "turn-1" };
+      return new Response(JSON.stringify(body), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const transport = new FetchGasCityTransport(fetcher);
+
+    await expect(
+      transport.register({
+        endpointUrl: "http://127.0.0.1:8372/",
+        cityName: "alpha",
+        sessionName: "reviewer",
+      }),
+    ).resolves.toEqual({ clientId: "client-1", conversationId: "conversation-1" });
+    await expect(
+      transport.sendInbound({
+        endpointUrl: "http://127.0.0.1:8372",
+        clientId: "client-1",
+        text: "Inspect the change.",
+        clientMessageId: "message-1",
+      }),
+    ).resolves.toEqual({ turnId: "turn-1" });
+
+    expect(requests.map(({ url }) => url)).toEqual([
+      "http://127.0.0.1:8372/api/external-messaging/register",
+      "http://127.0.0.1:8372/api/external-messaging/client-1/inbound",
+    ]);
+    expect(requests.map(({ init }) => JSON.parse(String(init?.body)))).toEqual([
+      { cityName: "alpha", sessionName: "reviewer" },
+      { text: "Inspect the change.", clientMessageId: "message-1" },
+    ]);
+  });
+
+  test("streams SSE frames with the replay cursor and reports a closed stream", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const encoder = new TextEncoder();
+    const fetcher = mockFetch(async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode("id: cursor-2\nevent: heartbeat\ndata:\n\n"));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream; charset=utf-8" } },
+      );
+    });
+    const transport = new FetchGasCityTransport(fetcher);
+    const frames: GasCitySseFrame[] = [];
+    const disconnected = Promise.withResolvers<Error>();
+
+    const subscription = await transport.subscribe({
+      endpointUrl: "http://127.0.0.1:8372",
+      clientId: "client-1",
+      lastEventId: "cursor-1",
+      callbacks: {
+        onFrame(frame) {
+          frames.push(frame);
+        },
+        onDisconnect(error) {
+          disconnected.resolve(error);
+        },
+      },
+    });
+
+    expect(requests[0]?.url).toBe("http://127.0.0.1:8372/api/external-messaging/client-1/events");
+    expect(new Headers(requests[0]?.init?.headers).get("Last-Event-ID")).toBe("cursor-1");
+    expect(frames).toEqual([{ id: "cursor-2", event: "heartbeat", data: "" }]);
+    await expect(disconnected.promise).resolves.toMatchObject({
+      code: "stream_closed",
+      retryable: true,
+    });
+    subscription.close();
+  });
+
+  test("rejects revoked authorization before accepting a registration", async () => {
+    const transport = new FetchGasCityTransport(
+      mockFetch(async () => new Response(null, { status: 403 })),
+    );
+
+    await expect(
+      transport.register({
+        endpointUrl: "http://127.0.0.1:8372",
+        cityName: "alpha",
+        sessionName: "reviewer",
+      }),
+    ).rejects.toEqual(
+      new GasCityTransportError("Gas City external messaging authorization was revoked", {
+        code: "authorization_revoked",
+        retryable: false,
+      }),
+    );
   });
 });
