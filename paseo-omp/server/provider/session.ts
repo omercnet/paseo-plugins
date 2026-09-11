@@ -312,7 +312,7 @@ export class OmpProviderSession {
       ]);
       const models = mapOmpModels(nativeModels, filter);
       const nativeModelsByPublicId = new Map(
-        nativeModels.map((model) => [ompModelId(model, filter), model] as const),
+        nativeModels.map((model) => [ompModelId(model), model] as const),
       );
       if (input.config.model?.startsWith("omp:model:")) {
         const selected = nativeModelsByPublicId.get(input.config.model);
@@ -326,7 +326,7 @@ export class OmpProviderSession {
           )
         : undefined;
       const configState: ProviderConfigState = {
-        ...(state.model ? { model: ompModelId(state.model, filter) } : {}),
+        ...(state.model ? { model: ompModelId(state.model) } : {}),
         mode: "full",
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
         models,
@@ -599,7 +599,7 @@ export class OmpProviderSession {
   private publishCommittedConfig(state: OmpSessionState): void {
     this.configState = {
       ...this.configState,
-      ...(state.model ? { model: ompModelId(state.model, this.dataFilter) } : { model: undefined }),
+      ...(state.model ? { model: ompModelId(state.model) } : { model: undefined }),
       ...(state.thinkingLevel
         ? { thinkingOption: state.thinkingLevel }
         : { thinkingOption: undefined }),

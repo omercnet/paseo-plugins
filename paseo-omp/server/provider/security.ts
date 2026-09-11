@@ -17,7 +17,8 @@ const OMITTED = "<omitted>";
 
 const SENSITIVE_KEY =
   /(?:^|_)(?:api_?key|access_?token|refresh_?token|auth|authorization|cookie|credential|password|private_?key|secret|session_?token)(?:$|_)/iu;
-const AUTHORIZATION_CREDENTIAL = /\bAuthorization\s*:\s*[^\r\n,;]+/giu;
+const AUTHORIZATION_CREDENTIAL =
+  /\bAuthorization\s*[:=]\s*[^\r\n,;]*(?:\r?\n[ \t]+[^\r\n,;]*)*/giu;
 const BEARER_CREDENTIAL = /\bBearer\s+[A-Za-z0-9._~+/=-]{1,}/giu;
 const CREDENTIAL_ASSIGNMENT =
   /\b(api[ _-]?key|access[ _-]?token|refresh[ _-]?token|authorization|cookie|credential|password|private[ _-]?key|secret|session[ _-]?token)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
@@ -162,6 +163,7 @@ export class OmpPublicDataFilter {
         return `${name}${separator}${REDACTED}`;
       })
       .replace(TOKEN_CREDENTIAL, REDACTED)
+      .replace(/[\u0000-\u001f\u007f]/gu, "<control>")
       .replace(POSIX_ABSOLUTE_PATH, (_match, prefix: string) => `${prefix}<absolute path>`)
       .replace(WINDOWS_ABSOLUTE_PATH, "<absolute path>");
     return truncateUtf8(output, maxBytes);

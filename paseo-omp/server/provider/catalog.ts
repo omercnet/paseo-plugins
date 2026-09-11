@@ -34,13 +34,9 @@ export function nativeOmpModelId(model: OmpModel): string {
   return `${model.provider}/${model.id}`;
 }
 
-export function ompModelId(model: OmpModel, filter = new OmpPublicDataFilter()): string {
-  const nativeId = nativeOmpModelId(model);
-  const safeProvider = filter.text(model.provider, 256);
-  const safeModelId = filter.text(model.id, 256);
-  if (safeProvider === model.provider && safeModelId === model.id) return nativeId;
-  const digest = createHash("sha256").update(nativeId).digest("base64url").slice(0, 16);
-  return `omp:model:${digest}`;
+export function ompModelId(model: OmpModel): string {
+  const nativeIdentity = `${Buffer.byteLength(model.provider, "utf8")}:${model.provider}${Buffer.byteLength(model.id, "utf8")}:${model.id}`;
+  return `omp:model:${createHash("sha256").update(nativeIdentity).digest("hex")}`;
 }
 
 export function parseOmpModelId(id: string): { provider: string; modelId: string } {
@@ -55,9 +51,17 @@ export function mapOmpModels(
   models: readonly OmpModel[],
   filter = new OmpPublicDataFilter(),
 ): ProviderModel[] {
+  const seenIds = new Map<string, string>();
   return models.map((model) => {
     const thinkingOptions = model.reasoning ? thinkingForModel(model) : undefined;
-    const id = ompModelId(model, filter);
+    const id = ompModelId(model);
+    const nativeIdentity = nativeOmpModelId(model);
+    const existing = seenIds.get(id);
+    if (existing !== undefined && existing !== nativeIdentity) {
+      throw new Error("OMP model identity collision");
+    }
+    if (existing !== undefined) throw new Error("OMP reported a duplicate model identity");
+    seenIds.set(id, nativeIdentity);
     const provider = filter.text(model.provider, 256);
     const modelId = filter.text(model.id, 256);
     const name = model.name ? filter.text(model.name, 256) : modelId;
@@ -112,7 +116,7 @@ export async function discoverOmpCatalog(
     const filter = new OmpPublicDataFilter(session.redactionValues ?? []);
     const models = mapOmpModels(nativeModels, filter);
     if (models.length === 0) throw new Error("OMP reported no available models");
-    const defaultModel = state.model ? ompModelId(state.model, filter) : models[0]?.id;
+    const defaultModel = state.model ? ompModelId(state.model) : models[0]?.id;
     const currentModel = state.model
       ? nativeModels.find(
           (model) => model.provider === state.model?.provider && model.id === state.model.id,

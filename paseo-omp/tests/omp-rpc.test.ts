@@ -58,6 +58,24 @@ class FakeRpcChild extends EventEmitter {
     return this as unknown as ChildProcessWithoutNullStreams;
   }
 }
+function writeChunked(child: FakeRpcChild, frame: Record<string, unknown>, chunkId: string): void {
+  const payload = Buffer.from(JSON.stringify(frame));
+  const parts: Buffer[] = [];
+  for (let offset = 0; offset < payload.byteLength; offset += 256 * 1024) {
+    parts.push(payload.subarray(offset, offset + 256 * 1024));
+  }
+  for (const [index, part] of parts.entries()) {
+    child.write({
+      type: "rpc_chunk",
+      chunkId,
+      index,
+      count: parts.length,
+      byteLength: payload.byteLength,
+      data: part.toString("base64"),
+    });
+  }
+}
+
 
 function observeCommands(
   child: FakeRpcChild,
@@ -378,7 +396,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("accepts 513 branch entries and isolates an oversized response", async () => {
+  test("accepts 1,024 branch entries and isolates an oversized response", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
@@ -407,7 +425,7 @@ describe("OMP RPC transport", () => {
         id: command.id,
         success: true,
         data: {
-          messages: Array.from({ length: 513 }, (_, index) => ({
+          messages: Array.from({ length: 1_024 }, (_, index) => ({
             entryId: `entry-${index}`,
             text: "x",
           })),
@@ -419,8 +437,90 @@ describe("OMP RPC transport", () => {
     const session = await opening;
 
     const messages = await session.getBranchMessages();
-    expect(messages).toHaveLength(513);
-    expect(messages.at(-1)).toEqual({ entryId: "entry-512", text: "x" });
+    expect(messages).toHaveLength(1_024);
+    expect(messages.at(-1)).toEqual({ entryId: "entry-1023", text: "x" });
+    await session.close();
+  });
+
+  test("enforces chunked UTF-8 assistant and image boundaries without stale corruption", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const nearText = "é".repeat((1024 * 1024) / 2);
+    const textEvent = nextEvent((listener) => session.onEvent(listener));
+    writeChunked(
+      child,
+      { type: "message_update", message: { role: "assistant", responseId: "text", content: nearText } },
+      "near-text",
+    );
+    const receivedText = await textEvent;
+    expect(receivedText.type === "message_update" ? receivedText.message.content : null).toBe(nearText);
+
+    writeChunked(
+      child,
+      {
+        type: "message_update",
+        message: { role: "assistant", responseId: "text", content: `${nearText}é` },
+      },
+      "oversized-text",
+    );
+    const imageData = "A".repeat(8 * 1024 * 1024);
+    const imageEvent = nextEvent((listener) => session.onEvent(listener));
+    writeChunked(
+      child,
+      {
+        type: "message_update",
+        message: { role: "assistant", responseId: "image", content: [] },
+        assistantMessageEvent: {
+          type: "image_end",
+          contentIndex: 0,
+          content: { type: "image", data: imageData, mimeType: "image/png" },
+        },
+      },
+      "near-image",
+    );
+    const receivedImage = await imageEvent;
+    expect(
+      receivedImage.type === "message_update" &&
+        receivedImage.assistantMessageEvent?.content &&
+        typeof receivedImage.assistantMessageEvent.content === "object" &&
+        "data" in receivedImage.assistantMessageEvent.content
+        ? receivedImage.assistantMessageEvent.content.data
+        : null,
+    ).toBe(imageData);
+
+    writeChunked(
+      child,
+      {
+        type: "message_update",
+        message: { role: "assistant", responseId: "image", content: [] },
+        assistantMessageEvent: {
+          type: "image_end",
+          contentIndex: 0,
+          content: { type: "image", data: `${imageData}AAAA`, mimeType: "image/png" },
+        },
+      },
+      "oversized-image",
+    );
+    const recovered = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "agent_end",
+      messages: Array.from({ length: 513 }, () => ({ role: "assistant", content: "ok" })),
+      messageCount: 513,
+      isTerminal: true,
+    });
+    await expect(recovered).resolves.toEqual({
+      type: "agent_end",
+      messageCount: 513,
+      isTerminal: true,
+    });
     await session.close();
   });
 
@@ -814,6 +914,23 @@ describe("OMP RPC transport", () => {
     const session = await opening;
     await expect(session.close()).rejects.toThrow("cleanup failed");
   });
+  test("treats uncertain injected process-tree cleanup as unsuccessful", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => Promise.resolve("uncertain"),
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    await expect(session.close()).rejects.toThrow("cleanup failed");
+  });
+
 
   if (process.platform !== "win32") {
     test("session close terminates descendants left by an exited POSIX leader", async () => {

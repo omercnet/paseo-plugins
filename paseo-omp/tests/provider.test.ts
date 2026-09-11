@@ -8,6 +8,7 @@ import type {
   ProviderEvent,
   ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
+import { ompModelId } from "../server/provider/catalog";
 import {
   type OmpModel,
   type OmpRpcEvent,
@@ -78,6 +79,8 @@ const ALTERNATE_MODEL: OmpModel = {
   thinking: { efforts: ["low", "high"], defaultLevel: "high" },
   contextWindow: null,
 };
+const MODEL_PUBLIC_ID = ompModelId(MODEL);
+const ALTERNATE_MODEL_PUBLIC_ID = ompModelId(ALTERNATE_MODEL);
 const THINKING_LEVELS: Readonly<Record<string, true>> = {
   high: true,
   low: true,
@@ -460,11 +463,11 @@ describe("OMP direct provider", () => {
       type: "catalog",
       requestId: "catalog-1",
       catalog: expect.objectContaining({
-        defaultModel: "anthropic/claude-sonnet-4-5",
+        defaultModel: MODEL_PUBLIC_ID,
         defaultMode: "full",
         models: expect.arrayContaining([
-          expect.objectContaining({ id: "anthropic/claude-sonnet-4-5" }),
-          expect.objectContaining({ id: "openai/gpt-5.4" }),
+          expect.objectContaining({ id: MODEL_PUBLIC_ID }),
+          expect.objectContaining({ id: ALTERNATE_MODEL_PUBLIC_ID }),
         ]),
         modes: [expect.objectContaining({ id: "full" })],
       }),
@@ -481,8 +484,10 @@ describe("OMP direct provider", () => {
       name: "Authorization: Basic model-secret",
       reasoning: false,
     };
+    const slashModelA: OmpModel = { provider: "a/b", id: "c", name: "A\u0000name" };
+    const slashModelB: OmpModel = { provider: "a", id: "b/c", name: "B\u0007name" };
     const runtime = new FakeOmpRuntime();
-    runtime.availableModels = [maliciousModel];
+    runtime.availableModels = [maliciousModel, slashModelA, slashModelB];
     runtime.nextModel = maliciousModel;
     const { connection, events } = await createHarness(runtime);
     await connection.send({ type: "catalog", requestId: "malicious-catalog", cwd: "/repo" });
@@ -511,6 +516,11 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("/home/private/model");
     expect(visible).not.toContain("model-secret");
     expect(visible).toContain("omp:model:");
+    if (catalog.type !== "catalog") throw new Error("Expected catalog event");
+    expect(new Set(catalog.catalog.models.map((model) => model.id)).size).toBe(3);
+    expect(catalog.catalog.models.every((model) => model.id.startsWith("omp:model:"))).toBe(true);
+    expect(visible).not.toContain("\u0000");
+    expect(visible).not.toContain("\u0007");
     expect(runtime.starts[1]?.model).toBe("anthropic/claude-sonnet-4-5");
     expect(sessionAt(runtime, 1).modelChanges).toContainEqual({
       provider: maliciousModel.provider,
@@ -532,7 +542,7 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         type: "session.config",
         config: expect.objectContaining({
-          model: "anthropic/claude-sonnet-4-5",
+          model: MODEL_PUBLIC_ID,
           mode: "full",
           modes: [expect.objectContaining({ id: "full" })],
           thinkingOption: "medium",
@@ -561,6 +571,12 @@ describe("OMP direct provider", () => {
     await expect(
       provider.connect({ versions: [1], capabilities: ["prompt.message", 42] } as never),
     ).rejects.toThrow("valid provider protocol version 1 request");
+    await expect(
+      provider.connect({
+        versions: Array.from({ length: 33 }, () => 1),
+        capabilities: ["prompt.message"],
+      }),
+    ).rejects.toThrow("oversized connection request");
 
     const connection = await provider.connect({
       versions: [1],
@@ -719,7 +735,7 @@ describe("OMP direct provider", () => {
       type: "session.configure",
       requestId: "configure-1",
       sessionId: "session-1",
-      changes: { model: "openai/gpt-5.4", thinkingOption: "high" },
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID, thinkingOption: "high" },
     });
     await events.waitFor(
       (event) => event.type === "request.completed" && event.requestId === "configure-1",
@@ -731,7 +747,7 @@ describe("OMP direct provider", () => {
     expect(events.slice(baseline)).toEqual([
       expect.objectContaining({
         type: "session.config",
-        config: expect.objectContaining({ model: "openai/gpt-5.4", thinkingOption: "high" }),
+        config: expect.objectContaining({ model: ALTERNATE_MODEL_PUBLIC_ID, thinkingOption: "high" }),
       }),
       { type: "request.completed", requestId: "configure-1" },
     ]);
@@ -2720,7 +2736,7 @@ describe("OMP direct provider", () => {
     const config: HostSessionConfig = {
       provider: registration.id,
       cwd: "/repo",
-      systemPrompt: "Be precise",
+      model: MODEL_PUBLIC_ID,
       mcpServers: {},
       modeId: "full",
       model: "anthropic/claude-sonnet-4-5",
@@ -3217,6 +3233,13 @@ describe("OMP direct provider", () => {
         '{"__proto__":{"polluted":"yes"},"apiKey":"another-secret","/home/private":"first","<absolute path>":"second"}',
       ),
     });
+    for (const message of [
+      "Authorization=Basic basic-equals-secret",
+      "Authorization: Token token-scheme-secret",
+      "Authorization: Digest digest-alpha\r\n digest-beta",
+    ]) {
+      session.emit({ type: "notice", level: "warning", message });
+    }
     session.emit({
       type: "tool_execution_start",
       toolCallId: "credential-value-1234",
@@ -3276,6 +3299,10 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("provider-internal-response-id");
     expect(visible).not.toContain("token-not-from-env");
     expect(visible).not.toContain("basic-token-not-from-env");
+    expect(visible).not.toContain("basic-equals-secret");
+    expect(visible).not.toContain("token-scheme-secret");
+    expect(visible).not.toContain("digest-alpha");
+    expect(visible).not.toContain("digest-beta");
     expect(visible).not.toContain("split-assistant-secret");
     expect(visible).not.toContain("split-reasoning-secret");
     expect(
@@ -3971,6 +3998,33 @@ describe("OMP direct provider", () => {
         event.type === "session.prompt_result" &&
         event.clientMessageId === "transport-late-command",
     );
+    children[0]?.write({
+      type: "tool_execution_start",
+      toolCallId: "large-tool",
+      toolName: "read",
+      args: Array.from({ length: 513 }, (_, index) => `input-${index}`),
+    });
+    children[0]?.write({
+      type: "tool_execution_end",
+      toolCallId: "large-tool",
+      toolName: "read",
+      result: Array.from({ length: 513 }, (_, index) => `output-${index}`),
+    });
+    const completedTool = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.status === "completed",
+    );
+    if (
+      completedTool?.type !== "timeline.item" ||
+      completedTool.item.type !== "tool_call" ||
+      completedTool.item.detail.type !== "unknown" ||
+      !Array.isArray(completedTool.item.detail.output)
+    ) {
+      throw new Error("Expected completed bounded tool output");
+    }
+    expect(completedTool.item.detail.output).toHaveLength(128);
     children[0]?.write({
       type: "agent_end",
       messages: [

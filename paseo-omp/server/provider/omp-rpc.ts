@@ -50,8 +50,13 @@ const NAME = boundedString(MAX_NAME_LENGTH, 1);
 const TEXT = boundedString(MAX_TEXT_LENGTH);
 const OmpThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-function isBoundedJson(value: unknown, maxBytes = MAX_TOOL_PAYLOAD_LENGTH): boolean {
-  return boundedJsonBytes(value, maxBytes, MAX_ARRAY_ITEMS) !== Number.POSITIVE_INFINITY;
+function isBoundedJson(
+  value: unknown,
+  maxBytes = MAX_TOOL_PAYLOAD_LENGTH,
+  maxItems = MAX_ARRAY_ITEMS,
+  maxNodes = 2_048,
+): boolean {
+  return boundedJsonBytes(value, maxBytes, maxItems, maxBytes, maxNodes) !== Number.POSITIVE_INFINITY;
 }
 
 const OmpContentPartSchema = z
@@ -151,13 +156,20 @@ const OmpChunkFrameSchema = z.object({
   byteLength: z.number().int().nonnegative().max(MAX_REASSEMBLED_FRAME_BYTES),
   data: boundedString(MAX_ENCODED_CHUNK_BYTES),
 });
-const BoundedToolPayloadSchema = z.unknown().refine((value) => isBoundedJson(value));
+const BoundedToolPayloadSchema = z.unknown().refine((value) =>
+  isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096),
+);
+const OmpAgentEndEnvelopeSchema = z.object({
+  type: z.literal("agent_end"),
+  messageCount: z.number().int().nonnegative().optional(),
+  isTerminal: z.boolean().optional(),
+});
 const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent_start") }),
   z.object({
     type: z.literal("agent_end"),
     messages: z.array(OmpMessageSchema).max(MAX_ARRAY_ITEMS).optional(),
-    messageCount: z.number().int().nonnegative().max(MAX_ARRAY_ITEMS).optional(),
+    messageCount: z.number().int().nonnegative().optional(),
     isTerminal: z.boolean().optional(),
   }),
   z.object({ type: z.literal("turn_start") }),
@@ -290,7 +302,7 @@ export interface OmpSpawnRequest {
 
 export interface OmpRpcRuntimeOptions {
   spawnProcess?: (request: OmpSpawnRequest) => ChildProcessWithoutNullStreams;
-  terminateProcessTree?: (pid: number) => Promise<boolean>;
+  terminateProcessTree?: (pid: number) => Promise<boolean | "uncertain">;
 }
 
 type PendingRequest = {
@@ -317,7 +329,6 @@ type ChunkState = {
 // The daemon contributes only process/runtime discovery variables plus provider authentication
 // families. Session-scoped values are explicit host input and are overlaid after rejecting loader
 // and executable-resolution controls; this keeps provider credentials available without copying
-// the daemon's unrelated environment into OMP.
 const INHERITED_RUNTIME_ENV: Readonly<Record<string, true>> = {
   APPDATA: true,
   COLORTERM: true,
@@ -771,7 +782,10 @@ class OmpRpcProcess {
     const request = buildOmpSpawnRequest(options);
     this.redactionValues = request.sensitiveValues;
     this.terminateProcessTree = terminateProcessTree
-      ? async (pid) => ((await terminateProcessTree(pid)) ? "verified" : "failed")
+      ? async (pid) => {
+          const outcome = await terminateProcessTree(pid);
+          return outcome === true ? "verified" : outcome === "uncertain" ? "uncertain" : "failed";
+        }
       : async (pid) =>
           process.platform === "win32"
             ? stopWindowsTree(pid)
@@ -922,10 +936,10 @@ class OmpRpcProcess {
       } catch {
         // Continue to process-tree cleanup when the input channel is already closed.
       }
-      await this.waitForExit(PROCESS_STOP_TIMEOUT_MS);
     }
-    const cleanup = await this.startTreeCleanup();
-    if (cleanup === "failed") throw new Error("OMP RPC process tree cleanup failed");
+    const cleanupPromise = this.startTreeCleanup();
+    const cleanup = await cleanupPromise;
+    if (cleanup !== "verified") throw new Error("OMP RPC process tree cleanup failed");
     if (!this.exited && !(await this.waitForExit(PROCESS_STOP_TIMEOUT_MS))) {
       throw new Error("OMP RPC process did not close after tree cleanup");
     }
@@ -1003,6 +1017,14 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
+    if (this.receiveOversizedAgentEnd(decoded)) return;
+    if (
+      boundedJsonBytes(decoded, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
+      Number.POSITIVE_INFINITY
+    ) {
+      this.recordProtocolViolation();
+      return;
+    }
     const frame = JsonObjectSchema.safeParse(decoded);
     if (!frame.success) {
       this.recordProtocolViolation();
@@ -1069,6 +1091,19 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
+    if (this.receiveOversizedAgentEnd(decodedFrame)) return;
+    if (
+      boundedJsonBytes(
+        decodedFrame,
+        MAX_SEMANTIC_FRAME_BYTES,
+        1_024,
+        MAX_IMAGE_DATA_LENGTH,
+        4_096,
+      ) === Number.POSITIVE_INFINITY
+    ) {
+      this.recordProtocolViolation();
+      return;
+    }
     const frameObject = JsonObjectSchema.safeParse(decodedFrame);
     if (!frameObject.success) {
       this.recordProtocolViolation();
@@ -1077,10 +1112,45 @@ class OmpRpcProcess {
     this.receiveFrame(frameObject.data);
   }
 
+  private receiveOversizedAgentEnd(value: unknown): boolean {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const frame = value as Record<string, unknown>;
+    if (frame.type !== "agent_end" || !Array.isArray(frame.messages)) return false;
+    if (frame.messages.length <= MAX_ARRAY_ITEMS) return false;
+    const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
+    if (!envelope.success || envelope.data.isTerminal === false) {
+      this.recordProtocolViolation();
+      return true;
+    }
+    this.emit({
+      ...envelope.data,
+      messageCount: Math.max(envelope.data.messageCount ?? 0, frame.messages.length),
+    });
+    this.streamedBlocks.clear();
+    this.commandTextLength = 0;
+    this.activeToolCallIds.clear();
+    return true;
+  }
+
   private receiveFrame(frame: Record<string, unknown>): void {
     const type = typeof frame.type === "string" && frame.type.length <= 64 ? frame.type : null;
     if (!type) {
       this.recordProtocolViolation();
+      return;
+    }
+    if (type === "agent_end" && Array.isArray(frame.messages) && frame.messages.length > MAX_ARRAY_ITEMS) {
+      const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
+      if (!envelope.success || envelope.data.isTerminal === false) {
+        this.recordProtocolViolation();
+        return;
+      }
+      this.emit({
+        ...envelope.data,
+        messageCount: Math.max(envelope.data.messageCount ?? 0, frame.messages.length),
+      });
+      this.streamedBlocks.clear();
+      this.commandTextLength = 0;
+      this.activeToolCallIds.clear();
       return;
     }
     if (

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createOmpConnection } from "./connection";
 import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
 import type { OmpTimelineScheduler } from "./timeline-projector";
+import { boundedJsonBytes } from "./security";
 
 const CAPABILITIES = ["prompt.message", "prompt.steer", "session.configure"] as const;
 const ConnectRequestSchema = z.object({
@@ -22,6 +23,9 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
     description: "Canary direct provider for OMP's rpc-ui protocol",
     icon: "server/provider/omp.svg",
     async connect(request) {
+      if (boundedJsonBytes(request, 8 * 1024, 32, 256, 64) === Number.POSITIVE_INFINITY) {
+        throw new Error("OMP Plugin Preview received an oversized connection request");
+      }
       const parsed = ConnectRequestSchema.safeParse(request);
       if (!parsed.success || !parsed.data.versions.includes(1)) {
         throw new Error("OMP Plugin Preview requires a valid provider protocol version 1 request");
