@@ -515,20 +515,17 @@ describe("OMP direct provider", () => {
     expect(sessionAt(runtime).closes).toBe(1);
     await connection.close();
   });
-  test("retries catalog discovery after asynchronous cleanup settles", async () => {
+  test("blocks repeated catalog discovery after unverified cleanup", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.nextCloseError = new Error("catalog cleanup failed");
     const { connection, events } = await createHarness(runtime);
-    await connection.send({ type: "catalog", requestId: "catalog-cleanup-failure", cwd: "/repo" });
-    await events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "catalog-cleanup-failure",
-    );
-    await Promise.resolve();
-    await connection.send({ type: "catalog", requestId: "catalog-cleanup-retry", cwd: "/repo" });
-    await events.waitFor(
-      (event) => event.type === "catalog" && event.requestId === "catalog-cleanup-retry",
-    );
-    expect(runtime.starts).toHaveLength(2);
+    for (const requestId of ["catalog-cleanup-failure", "catalog-cleanup-retry"]) {
+      await connection.send({ type: "catalog", requestId, cwd: "/repo" });
+      await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === requestId,
+      );
+    }
+    expect(runtime.starts).toHaveLength(1);
     await expect(connection.close()).resolves.toBeUndefined();
   });
 
