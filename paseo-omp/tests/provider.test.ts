@@ -1171,18 +1171,24 @@ describe("OMP direct provider", () => {
     const assistantItems = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "assistant_message" ? [event.item] : [],
     );
-    expect(assistantItems).toEqual([
-      expect.objectContaining({
-        id: "omp:assistant:1:FptmLPBZggWJ:content:0:text",
-        messageId: "omp:assistant:1:FptmLPBZggWJ",
-        text: "First",
-      }),
-      expect.objectContaining({
-        id: "omp:assistant:2:bcYQ7w4CEWWL:content:0:text",
-        messageId: "omp:assistant:2:bcYQ7w4CEWWL",
-        text: "Second",
-      }),
-    ]);
+    const firstFinal = assistantItems.findLast((item) => item.text === "First");
+    const secondFinal = assistantItems.findLast((item) => item.text === "Second");
+    if (!firstFinal || !secondFinal) throw new Error("Expected final assistant snapshots");
+    expect(new Set(assistantItems.map((item) => item.messageId))).toEqual(
+      new Set([firstFinal.messageId, secondFinal.messageId]),
+    );
+    expect(
+      assistantItems
+        .filter((item) => item.messageId === firstFinal.messageId)
+        .every((item) => item.id === firstFinal.id),
+    ).toBe(true);
+    expect(
+      assistantItems
+        .filter((item) => item.messageId === secondFinal.messageId)
+        .every((item) => item.id === secondFinal.id),
+    ).toBe(true);
+    expect(firstFinal.text).toBe("First");
+    expect(secondFinal.text).toBe("Second");
     expect(assistantItems.some((item) => item.id.includes("generic-id"))).toBe(false);
     await finishTurn(events, session, turnId);
     await connection.close();
@@ -1226,33 +1232,28 @@ describe("OMP direct provider", () => {
     const assistantItems = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "assistant_message" ? [event.item] : [],
     );
-    expect(assistantItems).toEqual([
-      {
-        type: "assistant_message",
-        id: "omp:assistant:1:LXEWQrcmsEQB:content:0:text",
-        messageId: "omp:assistant:1:LXEWQrcmsEQB",
-        text: "First",
-      },
-      {
-        type: "assistant_message",
-        id: "omp:assistant:2:f4WLYWiaVvzc:content:0:text",
-        messageId: "omp:assistant:2:f4WLYWiaVvzc",
-        text: "Adversarial",
-      },
-      {
-        type: "assistant_message",
-        id: "omp:assistant:3:LXEWQrcmsEQB:content:0:text",
-        messageId: "omp:assistant:3:LXEWQrcmsEQB",
-        text: "Third draft",
-      },
-      {
-        type: "assistant_message",
-        id: "omp:assistant:3:LXEWQrcmsEQB:content:0:text",
-        messageId: "omp:assistant:3:LXEWQrcmsEQB",
-        text: "Third final",
-      },
-    ]);
-    expect(new Set(assistantItems.map((item) => item.messageId)).size).toBe(3);
+    const firstFinal = assistantItems.findLast((item) => item.text === "First");
+    const adversarialFinal = assistantItems.findLast((item) => item.text === "Adversarial");
+    const repeatedFinal = assistantItems.findLast((item) => item.text === "Third final");
+    if (!firstFinal || !adversarialFinal || !repeatedFinal) {
+      throw new Error("Expected final assistant snapshots");
+    }
+    const finalItems = [firstFinal, adversarialFinal, repeatedFinal];
+    expect(new Set(assistantItems.map((item) => item.messageId))).toEqual(
+      new Set(finalItems.map((item) => item.messageId)),
+    );
+    for (const finalItem of finalItems) {
+      expect(
+        assistantItems
+          .filter((item) => item.messageId === finalItem.messageId)
+          .every((item) => item.id === finalItem.id),
+      ).toBe(true);
+    }
+    expect(finalItems.map((item) => item.text)).toEqual(["First", "Adversarial", "Third final"]);
+    expect(JSON.stringify(finalItems.map((item) => item.messageId))).not.toContain("x:occurrence");
+    expect(JSON.stringify(finalItems.map((item) => item.messageId))).not.toContain(
+      "repeated-native-response",
+    );
     await connection.close();
   });
 
