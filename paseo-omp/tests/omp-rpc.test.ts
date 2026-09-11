@@ -888,7 +888,11 @@ describe("OMP RPC transport", () => {
       );
       expect(request.sensitiveValues).not.toContain("1");
       for (const config of [
-        { servers: { unsafe: { type: "http", url: "https://example.test", headers: { "X-License": "abc" } } } },
+        {
+          servers: {
+            unsafe: { type: "http", url: "https://example.test", headers: { "X-License": "abc" } },
+          },
+        },
         { servers: { unsafe: { type: "stdio", command: "server", env: { PIN: "123" } } } },
         { servers: { unsafe: { type: "http", url: "https://user:abc@example.test/mcp" } } },
         { servers: { unsafe: { type: "http", url: "https://example.test/mcp?token=xyz" } } },
