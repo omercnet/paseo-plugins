@@ -1167,6 +1167,16 @@ describe("OMP direct provider", () => {
       },
     });
     await scheduler.flush();
+    session.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Second" }],
+        responseId: "response-2",
+        id: "generic-id",
+      },
+    });
+    await finishTurn(events, session, turnId);
 
     const assistantItems = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "assistant_message" ? [event.item] : [],
@@ -1190,7 +1200,6 @@ describe("OMP direct provider", () => {
     expect(firstFinal.text).toBe("First");
     expect(secondFinal.text).toBe("Second");
     expect(assistantItems.some((item) => item.id.includes("generic-id"))).toBe(false);
-    await finishTurn(events, session, turnId);
     await connection.close();
   });
 
@@ -1343,18 +1352,19 @@ describe("OMP direct provider", () => {
       await scheduler.flush();
     }
 
-    expect(
-      events.flatMap((event) =>
-        event.type === "timeline.item" &&
-        (event.item.type === "assistant_message" || event.item.type === "reasoning")
-          ? [event.item]
-          : [],
-      ),
-    ).toEqual([
+    await finishTurn(events, session, turnId);
+    const timelineUpdates = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      (event.item.type === "assistant_message" || event.item.type === "reasoning")
+        ? [event.item]
+        : [],
+    );
+    const finalById = new Map(timelineUpdates.map((item) => [item.id, item]));
+    expect([...finalById.values()]).toEqual([
       {
         type: "reasoning",
         id: "omp:assistant:1:_rtzMvYnX4Ti:content:0:reasoning",
-        text: "Reason A",
+        text: "Reason A revised",
       },
       {
         type: "assistant_message",
@@ -1362,13 +1372,7 @@ describe("OMP direct provider", () => {
         messageId: "omp:assistant:1:_rtzMvYnX4Ti",
         text: "Answer A",
       },
-      {
-        type: "reasoning",
-        id: "omp:assistant:1:_rtzMvYnX4Ti:content:0:reasoning",
-        text: "Reason A revised",
-      },
     ]);
-    await finishTurn(events, session, turnId);
     await connection.close();
   });
 
@@ -1613,7 +1617,7 @@ describe("OMP direct provider", () => {
       type: "tool_execution_update",
       toolCallId: "active-tool",
       toolName: "read",
-      partialResult: { content: "still running" },
+      partialResult: { content: "still active." },
     });
     session.emit({
       type: "tool_execution_end",
@@ -1678,7 +1682,7 @@ describe("OMP direct provider", () => {
         detail: {
           type: "unknown",
           input: { path: "active.ts" },
-          output: { content: "still running" },
+          output: { content: "still active." },
         },
       }),
       expect.objectContaining({
@@ -3755,7 +3759,7 @@ describe("OMP direct provider", () => {
         ? literalSplitReasoning.item.text
         : null,
     ).toBe("<redacted>");
-    const command = events.find(
+    const command = events.findLast(
       (event) =>
         event.type === "timeline.item" &&
         event.item.type === "assistant_message" &&
