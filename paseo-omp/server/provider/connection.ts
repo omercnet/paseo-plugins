@@ -6,6 +6,7 @@ import {
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import { discoverOmpCatalog } from "./catalog";
+import type { OmpMcpConnector } from "./host-tools";
 import type { OmpRuntime } from "./omp-rpc";
 import { boundedJsonBytes, OmpCleanupFailure, OmpPublicError, utf8Bytes } from "./security";
 import { OmpProviderSession } from "./session";
@@ -14,6 +15,7 @@ import type { OmpTimelineScheduler } from "./timeline-projector";
 const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.message": true,
   "prompt.steer": true,
+  "permission.tool_policy": true,
   "session.configure": true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
@@ -62,12 +64,6 @@ function preflightProviderInput(input: unknown): void {
       ) {
         throw new OmpPublicError("Session configuration is too large");
       }
-    }
-    if (hasOwnEntries(config?.mcpServers)) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host MCP servers");
-    }
-    if (config?.toolPolicy !== undefined) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
     }
     if (hasOwnEntries(config?.providerOptions) || hasOwnEntries(config?.settings)) {
       throw new OmpPublicError("OMP Plugin Preview does not support provider options");
@@ -172,6 +168,7 @@ export function createOmpConnection(
   capabilities: readonly string[],
   scheduler?: OmpTimelineScheduler,
   environment?: NodeJS.ProcessEnv,
+  mcpConnector?: OmpMcpConnector,
 ): ProviderConnection {
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) => SUPPORTED_CAPABILITIES[capability],
@@ -249,6 +246,7 @@ export function createOmpConnection(
           scheduler,
           shutdown.signal,
           environment,
+          mcpConnector,
         );
         opening.set(input.sessionId, { token, promise: pending });
         try {

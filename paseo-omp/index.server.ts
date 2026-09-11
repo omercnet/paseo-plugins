@@ -2,6 +2,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { resolveListHubProcesses, resolveTailHubLog } from "./server/hub";
 import { resolveListOmpMemory } from "./server/memory";
 import { resolveListOmpConfig } from "./server/omp-config";
+import { withOmpWorkspaceIdentity } from "./server/provider/host-tools";
 import { createOmpProvider } from "./server/provider/registration";
 import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
 import { resolveListOmpQuotas } from "./server/quota";
@@ -21,6 +22,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpSessions, resolveListOmpSessions);
   server.handle(listOmpConfig, resolveListOmpConfig);
   server.handle(getOmpProviderHealth, resolveGetOmpProviderHealth);
+  const removeIdentityHook = server.before("agent.session_open", ({ request }) => {
+    if (request.provider !== "omp-plugin") return;
+    return withOmpWorkspaceIdentity(request);
+  });
   server.registerProvider(createOmpProvider());
-  return () => {};
+  return () => removeIdentityHook();
 }

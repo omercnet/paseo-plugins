@@ -58,11 +58,17 @@ describe("plugin server bundle", () => {
       if (typeof module.default !== "function") throw new Error("Missing server contribution");
       const providers: ProviderRegistration[] = [];
       const handlers: unknown[] = [];
+      const beforeHooks: unknown[] = [];
       const cleanup = module.default({
+        before: (...args: unknown[]) => {
+          beforeHooks.push(args);
+          return () => {};
+        },
         handle: (...args: unknown[]) => handlers.push(args),
         registerProvider: (provider: ProviderRegistration) => providers.push(provider),
       });
       expect(handlers).toHaveLength(7);
+      expect(beforeHooks).toHaveLength(1);
       expect(providers).toEqual([
         expect.objectContaining({ id: "omp-plugin", label: "OMP (Plugin Preview)" }),
       ]);

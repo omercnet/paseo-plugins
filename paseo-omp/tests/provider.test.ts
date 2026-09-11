@@ -10,6 +10,9 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
 import {
+  type OmpHostToolDefinition,
+  type OmpHostToolResult,
+  type OmpHostToolUpdate,
   type OmpModel,
   type OmpRpcEvent,
   OmpRpcRuntime,
@@ -282,6 +285,9 @@ class FakeOmpSession implements OmpRuntimeSession {
   aborts = 0;
   promptCount = 0;
   closes = 0;
+  readonly hostToolCatalogs: OmpHostToolDefinition[][] = [];
+  readonly hostToolResults: OmpHostToolResult[] = [];
+  readonly hostToolUpdates: OmpHostToolUpdate[] = [];
   onEvent(listener: (event: OmpRpcEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -355,6 +361,19 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (!isThinkingLevel(level)) return Promise.reject(new Error("invalid thinking level"));
     if (this.applyThinkingChanges) this.thinkingLevel = level;
     return Promise.resolve();
+  }
+
+  setHostTools(tools: readonly OmpHostToolDefinition[]) {
+    this.hostToolCatalogs.push(tools.map((tool) => structuredClone(tool)));
+    return Promise.resolve(tools.map(({ name }) => name));
+  }
+
+  sendHostToolResult(result: OmpHostToolResult) {
+    this.hostToolResults.push(structuredClone(result));
+  }
+
+  sendHostToolUpdate(update: OmpHostToolUpdate) {
+    this.hostToolUpdates.push(structuredClone(update));
   }
 
   async steer(message: string) {
@@ -893,30 +912,40 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("rejects unsupported MCP configuration and dangerous environment before spawn", async () => {
+  test("rejects unsupported exact MCP preapproval and dangerous environment before spawn", async () => {
     const runtime = new FakeOmpRuntime();
     const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
       versions: [1],
-      capabilities: ["prompt.message"],
+      capabilities: ["prompt.message", "permission.tool_policy"],
     });
     const events = new EventLog();
     connection.onEvent((event) => events.push(event));
     await connection.send({
       type: "session.open",
-      requestId: "unsupported-mcp",
+      requestId: "unsupported-preapproval",
       sessionId: "session-mcp",
       config: {
         cwd: "/repo",
         env: { API_TOKEN: "credential-value" },
         mcpServers: { filesystem: { type: "stdio", command: "cat", args: ["/etc/passwd"] } },
+        toolPolicy: {
+          preapproved: [{ kind: "mcp", server: "filesystem", tool: "read_file" }],
+        },
         mode: "full",
         settings: {},
         persist: false,
       },
       history: "skip",
     });
-    await events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "unsupported-mcp",
+    const preapprovalFailure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unsupported-preapproval",
+    );
+    expect(preapprovalFailure).toEqual(
+      expect.objectContaining({
+        error: expect.objectContaining({
+          message: expect.stringContaining("exact MCP preapproval"),
+        }),
+      }),
     );
     await connection.send({
       type: "session.open",
@@ -5437,7 +5466,14 @@ describe("OMP direct provider", () => {
         let child: ProviderRpcChild;
         child = new ProviderRpcChild((command) => {
           const type = command.type;
-          if (type === "negotiate_protocol") {
+          if (type === "set_host_tools") {
+            child.write({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: { toolNames: [] },
+            });
+          } else if (type === "negotiate_protocol") {
             child.write({
               type: "response",
               id: command.id,

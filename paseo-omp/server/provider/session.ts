@@ -6,6 +6,7 @@ import type {
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
+import { OmpHostToolsBridge, type OmpMcpConnector } from "./host-tools";
 import type {
   OmpMessage,
   OmpModel,
@@ -243,6 +244,7 @@ export class OmpProviderSession {
     private runtime: OmpRuntimeSession,
     private readonly runtimeFactory: OmpRuntime,
     private recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal">,
+    private readonly hostTools: OmpHostToolsBridge,
     private nativeSessionId: string,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
@@ -274,6 +276,7 @@ export class OmpProviderSession {
     scheduler?: OmpTimelineScheduler,
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
+    mcpConnector?: OmpMcpConnector,
   ): Promise<OmpProviderSession> {
     if (input.persistence) {
       throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
@@ -284,12 +287,6 @@ export class OmpProviderSession {
     if (input.config.mode && input.config.mode !== "full") {
       throw new OmpPublicError("OMP Plugin Preview supports Full Access mode only");
     }
-    if (Object.keys(input.config.mcpServers ?? {}).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host MCP servers");
-    }
-    if (input.config.toolPolicy) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
-    }
     if (input.config.providerOptions && Object.keys(input.config.providerOptions).length > 0) {
       throw new OmpPublicError("OMP Plugin Preview does not support provider options");
     }
@@ -299,6 +296,7 @@ export class OmpProviderSession {
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
+    const hostTools = await OmpHostToolsBridge.open(input.config, mcpConnector);
     const startOptions: OmpStartOptions = {
       cwd: input.config.cwd,
       env: input.config.env,
@@ -309,9 +307,11 @@ export class OmpProviderSession {
       signal,
       environment,
     };
-    buildOmpSpawnRequest(startOptions);
-    const native = await runtime.startSession(startOptions);
+    let native: OmpRuntimeSession | undefined;
     try {
+      buildOmpSpawnRequest(startOptions);
+      native = await runtime.startSession(startOptions);
+      await hostTools.bind(native);
       const [initialState, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
         native.getAvailableModels(),
@@ -381,6 +381,7 @@ export class OmpProviderSession {
         native,
         runtime,
         recoveryOptions,
+        hostTools,
         state.sessionId,
         input.config,
         configState,
@@ -397,7 +398,8 @@ export class OmpProviderSession {
         scheduler,
       );
     } catch (error) {
-      const cleanup = native.close();
+      const cleanups = [hostTools.close(), ...(native ? [native.close()] : [])];
+      const cleanup = Promise.all(cleanups).then(() => undefined);
       try {
         await cleanup;
       } catch {
@@ -947,7 +949,10 @@ export class OmpProviderSession {
     this.lifetime.abort(new Error("OMP provider session closed"));
     this.projector.close();
     this.unsubscribe();
-    this.runtimeDisposal ??= this.runtime.close();
+    this.hostTools.detach();
+    this.runtimeDisposal ??= Promise.all([this.runtime.close(), this.hostTools.close()]).then(
+      () => undefined,
+    );
     await Promise.allSettled([
       this.runtimeDisposal,
       this.recoveryPromise,
@@ -969,6 +974,10 @@ export class OmpProviderSession {
     const generation = this.generation;
     this.unsubscribe = runtime.onEvent((event) => {
       if (generation !== this.generation) return;
+      if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+        this.hostTools.handle(event);
+        return;
+      }
       this.handleRuntimeEvent(event);
     });
   }
@@ -1014,6 +1023,7 @@ export class OmpProviderSession {
       throw error;
     }
     try {
+      await this.hostTools.bind(recovered);
       const state = await recovered.getState();
       if (state.sessionId !== expectedSessionId) {
         throw new Error(
@@ -1048,6 +1058,7 @@ export class OmpProviderSession {
       }
       this.recoveryUsesNativeConfig = false;
     } catch (error) {
+      this.hostTools.detach();
       this.runtimeDisposal = recovered.close();
       void this.runtimeDisposal.catch(() => undefined);
       throw error;
@@ -1620,6 +1631,7 @@ export class OmpProviderSession {
     const configRefresh = this.configRefreshInFlight;
     this.cancelConfigRefreshRetry();
     this.unsubscribe();
+    this.hostTools.detach();
     this.unsubscribe = () => {};
     const runtimeDisposal = this.runtimeDisposal ?? this.runtime.close();
     this.runtimeDisposal = configRefresh

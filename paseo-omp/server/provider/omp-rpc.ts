@@ -32,6 +32,7 @@ const MAX_SYSTEM_PROMPT_LENGTH = 64 * 1024;
 const MAX_IMAGE_DATA_LENGTH = 8 * 1024 * 1024;
 const MAX_TOOL_PAYLOAD_LENGTH = 256 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
+const MAX_HOST_TOOLS = 256;
 const MAX_PENDING_REQUESTS = 256;
 const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const MAX_LINE_PARTS = 4_096;
@@ -166,9 +167,46 @@ const OmpChunkFrameSchema = z.object({
   byteLength: z.number().int().nonnegative().max(MAX_REASSEMBLED_FRAME_BYTES),
   data: boundedString(MAX_ENCODED_CHUNK_BYTES),
 });
+const JsonObjectSchema = z.record(z.string(), z.unknown());
 const BoundedToolPayloadSchema = z
   .unknown()
   .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096));
+const OmpHostToolDefinitionSchema = z.object({
+  name: NAME,
+  label: NAME.optional(),
+  description: boundedString(MAX_TEXT_LENGTH),
+  loadMode: z.enum(["essential", "discoverable"]).optional(),
+  parameters: JsonObjectSchema,
+});
+const OmpHostToolCallSchema = z.object({
+  type: z.literal("host_tool_call"),
+  id: IDENTIFIER,
+  toolCallId: IDENTIFIER,
+  toolName: NAME,
+  arguments: JsonObjectSchema,
+});
+const OmpHostToolCancelSchema = z.object({
+  type: z.literal("host_tool_cancel"),
+  id: IDENTIFIER,
+  targetId: IDENTIFIER,
+});
+const OmpHostToolContentSchema = z.object({ type: NAME, text: TEXT.optional() }).passthrough();
+const OmpHostToolAgentResultSchema = z.object({
+  content: z.array(OmpHostToolContentSchema).max(MAX_ARRAY_ITEMS),
+  details: BoundedToolPayloadSchema.optional(),
+  isError: z.boolean().optional(),
+});
+const OmpHostToolResultSchema = z.object({
+  type: z.literal("host_tool_result"),
+  id: IDENTIFIER,
+  result: OmpHostToolAgentResultSchema,
+  isError: z.boolean().optional(),
+});
+const OmpHostToolUpdateSchema = z.object({
+  type: z.literal("host_tool_update"),
+  id: IDENTIFIER,
+  partialResult: OmpHostToolAgentResultSchema,
+});
 const OmpAgentEndEnvelopeSchema = z.object({
   type: z.literal("agent_end"),
   messageCount: z.number().int().nonnegative().optional(),
@@ -264,8 +302,9 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     id: IDENTIFIER.optional(),
     agentInvoked: z.boolean(),
   }),
+  OmpHostToolCallSchema,
+  OmpHostToolCancelSchema,
 ]);
-const JsonObjectSchema = z.record(z.string(), z.unknown());
 const OmpModelsResultSchema = z.object({
   models: z.array(OmpModelSchema).min(1).max(256),
 });
@@ -281,6 +320,10 @@ const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2)
 export type OmpMessage = z.infer<typeof OmpMessageSchema>;
 export type OmpModel = z.infer<typeof OmpModelSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
+export type OmpHostToolDefinition = z.infer<typeof OmpHostToolDefinitionSchema>;
+export type OmpHostToolCall = z.infer<typeof OmpHostToolCallSchema>;
+export type OmpHostToolResult = z.infer<typeof OmpHostToolResultSchema>;
+export type OmpHostToolUpdate = z.infer<typeof OmpHostToolUpdateSchema>;
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
   | { type: "process_exit"; error: string };
@@ -312,6 +355,9 @@ export interface OmpRuntimeSession {
   steer(message: string): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
   abort(): Promise<void>;
+  setHostTools(tools: readonly OmpHostToolDefinition[]): Promise<string[]>;
+  sendHostToolResult(result: OmpHostToolResult): void;
+  sendHostToolUpdate(update: OmpHostToolUpdate): void;
   close(): Promise<void>;
 }
 
@@ -1116,6 +1162,37 @@ class OmpRpcProcess {
     return this.startRequest(command, timeoutMs).promise;
   }
 
+  send(frame: OmpHostToolResult | OmpHostToolUpdate): void {
+    if (this.fatalError) throw this.fatalError;
+    if (this.closed || this.exited || !this.child.stdin.writable) {
+      throw new Error("OMP RPC process is closed");
+    }
+    const parsed =
+      frame.type === "host_tool_result"
+        ? OmpHostToolResultSchema.parse(frame)
+        : OmpHostToolUpdateSchema.parse(frame);
+    const payload = Buffer.from(`${JSON.stringify(parsed)}\n`);
+    if (payload.byteLength > this.physicalFrameLimit) {
+      throw new Error("OMP host tool frame exceeds the negotiated frame limit");
+    }
+    if (this.pendingWriteBytes + payload.byteLength > MAX_PENDING_WRITE_BYTES) {
+      throw new Error("OMP RPC has too many pending writes");
+    }
+    const writeId = randomUUID();
+    this.queuedWrites.set(writeId, payload.byteLength);
+    this.pendingWriteBytes += payload.byteLength;
+    try {
+      this.child.stdin.write(payload, (cause) => {
+        this.releaseQueuedWrite(writeId);
+        if (cause) this.fail(new Error("OMP RPC input channel failed"));
+      });
+    } catch {
+      this.releaseQueuedWrite(writeId);
+      this.fail(new Error("OMP RPC input channel failed"));
+      throw new Error("OMP RPC input channel failed");
+    }
+  }
+
   close(): Promise<void> {
     this.closePromise ??= this.closeProcess();
     return this.closePromise;
@@ -1704,6 +1781,22 @@ class OmpRpcSession implements OmpRuntimeSession {
       await this.process.request({ type: "get_branch_messages" }),
     );
     return result.messages;
+  }
+
+  async setHostTools(tools: readonly OmpHostToolDefinition[]): Promise<string[]> {
+    const safeTools = z.array(OmpHostToolDefinitionSchema).max(MAX_HOST_TOOLS).parse(tools);
+    const result = z
+      .object({ toolNames: z.array(NAME).max(MAX_HOST_TOOLS).optional() })
+      .parse(await this.process.request({ type: "set_host_tools", tools: safeTools }));
+    return result.toolNames ?? [];
+  }
+
+  sendHostToolResult(result: OmpHostToolResult): void {
+    this.process.send(result);
+  }
+
+  sendHostToolUpdate(update: OmpHostToolUpdate): void {
+    this.process.send(update);
   }
 
   async prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }> {
