@@ -503,7 +503,7 @@ function buildOmpEnvironment(
     collectUrlComponents(
       value,
       (key) => SESSION_CREDENTIAL_ENV.test(key),
-      (component) => collectComponent(component, true),
+      collectComponent,
       "OMP proxy URL components cannot be decoded safely",
     );
   };

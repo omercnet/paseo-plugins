@@ -954,9 +954,6 @@ describe("OMP RPC transport", () => {
     ).toThrow("credential is too short");
     for (const proxy of [
       "https://abc:long-password@example.test",
-      "https://example.test/abc",
-      "https://example.test?arbitrary=xyz",
-      "https://example.test#abc",
       "https://example.test?token=xyz",
     ]) {
       expect(() =>
@@ -966,6 +963,13 @@ describe("OMP RPC transport", () => {
         ),
       ).toThrow("proxy credential is too short");
     }
+    const benignShortProxy = "https://example.test/abc?arbitrary=xyz#abc";
+    const benignProxyRequest = buildOmpSpawnRequest(
+      { cwd: "/repo", mode: "full", env: { HTTPS_PROXY: benignShortProxy } },
+      TEST_RUNTIME_ENV,
+    );
+    expect(benignProxyRequest.env.HTTPS_PROXY).toBe(benignShortProxy);
+    expect(benignProxyRequest.sensitiveValues).toContain(benignShortProxy);
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", env: { LD_PRELOAD: "/tmp/evil.so" } },
