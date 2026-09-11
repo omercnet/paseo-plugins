@@ -184,6 +184,7 @@ type ActiveTurn = {
   activitySequence: number;
   acknowledged: boolean;
   terminalOwnershipEvidence: boolean;
+  terminalOwnershipRequired: boolean;
   replayingBufferedEvents: boolean;
   agentInvoked?: boolean;
   nativeRequestId?: string;
@@ -448,6 +449,7 @@ export class OmpProviderSession {
   private activeCompaction: ActiveCompaction | null = null;
   private lastUsage: ProviderUsage | null = null;
   private revertInFlight = false;
+  private runtimeTurnCompleted = false;
   private commandCatalog: OmpAvailableCommand[];
   private permissionSequence = 0;
   private readonly permissionNamespace = randomUUID();
@@ -1321,6 +1323,7 @@ export class OmpProviderSession {
       acknowledged: false,
       terminalOwnershipEvidence: false,
       replayingBufferedEvents: false,
+      terminalOwnershipRequired: this.runtimeTurnCompleted,
       steersInFlight: 0,
       userCorrelationActive: false,
       userLookups: new Set(),
@@ -1959,6 +1962,7 @@ export class OmpProviderSession {
     this.unsubscribe();
     this.runtime = runtime;
     this.configRefreshAttempts = 0;
+    this.runtimeTurnCompleted = false;
     const generation = this.generation;
     this.unsubscribe = runtime.onEvent((event) => {
       if (generation !== this.generation) return;
@@ -2210,8 +2214,6 @@ export class OmpProviderSession {
       event.type === "goal_updated" ||
       event.type === "auto_retry_start" ||
       event.type === "auto_retry_end" ||
-      event.type === "auto_compaction_start" ||
-      event.type === "auto_compaction_end" ||
       event.type === "compaction_start" ||
       event.type === "compaction_end" ||
       event.type === "advisor_yielded"
@@ -2233,7 +2235,12 @@ export class OmpProviderSession {
       return;
     }
     const turn = this.activeTurn;
-    if (!turn) return;
+    if (!turn) {
+      if (event.type === "auto_compaction_start" || event.type === "auto_compaction_end") {
+        this.projector.projectPassive(event);
+      }
+      return;
+    }
     if (turn.starting) {
       if (
         turn.bufferedEvents.length >= MAX_BUFFERED_TURN_EVENTS ||
@@ -2269,7 +2276,7 @@ export class OmpProviderSession {
     if (
       turn.generation !== this.generation ||
       turn.terminal ||
-      turn.terminalizing ||
+      (turn.terminalizing && turn.terminalization !== undefined) ||
       this.activeTurn !== turn
     ) {
       return;
@@ -2340,6 +2347,7 @@ export class OmpProviderSession {
       this.cancelLocalOnlyCompletion(turn);
     }
     if (event.type === "message_end" && event.message.role === "user") {
+      this.markAgentEvidence(turn);
       this.projectUserEcho(turn, event.message);
       return;
     }
@@ -3159,13 +3167,30 @@ export class OmpProviderSession {
       if (this.deferAgentEndForSubsessions(turn, event)) return;
     }
     if (state) {
-      if (!state.isStreaming && !state.isCompacting) {
-        await this.completeAgentEnd(turn, event);
+      if (state.isStreaming || state.isCompacting) {
+        if (!turn.terminalOwnershipEvidence && !turn.terminalOwnershipRequired) {
+          const message = "OMP agent_end arrived while the native runtime remained active";
+          this.invalidateRuntime(message);
+          await this.finishTurn(turn, "failed", { message }, true, true);
+          return;
+        }
+        turn.agentEndPending = false;
+        turn.terminalizing = false;
+        turn.deferredAgentEnd = undefined;
         return;
       }
-      const message = "OMP agent_end arrived while the native runtime remained active";
-      this.invalidateRuntime(message);
-      await this.finishTurn(turn, "failed", { message }, true, true);
+      if (!turn.terminalOwnershipEvidence && turn.terminalOwnershipRequired) {
+        turn.agentEndPending = false;
+        turn.terminalizing = false;
+        turn.deferredAgentEnd = undefined;
+        this.scheduleTerminalOwnershipTimeout(turn);
+        return;
+      }
+      await this.completeAgentEnd(turn, event);
+      return;
+    }
+    if (turn.terminalOwnershipEvidence) {
+      this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
       return;
     }
     if (turn.userEchoObserved) {
@@ -3348,6 +3373,7 @@ export class OmpProviderSession {
         state: outcome.state,
         ...(outcome.error ? { error: outcome.error } : {}),
       });
+      this.runtimeTurnCompleted = true;
       if (this.activeTurn === turn) this.activeTurn = null;
     })();
     turn.terminalization = terminalization;
