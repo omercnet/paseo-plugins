@@ -11,6 +11,12 @@ import {
   OmpPublicError,
   utf8Bytes,
 } from "./security";
+import {
+  listOmpSessionDescriptors,
+  type OmpSessionDescriptor,
+  type OmpSessionListOptions,
+  validateNativeSessionId,
+} from "./session-descriptors";
 
 const READY_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -276,6 +282,11 @@ const OmpAvailableCommandsResultSchema = z.object({
 const OmpBranchMessagesResultSchema = z.object({
   messages: z.array(z.object({ entryId: IDENTIFIER, text: TEXT })).max(1_024),
 });
+const OmpMessagesPageResultSchema = z.object({
+  messages: z.array(OmpMessageSchema).max(256),
+  totalMessages: z.number().int().nonnegative(),
+  nextCursor: IDENTIFIER.nullable().optional(),
+});
 const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2) });
 
 export type OmpMessage = z.infer<typeof OmpMessageSchema>;
@@ -284,6 +295,11 @@ export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
   | { type: "process_exit"; error: string };
+export interface OmpMessagesPage {
+  messages: OmpMessage[];
+  totalMessages: number;
+  nextCursor?: string;
+}
 
 export interface OmpStartOptions {
   cwd: string;
@@ -311,12 +327,14 @@ export interface OmpRuntimeSession {
   setThinkingLevel(level: string): Promise<void>;
   steer(message: string): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
+  getMessagesPage(cursor?: string, limit?: number): Promise<OmpMessagesPage>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface OmpRuntime {
   startSession(options: OmpStartOptions): Promise<OmpRuntimeSession>;
+  listSessions(options?: OmpSessionListOptions): Promise<OmpSessionDescriptor[]>;
 }
 
 export interface OmpSpawnRequest {
@@ -775,10 +793,7 @@ export function buildOmpSpawnRequest(
     args.push("--thinking", thinking.data);
   }
   if (options.resumeSessionId !== undefined) {
-    args.push(
-      "--resume",
-      validateBoundedText(options.resumeSessionId, "resume session identifier", MAX_ID_LENGTH),
-    );
+    args.push("--resume", validateNativeSessionId(options.resumeSessionId));
   }
   if (options.noSession) args.push("--no-session");
   const systemPrompt = options.systemPrompt?.trim();
@@ -1361,16 +1376,21 @@ class OmpRpcProcess {
     }
     const pending = this.pending.get(response.data.id);
     if (!pending) return;
-    const responseItemLimit = pending.command === "get_branch_messages" ? 1_024 : MAX_ARRAY_ITEMS;
+    const isBranchHistory = pending.command === "get_branch_messages";
+    const isPagedHistory = pending.command === "get_messages_page";
+    const responseItemLimit = isBranchHistory ? 1_024 : isPagedHistory ? 256 : MAX_ARRAY_ITEMS;
     const responseByteLimit =
-      pending.command === "get_branch_messages" ? MAX_SEMANTIC_FRAME_BYTES : 2 * 1024 * 1024;
+      isBranchHistory || isPagedHistory
+        ? Math.min(MAX_SEMANTIC_FRAME_BYTES, this.reassembledFrameLimit)
+        : 2 * 1024 * 1024;
+    const responseNodeLimit = isBranchHistory || isPagedHistory ? 4_096 : 2_048;
     if (
       boundedJsonBytes(
         frame,
         responseByteLimit,
         responseItemLimit,
         MAX_IMAGE_DATA_LENGTH,
-        responseItemLimit === 1_024 ? 4_096 : 2_048,
+        responseNodeLimit,
       ) === Number.POSITIVE_INFINITY
     ) {
       this.takePending(response.data.id)?.reject(
@@ -1705,6 +1725,20 @@ class OmpRpcSession implements OmpRuntimeSession {
     );
     return result.messages;
   }
+  async getMessagesPage(cursor?: string, limit = 128): Promise<OmpMessagesPage> {
+    const result = OmpMessagesPageResultSchema.parse(
+      await this.process.request({
+        type: "get_messages_page",
+        ...(cursor ? { cursor: validateBoundedText(cursor, "history cursor", MAX_ID_LENGTH) } : {}),
+        limit: Math.min(Math.max(limit, 1), 256),
+      }),
+    );
+    return {
+      messages: result.messages,
+      totalMessages: result.totalMessages,
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    };
+  }
 
   async prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }> {
     const safeMessage = validateBoundedText(message, "prompt", MAX_TEXT_LENGTH);
@@ -1730,6 +1764,11 @@ class OmpRpcSession implements OmpRuntimeSession {
 
 export class OmpRpcRuntime implements OmpRuntime {
   constructor(private readonly options: OmpRpcRuntimeOptions = {}) {}
+  listSessions(options?: OmpSessionListOptions): Promise<OmpSessionDescriptor[]> {
+    return Promise.resolve(
+      listOmpSessionDescriptors(options, this.options.environment ?? process.env),
+    );
+  }
 
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     options.signal?.throwIfAborted();

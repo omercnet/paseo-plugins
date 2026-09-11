@@ -88,6 +88,9 @@ export class OmpTimelineProjector {
   private noticeSequence = 0;
   private toolSequence = 0;
   private userSequence = 0;
+  private replayTurnId: string | null = null;
+  private replaySequence = 0;
+  private readonly replayedNativeMessageIds = new Set<string>();
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -109,6 +112,15 @@ export class OmpTimelineProjector {
 
   project(event: OmpRpcEvent, turnId: string): void {
     if (this.closed) return;
+    if (
+      (event.type === "message_start" ||
+        event.type === "message_update" ||
+        event.type === "message_end") &&
+      assistantIdentity(event.message) &&
+      this.replayedNativeMessageIds.has(assistantIdentity(event.message) as string)
+    ) {
+      return;
+    }
     if (
       event.type === "todo_reminder" ||
       event.type === "notice" ||
@@ -287,6 +299,44 @@ export class OmpTimelineProjector {
       clientMessageId,
       text: this.dataFilter.text(text),
     });
+  }
+
+  projectReplayMessage(message: OmpMessage): void {
+    if (this.closed) return;
+    const nativeIdentity = assistantIdentity(message) ?? message.id;
+    if (nativeIdentity && this.replayedNativeMessageIds.has(nativeIdentity)) return;
+    this.replaySequence += 1;
+    if (message.role === "user") {
+      if (this.replayTurnId) this.finishTurn(this.replayTurnId);
+      this.replayTurnId = `omp:replay-turn:${this.replaySequence}`;
+      const text =
+        typeof message.content === "string"
+          ? message.content
+          : message.content
+              ?.filter((part) => part.type === "text" && typeof part.text === "string")
+              .map((part) => part.text ?? "")
+              .join("\n\n");
+      if (text) {
+        this.publishUser(
+          text,
+          `omp:replay-user:${this.replaySequence}`,
+          message.id ?? message.entryId,
+        );
+      }
+      if (nativeIdentity) this.replayedNativeMessageIds.add(nativeIdentity);
+      return;
+    }
+    if (message.role !== "assistant") return;
+    this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
+    this.project({ type: "message_start", message }, this.replayTurnId);
+    this.project({ type: "message_end", message }, this.replayTurnId);
+    if (nativeIdentity) this.replayedNativeMessageIds.add(nativeIdentity);
+  }
+
+  finishReplay(): void {
+    if (!this.replayTurnId) return;
+    this.finishTurn(this.replayTurnId);
+    this.replayTurnId = null;
   }
 
   flush(finalizeFallback = false): void {

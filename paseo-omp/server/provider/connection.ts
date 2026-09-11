@@ -15,9 +15,12 @@ const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.message": true,
   "prompt.steer": true,
   "session.configure": true,
+  "session.list": true,
+  "session.persistence": true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   catalog: true,
+  sessions: true,
   "session.open": true,
   "session.prompt": true,
   "session.configure": true,
@@ -50,9 +53,6 @@ function preflightProviderInput(input: unknown): void {
       boundedJsonBytes(record.persistence, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
     ) {
       throw new OmpPublicError("Session persistence input is too large");
-    }
-    if (record.persistence !== undefined) {
-      throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
     }
     const config = record.config as Record<string, unknown> | undefined;
     for (const value of [config?.mcpServers, config?.providerOptions, config?.settings]) {
@@ -112,6 +112,31 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
     if (
       record.cwd !== undefined &&
       (typeof record.cwd !== "string" || utf8Bytes(record.cwd) > 4_096 || record.cwd.includes("\0"))
+    ) {
+      throw new OmpPublicError("Invalid provider request");
+    }
+    return;
+  }
+  if (record.type === "sessions") {
+    if (!isBoundedIdentifier(record.requestId))
+      throw new OmpPublicError("Invalid provider request");
+    if (
+      record.cwd !== undefined &&
+      (typeof record.cwd !== "string" || utf8Bytes(record.cwd) > 4_096 || record.cwd.includes("\0"))
+    ) {
+      throw new OmpPublicError("Invalid provider request");
+    }
+    if (
+      record.query !== undefined &&
+      (typeof record.query !== "string" || utf8Bytes(record.query) > 512)
+    ) {
+      throw new OmpPublicError("Invalid provider request");
+    }
+    if (
+      record.limit !== undefined &&
+      (!Number.isInteger(record.limit) ||
+        (record.limit as number) < 1 ||
+        (record.limit as number) > 500)
     ) {
       throw new OmpPublicError("Invalid provider request");
     }
@@ -218,6 +243,22 @@ export function createOmpConnection(
           if (!closing) requestFailure(input.requestId, error, "OMP catalog discovery failed");
         }
         return;
+      case "sessions":
+        try {
+          emit({
+            type: "sessions",
+            requestId: input.requestId,
+            sessions: (await runtime.listSessions(input)).map((session) => ({
+              persistence: { version: 1, data: { sessionId: session.id } },
+              cwd: session.cwd,
+              ...(session.title ? { title: session.title } : {}),
+              ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
+            })),
+          });
+        } catch (error) {
+          requestFailure(input.requestId, error, "OMP session listing failed");
+        }
+        return;
       case "session.open": {
         if (
           sessions.has(input.sessionId) ||
@@ -251,18 +292,32 @@ export function createOmpConnection(
           environment,
         );
         opening.set(input.sessionId, { token, promise: pending });
+        let session: OmpProviderSession | undefined;
         try {
-          const session = await pending;
+          session = await pending;
+          if (closing || opening.get(input.sessionId)?.token !== token) {
+            await session.close();
+            return;
+          }
+          await session.publishOpened(input.requestId);
           if (closing || opening.get(input.sessionId)?.token !== token) {
             await session.close();
             return;
           }
           sessions.set(input.sessionId, { token, session });
-          session.publishOpened(input.requestId);
         } catch (error) {
+          let cleanupFailure = error instanceof OmpCleanupFailure ? error : undefined;
+          if (session) {
+            try {
+              await session.abortOpen();
+            } catch {
+              const cleanup = session.abortOpen().catch(() => undefined);
+              cleanupFailure = new OmpCleanupFailure("OMP session cleanup failed", cleanup);
+            }
+          }
           if (opening.get(input.sessionId)?.token === token) {
-            if (error instanceof OmpCleanupFailure) {
-              failedCleanup.set(input.sessionId, { token, cleanup: error.cleanup });
+            if (cleanupFailure) {
+              failedCleanup.set(input.sessionId, { token, cleanup: cleanupFailure.cleanup });
             }
             const details = errorDetails(error, "OMP session failed to open");
             emit({ type: "request.failed", requestId: input.requestId, error: details });

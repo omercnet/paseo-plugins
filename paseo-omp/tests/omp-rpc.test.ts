@@ -1499,7 +1499,7 @@ describe("OMP RPC transport", () => {
         const recovered = await runtime.startSession({
           cwd: process.cwd(),
           mode: "full",
-          resumeSessionId: "tree",
+          resumeSessionId: "tree-session",
         });
         const recoveredPidEvent = nextEvent((listener) => recovered.onEvent(listener));
         await recovered.getState();

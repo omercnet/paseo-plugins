@@ -24,6 +24,7 @@ import {
   OmpPublicError,
   utf8Bytes,
 } from "./security";
+import { type OmpSessionDescriptor, validateNativeSessionId } from "./session-descriptors";
 import {
   defaultOmpTimelineScheduler,
   OmpTimelineProjector,
@@ -54,6 +55,41 @@ const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
 const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
 class OmpCatalogEscape extends OmpPublicError {}
+const REPLAY_PAGE_SIZE = 128;
+const MAX_REPLAY_MESSAGES = 100_000;
+
+function persistedSessionId(input: SessionOpenInput): string | undefined {
+  if (!input.persistence) return;
+  if (input.persistence.version !== 1) {
+    throw new OmpPublicError("Unsupported OMP persistence version");
+  }
+  const data = input.persistence.data;
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    !Object.hasOwn(data, "sessionId") ||
+    Object.keys(data).length !== 1
+  ) {
+    throw new OmpPublicError("Invalid OMP session persistence");
+  }
+  try {
+    return validateNativeSessionId((data as Record<string, unknown>).sessionId);
+  } catch {
+    throw new OmpPublicError("Invalid OMP session identifier");
+  }
+}
+
+async function resolveNativeSession(
+  runtime: OmpRuntime,
+  sessionId: string,
+): Promise<OmpSessionDescriptor> {
+  const matches = await runtime.listSessions({ sessionId, limit: 2 });
+  if (matches.length !== 1 || matches[0]?.id !== sessionId) {
+    throw new OmpPublicError("OMP session could not be resolved");
+  }
+  return matches[0];
+}
 
 function retainedBytes(values: readonly unknown[], maxBytes: number): number {
   let total = 0;
@@ -251,6 +287,8 @@ export class OmpProviderSession {
     private readonly slashCommands: Set<string>,
     private commandDiscoveryAvailable: boolean,
     private readonly emit: Emit,
+    private readonly replayHistoryOnOpen: boolean,
+    private readonly persistSession: boolean,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -275,11 +313,12 @@ export class OmpProviderSession {
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
   ): Promise<OmpProviderSession> {
-    if (input.persistence) {
-      throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
+    const resumeSessionId = persistedSessionId(input);
+    if (input.history === "replay" && !resumeSessionId) {
+      throw new OmpPublicError("OMP history replay requires persisted session identity");
     }
-    if (input.history !== "skip") {
-      throw new OmpPublicError("OMP Plugin Preview does not support history replay");
+    if (input.history === "skip" && resumeSessionId) {
+      throw new OmpPublicError("OMP persisted sessions require history replay");
     }
     if (input.config.mode && input.config.mode !== "full") {
       throw new OmpPublicError("OMP Plugin Preview supports Full Access mode only");
@@ -299,13 +338,25 @@ export class OmpProviderSession {
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
+    const descriptor = resumeSessionId
+      ? await resolveNativeSession(runtime, resumeSessionId)
+      : undefined;
+    const effectiveConfig: ProviderSessionConfig = {
+      ...input.config,
+      cwd: descriptor?.cwd ?? input.config.cwd,
+    };
     const startOptions: OmpStartOptions = {
-      cwd: input.config.cwd,
-      env: input.config.env,
-      // Model selection is authorized only after this runtime reports its exact catalog.
+      cwd: effectiveConfig.cwd,
+      env: effectiveConfig.env,
       mode: "full",
-      thinkingOption: input.config.thinkingOption,
-      systemPrompt: input.config.systemPrompt,
+      ...(!resumeSessionId && effectiveConfig.thinkingOption
+        ? { thinkingOption: effectiveConfig.thinkingOption }
+        : {}),
+      ...(!resumeSessionId && effectiveConfig.systemPrompt
+        ? { systemPrompt: effectiveConfig.systemPrompt }
+        : {}),
+      ...(resumeSessionId ? { resumeSessionId } : {}),
+      ...(!effectiveConfig.persist ? { noSession: true } : {}),
       signal,
       environment,
     };
@@ -321,6 +372,11 @@ export class OmpProviderSession {
         ),
       ]);
       let state = initialState;
+      if (effectiveConfig.persist || resumeSessionId)
+        validateNativeSessionId(initialState.sessionId);
+      if (resumeSessionId && initialState.sessionId !== resumeSessionId) {
+        throw new OmpPublicError("OMP resumed a different native session");
+      }
       const filter = new OmpPublicDataFilter([
         ...Object.values(input.config.env ?? {}),
         ...(native.redactionValues ?? []),
@@ -329,7 +385,7 @@ export class OmpProviderSession {
       const nativeModelsByPublicId = new Map(
         nativeModels.map((model) => [ompModelId(model), model] as const),
       );
-      if (input.config.model) {
+      if (!resumeSessionId && input.config.model) {
         const selected = nativeModelsByPublicId.get(input.config.model);
         if (!selected) throw new OmpPublicError("OMP model selection is unavailable");
         if (state.model?.provider !== selected.provider || state.model.id !== selected.id) {
@@ -368,10 +424,10 @@ export class OmpProviderSession {
         settings: [],
       };
       const recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal"> = {
-        cwd: input.config.cwd,
-        env: input.config.env,
+        cwd: effectiveConfig.cwd,
+        env: effectiveConfig.env,
         mode: "full",
-        systemPrompt: input.config.systemPrompt,
+        systemPrompt: effectiveConfig.systemPrompt,
         ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
         environment,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
@@ -382,7 +438,7 @@ export class OmpProviderSession {
         runtime,
         recoveryOptions,
         state.sessionId,
-        input.config,
+        effectiveConfig,
         configState,
         nativeModelsByPublicId,
         capabilities,
@@ -394,6 +450,8 @@ export class OmpProviderSession {
         ),
         commandDiscovery.available,
         emit,
+        input.history === "replay",
+        effectiveConfig.persist,
         scheduler,
       );
     } catch (error) {
@@ -410,18 +468,47 @@ export class OmpProviderSession {
     }
   }
 
-  publishOpened(requestId: string): void {
+  async publishOpened(requestId: string): Promise<void> {
     this.emit({
       type: "session.opened",
       requestId,
       sessionId: this.id,
       capabilities: this.capabilities,
       restoration: "core",
-      cwd: "<workspace>",
+      cwd: this.cwd,
+      ...(this.persistSession
+        ? { persistence: { version: 1, data: { sessionId: this.nativeSessionId } } }
+        : {}),
       ...(this.config.title ? { title: this.dataFilter.text(this.config.title, 256) } : {}),
     });
     this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
+    if (this.replayHistoryOnOpen) await this.replayHistory();
     this.emit({ type: "session.ready", requestId, sessionId: this.id });
+  }
+
+  private async replayHistory(): Promise<void> {
+    let cursor: string | undefined;
+    let replayed = 0;
+    const cursors = new Set<string>();
+    let hasMore = true;
+    while (hasMore) {
+      const page = await this.runtime.getMessagesPage(cursor, REPLAY_PAGE_SIZE);
+      if (replayed + page.messages.length > MAX_REPLAY_MESSAGES) {
+        throw new OmpPublicError("OMP session history exceeds replay limits");
+      }
+      for (const message of page.messages) this.projector.projectReplayMessage(message);
+      replayed += page.messages.length;
+      if (!page.nextCursor) {
+        hasMore = false;
+        continue;
+      }
+      if (page.messages.length === 0 || cursors.has(page.nextCursor)) {
+        throw new OmpPublicError("OMP session history pagination is invalid");
+      }
+      cursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    }
+    this.projector.finishReplay();
   }
 
   async prompt(input: SessionPromptInput): Promise<void> {
@@ -893,6 +980,7 @@ export class OmpProviderSession {
       cwd: this.recoveryOptions.cwd,
       env: this.recoveryOptions.env,
       mode: "full",
+
       systemPrompt: this.recoveryOptions.systemPrompt,
       environment: this.recoveryOptions.environment,
       ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
@@ -904,6 +992,11 @@ export class OmpProviderSession {
       this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
     }
     return true;
+  }
+
+  abortOpen(): Promise<void> {
+    this.disposalPromise ??= this.disposeSession();
+    return this.disposalPromise;
   }
 
   close(input?: SessionCloseInput): Promise<void> {

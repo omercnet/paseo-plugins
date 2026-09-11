@@ -32,6 +32,7 @@ const releaseFiles = [
   "server/provider/omp.svg",
   "server/provider/registration.ts",
   "server/provider/session.ts",
+  "server/provider/session-descriptors.ts",
   "server/provider/timeline-projector.ts",
   "shared/hub.ts",
   "shared/memory.ts",
