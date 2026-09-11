@@ -382,7 +382,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
         return;
       }
       if (command.type !== "get_branch_messages") return;
@@ -391,7 +396,10 @@ describe("OMP RPC transport", () => {
         id: command.id,
         success: true,
         data: {
-          messages: Array.from({ length: 1_025 }, (_, index) => ({ entryId: `bad-${index}`, text: "x" })),
+          messages: Array.from({ length: 1_025 }, (_, index) => ({
+            entryId: `bad-${index}`,
+            text: "x",
+          })),
         },
       });
       child.write({
@@ -399,7 +407,10 @@ describe("OMP RPC transport", () => {
         id: command.id,
         success: true,
         data: {
-          messages: Array.from({ length: 513 }, (_, index) => ({ entryId: `entry-${index}`, text: "x" })),
+          messages: Array.from({ length: 513 }, (_, index) => ({
+            entryId: `entry-${index}`,
+            text: "x",
+          })),
         },
       });
     });
@@ -690,6 +701,8 @@ describe("OMP RPC transport", () => {
     const root = mkdtempSync(join(tmpdir(), "paseo-omp-mcp-"));
     const agentDir = join(root, "agent");
     mkdirSync(agentDir);
+    mkdirSync(join(root, ".omp"));
+    writeFileSync(join(root, ".omp", "mcp.json"), "{not-json");
     writeFileSync(
       join(agentDir, "mcp.json"),
       JSON.stringify({
@@ -699,7 +712,11 @@ describe("OMP RPC transport", () => {
             url: "https://user%40name:pass%20word@example.test/mcp?token=url%2Dsecret",
             headers: { Authorization: "Bearer header-secret" },
           },
-          local: { type: "stdio", command: "server", env: { API_KEY: "env-secret" } },
+          local: {
+            type: "stdio",
+            command: "server",
+            env: { API_KEY: "env-secret", DEBUG: "1" },
+          },
         },
       }),
     );
@@ -718,6 +735,7 @@ describe("OMP RPC transport", () => {
           "env-secret",
         ]),
       );
+      expect(request.sensitiveValues).not.toContain("1");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -741,6 +759,33 @@ describe("OMP RPC transport", () => {
 
     expect(stopped).toBe(true);
     expect(signals).toEqual([0, "SIGTERM", 0, "SIGKILL", 0]);
+  });
+
+  test("starts descendant cleanup once when the leader exit is observed", async () => {
+    const child = new FakeRpcChild();
+    const cleanup = Promise.withResolvers<boolean>();
+    const cleanedPids: number[] = [];
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree(pid) {
+        cleanedPids.push(pid);
+        return cleanup.promise;
+      },
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    child.close(7);
+    expect(cleanedPids).toEqual([child.pid]);
+    const closing = session.close();
+    cleanup.resolve(true);
+    await closing;
+    expect(cleanedPids).toEqual([child.pid]);
   });
 
   test("surfaces unverified process-tree cleanup", async () => {

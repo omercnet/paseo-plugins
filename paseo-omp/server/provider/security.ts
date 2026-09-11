@@ -50,6 +50,7 @@ export function boundedJsonBytes(
   maxBytes: number,
   maxItems = MAX_PUBLIC_COLLECTION_ITEMS,
   maxStringBytes = maxBytes,
+  maxNodes = MAX_PUBLIC_NODES,
 ): number {
   const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
   let nodes = 0;
@@ -58,7 +59,7 @@ export function boundedJsonBytes(
     const current = stack.pop();
     if (!current) break;
     nodes += 1;
-    if (nodes > MAX_PUBLIC_NODES || current.depth > MAX_PUBLIC_DEPTH) {
+    if (nodes > maxNodes || current.depth > MAX_PUBLIC_DEPTH) {
       return Number.POSITIVE_INFINITY;
     }
     const item = current.value;

@@ -15,6 +15,7 @@ import {
 } from "./catalog";
 import type {
   OmpMessage,
+  OmpModel,
   OmpRpcEvent,
   OmpRuntime,
   OmpRuntimeSession,

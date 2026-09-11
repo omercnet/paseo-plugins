@@ -460,28 +460,27 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
   const agentDir = env.PI_CODING_AGENT_DIR ?? join(home, env.PI_CONFIG_DIR ?? ".omp", "agent");
   const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
   const secrets: string[] = [];
-  const sensitiveContainers: Readonly<Record<string, true>> = {
-    auth: true,
-    env: true,
-    headers: true,
-    oauth: true,
-    url: true,
-  };
+  const credentialKey = /(?:authorization|cookie|credential|api.?key|token|secret|password)/iu;
   const collectStrings = (root: unknown) => {
     const stack: unknown[] = [root];
     while (stack.length > 0) {
       const value = stack.pop();
       if (typeof value === "string") {
         if (value.length > 0 && utf8Bytes(value) < 4) {
-          throw new Error("OMP MCP configuration contains a value too short for safe redaction");
+          throw new OmpPublicError("OMP MCP credentials cannot be safely redacted");
         }
         if (value.length > 0) secrets.push(value);
       } else if (Array.isArray(value)) {
-        if (value.length > MAX_ARRAY_ITEMS) throw new Error("OMP MCP configuration is too large");
+        if (value.length > MAX_ARRAY_ITEMS) {
+          throw new OmpPublicError("OMP MCP configuration exceeds safe limits");
+        }
         for (let index = value.length - 1; index >= 0; index -= 1) stack.push(value[index]);
       } else if (value && typeof value === "object") {
         for (const key in value) {
-          if (Object.hasOwn(value, key)) stack.push((value as Record<string, unknown>)[key]);
+          if (!Object.hasOwn(value, key)) continue;
+          const child = (value as Record<string, unknown>)[key];
+          if (credentialKey.test(key)) collectStrings(child);
+          else if (child && typeof child === "object") stack.push(child);
         }
       }
     }
@@ -506,14 +505,16 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
     try {
       descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
-      throw new Error("OMP MCP configuration cannot be secured");
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "EISDIR") continue;
+      throw new OmpPublicError("OMP MCP configuration cannot be read safely");
     }
     let raw: string;
     try {
       const stats = fstatSync(descriptor);
-      if (!stats.isFile() || stats.size > MAX_MCP_CONFIG_BYTES) {
-        throw new Error("OMP MCP configuration cannot be secured");
+      if (!stats.isFile()) continue;
+      if (stats.size > MAX_MCP_CONFIG_BYTES) {
+        throw new OmpPublicError("OMP MCP configuration exceeds safe limits");
       }
       const buffer = Buffer.allocUnsafe(MAX_MCP_CONFIG_BYTES + 1);
       let bytesRead = 0;
@@ -523,7 +524,7 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
         bytesRead += count;
       }
       if (bytesRead > MAX_MCP_CONFIG_BYTES) {
-        throw new Error("OMP MCP configuration cannot be secured");
+        throw new OmpPublicError("OMP MCP configuration exceeds safe limits");
       }
       raw = buffer.subarray(0, bytesRead).toString("utf8");
     } finally {
@@ -533,12 +534,12 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
     try {
       parsed = JSON.parse(raw);
     } catch {
-      throw new Error("OMP MCP configuration cannot be secured");
+      continue;
     }
     if (
       boundedJsonBytes(parsed, MAX_MCP_CONFIG_BYTES, MAX_ARRAY_ITEMS) === Number.POSITIVE_INFINITY
     ) {
-      throw new Error("OMP MCP configuration cannot be secured");
+      throw new OmpPublicError("OMP MCP configuration exceeds safe limits");
     }
     if (!parsed || typeof parsed !== "object") continue;
     const stack: unknown[] = [parsed];
@@ -550,10 +551,12 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
         const child = (value as Record<string, unknown>)[key];
         if (key.toLowerCase() === "url" && typeof child === "string") {
           collectUrlSecrets(child);
-        } else if (sensitiveContainers[key.toLowerCase()]) {
-          collectStrings(child);
         } else if (child && typeof child === "object") {
-          stack.push(child);
+          if (["auth", "env", "headers", "oauth"].includes(key.toLowerCase())) {
+            collectStrings(child);
+          } else {
+            stack.push(child);
+          }
         }
       }
     }
@@ -679,8 +682,10 @@ export async function terminatePosixProcessTree(
   }
 }
 
-async function stopWindowsTree(pid: number): Promise<boolean> {
-  const result = Promise.withResolvers<boolean>();
+type ProcessTreeCleanup = "verified" | "uncertain" | "failed";
+
+async function stopWindowsTree(pid: number): Promise<ProcessTreeCleanup> {
+  const result = Promise.withResolvers<ProcessTreeCleanup>();
   const systemRoot = process.env.SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT;
   let taskkill: ChildProcessWithoutNullStreams;
   try {
@@ -694,27 +699,33 @@ async function stopWindowsTree(pid: number): Promise<boolean> {
       },
     );
   } catch {
-    return false;
+    return "failed";
   }
   taskkill.stdout.resume();
   taskkill.stderr.resume();
   let settled = false;
   let deadline: NodeJS.Timeout | undefined;
   let finalDeadline: NodeJS.Timeout | undefined;
-  const finish = (success: boolean) => {
+  const finish = (outcome: ProcessTreeCleanup) => {
     if (settled) return;
     settled = true;
     clearTimeout(deadline);
     clearTimeout(finalDeadline);
-    result.resolve(success);
+    result.resolve(outcome);
   };
   deadline = setTimeout(() => {
     taskkill.kill("SIGKILL");
-    finalDeadline = setTimeout(() => finish(false), PROCESS_STOP_TIMEOUT_MS);
+    finalDeadline = setTimeout(() => finish("failed"), PROCESS_STOP_TIMEOUT_MS);
   }, PROCESS_STOP_TIMEOUT_MS);
-  taskkill.once("error", () => finish(false));
+  taskkill.once("error", () => finish("failed"));
   taskkill.once("close", (code, signal) => {
-    finish(code === 0 && signal === null);
+    finish(
+      code === 0 && signal === null
+        ? "verified"
+        : code === 128 && signal === null
+          ? "uncertain"
+          : "failed",
+    );
   });
   return result.promise;
 }
@@ -729,7 +740,7 @@ class OmpRpcProcess {
   private readonly exitPromise: Promise<void>;
   private readonly resolveReady: (frame: ReadyFrame) => void;
   private readonly rejectReady: (error: Error) => void;
-  private readonly terminateProcessTree: (pid: number) => Promise<boolean>;
+  private readonly terminateProcessTree: (pid: number) => Promise<ProcessTreeCleanup>;
   private readonly streamedBlocks = new Map<number, string>();
   private readonly activeToolCallIds = new Set<string>();
   private pendingWriteBytes = 0;
@@ -745,6 +756,7 @@ class OmpRpcProcess {
   private exited = false;
   private fatalError: Error | null = null;
   private closePromise: Promise<void> | null = null;
+  private treeCleanupPromise: Promise<ProcessTreeCleanup> | null = null;
   private readyReceived = false;
 
   constructor(
@@ -758,12 +770,14 @@ class OmpRpcProcess {
     this.resolveReady = ready.resolve;
     const request = buildOmpSpawnRequest(options);
     this.redactionValues = request.sensitiveValues;
-    this.terminateProcessTree =
-      terminateProcessTree ??
-      (async (pid) =>
-        process.platform === "win32"
-          ? stopWindowsTree(pid)
-          : terminatePosixProcessTree(pid, PROCESS_STOP_TIMEOUT_MS));
+    this.terminateProcessTree = terminateProcessTree
+      ? async (pid) => ((await terminateProcessTree(pid)) ? "verified" : "failed")
+      : async (pid) =>
+          process.platform === "win32"
+            ? stopWindowsTree(pid)
+            : (await terminatePosixProcessTree(pid, PROCESS_STOP_TIMEOUT_MS))
+              ? "verified"
+              : "failed";
     try {
       this.child = spawnProcess
         ? spawnProcess(request)
@@ -801,12 +815,18 @@ class OmpRpcProcess {
     this.exitPromise = exited.promise;
     this.child.once("close", (code, signal) => {
       this.exited = true;
+      const cleanup = this.startTreeCleanup();
       const detail = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
       const error = new Error(`OMP RPC process exited (${detail})`);
       this.rejectReady(error);
       this.failPending(error);
-      if (!this.closed && !this.fatalError) this.fail(error);
       exited.resolve();
+      if (!this.closed && !this.fatalError) {
+        void cleanup.then((outcome) => {
+          const suffix = outcome === "uncertain" ? "; descendant cleanup unverified" : "";
+          this.fail(new Error(`${error.message}${suffix}`));
+        });
+      }
     });
     this.child.once("error", (cause) => {
       const code = (cause as NodeJS.ErrnoException)?.code;
@@ -909,14 +929,20 @@ class OmpRpcProcess {
       }
       await this.waitForExit(PROCESS_STOP_TIMEOUT_MS);
     }
-    const pid = this.child.pid;
-    if (pid !== undefined) {
-      const treeStopped = await this.terminateProcessTree(pid).catch(() => false);
-      if (!treeStopped) throw new Error("OMP RPC process tree cleanup failed");
-    }
+    const cleanup = await this.startTreeCleanup();
+    if (cleanup === "failed") throw new Error("OMP RPC process tree cleanup failed");
     if (!this.exited && !(await this.waitForExit(PROCESS_STOP_TIMEOUT_MS))) {
       throw new Error("OMP RPC process did not close after tree cleanup");
     }
+  }
+
+  private startTreeCleanup(): Promise<ProcessTreeCleanup> {
+    if (this.treeCleanupPromise) return this.treeCleanupPromise;
+    const pid = this.child.pid;
+    this.treeCleanupPromise = (
+      pid === undefined ? Promise.resolve<ProcessTreeCleanup>("uncertain") : this.terminateProcessTree(pid)
+    ).catch(() => "failed");
+    return this.treeCleanupPromise;
   }
 
   private async waitForExit(timeoutMs: number): Promise<boolean> {
@@ -1061,8 +1087,13 @@ class OmpRpcProcess {
       return;
     }
     if (
-      boundedJsonBytes(frame, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH) ===
-      Number.POSITIVE_INFINITY
+      boundedJsonBytes(
+        frame,
+        MAX_SEMANTIC_FRAME_BYTES,
+        1_024,
+        MAX_IMAGE_DATA_LENGTH,
+        4_096,
+      ) === Number.POSITIVE_INFINITY
     ) {
       this.recordProtocolViolation();
       return;
@@ -1113,6 +1144,7 @@ class OmpRpcProcess {
           responseByteLimit,
           responseItemLimit,
           MAX_IMAGE_DATA_LENGTH,
+          responseItemLimit === 1_024 ? 4_096 : 2_048,
         ) === Number.POSITIVE_INFINITY
       ) {
         clearTimeout(pending.timer);

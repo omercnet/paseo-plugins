@@ -160,7 +160,6 @@ class ProviderRpcChild extends EventEmitter {
   }
 }
 
-
 class ManualScheduler implements OmpTimelineScheduler {
   private nextId = 1;
   private readonly callbacks = new Map<number, () => void | Promise<void>>();
@@ -3562,6 +3561,8 @@ describe("OMP direct provider", () => {
         error: { message: "OMP session close failed" },
       }),
     );
+    await openSession(connection, events, "reopen-after-close-failure", "session-1");
+    expect(runtime.starts).toHaveLength(2);
     await expect(connection.close()).resolves.toBeUndefined();
   });
 
@@ -3836,7 +3837,8 @@ describe("OMP direct provider", () => {
       isTerminal: true,
     });
     const terminal = await events.waitFor(
-      (event) => event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
     const assistantIds = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "assistant_message"
@@ -3862,7 +3864,12 @@ describe("OMP direct provider", () => {
         child = new ProviderRpcChild((command) => {
           const type = command.type;
           if (type === "negotiate_protocol") {
-            child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+            child.write({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: { protocolVersion: 2 },
+            });
           } else if (type === "get_state") {
             child.write({
               type: "response",
@@ -3877,7 +3884,12 @@ describe("OMP direct provider", () => {
               },
             });
           } else if (type === "get_available_models") {
-            child.write({ type: "response", id: command.id, success: true, data: { models: [MODEL] } });
+            child.write({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: { models: [MODEL] },
+            });
           } else if (type === "get_available_commands") {
             child.write({
               type: "response",
@@ -3885,15 +3897,24 @@ describe("OMP direct provider", () => {
               success: true,
               data: {
                 commands: [
-                  ...Array.from({ length: 128 }, (_, index) => ({ name: `command-${index}` })),
-                  { name: "late-command" },
+                  ...Array.from({ length: 129 }, (_, index) => ({ name: `command-${index}` })),
                 ],
               },
             });
           } else if (type === "prompt" || type === "steer") {
-            child.write({ type: "response", id: command.id, success: true, data: { agentInvoked: true } });
+            child.write({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: { agentInvoked: true },
+            });
           } else if (type === "get_branch_messages") {
-            child.write({ type: "response", id: command.id, success: true, data: { messages: [] } });
+            child.write({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: { messages: [] },
+            });
           }
         });
         children.push(child);
@@ -3930,9 +3951,12 @@ describe("OMP direct provider", () => {
       },
     });
     const rejected = await events.waitFor(
-      (event) => event.type === "session.prompt_result" && event.clientMessageId === "missing-command",
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "missing-command",
     );
-    expect(rejected).toEqual(expect.objectContaining({ result: expect.objectContaining({ type: "failed" }) }));
+    expect(rejected).toEqual(
+      expect.objectContaining({ result: expect.objectContaining({ type: "failed" }) }),
+    );
     await connection.send({
       type: "session.prompt",
       sessionId: "session-1",
@@ -3943,7 +3967,9 @@ describe("OMP direct provider", () => {
       },
     });
     await events.waitFor(
-      (event) => event.type === "session.prompt_result" && event.clientMessageId === "transport-late-command",
+      (event) =>
+        event.type === "session.prompt_result" &&
+        event.clientMessageId === "transport-late-command",
     );
     children[0]?.write({
       type: "agent_end",
@@ -3953,12 +3979,18 @@ describe("OMP direct provider", () => {
       ],
       isTerminal: true,
     });
-    await events.waitFor(
-      (event) => event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    expect(terminal).toEqual(
+      expect.objectContaining({ error: { message: "OMP assistant turn failed" } }),
     );
     children[0]?.close();
     const recovered = await startPrompt(connection, events, "transport-recovery", "continue");
-    expect(recovered).toEqual(expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }));
+    expect(recovered).toEqual(
+      expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
+    );
     expect(launchArgs[1]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
     expect(JSON.stringify(events)).not.toContain(nativeSessionId);
     expect(children).toHaveLength(2);

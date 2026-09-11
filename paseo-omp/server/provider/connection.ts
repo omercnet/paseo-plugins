@@ -178,6 +178,7 @@ export function createOmpConnection(
   const listeners = new Set<(event: ProviderEvent) => void>();
   const sessions = new Map<string, { token: symbol; session: OmpProviderSession }>();
   const opening = new Map<string, { token: symbol; promise: Promise<OmpProviderSession> }>();
+  const failedCleanup = new Map<symbol, Promise<void>>();
   const shutdown = new AbortController();
   const activeOperations = new Set<Promise<void>>();
   let closing = false;
@@ -302,6 +303,12 @@ export function createOmpConnection(
         try {
           await slot.session.close();
         } catch {
+          if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
+          failedCleanup.set(slot.token, slot.session.close().catch(() => undefined));
+          if (failedCleanup.size > MAX_CONNECTION_SESSIONS) {
+            const oldest = failedCleanup.keys().next().value;
+            if (oldest !== undefined) failedCleanup.delete(oldest);
+          }
           throw new OmpPublicError("OMP session close failed");
         }
         if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
@@ -318,9 +325,10 @@ export function createOmpConnection(
   const disposeConnection = async (): Promise<void> => {
     closing = true;
     shutdown.abort(new Error("OMP provider connection closed"));
-    const sessionClosures = Promise.allSettled(
-      [...sessions.values()].map(({ session }) => session.close()),
-    );
+    const sessionClosures = Promise.allSettled([
+      ...[...sessions.values()].map(({ session }) => session.close()),
+      ...failedCleanup.values(),
+    ]);
     await Promise.all([Promise.all(activeOperations), sessionClosures]);
     const pending = await Promise.allSettled([...opening.values()].map((slot) => slot.promise));
     const orphanClosures: Promise<void>[] = [];
@@ -331,6 +339,7 @@ export function createOmpConnection(
     }
     await Promise.allSettled(orphanClosures);
     sessions.clear();
+    failedCleanup.clear();
     listeners.clear();
     closed = true;
   };
