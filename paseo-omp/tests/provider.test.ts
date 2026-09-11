@@ -191,6 +191,9 @@ class ManualScheduler implements OmpTimelineScheduler {
   private readonly callbacks = new Map<number, () => void | Promise<void>>();
   readonly delays: number[] = [];
   clearError: Error | null = null;
+  get pendingCount(): number {
+    return this.callbacks.size;
+  }
 
   set(callback: () => void | Promise<void>, delayMs: number): number {
     const id = this.nextId;
@@ -1400,6 +1403,44 @@ describe("OMP direct provider", () => {
     await closed.promise;
 
     expect(session.stateLookups).toBe(baselineLookups + 3);
+    expect(session.closes).toBe(1);
+    await connection.close();
+  });
+
+  test("cancels and drains a config refresh backoff on close", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.stateError = new Error("state unavailable before close");
+    session.emit({ type: "model_changed" });
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.pendingCount).toBe(1);
+    const stateLookups = session.stateLookups;
+
+    await connection.close();
+
+    expect(scheduler.pendingCount).toBe(0);
+    await scheduler.flush();
+    expect(session.stateLookups).toBe(stateLookups);
+  });
+
+  test("cancels and drains a config refresh backoff on runtime invalidation", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.stateError = new Error("state unavailable before invalidation");
+    session.emit({ type: "model_changed" });
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.pendingCount).toBe(1);
+    const stateLookups = session.stateLookups;
+
+    session.emit({ type: "process_exit", error: "runtime exited during refresh backoff" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(scheduler.pendingCount).toBe(0);
+    await scheduler.flush();
+    expect(session.stateLookups).toBe(stateLookups);
     expect(session.closes).toBe(1);
     await connection.close();
   });

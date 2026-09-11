@@ -231,6 +231,8 @@ export class OmpProviderSession {
   private configRefreshInFlight: Promise<void> | null = null;
   private configRefreshDirty = false;
   private configRefreshAttempts = 0;
+  private configRefreshRetryHandle: unknown | null = null;
+  private configRefreshRetryResolve: (() => void) | null = null;
   private configMutationInFlight = false;
   private configRevision = 0;
   private recoveryUsesNativeConfig = false;
@@ -778,17 +780,39 @@ export class OmpProviderSession {
         const retry = Promise.withResolvers<void>();
         const delayMs = CONFIG_REFRESH_RETRY_BASE_MS * 2 ** (this.configRefreshAttempts - 1);
         const timer = this.scheduler.set(retry.resolve, delayMs);
+        this.configRefreshRetryHandle = timer;
+        this.configRefreshRetryResolve = retry.resolve;
         await retry.promise;
-        try {
-          this.scheduler.clear(timer);
-        } catch {
-          // The one-shot callback already fired; a cleanup failure must not wedge refreshes.
+        if (this.configRefreshRetryResolve === retry.resolve) {
+          this.configRefreshRetryHandle = null;
+          this.configRefreshRetryResolve = null;
+          try {
+            this.scheduler.clear(timer);
+          } catch {
+            // The one-shot callback already fired; a cleanup failure must not wedge refreshes.
+          }
         }
         if (!this.isCurrentRuntime(runtime, generation)) return;
       } else {
         this.configRefreshAttempts = 0;
       }
     } while (this.configRefreshDirty && this.isCurrentRuntime(runtime, generation));
+  }
+
+  private cancelConfigRefreshRetry(): void {
+    const resolve = this.configRefreshRetryResolve;
+    if (!resolve) return;
+    const handle = this.configRefreshRetryHandle;
+    this.configRefreshRetryHandle = null;
+    this.configRefreshRetryResolve = null;
+    if (handle !== null) {
+      try {
+        this.scheduler.clear(handle);
+      } catch {
+        // Resolving below is authoritative even when scheduler cleanup reports failure.
+      }
+    }
+    resolve();
   }
 
   private async readRuntimeStateWithTimeout(
@@ -832,6 +856,7 @@ export class OmpProviderSession {
       throw new OmpCatalogEscape("OMP runtime selected an unsupported thinking level");
     }
     this.configRefreshAttempts = 0;
+    this.cancelConfigRefreshRetry();
     const nextConfig: ProviderConfigState = {
       ...this.configState,
       ...(publicModelId ? { model: publicModelId } : { model: undefined }),
@@ -904,11 +929,17 @@ export class OmpProviderSession {
     this.closed = true;
     this.configRefreshAttempts = 0;
     this.configRefreshDirty = false;
+    const configRefresh = this.configRefreshInFlight;
+    this.cancelConfigRefreshRetry();
     this.lifetime.abort(new Error("OMP provider session closed"));
     this.projector.close();
     this.unsubscribe();
     this.runtimeDisposal ??= this.runtime.close();
-    await Promise.allSettled([this.runtimeDisposal, this.recoveryPromise]);
+    await Promise.allSettled([
+      this.runtimeDisposal,
+      this.recoveryPromise,
+      ...(configRefresh ? [configRefresh] : []),
+    ]);
     await this.runtimeDisposal;
   }
 
@@ -1572,9 +1603,15 @@ export class OmpProviderSession {
     this.generation += 1;
     this.runtimeDead = message;
     this.configRefreshAttempts = 0;
+    this.configRefreshDirty = false;
+    const configRefresh = this.configRefreshInFlight;
+    this.cancelConfigRefreshRetry();
     this.unsubscribe();
     this.unsubscribe = () => {};
-    this.runtimeDisposal ??= this.runtime.close();
+    const runtimeDisposal = this.runtimeDisposal ?? this.runtime.close();
+    this.runtimeDisposal = configRefresh
+      ? Promise.all([runtimeDisposal, configRefresh]).then(() => undefined)
+      : runtimeDisposal;
     void this.runtimeDisposal.catch(() => undefined);
   }
 
