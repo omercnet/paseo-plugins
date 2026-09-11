@@ -6,7 +6,7 @@ import type {
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
-import { OmpHostToolsBridge, type OmpMcpConnector } from "./host-tools";
+import { OmpHostToolsBridge, type OmpMcpConnector, validateOmpHostToolConfig } from "./host-tools";
 import type {
   OmpMessage,
   OmpModel,
@@ -297,6 +297,7 @@ export class OmpProviderSession {
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
+    validateOmpHostToolConfig(input.config);
     const startOptions: OmpStartOptions = {
       cwd: input.config.cwd,
       env: input.config.env,

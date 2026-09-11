@@ -299,6 +299,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly hostToolCatalogs: OmpHostToolDefinition[][] = [];
   readonly hostToolResults: OmpHostToolResult[] = [];
   readonly hostToolUpdates: OmpHostToolUpdate[] = [];
+  hostToolResultObserved: (() => void) | null = null;
   onEvent(listener: (event: OmpRpcEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -381,6 +382,7 @@ class FakeOmpSession implements OmpRuntimeSession {
 
   sendHostToolResult(result: OmpHostToolResult) {
     this.hostToolResults.push(structuredClone(result));
+    this.hostToolResultObserved?.();
   }
 
   sendHostToolUpdate(update: OmpHostToolUpdate) {
@@ -952,6 +954,53 @@ describe("OMP direct provider", () => {
     });
     await events.waitFor(
       (event) => event.type === "request.failed" && event.requestId === "invalid-spawn-before-mcp",
+    );
+    expect(connections).toBe(0);
+    expect(runtime.starts).toHaveLength(0);
+    await connection.close();
+  });
+
+  test("rejects excessive MCP servers before connector or OMP spawn", async () => {
+    const runtime = new FakeOmpRuntime();
+    let connections = 0;
+    const connection = await createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async () => {
+        connections += 1;
+        throw new Error("must not connect");
+      },
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({
+      type: "session.open",
+      requestId: "excessive-mcp-servers",
+      sessionId: "session-excessive-mcp",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: Object.fromEntries(
+          Array.from({ length: 33 }, (_, index) => [
+            `server-${index}`,
+            { type: "stdio" as const, command: "server" },
+          ]),
+        ),
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "excessive-mcp-servers",
+    );
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: expect.objectContaining({
+          message: expect.stringContaining("server count exceeds"),
+        }),
+      }),
     );
     expect(connections).toBe(0);
     expect(runtime.starts).toHaveLength(0);
@@ -3955,41 +4004,74 @@ describe("OMP direct provider", () => {
   test("AgentManager preserves caller workspace identity through a real host-tool execution", async () => {
     const runtime = new FakeOmpRuntime();
     const agentId = "00000000-0000-4000-8000-000000000001";
-    const connected: Array<{
-      name: string;
-      cwd: string;
-      config: unknown;
+    const toolExecuted = Promise.withResolvers<{
+      callerAgentId: string | null;
+      authorization: string | null;
+      input: unknown;
       ownerPid: number;
-      signal: AbortSignal;
-    }> = [];
-    let mcpCloses = 0;
-    const calls: Array<{ name: string; input: Record<string, unknown>; ownerPid: number }> = [];
-    const registration = createOmpProvider({
-      runtime,
-      timelineScheduler: new ManualScheduler(),
-      environment: TEST_RUNTIME_ENV,
-      mcpConnector: async (name, config, cwd, signal) => {
-        connected.push({ name, config, cwd, ownerPid: process.pid, signal });
-        return {
-          listTools: async ({ signal: discoverySignal }) => {
-            expect(discoverySignal).toBe(signal);
-            return [
+      ownerCwd: string;
+    }>();
+    const mcpServer = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        if (request.method === "GET") return new Response(null, { status: 405 });
+        const payload = (await request.json()) as {
+          id?: string | number;
+          method: string;
+          params?: Record<string, unknown>;
+        };
+        if (payload.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
+        let result: Record<string, unknown>;
+        if (payload.method === "initialize") {
+          const params = payload.params as { protocolVersion?: string } | undefined;
+          result = {
+            protocolVersion: params?.protocolVersion ?? "2025-11-25",
+            capabilities: { tools: {} },
+            serverInfo: { name: "paseo-host-test", version: "1.0.0" },
+          };
+        } else if (payload.method === "tools/list") {
+          result = {
+            tools: [
               {
                 name: "workspace_probe",
                 description: "Return caller workspace identity",
                 inputSchema: { type: "object" },
               },
-            ];
-          },
-          callTool: async (toolName, input) => {
-            calls.push({ name: toolName, input, ownerPid: process.pid });
-            return { content: [{ type: "text", text: "workspace-1" }] };
-          },
-          close: async () => {
-            mcpCloses += 1;
-          },
-        };
+            ],
+          };
+        } else if (payload.method === "tools/call") {
+          const url = new URL(request.url);
+          toolExecuted.resolve({
+            callerAgentId: url.searchParams.get("callerAgentId"),
+            authorization: request.headers.get("authorization"),
+            input: payload.params,
+            ownerPid: process.pid,
+            ownerCwd: process.cwd(),
+          });
+          result = {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ ownerPid: process.pid, ownerCwd: process.cwd() }),
+              },
+            ],
+          };
+        } else {
+          return Response.json(
+            { jsonrpc: "2.0", id: payload.id, error: { code: -32601, message: "Not found" } },
+            { status: 404 },
+          );
+        }
+        return Response.json({ jsonrpc: "2.0", id: payload.id, result });
       },
+    });
+    const registration = createOmpProvider({
+      runtime,
+      timelineScheduler: new ManualScheduler(),
+      environment: TEST_RUNTIME_ENV,
     });
     // Dynamic imports intentionally exercise the installed daemon's CJS/ESM plugin boundary.
     const adapter = (await import(pluginProviderModulePath)) as unknown as {
@@ -4004,7 +4086,11 @@ describe("OMP direct provider", () => {
       async before(name: string, request: unknown) {
         if (name !== "agent.session_open") return request;
         return withOmpWorkspaceIdentity(
-          request as { workspaceId: string | null; env: Record<string, string> },
+          request as {
+            agentId: string;
+            workspaceId: string | null;
+            env: Record<string, string>;
+          },
         );
       },
       emit() {},
@@ -4014,7 +4100,7 @@ describe("OMP direct provider", () => {
       clients: registry.clients(),
       providerDefinitions: registry.definitions(),
       pluginLifecycle: lifecycle,
-      mcpBaseUrl: "http://127.0.0.1:4567/mcp/agents",
+      mcpBaseUrl: `http://127.0.0.1:${mcpServer.port}/mcp/agents`,
       mcpAuthToken: "host-capability-token",
       paseoToolsEnabled: true,
       idFactory: () => agentId,
@@ -4042,18 +4128,6 @@ describe("OMP direct provider", () => {
           PASEO_WORKSPACE_ID: "workspace-1",
         }),
       );
-      expect(connected).toEqual([
-        expect.objectContaining({
-          name: "paseo",
-          cwd: process.cwd(),
-          ownerPid: process.pid,
-          config: {
-            type: "http",
-            url: `http://127.0.0.1:4567/mcp/agents?callerAgentId=${agentId}`,
-            headers: { Authorization: "Bearer host-capability-token" },
-          },
-        }),
-      ]);
       const native = sessionAt(runtime);
       expect(native.hostToolCatalogs[0]).toEqual([
         expect.objectContaining({
@@ -4061,6 +4135,8 @@ describe("OMP direct provider", () => {
           loadMode: "essential",
         }),
       ]);
+      const hostToolResult = Promise.withResolvers<void>();
+      native.hostToolResultObserved = hostToolResult.resolve;
       native.emit({
         type: "host_tool_call",
         id: "host-call-1",
@@ -4068,28 +4144,42 @@ describe("OMP direct provider", () => {
         toolName: "mcp__paseo_workspace_probe",
         arguments: { expectedWorkspaceId: "workspace-1" },
       });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(calls).toEqual([
-        {
-          name: "workspace_probe",
-          input: { expectedWorkspaceId: "workspace-1" },
+      const execution = await toolExecuted.promise;
+      expect(execution).toEqual(
+        expect.objectContaining({
+          callerAgentId: agentId,
+          authorization: "Bearer host-capability-token",
           ownerPid: process.pid,
-        },
-      ]);
+          ownerCwd: process.cwd(),
+        }),
+      );
+      expect(execution.input).toEqual(
+        expect.objectContaining({
+          name: "workspace_probe",
+          arguments: { expectedWorkspaceId: "workspace-1" },
+        }),
+      );
+      await hostToolResult.promise;
       expect(native.hostToolResults).toEqual([
         expect.objectContaining({
           type: "host_tool_result",
           id: "host-call-1",
-          result: expect.objectContaining({ content: [{ type: "text", text: "workspace-1" }] }),
+          result: expect.objectContaining({
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ ownerPid: process.pid, ownerCwd: process.cwd() }),
+              },
+            ],
+          }),
         }),
       ]);
       native.emit({ type: "process_exit", error: "OMP exited after host tool execution" });
     } finally {
       if (createdAgentId) await manager.closeAgent(createdAgentId);
       await registry.shutdown();
+      mcpServer.stop(true);
     }
-    expect(mcpCloses).toBe(1);
   });
   test("recovers a dead idle runtime by resuming the same native session", async () => {
     const { connection, events, runtime } = await createHarness();
@@ -5272,7 +5362,7 @@ describe("OMP direct provider", () => {
       runtime,
       environment: TEST_RUNTIME_ENV,
       mcpConnector: async () => ({
-        listTools: async () => [],
+        listTools: async () => ({ tools: [] }),
         callTool: async () => ({ content: [] }),
         close: async () => {
           hostCloses += 1;

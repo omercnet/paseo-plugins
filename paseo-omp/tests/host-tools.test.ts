@@ -75,7 +75,7 @@ class FakeConnection implements OmpMcpConnection {
 
   listTools(options: { signal: AbortSignal }) {
     this.listSignals.push(options.signal);
-    return Promise.resolve(this.tools);
+    return Promise.resolve({ tools: this.tools });
   }
 
   async callTool(
@@ -191,7 +191,7 @@ describe("OMP host tool bridge", () => {
         sessionConfig({
           env: { PASEO_AGENT_ID: "agent-1", PASEO_WORKSPACE_ID: "workspace-1" },
           mcpServers: {
-            paseo: {
+            renamed: {
               type: "http",
               url: "http://LOCALHOST:80/mcp/agents?callerAgentId=agent-1",
             },
@@ -399,6 +399,121 @@ describe("OMP host tool bridge", () => {
     await bridge.close();
   });
 
+  test("rejects excessive server counts before classification or connection", async () => {
+    let connections = 0;
+    const mcpServers = Object.fromEntries(
+      Array.from({ length: 33 }, (_, index) => [
+        `server-${index}`,
+        { type: "stdio" as const, command: "server" },
+      ]),
+    );
+    await expect(
+      OmpHostToolsBridge.open(sessionConfig({ mcpServers }), {
+        connectMcp: async () => {
+          connections += 1;
+          return new FakeConnection([], { content: [] });
+        },
+      }),
+    ).rejects.toThrow("server count exceeds");
+    expect(connections).toBe(0);
+  });
+
+  test("follows bounded tool pages and rejects repeated cursors", async () => {
+    const cursors: Array<string | undefined> = [];
+    const connection: OmpMcpConnection = {
+      async listTools({ cursor }) {
+        cursors.push(cursor);
+        if (!cursor) {
+          return {
+            tools: [{ name: "one", inputSchema: { type: "object" } }],
+            nextCursor: "page-2",
+          };
+        }
+        return { tools: [{ name: "two", inputSchema: { type: "object" } }] };
+      },
+      async callTool() {
+        return { content: [] };
+      },
+      async close() {},
+    };
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+      { connectMcp: async () => connection },
+    );
+    const runtime = new FakeRuntime();
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+    expect(cursors).toEqual([undefined, "page-2"]);
+    expect(runtime.catalogs[0]?.map(({ name }) => name)).toEqual([
+      "mcp__repo_one",
+      "mcp__repo_two",
+    ]);
+    await bridge.close();
+
+    const repeated = new FakeConnection([], { content: [] });
+    repeated.listTools = async () => ({ tools: [], nextCursor: "same" });
+    await expect(
+      OmpHostToolsBridge.open(
+        sessionConfig({ mcpServers: { repeated: { type: "stdio", command: "repeat" } } }),
+        { connectMcp: async () => repeated },
+      ),
+    ).rejects.toThrow("repeated a tool-list cursor");
+    expect(repeated.closes).toBe(1);
+  });
+
+  test("rejects per-server tool overflow and aggregate catalogs before OMP transport", async () => {
+    const overflow = new FakeConnection([], { content: [] });
+    let page = 0;
+    overflow.listTools = async () => {
+      page += 1;
+      return {
+        tools: Array.from({ length: page === 1 ? 256 : 1 }, (_, index) => ({
+          name: `tool-${page}-${index}`,
+          inputSchema: { type: "object" },
+        })),
+        ...(page === 1 ? { nextCursor: "overflow" } : {}),
+      };
+    };
+    await expect(
+      OmpHostToolsBridge.open(
+        sessionConfig({ mcpServers: { overflow: { type: "stdio", command: "overflow" } } }),
+        { connectMcp: async () => overflow },
+      ),
+    ).rejects.toThrow("tool count exceeds");
+    expect(overflow.closes).toBe(1);
+
+    const largeCatalog = new FakeConnection(
+      Array.from({ length: 14 }, (_, index) => ({
+        name: `tool-${index}`,
+        description: "x".repeat(60 * 1024),
+        inputSchema: { type: "object" },
+      })),
+      { content: [] },
+    );
+    await expect(
+      OmpHostToolsBridge.open(
+        sessionConfig({ mcpServers: { large: { type: "stdio", command: "large" } } }),
+        { connectMcp: async () => largeCatalog },
+      ),
+    ).rejects.toThrow("catalog exceeds the RPC frame limit");
+    expect(largeCatalog.closes).toBe(1);
+  });
+
+  test("preserves Windows and WSL workspace paths at the host connector boundary", async () => {
+    const observed: string[] = [];
+    const connector: OmpMcpConnector = async (_name, _config, cwd) => {
+      observed.push(cwd);
+      return new FakeConnection([], { content: [] });
+    };
+    for (const cwd of ["C:\\Users\\agent\\repo", "/mnt/c/Users/agent/repo"]) {
+      const bridge = await OmpHostToolsBridge.open(
+        sessionConfig({ cwd, mcpServers: { local: { type: "stdio", command: "server" } } }),
+        { connectMcp: connector },
+      );
+      await bridge.close();
+    }
+    expect(observed).toEqual(["C:\\Users\\agent\\repo", "/mnt/c/Users/agent/repo"]);
+  });
+
   test("keeps failed close ownership and rejects a mismatched OMP catalog", async () => {
     const connection = new FakeConnection(
       [{ name: "read", description: "Read", inputSchema: { type: "object" } }],
@@ -430,9 +545,13 @@ describe("OMP host tool bridge", () => {
         purpose: "interactive" as const,
         env: { PASEO_WORKSPACE_ID: "spoofed" },
       }).env,
-    ).toEqual({ PASEO_WORKSPACE_ID: "workspace-1" });
+    ).toEqual({ PASEO_AGENT_ID: "agent-1", PASEO_WORKSPACE_ID: "workspace-1" });
     expect(
-      withOmpWorkspaceIdentity({ workspaceId: null, env: { PASEO_WORKSPACE_ID: "spoofed" } }).env,
-    ).toEqual({});
+      withOmpWorkspaceIdentity({
+        agentId: "agent-legacy",
+        workspaceId: null,
+        env: { PASEO_AGENT_ID: "spoofed", PASEO_WORKSPACE_ID: "spoofed" },
+      }).env,
+    ).toEqual({ PASEO_AGENT_ID: "agent-legacy" });
   });
 });

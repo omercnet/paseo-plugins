@@ -3,10 +3,12 @@ import type {
   ProviderMcpServerConfig,
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  type ConnectedMcpClient,
+  type ConnectedMcpTool,
+  type ConnectedMcpToolPage,
+  connectMcpServer,
+} from "./mcp-transport";
 import type {
   OmpHostToolCall,
   OmpHostToolDefinition,
@@ -17,32 +19,23 @@ import { boundedJsonBytes, OmpCleanupFailure, OmpPublicError, utf8Bytes } from "
 
 const INTERNAL_PASEO_MCP_PATH = "/mcp/agents";
 const RESERVED_PASEO_NAMESPACE = "paseo";
+const MAX_MCP_SERVERS = 32;
+const MAX_MCP_TOOL_PAGES = 32;
+const MAX_MCP_TOOLS_PER_SERVER = 256;
 const MAX_HOST_TOOLS = 256;
 const MAX_HOST_TOOL_NAME_BYTES = 256;
 const MAX_HOST_TOOL_LABEL_BYTES = 256;
 const MAX_HOST_TOOL_DESCRIPTION_BYTES = 64 * 1024;
 const MAX_HOST_TOOL_SCHEMA_BYTES = 256 * 1024;
+const MAX_HOST_TOOL_CATALOG_BYTES = 768 * 1024;
 const MAX_HOST_TOOL_RESULT_BYTES = 12 * 1024 * 1024;
 const MAX_PENDING_HOST_TOOL_CALLS = 64;
 const MAX_PENDING_HOST_TOOL_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 20_000;
 
-export interface OmpMcpTool {
-  name: string;
-  title?: string;
-  description?: string;
-  inputSchema: Record<string, unknown>;
-}
-
-export interface OmpMcpConnection {
-  listTools(options: { signal: AbortSignal }): Promise<readonly OmpMcpTool[]>;
-  callTool(
-    name: string,
-    input: Record<string, unknown>,
-    options: { signal: AbortSignal; onProgress: (progress: unknown) => void },
-  ): Promise<unknown>;
-  close(): Promise<void>;
-}
+export type OmpMcpTool = ConnectedMcpTool;
+export type OmpMcpToolPage = ConnectedMcpToolPage;
+export type OmpMcpConnection = ConnectedMcpClient;
 
 export type OmpMcpConnector = (
   name: string,
@@ -123,21 +116,21 @@ function classifyServers(config: ProviderSessionConfig): ClassifiedServer[] {
     config: serverConfig,
     url: remoteUrl(serverConfig),
   }));
-  const canonical = entries.filter(
-    (entry) =>
-      entry.name === RESERVED_PASEO_NAMESPACE &&
-      entry.url &&
-      normalizedPathname(entry.url) === INTERNAL_PASEO_MCP_PATH,
+  const endpoints = entries.filter(
+    (entry) => entry.url && normalizedPathname(entry.url) === INTERNAL_PASEO_MCP_PATH,
   );
-  if (canonical.length > 1) {
-    throw new OmpPublicError("Paseo host tool endpoint is ambiguous");
+  const daemonOrigins = new Set(endpoints.map((entry) => entry.url?.origin));
+  if (daemonOrigins.size > 1) {
+    throw new OmpPublicError("Paseo host tool endpoint origin is ambiguous");
   }
-  const daemonOrigin = canonical[0]?.url?.origin;
+  const daemonOrigin = endpoints[0]?.url?.origin;
+  const canonical =
+    endpoints.find((entry) => entry.name === RESERVED_PASEO_NAMESPACE) ?? endpoints[0];
   const classified = entries.map((entry) => ({
     name: entry.name,
     config: entry.config,
     internal: daemonOrigin !== undefined && entry.url?.origin === daemonOrigin,
-    canonical: entry === canonical[0],
+    canonical: entry === canonical,
   }));
   const internal = classified.filter((entry) => entry.internal);
   if (internal.length > 0) {
@@ -192,11 +185,58 @@ function exposedToolName(namespace: string, serverName: string, toolName: string
   return `${base.slice(0, MAX_HOST_TOOL_NAME_BYTES - suffix.length - 1)}_${suffix}`;
 }
 
-function validateToolPolicy(config: ProviderSessionConfig): void {
-  if ((config.toolPolicy?.preapproved.length ?? 0) === 0) return;
-  throw new OmpPublicError(
-    "OMP set_host_tools cannot preserve exact MCP preapproval; refusing to broaden access",
-  );
+export function validateOmpHostToolConfig(config: ProviderSessionConfig): void {
+  if (Object.keys(config.mcpServers).length > MAX_MCP_SERVERS) {
+    throw new OmpPublicError("OMP MCP server count exceeds the supported limit");
+  }
+  if ((config.toolPolicy?.preapproved.length ?? 0) > 0) {
+    throw new OmpPublicError(
+      "OMP set_host_tools cannot preserve exact MCP preapproval; refusing to broaden access",
+    );
+  }
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  const reason = () =>
+    signal.reason instanceof Error ? signal.reason : new Error("Operation was aborted");
+  if (signal.aborted) return Promise.reject(reason());
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(reason());
+    signal.addEventListener("abort", abort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function discoverMcpTools(
+  connection: OmpMcpConnection,
+  signal: AbortSignal,
+): Promise<OmpMcpTool[]> {
+  const tools: OmpMcpTool[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let pageIndex = 0; pageIndex < MAX_MCP_TOOL_PAGES; pageIndex += 1) {
+    const page = await abortable(connection.listTools({ signal, cursor }), signal);
+    if (tools.length + page.tools.length > MAX_MCP_TOOLS_PER_SERVER) {
+      throw new OmpPublicError("MCP server tool count exceeds the supported limit");
+    }
+    tools.push(...page.tools);
+    if (!page.nextCursor) return tools;
+    if (cursors.has(page.nextCursor)) {
+      throw new OmpPublicError("MCP server repeated a tool-list cursor");
+    }
+    cursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+  throw new OmpPublicError("MCP server tool-list pagination exceeds the supported limit");
 }
 
 function normalizeResult(result: unknown): OmpHostToolResult["result"] {
@@ -243,79 +283,6 @@ function errorResult(id: string, message: string): OmpHostToolResult {
   };
 }
 
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  const reason = () =>
-    signal.reason instanceof Error ? signal.reason : new Error("Operation was aborted");
-  if (signal.aborted) return Promise.reject(reason());
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(reason());
-    signal.addEventListener("abort", abort, { once: true });
-    void promise.then(
-      (value) => {
-        signal.removeEventListener("abort", abort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", abort);
-        reject(error);
-      },
-    );
-  });
-}
-
-// MCP transports stay in the plugin-server host. OMP receives only schemas and call frames, so
-// filesystem and terminal ownership never migrates into a WSL/container OMP child by accident.
-async function defaultConnectMcp(
-  _name: string,
-  config: ProviderMcpServerConfig,
-  cwd: string,
-  signal: AbortSignal,
-): Promise<OmpMcpConnection> {
-  const client = new Client({ name: "paseo-omp-provider", version: "1.0.0" });
-  const requestInit = config.type === "stdio" ? undefined : { headers: config.headers };
-  const transport =
-    config.type === "stdio"
-      ? new StdioClientTransport({
-          command: config.command,
-          args: config.args,
-          env: config.env,
-          cwd,
-          stderr: "ignore",
-        })
-      : config.type === "http"
-        ? new StreamableHTTPClientTransport(new URL(config.url), { requestInit })
-        : new SSEClientTransport(new URL(config.url), { requestInit });
-  try {
-    await client.connect(transport, { signal });
-  } catch (error) {
-    const cleanup = client.close();
-    try {
-      await cleanup;
-    } catch {
-      throw new OmpCleanupFailure(
-        "OMP MCP connection cleanup failed",
-        cleanup.catch(() => undefined),
-      );
-    }
-    throw error;
-  }
-  return {
-    async listTools(options) {
-      return (await client.listTools({}, { signal: options.signal })).tools;
-    },
-    async callTool(name, input, options) {
-      return await client.callTool({ name, arguments: input }, undefined, {
-        signal: options.signal,
-        onprogress: (progress) => options.onProgress(progress),
-        resetTimeoutOnProgress: true,
-      });
-    },
-    async close() {
-      await client.close();
-    },
-  };
-}
-
 export class OmpHostToolsBridge {
   private runtime: OmpRuntimeSession | null = null;
   private readonly pending = new Map<string, PendingCall>();
@@ -333,10 +300,10 @@ export class OmpHostToolsBridge {
     config: ProviderSessionConfig,
     options: OmpHostToolsOpenOptions = {},
   ): Promise<OmpHostToolsBridge> {
-    validateToolPolicy(config);
+    validateOmpHostToolConfig(config);
     const servers = classifyServers(config);
     const namespaces = serverNamespaces(servers);
-    const connectMcp = options.connectMcp ?? defaultConnectMcp;
+    const connectMcp = options.connectMcp ?? connectMcpServer;
     const initialization = new AbortController();
     const abortFromCaller = () => initialization.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abortFromCaller, { once: true });
@@ -359,18 +326,20 @@ export class OmpHostToolsBridge {
         );
         let connection: OmpMcpConnection;
         try {
-          connection = await abortable(connecting, initialization.signal);
+          connection =
+            connectMcp === connectMcpServer
+              ? await connecting
+              : await abortable(connecting, initialization.signal);
         } catch (error) {
-          void connecting.then((lateConnection) => lateConnection.close()).catch(() => undefined);
+          if (connectMcp !== connectMcpServer) {
+            void connecting.then((lateConnection) => lateConnection.close()).catch(() => undefined);
+          }
           throw error;
         }
         connections.push(connection);
-        const tools = [
-          ...(await abortable(
-            connection.listTools({ signal: initialization.signal }),
-            initialization.signal,
-          )),
-        ].sort((left, right) => left.name.localeCompare(right.name));
+        const tools = (await discoverMcpTools(connection, initialization.signal)).sort(
+          (left, right) => left.name.localeCompare(right.name),
+        );
         const namespace = namespaces.get(server.name);
         if (!namespace) throw new Error("MCP server namespace is unavailable");
         for (const tool of tools) {
@@ -406,10 +375,16 @@ export class OmpHostToolsBridge {
             ),
             loadMode:
               server.internal || server.config.alwaysLoad === true ? "essential" : "discoverable",
-            parameters: tool.inputSchema,
+            parameters: structuredClone(tool.inputSchema),
           });
           targets.set(name, { toolName: tool.name, connection });
         }
+      }
+      if (
+        boundedJsonBytes(definitions, MAX_HOST_TOOL_CATALOG_BYTES, MAX_HOST_TOOLS, 64 * 1024) ===
+        Number.POSITIVE_INFINITY
+      ) {
+        throw new OmpPublicError("OMP host tool catalog exceeds the RPC frame limit");
       }
       return new OmpHostToolsBridge(connections, definitions, targets);
     } catch (error) {
@@ -427,7 +402,7 @@ export class OmpHostToolsBridge {
       if (initialization.signal.aborted) {
         throw new OmpPublicError("OMP MCP host tool initialization was cancelled or timed out");
       }
-      if (error instanceof OmpCleanupFailure) throw error;
+      if (error instanceof OmpCleanupFailure || error instanceof OmpPublicError) throw error;
       throw new OmpPublicError("OMP could not initialize configured MCP host tools");
     } finally {
       clearTimeout(timeout);
@@ -578,9 +553,9 @@ export class OmpHostToolsBridge {
 }
 
 export function withOmpWorkspaceIdentity<
-  T extends { workspaceId: string | null; env: Record<string, string> },
+  T extends { agentId: string; workspaceId: string | null; env: Record<string, string> },
 >(request: T): Omit<T, "env"> & { env: Record<string, string> } {
-  const env = { ...request.env };
+  const env: Record<string, string> = { ...request.env, PASEO_AGENT_ID: request.agentId };
   if (request.workspaceId) env.PASEO_WORKSPACE_ID = request.workspaceId;
   else delete env.PASEO_WORKSPACE_ID;
   return { ...request, env };

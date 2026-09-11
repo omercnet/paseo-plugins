@@ -966,6 +966,14 @@ async function stopWindowsTree(pid: number): Promise<ProcessTreeCleanup> {
   return result.promise;
 }
 
+export async function terminateSpawnedProcessTree(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  if (platform === "win32") return (await stopWindowsTree(pid)) === "verified";
+  return await terminatePosixProcessTree(pid, PROCESS_STOP_TIMEOUT_MS);
+}
+
 class OmpRpcProcess {
   readonly ready: Promise<ReadyFrame>;
   readonly redactionValues: readonly string[];
