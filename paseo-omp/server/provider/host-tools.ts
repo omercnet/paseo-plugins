@@ -492,6 +492,9 @@ export class OmpHostToolsBridge {
       throw error;
     }
   }
+  isBoundTo(runtime: OmpRuntimeSession): boolean {
+    return this.runtime === runtime && this.closePromise === null;
+  }
 
   onFatal(handler: (error: Error) => void): void {
     this.fatalHandler = handler;

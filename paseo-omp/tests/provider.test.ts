@@ -294,6 +294,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   steerError: Error | null = null;
   closeError: Error | null = null;
   hostToolResultError: Error | null = null;
+  hostToolResultAttempted: (() => void) | null = null;
   aborts = 0;
   promptCount = 0;
   closes = 0;
@@ -386,6 +387,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   }
 
   sendHostToolResult(result: OmpHostToolResult) {
+    this.hostToolResultAttempted?.();
     if (this.hostToolResultError) throw this.hostToolResultError;
     this.hostToolResults.push(structuredClone(result));
     this.hostToolResultObserved?.();
@@ -4561,6 +4563,57 @@ describe("OMP direct provider", () => {
     stateGate.resolve();
     const turnId = turnIdFrom(await prompting);
     await finishTurn(events, recovered, turnId);
+    await connection.close();
+  });
+  test("retires recovery after a bootstrap host-tool terminal write failure", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHostToolHarness(runtime);
+    await openHostToolSession(connection, events, "host-tool-write-failure-open");
+    const stateGate = Promise.withResolvers<void>();
+    const stateObserved = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      if (runtime.sessions.length !== 2) return;
+      session.stateGate = stateGate.promise;
+      session.stateObserved = stateObserved.resolve;
+    };
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    const prompting = startPrompt(connection, events, "host-tool-write-failure", "continue");
+    await stateObserved.promise;
+    const failedReplacement = sessionAt(runtime, 1);
+    const writeAttempted = Promise.withResolvers<void>();
+    failedReplacement.hostToolResultAttempted = writeAttempted.resolve;
+    failedReplacement.hostToolResultError = new Error("OMP RPC has too many pending writes");
+    failedReplacement.emit({
+      type: "host_tool_call",
+      id: "recovery-write-failure-call",
+      toolCallId: "recovery-write-failure-tool-call",
+      toolName: "mcp__repo_read",
+      arguments: {},
+    });
+    await writeAttempted.promise;
+    failedReplacement.stateGate = null;
+    stateGate.resolve();
+
+    expect(await prompting).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: { message: "OMP session recovery failed" },
+        }),
+      }),
+    );
+    expect(failedReplacement.closes).toBe(1);
+    expect(failedReplacement.prompts).toHaveLength(0);
+
+    runtime.sessionCreated = null;
+    const retryTurnId = turnIdFrom(
+      await startPrompt(connection, events, "host-tool-write-failure-retry", "continue"),
+    );
+    const replacement = sessionAt(runtime, 2);
+    expect(runtime.starts).toHaveLength(3);
+    await expectBootstrapHostToolTerminal(replacement, "recovery-write-retry-call");
+    await finishTurn(events, replacement, retryTurnId);
     await connection.close();
   });
   test("invalidates the runtime when a terminal host-tool frame cannot be queued", async () => {

@@ -413,6 +413,9 @@ export class OmpProviderSession {
         environment,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
       };
+      if (!hostTools.isBoundTo(native)) {
+        throw new Error("OMP host tool bridge detached during session initialization");
+      }
       unsubscribeBootstrap();
       unsubscribeBootstrap = () => {};
       const session = new OmpProviderSession(
@@ -1135,6 +1138,9 @@ export class OmpProviderSession {
         throw new Error("OMP recovered with an unsupported thinking level");
       }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
+      if (!this.hostTools.isBoundTo(recovered)) {
+        throw new Error("OMP host tool bridge detached during recovery");
+      }
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
       this.projector.addSensitiveValues(recovered.redactionValues ?? []);
       this.generation += 1;
