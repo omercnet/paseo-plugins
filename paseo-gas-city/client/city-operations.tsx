@@ -1,5 +1,5 @@
-import type { PluginHostProps, PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import type { PluginHostProps } from "@getpaseo/plugin/client";
+import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -29,7 +29,6 @@ import {
   type SessionActionRequest,
 } from "../shared";
 import type { SlingIntent } from "./dispatch-intent";
-import { openSessionInPaseo } from "./open-in-paseo";
 import {
   buildDashboardSections,
   convoyProgress,
@@ -41,12 +40,8 @@ import {
 } from "./view-model";
 
 interface CityOperationsProps extends PluginHostProps {
-  navigation?: PluginSurfaceProps["navigation"];
   cityName: string;
   rigName: string | null;
-  workspaceId?: string;
-  cwd: string;
-  endpointUrl: string;
   eventLimit: number;
   refreshIntervalMs: number;
   mutationsEnabled: boolean;
@@ -283,12 +278,8 @@ export function CityOperations({
   theme,
   layout,
   host,
-  navigation,
   cityName,
   rigName,
-  workspaceId,
-  cwd,
-  endpointUrl,
   eventLimit,
   refreshIntervalMs,
   mutationsEnabled,
@@ -296,7 +287,6 @@ export function CityOperations({
   onDismissSlingIntent,
 }: CityOperationsProps) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
-  const paseo = usePaseo();
   const toast = useToast();
   const queryClient = useQueryClient();
   const loadSnapshot = useRpc(getCityRigSnapshot);
@@ -457,20 +447,6 @@ export function CityOperations({
     onSettled: () => queryClient.invalidateQueries({ queryKey: queryRoot }),
   });
 
-  const openMutation = useMutation({
-    mutationFn: (session: GasCitySession) =>
-      openSessionInPaseo({
-        paseo,
-        session,
-        endpointUrl,
-        workspaceId,
-        cwd,
-        onOpenAgent: navigation ? (agentId) => navigation.openAgent({ agentId }) : undefined,
-      }),
-    onSuccess: () => toast.show("Opened Gas City session in Paseo.", { variant: "success" }),
-    onError: (error) => toast.error(errorMessage(error)),
-  });
-
   async function refreshAll() {
     await Promise.all([
       snapshotQuery.refetch(),
@@ -513,20 +489,6 @@ export function CityOperations({
             {item.rigName ?? "city"} · {item.activity ?? "idle"} · {relativeTime(item.lastActiveAt)}
           </Text>
           <View style={styles.rowActions}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open ${item.title} in Paseo`}
-              disabled={openMutation.isPending}
-              onPress={() => openMutation.mutate(item)}
-              style={({ pressed }) => [
-                styles.inlineButton,
-                pressed && styles.pressed,
-                openMutation.isPending && styles.disabled,
-              ]}
-            >
-              <Icon name="ExternalLink" size={13} color={theme.colors.foreground} />
-              <Text style={styles.inlineButtonText}>Open in Paseo</Text>
-            </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Open actions for ${item.title}`}

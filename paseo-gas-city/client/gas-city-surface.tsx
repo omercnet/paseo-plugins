@@ -189,11 +189,8 @@ function ReadyGasCitySurface({
             theme={theme}
             layout={layout}
             host={host}
-            navigation={navigation}
             cityName={selectedCity}
             rigName={null}
-            cwd={data.cities.find((city) => city.name === selectedCity)?.path ?? "."}
-            endpointUrl={settings.endpointUrl}
             eventLimit={settings.eventLimit}
             refreshIntervalMs={settings.refreshIntervalMs}
             mutationsEnabled={settings.mutationsEnabled}
