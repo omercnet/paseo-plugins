@@ -27,6 +27,7 @@ import {
   utf8Bytes,
 } from "./security";
 import { validateNativeSessionId } from "./session-descriptors";
+import { OmpSubsessionProjector } from "./subsessions";
 import {
   defaultOmpTimelineScheduler,
   OmpTimelineProjector,
@@ -253,6 +254,7 @@ export class OmpProviderSession {
   readonly cwd: string;
 
   private readonly projector: OmpTimelineProjector;
+  private readonly subsessions: OmpSubsessionProjector | null;
   private unsubscribe: () => void = () => {};
   private activeTurn: ActiveTurn | null = null;
   private closed = false;
@@ -286,6 +288,7 @@ export class OmpProviderSession {
     private readonly runtimeFactory: OmpRuntime,
     private recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal">,
     private nativeSessionId: string,
+    nativeSessionFile: string | undefined,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
     nativeModelsByPublicId: ReadonlyMap<string, OmpModel>,
@@ -307,6 +310,18 @@ export class OmpProviderSession {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
+    this.subsessions = capabilities.includes("session.subsession")
+      ? new OmpSubsessionProjector(
+          id,
+          nativeSessionId,
+          nativeSessionFile,
+          config.cwd,
+          emit,
+          scheduler,
+          sensitiveValues,
+          () => this.resumeDeferredAgentEnd(),
+        )
+      : null;
     this.bindRuntime(runtime);
   }
   get persistenceSessionId(): string | undefined {
@@ -450,16 +465,27 @@ export class OmpProviderSession {
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
         ...(!effectiveConfig.persist ? { noSession: true } : {}),
       };
+      let sessionCapabilities = capabilities;
+      if (capabilities.includes("session.subsession")) {
+        try {
+          await native.setSubagentSubscription("events");
+        } catch {
+          sessionCapabilities = capabilities.filter(
+            (capability) => capability !== "session.subsession",
+          );
+        }
+      }
       return new OmpProviderSession(
         input.sessionId,
         native,
         runtime,
         recoveryOptions,
         state.sessionId,
+        state.sessionFile,
         effectiveConfig,
         configState,
         nativeModelsByPublicId,
-        capabilities,
+        sessionCapabilities,
         new Set(
           commandDiscovery.commands.flatMap((command) => [
             command.name,
@@ -534,6 +560,7 @@ export class OmpProviderSession {
         this.projector.projectReplayMessage(message);
       }
       this.projector.finishReplay();
+      await this.subsessions?.replay(messages, this.runtime);
     } finally {
       clearTimeout(timeoutHandle);
       this.lifetime.signal.removeEventListener("abort", onAbort);
@@ -666,6 +693,7 @@ export class OmpProviderSession {
       this.publishPendingUsers(turn);
       const failure = providerError(error, "OMP prompt failed");
       this.publishPromptResult(turn, { type: "failed", error: failure });
+      this.subsessions?.terminalize("failed");
       if (turn.started) this.finishTurn(turn, "failed", failure);
       else {
         turn.terminal = true;
@@ -1078,6 +1106,7 @@ export class OmpProviderSession {
     const configRefresh = this.configRefreshInFlight;
     this.cancelConfigRefreshRetry();
     this.lifetime.abort(new Error("OMP provider session closed"));
+    this.subsessions?.close();
     this.projector.close();
     this.unsubscribe();
     this.runtimeDisposal ??= this.runtime.close();
@@ -1164,8 +1193,10 @@ export class OmpProviderSession {
         throw new Error("OMP recovered with an unsupported thinking level");
       }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
+      if (this.subsessions) await recovered.setSubagentSubscription("events");
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
       this.projector.addSensitiveValues(recovered.redactionValues ?? []);
+      this.subsessions?.addSensitiveValues(recovered.redactionValues ?? []);
       this.generation += 1;
       this.runtimeDead = null;
       this.runtimeDisposal = null;
@@ -1262,6 +1293,18 @@ export class OmpProviderSession {
 
   private handleRuntimeEvent(event: OmpRpcEvent): void {
     if (this.closed) return;
+    if (
+      event.type === "subagent_lifecycle" ||
+      event.type === "subagent_progress" ||
+      event.type === "subagent_event"
+    ) {
+      try {
+        this.subsessions?.handle(event);
+      } catch {
+        this.handleRuntimeFailure("OMP subagent event processing failed");
+      }
+      return;
+    }
     if (event.type === "available_commands_update") {
       this.replaceSlashCommands(event.commands);
       return;
@@ -1334,6 +1377,14 @@ export class OmpProviderSession {
         this.scheduleLocalOnlyCompletion(turn);
       }
       return;
+    }
+    if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+      try {
+        this.subsessions?.observeSessionEvent(this.id, event);
+      } catch {
+        this.handleRuntimeFailure("OMP subagent dispatch tracking failed");
+        return;
+      }
     }
     if (isNativeTurnActivity(event)) {
       turn.nativeActivity = true;
@@ -1585,6 +1636,7 @@ export class OmpProviderSession {
     event: Extract<OmpRpcEvent, { type: "agent_end" }>,
   ): void {
     if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) return;
+    if (!turn.interrupted && this.deferAgentEndForSubsessions(turn, event)) return;
     turn.terminalizing = true;
     if (turn.userLookups.size === 0 && turn.userEchoes.length === 0) {
       this.completeAgentEnd(turn, event);
@@ -1604,6 +1656,37 @@ export class OmpProviderSession {
     if (turn.localOnlyEligible && !turn.localOnlyDisabled && !turn.nativeActivity) {
       this.scheduleLocalOnlyCompletion(turn);
     }
+  }
+  private deferAgentEndForSubsessions(
+    turn: ActiveTurn,
+    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  ): boolean {
+    if (!this.subsessions?.hasActiveChildren()) return false;
+    turn.terminalizing = false;
+    turn.deferredAgentEnd = event;
+    void this.subsessions.reconcile(this.runtime).catch(() => {
+      if (!turn.terminal && this.activeTurn === turn) {
+        this.handleRuntimeFailure("OMP subagent reconciliation failed");
+      }
+    });
+    return true;
+  }
+
+  private resumeDeferredAgentEnd(): void {
+    const turn = this.activeTurn;
+    if (
+      !turn ||
+      turn.terminal ||
+      turn.terminalizing ||
+      turn.steersInFlight > 0 ||
+      this.subsessions?.hasActiveChildren()
+    ) {
+      return;
+    }
+    const event = turn.deferredAgentEnd;
+    if (!event) return;
+    turn.deferredAgentEnd = undefined;
+    this.beginTerminalization(turn, event);
   }
 
   private async finishFromAgentEnd(
@@ -1637,6 +1720,7 @@ export class OmpProviderSession {
       this.finishTurn(turn, "failed", { message });
       return;
     }
+    if (this.deferAgentEndForSubsessions(turn, event)) return;
     this.completeAgentEnd(turn, event);
   }
 
@@ -1647,9 +1731,13 @@ export class OmpProviderSession {
     if (turn.generation !== this.generation || turn.terminal || this.activeTurn !== turn) return;
     this.publishPendingUsers(turn);
     const error = terminalError(event);
-    if (turn.interrupted) this.finishTurn(turn, "canceled");
-    else if (error) this.finishTurn(turn, "failed", { message: error });
-    else this.finishTurn(turn, "completed");
+    if (turn.interrupted) {
+      this.subsessions?.terminalize("canceled");
+      this.finishTurn(turn, "canceled");
+    } else if (error) {
+      this.subsessions?.terminalize("failed");
+      this.finishTurn(turn, "failed", { message: error });
+    } else this.finishTurn(turn, "completed");
   }
 
   private async confirmAgentEndState(turn: ActiveTurn): Promise<OmpSessionState | undefined> {
@@ -1758,6 +1846,7 @@ export class OmpProviderSession {
   private handleRuntimeFailure(message = "OMP runtime failed"): void {
     if (this.closed || this.runtimeDead) return;
     this.invalidateRuntime(message);
+    this.subsessions?.terminalize("failed");
     const turn = this.activeTurn;
     if (!turn) return;
     this.publishPendingUsers(turn);

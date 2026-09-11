@@ -220,6 +220,127 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("subscribes to bounded subagent lifecycle, timelines, snapshots, and replay", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "set_subagent_subscription") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "set_subagent_subscription",
+          success: true,
+          data: { level: "events" },
+        });
+      } else if (command.type === "get_subagents") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "get_subagents",
+          success: true,
+          data: {
+            subagents: [
+              {
+                id: "native-child",
+                index: 0,
+                agent: "scout",
+                status: "running",
+                sessionFile: "/sessions/root/native-child.jsonl",
+                lastUpdate: 1,
+                parentToolCallId: "task-call",
+              },
+            ],
+          },
+        });
+      } else if (command.type === "get_subagent_messages") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "get_subagent_messages",
+          success: true,
+          data: {
+            sessionFile: "/sessions/root/native-child.jsonl",
+            fromByte: 0,
+            nextByte: 10,
+            reset: false,
+            entries: [],
+            messages: [
+              {
+                role: "toolResult",
+                toolCallId: "nested-task",
+                toolName: "task",
+                content: [],
+                details: { results: [{ id: "native-grandchild" }] },
+              },
+            ],
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    await session.setSubagentSubscription("events");
+    await expect(session.getSubagents()).resolves.toEqual([
+      expect.objectContaining({ id: "native-child", status: "running" }),
+    ]);
+    await expect(session.getSubagentMessages({ subagentId: "native-child" })).resolves.toEqual(
+      expect.objectContaining({
+        sessionFile: "/sessions/root/native-child.jsonl",
+        messages: [
+          expect.objectContaining({ details: { results: [{ id: "native-grandchild" }] } }),
+        ],
+      }),
+    );
+    const frames: OmpRpcEvent[] = [
+      {
+        type: "subagent_lifecycle",
+        payload: {
+          id: "native-child",
+          agent: "scout",
+          status: "started",
+          index: 0,
+          sessionFile: "/sessions/root/native-child.jsonl",
+          parentToolCallId: "task-call",
+        },
+      },
+      {
+        type: "subagent_progress",
+        payload: {
+          index: 0,
+          agent: "scout",
+          task: "inspect",
+          progress: { id: "native-child", status: "running", recentOutput: ["working"] },
+          sessionFile: "/sessions/root/native-child.jsonl",
+          parentToolCallId: "task-call",
+        },
+      },
+      {
+        type: "subagent_event",
+        payload: {
+          id: "native-child",
+          event: {
+            type: "message_end",
+            message: { role: "assistant", responseId: "child-answer", content: "done" },
+          },
+        },
+      },
+    ];
+    for (const frame of frames) {
+      const received = nextEvent((listener) => session.onEvent(listener));
+      child.write(frame);
+      await expect(received).resolves.toEqual(frame);
+    }
+    await session.close();
+  });
+
   test("passes an exact native session handle to OMP resume", async () => {
     const child = new FakeRpcChild();
     const launches: OmpSpawnRequest[] = [];

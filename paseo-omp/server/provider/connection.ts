@@ -24,6 +24,7 @@ const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "session.configure": true,
   "session.list": true,
   "session.persistence": true,
+  "session.subsession": true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   catalog: true,
