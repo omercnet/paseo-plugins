@@ -964,10 +964,7 @@ export class OmpProviderSession {
       this.runtimeDisposal,
       this.hostToolsDisposal,
     ]);
-    await Promise.allSettled([
-      this.recoveryPromise,
-      ...(configRefresh ? [configRefresh] : []),
-    ]);
+    await Promise.allSettled([this.recoveryPromise, ...(configRefresh ? [configRefresh] : [])]);
     const cleanupErrors = [runtimeResult, hostToolsResult]
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => result.reason);
