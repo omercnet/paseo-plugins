@@ -50,7 +50,8 @@ function replaceControlCharacters(value: string): string {
   let segmentStart = 0;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code === 0x09 || code === 0x0a || code === 0x0d || (code >= 0x20 && code !== 0x7f)) continue;
+    if (code === 0x09 || code === 0x0a || code === 0x0d || (code >= 0x20 && code !== 0x7f))
+      continue;
     output += `${value.slice(segmentStart, index)}<control>`;
     segmentStart = index + 1;
   }
@@ -254,11 +255,7 @@ export class OmpPublicDataFilter {
         }
         const keyBytes = utf8Bytes(JSON.stringify(safeKey)) + 1 + (itemCount > 1 ? 1 : 0);
         if (!consume(keyBytes)) break;
-        output[safeKey] = visit(
-          (value as Record<string, unknown>)[childKey],
-          childKey,
-          depth + 1,
-        );
+        output[safeKey] = visit((value as Record<string, unknown>)[childKey], childKey, depth + 1);
       }
       return output;
     };

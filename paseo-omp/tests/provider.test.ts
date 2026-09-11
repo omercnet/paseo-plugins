@@ -160,7 +160,6 @@ class ProviderRpcChild extends EventEmitter {
     }
   }
 
-
   close(): void {
     if (this.didClose) return;
     this.didClose = true;
@@ -3352,12 +3351,16 @@ describe("OMP direct provider", () => {
         event.item.type === "reasoning" &&
         event.item.id.endsWith(":content:2:reasoning"),
     );
-    expect(splitAssistant?.type === "timeline.item" ? splitAssistant.item.text : null).toBe(
-      "Bearer <redacted>",
-    );
-    expect(splitReasoning?.type === "timeline.item" ? splitReasoning.item.text : null).toBe(
-      "Bearer <redacted>",
-    );
+    expect(
+      splitAssistant?.type === "timeline.item" && splitAssistant.item.type === "assistant_message"
+        ? splitAssistant.item.text
+        : null,
+    ).toBe("Bearer <redacted>");
+    expect(
+      splitReasoning?.type === "timeline.item" && splitReasoning.item.type === "reasoning"
+        ? splitReasoning.item.text
+        : null,
+    ).toBe("Bearer <redacted>");
     const toolIds = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "tool_call" ? [event.item.callId] : [],
     );
@@ -4127,7 +4130,9 @@ describe("OMP direct provider", () => {
           event.state !== "started",
       ),
     ).toHaveLength(1);
-    const nestedTurn = turnIdFrom(await startPrompt(connection, events, "nested-terminal", "continue"));
+    const nestedTurn = turnIdFrom(
+      await startPrompt(connection, events, "nested-terminal", "continue"),
+    );
     children[1]?.write({
       type: "agent_end",
       messages: Array.from({ length: 400 }, () => ({
@@ -4147,7 +4152,9 @@ describe("OMP direct provider", () => {
       ),
     ).toHaveLength(1);
     const later = await startPrompt(connection, events, "after-degraded-terminal", "continue");
-    expect(later).toEqual(expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }));
+    expect(later).toEqual(
+      expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
+    );
     expect(launchArgs[1]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
     expect(JSON.stringify(events)).not.toContain(nativeSessionId);
     expect(children).toHaveLength(2);

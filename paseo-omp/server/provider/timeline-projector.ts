@@ -147,7 +147,10 @@ export class OmpTimelineProjector {
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
         );
         const retainedBytes = boundedJsonBytes(input, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
-        if (this.activeToolBytes - (previous?.retainedBytes ?? 0) + retainedBytes > MAX_ACTIVE_TOOL_BYTES) {
+        if (
+          this.activeToolBytes - (previous?.retainedBytes ?? 0) + retainedBytes >
+          MAX_ACTIVE_TOOL_BYTES
+        ) {
           return;
         }
         if (!previous) this.toolSequence += 1;
@@ -174,7 +177,8 @@ export class OmpTimelineProjector {
         const outputBytes = boundedJsonBytes(output, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
         const inputBytes = boundedJsonBytes(previous.input, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
         const retainedBytes = inputBytes + outputBytes;
-        if (this.activeToolBytes - previous.retainedBytes + retainedBytes > MAX_ACTIVE_TOOL_BYTES) return;
+        if (this.activeToolBytes - previous.retainedBytes + retainedBytes > MAX_ACTIVE_TOOL_BYTES)
+          return;
         const snapshot: ToolSnapshot = { ...previous, output, retainedBytes };
         this.activeToolBytes += retainedBytes - previous.retainedBytes;
         this.tools.set(event.toolCallId, snapshot);
@@ -189,7 +193,11 @@ export class OmpTimelineProjector {
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
         );
-        const snapshot: ToolSnapshot = { ...previous, output, retainedBytes: previous.retainedBytes };
+        const snapshot: ToolSnapshot = {
+          ...previous,
+          output,
+          retainedBytes: previous.retainedBytes,
+        };
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
         if (event.isError) {
