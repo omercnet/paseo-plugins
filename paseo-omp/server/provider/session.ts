@@ -339,13 +339,20 @@ export class OmpProviderSession {
       if (state.model && !currentModel) {
         throw new OmpPublicError("OMP runtime selected an unadvertised model");
       }
+      const thinkingOptions = thinkingForModel(currentModel);
+      if (
+        input.config.thinkingOption !== undefined &&
+        !thinkingOptions.some((option) => option.id === input.config.thinkingOption)
+      ) {
+        throw new OmpPublicError("OMP thinking level is unavailable for the selected model");
+      }
       const configState: ProviderConfigState = {
         ...(state.model ? { model: ompModelId(state.model) } : {}),
         mode: "full",
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
         models,
         modes: OMP_MODES,
-        thinkingOptions: thinkingForModel(currentModel),
+        thinkingOptions,
         settings: [],
       };
       const recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal"> = {
@@ -595,7 +602,6 @@ export class OmpProviderSession {
     const runtime = this.runtime;
     const generation = this.generation;
     this.configMutationInFlight = true;
-    this.configRevision += 1;
     let mutationAttempted = false;
     try {
       if (!this.isCurrentRuntime(runtime, generation)) {
@@ -624,6 +630,9 @@ export class OmpProviderSession {
         !thinkingForModel(targetModel).some((option) => option.id === input.changes.thinkingOption)
       ) {
         throw new OmpPublicError("OMP thinking level is unavailable for the selected model");
+      }
+      if (input.changes.model !== undefined || input.changes.thinkingOption !== undefined) {
+        this.configRevision += 1;
       }
       if (input.changes.model && targetModel) {
         mutationAttempted = true;
@@ -656,25 +665,25 @@ export class OmpProviderSession {
       if (error instanceof OmpCatalogEscape && this.isCurrentRuntime(runtime, generation)) {
         this.handleRuntimeFailure(error.message);
       } else if (mutationAttempted && this.isCurrentRuntime(runtime, generation)) {
-        await runtime
-          .getState()
-          .then((state) => this.publishCommittedConfig(state, runtime, generation))
-          .catch((refreshError) => {
+        const state = await this.readRuntimeStateWithTimeout(runtime);
+        if (state && this.isCurrentRuntime(runtime, generation)) {
+          try {
+            this.publishCommittedConfig(state, runtime, generation);
+          } catch (refreshError) {
             if (
               refreshError instanceof OmpCatalogEscape &&
               this.isCurrentRuntime(runtime, generation)
             ) {
               this.handleRuntimeFailure(refreshError.message);
             }
-          });
+          }
+        }
       }
-      if (!this.closed) {
-        this.emit({
-          type: "request.failed",
-          requestId: input.requestId,
-          error: providerError(error, "OMP configuration failed"),
-        });
-      }
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: providerError(error, "OMP configuration failed"),
+      });
     } finally {
       this.configMutationInFlight = false;
       if (this.configRefreshDirty && this.isCurrentRuntime(runtime, generation)) {
@@ -722,7 +731,11 @@ export class OmpProviderSession {
       this.configRefreshDirty = false;
       const revision = this.configRevision;
       const state = await this.readRuntimeStateWithTimeout(runtime);
-      if (!this.isCurrentRuntime(runtime, generation) || revision !== this.configRevision) return;
+      if (!this.isCurrentRuntime(runtime, generation)) return;
+      if (revision !== this.configRevision) {
+        this.configRefreshDirty = true;
+        return;
+      }
       if (state) {
         try {
           this.publishCommittedConfig(state, runtime, generation);

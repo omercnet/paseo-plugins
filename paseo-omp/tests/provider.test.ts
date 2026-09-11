@@ -248,6 +248,9 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly thinkingChanges: string[] = [];
   applyModelChanges = true;
   applyThinkingChanges = true;
+  modelChangeGate: Promise<void> | null = null;
+  modelChangeObserved: (() => void) | null = null;
+  modelChangeError: Error | null = null;
   branchMessages: Array<{ entryId: string; text: string }> = [];
   currentModel = MODEL;
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
@@ -313,14 +316,17 @@ class FakeOmpSession implements OmpRuntimeSession {
     };
   }
 
-  setModel(provider: string, modelId: string) {
+  async setModel(provider: string, modelId: string) {
     this.modelChanges.push({ provider, modelId });
     const model = this.availableModels.find(
       (candidate) => candidate.provider === provider && candidate.id === modelId,
     );
-    if (!model) return Promise.reject(new Error("unknown model"));
+    if (!model) throw new Error("unknown model");
+    this.modelChangeObserved?.();
+    if (this.modelChangeGate) await this.modelChangeGate;
+    if (this.modelChangeError) throw this.modelChangeError;
     if (this.applyModelChanges) this.currentModel = model;
-    return Promise.resolve(model);
+    return model;
   }
 
   setThinkingLevel(level: string) {
@@ -446,6 +452,7 @@ async function openSession(
   sessionId = "session-1",
   env: Record<string, string> = { TEST_ENV: "test-value" },
   model = MODEL_PUBLIC_ID,
+  thinkingOption: string | null = "medium",
 ) {
   await connection.send({
     type: "session.open",
@@ -458,13 +465,18 @@ async function openSession(
       mcpServers: {},
       model,
       mode: "full",
-      thinkingOption: "medium",
+      ...(thinkingOption ? { thinkingOption } : {}),
       settings: {},
       persist: false,
     },
     history: "skip",
   });
-  await events.waitFor((event) => event.type === "session.ready" && event.requestId === requestId);
+  const outcome = await events.waitFor(
+    (event) =>
+      (event.type === "session.ready" && event.requestId === requestId) ||
+      (event.type === "request.failed" && event.requestId === requestId),
+  );
+  if (outcome.type === "request.failed") throw new Error(outcome.error.message);
 }
 
 async function startPrompt(
@@ -640,6 +652,7 @@ describe("OMP direct provider", () => {
       "session-1",
       { TEST_ENV: "test-value" },
       publicModelId,
+      null,
     );
     const config = events.find(
       (event) => event.type === "session.config" && event.sessionId === "session-1",
@@ -748,6 +761,41 @@ describe("OMP direct provider", () => {
     );
     expect(events.some((event) => event.type === "session.ready")).toBe(false);
     expect(sessionAt(runtime).modelChanges).toHaveLength(0);
+    await connection.close();
+  });
+
+  test("rejects unsupported thinking after resolving the committed open model", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextModel = ALTERNATE_MODEL;
+    const { connection, events } = await createHarness(runtime);
+
+    await connection.send({
+      type: "session.open",
+      requestId: "unsupported-thinking-open",
+      sessionId: "unsupported-thinking-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        model: ALTERNATE_MODEL_PUBLIC_ID,
+        mode: "full",
+        thinkingOption: "medium",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unsupported-thinking-open",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP thinking level is unavailable for the selected model" },
+      }),
+    );
+    expect(events.some((event) => event.type === "session.ready")).toBe(false);
+    expect(sessionAt(runtime).closes).toBe(1);
     await connection.close();
   });
 
@@ -1044,6 +1092,49 @@ describe("OMP direct provider", () => {
     );
     await connection.close();
   });
+  test("preserves a deferred native refresh across rejected configure validation", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = gate.promise;
+    session.stateObserved = observed.resolve;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+
+    session.emit({ type: "model_changed" });
+    await observed.promise;
+    await connection.send({
+      type: "session.configure",
+      requestId: "invalid-during-refresh",
+      sessionId: "session-1",
+      changes: { mode: "write" },
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "invalid-during-refresh",
+    );
+
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    session.stateGate = null;
+    gate.resolve();
+    await refreshed;
+
+    session.emit({ type: "process_exit", error: "restart after native change" });
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "refresh-recovery", "continue"),
+    );
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({ model: "openai/gpt-5.4", thinkingOption: "high" }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
 
   test("skips failed and timed-out config refreshes without killing an active turn", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
@@ -1141,6 +1232,35 @@ describe("OMP direct provider", () => {
     ).toBe(false);
     await connection.close();
   });
+  test("bounds state reconciliation after a configure mutation failure", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const stateGate = Promise.withResolvers<void>();
+    const stateObserved = Promise.withResolvers<void>();
+    session.modelChangeError = new Error("model mutation failed");
+    session.stateGate = stateGate.promise;
+    session.stateObserved = stateObserved.resolve;
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-reconcile-timeout",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await stateObserved.promise;
+    const failure = events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "configure-reconcile-timeout",
+    );
+    await scheduler.flush();
+
+    await failure;
+    expect(scheduler.delays).toContain(2_000);
+    expect(session.closes).toBe(0);
+    stateGate.resolve();
+    await connection.close();
+  });
 
   test("rejects unsupported thinking before changing the target model", async () => {
     const { connection, events, runtime } = await createHarness();
@@ -1233,7 +1353,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("does not publish deferred configure results after close", async () => {
+  test("fails a deferred getState configure request after close", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -1250,17 +1370,56 @@ describe("OMP direct provider", () => {
       changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
     });
     await observed.promise;
+    const failure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-closed",
+    );
     const closing = connection.close();
     session.stateGate = null;
     gate.resolve();
+    await failure;
     await Promise.all([configuring, closing]);
 
     expect(events.slice(baseline).some((event) => event.type === "session.config")).toBe(false);
     expect(
-      events.some(
+      events.filter(
         (event) => event.type === "request.completed" && event.requestId === "configure-closed",
       ),
-    ).toBe(false);
+    ).toHaveLength(0);
+  });
+
+  test("fails a deferred setModel configure request after close", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baseline = events.length;
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.modelChangeGate = gate.promise;
+    session.modelChangeObserved = observed.resolve;
+
+    const configuring = connection.send({
+      type: "session.configure",
+      requestId: "configure-model-closed",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await observed.promise;
+    const failure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-model-closed",
+    );
+    const closing = connection.close();
+    session.modelChangeGate = null;
+    gate.resolve();
+    await failure;
+    await Promise.all([configuring, closing]);
+
+    expect(events.slice(baseline).some((event) => event.type === "session.config")).toBe(false);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "request.completed" && event.requestId === "configure-model-closed",
+      ),
+    ).toHaveLength(0);
   });
 
   test("rejects approval mode changes without claiming success", async () => {
