@@ -21,6 +21,7 @@
   ],
   "files": [
     "index.client.tsx",
+    "README.md",
     "index.server.ts",
     "client",
     "server",

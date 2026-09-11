@@ -329,7 +329,7 @@ export class OmpProviderSession {
     this.subsessions = capabilities.includes("session.subsession")
       ? new OmpSubsessionProjector(
           id,
-          nativeSessionId,
+          persistSession ? `persisted:${nativeSessionId}` : `ephemeral:${id}`,
           nativeSessionFile,
           config.cwd,
           emit,

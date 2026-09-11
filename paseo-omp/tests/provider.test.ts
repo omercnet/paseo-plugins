@@ -7963,7 +7963,42 @@ describe("OMP direct provider", () => {
     await reuseHarness.connection.close();
   });
 
-  test("replays cold child transcripts once with provider-root-scoped identity", async () => {
+  test("isolates identical native child ids across ephemeral provider roots", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.sessionIds.push(NATIVE_SESSION_ID, NATIVE_SESSION_ID);
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.subsession",
+    ]);
+    await openSession(connection, events, "open-ephemeral-one", "ephemeral-one");
+    await openSession(connection, events, "open-ephemeral-two", "ephemeral-two");
+    await startPrompt(connection, events, "prompt-ephemeral-one", "work", "ephemeral-one");
+    await startPrompt(connection, events, "prompt-ephemeral-two", "work", "ephemeral-two");
+    for (const index of [0, 1]) {
+      sessionAt(runtime, index).emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "same-native-child",
+          agent: "scout",
+          status: "started",
+          index: 0,
+        },
+      });
+    }
+    const firstChild = events.find(
+      (event) => event.type === "session.opened" && event.parentSessionId === "ephemeral-one",
+    );
+    const secondChild = events.find(
+      (event) => event.type === "session.opened" && event.parentSessionId === "ephemeral-two",
+    );
+    if (firstChild?.type !== "session.opened" || secondChild?.type !== "session.opened") {
+      throw new Error("Missing ephemeral children");
+    }
+    expect(secondChild.sessionId).not.toBe(firstChild.sessionId);
+    await connection.close();
+  });
+
+  test("replays cold child transcripts once with stable persisted identity", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({
       id: NATIVE_SESSION_ID,
@@ -8064,7 +8099,7 @@ describe("OMP direct provider", () => {
     );
     configureReplay();
     const secondChildId = await openReplay("replay-two", "resumed-two");
-    expect(secondChildId).not.toBe(firstChildId);
+    expect(secondChildId).toBe(firstChildId);
     expect(runtime.persistedSubagentRequests).toEqual([
       { parentSessionFile: "/sessions/root.jsonl", childTranscriptId: "native-replayed-child" },
       { parentSessionFile: "/sessions/root.jsonl", childTranscriptId: "native-replayed-child" },

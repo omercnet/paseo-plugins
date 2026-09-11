@@ -6,6 +6,7 @@ import packageJson from "../package.json";
 const releaseFiles = [
   "bun.lock",
   "LICENSE",
+  "README.md",
   "index.client.tsx",
   "index.server.ts",
   "client/hub-popover.tsx",

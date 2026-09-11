@@ -45,6 +45,14 @@ async function compileServerBundle(entryPath: string) {
 }
 
 describe("plugin server bundle", () => {
+  test("requires the first Paseo release with nested provider ancestry", async () => {
+    const manifest = await Bun.file(join(pluginRoot, "paseo-plugin.json")).json();
+    expect(manifest).toEqual(expect.objectContaining({ requirements: { paseo: "^0.8.1" } }));
+    expect(await Bun.file(join(pluginRoot, "README.md")).text()).toContain(
+      "requires Paseo `^0.8.1`",
+    );
+  });
+
   test("loads and registers the canary provider in the daemon CJS sandbox", async () => {
     const { code, warnings } = await compileServerBundle(join(pluginRoot, "index.server.ts"));
     expect(warnings.map((warning) => warning.text)).toEqual([]);
@@ -107,6 +115,12 @@ describe("plugin server bundle", () => {
 
       const files = unzipSync(await Bun.file(archivePath).bytes());
       expect(files["paseo-omp/server/provider/security.ts"]).toBeDefined();
+      expect(new TextDecoder().decode(files["paseo-omp/paseo-plugin.json"])).toContain(
+        '"paseo": "^0.8.1"',
+      );
+      expect(new TextDecoder().decode(files["paseo-omp/README.md"])).toContain(
+        "nested-subagent ancestry",
+      );
       for (const [path, content] of Object.entries(files)) {
         const outputPath = join(extractionRoot, path);
         await mkdir(dirname(outputPath), { recursive: true });

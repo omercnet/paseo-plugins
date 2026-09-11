@@ -250,7 +250,7 @@ export class OmpSubsessionProjector {
 
   constructor(
     private readonly rootSessionId: string,
-    private readonly rootNativeSessionId: string,
+    private readonly rootIdentityKey: string,
     private readonly rootSessionFile: string | undefined,
     private readonly cwd: string,
     private readonly emit: Emit,
@@ -455,9 +455,7 @@ export class OmpSubsessionProjector {
     if (existing) return existing;
     if (this.children.size >= MAX_CHILDREN) throw new OmpPublicError("OMP subagent limit reached");
     const digest = createHash("sha256")
-      .update(this.rootSessionId)
-      .update("\0")
-      .update(this.rootNativeSessionId)
+      .update(this.rootIdentityKey)
       .update("\0")
       .update(ref.id)
       .digest("base64url")
