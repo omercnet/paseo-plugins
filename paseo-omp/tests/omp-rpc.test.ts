@@ -396,12 +396,12 @@ describe("OMP RPC transport", () => {
       assistantMessageEvent: {
         type: "image_end",
         contentIndex: 0,
-        content: { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        content: { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
       },
       message: {
         role: "assistant",
         responseId: "response-image",
-        content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+        content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
       },
     });
     await expect(imageEvent).resolves.toEqual({
@@ -409,12 +409,12 @@ describe("OMP RPC transport", () => {
       assistantMessageEvent: {
         type: "image_end",
         contentIndex: 0,
-        content: { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        content: { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
       },
       message: {
         role: "assistant",
         responseId: "response-image",
-        content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+        content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
       },
     });
 
@@ -426,7 +426,7 @@ describe("OMP RPC transport", () => {
         role: "assistant",
         responseId: "response-image",
         content: [
-          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
           { type: "text", text: "after image" },
         ],
       },
@@ -438,7 +438,7 @@ describe("OMP RPC transport", () => {
         role: "assistant",
         responseId: "response-image",
         content: [
-          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
           { type: "text", text: "after image" },
         ],
       },
@@ -679,7 +679,10 @@ describe("OMP RPC transport", () => {
       },
       "oversized-text",
     );
-    const imageData = "A".repeat(8 * 1024 * 1024);
+    const imageData = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      Buffer.alloc(6 * 1024 * 1024 - 8),
+    ]).toString("base64");
     writeChunked(
       child,
       {
@@ -1703,6 +1706,20 @@ describe("OMP RPC transport", () => {
         type: "metadata",
         contentIndex: 0,
         content: { type: "image", data: "not-base64", mimeType: "image/png" },
+      },
+    });
+    const encodedSecret = Buffer.from("arbitrary secret bytes").toString("base64");
+    child.write({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        responseId: "secret-image",
+        content: [{ type: "image", data: encodedSecret, mimeType: "image/png" }],
+      },
+      assistantMessageEvent: {
+        type: "image_end",
+        contentIndex: 0,
+        content: { type: "image", data: encodedSecret, mimeType: "image/png" },
       },
     });
     await Promise.resolve();

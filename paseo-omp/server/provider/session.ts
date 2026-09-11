@@ -7,6 +7,7 @@ import type {
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
+import { isValidImagePayload } from "./image";
 import type {
   OmpAvailableCommand,
   OmpExtensionUiResponse,
@@ -173,6 +174,9 @@ function promptPayload(input: SessionPromptInput): OmpPromptPayload {
       continue;
     }
     if (part.type === "image") {
+      if (!isValidImagePayload(part.data, part.mimeType, 8 * 1024 * 1024)) {
+        throw new OmpPublicError("OMP prompt image is invalid");
+      }
       images.push({ type: "image", data: part.data, mimeType: part.mimeType });
       continue;
     }
@@ -302,6 +306,7 @@ export class OmpProviderSession {
     commandCatalog: OmpAvailableCommand[],
     private commandDiscoveryAvailable: boolean,
     private readonly emit: Emit,
+    pluginId: string | undefined,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -318,7 +323,7 @@ export class OmpProviderSession {
       id,
       emit,
       scheduler,
-      capabilities.includes("timeline.plugin"),
+      capabilities.includes("timeline.plugin") ? pluginId : undefined,
       sensitiveValues,
     );
     this.bindRuntime(runtime);
@@ -332,6 +337,7 @@ export class OmpProviderSession {
     scheduler?: OmpTimelineScheduler,
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
+    pluginId?: string,
   ): Promise<OmpProviderSession> {
     if (input.persistence) {
       throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
@@ -453,6 +459,7 @@ export class OmpProviderSession {
         commandDiscovery.commands,
         commandDiscovery.available,
         emit,
+        pluginId,
         scheduler,
       );
     } catch (error) {
@@ -618,6 +625,7 @@ export class OmpProviderSession {
       if (turn.started) this.finishTurn(turn, "failed", failure);
       else {
         turn.terminal = true;
+        this.resolveTurnPermissions(turn.turnId);
         this.projector.finishTurn(turn.turnId);
         if (this.activeTurn === turn) this.activeTurn = null;
       }

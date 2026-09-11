@@ -59,6 +59,7 @@ describe("plugin server bundle", () => {
       const providers: ProviderRegistration[] = [];
       const handlers: unknown[] = [];
       const cleanup = module.default({
+        pluginId: "custom-installation",
         handle: (...args: unknown[]) => handlers.push(args),
         registerProvider: (provider: ProviderRegistration) => providers.push(provider),
       });
@@ -70,12 +71,13 @@ describe("plugin server bundle", () => {
       if (!provider) throw new Error("Registered provider is missing");
       const connection = await provider.connect({
         versions: [1],
-        capabilities: ["prompt.message", "prompt.steer", "session.configure"],
+        capabilities: ["prompt.message", "prompt.steer", "session.configure", "timeline.plugin"],
       });
       expect(connection.capabilities).toEqual([
         "prompt.message",
         "prompt.steer",
         "session.configure",
+        "timeline.plugin",
       ]);
       await connection.close();
       expect(typeof cleanup).toBe("function");

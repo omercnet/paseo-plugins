@@ -23,6 +23,7 @@ export interface OmpProviderOptions {
   runtime?: OmpRuntime;
   timelineScheduler?: OmpTimelineScheduler;
   environment?: NodeJS.ProcessEnv;
+  pluginId?: string;
 }
 
 export function createOmpProvider(options: OmpProviderOptions = {}): ProviderRegistration {
@@ -40,14 +41,17 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         throw new Error("OMP Plugin Preview requires a valid provider protocol version 1 request");
       }
       const requestedCapabilities = new Set(parsed.data.capabilities);
-      const capabilities = CAPABILITIES.filter((capability) =>
-        requestedCapabilities.has(capability),
+      const capabilities = CAPABILITIES.filter(
+        (capability) =>
+          requestedCapabilities.has(capability) &&
+          (capability !== "timeline.plugin" || options.pluginId !== undefined),
       );
       return createOmpConnection(
         options.runtime ?? new OmpRpcRuntime({ environment: options.environment }),
         capabilities,
         options.timelineScheduler,
         options.environment,
+        options.pluginId,
       );
     },
   };

@@ -288,6 +288,7 @@ class FakeOmpSession implements OmpRuntimeSession {
     "medium";
   promptAgentInvoked: boolean | undefined = true;
   promptEvents: OmpRpcEvent[] = [];
+  promptError: Error | null = null;
   steerError: Error | null = null;
   closeError: Error | null = null;
   aborts = 0;
@@ -334,6 +335,7 @@ class FakeOmpSession implements OmpRuntimeSession {
     this.promptObserved?.();
     if (this.promptGate) await this.promptGate;
     for (const event of this.promptEvents) this.emit(event);
+    if (this.promptError) throw this.promptError;
     return {
       requestId: `rpc-prompt-${this.promptCount}`,
       agentInvoked: this.promptAgentInvoked,
@@ -478,6 +480,7 @@ async function createHarness(runtime = new FakeOmpRuntime(), scheduler = new Man
   const connection = await createOmpProvider({
     runtime,
     timelineScheduler: scheduler,
+    pluginId: "test-installation",
     environment: TEST_RUNTIME_ENV,
   }).connect({
     versions: [1],
@@ -2340,7 +2343,7 @@ describe("OMP direct provider", () => {
 
   test("accepts image blocks and projects later indexed text", async () => {
     const runtime = new FakeOmpRuntime();
-    runtime.redactionValues = ["aW1hZ2U="];
+    runtime.redactionValues = ["iVBORw0KGgo="];
     const { connection, events, scheduler } = await createHarness(runtime);
     await openSession(connection, events);
     const turnId = turnIdFrom(await startPrompt(connection, events));
@@ -2354,12 +2357,12 @@ describe("OMP direct provider", () => {
       assistantMessageEvent: {
         type: "image_end",
         contentIndex: 0,
-        content: { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        content: { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
       },
       message: {
         role: "assistant",
         responseId: "response-image",
-        content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+        content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
       },
     });
     await scheduler.flush();
@@ -2370,7 +2373,7 @@ describe("OMP direct provider", () => {
         role: "assistant",
         responseId: "response-image",
         content: [
-          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
           { type: "text", text: "after image" },
         ],
       },
@@ -2385,7 +2388,7 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         item: expect.objectContaining({
           id: "omp:assistant:1:-588CG_nYBzM:content:0:text",
-          text: "![OMP image](data:image/png;base64,aW1hZ2U=)",
+          text: "![OMP image](data:image/png;base64,iVBORw0KGgo=)",
         }),
       }),
       expect.objectContaining({
@@ -3774,6 +3777,74 @@ describe("OMP direct provider", () => {
       ),
     ).toBe(false);
     await finishTurn(events, session, turnId);
+
+    await connection.close();
+  });
+  test("cleans pending and in-flight permissions when prompt acknowledgement rejects", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const promptGate = Promise.withResolvers<void>();
+    const promptObserved = Promise.withResolvers<void>();
+    session.promptGate = promptGate.promise;
+    session.promptObserved = promptObserved.resolve;
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "reject-with-permission",
+        delivery: "auto",
+        input: { type: "message", content: [{ type: "text", text: "work" }] },
+      },
+    });
+    await promptObserved.promise;
+    session.emit({
+      type: "extension_ui_request",
+      id: "prompt-reject-ui",
+      method: "confirm",
+      title: "Continue",
+      message: "Proceed?",
+    });
+    const permission = events.findLast((event) => event.type === "session.permission");
+    if (permission?.type !== "session.permission") throw new Error("Expected permission");
+    const responseGate = Promise.withResolvers<void>();
+    const responseObserved = Promise.withResolvers<void>();
+    session.extensionUiResponseGate = responseGate.promise;
+    session.extensionUiResponseObserved = responseObserved.resolve;
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+      response: { behavior: "allow", selectedActionId: "submit" },
+    });
+    await responseObserved.promise;
+    promptGate.reject(new Error("prompt rejected"));
+    await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" &&
+        event.clientMessageId === "reject-with-permission" &&
+        event.result.type === "failed",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.permission_resolved" &&
+          event.permissionId === permission.request.id,
+      ),
+    ).toHaveLength(1);
+    responseGate.resolve();
+    await Promise.resolve();
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+      response: { behavior: "deny" },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.notice" &&
+        event.notice.id === `omp:permission-error:${permission.request.id}`,
+    );
     await connection.close();
   });
 
@@ -5985,7 +6056,7 @@ describe("OMP direct provider", () => {
           type: "message",
           content: [
             { type: "text", text: "inspect" },
-            { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+            { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
           ],
         },
       },
@@ -5998,7 +6069,7 @@ describe("OMP direct provider", () => {
       ),
     );
     expect(session.promptImages.at(-1)).toEqual([
-      { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+      { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
     ]);
     await finishTurn(events, session, imageTurn);
     await connection.close();
@@ -6669,7 +6740,10 @@ describe("OMP direct provider", () => {
       filePath: "src/derived.ts",
       unifiedDiff: "-old\n+new\n-before\n+after",
     });
-    const screenshotBytes = "a".repeat(300 * 1024);
+    const screenshotBytes = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      Buffer.alloc(225 * 1024),
+    ]).toString("base64");
     session.emit({
       type: "tool_execution_start",
       toolCallId: "browser-shot",
@@ -6697,6 +6771,17 @@ describe("OMP direct provider", () => {
     if (browserScreenshot?.type !== "timeline.item" || browserScreenshot.item.type !== "plugin") {
       throw new Error("Expected browser screenshot image item");
     }
+    expect(browserScreenshot.item.pluginId).toBe("test-installation");
+    const screenshotLifecycle = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.id === browserScreenshot.item.id
+        ? [event.item]
+        : [],
+    );
+    expect(screenshotLifecycle[0]?.type).toBe("tool_call");
+    expect(
+      new Map(screenshotLifecycle.map((item) => [item.id, item])).get(browserScreenshot.item.id)
+        ?.type,
+    ).toBe("plugin");
     expect(JSON.stringify(browserScreenshot.item.data).length).toBeGreaterThan(256 * 1024);
     expect(browserScreenshot.item.data).toEqual({
       label: "browser_screenshot",
@@ -6711,6 +6796,30 @@ describe("OMP direct provider", () => {
       details: { width: 1280, height: 720, authorization: "<redacted>" },
     });
     session.emit({
+      type: "tool_execution_start",
+      toolCallId: "read-image",
+      toolName: "read",
+      args: { path: "image.png" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "read-image",
+      toolName: "read",
+      result: {
+        content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+      },
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({
+          type: "plugin",
+          kind: "omp-images",
+          data: expect.objectContaining({ label: "read" }),
+        }),
+      }),
+    );
+    session.emit({
       type: "message_end",
       message: {
         role: "custom",
@@ -6719,7 +6828,7 @@ describe("OMP direct provider", () => {
         display: true,
         content: [
           { type: "text", text: "caption test-value" },
-          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
         ],
         details: { token: "test-value" },
       },
@@ -6735,7 +6844,7 @@ describe("OMP direct provider", () => {
             images: [
               {
                 id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-                data: "aW1hZ2U=",
+                data: "iVBORw0KGgo=",
                 mimeType: "image/png",
               },
             ],
@@ -6910,13 +7019,13 @@ describe("OMP direct provider", () => {
       },
     });
     session.emit({ type: "compaction_start" });
-    session.emit({ type: "compaction_start" });
     session.emit({
       type: "compaction_end",
       aborted: true,
       willRetry: false,
       errorMessage: "manual compaction aborted",
     });
+    session.emit({ type: "compaction_start" });
     session.emit({ type: "compaction_end", skipped: true, aborted: false, willRetry: false });
     session.emit({ type: "auto_compaction_start", reason: "overflow", action: "remote" });
     session.emit({
@@ -6942,6 +7051,20 @@ describe("OMP direct provider", () => {
       aborted: false,
       willRetry: false,
     });
+    session.emit({ type: "auto_compaction_start", reason: "overflow", action: "remote" });
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      aborted: false,
+      willRetry: false,
+    });
+    session.emit({
+      type: "auto_compaction_end",
+      action: "remote",
+      aborted: false,
+      willRetry: false,
+    });
     const overlapBaseline = events.length;
     for (let index = 0; index < 9; index += 1) session.emit({ type: "compaction_start" });
     const overlapEvents = events
@@ -6956,7 +7079,7 @@ describe("OMP direct provider", () => {
     );
     expect(overlapLoading).toHaveLength(8);
     expect(overlapRetired).toHaveLength(8);
-    expect(new Set(overlapLoading.map((item) => item.id))).toEqual(
+    expect(new Set(overlapLoading.map((item) => `${item.id}:error`))).toEqual(
       new Set(overlapRetired.map((item) => item.id)),
     );
     session.emit({ type: "advisor_yielded" });
@@ -7008,8 +7131,19 @@ describe("OMP direct provider", () => {
     );
     expect(compactionResults).toContainEqual({
       type: "error",
-      id: "omp:compaction:1",
+      id: "omp:compaction:1:error",
       message: "manual compaction aborted",
+    });
+    const reducedTimeline = new Map(
+      rendered.flatMap((event) =>
+        event.type === "timeline.item" ? [[event.item.id, event.item] as const] : [],
+      ),
+    );
+    expect(reducedTimeline.get("omp:compaction:1")).toEqual({
+      type: "compaction",
+      id: "omp:compaction:1",
+      status: "completed",
+      trigger: "manual",
     });
     expect(compactionResults).toContainEqual({
       type: "compaction",
@@ -7083,7 +7217,7 @@ describe("OMP direct provider", () => {
       sessionId: "session-1",
       item: {
         type: "error",
-        id: "omp:compaction:1",
+        id: "omp:compaction:1:error",
         message: "OMP runtime ended during compaction",
       },
     });
@@ -7098,7 +7232,7 @@ describe("OMP direct provider", () => {
       sessionId: "session-1",
       item: {
         type: "error",
-        id: "omp:compaction:2",
+        id: "omp:compaction:2:error",
         message: "OMP compaction ended without a matching start",
       },
     });
@@ -7109,7 +7243,7 @@ describe("OMP direct provider", () => {
       sessionId: "session-1",
       item: {
         type: "error",
-        id: "omp:compaction:3",
+        id: "omp:compaction:3:error",
         message: "OMP compaction ended with the turn",
       },
     });
@@ -7124,7 +7258,7 @@ describe("OMP direct provider", () => {
       sessionId: "session-2",
       item: {
         type: "error",
-        id: "omp:compaction:1",
+        id: "omp:compaction:1:error",
         message: "OMP compaction ended when the session closed",
       },
     });
@@ -7281,7 +7415,10 @@ describe("OMP direct provider", () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const turnId = turnIdFrom(await startPrompt(connection, events, "image-flood", "render"));
-    const imageData = "a".repeat(8 * 1024 * 1024);
+    const imageData = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      Buffer.alloc(6 * 1024 * 1024 - 8),
+    ]).toString("base64");
     const session = sessionAt(runtime);
     session.emit({
       type: "message_start",

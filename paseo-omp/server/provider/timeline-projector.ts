@@ -4,6 +4,7 @@ import type {
   ProviderTimelineItem,
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
+import { isOmpImageMimeType, isValidImagePayload } from "./image";
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
 import { boundedJsonBytes, type JsonValue, OmpPublicDataFilter, utf8Bytes } from "./security";
 
@@ -177,12 +178,10 @@ function nativeImageResult(
       if (
         !("data" in part) ||
         typeof part.data !== "string" ||
-        part.data.length === 0 ||
-        part.data.length % 4 !== 0 ||
-        !/^[A-Za-z0-9+/]*={0,2}$/u.test(part.data) ||
         !("mimeType" in part) ||
         typeof part.mimeType !== "string" ||
-        !/^image\/(?:gif|jpeg|png|webp)$/u.test(part.mimeType)
+        !isValidImagePayload(part.data, part.mimeType, 8 * 1024 * 1024) ||
+        !isOmpImageMimeType(part.mimeType)
       ) {
         return undefined;
       }
@@ -194,7 +193,7 @@ function nativeImageResult(
           .digest("base64url")
           .slice(0, 16),
         data: part.data,
-        mimeType: part.mimeType as NativeImageEnvelope["images"][number]["mimeType"],
+        mimeType: part.mimeType,
       });
       continue;
     }
@@ -218,7 +217,7 @@ function nativeImageResult(
   };
 }
 
-type CompactionSlot = { id: string; retrying: boolean };
+type CompactionSlot = { id: string; retrying: boolean; action?: string };
 
 export class OmpTimelineProjector {
   private readonly tools = new Map<string, ToolSnapshot>();
@@ -247,7 +246,7 @@ export class OmpTimelineProjector {
     private readonly sessionId: string,
     private readonly emit: Emit,
     private readonly scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
-    private readonly supportsPluginImages = false,
+    private readonly pluginId: string | undefined = undefined,
     sensitiveValues: Iterable<string> = [],
   ) {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
@@ -363,9 +362,7 @@ export class OmpTimelineProjector {
       case "tool_execution_end": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
-        const preservedImage = previous.nativeName.startsWith("browser_")
-          ? nativeImageResult(event.result, this.dataFilter)
-          : undefined;
+        const preservedImage = nativeImageResult(event.result, this.dataFilter);
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
         if (preservedImage && !event.isError) {
@@ -480,10 +477,15 @@ export class OmpTimelineProjector {
     }
     if (event.type === "auto_compaction_start" || event.type === "compaction_start") {
       const trigger = event.type === "auto_compaction_start" ? "auto" : "manual";
+      const action = event.type === "auto_compaction_start" ? event.action : undefined;
       const active = this.compactions[trigger];
-      const retrying = active[0];
-      if (retrying?.retrying) {
-        retrying.retrying = false;
+      const retrying = active.filter((slot) => slot.retrying && slot.action === action);
+      if (retrying.length > 1) {
+        this.retireCompactions("OMP emitted ambiguous compaction retries");
+        return;
+      }
+      if (retrying[0]) {
+        retrying[0].retrying = false;
         return;
       }
       const activeCount = this.compactions.auto.length + this.compactions.manual.length;
@@ -492,52 +494,63 @@ export class OmpTimelineProjector {
         return;
       }
       this.compactionSequence += 1;
-      const slot = { id: `omp:compaction:${this.compactionSequence}`, retrying: false };
+      const slot: CompactionSlot = {
+        id: `omp:compaction:${this.compactionSequence}`,
+        retrying: false,
+        ...(action ? { action } : {}),
+      };
       active.push(slot);
       this.publish({ type: "compaction", id: slot.id, status: "loading", trigger });
       return;
     }
     if (event.type === "auto_compaction_end" || event.type === "compaction_end") {
       const trigger = event.type === "auto_compaction_end" ? "auto" : "manual";
+      const action = event.type === "auto_compaction_end" ? event.action : undefined;
       const active = this.compactions[trigger];
-      const slot = active[0];
-      if (!slot) {
+      const candidates = active.filter((slot) => slot.action === action);
+      if (candidates.length === 0) {
         this.compactionSequence += 1;
         this.publish({
           type: "error",
-          id: `omp:compaction:${this.compactionSequence}`,
+          id: `omp:compaction:${this.compactionSequence}:error`,
           message: "OMP compaction ended without a matching start",
         });
         return;
       }
+      if (candidates.length > 1) {
+        this.retireCompactions("OMP emitted ambiguous overlapping compactions");
+        return;
+      }
+      const slot = candidates[0] as CompactionSlot;
       if (event.willRetry) {
         slot.retrying = true;
         return;
       }
-      active.shift();
+      active.splice(active.indexOf(slot), 1);
       const result = jsonRecord(this.dataFilter.json(event.result ?? null));
       const rawPreTokens = result?.preTokens ?? result?.tokensBefore;
+      const preTokens =
+        typeof rawPreTokens === "number" && Number.isFinite(rawPreTokens)
+          ? Math.max(0, Math.trunc(rawPreTokens))
+          : undefined;
+      this.publish({
+        type: "compaction",
+        id: slot.id,
+        status: "completed",
+        trigger,
+        ...(preTokens !== undefined ? { preTokens } : {}),
+      });
       if (event.aborted || event.errorMessage) {
         this.publish({
           type: "error",
-          id: slot.id,
+          id: `${slot.id}:error`,
           message: this.dataFilter.text(
             event.errorMessage ??
               (event.aborted ? "OMP compaction canceled" : "OMP compaction failed"),
             4_096,
           ),
         });
-        return;
       }
-      this.publish({
-        type: "compaction",
-        id: slot.id,
-        status: "completed",
-        trigger,
-        ...(typeof rawPreTokens === "number" && Number.isFinite(rawPreTokens)
-          ? { preTokens: Math.max(0, Math.trunc(rawPreTokens)) }
-          : {}),
-      });
     }
   }
 
@@ -637,7 +650,8 @@ export class OmpTimelineProjector {
   retireCompactions(message: string): void {
     for (const trigger of ["auto", "manual"] as const) {
       for (const slot of this.compactions[trigger].splice(0)) {
-        this.publish({ type: "error", id: slot.id, message });
+        this.publish({ type: "compaction", id: slot.id, status: "completed", trigger });
+        this.publish({ type: "error", id: `${slot.id}:error`, message });
       }
     }
   }
@@ -1120,11 +1134,11 @@ export class OmpTimelineProjector {
   }
 
   private publishImages(id: string, label: string, image: NativeImageEnvelope): boolean {
-    if (!this.supportsPluginImages) return false;
+    if (!this.pluginId) return false;
     this.publish({
       type: "plugin",
       id,
-      pluginId: "paseo-omp",
+      pluginId: this.pluginId,
       kind: "omp-images",
       version: 1,
       data: { label, ...image },

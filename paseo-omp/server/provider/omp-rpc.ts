@@ -4,6 +4,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { isValidImagePayload } from "./image";
 import {
   boundedJsonBytes,
   OmpCleanupFailure,
@@ -81,10 +82,8 @@ const OmpContentPartSchema = z
     if (part.type !== "image") return;
     if (
       part.data === undefined ||
-      part.data.length === 0 ||
-      part.data.length % 4 !== 0 ||
-      !/^[A-Za-z0-9+/]*={0,2}$/u.test(part.data) ||
-      !/^image\/(?:gif|jpeg|png|webp)$/u.test(part.mimeType ?? "")
+      part.mimeType === undefined ||
+      !isValidImagePayload(part.data, part.mimeType, MAX_IMAGE_DATA_LENGTH)
     ) {
       context.addIssue({ code: "custom", message: "invalid image payload" });
     }

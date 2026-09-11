@@ -176,6 +176,7 @@ export function createOmpConnection(
   capabilities: readonly string[],
   scheduler?: OmpTimelineScheduler,
   environment?: NodeJS.ProcessEnv,
+  pluginId?: string,
 ): ProviderConnection {
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) => SUPPORTED_CAPABILITIES[capability],
@@ -253,6 +254,7 @@ export function createOmpConnection(
           scheduler,
           shutdown.signal,
           environment,
+          pluginId,
         );
         opening.set(input.sessionId, { token, promise: pending });
         try {
