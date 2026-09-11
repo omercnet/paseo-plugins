@@ -10,7 +10,7 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
-import { type GasCitySettings, gasCitySettings } from "../shared";
+import { endpointUrlSchema, type GasCitySettings, gasCitySettings } from "../shared";
 
 type ReadySettings = Extract<SettingsState<typeof gasCitySettings.schema>, { status: "ready" }>;
 
@@ -53,6 +53,16 @@ function ReadySettingsScreen({
       settings.save({ ...settings.values, ...patch }, settings.revision),
     [settings],
   );
+  const normalizedEndpoint = endpointUrl.trim();
+  const endpointResult = endpointUrlSchema.safeParse(normalizedEndpoint);
+  const endpointError = endpointResult.success
+    ? null
+    : (endpointResult.error.issues[0]?.message ?? "Enter a valid Gas City endpoint.");
+
+  async function saveEndpoint() {
+    if (!endpointResult.success) return;
+    await save({ endpointUrl: endpointResult.data });
+  }
 
   async function addMapping() {
     const normalized = {
@@ -93,6 +103,7 @@ function ReadySettingsScreen({
           <SettingsInput
             label="Supervisor endpoint"
             hint="HTTP or HTTPS URL for the Gas City supervisor"
+            error={endpointUrl === settings.values.endpointUrl ? null : endpointError}
             initialValue={endpointUrl}
             onChangeText={setEndpointUrl}
             placeholder="http://127.0.0.1:7375"
@@ -101,8 +112,12 @@ function ReadySettingsScreen({
           <SettingsAction
             label="Save endpoint"
             actionLabel="Save"
-            disabled={settings.saving || endpointUrl.trim() === settings.values.endpointUrl}
-            onPress={() => void save({ endpointUrl: endpointUrl.trim() })}
+            disabled={
+              settings.saving ||
+              normalizedEndpoint === settings.values.endpointUrl ||
+              !endpointResult.success
+            }
+            onPress={() => void saveEndpoint()}
           />
           <SettingsSwitch
             label="Allow remote endpoint"
@@ -118,7 +133,7 @@ function ReadySettingsScreen({
         <SettingsCard>
           <SettingsSwitch
             label="Enable mutations"
-            hint="Allows confirmed dispatch and session actions. Off keeps Gas City observe-only."
+            hint="Interactive safety interlock for confirmed actions; not an authorization boundary."
             value={settings.values.mutationsEnabled}
             disabled={settings.saving}
             onValueChange={(mutationsEnabled) => void save({ mutationsEnabled })}
@@ -142,7 +157,8 @@ function ReadySettingsScreen({
           <Text style={styles.muted}>Observe-only mode is active.</Text>
         ) : (
           <Text accessibilityRole="alert" style={styles.warning}>
-            Mutations are enabled. Every operation still requires confirmation.
+            Mutations are enabled as an interactive safety interlock. Every operation still requires
+            confirmation.
           </Text>
         )}
       </SettingsSection>

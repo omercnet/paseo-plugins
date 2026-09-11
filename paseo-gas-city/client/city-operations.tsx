@@ -20,24 +20,31 @@ import {
   type GasCityConvoy,
   type GasCityEvent,
   type GasCitySession,
+  type GasCitySettings,
+  type GasCityWorkItem,
   getCityRigSnapshot,
   listAttention,
   listConvoys,
   listEvents,
   listSessions,
+  listWork,
   performSessionAction,
   type SessionActionRequest,
+  toGasCityRpcSettings,
 } from "../shared";
 import type { SlingIntent } from "./dispatch-intent";
 import { openSessionInPaseo } from "./open-in-paseo";
 import {
   buildDashboardSections,
+  cityQueryRoot,
   convoyProgress,
   type DashboardRow,
   type DashboardSection,
   presentSection,
   refreshPresentation,
+  type SessionActionName,
   sessionAccessibilityLabel,
+  sessionActionsFor,
 } from "./view-model";
 
 interface CityOperationsProps extends PluginHostProps {
@@ -46,27 +53,31 @@ interface CityOperationsProps extends PluginHostProps {
   rigName: string | null;
   workspaceId?: string;
   cwd: string;
-  endpointUrl: string;
-  eventLimit: number;
-  refreshIntervalMs: number;
-  mutationsEnabled: boolean;
+  settings: GasCitySettings;
   slingIntent?: SlingIntent | null;
   onDismissSlingIntent?: (id: number) => void;
 }
 
-type SessionAction = Exclude<SessionActionRequest["action"], "respond">;
+type SessionAction = SessionActionName | "respond";
+type InteractionResponse = "allow" | "deny" | "answer";
+type SessionActionDialog = {
+  sessionId: string;
+  title: string;
+  actions: readonly SessionAction[];
+  requestId: string | null;
+};
 type Styles = Record<string, TextStyle | ViewStyle>;
 
-const SESSION_ACTIONS: readonly { action: SessionAction; label: string; destructive?: boolean }[] =
-  [
-    { action: "wake", label: "Wake" },
-    { action: "message", label: "Message" },
-    { action: "submit", label: "Submit" },
-    { action: "stop", label: "Stop" },
-    { action: "suspend", label: "Suspend" },
-    { action: "close", label: "Close" },
-    { action: "kill", label: "Kill", destructive: true },
-  ];
+const SESSION_ACTION_LABELS: Record<SessionAction, string> = {
+  wake: "Wake",
+  message: "Message",
+  submit: "Submit",
+  stop: "Stop",
+  suspend: "Suspend",
+  close: "Close",
+  kill: "Kill",
+  respond: "Respond",
+};
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An unexpected error occurred.";
@@ -171,10 +182,12 @@ function Diagnostics({
 
 function AttentionRow({
   item,
+  onRespond,
   styles,
   theme,
 }: {
   item: AttentionItem;
+  onRespond?: () => void;
   styles: Styles;
   theme: PluginHostProps["theme"];
 }) {
@@ -201,6 +214,19 @@ function AttentionRow({
         <Text style={styles.rowMeta}>
           {item.kind} · {item.code} · {relativeTime(item.observedAt)}
         </Text>
+        {onRespond ? (
+          <View style={styles.rowActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Respond to ${item.title}`}
+              onPress={onRespond}
+              style={({ pressed }) => [styles.inlineButton, pressed && styles.pressed]}
+            >
+              <Icon name="MessageSquareReply" size={13} color={theme.colors.foreground} />
+              <Text style={styles.inlineButtonText}>Respond</Text>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -238,6 +264,43 @@ function ConvoyRow({
         <Text style={styles.rowMessage}>{convoyProgress(item)}</Text>
         <Text style={styles.rowMeta}>
           {item.id} · {item.assignee ?? "unassigned"} · {item.status}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function WorkRow({
+  item,
+  styles,
+  theme,
+}: {
+  item: GasCityWorkItem;
+  styles: Styles;
+  theme: PluginHostProps["theme"];
+}) {
+  return (
+    <View accessibilityLabel={`${item.title}. ${item.status}. ${item.type}.`} style={styles.row}>
+      <View
+        style={[
+          styles.statusRail,
+          { backgroundColor: statusColor(item.blocked ? "blocked" : item.status, theme.colors) },
+        ]}
+      />
+      <View style={styles.rowBody}>
+        <View style={styles.rowTop}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {item.title}
+          </Text>
+          <Text style={styles.badgeText}>
+            {item.priority === null ? "P–" : `P${item.priority}`}
+          </Text>
+        </View>
+        <Text style={styles.rowMessage} numberOfLines={1}>
+          {item.id} · {item.type}
+        </Text>
+        <Text style={styles.rowMeta}>
+          {item.assignee ?? "unassigned"} · {item.status}
         </Text>
       </View>
     </View>
@@ -288,10 +351,7 @@ export function CityOperations({
   rigName,
   workspaceId,
   cwd,
-  endpointUrl,
-  eventLimit,
-  refreshIntervalMs,
-  mutationsEnabled,
+  settings,
   slingIntent,
   onDismissSlingIntent,
 }: CityOperationsProps) {
@@ -302,6 +362,7 @@ export function CityOperations({
   const loadSnapshot = useRpc(getCityRigSnapshot);
   const loadSessions = useRpc(listSessions);
   const loadConvoys = useRpc(listConvoys);
+  const loadWork = useRpc(listWork);
   const loadEvents = useRpc(listEvents);
   const loadAttention = useRpc(listAttention);
   const runDispatch = useRpc(dispatchWork);
@@ -310,9 +371,11 @@ export function CityOperations({
   const [dispatchBeadId, setDispatchBeadId] = useState("");
   const [dispatchAgent, setDispatchAgent] = useState("");
   const [dispatchDraftError, setDispatchDraftError] = useState<string | null>(null);
-  const [sessionDialog, setSessionDialog] = useState<GasCitySession | null>(null);
+  const [sessionDialog, setSessionDialog] = useState<SessionActionDialog | null>(null);
   const [sessionAction, setSessionAction] = useState<SessionAction>("message");
   const [sessionMessage, setSessionMessage] = useState("");
+  const [interactionResponse, setInteractionResponse] = useState<InteractionResponse>("allow");
+  const rpcSettings = useMemo(() => toGasCityRpcSettings(settings), [settings]);
 
   useEffect(() => {
     if (!slingIntent) return;
@@ -323,35 +386,43 @@ export function CityOperations({
     onDismissSlingIntent?.(slingIntent.id);
   }, [onDismissSlingIntent, slingIntent]);
 
-  const scope = useMemo(() => ({ cityName, rigName }), [cityName, rigName]);
+  const scope = useMemo(
+    () => ({ settings: rpcSettings, cityName, rigName }),
+    [cityName, rigName, rpcSettings],
+  );
   const queryRoot = useMemo(
-    () => ["gas-city", host.id, cityName, rigName ?? "all-rigs"] as const,
-    [cityName, host.id, rigName],
+    () => cityQueryRoot(host.id, settings.endpointUrl, cityName, rigName),
+    [cityName, host.id, rigName, settings.endpointUrl],
   );
   const snapshotQuery = useQuery({
     queryKey: [...queryRoot, "snapshot"],
     queryFn: () => loadSnapshot(scope),
-    refetchInterval: refreshIntervalMs,
+    refetchInterval: settings.refreshIntervalMs,
   });
   const sessionsQuery = useQuery({
     queryKey: [...queryRoot, "sessions"],
     queryFn: () => loadSessions(scope),
-    refetchInterval: refreshIntervalMs,
+    refetchInterval: settings.refreshIntervalMs,
   });
   const convoysQuery = useQuery({
     queryKey: [...queryRoot, "convoys"],
     queryFn: () => loadConvoys(scope),
-    refetchInterval: refreshIntervalMs,
+    refetchInterval: settings.refreshIntervalMs,
+  });
+  const workQuery = useQuery({
+    queryKey: [...queryRoot, "work", settings.eventLimit],
+    queryFn: () => loadWork(scope),
+    refetchInterval: settings.refreshIntervalMs,
   });
   const eventsQuery = useQuery({
-    queryKey: [...queryRoot, "events", eventLimit],
-    queryFn: () => loadEvents({ scope: "city", cityName, afterSequence: null, limit: eventLimit }),
-    refetchInterval: refreshIntervalMs,
+    queryKey: [...queryRoot, "events", settings.eventLimit],
+    queryFn: () => loadEvents({ settings: rpcSettings, scope: "city", cityName, cursor: null }),
+    refetchInterval: settings.refreshIntervalMs,
   });
   const attentionQuery = useQuery({
     queryKey: [...queryRoot, "attention"],
     queryFn: () => loadAttention(scope),
-    refetchInterval: refreshIntervalMs,
+    refetchInterval: settings.refreshIntervalMs,
   });
 
   const baseSections = useMemo(
@@ -360,12 +431,13 @@ export function CityOperations({
         attention: attentionQuery.data,
         sessions: sessionsQuery.data,
         convoys: convoysQuery.data,
+        work: workQuery.data,
         events: eventsQuery.data,
       }),
-    [attentionQuery.data, convoysQuery.data, eventsQuery.data, sessionsQuery.data],
+    [attentionQuery.data, convoysQuery.data, eventsQuery.data, sessionsQuery.data, workQuery.data],
   );
   const sections = useMemo(() => {
-    const queries = [attentionQuery, sessionsQuery, convoysQuery, eventsQuery];
+    const queries = [attentionQuery, sessionsQuery, convoysQuery, workQuery, eventsQuery];
     return baseSections.map((section, index) => {
       const query = queries[index];
       return presentSection(section, {
@@ -375,7 +447,7 @@ export function CityOperations({
         error: query.error,
       });
     });
-  }, [attentionQuery, baseSections, convoysQuery, eventsQuery, sessionsQuery]);
+  }, [attentionQuery, baseSections, convoysQuery, eventsQuery, sessionsQuery, workQuery]);
 
   const refresh = refreshPresentation({
     hasData: snapshotQuery.data !== undefined,
@@ -384,12 +456,14 @@ export function CityOperations({
       snapshotQuery.isFetching ||
       sessionsQuery.isFetching ||
       convoysQuery.isFetching ||
+      workQuery.isFetching ||
       eventsQuery.isFetching ||
       attentionQuery.isFetching,
     error:
       snapshotQuery.error ??
       sessionsQuery.error ??
       convoysQuery.error ??
+      workQuery.error ??
       eventsQuery.error ??
       attentionQuery.error,
     refreshedAt: snapshotQuery.data?.refreshedAt,
@@ -397,7 +471,9 @@ export function CityOperations({
 
   const dispatchMutation = useMutation({
     mutationFn: async () => {
-      if (!mutationsEnabled) throw new Error("Enable mutations in Gas City settings first.");
+      if (!settings.mutationsEnabled) {
+        throw new Error("Enable mutations in Gas City settings first.");
+      }
       const beadId = dispatchBeadId.trim();
       const agent = dispatchAgent.trim();
       if (!beadId || !agent) throw new Error("Bead ID and agent role are required.");
@@ -413,7 +489,7 @@ export function CityOperations({
         noConvoy: false,
         merge: "direct",
       } satisfies DispatchRequest;
-      return runDispatch(request);
+      return runDispatch({ settings: rpcSettings, request });
     },
     onSuccess: (result) => {
       toast.show(`Dispatched ${result.beadId ?? "work"} to ${result.target}.`, {
@@ -425,14 +501,18 @@ export function CityOperations({
       setDispatchDraftError(null);
     },
     onError: (error) => toast.error(errorMessage(error)),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: queryRoot }),
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryRoot });
+    },
   });
 
   const sessionMutation = useMutation({
     mutationFn: async () => {
-      if (!mutationsEnabled) throw new Error("Enable mutations in Gas City settings first.");
+      if (!settings.mutationsEnabled) {
+        throw new Error("Enable mutations in Gas City settings first.");
+      }
       if (!sessionDialog) throw new Error("Choose a session first.");
-      const base = { cityName, sessionId: sessionDialog.id, confirmed: true as const };
+      const base = { cityName, sessionId: sessionDialog.sessionId, confirmed: true as const };
       let request: SessionActionRequest;
       if (sessionAction === "message") {
         request = { ...base, action: "message", message: sessionMessage.trim() };
@@ -443,10 +523,20 @@ export function CityOperations({
           message: sessionMessage.trim(),
           intent: "follow_up",
         };
+      } else if (sessionAction === "respond") {
+        if (!sessionDialog.requestId) throw new Error("Pending interaction request ID is missing.");
+        request = {
+          ...base,
+          action: "respond",
+          requestId: sessionDialog.requestId,
+          response: interactionResponse,
+          text: interactionResponse === "answer" ? sessionMessage.trim() : null,
+          metadata: {},
+        };
       } else {
         request = { ...base, action: sessionAction };
       }
-      return runSessionAction(request);
+      return runSessionAction({ settings: rpcSettings, request });
     },
     onSuccess: (result) => {
       toast.show(`${sessionAction} accepted for ${result.sessionId}.`, { variant: "success" });
@@ -454,7 +544,9 @@ export function CityOperations({
       setSessionMessage("");
     },
     onError: (error) => toast.error(errorMessage(error)),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: queryRoot }),
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryRoot });
+    },
   });
 
   const openMutation = useMutation({
@@ -462,10 +554,19 @@ export function CityOperations({
       openSessionInPaseo({
         paseo,
         session,
-        endpointUrl,
+        endpointUrl: settings.endpointUrl,
         workspaceId,
         cwd,
-        onOpenAgent: navigation ? (agentId) => navigation.openAgent({ agentId }) : undefined,
+        onOpenAgent: navigation
+          ? (agentId) => {
+              try {
+                navigation.openAgent({ agentId });
+              } catch (error) {
+                console.error("[paseo-gas-city] Open-agent navigation callback failed", error);
+                toast.error("The session opened, but Paseo could not navigate to it.");
+              }
+            }
+          : undefined,
       }),
     onSuccess: () => toast.show("Opened Gas City session in Paseo.", { variant: "success" }),
     onError: (error) => toast.error(errorMessage(error)),
@@ -476,18 +577,41 @@ export function CityOperations({
       snapshotQuery.refetch(),
       sessionsQuery.refetch(),
       convoysQuery.refetch(),
+      workQuery.refetch(),
       eventsQuery.refetch(),
       attentionQuery.refetch(),
     ]);
   }
 
   function openSessionActions(session: GasCitySession) {
-    setSessionDialog(session);
-    setSessionAction(session.running ? "message" : "wake");
+    const actions = sessionActionsFor(session);
+    const firstAction = actions[0];
+    if (!firstAction) return;
+    setSessionDialog({
+      sessionId: session.id,
+      title: session.title,
+      actions,
+      requestId: null,
+    });
+    setSessionAction(firstAction);
+    setSessionMessage("");
+  }
+
+  function openInteractionResponse(item: AttentionItem) {
+    if (!item.resourceId || !item.requestId) return;
+    setSessionDialog({
+      sessionId: item.resourceId,
+      title: item.title,
+      actions: ["respond"],
+      requestId: item.requestId,
+    });
+    setSessionAction("respond");
+    setInteractionResponse("allow");
     setSessionMessage("");
   }
 
   function renderSession(item: GasCitySession) {
+    const actions = sessionActionsFor(item);
     return (
       <View accessibilityLabel={sessionAccessibilityLabel(item)} style={styles.row}>
         <View
@@ -527,15 +651,17 @@ export function CityOperations({
               <Icon name="ExternalLink" size={13} color={theme.colors.foreground} />
               <Text style={styles.inlineButtonText}>Open in Paseo</Text>
             </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open actions for ${item.title}`}
-              onPress={() => openSessionActions(item)}
-              style={({ pressed }) => [styles.inlineButton, pressed && styles.pressed]}
-            >
-              <Icon name="SlidersHorizontal" size={13} color={theme.colors.foreground} />
-              <Text style={styles.inlineButtonText}>Actions</Text>
-            </Pressable>
+            {actions.length > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Open actions for ${item.title}`}
+                onPress={() => openSessionActions(item)}
+                style={({ pressed }) => [styles.inlineButton, pressed && styles.pressed]}
+              >
+                <Icon name="SlidersHorizontal" size={13} color={theme.colors.foreground} />
+                <Text style={styles.inlineButtonText}>Actions</Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
       </View>
@@ -563,10 +689,20 @@ export function CityOperations({
       );
     }
     if (item.kind === "empty") return <Text style={styles.emptyText}>{item.message}</Text>;
-    if (item.kind === "attention")
-      return <AttentionRow item={item.item} styles={styles} theme={theme} />;
+    if (item.kind === "attention") {
+      const canRespond = Boolean(item.item.requestId && item.item.resourceId);
+      return (
+        <AttentionRow
+          item={item.item}
+          onRespond={canRespond ? () => openInteractionResponse(item.item) : undefined}
+          styles={styles}
+          theme={theme}
+        />
+      );
+    }
     if (item.kind === "session") return renderSession(item.item);
     if (item.kind === "convoy") return <ConvoyRow item={item.item} styles={styles} theme={theme} />;
+    if (item.kind === "work") return <WorkRow item={item.item} styles={styles} theme={theme} />;
     return <EventRow item={item.item} styles={styles} theme={theme} />;
   }
 
@@ -634,14 +770,18 @@ export function CityOperations({
           contentContainerStyle={styles.statsRail}
         >
           <Stat
-            label="agents"
+            label="city-wide agents"
             value={`${snapshot.city.agents.running}/${snapshot.city.agents.total}`}
             styles={styles}
           />
-          <Stat label="sessions" value={snapshot.city.sessions.active} styles={styles} />
-          <Stat label="ready work" value={snapshot.city.work.ready} styles={styles} />
-          <Stat label="in progress" value={snapshot.city.work.inProgress} styles={styles} />
-          <Stat label="open work" value={snapshot.city.work.open} styles={styles} />
+          <Stat label="city-wide sessions" value={snapshot.city.sessions.active} styles={styles} />
+          <Stat label="city-wide ready" value={snapshot.city.work.ready} styles={styles} />
+          <Stat
+            label="city-wide in progress"
+            value={snapshot.city.work.inProgress}
+            styles={styles}
+          />
+          <Stat label="city-wide open" value={snapshot.city.work.open} styles={styles} />
         </ScrollView>
         {snapshot.rig ? (
           <View style={styles.rigCard}>
@@ -649,6 +789,9 @@ export function CityOperations({
               <Text style={styles.rigName}>{snapshot.rig.name}</Text>
               <Text style={styles.rowMeta} numberOfLines={1}>
                 {snapshot.rig.path}
+                {snapshot.rig.git
+                  ? ` · ${snapshot.rig.git.branch}${snapshot.rig.git.clean ? "" : "*"}`
+                  : ""}
               </Text>
             </View>
             <Text
@@ -717,6 +860,7 @@ export function CityOperations({
           if (item.kind === "attention") return `attention:${item.item.id}`;
           if (item.kind === "session") return `session:${item.item.id}`;
           if (item.kind === "convoy") return `convoy:${item.item.id}`;
+          if (item.kind === "work") return `work:${item.item.id}`;
           if (item.kind === "event")
             return `event:${item.item.cityName ?? "global"}:${item.item.sequence}`;
           return `${item.kind}:${index}:${item.message}`;
@@ -739,9 +883,12 @@ export function CityOperations({
     );
   }
 
-  const messageRequired = sessionAction === "message" || sessionAction === "submit";
+  const messageRequired =
+    sessionAction === "message" ||
+    sessionAction === "submit" ||
+    (sessionAction === "respond" && interactionResponse === "answer");
   const sessionConfirmDisabled =
-    !mutationsEnabled ||
+    !settings.mutationsEnabled ||
     sessionMutation.isPending ||
     (messageRequired && sessionMessage.trim().length === 0);
 
@@ -794,7 +941,7 @@ export function CityOperations({
               Dispatch one bead to a generic Gas City agent role in {cityName}
               {rigName ? ` / ${rigName}` : ""}.
             </Text>
-            {!mutationsEnabled ? (
+            {!settings.mutationsEnabled ? (
               <View accessibilityRole="alert" style={styles.lockedNotice}>
                 <Icon name="Lock" size={15} color={theme.colors.statusWarning} />
                 <Text style={styles.lockedText}>
@@ -853,7 +1000,7 @@ export function CityOperations({
                 accessibilityRole="button"
                 accessibilityLabel="Confirm Gas City dispatch"
                 disabled={
-                  !mutationsEnabled ||
+                  !settings.mutationsEnabled ||
                   dispatchMutation.isPending ||
                   !dispatchBeadId.trim() ||
                   !dispatchAgent.trim()
@@ -862,7 +1009,7 @@ export function CityOperations({
                 style={({ pressed }) => [
                   styles.primaryButton,
                   pressed && styles.pressed,
-                  (!mutationsEnabled ||
+                  (!settings.mutationsEnabled ||
                     dispatchMutation.isPending ||
                     !dispatchBeadId.trim() ||
                     !dispatchAgent.trim()) &&
@@ -888,7 +1035,7 @@ export function CityOperations({
       >
         <Modal.Content>
           <View style={styles.modalBody}>
-            {!mutationsEnabled ? (
+            {!settings.mutationsEnabled ? (
               <View accessibilityRole="alert" style={styles.lockedNotice}>
                 <Icon name="Lock" size={15} color={theme.colors.statusWarning} />
                 <Text style={styles.lockedText}>
@@ -902,39 +1049,71 @@ export function CityOperations({
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.actionRail}
             >
-              {SESSION_ACTIONS.map((option) => {
-                const selected = sessionAction === option.action;
+              {(sessionDialog?.actions ?? []).map((action) => {
+                const selected = sessionAction === action;
+                const label = SESSION_ACTION_LABELS[action];
                 return (
                   <Pressable
-                    key={option.action}
+                    key={action}
                     accessibilityRole="button"
-                    accessibilityLabel={`${option.label} session`}
+                    accessibilityLabel={`${label} session`}
                     accessibilityState={{ selected }}
-                    onPress={() => setSessionAction(option.action)}
+                    onPress={() => setSessionAction(action)}
                     style={({ pressed }) => [
                       styles.actionChip,
                       selected && styles.actionChipSelected,
-                      option.destructive && selected && styles.dangerChip,
+                      action === "kill" && selected && styles.dangerChip,
                       pressed && styles.pressed,
                     ]}
                   >
                     <Text
                       style={[styles.actionChipText, selected && styles.actionChipTextSelected]}
                     >
-                      {option.label}
+                      {label}
                     </Text>
                   </Pressable>
                 );
               })}
             </ScrollView>
+            {sessionAction === "respond" ? (
+              <View style={styles.actionRail}>
+                {(["allow", "deny", "answer"] as const).map((response) => {
+                  const selected = interactionResponse === response;
+                  return (
+                    <Pressable
+                      key={response}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${response} pending interaction`}
+                      accessibilityState={{ selected }}
+                      onPress={() => setInteractionResponse(response)}
+                      style={[styles.actionChip, selected && styles.actionChipSelected]}
+                    >
+                      <Text
+                        style={[styles.actionChipText, selected && styles.actionChipTextSelected]}
+                      >
+                        {response}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
             {messageRequired ? (
               <View style={styles.field}>
                 <Text style={styles.fieldLabel}>
-                  {sessionAction === "submit" ? "Follow-up prompt" : "Message"}
+                  {sessionAction === "submit"
+                    ? "Follow-up prompt"
+                    : sessionAction === "respond"
+                      ? "Response"
+                      : "Message"}
                 </Text>
                 <TextInput
                   accessibilityLabel={
-                    sessionAction === "submit" ? "Session follow-up prompt" : "Session message"
+                    sessionAction === "submit"
+                      ? "Session follow-up prompt"
+                      : sessionAction === "respond"
+                        ? "Interaction response"
+                        : "Session message"
                   }
                   multiline
                   onChangeText={setSessionMessage}

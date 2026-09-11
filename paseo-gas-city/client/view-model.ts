@@ -1,4 +1,10 @@
-import type { AttentionItem, GasCityConvoy, GasCityEvent, GasCitySession } from "../shared";
+import type {
+  AttentionItem,
+  GasCityConvoy,
+  GasCityEvent,
+  GasCitySession,
+  GasCityWorkItem,
+} from "../shared";
 
 export type DashboardRow =
   | { kind: "status"; tone: "loading" | "error" | "refreshing" | "stale"; message: string }
@@ -6,20 +12,36 @@ export type DashboardRow =
   | { kind: "attention"; item: AttentionItem }
   | { kind: "session"; item: GasCitySession }
   | { kind: "convoy"; item: GasCityConvoy }
+  | { kind: "work"; item: GasCityWorkItem }
   | { kind: "event"; item: GasCityEvent };
 
 export interface DashboardSection {
-  id: "attention" | "sessions" | "convoys" | "events";
+  id: "attention" | "sessions" | "convoys" | "work" | "events";
   title: string;
   data: DashboardRow[];
   truncated: boolean;
 }
 
 export interface DashboardData {
-  attention: { items: readonly AttentionItem[]; truncated: boolean } | undefined;
-  sessions: { items: readonly GasCitySession[]; truncated: boolean } | undefined;
-  convoys: { items: readonly GasCityConvoy[]; truncated: boolean } | undefined;
-  events: { items: readonly GasCityEvent[]; truncated: boolean } | undefined;
+  attention:
+    | { scope: "city" | "city-and-rig"; items: readonly AttentionItem[]; truncated: boolean }
+    | undefined;
+  sessions:
+    | { scope: "city" | "rig"; items: readonly GasCitySession[]; truncated: boolean }
+    | undefined;
+  convoys:
+    | {
+        scope: "city" | "rig-and-unattributed";
+        items: readonly GasCityConvoy[];
+        truncated: boolean;
+      }
+    | undefined;
+  work:
+    | { scope: "city" | "rig"; items: readonly GasCityWorkItem[]; truncated: boolean }
+    | undefined;
+  events:
+    | { scope: "supervisor-head" | "city"; items: readonly GasCityEvent[]; truncated: boolean }
+    | undefined;
 }
 
 const severityOrder = { critical: 0, warning: 1, info: 2 } as const;
@@ -59,11 +81,22 @@ export function buildDashboardSections(data: DashboardData): DashboardSection[] 
   const events = [...(data.events?.items ?? [])].sort(
     (left, right) => right.sequence - left.sequence,
   );
+  const work = [...(data.work?.items ?? [])].sort((left, right) => {
+    const leftPriority = left.priority ?? Number.MAX_SAFE_INTEGER;
+    const rightPriority = right.priority ?? Number.MAX_SAFE_INTEGER;
+    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+    return (
+      timestamp(right.updatedAt ?? right.createdAt) - timestamp(left.updatedAt ?? left.createdAt)
+    );
+  });
 
   return [
     {
       id: "attention",
-      title: "Attention",
+      title:
+        data.attention?.scope === "city-and-rig"
+          ? "Attention · city + rig"
+          : "Attention · city-wide",
       data: withEmptyRow(attention, "No resources need attention.", (item) => ({
         kind: "attention",
         item,
@@ -72,7 +105,7 @@ export function buildDashboardSections(data: DashboardData): DashboardSection[] 
     },
     {
       id: "sessions",
-      title: "Sessions",
+      title: data.sessions?.scope === "rig" ? "Sessions · mapped rig" : "Sessions · city-wide",
       data: withEmptyRow(sessions, "No sessions in this scope.", (item) => ({
         kind: "session",
         item,
@@ -81,7 +114,10 @@ export function buildDashboardSections(data: DashboardData): DashboardSection[] 
     },
     {
       id: "convoys",
-      title: "Convoys",
+      title:
+        data.convoys?.scope === "rig-and-unattributed"
+          ? "Convoys · mapped rig + unattributed"
+          : "Convoys · city-wide",
       data: withEmptyRow(convoys, "No convoys in this scope.", (item) => ({
         kind: "convoy",
         item,
@@ -89,8 +125,17 @@ export function buildDashboardSections(data: DashboardData): DashboardSection[] 
       truncated: data.convoys?.truncated ?? false,
     },
     {
+      id: "work",
+      title: data.work?.scope === "rig" ? "Work · mapped rig" : "Work · city-wide",
+      data: withEmptyRow(work, "No work in this scope.", (item) => ({ kind: "work", item })),
+      truncated: data.work?.truncated ?? false,
+    },
+    {
       id: "events",
-      title: "Recent events",
+      title:
+        data.events?.scope === "supervisor-head"
+          ? "Supervisor events · head snapshot"
+          : "Recent events · city-wide",
       data: withEmptyRow(events, "No recent events.", (item) => ({ kind: "event", item })),
       truncated: data.events?.truncated ?? false,
     },
@@ -168,6 +213,44 @@ export function refreshPresentation(input: {
     }
   }
   return { state: "ready", label: "Live data ready" };
+}
+
+export type SessionActionName =
+  | "wake"
+  | "message"
+  | "submit"
+  | "stop"
+  | "suspend"
+  | "close"
+  | "kill";
+
+export function sessionActionsFor(
+  session: Pick<GasCitySession, "running" | "state" | "submissionKinds">,
+): SessionActionName[] {
+  if (session.state.toLowerCase() === "closed") return [];
+  if (!session.running) return ["wake", "close"];
+  const actions: SessionActionName[] = [];
+  if (session.submissionKinds.includes("message")) actions.push("message");
+  if (session.submissionKinds.includes("submit")) actions.push("submit");
+  actions.push("stop", "suspend", "close", "kill");
+  return actions;
+}
+
+export function selectAvailableCity(
+  preferred: string | null,
+  cities: readonly { name: string }[],
+): string | null {
+  if (preferred && cities.some(({ name }) => name === preferred)) return preferred;
+  return cities[0]?.name ?? null;
+}
+
+export function cityQueryRoot(
+  hostId: string,
+  endpointUrl: string,
+  cityName: string,
+  rigName: string | null,
+) {
+  return ["gas-city", hostId, endpointUrl, cityName, rigName ?? "all-rigs"] as const;
 }
 
 export interface SlingArguments {

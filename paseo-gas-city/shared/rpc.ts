@@ -10,17 +10,20 @@ import {
   EventListSchema,
   identifierSchema,
   nameSchema,
-  ProviderSelectionListSchema,
   SessionActionRequestSchema,
   SessionActionResultSchema,
   SessionListSchema,
   SupervisorDiscoverySchema,
+  WorkListSchema,
   WorkspaceRigMappingSchema,
 } from "./schemas";
+import { GasCityRpcSettingsSchema } from "./settings";
 
-const noInput = z.object({}).strict();
+const settingsInput = { settings: GasCityRpcSettingsSchema };
+const noInput = z.object(settingsInput).strict();
 const cityRigInput = z
   .object({
+    ...settingsInput,
     cityName: nameSchema,
     rigName: nameSchema.nullable(),
   })
@@ -34,7 +37,7 @@ export const discoverSupervisor = defineRpc({
 
 export const resolveWorkspaceRig = defineRpc({
   name: "gas-city.resolve-workspace-rig",
-  input: z.object({ workspaceId: identifierSchema }).strict(),
+  input: z.object({ ...settingsInput, workspaceId: identifierSchema }).strict(),
   output: WorkspaceRigMappingSchema,
 });
 
@@ -55,23 +58,22 @@ export const listConvoys = defineRpc({
   input: cityRigInput,
   output: ConvoyListSchema,
 });
+export const listWork = defineRpc({
+  name: "gas-city.list-work",
+  input: cityRigInput,
+  output: WorkListSchema,
+});
 
 export const listEvents = defineRpc({
   name: "gas-city.list-events",
   input: z.discriminatedUnion("scope", [
+    z.object({ ...settingsInput, scope: z.literal("supervisor") }).strict(),
     z
       .object({
-        scope: z.literal("supervisor"),
-        cursor: z.string().max(GAS_CITY_LIMITS.cursor).nullable(),
-        limit: z.number().int().min(1).max(GAS_CITY_LIMITS.events),
-      })
-      .strict(),
-    z
-      .object({
+        ...settingsInput,
         scope: z.literal("city"),
         cityName: nameSchema,
-        afterSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
-        limit: z.number().int().min(1).max(GAS_CITY_LIMITS.events),
+        cursor: z.string().max(GAS_CITY_LIMITS.cursor).nullable(),
       })
       .strict(),
   ]),
@@ -86,18 +88,12 @@ export const listAttention = defineRpc({
 
 export const dispatchWork = defineRpc({
   name: "gas-city.dispatch-work",
-  input: DispatchRequestSchema,
+  input: z.object({ ...settingsInput, request: DispatchRequestSchema }).strict(),
   output: DispatchResultSchema,
 });
 
 export const performSessionAction = defineRpc({
   name: "gas-city.perform-session-action",
-  input: SessionActionRequestSchema,
+  input: z.object({ ...settingsInput, request: SessionActionRequestSchema }).strict(),
   output: SessionActionResultSchema,
-});
-
-export const listProviderSelections = defineRpc({
-  name: "gas-city.list-provider-selections",
-  input: z.object({ cityName: nameSchema.nullable() }).strict(),
-  output: ProviderSelectionListSchema,
 });

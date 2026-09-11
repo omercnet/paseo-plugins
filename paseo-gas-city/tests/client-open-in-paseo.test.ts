@@ -66,4 +66,26 @@ describe("Open in Paseo", () => {
       title: "Gas City: Review API",
     });
   });
+
+  test("creates a global bridge agent with the requested working directory", async () => {
+    let captured: unknown;
+    const paseo = {
+      agents: {
+        async create(options: unknown) {
+          captured = options;
+          return { id: "paseo-agent-global" };
+        },
+      },
+    } as unknown as PaseoApi;
+
+    await expect(
+      openSessionInPaseo({
+        paseo,
+        session: sessionsFixture.items[0],
+        endpointUrl: "http://127.0.0.1:7375",
+        cwd: "/work/alpha",
+      }),
+    ).resolves.toBe("paseo-agent-global");
+    expect(captured).toMatchObject({ cwd: "/work/alpha", title: "Gas City: Review API" });
+  });
 });

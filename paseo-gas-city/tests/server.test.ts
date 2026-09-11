@@ -3,7 +3,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { GasCityClient, GasCityClientError } from "../server/gas-city-client";
 import { createGasCityHandlers } from "../server/handlers";
 import { mapWorkspaceToRig } from "../server/workspace-mapping";
-import { GasCitySettingsSchema } from "../shared";
+import { GasCitySettingsSchema, toGasCityRpcSettings } from "../shared";
 
 function jsonResponse(value: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(value), {
@@ -44,6 +44,7 @@ const rigs = {
       running_count: 1,
       default_branch: "main",
       last_activity: "2026-09-11T06:00:00Z",
+      git: { branch: "main", clean: true, changed_files: 0, ahead: 0, behind: 0 },
     },
   ],
   total: 1,
@@ -100,6 +101,22 @@ const convoys = {
   ],
   total: 1,
 };
+const work = {
+  items: [
+    {
+      id: "al-1",
+      title: "Review API",
+      status: "in_progress",
+      issue_type: "task",
+      created_at: "2026-09-11T06:00:00Z",
+      updated_at: "2026-09-11T06:01:00Z",
+      priority: 1,
+      assignee: "alpha/reviewer",
+      is_blocked: false,
+    },
+  ],
+  total: 1,
+};
 const pending = {
   items: [{ session_id: "session-1", request_id: "permission-1", kind: "tool-approval" }],
   total: 1,
@@ -131,9 +148,14 @@ function fixtureFetch(request: string | URL | Request, init?: RequestInit): Prom
   if (path.startsWith("/v0/city/alpha-city/convoys")) return Promise.resolve(jsonResponse(convoys));
   if (path === "/v0/city/alpha-city/pending") return Promise.resolve(jsonResponse(pending));
   if (path.startsWith("/v0/city/alpha-city/events")) return Promise.resolve(jsonResponse(events));
-  if (path === "/v0/events?limit=10") {
+  if (path.startsWith("/v0/city/alpha-city/beads")) return Promise.resolve(jsonResponse(work));
+  if (path === "/v0/events?limit=100") {
     return Promise.resolve(
-      jsonResponse({ ...events, items: [{ ...events.items[0], city: "alpha-city" }] }),
+      jsonResponse({
+        event_cursor: "alpha-city:42",
+        items: [{ ...events.items[0], city: "alpha-city" }],
+        total: 1,
+      }),
     );
   }
   if (path === "/v0/city/alpha-city/sling") {
@@ -141,6 +163,14 @@ function fixtureFetch(request: string | URL | Request, init?: RequestInit): Prom
     return Promise.resolve(
       jsonResponse({ status: "slung", target: "alpha/reviewer", bead: "al-1", warnings: [] }),
     );
+  }
+  if (path === "/v0/city/alpha-city/session/session-1/respond") {
+    expect(JSON.parse(String(init?.body))).toEqual({
+      request_id: "permission-1",
+      action: "allow",
+      metadata: {},
+    });
+    return Promise.resolve(jsonResponse({ status: "accepted", id: "session-1" }));
   }
   if (path === "/v0/city/alpha-city/session/session-1/messages") {
     expect(new Headers(init?.headers).get("X-GC-Request")).toBeTruthy();
@@ -153,14 +183,14 @@ function fixtureFetch(request: string | URL | Request, init?: RequestInit): Prom
 
 function handlerFixture(mutationsEnabled = false) {
   const settings = GasCitySettingsSchema.parse({ mutationsEnabled });
-  const client = new GasCityClient({
-    endpointUrl: settings.endpointUrl,
-    allowRemoteEndpoint: false,
-    fetch: fixtureFetch,
-  });
+  const rpcSettings = toGasCityRpcSettings(settings);
   const handlers = createGasCityHandlers({
-    getSettings: () => settings,
-    createClient: () => client,
+    createClient: (requestSettings) =>
+      new GasCityClient({
+        endpointUrl: requestSettings.endpointUrl,
+        allowRemoteEndpoint: requestSettings.allowRemoteEndpoint,
+        fetch: fixtureFetch,
+      }),
     now: () => new Date("2026-09-11T06:00:00Z"),
   });
   const context = {
@@ -170,7 +200,7 @@ function handlerFixture(mutationsEnabled = false) {
       },
     },
   } as unknown as PluginHandlerContext;
-  return { handlers, context };
+  return { handlers, context, settings: rpcSettings };
 }
 
 describe("GasCityClient security boundary", () => {
@@ -193,6 +223,7 @@ describe("GasCityClient security boundary", () => {
       "http://user:pass@127.0.0.1:8372",
       "http://127.0.0.1:8372/#secret",
       "file:///tmp/gc.sock",
+      "http://127.0.0.1:8372?token=secret",
     ]) {
       expect(() => new GasCityClient({ endpointUrl, allowRemoteEndpoint: false })).toThrow(
         GasCityClientError,
@@ -244,6 +275,61 @@ describe("GasCityClient security boundary", () => {
       fetch: async () => jsonResponse({ ...health, cities_total: "one" }),
     });
     await expect(client.health()).rejects.toMatchObject({ code: "invalid-response" });
+  });
+
+  test("passes city pagination cursors without inventing supervisor cursors", async () => {
+    const requests: string[] = [];
+    const client = new GasCityClient({
+      endpointUrl: "http://127.0.0.1:8372",
+      allowRemoteEndpoint: false,
+      fetch: async (request) => {
+        requests.push(String(request));
+        return jsonResponse(events);
+      },
+    });
+    await client.cityEvents("alpha-city", "next-page", 25);
+    expect(requests).toEqual([
+      "http://127.0.0.1:8372/v0/city/alpha-city/events?limit=25&cursor=next-page",
+    ]);
+  });
+
+  test("reports caller cancellation separately from timeout", async () => {
+    const started = Promise.withResolvers<void>();
+    const response = Promise.withResolvers<Response>();
+    const controller = new AbortController();
+    const client = new GasCityClient({
+      endpointUrl: "http://127.0.0.1:8372",
+      allowRemoteEndpoint: false,
+      fetch: async (_request, init) => {
+        init?.signal?.addEventListener("abort", () =>
+          response.reject(new DOMException("Aborted", "AbortError")),
+        );
+        started.resolve();
+        return response.promise;
+      },
+    });
+    const request = client.health(controller.signal);
+    await started.promise;
+    controller.abort();
+    await expect(request).rejects.toMatchObject({ code: "canceled" });
+  });
+
+  test("preserves the bounded-response error when stream cancellation fails", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new TextEncoder().encode("too-large"));
+      },
+      cancel() {
+        throw new Error("cancel callback failed");
+      },
+    });
+    const client = new GasCityClient({
+      endpointUrl: "http://127.0.0.1:8372",
+      allowRemoteEndpoint: false,
+      maxResponseBytes: 2,
+      fetch: async () => new Response(body),
+    });
+    await expect(client.health()).rejects.toMatchObject({ code: "response-too-large" });
   });
 });
 
@@ -299,121 +385,344 @@ describe("workspace-to-rig mapping", () => {
     });
     expect(mapped).toMatchObject({ state: "mapped", rigName: "alpha", source: "explicit" });
   });
+
+  test("reports missing paths, unmatched paths, and stale overrides honestly", async () => {
+    const common = {
+      workspaceId: "workspace-1",
+      cities: cities.items,
+      rigsByCity: new Map([["alpha-city", rigs.items]]),
+    };
+    await expect(
+      mapWorkspaceToRig({ ...common, workspacePath: null, overrides: [] }),
+    ).resolves.toMatchObject({
+      state: "unmapped",
+      diagnostics: [{ code: "workspace-path-unavailable" }],
+    });
+    await expect(
+      mapWorkspaceToRig({ ...common, workspacePath: "/elsewhere", overrides: [] }),
+    ).resolves.toMatchObject({ state: "unmapped", candidates: [] });
+    await expect(
+      mapWorkspaceToRig({
+        ...common,
+        workspacePath: "/work/alpha",
+        overrides: [{ workspaceId: "workspace-1", cityName: "alpha-city", rigName: "missing" }],
+      }),
+    ).resolves.toMatchObject({
+      state: "unavailable",
+      source: "explicit",
+      diagnostics: [{ code: "mapping-target-unavailable" }],
+    });
+  });
 });
 
 describe("Gas City RPC handlers", () => {
-  test("normalizes discovery, mapping, snapshots, sessions, convoys, events, and attention", async () => {
-    const { handlers, context } = handlerFixture();
-    expect(await handlers.discoverSupervisor({}, context)).toMatchObject({
+  test("normalizes scoped control-plane data", async () => {
+    const { handlers, context, settings } = handlerFixture();
+    expect(await handlers.discoverSupervisor({ settings }, context)).toMatchObject({
       state: "available",
       supervisor: { endpointUrl: "http://127.0.0.1:8372", version: "1.4.1" },
     });
     expect(
-      await handlers.resolveWorkspaceRig({ workspaceId: "workspace-1" }, context),
-    ).toMatchObject({
-      state: "mapped",
-      rigName: "alpha",
-    });
-    expect(
-      await handlers.getCityRigSnapshot({ cityName: "alpha-city", rigName: "alpha" }, context),
-    ).toMatchObject({
-      city: { work: { open: 3, ready: 2, inProgress: 1 } },
-      rig: { name: "alpha" },
+      await handlers.resolveWorkspaceRig({ settings, workspaceId: "workspace-1" }, context),
+    ).toMatchObject({ state: "mapped", rigName: "alpha" });
+    const scope = { settings, cityName: "alpha-city", rigName: "alpha" } as const;
+    expect(await handlers.getCityRigSnapshot(scope, context)).toMatchObject({
+      city: { work: { open: 3, ready: 2, inProgress: 1 }, totalsScope: "city" },
+      rig: { name: "alpha", git: { branch: "main", clean: true } },
       partial: false,
     });
-    expect(
-      await handlers.listSessions({ cityName: "alpha-city", rigName: "alpha" }, context),
-    ).toMatchObject({
+    expect(await handlers.listSessions(scope, context)).toMatchObject({
+      scope: "rig",
       items: [{ id: "session-1", provider: "codex", activeBeadId: "al-1" }],
       truncated: false,
     });
-    expect(
-      await handlers.listConvoys({ cityName: "alpha-city", rigName: "alpha" }, context),
-    ).toMatchObject({
-      items: [{ id: "al-convoy-1", rigName: "alpha", blocked: true }],
+    expect(await handlers.listConvoys(scope, context)).toMatchObject({
+      scope: "rig-and-unattributed",
+      items: [{ id: "al-convoy-1", rigName: null, blocked: true }],
+    });
+    expect(await handlers.listWork(scope, context)).toMatchObject({
+      scope: "rig",
+      items: [{ id: "al-1", rigName: "alpha", status: "in_progress" }],
+      partial: false,
     });
     expect(
       await handlers.listEvents(
-        { scope: "city", cityName: "alpha-city", afterSequence: 41, limit: 10 },
+        { settings, scope: "city", cityName: "alpha-city", cursor: null },
         context,
       ),
-    ).toMatchObject({ items: [{ sequence: 42, cityName: "alpha-city" }] });
-    expect(
-      await handlers.listAttention({ cityName: "alpha-city", rigName: "alpha" }, context),
-    ).toMatchObject({
+    ).toMatchObject({ scope: "city", items: [{ sequence: 42, cityName: "alpha-city" }] });
+    expect(await handlers.listAttention(scope, context)).toMatchObject({
+      scope: "city-and-rig",
       items: [
-        { id: "session:session-1:pending", code: "interaction-pending" },
+        {
+          id: "session:session-1:pending:permission-1",
+          code: "interaction-pending",
+          requestId: "permission-1",
+        },
         { id: "convoy:al-convoy-1:blocked", code: "convoy-blocked" },
       ],
     });
-    expect(
-      await handlers.listProviderSelections({ cityName: "alpha-city" }, context),
-    ).toMatchObject({
-      items: [
-        {
-          selection: { cityName: "alpha-city", sessionId: "session-1" },
-          upstreamProvider: "codex",
-          selectable: true,
-        },
-      ],
+  });
+
+  test("exposes supervisor events as a bounded head snapshot", async () => {
+    const { handlers, context, settings } = handlerFixture();
+    await expect(
+      handlers.listEvents({ settings, scope: "supervisor" }, context),
+    ).resolves.toMatchObject({
+      scope: "supervisor-head",
+      cursor: null,
+      items: [{ sequence: 42, cityName: "alpha-city" }],
       truncated: false,
     });
   });
 
-  test("keeps mutations observe-only unless enabled and preserves correlation headers", async () => {
+  test("uses the validated RPC settings for connection, limits, and mapping overrides", async () => {
+    const settings = toGasCityRpcSettings(
+      GasCitySettingsSchema.parse({
+        endpointUrl: "http://192.0.2.10:9000",
+        allowRemoteEndpoint: true,
+        eventLimit: 25,
+        workspaceMappings: [
+          { workspaceId: "workspace-1", cityName: "alpha-city", rigName: "alpha" },
+        ],
+      }),
+    );
+    const observedSettings: unknown[] = [];
+    const requests: string[] = [];
+    const handlers = createGasCityHandlers({
+      createClient: (requestSettings) => {
+        observedSettings.push(requestSettings);
+        return new GasCityClient({
+          endpointUrl: requestSettings.endpointUrl,
+          allowRemoteEndpoint: requestSettings.allowRemoteEndpoint,
+          fetch: async (request, init) => {
+            requests.push(String(request));
+            return fixtureFetch(request, init);
+          },
+        });
+      },
+      now: () => new Date("2026-09-11T06:00:00Z"),
+    });
+    const { context } = handlerFixture();
+
+    await handlers.discoverSupervisor({ settings }, context);
+    const mapping = await handlers.resolveWorkspaceRig(
+      { settings, workspaceId: "workspace-1" },
+      context,
+    );
+    await handlers.listEvents(
+      { settings, scope: "city", cityName: "alpha-city", cursor: null },
+      context,
+    );
+
+    expect(observedSettings).toEqual([settings, settings, settings]);
+    expect(mapping).toMatchObject({
+      source: "explicit",
+      cityName: "alpha-city",
+      rigName: "alpha",
+    });
+    expect(requests).toContain("http://192.0.2.10:9000/v0/city/alpha-city/events?limit=25");
+  });
+
+  test("marks attention truncated when an upstream aggregate is partial", async () => {
+    const { context, settings } = handlerFixture();
+    const handlers = createGasCityHandlers({
+      createClient: (requestSettings) =>
+        new GasCityClient({
+          endpointUrl: requestSettings.endpointUrl,
+          allowRemoteEndpoint: requestSettings.allowRemoteEndpoint,
+          fetch: (request, init) => {
+            const path = new URL(String(request)).pathname;
+            if (path === "/v0/city/alpha-city/pending") {
+              return Promise.resolve(
+                jsonResponse({ ...pending, partial: true, partial_errors: ["rig unavailable"] }),
+              );
+            }
+            return fixtureFetch(request, init);
+          },
+        }),
+      now: () => new Date("2026-09-11T06:00:00Z"),
+    });
+
+    await expect(
+      handlers.listAttention({ settings, cityName: "alpha-city", rigName: "alpha" }, context),
+    ).resolves.toMatchObject({ truncated: true });
+  });
+
+  test("returns typed discovery and mapping states for rejected endpoints", async () => {
+    const settings = toGasCityRpcSettings(
+      GasCitySettingsSchema.parse({
+        endpointUrl: "http://192.0.2.10:8372",
+        allowRemoteEndpoint: false,
+      }),
+    );
+    const handlers = createGasCityHandlers({ now: () => new Date("2026-09-11T06:00:00Z") });
+    const { context } = handlerFixture();
+
+    await expect(handlers.discoverSupervisor({ settings }, context)).resolves.toMatchObject({
+      state: "not-configured",
+      diagnostics: [{ code: "invalid-endpoint", retryable: false }],
+    });
+    await expect(
+      handlers.resolveWorkspaceRig({ settings, workspaceId: "workspace-1" }, context),
+    ).resolves.toMatchObject({
+      state: "unavailable",
+      diagnostics: [{ code: "mapping-unavailable" }],
+    });
+  });
+
+  test("surfaces partial city status and a missing requested rig", async () => {
+    const { context, settings } = handlerFixture();
+    const handlers = createGasCityHandlers({
+      createClient: (requestSettings) =>
+        new GasCityClient({
+          endpointUrl: requestSettings.endpointUrl,
+          allowRemoteEndpoint: requestSettings.allowRemoteEndpoint,
+          fetch: (request, init) => {
+            const path = new URL(String(request)).pathname;
+            if (path === "/v0/city/alpha-city/status") {
+              return Promise.resolve(jsonResponse({ ...status, partial: true }));
+            }
+            return fixtureFetch(request, init);
+          },
+        }),
+      now: () => new Date("2026-09-11T06:00:00Z"),
+    });
+
+    await expect(
+      handlers.getCityRigSnapshot(
+        { settings, cityName: "alpha-city", rigName: "missing" },
+        context,
+      ),
+    ).resolves.toMatchObject({
+      partial: true,
+      rig: null,
+      diagnostics: [{ code: "partial-status" }, { code: "rig-not-found" }],
+    });
+  });
+
+  test("derives city-level attention from degraded status", async () => {
+    const { context, settings } = handlerFixture();
+    const handlers = createGasCityHandlers({
+      createClient: (requestSettings) =>
+        new GasCityClient({
+          endpointUrl: requestSettings.endpointUrl,
+          allowRemoteEndpoint: requestSettings.allowRemoteEndpoint,
+          fetch: (request, init) => {
+            const path = new URL(String(request)).pathname;
+            if (path === "/v0/city/alpha-city/status") {
+              return Promise.resolve(
+                jsonResponse({
+                  ...status,
+                  suspended: true,
+                  partial: true,
+                  agents: { ...status.agents, quarantined: 2 },
+                }),
+              );
+            }
+            return fixtureFetch(request, init);
+          },
+        }),
+      now: () => new Date("2026-09-11T06:00:00Z"),
+    });
+
+    const response = await handlers.listAttention(
+      { settings, cityName: "alpha-city", rigName: null },
+      context,
+    );
+    expect(response.items.map(({ code }) => code)).toEqual([
+      "city-suspended",
+      "agents-quarantined",
+      "partial-status",
+      "interaction-pending",
+      "convoy-blocked",
+    ]);
+  });
+
+  test("keeps mutations behind the client safety interlock and preserves correlation", async () => {
     const disabled = handlerFixture();
+    const dispatchRequest = {
+      kind: "bead",
+      confirmed: true,
+      target: { cityName: "alpha-city", rigName: "alpha", agent: "alpha/reviewer" },
+      beadId: "al-1",
+      reassign: false,
+      owned: false,
+      force: false,
+      noFormula: false,
+      noConvoy: false,
+      merge: "direct",
+    } as const;
     await expect(
       disabled.handlers.dispatchWork(
-        {
-          kind: "bead",
-          confirmed: true,
-          target: { cityName: "alpha-city", rigName: "alpha", agent: "alpha/reviewer" },
-          beadId: "al-1",
-          reassign: false,
-          owned: false,
-          force: false,
-          noFormula: false,
-          noConvoy: false,
-          merge: "direct",
-        },
+        { settings: disabled.settings, request: dispatchRequest },
         disabled.context,
       ),
-    ).rejects.toThrow("mutations are disabled");
+    ).rejects.toThrow("interactive safety interlock");
 
     const enabled = handlerFixture(true);
-    expect(
-      await enabled.handlers.dispatchWork(
+    await expect(
+      enabled.handlers.dispatchWork(
+        { settings: enabled.settings, request: dispatchRequest },
+        enabled.context,
+      ),
+    ).resolves.toMatchObject({ status: "slung", beadId: "al-1" });
+    await expect(
+      enabled.handlers.dispatchWork(
         {
-          kind: "bead",
-          confirmed: true,
-          target: { cityName: "alpha-city", rigName: "alpha", agent: "alpha/reviewer" },
-          beadId: "al-1",
-          reassign: false,
-          owned: false,
-          force: false,
-          noFormula: false,
-          noConvoy: false,
-          merge: "direct",
+          settings: enabled.settings,
+          request: {
+            kind: "formula",
+            confirmed: true,
+            target: { cityName: "alpha-city", rigName: null, agent: "reviewer" },
+            formula: "review-change",
+            title: "Review API",
+            attachedBeadId: null,
+            variables: { depth: "full" },
+            force: false,
+            merge: "direct",
+          },
         },
         enabled.context,
       ),
-    ).toMatchObject({ status: "slung", beadId: "al-1" });
-    expect(
-      await enabled.handlers.performSessionAction(
+    ).resolves.toMatchObject({ status: "slung" });
+    await expect(
+      enabled.handlers.performSessionAction(
         {
-          action: "message",
-          cityName: "alpha-city",
-          sessionId: "session-1",
-          confirmed: true,
-          message: "Continue.",
+          settings: enabled.settings,
+          request: {
+            action: "message",
+            cityName: "alpha-city",
+            sessionId: "session-1",
+            confirmed: true,
+            message: "Continue.",
+          },
         },
         enabled.context,
       ),
-    ).toEqual({
+    ).resolves.toEqual({
       status: "accepted",
       sessionId: "session-1",
       requestId: "request-1",
       eventCursor: "42",
     });
+    await expect(
+      enabled.handlers.performSessionAction(
+        {
+          settings: enabled.settings,
+          request: {
+            action: "respond",
+            cityName: "alpha-city",
+            sessionId: "session-1",
+            confirmed: true,
+            requestId: "permission-1",
+            response: "allow",
+            text: null,
+            metadata: {},
+          },
+        },
+        enabled.context,
+      ),
+    ).resolves.toMatchObject({ status: "accepted", sessionId: "session-1" });
   });
 });

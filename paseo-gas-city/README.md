@@ -7,7 +7,8 @@ Gas City session as a Paseo agent.
 ## What it does
 
 - Discovers the configured supervisor and shows its cities, health, version, and diagnostics.
-- Shows city and rig status, sessions, convoys, recent events, and items needing operator attention.
+- Shows city-wide status and recent events, plus rig-filtered sessions and work. Convoys without
+  upstream rig attribution remain visible in mapped workspace views.
 - Maps a Paseo workspace to a Gas City rig by explicit override or longest ancestor path.
 - Opens an existing Gas City session in Paseo through the external-messaging provider, preserving
   its connection and event cursor across reconnects.
@@ -20,8 +21,9 @@ Gas City session as a Paseo agent.
 
 The default endpoint is `http://127.0.0.1:8372`. Non-loopback endpoints are rejected unless **Allow
 remote endpoint** is enabled. Mutations are disabled by default, and mutation RPCs require explicit
-confirmation even after they are enabled. Responses, lists, strings, and SSE frames are bounded and
-validated before they reach the UI.
+confirmation even after they are enabled. These controls are an interactive safety interlock, not
+an authorization boundary; Gas City remains responsible for access control. Responses, lists,
+strings, and SSE frames are bounded and validated before they reach the UI.
 
 Paseo plugins are trusted, unsandboxed code. Review the source before installing it on the daemon
 host. Enabling a remote endpoint sends requests to that host from the Paseo daemon.
@@ -33,8 +35,8 @@ host. Enabling a remote endpoint sends requests to that host from the Paseo daem
 - HTTP or HTTPS endpoints only. Credentials, query strings, and fragments are rejected.
 - Automatic workspace mapping requires the workspace path to be inside exactly one discovered rig;
   ambiguous or unrelated paths need an explicit mapping.
-- The dashboard polls at the configured interval. It is not a complete event archive, and bounded
-  responses may be marked truncated.
+- The dashboard polls at the configured interval. Supervisor events are a head snapshot, city event
+  pages expose continuation cursors, and bounded or partial responses are marked truncated.
 - The provider bridges an existing Gas City session. It does not create or configure that upstream
   session.
 

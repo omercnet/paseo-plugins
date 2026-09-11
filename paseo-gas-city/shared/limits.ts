@@ -18,6 +18,7 @@ export const GAS_CITY_LIMITS = {
   rigs: 512,
   sessions: 1_000,
   convoys: 500,
+  workItems: 500,
   events: 500,
   attentionItems: 500,
   diagnostics: 32,
