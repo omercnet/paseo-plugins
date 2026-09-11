@@ -850,67 +850,16 @@ describe("OMP RPC transport", () => {
     await expect(opening).rejects.toThrow();
   });
 
-  test("accepts a metadata-free legacy ready frame as v1", async () => {
+  test("rejects a metadata-free legacy ready frame before opening a session", async () => {
     const child = new FakeRpcChild();
     const commands: Record<string, unknown>[] = [];
-    observeCommands(child, (command) => {
-      commands.push(command);
-      if (command.type === "get_state") {
-        child.write({
-          type: "response",
-          id: command.id,
-          command: "get_state",
-          success: true,
-          data: {
-            model: null,
-            isStreaming: false,
-            isCompacting: false,
-            sessionId: "legacy",
-            contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
-          },
-        });
-      }
-      if (command.type === "get_session_stats") {
-        child.write({
-          type: "response",
-          id: command.id,
-          command: "get_session_stats",
-          success: true,
-          data: {
-            tokens: { input: 120, output: 30, cacheRead: 40 },
-            cost: 0.12,
-            contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
-          },
-        });
-      }
-      if (command.type === "compact") {
-        child.write({
-          type: "response",
-          id: command.id,
-          command: "compact",
-          success: true,
-          data: { tokensBefore: 1_500, summary: "not exposed" },
-        });
-      }
-    });
+    observeCommands(child, (command) => commands.push(command));
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
     child.write({ type: "ready" });
-    const session = await opening;
 
-    expect(await session.getState()).toEqual(
-      expect.objectContaining({ sessionId: "legacy", isStreaming: false }),
-    );
-    expect(await session.getSessionStats()).toEqual({
-      tokens: { input: 120, output: 30, cacheRead: 40 },
-      cost: 0.12,
-      contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
-    });
-    expect(await session.compact("focus")).toEqual({ tokensBefore: 1_500 });
-    expect(commands).toContainEqual(
-      expect.objectContaining({ type: "compact", customInstructions: "focus" }),
-    );
-    expect(commands.some((command) => command.type === "negotiate_protocol")).toBe(false);
-    await session.close();
+    await expect(opening).rejects.toThrow("requires OMP RPC protocol v2");
+    expect(commands).toEqual([]);
+    expect(child.stdin.writableEnded).toBe(true);
   });
 
   test("accepts nullable usage and sparse compaction payloads", async () => {
@@ -922,6 +871,10 @@ describe("OMP RPC transport", () => {
         command: command.type,
         success: true,
       };
+      if (command.type === "negotiate_protocol") {
+        child.write({ ...response, data: { protocolVersion: 2 } });
+        return;
+      }
       if (command.type === "get_state") {
         child.write({
           ...response,
@@ -947,7 +900,7 @@ describe("OMP RPC transport", () => {
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
-    child.write({ type: "ready" });
+    child.write(READY_FRAME);
     const session = await opening;
     const compactionEvent = nextEvent((listener) => session.onEvent(listener));
 
@@ -978,6 +931,10 @@ describe("OMP RPC transport", () => {
         command: command.type,
         success: true,
       };
+      if (command.type === "negotiate_protocol") {
+        child.write({ ...response, data: { protocolVersion: 2 } });
+        return;
+      }
       if (command.type === "get_state") {
         child.write({
           ...response,
@@ -1000,7 +957,7 @@ describe("OMP RPC transport", () => {
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
-    child.write({ type: "ready" });
+    child.write(READY_FRAME);
     const session = await opening;
 
     await expect(session.getState()).rejects.toThrow();
@@ -1120,14 +1077,16 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("does not expose history replay on legacy RPC framing", async () => {
+  test("rejects an explicit v1-only ready frame before negotiation", async () => {
     const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => commands.push(command));
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
-    child.write({ type: "ready" });
-    const session = await opening;
-    expect(session.canReplayHistory).toBe(false);
-    await expect(session.getMessages()).rejects.toThrow("requires negotiated RPC protocol v2");
-    await session.close();
+    child.write({ ...READY_FRAME, supportedProtocolVersions: [1] });
+
+    await expect(opening).rejects.toThrow("requires OMP RPC protocol v2");
+    expect(commands).toEqual([]);
+    expect(child.stdin.writableEnded).toBe(true);
   });
 
   test("rejects invalid branch responses immediately and accepts the next valid response", async () => {
@@ -2094,7 +2053,7 @@ describe("OMP RPC transport", () => {
         process.stdout.write(JSON.stringify({
           type: "ready",
           protocolVersion: 1,
-          supportedProtocolVersions: [1],
+          supportedProtocolVersions: [1, 2],
           maxFrameBytes: 1048576,
           maxReassembledFrameBytes: 67108864,
         }) + "\\n");
@@ -2108,6 +2067,16 @@ describe("OMP RPC transport", () => {
             input = input.slice(newline + 1);
             if (!line) continue;
             const command = JSON.parse(line);
+            if (command.type === "negotiate_protocol") {
+              process.stdout.write(JSON.stringify({
+                type: "response",
+                id: command.id,
+                command: "negotiate_protocol",
+                success: true,
+                data: { protocolVersion: 2 },
+              }) + "\\n");
+              continue;
+            }
             if (command.type === "prompt") process.exit(7);
             if (command.type !== "get_state") continue;
             process.stdout.write(JSON.stringify({ type: "notice", level: "info", message: String(descendant.pid) }) + "\\n");

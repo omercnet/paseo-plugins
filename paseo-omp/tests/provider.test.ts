@@ -834,7 +834,14 @@ function sessionAt(runtime: FakeOmpRuntime, index = 0): FakeOmpSession {
 async function createHarness(
   runtime = new FakeOmpRuntime(),
   scheduler = new ManualScheduler(),
-  capabilities: readonly string[] = ["prompt.message", "prompt.steer", "session.configure"],
+  capabilities: readonly string[] = [
+    "prompt.message",
+    "prompt.command",
+    "prompt.image",
+    "prompt.steer",
+    "session.configure",
+    "permission",
+  ],
   replayTimeoutMs?: number,
 ) {
   const connection = await createOmpProvider({
@@ -869,6 +876,7 @@ async function createHostToolHarness(runtime = new FakeOmpRuntime()) {
       "prompt.steer",
       "session.configure",
       "permission",
+      "session.persistence",
     ],
   });
   const events = new EventLog();
@@ -880,6 +888,7 @@ async function openHostToolSession(
   connection: ProviderConnection,
   events: EventLog,
   requestId = "host-tool-open",
+  persist = false,
 ): Promise<void> {
   await connection.send({
     type: "session.open",
@@ -893,7 +902,7 @@ async function openHostToolSession(
       mode: "full",
       thinkingOption: "medium",
       settings: {},
-      persist: false,
+      persist,
     },
     history: "skip",
   });
@@ -935,6 +944,7 @@ async function openSession(
   env: Record<string, string> = { TEST_ENV: "test-value" },
   model = MODEL_PUBLIC_ID,
   thinkingOption: string | null = "medium",
+  persist = true,
 ) {
   await connection.send({
     type: "session.open",
@@ -946,7 +956,7 @@ async function openSession(
       systemPrompt: "Be precise",
       mcpServers: {},
       model,
-      persist: true,
+      persist,
       mode: "full",
       ...(thinkingOption ? { thinkingOption } : {}),
       settings: {},
@@ -1111,7 +1121,7 @@ describe("OMP direct provider", () => {
           ...expectedTemplate,
           model: "openai/gpt-5.4",
           thinkingOption: "high",
-          resumeSessionId: "native-session",
+          resumeSessionId: NATIVE_SESSION_ID,
         }),
       );
       await finishTurn(events, sessionAt(runtime, recovery), turnId);
@@ -2169,8 +2179,192 @@ describe("OMP direct provider", () => {
           }),
         );
       }
-      await connection.close();
+      if (testCase.cleanupFails) {
+        await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
+      } else {
+        await connection.close();
+      }
     }
+  });
+
+  test("quarantines committed rewind failure until runtime and host teardown complete", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = [
+      { role: "user", entryId: "security-rewind-entry", content: "earlier" },
+    ];
+    const runtimeCleanup = Promise.withResolvers<void>();
+    const runtimeCloseStarted = Promise.withResolvers<void>();
+    const hostCleanup = Promise.withResolvers<void>();
+    const hostCloseStarted = Promise.withResolvers<void>();
+    let hostCloses = 0;
+    const provider = createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async () => ({
+        listTools: async () => ({ tools: [] }),
+        callTool: async () => ({ content: [] }),
+        close: async () => {
+          hostCloses += 1;
+          hostCloseStarted.resolve();
+          await hostCleanup.promise;
+        },
+      }),
+    });
+    const connect = async () => {
+      const connection = await provider.connect({
+        versions: [1],
+        capabilities: [
+          "prompt.message",
+          "permission",
+          "session.persistence",
+          "session.revert.conversation",
+          "session.subsession",
+        ],
+      });
+      const events = new EventLog();
+      connection.onEvent((event) => events.push(event));
+      return { connection, events };
+    };
+    const first = await connect();
+    const second = await connect();
+    await first.connection.send({
+      type: "session.open",
+      requestId: "security-rewind-open",
+      sessionId: "security-rewind-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: { repo: { type: "stdio", command: "repo" } },
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await first.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "security-rewind-open",
+    );
+    const user = first.events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "user_message",
+    );
+    if (user?.type !== "timeline.item" || user.item.type !== "user_message") {
+      throw new Error("Missing security rewind token");
+    }
+    const session = sessionAt(runtime);
+    const permissionCancellation = Promise.withResolvers<void>();
+    session.extensionUiResponseObserved = permissionCancellation.resolve;
+    session.emit({
+      type: "extension_ui_request",
+      id: "security-rewind-permission",
+      method: "confirm",
+      title: "Continue",
+      message: "Proceed?",
+    });
+    const permission = first.events.findLast((event) => event.type === "session.permission");
+    if (permission?.type !== "session.permission") throw new Error("Expected rewind permission");
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: { id: "security-child", agent: "scout", status: "started", index: 0 },
+    });
+    const child = first.events.findLast(
+      (event) =>
+        event.type === "session.opened" && event.parentSessionId === "security-rewind-session",
+    );
+    if (child?.type !== "session.opened") throw new Error("Expected rewind child session");
+    session.branchMessages = [{ entryId: "security-rewind-entry", text: "earlier" }];
+    session.branchSessionIdAfter = BRANCHED_NATIVE_SESSION_ID;
+    session.branchHistoryErrorAfter = new Error("replay failed");
+    session.closeGate = runtimeCleanup.promise;
+    session.closeObserved = runtimeCloseStarted.resolve;
+
+    await first.connection.send({
+      type: "session.revert",
+      requestId: "security-rewind",
+      sessionId: "security-rewind-session",
+      token: user.item.revertToken ?? null,
+      scope: "conversation",
+    });
+    await Promise.all([
+      runtimeCloseStarted.promise,
+      hostCloseStarted.promise,
+      permissionCancellation.promise,
+    ]);
+    expect(session.extensionUiResponses).toContainEqual({
+      type: "extension_ui_response",
+      id: "security-rewind-permission",
+      cancelled: true,
+    });
+    expect(first.events).toContainEqual({
+      type: "session.permission_resolved",
+      sessionId: "security-rewind-session",
+      permissionId: permission.request.id,
+    });
+    expect(first.events).toContainEqual({ type: "session.closed", sessionId: child.sessionId });
+    expect(session.closes).toBe(1);
+    expect(hostCloses).toBe(1);
+    expect(
+      first.events.some(
+        (event) => event.type === "request.failed" && event.requestId === "security-rewind",
+      ),
+    ).toBe(false);
+
+    const expectQuarantined = async (requestId: string) => {
+      await second.connection.send({
+        type: "session.open",
+        requestId,
+        sessionId: requestId,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: false,
+        },
+        history: "skip",
+      });
+      await expect(
+        second.events.waitFor(
+          (event) => event.type === "request.failed" && event.requestId === requestId,
+        ),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          error: { message: "OMP native session cleanup quarantine is active" },
+        }),
+      );
+    };
+    await expectQuarantined("security-rewind-blocked-both");
+    runtimeCleanup.resolve();
+    await runtimeCleanup.promise;
+    await expectQuarantined("security-rewind-blocked-host");
+
+    hostCleanup.resolve();
+    await hostCleanup.promise;
+    await first.events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "security-rewind",
+    );
+    await Promise.resolve();
+    await second.connection.send({
+      type: "session.open",
+      requestId: "security-rewind-released",
+      sessionId: "security-rewind-released",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await second.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "security-rewind-released",
+    );
+    await first.connection.close();
+    await second.connection.close();
   });
 
   test("moves persistent reservation ownership to the branched native session", () => {
@@ -3111,7 +3305,11 @@ describe("OMP direct provider", () => {
         ?.item,
     ).toEqual(
       expect.objectContaining({
-        detail: expect.objectContaining({ input: { path: "selected.ts" } }),
+        detail: {
+          type: "read",
+          filePath: "selected.ts",
+          content: "selected result",
+        },
       }),
     );
     await connection.close();
@@ -3392,6 +3590,66 @@ describe("OMP direct provider", () => {
     expect(connection.capabilities).toEqual(["prompt.message"]);
     await connection.close();
   });
+
+  test("rejects RPC v1 before opening a rich provider session", async () => {
+    const children: ProviderRpcChild[] = [];
+    const runtime = new OmpRpcRuntime({
+      spawnProcess() {
+        const child = new ProviderRpcChild(() => {});
+        children.push(child);
+        queueMicrotask(() =>
+          child.write({
+            type: "ready",
+            protocolVersion: 1,
+            supportedProtocolVersions: [1],
+            maxFrameBytes: 1_048_576,
+            maxReassembledFrameBytes: 67_108_864,
+          }),
+        );
+        return child.asChildProcess();
+      },
+      terminateProcessTree: () => Promise.resolve(true),
+      environment: TEST_RUNTIME_ENV,
+    });
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.persistence", "session.revert.conversation"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    expect(connection.capabilities).toEqual([
+      "prompt.message",
+      "session.persistence",
+      "session.revert.conversation",
+    ]);
+
+    await connection.send({
+      type: "session.open",
+      requestId: "legacy-v1-open",
+      sessionId: "legacy-v1-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      history: "skip",
+    });
+    await expect(
+      events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === "legacy-v1-open",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        error: { message: "OMP Plugin Preview requires OMP RPC protocol v2" },
+      }),
+    );
+    expect(events.some((event) => event.type === "session.opened")).toBe(false);
+    expect(children).toHaveLength(1);
+    await connection.close();
+  });
   test("tombstones an unreaped session after history replay fails", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
@@ -3449,9 +3707,10 @@ describe("OMP direct provider", () => {
         event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
     );
 
-    expect(events.slice(0, 3).map((event) => event.type)).toEqual([
+    expect(events.slice(0, 4).map((event) => event.type)).toEqual([
       "session.opened",
       "session.config",
+      "session.commands",
       "session.ready",
     ]);
     expect(reconciled).toEqual(
@@ -3849,7 +4108,9 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "unsupported-policy",
     );
     expect(preapprovalFailure).toEqual(
-      expect.objectContaining({ error: { message: "OMP provider request failed" } }),
+      expect.objectContaining({
+        error: { message: "OMP Plugin Preview does not support host tool policies" },
+      }),
     );
     await connection.send({
       type: "session.open",
@@ -4293,10 +4554,10 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         model: undefined,
         thinkingOption: undefined,
-        noSession: true,
+        noSession: false,
+        resumeSessionId: NATIVE_SESSION_ID,
       }),
     );
-    expect(runtime.starts[1]?.resumeSessionId).toBeUndefined();
     expect(events.findLast((event) => event.type === "session.config")).toEqual(
       expect.objectContaining({
         config: expect.objectContaining({
@@ -4343,10 +4604,10 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         model: undefined,
         thinkingOption: undefined,
-        noSession: true,
+        noSession: false,
+        resumeSessionId: NATIVE_SESSION_ID,
       }),
     );
-    expect(runtime.starts[1]?.resumeSessionId).toBeUndefined();
     expect(events.findLast((event) => event.type === "session.config")).toEqual(
       expect.objectContaining({
         config: expect.objectContaining({
@@ -4865,7 +5126,8 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         environment: TEST_RUNTIME_ENV,
         model: "openai/gpt-5.4",
-        noSession: true,
+        noSession: false,
+        resumeSessionId: NATIVE_SESSION_ID,
       }),
     );
     await finishTurn(events, sessionAt(runtime, 1), turnId);
@@ -7214,7 +7476,9 @@ describe("OMP direct provider", () => {
       const second = await session.startTurn("continue", { clientMessageId: "host-recovered" });
       secondTurnId = second.turnId;
       expect(session.id).toBe(sessionId);
-      expect(runtime.starts[1]).toEqual(expect.objectContaining({ noSession: true }));
+      expect(runtime.starts[1]).toEqual(
+        expect.objectContaining({ noSession: false, resumeSessionId: NATIVE_SESSION_ID }),
+      );
       establishTerminalOwnership(sessionAt(runtime, 1));
       sessionAt(runtime, 1).emit({ type: "agent_end", messages: [], isTerminal: true });
       await expect(secondTerminal.promise).resolves.toEqual(
@@ -7566,6 +7830,7 @@ describe("OMP direct provider", () => {
     const firstTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-a", "first"));
 
     await observed.promise;
+    establishTerminalOwnership(session);
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await scheduler.flush(5_000);
     await scheduler.flush(250);
@@ -7581,6 +7846,7 @@ describe("OMP direct provider", () => {
     const secondTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-b", "second"));
     expect(session.stateLookups).toBe(afterFirstStateLookups + 1);
     expect(session.statsLookups).toBe(afterFirstStatsLookups + 1);
+    establishTerminalOwnership(session);
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await scheduler.flush(5_000);
     await scheduler.flush(250);
@@ -7608,6 +7874,7 @@ describe("OMP direct provider", () => {
     expect(session.stateLookups).toBe(afterSecondStateLookups + 1);
     expect(session.statsLookups).toBe(afterSecondStatsLookups + 1);
 
+    establishTerminalOwnership(session);
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
       (event) =>
@@ -7746,6 +8013,10 @@ describe("OMP direct provider", () => {
       spawnProcess() {
         const spawned = new ProviderRpcChild((command) => {
           const type = command.type;
+          if (type === "negotiate_protocol") {
+            respond(command, { protocolVersion: 2 });
+            return;
+          }
           if (type === "get_available_models") {
             respond(command, { models: [MODEL] });
           } else if (type === "get_available_commands") {
@@ -7783,7 +8054,15 @@ describe("OMP direct provider", () => {
           }
         });
         child = spawned;
-        queueMicrotask(() => spawned.write({ type: "ready" }));
+        queueMicrotask(() =>
+          spawned.write({
+            type: "ready",
+            protocolVersion: 1,
+            supportedProtocolVersions: [1, 2],
+            maxFrameBytes: 1_048_576,
+            maxReassembledFrameBytes: 67_108_864,
+          }),
+        );
         return spawned.asChildProcess();
       },
       terminateProcessTree: () => Promise.resolve(true),
@@ -7799,7 +8078,16 @@ describe("OMP direct provider", () => {
     });
     const events = new EventLog();
     connection.onEvent((event) => events.push(event));
-    await openSession(connection, events);
+    await openSession(
+      connection,
+      events,
+      "open-1",
+      "session-1",
+      { TEST_ENV: "test-value" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      false,
+    );
     const turnId = turnIdFrom(
       await startPrompt(connection, events, "real-timeout-compact", "/compact focus"),
     );
@@ -8187,6 +8475,7 @@ describe("OMP direct provider", () => {
       aborted: false,
       willRetry: false,
     });
+    establishTerminalOwnership(first);
     first.emit({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
       (event) =>
@@ -8700,7 +8989,7 @@ describe("OMP direct provider", () => {
   test("routes one host-tool result while recovered host tools bind", async () => {
     const runtime = new FakeOmpRuntime();
     const { connection, events } = await createHostToolHarness(runtime);
-    await openHostToolSession(connection, events, "host-tool-recovery-bind-open");
+    await openHostToolSession(connection, events, "host-tool-recovery-bind-open", true);
     const bindGate = Promise.withResolvers<void>();
     const bindObserved = Promise.withResolvers<void>();
     runtime.sessionCreated = (session) => {
@@ -8724,7 +9013,7 @@ describe("OMP direct provider", () => {
   test("routes one host-tool result while recovered state reconciles", async () => {
     const runtime = new FakeOmpRuntime();
     const { connection, events } = await createHostToolHarness(runtime);
-    await openHostToolSession(connection, events, "host-tool-recovery-state-open");
+    await openHostToolSession(connection, events, "host-tool-recovery-state-open", true);
     const stateGate = Promise.withResolvers<void>();
     const stateObserved = Promise.withResolvers<void>();
     runtime.sessionCreated = (session) => {
@@ -8747,7 +9036,7 @@ describe("OMP direct provider", () => {
   test("retires recovery after a bootstrap host-tool terminal write failure", async () => {
     const runtime = new FakeOmpRuntime();
     const { connection, events } = await createHostToolHarness(runtime);
-    await openHostToolSession(connection, events, "host-tool-write-failure-open");
+    await openHostToolSession(connection, events, "host-tool-write-failure-open", true);
     const stateGate = Promise.withResolvers<void>();
     const stateObserved = Promise.withResolvers<void>();
     runtime.sessionCreated = (session) => {
@@ -8807,7 +9096,7 @@ describe("OMP direct provider", () => {
         callTool: async () => ({ content: [{ type: "text", text: "done" }] }),
         close: async () => {},
       }),
-    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    }).connect({ versions: [1], capabilities: ["prompt.message", "session.persistence"] });
     const events = new EventLog();
     connection.onEvent((event) => events.push(event));
     await connection.send({
@@ -8821,7 +9110,7 @@ describe("OMP direct provider", () => {
         model: MODEL_PUBLIC_ID,
         mode: "full",
         settings: {},
-        persist: false,
+        persist: true,
       },
       history: "skip",
     });
@@ -9009,7 +9298,8 @@ describe("OMP direct provider", () => {
         mode: "full",
         thinkingOption: "medium",
         systemPrompt: "Be precise",
-        noSession: true,
+        noSession: false,
+        resumeSessionId: NATIVE_SESSION_ID,
       }),
     );
     expect(await finishTurn(events, recovered, turnId)).toEqual(
@@ -9048,7 +9338,8 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         model: "openai/gpt-5.4",
         thinkingOption: "high",
-        noSession: true,
+        noSession: false,
+        resumeSessionId: NATIVE_SESSION_ID,
       }),
     );
     expect(events.slice(baseline)).toContainEqual(
@@ -9149,7 +9440,8 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         model: "openai/gpt-5.4",
         thinkingOption: "high",
-        noSession: true,
+        noSession: false,
+        resumeSessionId: NATIVE_SESSION_ID,
         systemPrompt: "Be precise",
       }),
     );
@@ -9418,7 +9710,9 @@ describe("OMP direct provider", () => {
     const recoveredTurn = turnIdFrom(
       await startPrompt(connection, events, "after-unavailable", "continue"),
     );
-    expect(runtime.starts[1]).toEqual(expect.objectContaining({ noSession: true }));
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({ noSession: false, resumeSessionId: NATIVE_SESSION_ID }),
+    );
     await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
     await connection.close();
   });
@@ -9462,19 +9756,34 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("recovers an ephemeral session without a native transcript handle", async () => {
+  test("rejects recovery for an ephemeral session without a native transcript handle", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.sessionIds.push("");
     const { connection, events } = await createHarness(runtime);
-    await openSession(connection, events);
+    await openSession(
+      connection,
+      events,
+      "open-ephemeral-missing-handle",
+      "session-1",
+      { TEST_ENV: "test-value" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      false,
+    );
     sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
 
     const result = await startPrompt(connection, events, "missing-handle", "continue");
-    const turnId = turnIdFrom(result);
-    expect(runtime.starts).toHaveLength(2);
-    expect(runtime.starts[1]).toEqual(expect.objectContaining({ noSession: true }));
-    expect(runtime.starts[1]?.resumeSessionId).toBeUndefined();
-    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    expect(result).toEqual(
+      expect.objectContaining({
+        result: {
+          type: "failed",
+          error: {
+            message: "OMP cannot recover a non-persisted session; create a new session instead",
+          },
+        },
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
     await connection.close();
   });
 
@@ -11565,8 +11874,8 @@ describe("OMP direct provider", () => {
       expect(recovered).toEqual(
         expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
       );
-      expect(launchArgs[index + 2]).toContain("--no-session");
-      expect(launchArgs[index + 2]).not.toContain("--resume");
+      expect(launchArgs[index + 2]).toContain("--resume");
+      expect(launchArgs[index + 2]).toContain(nativeSessionId);
     }
 
     children.at(-1)?.write({
@@ -11592,8 +11901,8 @@ describe("OMP direct provider", () => {
     const finalTurn = turnIdFrom(
       await startPrompt(connection, events, "after-invalid-nonterminal", "continue"),
     );
-    expect(launchArgs[5]).toContain("--no-session");
-    expect(launchArgs[5]).not.toContain("--resume");
+    expect(launchArgs[5]).toContain("--resume");
+    expect(launchArgs[5]).toContain(nativeSessionId);
     children.at(-1)?.write({
       type: "prompt_result",
       id: promptRequestIds.at(-1),
@@ -11605,7 +11914,18 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "session.turn" && event.turnId === finalTurn && event.state === "completed",
     );
-    expect(JSON.stringify(events)).not.toContain(nativeSessionId);
+    const publicEventsWithoutPersistence = events.map((event) => {
+      if (event.type !== "session.opened") return event;
+      const { persistence: _persistence, ...publicEvent } = event;
+      return publicEvent;
+    });
+    expect(JSON.stringify(publicEventsWithoutPersistence)).not.toContain(nativeSessionId);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.opened",
+        persistence: { version: 1, data: { sessionId: nativeSessionId } },
+      }),
+    );
     expect(children).toHaveLength(6);
     await connection.close();
   });
@@ -11854,6 +12174,7 @@ describe("OMP direct provider", () => {
           },
         },
       });
+      establishTerminalOwnership(session);
       session.emit({ type: "agent_end", messages: [], isTerminal: true });
       await Promise.resolve();
       expect(
@@ -12264,8 +12585,26 @@ describe("OMP direct provider", () => {
       "prompt.message",
       "session.subsession",
     ]);
-    await openSession(connection, events, "open-ephemeral-one", "ephemeral-one");
-    await openSession(connection, events, "open-ephemeral-two", "ephemeral-two");
+    await openSession(
+      connection,
+      events,
+      "open-ephemeral-one",
+      "ephemeral-one",
+      { TEST_ENV: "test-value" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      false,
+    );
+    await openSession(
+      connection,
+      events,
+      "open-ephemeral-two",
+      "ephemeral-two",
+      { TEST_ENV: "test-value" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      false,
+    );
     await startPrompt(connection, events, "prompt-ephemeral-one", "work", "ephemeral-one");
     await startPrompt(connection, events, "prompt-ephemeral-two", "work", "ephemeral-two");
     for (const index of [0, 1]) {
@@ -13491,7 +13830,16 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.completed" && event.requestId === "close-first",
     );
 
-    await openSession(connection, events, "open-second", "session-2");
+    await openSession(
+      connection,
+      events,
+      "open-second",
+      "session-2",
+      { TEST_ENV: "test-value" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      false,
+    );
     sessionAt(runtime, 1).emit({
       type: "extension_ui_request",
       id: "reused-native-id",
@@ -14161,22 +14509,24 @@ describe("OMP direct provider", () => {
     const overlapEvents = events
       .slice(overlapBaseline)
       .flatMap((event) => (event.type === "timeline.item" ? [event.item] : []));
+    const overlapId = overlapEvents[0]?.id;
+    expect(overlapId).toEqual(expect.any(String));
     expect(overlapEvents).toEqual([
       {
         type: "compaction",
-        id: "omp:compaction:5",
+        id: overlapId,
         status: "loading",
         trigger: "auto",
       },
       {
         type: "compaction",
-        id: "omp:compaction:5",
+        id: overlapId,
         status: "completed",
         trigger: "auto",
       },
       {
         type: "error",
-        id: "omp:compaction:5:error",
+        id: `${overlapId}:error`,
         message: "OMP emitted overlapping compactions",
       },
     ]);
@@ -14212,15 +14562,18 @@ describe("OMP direct provider", () => {
     const compactions = rendered.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "compaction" ? [event.item] : [],
     );
+    const compactionIds = [...new Set(compactions.map((item) => item.id))];
+    expect(compactionIds).toHaveLength(5);
+    const [manualAbortedId, manualSkippedId, retryId, thresholdId] = compactionIds;
     expect(compactions).toContainEqual({
       type: "compaction",
-      id: "omp:compaction:4",
+      id: thresholdId,
       status: "loading",
       trigger: "auto",
     });
     expect(compactions).toContainEqual({
       type: "compaction",
-      id: "omp:compaction:4",
+      id: thresholdId,
       status: "completed",
       trigger: "auto",
       preTokens: 12_345,
@@ -14233,7 +14586,7 @@ describe("OMP direct provider", () => {
     );
     expect(compactionResults).toContainEqual({
       type: "error",
-      id: "omp:compaction:1:error",
+      id: `${manualAbortedId}:error`,
       message: "manual compaction aborted",
     });
     const reducedTimeline = new Map(
@@ -14241,15 +14594,15 @@ describe("OMP direct provider", () => {
         event.type === "timeline.item" ? [[event.item.id, event.item] as const] : [],
       ),
     );
-    expect(reducedTimeline.get("omp:compaction:1")).toEqual({
+    expect(reducedTimeline.get(manualAbortedId)).toEqual({
       type: "compaction",
-      id: "omp:compaction:1",
+      id: manualAbortedId,
       status: "completed",
       trigger: "manual",
     });
     expect(compactionResults).toContainEqual({
       type: "compaction",
-      id: "omp:compaction:2",
+      id: manualSkippedId,
       status: "completed",
       trigger: "manual",
     });
@@ -14258,14 +14611,14 @@ describe("OMP direct provider", () => {
       sessionId: "session-1",
       item: {
         type: "notification",
-        id: "omp:compaction:2:skipped",
+        id: `${manualSkippedId}:skipped`,
         level: "warning",
         message: "OMP compaction was skipped",
       },
     });
     expect(compactionResults).toContainEqual({
       type: "compaction",
-      id: "omp:compaction:3",
+      id: retryId,
       status: "completed",
       trigger: "auto",
       preTokens: 8_000,
@@ -14347,7 +14700,16 @@ describe("OMP direct provider", () => {
       },
     });
     await finishTurn(events, recovered, finalTurn);
-    await openSession(connection, events, "open-2", "session-2");
+    await openSession(
+      connection,
+      events,
+      "open-2",
+      "session-2",
+      { TEST_ENV: "test-value" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      false,
+    );
     sessionAt(runtime, 2).emit({ type: "compaction_start" });
     await connection.send({ type: "session.close", requestId: "close-2", sessionId: "session-2" });
     await events.waitFor(
@@ -14406,7 +14768,7 @@ describe("OMP direct provider", () => {
     ).toHaveLength(1);
     await connection.close();
   });
-  test("keeps compaction active through local-only completion", async () => {
+  test("completes a manual compaction once from its RPC result", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -14414,37 +14776,27 @@ describe("OMP direct provider", () => {
     const turnId = turnIdFrom(
       await startPrompt(connection, events, "local-compaction", "/compact"),
     );
-    session.emit({ type: "compaction_start" });
     await scheduler.flush();
     await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
     );
-    expect(
-      events.some(
-        (event) =>
-          event.type === "timeline.item" &&
-          event.item.type === "error" &&
-          event.item.id === "omp:compaction:1",
-      ),
-    ).toBe(false);
-    session.emit({
-      type: "compaction_end",
-      result: { preTokens: 4_000 },
-      aborted: false,
-      willRetry: false,
-    });
-    expect(events).toContainEqual({
-      type: "timeline.item",
-      sessionId: "session-1",
-      item: {
+    const compactions = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "compaction" ? [event.item] : [],
+    );
+    expect(compactions).toHaveLength(2);
+    const operationId = compactions[0]?.id;
+    expect(operationId).toEqual(expect.any(String));
+    expect(compactions).toEqual([
+      { type: "compaction", id: operationId, status: "loading", trigger: "manual" },
+      {
         type: "compaction",
-        id: "omp:compaction:1",
+        id: operationId,
         status: "completed",
         trigger: "manual",
-        preTokens: 4_000,
+        preTokens: 1_000,
       },
-    });
+    ]);
     await connection.close();
   });
 

@@ -2379,14 +2379,16 @@ class OmpRpcProcess {
   }
 }
 
-function validateReadyMetadata(frame: ReadyFrame): "legacy-v1" | "v1" | "v2" {
+function validateReadyMetadata(frame: ReadyFrame): void {
   const metadata = [
     frame.protocolVersion,
     frame.supportedProtocolVersions,
     frame.maxFrameBytes,
     frame.maxReassembledFrameBytes,
   ];
-  if (metadata.every((value) => value === undefined)) return "legacy-v1";
+  if (metadata.every((value) => value === undefined)) {
+    throw new OmpPublicError("OMP Plugin Preview requires OMP RPC protocol v2");
+  }
   if (metadata.some((value) => value === undefined)) {
     throw new Error("OMP ready frame contains incomplete protocol metadata");
   }
@@ -2404,7 +2406,9 @@ function validateReadyMetadata(frame: ReadyFrame): "legacy-v1" | "v1" | "v2" {
   if (frame.maxFrameBytes < MIN_HOST_TOOL_RESULT_FRAME_BYTES) {
     throw new Error("OMP ready frame cannot carry terminal host tool results");
   }
-  return frame.supportedProtocolVersions.includes(2) ? "v2" : "v1";
+  if (!frame.supportedProtocolVersions.includes(2)) {
+    throw new OmpPublicError("OMP Plugin Preview requires OMP RPC protocol v2");
+  }
 }
 
 class OmpRpcSession implements OmpRuntimeSession {
@@ -2644,16 +2648,14 @@ export class OmpRpcRuntime implements OmpRuntime {
         readyTimeoutMs,
         `OMP RPC did not become ready within ${readyTimeoutMs}ms`,
       );
-      const protocol = validateReadyMetadata(ready);
+      validateReadyMetadata(ready);
       process.applyReadyLimits(ready);
       options.signal?.throwIfAborted();
-      if (protocol === "v2") {
-        ProtocolNegotiationResultSchema.parse(
-          await process.request({ type: "negotiate_protocol", protocolVersion: 2 }),
-        );
-      }
+      ProtocolNegotiationResultSchema.parse(
+        await process.request({ type: "negotiate_protocol", protocolVersion: 2 }),
+      );
       options.signal?.throwIfAborted();
-      return new OmpRpcSession(process, removeAbortListener, protocol === "v2");
+      return new OmpRpcSession(process, removeAbortListener, true);
     } catch (error) {
       removeAbortListener();
       const cleanup = process.close();
