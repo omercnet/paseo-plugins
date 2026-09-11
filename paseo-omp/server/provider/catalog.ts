@@ -6,7 +6,7 @@ import type {
   ProviderModel,
   ProviderThinkingOption,
 } from "@getpaseo/plugin/server/provider";
-import type { OmpModel, OmpRuntime } from "./omp-rpc";
+import type { OmpModel, OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
 import { OmpCleanupFailure, OmpPublicDataFilter } from "./security";
 
 export const OMP_MODES: readonly ProviderMode[] = [
@@ -38,7 +38,6 @@ export function ompModelId(model: OmpModel): string {
   const nativeIdentity = `${Buffer.byteLength(model.provider, "utf8")}:${model.provider}${Buffer.byteLength(model.id, "utf8")}:${model.id}`;
   return `omp:model:${createHash("sha256").update(nativeIdentity).digest("hex")}`;
 }
-
 
 export function mapOmpModels(
   models: readonly OmpModel[],
@@ -90,6 +89,18 @@ export function thinkingForModel(model: OmpModel | null | undefined): ProviderTh
   return supported.map((option) => ({ ...option, isDefault: option.id === selectedDefault }));
 }
 
+async function closeCatalogSession(session: OmpRuntimeSession): Promise<void> {
+  const cleanup = session.close();
+  try {
+    await cleanup;
+  } catch {
+    throw new OmpCleanupFailure(
+      "OMP catalog cleanup failed",
+      cleanup.catch(() => undefined),
+    );
+  }
+}
+
 export async function discoverOmpCatalog(
   runtime: OmpRuntime,
   cwd?: string,
@@ -128,14 +139,6 @@ export async function discoverOmpCatalog(
       ...(state.thinkingLevel ? { defaultThinkingOption: state.thinkingLevel } : {}),
     };
   } finally {
-    const cleanup = session.close();
-    try {
-      await cleanup;
-    } catch {
-      throw new OmpCleanupFailure(
-        "OMP catalog cleanup failed",
-        cleanup.catch(() => undefined),
-      );
-    }
+    await closeCatalogSession(session);
   }
 }

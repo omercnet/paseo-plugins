@@ -539,7 +539,6 @@ describe("OMP direct provider", () => {
         cwd: "/repo",
         env: { TEST_ENV: "test-value" },
         mcpServers: {},
-        model: MODEL_PUBLIC_ID,
         mode: "full",
         settings: {},
         persist: false,
@@ -551,7 +550,6 @@ describe("OMP direct provider", () => {
     );
     await connection.close();
   });
-
 
   test("sanitizes malicious model fields while preserving native runtime identity", async () => {
     const maliciousModel: OmpModel = {
@@ -880,7 +878,8 @@ describe("OMP direct provider", () => {
       changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
     });
     await events.waitFor(
-      (event) => event.type === "request.completed" && event.requestId === "configure-before-recovery",
+      (event) =>
+        event.type === "request.completed" && event.requestId === "configure-before-recovery",
     );
     sessionAt(runtime).emit({ type: "process_exit", error: "closed" });
     const turnId = turnIdFrom(
@@ -896,7 +895,6 @@ describe("OMP direct provider", () => {
     await finishTurn(events, sessionAt(runtime, 1), turnId);
     await connection.close();
   });
-
 
   test("coalesces streams, preserves tool snapshots, and resets IDs between turns", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();

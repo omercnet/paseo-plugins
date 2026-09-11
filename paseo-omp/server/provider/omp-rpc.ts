@@ -470,7 +470,8 @@ function buildOmpEnvironment(
       throw new Error("OMP provider credential is too short for safe redaction");
     }
     totalBytes += utf8Bytes(name) + valueBytes;
-    if (totalBytes > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP inherited environment is too large");
+    if (totalBytes > MAX_ENV_TOTAL_LENGTH)
+      throw new Error("OMP inherited environment is too large");
     env[name] = value;
     if (isProviderAuth && value.length > 0) sensitiveValues.push(value);
     if (
@@ -487,12 +488,17 @@ function buildOmpEnvironment(
   for (const name in sessionEnv ?? {}) {
     if (!Object.hasOwn(sessionEnv ?? {}, name)) continue;
     entryCount += 1;
-    if (entryCount > MAX_ENV_ENTRIES) throw new Error("OMP session environment has too many entries");
+    if (entryCount > MAX_ENV_ENTRIES)
+      throw new Error("OMP session environment has too many entries");
     const value = (sessionEnv as Readonly<Record<string, string>>)[name];
     if (!ENV_NAME.test(name) || BLOCKED_SESSION_ENV.test(name.toUpperCase())) {
       throw new Error("OMP session environment contains a forbidden variable");
     }
-    if (typeof value !== "string" || utf8Bytes(value) > MAX_ENV_VALUE_LENGTH || value.includes("\0")) {
+    if (
+      typeof value !== "string" ||
+      utf8Bytes(value) > MAX_ENV_VALUE_LENGTH ||
+      value.includes("\0")
+    ) {
       throw new Error("OMP session environment contains an invalid value");
     }
     const valueBytes = utf8Bytes(value);
@@ -587,10 +593,7 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
   for (const path of paths) {
     let descriptor: number;
     try {
-      descriptor = openSync(
-        path,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
+      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "EISDIR") continue;

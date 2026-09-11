@@ -598,7 +598,12 @@ describe("OMP RPC transport", () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
@@ -612,7 +617,6 @@ describe("OMP RPC transport", () => {
     });
     await session.close();
   });
-
 
   test("preserves validated events internally while keeping stderr out of failures", async () => {
     const child = new FakeRpcChild();
