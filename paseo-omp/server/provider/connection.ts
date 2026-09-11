@@ -25,6 +25,7 @@ const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "session.configure": true,
   "session.list": true,
   "session.persistence": true,
+  "session.subsession": true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   catalog: true,
@@ -336,6 +337,7 @@ export function createOmpConnection(
   nativeReservations = new OmpNativeSessionReservations(),
   mcpConnector?: OmpMcpConnector,
   mcpInitializationTimeoutMs?: number,
+  replayTimeoutMs?: number,
 ): ProviderConnection {
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) =>
@@ -473,6 +475,7 @@ export function createOmpConnection(
           safeCapabilities,
           sessionEmit,
           scheduler,
+          replayTimeoutMs,
           shutdown.signal,
           environment,
           mcpConnector,

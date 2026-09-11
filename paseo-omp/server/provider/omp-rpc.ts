@@ -16,6 +16,7 @@ import {
   listOmpSessionDescriptors,
   type OmpSessionDescriptor,
   type OmpSessionListOptions,
+  readOmpPersistedSubagentTranscript,
   validateNativeSessionId,
 } from "./session-descriptors";
 
@@ -150,6 +151,7 @@ export type OmpMessage = OmpMessageIdentity &
         toolCallId: string;
         toolName: string;
         content: unknown;
+        details?: unknown;
         isError?: boolean;
       }
     | {
@@ -184,6 +186,10 @@ const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
       .unknown()
       .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192)),
     isError: z.boolean().optional(),
+    details: z
+      .unknown()
+      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192))
+      .optional(),
     ...OmpMessageIdentityShape,
   }),
   z.object({
@@ -297,6 +303,7 @@ const OmpSessionStateSchema = z.object({
   isCompacting: z.boolean(),
   sessionId: IDENTIFIER,
   contextUsage: OmpContextUsageSchema.nullable().optional(),
+  sessionFile: boundedString(MAX_PATH_LENGTH).optional(),
 });
 const OmpReadyFrameSchema = z.object({
   type: z.literal("ready"),
@@ -365,7 +372,7 @@ const OmpAgentEndEnvelopeSchema = z.object({
   messageCount: z.number().int().nonnegative().optional(),
   isTerminal: z.boolean().optional(),
 });
-const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
+const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent_start") }),
   z.object({
     type: z.literal("agent_end"),
@@ -401,6 +408,53 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     toolName: NAME,
     result: BoundedToolPayloadSchema,
     isError: z.boolean().optional(),
+  }),
+]);
+const OmpSubagentStatusSchema = z.enum(["pending", "running", "completed", "failed", "aborted"]);
+const OmpSubagentLifecyclePayloadSchema = z.object({
+  id: IDENTIFIER,
+  agent: NAME,
+  agentSource: NAME.optional(),
+  description: TEXT.optional(),
+  status: z.enum(["started", "completed", "failed", "aborted"]),
+  sessionFile: boundedString(MAX_PATH_LENGTH).optional(),
+  parentToolCallId: IDENTIFIER.optional(),
+  index: z.number().int().nonnegative().max(10_000),
+  detached: z.boolean().optional(),
+});
+const OmpSubagentProgressSchema = z.object({
+  id: IDENTIFIER,
+  status: OmpSubagentStatusSchema,
+  description: TEXT.optional(),
+  currentTool: BoundedToolPayloadSchema.optional(),
+  recentTools: z.array(BoundedToolPayloadSchema).max(64).optional(),
+  recentOutput: z.array(BoundedToolPayloadSchema).max(256).optional(),
+  resolvedModel: NAME.optional(),
+});
+const OmpSubagentProgressPayloadSchema = z.object({
+  index: z.number().int().nonnegative().max(10_000),
+  agent: NAME,
+  agentSource: NAME.optional(),
+  task: TEXT,
+  parentToolCallId: IDENTIFIER.optional(),
+  assignment: TEXT.optional(),
+  progress: OmpSubagentProgressSchema,
+  sessionFile: boundedString(MAX_PATH_LENGTH).optional(),
+  detached: z.boolean().optional(),
+});
+const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
+  ...OmpAgentSessionEventSchema.options,
+  z.object({
+    type: z.literal("subagent_lifecycle"),
+    payload: OmpSubagentLifecyclePayloadSchema,
+  }),
+  z.object({
+    type: z.literal("subagent_progress"),
+    payload: OmpSubagentProgressPayloadSchema,
+  }),
+  z.object({
+    type: z.literal("subagent_event"),
+    payload: z.object({ id: IDENTIFIER, event: OmpAgentSessionEventSchema }),
   }),
   z.object({
     type: z.literal("todo_reminder"),
@@ -485,6 +539,32 @@ const OmpBranchMessagesResultSchema = z.object({
 const OmpMessagesResultSchema = z.object({
   messages: z.array(OmpMessageSchema).max(100_000),
 });
+const OmpSubagentsResultSchema = z.object({
+  subagents: z
+    .array(
+      z.object({
+        id: IDENTIFIER,
+        index: z.number().int().nonnegative().max(10_000),
+        agent: NAME,
+        agentSource: NAME.optional(),
+        description: TEXT.optional(),
+        status: OmpSubagentStatusSchema,
+        task: TEXT.optional(),
+        assignment: TEXT.optional(),
+        sessionFile: boundedString(MAX_PATH_LENGTH).optional(),
+        lastUpdate: z.number().finite().nonnegative(),
+        parentToolCallId: IDENTIFIER.optional(),
+      }),
+    )
+    .max(1_024),
+});
+const OmpSubagentMessagesResultSchema = z.object({
+  sessionFile: boundedString(MAX_PATH_LENGTH),
+  fromByte: z.number().int().nonnegative(),
+  nextByte: z.number().int().nonnegative(),
+  reset: z.boolean(),
+  messages: z.array(OmpMessageSchema).max(100_000),
+});
 const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2) });
 
 export type OmpModel = z.infer<typeof OmpModelSchema>;
@@ -501,6 +581,25 @@ export function parseOmpHostToolAgentResult(value: unknown): OmpHostToolResult["
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
   | { type: "process_exit"; error: string };
+export type OmpAgentSessionEvent = z.infer<typeof OmpAgentSessionEventSchema>;
+export type OmpSubagentSnapshot = z.infer<typeof OmpSubagentsResultSchema>["subagents"][number];
+export type OmpSubagentEvent = Extract<
+  z.infer<typeof OmpRuntimeEventSchema>,
+  { type: "subagent_lifecycle" | "subagent_progress" | "subagent_event" }
+>;
+export interface OmpSubagentMessagesResult {
+  sessionFile: string;
+  fromByte: number;
+  nextByte: number;
+  reset: boolean;
+  messages: OmpMessage[];
+}
+export interface OmpPersistedSubagentMessages {
+  sessionFile: string;
+  nativeSessionId: string;
+  byteLength: number;
+  messages: OmpMessage[];
+}
 
 export interface OmpStartOptions {
   cwd: string;
@@ -530,6 +629,12 @@ export interface OmpRuntimeSession {
   getSessionStats(): Promise<OmpSessionStats>;
   getAvailableModels(): Promise<OmpModel[]>;
   getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>>;
+  setSubagentSubscription(level: "events"): Promise<void>;
+  getSubagents(): Promise<OmpSubagentSnapshot[]>;
+  getSubagentMessages(selector: {
+    subagentId?: string;
+    sessionFile?: string;
+  }): Promise<OmpSubagentMessagesResult>;
   prompt(
     message: string,
     onAccepted?: () => void,
@@ -552,6 +657,12 @@ export interface OmpRuntime {
   readonly supportsPersistence: boolean;
   startSession(options: OmpStartOptions): Promise<OmpRuntimeSession>;
   listSessions(options: OmpSessionListOptions): Promise<OmpSessionDescriptor[]>;
+  readPersistedSubagentTranscript(options: {
+    parentSessionFile: string;
+    childTranscriptId: string;
+    cwd: string;
+    signal?: AbortSignal;
+  }): Promise<OmpPersistedSubagentMessages>;
 }
 
 export interface OmpSpawnRequest {
@@ -1587,7 +1698,10 @@ class OmpRpcProcess {
   private receiveChunk(frame: ChunkFrame): void {
     if (
       frame.byteLength > MAX_SEMANTIC_FRAME_BYTES &&
-      ![...this.pending.values()].some((pending) => pending.command === "get_messages")
+      ![...this.pending.values()].some(
+        (pending) =>
+          pending.command === "get_messages" || pending.command === "get_subagent_messages",
+      )
     ) {
       this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
       return;
@@ -1695,7 +1809,8 @@ class OmpRpcProcess {
     const pending = this.pending.get(response.data.id);
     if (!pending) return;
     const isBranchHistory = pending.command === "get_branch_messages";
-    const isHistory = pending.command === "get_messages";
+    const isHistory =
+      pending.command === "get_messages" || pending.command === "get_subagent_messages";
     const responseItemLimit = isBranchHistory ? 1_024 : isHistory ? 100_000 : MAX_ARRAY_ITEMS;
     const responseByteLimit =
       isBranchHistory || isHistory
@@ -2070,6 +2185,35 @@ class OmpRpcSession implements OmpRuntimeSession {
     );
     return result.commands;
   }
+  async setSubagentSubscription(level: "events"): Promise<void> {
+    await this.process.request({ type: "set_subagent_subscription", level });
+  }
+
+  async getSubagents(): Promise<OmpSubagentSnapshot[]> {
+    return OmpSubagentsResultSchema.parse(await this.process.request({ type: "get_subagents" }))
+      .subagents;
+  }
+
+  async getSubagentMessages(selector: {
+    subagentId?: string;
+    sessionFile?: string;
+  }): Promise<OmpSubagentMessagesResult> {
+    const subagentId = selector.subagentId
+      ? validateBoundedText(selector.subagentId, "subagent identifier", MAX_ID_LENGTH)
+      : undefined;
+    const sessionFile = selector.sessionFile
+      ? validateBoundedText(selector.sessionFile, "subagent transcript", MAX_PATH_LENGTH)
+      : undefined;
+    if ((subagentId ? 1 : 0) + (sessionFile ? 1 : 0) !== 1) {
+      throw new OmpPublicError("OMP subagent history requires one transcript selector");
+    }
+    return OmpSubagentMessagesResultSchema.parse(
+      await this.process.request({
+        type: "get_subagent_messages",
+        ...(subagentId ? { subagentId } : { sessionFile }),
+      }),
+    );
+  }
 
   async getBranchMessages(): Promise<Array<{ entryId: string; text: string }>> {
     const result = OmpBranchMessagesResultSchema.parse(
@@ -2145,6 +2289,23 @@ export class OmpRpcRuntime implements OmpRuntime {
       this.options.listSessions?.(options) ??
         listOmpSessionDescriptors(options, this.options.environment ?? process.env),
     );
+  }
+  async readPersistedSubagentTranscript(options: {
+    parentSessionFile: string;
+    childTranscriptId: string;
+    cwd: string;
+    signal?: AbortSignal;
+  }): Promise<OmpPersistedSubagentMessages> {
+    const transcript = await readOmpPersistedSubagentTranscript(
+      options.parentSessionFile,
+      options.childTranscriptId,
+      options.cwd,
+      options.signal,
+    );
+    return {
+      ...transcript,
+      messages: z.array(OmpMessageSchema).max(100_000).parse(transcript.messages),
+    };
   }
 
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {

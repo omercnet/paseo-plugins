@@ -54,3 +54,10 @@ Full legacy profile parity requires these narrow additions to the public plugin-
 5. Expose a server-side read and change-subscription API for definitions registered through `registerSettings`. Registration currently creates host storage and RPC handlers, but provider registration and catalog discovery cannot consume those values.
 
 Until these APIs exist, unsupported fields fail visibly. The plugin does not read Paseo internal files or import private server modules.
+# Paseo OMP
+
+Paseo plugin for OMP workspace tools and the direct `rpc-ui` provider preview.
+
+## Compatibility
+
+This release requires Paseo `^0.8.1`. Provider-owned OMP child sessions rely on direct nested-subagent ancestry support introduced after Paseo 0.8.0.

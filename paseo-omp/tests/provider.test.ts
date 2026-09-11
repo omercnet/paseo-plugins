@@ -17,11 +17,14 @@ import {
   type OmpHostToolUpdate,
   type OmpMessage,
   type OmpModel,
+  type OmpPersistedSubagentMessages,
   type OmpRpcEvent,
   OmpRpcRuntime,
   type OmpRuntime,
   type OmpRuntimeSession,
   type OmpStartOptions,
+  type OmpSubagentMessagesResult,
+  type OmpSubagentSnapshot,
 } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
 import { OmpCleanupFailure, OmpPublicDataFilter } from "../server/provider/security";
@@ -285,6 +288,10 @@ class FakeOmpSession implements OmpRuntimeSession {
   availableCommandsError: Error | null = null;
   availableCommandLookups = 0;
   availableCommandsGate: Promise<void> | null = null;
+  subagentSubscriptionError: Error | null = null;
+  readonly subagentSubscriptions: string[] = [];
+  subagents: OmpSubagentSnapshot[] = [];
+  readonly subagentMessages = new Map<string, OmpSubagentMessagesResult>();
   availableCommandsObserved: (() => void) | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
   modelResponseGate: Promise<void> | null = null;
@@ -307,6 +314,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   maxActiveStateLookups = 0;
   activeStatsLookups = 0;
   maxActiveStatsLookups = 0;
+  nativeSessionFile: string | undefined = "/sessions/root.jsonl";
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   nativeSessionId = NATIVE_SESSION_ID;
   stateGate: Promise<void> | null = null;
@@ -366,6 +374,8 @@ class FakeOmpSession implements OmpRuntimeSession {
       contextWindow: this.contextWindow,
       usageAvailable: this.usageAvailable,
       stateContextNull: this.stateContextNull,
+      sessionFile: this.nativeSessionFile,
+      sessionId: this.nativeSessionId,
     };
     try {
       if (this.stateGate) await this.stateGate;
@@ -462,6 +472,21 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (this.availableCommandsGate) await this.availableCommandsGate;
     if (this.availableCommandsError) throw this.availableCommandsError;
     return this.availableCommands;
+  }
+  async setSubagentSubscription(level: "events") {
+    if (this.subagentSubscriptionError) throw this.subagentSubscriptionError;
+    this.subagentSubscriptions.push(level);
+  }
+
+  getSubagents() {
+    return Promise.resolve(this.subagents);
+  }
+
+  getSubagentMessages(selector: { subagentId?: string; sessionFile?: string }) {
+    const key = selector.subagentId ?? selector.sessionFile;
+    const result = key ? this.subagentMessages.get(key) : undefined;
+    if (!result) return Promise.reject(new Error("missing fake subagent transcript"));
+    return Promise.resolve(result);
   }
   async prompt(message: string, onAccepted?: () => void) {
     this.prompts.push(message);
@@ -584,13 +609,29 @@ class FakeOmpRuntime implements OmpRuntime {
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   nextAvailableModels: OmpModel[] | null = null;
   redactionValues: readonly string[] = [];
-  readonly descriptors: Array<{ id: string; cwd: string; title?: string; updatedAt?: string }> = [];
+  readonly descriptors: Array<{
+    id: string;
+    cwd: string;
+    title?: string;
+    updatedAt?: string;
+    transcriptFile?: string;
+  }> = [];
   resolveSessions = true;
   nextCanReplayHistory = true;
   nextHistoryGate: Promise<void> | null = null;
   nextHistoryObserved: (() => void) | null = null;
   nextHistoryError: Error | null = null;
   nextHistoryMessages: OmpMessage[] = [];
+  nextSubagents: OmpSubagentSnapshot[] = [];
+  readonly nextSubagentMessages = new Map<string, OmpSubagentMessagesResult>();
+  nextSubagentSubscriptionError: Error | null = null;
+  readonly persistedSubagentMessages = new Map<string, OmpPersistedSubagentMessages>();
+  readonly persistedSubagentGates = new Map<string, Promise<void>>();
+  persistedSubagentObserved: ((key: string) => void) | null = null;
+  readonly persistedSubagentRequests: Array<{
+    parentSessionFile: string;
+    childTranscriptId: string;
+  }> = [];
   readonly sessionListRequests: Array<{
     cwd: string;
     query?: string;
@@ -614,6 +655,25 @@ class FakeOmpRuntime implements OmpRuntime {
     );
   }
   sessionCreated: ((session: FakeOmpSession) => void) | null = null;
+  async readPersistedSubagentTranscript(options: {
+    parentSessionFile: string;
+    childTranscriptId: string;
+    cwd: string;
+    signal?: AbortSignal;
+  }) {
+    this.persistedSubagentRequests.push({
+      parentSessionFile: options.parentSessionFile,
+      childTranscriptId: options.childTranscriptId,
+    });
+    const key = `${options.parentSessionFile}\0${options.childTranscriptId}`;
+    this.persistedSubagentObserved?.(key);
+    const gate = this.persistedSubagentGates.get(key);
+    if (gate) await gate;
+    options.signal?.throwIfAborted();
+    const result = this.persistedSubagentMessages.get(key);
+    if (!result) throw new Error("missing fake persisted subagent transcript");
+    return result;
+  }
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     this.starts.push(options);
     this.startObserved?.();
@@ -641,11 +701,19 @@ class FakeOmpRuntime implements OmpRuntime {
     session.historyObserved = this.nextHistoryObserved;
     session.historyError = this.nextHistoryError;
     session.historyMessages = this.nextHistoryMessages;
+    session.subagents = this.nextSubagents;
+    session.subagentSubscriptionError = this.nextSubagentSubscriptionError;
+    for (const [key, history] of this.nextSubagentMessages) {
+      session.subagentMessages.set(key, history);
+    }
     this.nextCanReplayHistory = true;
     this.nextHistoryGate = null;
     this.nextHistoryObserved = null;
     this.nextHistoryError = null;
     this.nextHistoryMessages = [];
+    this.nextSubagents = [];
+    this.nextSubagentMessages.clear();
+    this.nextSubagentSubscriptionError = null;
     if (this.nextModel) {
       session.currentModel = this.nextModel;
       this.nextModel = null;
@@ -684,11 +752,13 @@ async function createHarness(
   runtime = new FakeOmpRuntime(),
   scheduler = new ManualScheduler(),
   capabilities: readonly string[] = ["prompt.message", "prompt.steer", "session.configure"],
+  replayTimeoutMs?: number,
 ) {
   const connection = await createOmpProvider({
     runtime,
     timelineScheduler: scheduler,
     environment: TEST_RUNTIME_ENV,
+    replayTimeoutMs,
   }).connect({ versions: [1], capabilities });
   const events = new EventLog();
   connection.onEvent((event) => events.push(event));
@@ -10205,6 +10275,1197 @@ describe("OMP direct provider", () => {
       }),
     );
     await finishTurn(events, session, nextTurn);
+    await connection.close();
+  });
+
+  test("publishes one task child once and keeps its parent active", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "task-single",
+      toolName: "task",
+      args: { tasks: [{ task: "inspect" }] },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "task-single",
+      toolName: "task",
+      result: { details: { results: [{ id: "native-child-single", agent: "scout" }] } },
+    });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-child-single",
+        agent: "scout",
+        description: "Inspect the implementation",
+        status: "started",
+        sessionFile: "/sessions/root/native-child-single.jsonl",
+        parentToolCallId: "task-single",
+        index: 0,
+      },
+    });
+    const opened = events.findLast(
+      (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
+    );
+    if (opened?.type !== "session.opened") throw new Error("Missing child session");
+    expect(opened).toEqual(
+      expect.objectContaining({
+        capabilities: [],
+        restoration: "parent",
+        title: "scout",
+      }),
+    );
+    session.emit({
+      type: "subagent_event",
+      payload: {
+        id: "native-child-single",
+        event: {
+          type: "message_end",
+          message: { role: "assistant", responseId: "child-answer", content: "child output" },
+        },
+      },
+    });
+    session.emit({
+      type: "subagent_event",
+      payload: {
+        id: "native-child-single",
+        event: {
+          type: "message_end",
+          message: { role: "assistant", responseId: "child-answer", content: "child output" },
+        },
+      },
+    });
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.sessionId === opened.sessionId &&
+          event.item.type === "assistant_message" &&
+          event.item.text === "child output",
+      ),
+    ).toHaveLength(1);
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await Promise.resolve();
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId === "session-1" &&
+          event.state !== "started",
+      ),
+    ).toBe(false);
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-child-single",
+        agent: "scout",
+        status: "completed",
+        sessionFile: "/sessions/root/native-child-single.jsonl",
+        parentToolCallId: "task-single",
+        index: 0,
+      },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    expect(
+      events.filter(
+        (event) => event.type === "session.opened" && event.sessionId === opened.sessionId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId === opened.sessionId &&
+          event.state === "completed",
+      ),
+    ).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("settles a successful task acknowledgement with no child evidence", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "task-no-child",
+      toolName: "task",
+      args: { tasks: [{ task: "cannot schedule" }] },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "task-no-child",
+      toolName: "task",
+      result: { details: { results: [], progress: [] }, message: "No agent was scheduled" },
+    });
+    await finishTurn(events, session, turnId);
+    expect(
+      events.filter((event) => event.type === "session.opened" && event.parentSessionId),
+    ).toHaveLength(0);
+    await connection.close();
+  });
+
+  test("restarts a terminal child id for follow-up work without losing history", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const runChildTurn = async (
+      parentClientMessageId: string,
+      taskCallId: string,
+      responseId: string,
+      text: string,
+    ) => {
+      const parentTurnId = turnIdFrom(
+        await startPrompt(connection, events, parentClientMessageId, text),
+      );
+      session.emit({
+        type: "tool_execution_start",
+        toolCallId: taskCallId,
+        toolName: "task",
+        args: { tasks: [{ task: text }] },
+      });
+      session.emit({
+        type: "tool_execution_end",
+        toolCallId: taskCallId,
+        toolName: "task",
+        result: { message: "spawned" },
+      });
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "reused-child",
+          agent: "scout",
+          status: "started",
+          parentToolCallId: taskCallId,
+          index: 0,
+        },
+      });
+      session.emit({
+        type: "subagent_event",
+        payload: {
+          id: "reused-child",
+          event: {
+            type: "message_end",
+            message: { role: "assistant", responseId, content: text },
+          },
+        },
+      });
+      session.emit({ type: "agent_end", messages: [], isTerminal: true });
+      await Promise.resolve();
+      expect(
+        events.some(
+          (event) =>
+            event.type === "session.turn" &&
+            event.turnId === parentTurnId &&
+            event.state === "completed",
+        ),
+      ).toBe(false);
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "reused-child",
+          agent: "scout",
+          status: "completed",
+          parentToolCallId: taskCallId,
+          index: 0,
+        },
+      });
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === parentTurnId &&
+          event.state === "completed",
+      );
+    };
+
+    await runChildTurn("follow-up-parent-one", "follow-up-task-one", "child-response-one", "first");
+    const childOpened = events.find(
+      (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
+    );
+    if (childOpened?.type !== "session.opened") throw new Error("Missing reused child");
+    await runChildTurn(
+      "follow-up-parent-two",
+      "follow-up-task-two",
+      "child-response-two",
+      "second",
+    );
+    expect(
+      events.filter(
+        (event) => event.type === "session.opened" && event.sessionId === childOpened.sessionId,
+      ),
+    ).toHaveLength(1);
+    const childTurns = events.flatMap((event) =>
+      event.type === "session.turn" && event.sessionId === childOpened.sessionId ? [event] : [],
+    );
+    expect(childTurns.filter((event) => event.state === "started")).toHaveLength(2);
+    expect(childTurns.filter((event) => event.state === "completed")).toHaveLength(2);
+    expect(new Set(childTurns.map((event) => event.turnId)).size).toBe(2);
+    expect(
+      events.flatMap((event) =>
+        event.type === "timeline.item" &&
+        event.sessionId === childOpened.sessionId &&
+        event.item.type === "assistant_message"
+          ? [event.item.text]
+          : [],
+      ),
+    ).toEqual(["first", "second"]);
+    await connection.close();
+  });
+
+  test("keeps a batch dispatch active across gaps between child starts", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "task-batch",
+      toolName: "task",
+      args: { task: "batch" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "task-batch",
+      toolName: "task",
+      result: {
+        message: "Spawned 2 background agents",
+        details: {
+          results: [],
+          progress: [
+            { index: 0, id: "native-batch-one", agent: "first", status: "pending" },
+            { index: 1, id: "native-batch-two", agent: "second", status: "pending" },
+          ],
+        },
+      },
+    });
+    for (const status of ["started", "completed"] as const) {
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "native-batch-one",
+          agent: "first",
+          status,
+          sessionFile: "/sessions/root/native-batch-one.jsonl",
+          parentToolCallId: "task-batch",
+          index: 0,
+        },
+      });
+    }
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await Promise.resolve();
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+      ),
+    ).toBe(false);
+    for (const status of ["started", "completed"] as const) {
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "native-batch-two",
+          agent: "second",
+          status,
+          sessionFile: "/sessions/root/native-batch-two.jsonl",
+          parentToolCallId: "task-batch",
+          index: 1,
+        },
+      });
+    }
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    expect(
+      events.filter(
+        (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
+      ),
+    ).toHaveLength(2);
+    await connection.close();
+  });
+
+  test("publishes nested task children beneath their native parent", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "root-task",
+      toolName: "task",
+      args: { tasks: [{ task: "parent" }] },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "root-task",
+      toolName: "task",
+      result: { message: "spawned" },
+    });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-parent-child",
+        agent: "parent-child",
+        status: "started",
+        sessionFile: "/sessions/root/native-parent-child.jsonl",
+        parentToolCallId: "root-task",
+        index: 0,
+      },
+    });
+    const parentChild = events.findLast(
+      (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
+    );
+    if (parentChild?.type !== "session.opened") throw new Error("Missing parent child session");
+    for (const event of [
+      {
+        type: "tool_execution_start" as const,
+        toolCallId: "nested-task",
+        toolName: "task",
+        args: { tasks: [{ task: "grandchild" }] },
+      },
+      {
+        type: "tool_execution_end" as const,
+        toolCallId: "nested-task",
+        toolName: "task",
+        result: { message: "spawned" },
+      },
+    ]) {
+      session.emit({ type: "subagent_event", payload: { id: "native-parent-child", event } });
+    }
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-grandchild",
+        agent: "grandchild",
+        status: "started",
+        sessionFile: "/sessions/root/native-parent-child/native-grandchild.jsonl",
+        parentToolCallId: "nested-task",
+        index: 0,
+      },
+    });
+    const grandchild = events.findLast(
+      (event) => event.type === "session.opened" && event.parentSessionId === parentChild.sessionId,
+    );
+    expect(grandchild).toEqual(
+      expect.objectContaining({
+        type: "session.opened",
+        parentSessionId: parentChild.sessionId,
+      }),
+    );
+    expect(grandchild).not.toEqual(expect.objectContaining({ parentSessionId: "session-1" }));
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-parent-child",
+        agent: "parent-child",
+        status: "completed",
+        sessionFile: "/sessions/root/native-parent-child.jsonl",
+        parentToolCallId: "root-task",
+        index: 0,
+      },
+    });
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId === parentChild.sessionId &&
+          event.state === "completed",
+      ),
+    ).toBe(false);
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-grandchild",
+        agent: "grandchild",
+        status: "completed",
+        sessionFile: "/sessions/root/native-parent-child/native-grandchild.jsonl",
+        parentToolCallId: "nested-task",
+        index: 0,
+      },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId === parentChild.sessionId &&
+          event.state === "completed",
+      ),
+    ).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("rejects live task owner collisions and permits reuse after dispatch settlement", async () => {
+    const collisionHarness = await createHarness(new FakeOmpRuntime(), new ManualScheduler(), [
+      "prompt.message",
+      "session.subsession",
+    ]);
+    await openSession(collisionHarness.connection, collisionHarness.events);
+    const collisionSession = sessionAt(collisionHarness.runtime);
+    const collisionTurnId = turnIdFrom(
+      await startPrompt(collisionHarness.connection, collisionHarness.events),
+    );
+    collisionSession.emit({
+      type: "tool_execution_start",
+      toolCallId: "colliding-task",
+      toolName: "task",
+      args: { tasks: [{ task: "parent" }] },
+    });
+    collisionSession.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "collision-parent",
+        agent: "parent",
+        status: "started",
+        parentToolCallId: "colliding-task",
+        index: 0,
+      },
+    });
+    collisionSession.emit({
+      type: "subagent_event",
+      payload: {
+        id: "collision-parent",
+        event: {
+          type: "tool_execution_start",
+          toolCallId: "colliding-task",
+          toolName: "task",
+          args: { tasks: [{ task: "nested" }] },
+        },
+      },
+    });
+    await collisionHarness.events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === collisionTurnId &&
+        event.state === "failed",
+    );
+    await collisionHarness.connection.close();
+
+    const reuseHarness = await createHarness(new FakeOmpRuntime(), new ManualScheduler(), [
+      "prompt.message",
+      "session.subsession",
+    ]);
+    await openSession(reuseHarness.connection, reuseHarness.events);
+    const reuseSession = sessionAt(reuseHarness.runtime);
+    const firstTurnId = turnIdFrom(
+      await startPrompt(reuseHarness.connection, reuseHarness.events, "first-owner"),
+    );
+    reuseSession.emit({
+      type: "tool_execution_start",
+      toolCallId: "reusable-task",
+      toolName: "task",
+      args: { tasks: [{ task: "first" }] },
+    });
+    reuseSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "reusable-task",
+      toolName: "task",
+      result: { message: "spawned" },
+    });
+    for (const status of ["started", "completed"] as const) {
+      reuseSession.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "first-owner-child",
+          agent: "first",
+          status,
+          parentToolCallId: "reusable-task",
+          index: 0,
+        },
+      });
+    }
+    await finishTurn(reuseHarness.events, reuseSession, firstTurnId);
+
+    const secondTurnId = turnIdFrom(
+      await startPrompt(reuseHarness.connection, reuseHarness.events, "second-owner"),
+    );
+    reuseSession.emit({
+      type: "tool_execution_start",
+      toolCallId: "second-root-task",
+      toolName: "task",
+      args: { tasks: [{ task: "second" }] },
+    });
+    reuseSession.emit({
+      type: "tool_execution_end",
+      toolCallId: "second-root-task",
+      toolName: "task",
+      result: { message: "spawned" },
+    });
+    reuseSession.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "second-owner-child",
+        agent: "second",
+        status: "started",
+        parentToolCallId: "second-root-task",
+        index: 0,
+      },
+    });
+    const secondChild = reuseHarness.events.findLast(
+      (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
+    );
+    if (secondChild?.type !== "session.opened") throw new Error("Missing second child");
+    reuseSession.emit({
+      type: "subagent_event",
+      payload: {
+        id: "second-owner-child",
+        event: {
+          type: "tool_execution_start",
+          toolCallId: "reusable-task",
+          toolName: "task",
+          args: { tasks: [{ task: "nested reuse" }] },
+        },
+      },
+    });
+    reuseSession.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "reused-grandchild",
+        agent: "nested",
+        status: "started",
+        parentToolCallId: "reusable-task",
+        index: 0,
+      },
+    });
+    expect(reuseHarness.events).toContainEqual(
+      expect.objectContaining({
+        type: "session.opened",
+        parentSessionId: secondChild.sessionId,
+      }),
+    );
+    reuseSession.emit({ type: "process_exit", error: "test cleanup" });
+    await reuseHarness.events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === secondTurnId && event.state === "failed",
+    );
+    await reuseHarness.connection.close();
+  });
+
+  test("isolates identical native child ids across ephemeral provider roots", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.sessionIds.push(NATIVE_SESSION_ID, NATIVE_SESSION_ID);
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.subsession",
+    ]);
+    await openSession(connection, events, "open-ephemeral-one", "ephemeral-one");
+    await openSession(connection, events, "open-ephemeral-two", "ephemeral-two");
+    await startPrompt(connection, events, "prompt-ephemeral-one", "work", "ephemeral-one");
+    await startPrompt(connection, events, "prompt-ephemeral-two", "work", "ephemeral-two");
+    for (const index of [0, 1]) {
+      sessionAt(runtime, index).emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "same-native-child",
+          agent: "scout",
+          status: "started",
+          index: 0,
+        },
+      });
+    }
+    const firstChild = events.find(
+      (event) => event.type === "session.opened" && event.parentSessionId === "ephemeral-one",
+    );
+    const secondChild = events.find(
+      (event) => event.type === "session.opened" && event.parentSessionId === "ephemeral-two",
+    );
+    if (firstChild?.type !== "session.opened" || secondChild?.type !== "session.opened") {
+      throw new Error("Missing ephemeral children");
+    }
+    expect(secondChild.sessionId).not.toBe(firstChild.sessionId);
+    await connection.close();
+  });
+
+  test("replays cold child transcripts once with stable persisted identity", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    const configureReplay = () => {
+      runtime.nextHistoryMessages = [
+        {
+          role: "assistant",
+          responseId: "root-task-message",
+          content: [
+            {
+              type: "toolCall",
+              id: "replayed-task",
+              name: "task",
+              arguments: { agent: "scout", task: "inspect" },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "replayed-task",
+          toolName: "task",
+          content: [{ type: "text", text: "done" }],
+          details: {
+            results: [],
+            progress: [
+              { index: 0, id: "native-replayed-child", agent: "scout", status: "pending" },
+            ],
+          },
+        },
+      ];
+      runtime.persistedSubagentMessages.set("/sessions/root.jsonl\0native-replayed-child", {
+        sessionFile: "/sessions/root/native-replayed-child.jsonl",
+        nativeSessionId: "01a0915d-e337-7009-af23-7382348f59b5",
+        byteLength: 42,
+        messages: [
+          { role: "user", entryId: "child-user", content: "inspect" },
+          { role: "assistant", responseId: "child-response", content: "replayed child output" },
+        ],
+      });
+    };
+    configureReplay();
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    const openReplay = async (requestId: string, sessionId: string) => {
+      const baseline = events.length;
+      await connection.send({
+        type: "session.open",
+        requestId,
+        sessionId,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+      await events.waitFor(
+        (event) => event.type === "session.ready" && event.requestId === requestId,
+      );
+      const replay = events.slice(baseline);
+      const childOpened = replay.find(
+        (event) => event.type === "session.opened" && event.parentSessionId === sessionId,
+      );
+      if (childOpened?.type !== "session.opened") throw new Error("Missing replayed child");
+      expect(
+        replay.filter(
+          (event) =>
+            event.type === "timeline.item" &&
+            event.sessionId === childOpened.sessionId &&
+            event.item.type === "assistant_message",
+        ),
+      ).toHaveLength(1);
+      expect(
+        replay.filter(
+          (event) => event.type === "session.opened" && event.sessionId === childOpened.sessionId,
+        ),
+      ).toHaveLength(1);
+      return childOpened.sessionId;
+    };
+    const firstChildId = await openReplay("replay-one", "resumed-one");
+    await connection.send({
+      type: "session.close",
+      requestId: "close-replay-one",
+      sessionId: "resumed-one",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "close-replay-one",
+    );
+    configureReplay();
+    const secondChildId = await openReplay("replay-two", "resumed-two");
+    expect(secondChildId).toBe(firstChildId);
+    expect(runtime.persistedSubagentRequests).toEqual([
+      { parentSessionFile: "/sessions/root.jsonl", childTranscriptId: "native-replayed-child" },
+      { parentSessionFile: "/sessions/root.jsonl", childTranscriptId: "native-replayed-child" },
+    ]);
+    expect(runtime.sessions.every((session) => session.subagentMessages.size === 0)).toBe(true);
+    await connection.close();
+  });
+
+  test("cancels recursive child replay at the shared deadline without late publication", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "timed-task",
+            name: "task",
+            arguments: { task: "wait" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "timed-task",
+        toolName: "task",
+        content: [],
+        details: { results: [{ id: "timed-child" }] },
+      },
+    ];
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    runtime.persistedSubagentGates.set(
+      "/sessions/root/timed-child.jsonl\0timed-grandchild",
+      gate.promise,
+    );
+    runtime.persistedSubagentObserved = (key) => {
+      if (key.endsWith("\0timed-grandchild")) observed.resolve();
+    };
+    runtime.persistedSubagentMessages.set("/sessions/root.jsonl\0timed-child", {
+      sessionFile: "/sessions/root/timed-child.jsonl",
+      nativeSessionId: "01a0915d-e337-7009-af23-7382348f59b6",
+      byteLength: 10,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "timed-nested-task",
+              name: "task",
+              arguments: { task: "nested wait" },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "timed-nested-task",
+          toolName: "task",
+          content: [],
+          details: { results: [{ id: "timed-grandchild" }] },
+        },
+      ],
+    });
+    runtime.persistedSubagentMessages.set("/sessions/root/timed-child.jsonl\0timed-grandchild", {
+      sessionFile: "/sessions/root/timed-child/timed-grandchild.jsonl",
+      nativeSessionId: "01a0915d-e337-7009-af23-7382348f59b8",
+      byteLength: 10,
+      messages: [{ role: "assistant", responseId: "too-late", content: "too late" }],
+    });
+    const { connection, events } = await createHarness(
+      runtime,
+      new ManualScheduler(),
+      ["prompt.message", "session.persistence", "session.subsession"],
+      5,
+    );
+    await connection.send({
+      type: "session.open",
+      requestId: "timed-replay",
+      sessionId: "timed-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await observed.promise;
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "timed-replay",
+    );
+    const childEventCount = events.filter(
+      (event) => "sessionId" in event && event.sessionId.startsWith("omp:subsession:"),
+    ).length;
+    expect(childEventCount).toBeGreaterThan(0);
+    gate.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) => "sessionId" in event && event.sessionId.startsWith("omp:subsession:"),
+      ),
+    ).toHaveLength(childEventCount);
+    expect(
+      events.some((event) => event.type === "session.ready" && event.requestId === "timed-replay"),
+    ).toBe(false);
+    await connection.close();
+  });
+
+  test("bounds root and child replay with one cumulative byte and node budget", async () => {
+    const bytePayload = "x".repeat(1024 * 1024);
+    const oversizedCases: Array<{ id: string; messages: OmpMessage[] }> = [
+      {
+        id: "bytes",
+        messages: Array.from({ length: 65 }, (_, index) => ({
+          role: "assistant",
+          responseId: `bytes-${index}`,
+          content: bytePayload,
+        })),
+      },
+      {
+        id: "nodes",
+        messages: Array.from({ length: 3_100 }, (_, index) => ({
+          role: "assistant",
+          responseId: `nodes-${index}`,
+          content: Array.from({ length: 64 }, () => ({ type: "text", text: "x" })),
+        })),
+      },
+    ];
+    for (const oversized of oversizedCases) {
+      const runtime = new FakeOmpRuntime();
+      runtime.descriptors.push({
+        id: NATIVE_SESSION_ID,
+        cwd: "/repo",
+        transcriptFile: "/sessions/root.jsonl",
+      });
+      runtime.nextHistoryMessages = [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: `budget-task-${oversized.id}`,
+              name: "task",
+              arguments: { task: "overflow" },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: `budget-task-${oversized.id}`,
+          toolName: "task",
+          content: [],
+          details: { results: [{ id: `budget-child-${oversized.id}` }] },
+        },
+      ];
+      runtime.persistedSubagentMessages.set(`/sessions/root.jsonl\0budget-child-${oversized.id}`, {
+        sessionFile: `/sessions/root/budget-child-${oversized.id}.jsonl`,
+        nativeSessionId: `native_budget_${oversized.id}`,
+        byteLength: 1,
+        messages: oversized.messages,
+      });
+      const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+        "prompt.message",
+        "session.persistence",
+        "session.subsession",
+      ]);
+      await connection.send({
+        type: "session.open",
+        requestId: `budget-${oversized.id}`,
+        sessionId: `budget-root-${oversized.id}`,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+      const failure = await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === `budget-${oversized.id}`,
+      );
+      expect(failure).toEqual(
+        expect.objectContaining({
+          error: { message: "OMP subagent history exceeds replay limits" },
+        }),
+      );
+      expect(
+        events.some(
+          (event) => "sessionId" in event && event.sessionId.startsWith("omp:subsession:"),
+        ),
+      ).toBe(false);
+      await connection.close();
+    }
+  });
+
+  test("derives pending cold async outcomes from terminal yield payloads", async () => {
+    for (const { outcome, yieldStatus } of [
+      { outcome: "canceled" as const, yieldStatus: "aborted" },
+      { outcome: "failed" as const, yieldStatus: "failed" },
+      { outcome: "completed" as const, yieldStatus: "success" },
+    ]) {
+      const runtime = new FakeOmpRuntime();
+      runtime.descriptors.push({
+        id: NATIVE_SESSION_ID,
+        cwd: "/repo",
+        transcriptFile: "/sessions/root.jsonl",
+      });
+      runtime.nextHistoryMessages = [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: `pending-${outcome}-task`,
+              name: "task",
+              arguments: { task: outcome },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: `pending-${outcome}-task`,
+          toolName: "task",
+          content: [],
+          details: {
+            results: [],
+            progress: [
+              {
+                index: 0,
+                id: `pending-${outcome}-child`,
+                agent: "scout",
+                status: "pending",
+              },
+            ],
+          },
+        },
+      ];
+      runtime.persistedSubagentMessages.set(`/sessions/root.jsonl\0pending-${outcome}-child`, {
+        sessionFile: `/sessions/root/pending-${outcome}-child.jsonl`,
+        nativeSessionId: `native_pending_${outcome}`,
+        byteLength: 1,
+        messages: [
+          {
+            role: "assistant",
+            responseId: `pending-${outcome}-response`,
+            content: `${outcome} output`,
+            stopReason: "stop",
+          },
+          {
+            role: "toolResult",
+            toolCallId: `pending-${outcome}-yield`,
+            toolName: "yield",
+            content: [{ type: "text", text: "Result submitted." }],
+            details: { status: yieldStatus },
+          },
+        ],
+      });
+      const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+        "prompt.message",
+        "session.persistence",
+        "session.subsession",
+      ]);
+      await connection.send({
+        type: "session.open",
+        requestId: `pending-${outcome}-open`,
+        sessionId: `pending-${outcome}-root`,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+      await events.waitFor(
+        (event) => event.type === "session.ready" && event.requestId === `pending-${outcome}-open`,
+      );
+      const child = events.find(
+        (event) =>
+          event.type === "session.opened" && event.parentSessionId === `pending-${outcome}-root`,
+      );
+      if (child?.type !== "session.opened") throw new Error("Missing pending history child");
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session.turn",
+          sessionId: child.sessionId,
+          state: outcome,
+        }),
+      );
+      await connection.close();
+    }
+  });
+
+  test("replays aborted task results as canceled despite error metadata", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "aborted-task", name: "task", arguments: { task: "stop" } },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "aborted-task",
+        toolName: "task",
+        content: [],
+        details: {
+          results: [
+            { id: "aborted-child", aborted: true, exitCode: 1, error: "request was aborted" },
+          ],
+        },
+      },
+    ];
+    runtime.persistedSubagentMessages.set("/sessions/root.jsonl\0aborted-child", {
+      sessionFile: "/sessions/root/aborted-child.jsonl",
+      nativeSessionId: "01a0915d-e337-7009-af23-7382348f59b7",
+      byteLength: 1,
+      messages: [],
+    });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "aborted-replay",
+      sessionId: "aborted-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "aborted-replay",
+    );
+    const child = events.find(
+      (event) => event.type === "session.opened" && event.parentSessionId === "aborted-root",
+    );
+    if (child?.type !== "session.opened") throw new Error("Missing aborted child");
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId === child.sessionId &&
+          event.state === "canceled",
+      ),
+    ).toHaveLength(1);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId === child.sessionId &&
+          event.state === "failed",
+      ),
+    ).toBe(false);
+    await connection.close();
+  });
+
+  test("publishes failed and canceled child terminal states exactly once", async () => {
+    for (const terminal of ["failed", "aborted"] as const) {
+      const { connection, events, runtime } = await createHarness(
+        new FakeOmpRuntime(),
+        new ManualScheduler(),
+        ["prompt.message", "session.subsession"],
+      );
+      await openSession(connection, events);
+      const session = sessionAt(runtime);
+      const turnId = turnIdFrom(await startPrompt(connection, events));
+      session.emit({
+        type: "tool_execution_start",
+        toolCallId: `task-${terminal}`,
+        toolName: "task",
+        args: { tasks: [{ task: terminal }] },
+      });
+      session.emit({
+        type: "tool_execution_end",
+        toolCallId: `task-${terminal}`,
+        toolName: "task",
+        result: { message: "spawned" },
+      });
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: `native-${terminal}`,
+          agent: terminal,
+          status: "started",
+          parentToolCallId: `task-${terminal}`,
+          index: 0,
+        },
+      });
+      session.emit({ type: "agent_end", messages: [], isTerminal: true });
+      if (terminal === "aborted") {
+        await connection.send({
+          type: "session.interrupt",
+          requestId: "cancel-parent",
+          sessionId: "session-1",
+        });
+      }
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: `native-${terminal}`,
+          agent: terminal,
+          status: terminal,
+          parentToolCallId: `task-${terminal}`,
+          index: 0,
+        },
+      });
+      const expected = terminal === "failed" ? "failed" : "canceled";
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      );
+      const childOpened = events.find(
+        (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
+      );
+      if (childOpened?.type !== "session.opened") throw new Error("Missing terminal child");
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "session.turn" &&
+            event.sessionId === childOpened.sessionId &&
+            event.state === expected,
+        ),
+      ).toHaveLength(1);
+      await connection.close();
+    }
+  });
+
+  test("omits subsession capabilities when OMP cannot subscribe", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextSubagentSubscriptionError = new Error("unsupported command");
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "prompt.steer",
+      "session.subsession",
+    ]);
+    await openSession(connection, events);
+    expect(
+      events.find((event) => event.type === "session.opened" && event.sessionId === "session-1"),
+    ).toEqual(expect.objectContaining({ capabilities: ["prompt.message", "prompt.steer"] }));
+    expect(connection.capabilities).toContain("session.subsession");
     await connection.close();
   });
 

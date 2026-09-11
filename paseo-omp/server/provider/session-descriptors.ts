@@ -1,6 +1,6 @@
 import { constants, type Dir } from "node:fs";
-import { type FileHandle, open, opendir } from "node:fs/promises";
-import { basename, isAbsolute, join } from "node:path";
+import { type FileHandle, open, opendir, realpath } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { ompSessionDir } from "../paths";
 
 const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
@@ -11,6 +11,9 @@ const MAX_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_SCAN_MS = 1_000;
 const SCAN_YIELD_INTERVAL = 128;
 const MAX_LIST_RESULTS = 500;
+const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+const MAX_CHILD_TRANSCRIPT_MESSAGES = 100_000;
+const CHILD_TRANSCRIPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u;
 const NATIVE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/u;
 
 export interface OmpSessionDescriptor {
@@ -18,8 +21,15 @@ export interface OmpSessionDescriptor {
   cwd: string;
   title?: string;
   updatedAt?: string;
+  transcriptFile?: string;
 }
 
+export interface OmpPersistedSubagentTranscript {
+  sessionFile: string;
+  nativeSessionId: string;
+  byteLength: number;
+  messages: unknown[];
+}
 export interface OmpSessionListOptions {
   cwd: string;
   query?: string;
@@ -154,6 +164,7 @@ async function parseDescriptor(
       return {
         id,
         cwd,
+        transcriptFile: file,
         ...((title ?? headerTitle) ? { title: title ?? headerTitle } : {}),
         updatedAt: stat.mtime.toISOString(),
       };
@@ -252,4 +263,98 @@ export async function listOmpSessionDescriptors(
     return !requestedId || matches.length < 2;
   });
   return matches;
+}
+
+export async function readOmpPersistedSubagentTranscript(
+  parentSessionFile: string,
+  childTranscriptId: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<OmpPersistedSubagentTranscript> {
+  signal?.throwIfAborted();
+  if (
+    !isAbsolute(parentSessionFile) ||
+    !parentSessionFile.endsWith(".jsonl") ||
+    parentSessionFile.includes("\0") ||
+    !CHILD_TRANSCRIPT_ID.test(childTranscriptId) ||
+    basename(childTranscriptId) !== childTranscriptId
+  ) {
+    throw new Error("Invalid OMP child transcript descriptor");
+  }
+  let parentHandle: FileHandle;
+  try {
+    parentHandle = await open(
+      parentSessionFile,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    throw new Error("OMP parent transcript could not be opened");
+  }
+  try {
+    const stat = await parentHandle.stat();
+    if (!stat.isFile()) throw new Error("OMP parent transcript is not a file");
+  } finally {
+    await parentHandle.close().catch(() => undefined);
+  }
+  const canonicalParent = await realpath(parentSessionFile);
+  const parentExtension = extname(canonicalParent);
+  const expectedDirectory = canonicalParent.slice(0, -parentExtension.length);
+  const canonicalDirectory = await realpath(expectedDirectory).catch(() => undefined);
+  if (!canonicalDirectory || canonicalDirectory !== expectedDirectory) {
+    throw new Error("OMP child transcript directory is not canonically owned by its parent");
+  }
+  const sessionFile = join(canonicalDirectory, `${childTranscriptId}.jsonl`);
+  let handle: FileHandle;
+  try {
+    handle = await open(
+      sessionFile,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    throw new Error("OMP child transcript could not be opened");
+  }
+  try {
+    const [stat, canonicalChild] = await Promise.all([handle.stat(), realpath(sessionFile)]);
+    if (
+      !stat.isFile() ||
+      stat.size > MAX_CHILD_TRANSCRIPT_BYTES ||
+      dirname(canonicalChild) !== canonicalDirectory ||
+      canonicalChild !== sessionFile
+    ) {
+      throw new Error("OMP child transcript failed ownership validation");
+    }
+    const bytes = await handle.readFile();
+    signal?.throwIfAborted();
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const messages: unknown[] = [];
+    let nativeSessionId: string | undefined;
+    for (const line of text.split("\n")) {
+      signal?.throwIfAborted();
+      if (!line.trim()) continue;
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      if (record.type === "session") {
+        const candidateId = validateNativeSessionId(record.id);
+        const candidateCwd = validatedCwd(record.cwd);
+        if (candidateCwd !== cwd)
+          throw new Error("OMP child transcript belongs to another workspace");
+        nativeSessionId ??= candidateId;
+        if (nativeSessionId !== candidateId)
+          throw new Error("OMP child transcript identity changed");
+      } else if (record.type === "message" && record.message !== undefined) {
+        if (messages.length >= MAX_CHILD_TRANSCRIPT_MESSAGES) {
+          throw new Error("OMP child transcript exceeds message limits");
+        }
+        messages.push(record.message);
+      }
+    }
+    if (!nativeSessionId) throw new Error("OMP child transcript is missing session identity");
+    return { sessionFile, nativeSessionId, byteLength: bytes.byteLength, messages };
+  } catch (error) {
+    if (error instanceof Error) throw error;
+    throw new Error("OMP child transcript could not be decoded");
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }

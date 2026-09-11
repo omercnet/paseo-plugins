@@ -35,7 +35,9 @@ import {
   OmpPublicError,
   utf8Bytes,
 } from "./security";
+import type { OmpSessionDescriptor } from "./session-descriptors";
 import { validateNativeSessionId } from "./session-descriptors";
+import { OmpSubsessionProjector } from "./subsessions";
 import {
   defaultOmpTimelineScheduler,
   OmpTimelineProjector,
@@ -100,14 +102,16 @@ async function authorizeNativeSession(
   runtime: OmpRuntime,
   sessionId: string,
   cwd: string,
-): Promise<void> {
+): Promise<OmpSessionDescriptor> {
   const matches = await runtime.listSessions({ sessionId, cwd, limit: 2 });
-  if (matches.length !== 1 || matches[0]?.id !== sessionId) {
+  const descriptor = matches[0];
+  if (matches.length !== 1 || descriptor?.id !== sessionId) {
     throw new OmpPublicError("OMP session could not be resolved in this workspace");
   }
-  if (matches[0].cwd !== cwd) {
+  if (descriptor.cwd !== cwd) {
     throw new OmpPublicError("OMP session belongs to a different working directory");
   }
+  return descriptor;
 }
 
 function retainedBytes(values: readonly unknown[], maxBytes: number): number {
@@ -125,6 +129,18 @@ function retainedBytes(values: readonly unknown[], maxBytes: number): number {
     if (total > maxBytes) return Number.POSITIVE_INFINITY;
   }
   return total;
+}
+
+async function waitForReplay<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  const aborted = Promise.withResolvers<never>();
+  const onAbort = () => aborted.reject(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([operation, aborted.promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 type PendingUser = {
@@ -334,6 +350,7 @@ export class OmpProviderSession {
   readonly cwd: string;
 
   private readonly projector: OmpTimelineProjector;
+  private readonly subsessions: OmpSubsessionProjector | null;
   private unsubscribe: () => void = () => {};
   private activeTurn: ActiveTurn | null = null;
   private closed = false;
@@ -382,6 +399,7 @@ export class OmpProviderSession {
     private recoveryOptions: OmpRecoveryOptions,
     private readonly hostTools: OmpHostToolsBridge,
     private nativeSessionId: string,
+    nativeSessionFile: string | undefined,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
     nativeModelsByPublicId: ReadonlyMap<string, OmpModel>,
@@ -391,6 +409,7 @@ export class OmpProviderSession {
     private readonly emit: Emit,
     private readonly replayHistoryOnOpen: boolean,
     private readonly persistSession: boolean,
+    private readonly replayTimeoutMs: number,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -404,6 +423,18 @@ export class OmpProviderSession {
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.hostTools.onFatal(() => this.handleRuntimeFailure());
     this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
+    this.subsessions = capabilities.includes("session.subsession")
+      ? new OmpSubsessionProjector(
+          id,
+          persistSession ? `persisted:${nativeSessionId}` : `ephemeral:${id}`,
+          nativeSessionFile,
+          config.cwd,
+          emit,
+          scheduler,
+          sensitiveValues,
+          () => this.resumeDeferredAgentEnd(),
+        )
+      : null;
     this.bindRuntime(runtime);
   }
   get persistenceSessionId(): string | undefined {
@@ -416,6 +447,7 @@ export class OmpProviderSession {
     capabilities: readonly string[],
     emit: Emit,
     scheduler?: OmpTimelineScheduler,
+    replayTimeoutMs = REPLAY_TIMEOUT_MS,
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
     mcpConnector?: OmpMcpConnector,
@@ -431,9 +463,9 @@ export class OmpProviderSession {
     if (input.history === "skip" && resumeSessionId) {
       throw new OmpPublicError("OMP persisted sessions require history replay");
     }
-    if (resumeSessionId) {
-      await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd);
-    }
+    const persistedDescriptor = resumeSessionId
+      ? await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd)
+      : undefined;
     const effectiveConfig: ProviderSessionConfig = { ...input.config };
     const normalizedConfig = normalizeOmpSessionConfig(effectiveConfig);
     validateOmpHostToolConfig(effectiveConfig);
@@ -548,6 +580,16 @@ export class OmpProviderSession {
       }
       unsubscribeBootstrap();
       unsubscribeBootstrap = () => {};
+      let sessionCapabilities = capabilities;
+      if (capabilities.includes("session.subsession")) {
+        try {
+          await native.setSubagentSubscription("events");
+        } catch {
+          sessionCapabilities = capabilities.filter(
+            (capability) => capability !== "session.subsession",
+          );
+        }
+      }
       const session = new OmpProviderSession(
         input.sessionId,
         native,
@@ -555,10 +597,11 @@ export class OmpProviderSession {
         recoveryOptions,
         hostTools,
         state.sessionId,
+        persistedDescriptor?.transcriptFile ?? state.sessionFile,
         effectiveConfig,
         configState,
         nativeModelsByPublicId,
-        capabilities,
+        sessionCapabilities,
         new Set(
           commandDiscovery.commands.flatMap((command) => [
             command.name,
@@ -569,6 +612,7 @@ export class OmpProviderSession {
         emit,
         input.history === "replay",
         effectiveConfig.persist,
+        replayTimeoutMs,
         scheduler,
       );
 
@@ -883,30 +927,30 @@ export class OmpProviderSession {
       throw new OmpPublicError("OMP session history cannot be replayed safely");
     }
     this.lifetime.signal.throwIfAborted();
-    const timeout = Promise.withResolvers<never>();
-    const timeoutHandle = setTimeout(
-      () => timeout.reject(new OmpPublicError("OMP session history replay timed out")),
-      REPLAY_TIMEOUT_MS,
-    );
-    const aborted = Promise.withResolvers<never>();
+    const replay = new AbortController();
     const onAbort = () =>
-      aborted.reject(new OmpPublicError("OMP session history replay was canceled"));
+      replay.abort(new OmpPublicError("OMP session history replay was canceled"));
     this.lifetime.signal.addEventListener("abort", onAbort, { once: true });
+    const timeoutHandle = setTimeout(
+      () => replay.abort(new OmpPublicError("OMP session history replay timed out")),
+      this.replayTimeoutMs,
+    );
     try {
-      const messages = await Promise.race([
-        this.runtime.getMessages(),
-        timeout.promise,
-        aborted.promise,
-      ]);
-      this.lifetime.signal.throwIfAborted();
+      const messages = await waitForReplay(this.runtime.getMessages(), replay.signal);
+      replay.signal.throwIfAborted();
       if (messages.length > MAX_REPLAY_MESSAGES) {
         throw new OmpPublicError("OMP session history exceeds replay limits");
       }
       for (const message of messages) {
-        this.lifetime.signal.throwIfAborted();
+        replay.signal.throwIfAborted();
         this.projector.projectReplayMessage(message);
       }
       this.projector.finishReplay();
+      await this.subsessions?.replay(messages, this.runtime, this.runtimeFactory, replay.signal);
+      replay.signal.throwIfAborted();
+    } catch (error) {
+      if (replay.signal.aborted) throw replay.signal.reason;
+      throw error;
     } finally {
       clearTimeout(timeoutHandle);
       this.lifetime.signal.removeEventListener("abort", onAbort);
@@ -1072,6 +1116,7 @@ export class OmpProviderSession {
       this.publishPendingUsers(turn);
       const failure = providerError(error, "OMP prompt failed");
       this.publishPromptResult(turn, { type: "failed", error: failure });
+      this.subsessions?.terminalize("failed");
       if (turn.started) await this.finishTurn(turn, "failed", failure);
       else {
         turn.terminal = true;
@@ -1519,6 +1564,7 @@ export class OmpProviderSession {
     const configRefresh = this.configRefreshInFlight;
     this.cancelConfigRefreshRetry();
     this.lifetime.abort(new Error("OMP provider session closed"));
+    this.subsessions?.close();
     this.projector.close();
     this.unsubscribe();
     this.hostTools.detach();
@@ -1653,8 +1699,10 @@ export class OmpProviderSession {
       if (!this.hostTools.isBoundTo(recovered)) {
         throw new Error("OMP host tool bridge detached during recovery");
       }
+      if (this.subsessions) await recovered.setSubagentSubscription("events");
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
       this.projector.addSensitiveValues(recovered.redactionValues ?? []);
+      this.subsessions?.addSensitiveValues(recovered.redactionValues ?? []);
       this.generation += 1;
       this.lastUsage = null;
       this.runtimeDead = null;
@@ -1760,6 +1808,18 @@ export class OmpProviderSession {
 
   private handleRuntimeEvent(event: OmpRpcEvent): void {
     if (this.closed) return;
+    if (
+      event.type === "subagent_lifecycle" ||
+      event.type === "subagent_progress" ||
+      event.type === "subagent_event"
+    ) {
+      try {
+        this.subsessions?.handle(event);
+      } catch {
+        this.handleRuntimeFailure("OMP subagent event processing failed");
+      }
+      return;
+    }
     if (event.type === "available_commands_update") {
       this.replaceSlashCommands(event.commands);
       return;
@@ -1866,6 +1926,14 @@ export class OmpProviderSession {
       return;
     }
     if (event.type === "agent_end" && turn.manualCompactionPending) return;
+    if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+      try {
+        this.subsessions?.observeSessionEvent(this.id, event);
+      } catch {
+        this.handleRuntimeFailure("OMP subagent dispatch tracking failed");
+        return;
+      }
+    }
     if (isNativeTurnActivity(event)) {
       turn.nativeActivity = true;
       this.cancelLocalOnlyCompletion(turn);
@@ -2121,6 +2189,7 @@ export class OmpProviderSession {
     if (turn.terminal || turn.terminalizing || turn.agentEndPending || this.activeTurn !== turn) {
       return;
     }
+    if (!turn.interrupted && this.deferAgentEndForSubsessions(turn, event)) return;
     turn.agentEndPending = true;
     turn.usageSampleFloor = this.usageSequence + 1;
     if (this.usageSample?.turn === turn && this.usageSample.sequence < turn.usageSampleFloor) {
@@ -2147,6 +2216,37 @@ export class OmpProviderSession {
     if (turn.localOnlyEligible && !turn.localOnlyDisabled && !turn.nativeActivity) {
       this.scheduleLocalOnlyCompletion(turn);
     }
+  }
+  private deferAgentEndForSubsessions(
+    turn: ActiveTurn,
+    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  ): boolean {
+    if (!this.subsessions?.hasActiveChildren()) return false;
+    turn.terminalizing = false;
+    turn.deferredAgentEnd = event;
+    void this.subsessions.reconcile(this.runtime).catch(() => {
+      if (!turn.terminal && this.activeTurn === turn) {
+        this.handleRuntimeFailure("OMP subagent reconciliation failed");
+      }
+    });
+    return true;
+  }
+
+  private resumeDeferredAgentEnd(): void {
+    const turn = this.activeTurn;
+    if (
+      !turn ||
+      turn.terminal ||
+      turn.terminalizing ||
+      turn.steersInFlight > 0 ||
+      this.subsessions?.hasActiveChildren()
+    ) {
+      return;
+    }
+    const event = turn.deferredAgentEnd;
+    if (!event) return;
+    turn.deferredAgentEnd = undefined;
+    this.beginTerminalization(turn, event);
   }
 
   private finishFromAgentEnd(
@@ -2179,6 +2279,10 @@ export class OmpProviderSession {
     }
     const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
+    if (!turn.interrupted && this.subsessions?.hasActiveChildren()) {
+      turn.agentEndPending = false;
+      if (this.deferAgentEndForSubsessions(turn, event)) return;
+    }
     if (state) {
       if (!state.isStreaming && !state.isCompacting) {
         await this.completeAgentEnd(turn, event);
@@ -2208,6 +2312,8 @@ export class OmpProviderSession {
   ): Promise<void> {
     if (turn.terminal || this.activeTurn !== turn) return;
     const error = terminalError(event);
+    if (turn.interrupted) this.subsessions?.terminalize("canceled");
+    else if (error) this.subsessions?.terminalize("failed");
     if (turn.interrupted) await this.finishTurn(turn, "canceled", undefined, usageSampled);
     else if (error) await this.finishTurn(turn, "failed", { message: error }, usageSampled);
     else await this.finishTurn(turn, "completed", undefined, usageSampled);
@@ -2402,6 +2508,7 @@ export class OmpProviderSession {
   private handleRuntimeFailure(message = "OMP runtime failed"): void {
     if (this.closed || this.runtimeDead) return;
     this.invalidateRuntime(message);
+    this.subsessions?.terminalize("failed");
     const turn = this.activeTurn;
     if (!turn) return;
     this.publishPendingUsers(turn);
