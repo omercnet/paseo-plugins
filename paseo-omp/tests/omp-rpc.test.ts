@@ -410,6 +410,7 @@ describe("OMP RPC transport", () => {
 
   test("accepts 1,024 branch entries and isolates an oversized response", async () => {
     const child = new FakeRpcChild();
+    let branchRequestCount = 0;
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
         child.write({
@@ -421,24 +422,15 @@ describe("OMP RPC transport", () => {
         return;
       }
       if (command.type !== "get_branch_messages") return;
+      branchRequestCount += 1;
+      const messageCount = branchRequestCount === 1 ? 1_024 : 1_025;
       child.write({
         type: "response",
         id: command.id,
         success: true,
         data: {
-          messages: Array.from({ length: 1_025 }, (_, index) => ({
-            entryId: `bad-${index}`,
-            text: "x",
-          })),
-        },
-      });
-      child.write({
-        type: "response",
-        id: command.id,
-        success: true,
-        data: {
-          messages: Array.from({ length: 1_024 }, (_, index) => ({
-            entryId: `entry-${index}`,
+          messages: Array.from({ length: messageCount }, (_, index) => ({
+            entryId: `${branchRequestCount === 1 ? "entry" : "bad"}-${index}`,
             text: "x",
           })),
         },
@@ -451,6 +443,7 @@ describe("OMP RPC transport", () => {
     const messages = await session.getBranchMessages();
     expect(messages).toHaveLength(1_024);
     expect(messages.at(-1)).toEqual({ entryId: "entry-1023", text: "x" });
+    await expect(session.getBranchMessages()).rejects.toThrow("exceeded command limits");
     await session.close();
   });
 
@@ -575,7 +568,7 @@ describe("OMP RPC transport", () => {
     const session = await opening;
     const recovered = nextEvent((listener) => session.onEvent(listener));
 
-    child.write({ type: "agent_end", messages: "not-an-array", isTerminal: false });
+    child.write({ type: "notice", level: 42, message: "invalid notice" });
     child.writeRaw(`${"x".repeat(1_048_577)}\n`);
     child.write({
       type: "rpc_chunk",
@@ -1018,13 +1011,33 @@ describe("OMP RPC transport", () => {
         ]),
       );
       expect(request.sensitiveValues).not.toContain("1");
+      writeFileSync(
+        join(agentDir, "mcp.json"),
+        JSON.stringify({
+          servers: {
+            remote: { type: "http", url: "x:", headers: { "X-License": "éx" } },
+            local: { type: "stdio", command: "server", env: { PIN: "123" } },
+          },
+        }),
+      );
+      const benignShortConfig = buildOmpSpawnRequest(
+        { cwd: root, mode: "full" },
+        { PATH: "/usr/bin", HOME: root, PI_CODING_AGENT_DIR: agentDir },
+      );
+      expect(benignShortConfig.sensitiveValues).not.toEqual(
+        expect.arrayContaining(["éx", "123"]),
+      );
       for (const config of [
         {
           servers: {
-            unsafe: { type: "http", url: "https://example.test", headers: { "X-License": "abc" } },
+            unsafe: { type: "http", headers: { Authorization: "abc" } },
           },
         },
-        { servers: { unsafe: { type: "stdio", command: "server", env: { PIN: "123" } } } },
+        { servers: { unsafe: { type: "stdio", command: "server", env: { API_TOKEN: "xyz" } } } },
+        { servers: { unsafe: { type: "stdio", command: "server", env: { AUTH: "abc" } } } },
+        { servers: { unsafe: { type: "http", auth: "abc" } } },
+        { servers: { unsafe: { type: "http", auth: { custom: "abc" } } } },
+        { servers: { unsafe: { type: "http", oauth: { nested: { custom: "abc" } } } } },
         { servers: { unsafe: { type: "http", url: "https://user:abc@example.test/mcp" } } },
         { servers: { unsafe: { type: "http", url: "https://example.test/mcp?token=xyz" } } },
       ]) {

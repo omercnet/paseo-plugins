@@ -4590,16 +4590,14 @@ describe("OMP direct provider", () => {
 
     children.at(-1)?.write({
       type: "agent_end",
-      messages: [],
-      messageCount: "invalid-but-nonterminal",
+      messages: "invalid-nonterminal-payload",
       isTerminal: false,
     });
-    children.at(-1)?.write({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
       (event) =>
         event.type === "session.turn" &&
         event.turnId === recoverableTurn &&
-        event.state === "completed",
+        event.state === "failed",
     );
     expect(
       events.filter(
@@ -4608,9 +4606,19 @@ describe("OMP direct provider", () => {
           event.turnId === recoverableTurn &&
           event.state !== "started",
       ),
-    ).toEqual([expect.objectContaining({ state: "completed" })]);
+    ).toEqual([expect.objectContaining({ state: "failed" })]);
+
+    const finalTurn = turnIdFrom(
+      await startPrompt(connection, events, "after-invalid-nonterminal", "continue"),
+    );
+    expect(launchArgs[5]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
+    children.at(-1)?.write({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === finalTurn && event.state === "completed",
+    );
     expect(JSON.stringify(events)).not.toContain(nativeSessionId);
-    expect(children).toHaveLength(5);
+    expect(children).toHaveLength(6);
     await connection.close();
   });
 

@@ -600,13 +600,7 @@ export function collectAmbientMcpSecrets(
   const agentDir = env.PI_CODING_AGENT_DIR ?? join(home, env.PI_CONFIG_DIR ?? ".omp", "agent");
   const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
   const secrets: string[] = [];
-  const credentialKey = /(?:authorization|cookie|credential|api.?key|token|secret|password)/iu;
-  const benignHeaders: Readonly<Record<string, true>> = {
-    ACCEPT: true,
-    "CONTENT-TYPE": true,
-    "USER-AGENT": true,
-  };
-  const benignEnv: Readonly<Record<string, true>> = { DEBUG: true, NODE_ENV: true };
+  const credentialKey = /(?:auth|authorization|cookie|credential|api.?key|oauth|token|secret|password)/iu;
   const collectCredential = (value: string) => {
     if (value.length === 0) return;
     if (utf8Bytes(value) < 4) {
@@ -639,10 +633,7 @@ export function collectAmbientMcpSecrets(
       if (!current.value || typeof current.value !== "object") continue;
       for (const key in current.value) {
         if (!Object.hasOwn(current.value, key)) continue;
-        const normalized = key.toUpperCase();
-        const sensitive =
-          current.sensitive ||
-          (kind === "headers" ? !benignHeaders[normalized] : !benignEnv[normalized]);
+        const sensitive = current.sensitive || credentialKey.test(key);
         stack.push({
           value: (current.value as Record<string, unknown>)[key],
           sensitive,
@@ -651,7 +642,7 @@ export function collectAmbientMcpSecrets(
     }
   };
   const collectUrlSecrets = (value: string) => {
-    collectCredential(value);
+    if (utf8Bytes(value) >= 4) secrets.push(value);
     collectUrlComponents(
       value,
       credentialKey,
@@ -717,12 +708,10 @@ export function collectAmbientMcpSecrets(
         if (normalized === "url" && typeof child === "string") {
           collectUrlSecrets(child);
         } else if (
-          child &&
-          typeof child === "object" &&
-          (normalized === "auth" ||
-            normalized === "env" ||
-            normalized === "headers" ||
-            normalized === "oauth")
+          normalized === "auth" ||
+          normalized === "env" ||
+          normalized === "headers" ||
+          normalized === "oauth"
         ) {
           collectContainer(child, normalized);
         } else if (child && typeof child === "object") {
@@ -1320,6 +1309,11 @@ class OmpRpcProcess {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const frame = value as Record<string, unknown>;
     if (frame.type !== "agent_end") return false;
+    const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
+    if (!envelope.success) {
+      this.fail(new Error("OMP emitted invalid terminal metadata"));
+      return true;
+    }
     const messagesAreSafe =
       frame.messages === undefined ||
       (Array.isArray(frame.messages) &&
@@ -1332,13 +1326,8 @@ class OmpRpcProcess {
           4_096,
         ) !== Number.POSITIVE_INFINITY);
     if (onlyUnsafePayload && messagesAreSafe) return false;
-    if (frame.isTerminal === false) {
-      this.recordProtocolViolation();
-      return true;
-    }
-    const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
-    if (!envelope.success) {
-      this.fail(new Error("OMP emitted invalid terminal metadata"));
+    if (envelope.data.isTerminal === false) {
+      this.fail(new Error("OMP emitted an invalid nonterminal agent_end payload"));
       return true;
     }
     const observedCount = Array.isArray(frame.messages)
