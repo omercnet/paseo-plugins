@@ -48,7 +48,11 @@ type SessionOpenInput = Extract<ProviderInput, { type: "session.open" }>;
 type SessionPromptInput = Extract<ProviderInput, { type: "session.prompt" }>;
 type SessionInterruptInput = Extract<ProviderInput, { type: "session.interrupt" }>;
 type SessionConfigureInput = Extract<ProviderInput, { type: "session.configure" }>;
+type SessionRevertInput = Extract<ProviderInput, { type: "session.revert" }>;
 type SessionCloseInput = Extract<ProviderInput, { type: "session.close" }>;
+type NativeSessionTransition = (previousSessionId: string, nextSessionId: string) => void;
+type RewindCleanupQuarantine = (cleanup: Promise<void>) => void;
+type RewindSessionRetirement = () => void;
 type Emit = (event: ProviderEvent) => void;
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
@@ -391,6 +395,7 @@ export class OmpProviderSession {
   } | null = null;
   private activeCompaction: ActiveCompaction | null = null;
   private lastUsage: ProviderUsage | null = null;
+  private revertInFlight = false;
 
   private constructor(
     id: string,
@@ -410,6 +415,9 @@ export class OmpProviderSession {
     private readonly replayHistoryOnOpen: boolean,
     private readonly persistSession: boolean,
     private readonly replayTimeoutMs: number,
+    private readonly transitionNativeSession: NativeSessionTransition,
+    private readonly quarantineRewindCleanup: RewindCleanupQuarantine,
+    private readonly retireRewindSession: RewindSessionRetirement,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -422,7 +430,13 @@ export class OmpProviderSession {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.hostTools.onFatal(() => this.handleRuntimeFailure());
-    this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
+    this.projector = new OmpTimelineProjector(
+      id,
+      emit,
+      scheduler,
+      sensitiveValues,
+      capabilities.includes("session.revert.conversation"),
+    );
     this.subsessions = capabilities.includes("session.subsession")
       ? new OmpSubsessionProjector(
           id,
@@ -446,6 +460,9 @@ export class OmpProviderSession {
     runtime: OmpRuntime,
     capabilities: readonly string[],
     emit: Emit,
+    transitionNativeSession: NativeSessionTransition,
+    quarantineRewindCleanup: RewindCleanupQuarantine,
+    retireRewindSession: RewindSessionRetirement,
     scheduler?: OmpTimelineScheduler,
     replayTimeoutMs = REPLAY_TIMEOUT_MS,
     signal?: AbortSignal,
@@ -511,6 +528,9 @@ export class OmpProviderSession {
       ]);
       if (effectiveConfig.persist && !native.canReplayHistory) {
         throw new OmpPublicError("OMP session persistence requires negotiated RPC protocol v2");
+      }
+      if (capabilities.includes("session.revert.conversation") && !native.canReplayHistory) {
+        throw new OmpPublicError("OMP conversation rewind requires negotiated RPC protocol v2");
       }
       let state = initialState;
       if (effectiveConfig.persist || resumeSessionId) {
@@ -613,6 +633,9 @@ export class OmpProviderSession {
         input.history === "replay",
         effectiveConfig.persist,
         replayTimeoutMs,
+        transitionNativeSession,
+        quarantineRewindCleanup,
+        retireRewindSession,
         scheduler,
       );
 
@@ -956,6 +979,163 @@ export class OmpProviderSession {
       this.lifetime.signal.removeEventListener("abort", onAbort);
     }
   }
+  async revert(input: SessionRevertInput): Promise<void> {
+    if (input.scope !== "conversation") {
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: { message: "OMP supports conversation rewind only" },
+      });
+      return;
+    }
+    if (this.activeTurn) {
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: { message: "Cannot rewind the OMP conversation while a turn is active" },
+      });
+      return;
+    }
+    if (this.revertInFlight || this.configMutationInFlight || this.activeAbort) {
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: { message: "OMP session is busy" },
+      });
+      return;
+    }
+
+    this.revertInFlight = true;
+    let branchMutationPossible = false;
+    let runtime = this.runtime;
+    let generation = this.generation;
+    try {
+      await this.recoverRuntime();
+      if (this.closed) throw new OmpPublicError("OMP session is closed");
+      if (this.activeTurn) {
+        throw new OmpPublicError("Cannot rewind the OMP conversation while a turn is active");
+      }
+      runtime = this.runtime;
+      generation = this.generation;
+      if (!runtime.canReplayHistory) {
+        throw new OmpPublicError("OMP conversation rewind requires negotiated RPC protocol v2");
+      }
+      const entryId = this.projector.resolveRevertToken(input.token);
+      const [branchMessages, beforeState] = await Promise.all([
+        runtime.getBranchMessages(),
+        runtime.getState(),
+      ]);
+      this.requireCurrentRuntime(runtime, generation);
+      if (this.activeTurn || beforeState.isStreaming || beforeState.isCompacting) {
+        throw new OmpPublicError("Cannot rewind the OMP conversation while a turn is active");
+      }
+      if (!branchMessages.some((message) => message.entryId === entryId)) {
+        throw new OmpPublicError("OMP conversation rewind token is stale");
+      }
+      branchMutationPossible = true;
+      const result = await runtime.branch(entryId);
+      this.requireCurrentRuntime(runtime, generation);
+      if (result.cancelled) {
+        branchMutationPossible = false;
+        throw new OmpPublicError("OMP conversation rewind was cancelled");
+      }
+
+      let state = await runtime.getState();
+      this.requireCurrentRuntime(runtime, generation);
+      const nextNativeSessionId = validateNativeSessionId(state.sessionId);
+      if (nextNativeSessionId !== this.nativeSessionId) {
+        this.transitionNativeSession(this.nativeSessionId, nextNativeSessionId);
+        this.nativeSessionId = nextNativeSessionId;
+        if (this.persistSession) {
+          this.emit({
+            type: "session.persistence",
+            sessionId: this.id,
+            persistence: { version: 1, data: { sessionId: nextNativeSessionId } },
+          });
+        }
+      }
+
+      const modelChanged =
+        beforeState.model?.provider !== state.model?.provider ||
+        beforeState.model?.id !== state.model?.id;
+      const thinkingChanged = beforeState.thinkingLevel !== state.thinkingLevel;
+      if (modelChanged) {
+        if (!beforeState.model) {
+          throw new OmpPublicError("OMP changed model while rewinding the conversation");
+        }
+        await runtime.setModel(beforeState.model.provider, beforeState.model.id);
+      }
+      if (thinkingChanged) {
+        if (!beforeState.thinkingLevel) {
+          throw new OmpPublicError("OMP changed thinking level while rewinding the conversation");
+        }
+        await runtime.setThinkingLevel(beforeState.thinkingLevel);
+      }
+      if (modelChanged || thinkingChanged) {
+        state = await runtime.getState();
+        this.requireCurrentRuntime(runtime, generation);
+      }
+      if (
+        state.sessionId !== this.nativeSessionId ||
+        state.model?.provider !== beforeState.model?.provider ||
+        state.model?.id !== beforeState.model?.id ||
+        state.thinkingLevel !== beforeState.thinkingLevel
+      ) {
+        throw new OmpPublicError("OMP did not preserve session configuration while rewinding");
+      }
+
+      this.projector.resetForRewindReplay();
+      this.quarantineBranchEntries();
+      await this.replayHistory();
+      this.requireCurrentRuntime(runtime, generation);
+      this.publishCommittedConfig(state, runtime, generation);
+      this.emit({ type: "request.completed", requestId: input.requestId });
+    } catch (error) {
+      const failure = branchMutationPossible
+        ? { message: "OMP conversation rewind left native state indeterminate" }
+        : providerError(error, "OMP conversation rewind failed");
+      if (branchMutationPossible) {
+        await this.closeAfterCommittedRewindFailure(runtime, failure.message);
+      }
+      this.emit({ type: "request.failed", requestId: input.requestId, error: failure });
+      if (branchMutationPossible) {
+        this.publishSessionClosed(failure);
+        this.retireRewindSession();
+      }
+    } finally {
+      this.revertInFlight = false;
+      if (this.configRefreshDirty && !this.configMutationInFlight && !this.closed) {
+        this.scheduleCommittedConfigRefresh();
+      }
+    }
+  }
+  private async closeAfterCommittedRewindFailure(
+    runtime: OmpRuntimeSession,
+    message: string,
+  ): Promise<void> {
+    this.closed = true;
+    this.generation += 1;
+    this.runtimeDead = message;
+    this.configRefreshAttempts = 0;
+    this.configRefreshDirty = false;
+    const configRefresh = this.configRefreshInFlight;
+    this.cancelConfigRefreshRetry();
+    this.lifetime.abort(new Error(message));
+    this.projector.close();
+    this.unsubscribe();
+    this.unsubscribe = () => {};
+    const runtimeCleanup = this.runtimeDisposal ?? runtime.close();
+    this.runtimeDisposal = configRefresh
+      ? Promise.all([runtimeCleanup, configRefresh]).then(() => undefined)
+      : runtimeCleanup;
+    this.disposalPromise = this.runtimeDisposal;
+    this.quarantineRewindCleanup(this.runtimeDisposal);
+    await Promise.allSettled([
+      this.runtimeDisposal,
+      this.recoveryPromise,
+      ...(configRefresh ? [configRefresh] : []),
+    ]);
+  }
 
   async prompt(input: SessionPromptInput): Promise<void> {
     let text: string;
@@ -967,6 +1147,15 @@ export class OmpProviderSession {
         sessionId: this.id,
         clientMessageId: input.prompt.clientMessageId,
         result: { type: "failed", error: providerError(error, "OMP prompt was rejected") },
+      });
+      return;
+    }
+    if (this.revertInFlight) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId: input.prompt.clientMessageId,
+        result: { type: "failed", error: { message: "OMP conversation rewind is in progress" } },
       });
       return;
     }
@@ -1004,6 +1193,15 @@ export class OmpProviderSession {
         sessionId: this.id,
         clientMessageId: input.prompt.clientMessageId,
         result: { type: "failed", error: { message: "OMP session is closed" } },
+      });
+      return;
+    }
+    if (this.revertInFlight) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId: input.prompt.clientMessageId,
+        result: { type: "failed", error: { message: "OMP conversation rewind is in progress" } },
       });
       return;
     }
@@ -1218,6 +1416,14 @@ export class OmpProviderSession {
     this.unsubscribe = () => {};
   }
   async configure(input: SessionConfigureInput): Promise<void> {
+    if (this.revertInFlight) {
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: { message: "OMP conversation rewind is in progress" },
+      });
+      return;
+    }
     if (this.configMutationInFlight) {
       this.emit({
         type: "request.failed",
@@ -1340,7 +1546,8 @@ export class OmpProviderSession {
     if (
       this.configRefreshInFlight ||
       this.configRefreshRetryResolve ||
-      this.configMutationInFlight
+      this.configMutationInFlight ||
+      this.revertInFlight
     ) {
       return;
     }

@@ -536,6 +536,7 @@ const OmpAvailableCommandsResultSchema = z.object({
 const OmpBranchMessagesResultSchema = z.object({
   messages: z.array(z.object({ entryId: IDENTIFIER, text: TEXT })).max(1_024),
 });
+const OmpBranchResultSchema = z.object({ text: TEXT, cancelled: z.boolean() });
 const OmpMessagesResultSchema = z.object({
   messages: z.array(OmpMessageSchema).max(100_000),
 });
@@ -644,6 +645,7 @@ export interface OmpRuntimeSession {
   setThinkingLevel(level: string): Promise<void>;
   steer(message: string): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
+  branch(entryId: string): Promise<{ text: string; cancelled: boolean }>;
   readonly canReplayHistory: boolean;
   getMessages(): Promise<OmpMessage[]>;
   abort(): Promise<void>;
@@ -2221,6 +2223,15 @@ class OmpRpcSession implements OmpRuntimeSession {
     );
     return result.messages;
   }
+  async branch(entryId: string): Promise<{ text: string; cancelled: boolean }> {
+    const safeEntryId = validateBoundedText(entryId, "branch entry identifier", MAX_ID_LENGTH);
+    const result = OmpBranchResultSchema.safeParse(
+      await this.process.request({ type: "branch", entryId: safeEntryId }),
+    );
+    if (!result.success) throw new Error("OMP RPC response is invalid");
+    return result.data;
+  }
+
   async getMessages(): Promise<OmpMessage[]> {
     if (!this.canReplayHistory) {
       throw new Error("OMP history replay requires negotiated RPC protocol v2");
