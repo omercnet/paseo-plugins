@@ -27,6 +27,10 @@ jobs:
             check: false
           - plugin: paseo-dracula
             check: true
+          - plugin: paseo-beads
+            check: true
+            coverage: true
+            verify-package: true
           - plugin: pr-radar
             check: true
     defaults:
@@ -50,6 +54,12 @@ jobs:
         run: bun run typecheck
       - name: Test
         run: bun test
+      - name: Test coverage
+        if: ${{ matrix.coverage }}
+        run: bun run test:coverage
+      - name: Verify package publication contents
+        if: ${{ matrix.verify-package }}
+        run: bun run verify:package
 
   shared-browser:
     name: paseo-shared-browser

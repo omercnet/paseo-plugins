@@ -1,0 +1,69 @@
+{
+  "name": "@omercnet/paseo-beads",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "A dependency-aware Beads work queue for each Paseo workspace.",
+  "license": "MIT",
+  "author": "Omer Cohen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "paseo-beads"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/paseo-beads#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "bun@1.4.0",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "beads",
+    "local-first",
+    "issue-tracking",
+    "coding-agents"
+  ],
+  "files": [
+    "bun.lock",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "server",
+    "shared",
+    "docs",
+    "paseo-plugin.json"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "typecheck": "tsc --noEmit",
+    "package:release": "bun scripts/package-release.ts",
+    "verify:package": "bun scripts/verify-package.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@getpaseo/cli": "0.8.0",
+    "@getpaseo/client": "0.8.0",
+    "@getpaseo/plugin": "0.8.0",
+    "@getpaseo/protocol": "0.8.0",
+    "@tanstack/react-query": "^5.102.3",
+    "@types/bun": "^1.4.0",
+    "@types/react": "~19.2.0",
+    "fflate": "^0.8.3",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}
