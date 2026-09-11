@@ -5,13 +5,12 @@ import type {
   DispatchRequest,
   DispatchResult,
   EventList,
-  GasCityProviderSelection,
   GasCitySettings,
-  ProviderSelectionList,
   SessionActionRequest,
   SessionActionResult,
   SessionList,
   SupervisorDiscovery,
+  WorkList,
   WorkspaceRigMapping,
 } from "../shared";
 
@@ -67,6 +66,7 @@ export const cityRigSnapshotFixture = {
     agents: { total: 4, running: 2, suspended: 1, quarantined: 0 },
     sessions: { active: 2, suspended: 1 },
     work: { open: 8, ready: 3, inProgress: 2 },
+    totalsScope: "city",
   },
   rig: {
     name: "alpha",
@@ -77,6 +77,13 @@ export const cityRigSnapshotFixture = {
     runningAgentCount: 2,
     defaultBranch: "main",
     lastActivityAt: FIXTURE_TIMESTAMP,
+    git: {
+      branch: "main",
+      clean: true,
+      changedFiles: 0,
+      ahead: 0,
+      behind: 0,
+    },
   },
   rigs: [
     {
@@ -88,6 +95,13 @@ export const cityRigSnapshotFixture = {
       runningAgentCount: 2,
       defaultBranch: "main",
       lastActivityAt: FIXTURE_TIMESTAMP,
+      git: {
+        branch: "main",
+        clean: true,
+        changedFiles: 0,
+        ahead: 0,
+        behind: 0,
+      },
     },
   ],
   partial: false,
@@ -96,6 +110,7 @@ export const cityRigSnapshotFixture = {
 } satisfies CityRigSnapshot;
 
 export const sessionsFixture = {
+  scope: "rig",
   items: [
     {
       id: "al-session-1",
@@ -123,6 +138,7 @@ export const sessionsFixture = {
 } satisfies SessionList;
 
 export const convoysFixture = {
+  scope: "rig-and-unattributed",
   items: [
     {
       id: "al-convoy-1",
@@ -144,6 +160,7 @@ export const convoysFixture = {
 } satisfies ConvoyList;
 
 export const eventsFixture = {
+  scope: "city",
   items: [
     {
       cityName: "alpha-city",
@@ -162,6 +179,7 @@ export const eventsFixture = {
 } satisfies EventList;
 
 export const attentionFixture = {
+  scope: "city-and-rig",
   items: [
     {
       id: "session:al-session-1:pending",
@@ -172,6 +190,7 @@ export const attentionFixture = {
       code: "interaction-pending",
       title: "Reviewer needs input",
       message: "The session is waiting for an operator response.",
+      requestId: "permission-1",
       resourceId: "al-session-1",
       observedAt: FIXTURE_TIMESTAMP,
     },
@@ -179,6 +198,28 @@ export const attentionFixture = {
   truncated: false,
   refreshedAt: FIXTURE_TIMESTAMP,
 } satisfies AttentionList;
+
+export const workFixture = {
+  scope: "rig",
+  items: [
+    {
+      id: "al-123",
+      cityName: "alpha-city",
+      rigName: "alpha",
+      title: "Review API",
+      status: "in_progress",
+      type: "task",
+      priority: 1,
+      assignee: "alpha/reviewer",
+      createdAt: FIXTURE_TIMESTAMP,
+      updatedAt: FIXTURE_TIMESTAMP,
+      blocked: false,
+    },
+  ],
+  truncated: false,
+  partial: false,
+  refreshedAt: FIXTURE_TIMESTAMP,
+} satisfies WorkList;
 
 export const dispatchRequestFixture = {
   kind: "bead",
@@ -282,27 +323,6 @@ export const sessionActionResultFixture = {
   requestId: "request-1",
   eventCursor: "42",
 } satisfies SessionActionResult;
-
-export const providerSelectionFixture = {
-  cityName: "alpha-city",
-  sessionId: "al-session-1",
-} satisfies GasCityProviderSelection;
-
-export const providerSelectionsFixture = {
-  items: [
-    {
-      selection: providerSelectionFixture,
-      label: "alpha-city / reviewer",
-      detail: "Review API",
-      upstreamProvider: "codex",
-      running: true,
-      selectable: true,
-      unavailableReason: null,
-    },
-  ],
-  truncated: false,
-  refreshedAt: FIXTURE_TIMESTAMP,
-} satisfies ProviderSelectionList;
 
 export const settingsFixture = {
   endpointUrl: "http://127.0.0.1:8372",

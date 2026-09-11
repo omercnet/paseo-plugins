@@ -60,6 +60,16 @@ export const UpstreamCitiesSchema = z
   })
   .strict();
 
+const UpstreamRigGitSchema = z
+  .object({
+    branch: z.string(),
+    clean: z.boolean(),
+    changed_files: nonnegativeInteger,
+    ahead: nonnegativeInteger,
+    behind: nonnegativeInteger,
+  })
+  .strict();
+
 export const UpstreamRigSchema = z
   .object({
     name: z.string(),
@@ -70,6 +80,7 @@ export const UpstreamRigSchema = z
     agent_count: nonnegativeInteger,
     running_count: nonnegativeInteger,
     last_activity: optionalString,
+    git: UpstreamRigGitSchema.optional(),
   })
   .strict();
 
@@ -194,6 +205,33 @@ export const UpstreamEventsSchema = nullableItems(
   GAS_CITY_LIMITS.events,
 ).strict();
 
+export const UpstreamSupervisorEventsSchema = z
+  .object({
+    event_cursor: z.string(),
+    items: z.array(UpstreamEventSchema).max(GAS_CITY_LIMITS.events),
+    total: nonnegativeInteger,
+  })
+  .strict();
+
+export const UpstreamWorkItemSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    status: z.string(),
+    issue_type: z.string(),
+    priority: z.number().int().min(0).max(4).optional(),
+    created_at: z.string(),
+    updated_at: optionalString,
+    assignee: optionalString,
+    is_blocked: z.boolean().optional(),
+  })
+  .passthrough();
+
+export const UpstreamWorkItemsSchema = nullableItems(
+  UpstreamWorkItemSchema,
+  GAS_CITY_LIMITS.workItems,
+).strict();
+
 export const UpstreamPendingSchema = nullableItems(
   z
     .object({
@@ -237,6 +275,7 @@ export type UpstreamStatus = z.infer<typeof UpstreamStatusSchema>;
 export type UpstreamSession = z.infer<typeof UpstreamSessionSchema>;
 export type UpstreamConvoy = z.infer<typeof UpstreamConvoySchema>;
 export type UpstreamEvent = z.infer<typeof UpstreamEventSchema>;
+export type UpstreamWorkItem = z.infer<typeof UpstreamWorkItemSchema>;
 
 export type GasCityClientErrorCode =
   | "invalid-endpoint"
@@ -245,6 +284,7 @@ export type GasCityClientErrorCode =
   | "unreachable"
   | "upstream-error"
   | "invalid-response"
+  | "canceled"
   | "response-too-large";
 
 export class GasCityClientError extends Error {
@@ -319,7 +359,9 @@ function parseEndpoint(value: string): URL {
       "Gas City endpoint cannot contain a fragment.",
     );
   }
-  endpoint.search = "";
+  if (endpoint.search) {
+    throw new GasCityClientError("invalid-endpoint", "Gas City endpoint cannot contain a query.");
+  }
   endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, "")}/`;
   return endpoint;
 }
@@ -384,7 +426,11 @@ async function readBoundedBody(response: Response, maximum: number): Promise<str
     if (done) break;
     size += value.byteLength;
     if (size > maximum) {
-      await reader.cancel();
+      try {
+        await reader.cancel();
+      } catch {
+        // Preserve the bounded-response error if a custom stream rejects cancellation.
+      }
       throw new GasCityClientError(
         "response-too-large",
         "Gas City response exceeded the size limit.",
@@ -422,8 +468,12 @@ export class GasCityClient {
   ): Promise<z.output<T>> {
     let url = new URL(path.replace(/^\//, ""), this.endpoint);
     let redirects = 0;
+    let timedOut = false;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error("timeout")), this.timeoutMs);
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutMs);
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
     try {
@@ -444,7 +494,11 @@ export class GasCityClient {
           });
         } catch (cause) {
           if (controller.signal.aborted) {
-            throw new GasCityClientError("timeout", "Gas City request timed out.", { cause });
+            const code = timedOut ? "timeout" : "canceled";
+            const message = timedOut
+              ? "Gas City request timed out."
+              : "Gas City request was canceled.";
+            throw new GasCityClientError(code, message, { cause });
           }
           throw new GasCityClientError("unreachable", "Gas City supervisor is unreachable.", {
             cause,
@@ -554,6 +608,15 @@ export class GasCityClient {
     );
   }
 
+  work(cityName: string, rigName: string | null, limit: number, signal?: AbortSignal) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (rigName) query.set("rig", rigName);
+    return this.request(`v0/city/${encodeURIComponent(cityName)}/beads?${query}`, {
+      schema: UpstreamWorkItemsSchema,
+      signal,
+    });
+  }
+
   pending(cityName: string, signal?: AbortSignal) {
     return this.request(`v0/city/${encodeURIComponent(cityName)}/pending`, {
       schema: UpstreamPendingSchema,
@@ -561,17 +624,20 @@ export class GasCityClient {
     });
   }
 
-  cityEvents(cityName: string, limit: number, signal?: AbortSignal) {
-    return this.request(`v0/city/${encodeURIComponent(cityName)}/events?limit=${limit}`, {
+  cityEvents(cityName: string, cursor: string | null, limit: number, signal?: AbortSignal) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set("cursor", cursor);
+    return this.request(`v0/city/${encodeURIComponent(cityName)}/events?${query}`, {
       schema: UpstreamEventsSchema,
       signal,
     });
   }
 
-  supervisorEvents(cursor: string | null, limit: number, signal?: AbortSignal) {
-    const query = new URLSearchParams({ limit: String(limit) });
-    if (cursor) query.set("cursor", cursor);
-    return this.request(`v0/events?${query}`, { schema: UpstreamEventsSchema, signal });
+  supervisorEvents(limit: number, signal?: AbortSignal) {
+    return this.request(`v0/events?limit=${limit}`, {
+      schema: UpstreamSupervisorEventsSchema,
+      signal,
+    });
   }
 
   sling(cityName: string, body: unknown, signal?: AbortSignal) {

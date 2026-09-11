@@ -6,8 +6,8 @@ import {
   handleListAttention,
   handleListConvoys,
   handleListEvents,
-  handleListProviderSelections,
   handleListSessions,
+  handleListWork,
   handlePerformSessionAction,
   handleResolveWorkspaceRig,
 } from "./server/handlers";
@@ -19,8 +19,8 @@ import {
   listAttention,
   listConvoys,
   listEvents,
-  listProviderSelections,
   listSessions,
+  listWork,
   performSessionAction,
   resolveWorkspaceRig,
 } from "./shared";
@@ -32,10 +32,11 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getCityRigSnapshot, handleGetCityRigSnapshot);
   server.handle(listSessions, handleListSessions);
   server.handle(listConvoys, handleListConvoys);
+  server.handle(listWork, handleListWork);
   server.handle(listEvents, handleListEvents);
   server.handle(listAttention, handleListAttention);
   server.handle(dispatchWork, handleDispatchWork);
   server.handle(performSessionAction, handlePerformSessionAction);
-  server.handle(listProviderSelections, handleListProviderSelections);
+
   return () => {};
 }

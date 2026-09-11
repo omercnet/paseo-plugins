@@ -13,8 +13,20 @@ export const statusSchema = boundedString(GAS_CITY_LIMITS.status).min(1);
 export const timestampSchema = boundedString(GAS_CITY_LIMITS.timestamp).datetime({ offset: true });
 export const endpointUrlSchema = boundedString(GAS_CITY_LIMITS.endpointUrl)
   .url()
-  .refine((value) => value.startsWith("http://") || value.startsWith("https://"), {
-    message: "Gas City endpoint must use HTTP or HTTPS",
+  .superRefine((value, context) => {
+    const endpoint = new URL(value);
+    if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") {
+      context.addIssue({ code: "custom", message: "Gas City endpoint must use HTTP or HTTPS" });
+    }
+    if (endpoint.username || endpoint.password) {
+      context.addIssue({ code: "custom", message: "Gas City endpoint cannot contain credentials" });
+    }
+    if (endpoint.search) {
+      context.addIssue({ code: "custom", message: "Gas City endpoint cannot contain a query" });
+    }
+    if (endpoint.hash) {
+      context.addIssue({ code: "custom", message: "Gas City endpoint cannot contain a fragment" });
+    }
   });
 
 export const MetadataValueSchema = z.union([
@@ -69,6 +81,15 @@ export const SupervisorDiscoverySchema = z
     refreshedAt: timestampSchema,
   })
   .strict();
+export const RigGitStatusSchema = z
+  .object({
+    branch: nameSchema,
+    clean: z.boolean(),
+    changedFiles: countSchema,
+    ahead: countSchema,
+    behind: countSchema,
+  })
+  .strict();
 
 export const RigSummarySchema = z
   .object({
@@ -80,6 +101,7 @@ export const RigSummarySchema = z
     runningAgentCount: countSchema,
     defaultBranch: boundedNullableString(GAS_CITY_LIMITS.name),
     lastActivityAt: timestampSchema.nullable(),
+    git: RigGitStatusSchema.nullable(),
   })
   .strict();
 
@@ -137,6 +159,7 @@ export const CityRigSnapshotSchema = z
       agents: AgentCountsSchema,
       sessions: SessionCountsSchema,
       work: WorkCountsSchema,
+      totalsScope: z.literal("city"),
     }).strict(),
     rig: RigSummarySchema.nullable(),
     rigs: z.array(RigSummarySchema).max(GAS_CITY_LIMITS.rigs),
@@ -171,6 +194,7 @@ export const GasCitySessionSchema = z
 
 export const SessionListSchema = z
   .object({
+    scope: z.enum(["city", "rig"]),
     items: z.array(GasCitySessionSchema).max(GAS_CITY_LIMITS.sessions),
     truncated: z.boolean(),
     refreshedAt: timestampSchema,
@@ -203,8 +227,34 @@ export const GasCityConvoySchema = z
 
 export const ConvoyListSchema = z
   .object({
+    scope: z.enum(["city", "rig-and-unattributed"]),
     items: z.array(GasCityConvoySchema).max(GAS_CITY_LIMITS.convoys),
     truncated: z.boolean(),
+    refreshedAt: timestampSchema,
+  })
+  .strict();
+export const GasCityWorkItemSchema = z
+  .object({
+    id: identifierSchema,
+    cityName: nameSchema,
+    rigName: nameSchema.nullable(),
+    title: titleSchema,
+    status: statusSchema,
+    type: statusSchema,
+    priority: z.number().int().min(0).max(4).nullable(),
+    assignee: boundedNullableString(GAS_CITY_LIMITS.name),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema.nullable(),
+    blocked: z.boolean().nullable(),
+  })
+  .strict();
+
+export const WorkListSchema = z
+  .object({
+    scope: z.enum(["city", "rig"]),
+    items: z.array(GasCityWorkItemSchema).max(GAS_CITY_LIMITS.workItems),
+    truncated: z.boolean(),
+    partial: z.boolean(),
     refreshedAt: timestampSchema,
   })
   .strict();
@@ -224,6 +274,7 @@ export const GasCityEventSchema = z
 
 export const EventListSchema = z
   .object({
+    scope: z.enum(["supervisor-head", "city"]),
     items: z.array(GasCityEventSchema).max(GAS_CITY_LIMITS.events),
     cursor: boundedNullableString(GAS_CITY_LIMITS.cursor),
     truncated: z.boolean(),
@@ -241,6 +292,7 @@ export const AttentionItemSchema = z
     code: statusSchema,
     title: titleSchema,
     message: boundedString(GAS_CITY_LIMITS.message),
+    requestId: identifierSchema.nullable(),
     resourceId: identifierSchema.nullable(),
     observedAt: timestampSchema,
   })
@@ -248,6 +300,7 @@ export const AttentionItemSchema = z
 
 export const AttentionListSchema = z
   .object({
+    scope: z.enum(["city", "city-and-rig"]),
     items: z.array(AttentionItemSchema).max(GAS_CITY_LIMITS.attentionItems),
     truncated: z.boolean(),
     refreshedAt: timestampSchema,
@@ -303,7 +356,7 @@ export const DispatchResultSchema = z
     formula: nameSchema.nullable(),
     workflowId: identifierSchema.nullable(),
     rootBeadId: identifierSchema.nullable(),
-    dashboardUrl: endpointUrlSchema.nullable(),
+    dashboardUrl: boundedNullableString(GAS_CITY_LIMITS.path),
     warnings: z.array(boundedString(GAS_CITY_LIMITS.message)).max(GAS_CITY_LIMITS.warnings),
   })
   .strict();
@@ -340,7 +393,7 @@ export const SessionActionRequestSchema = z.discriminatedUnion("action", [
     .object({
       ...sessionMutationBase,
       action: z.literal("respond"),
-      requestId: identifierSchema.nullable(),
+      requestId: identifierSchema,
       response: z.enum(["allow", "deny", "answer"]),
       text: boundedNullableString(GAS_CITY_LIMITS.prompt),
       metadata: BoundedMetadataSchema,
@@ -357,33 +410,6 @@ export const SessionActionResultSchema = z
   })
   .strict();
 
-export const GasCityProviderSelectionSchema = z
-  .object({
-    cityName: nameSchema,
-    sessionId: identifierSchema,
-  })
-  .strict();
-
-export const ProviderSelectionOptionSchema = z
-  .object({
-    selection: GasCityProviderSelectionSchema,
-    label: titleSchema,
-    detail: boundedNullableString(GAS_CITY_LIMITS.message),
-    upstreamProvider: nameSchema,
-    running: z.boolean(),
-    selectable: z.boolean(),
-    unavailableReason: boundedNullableString(GAS_CITY_LIMITS.errorMessage),
-  })
-  .strict();
-
-export const ProviderSelectionListSchema = z
-  .object({
-    items: z.array(ProviderSelectionOptionSchema).max(GAS_CITY_LIMITS.providers),
-    truncated: z.boolean(),
-    refreshedAt: timestampSchema,
-  })
-  .strict();
-
 export type GasCityDiagnostic = z.infer<typeof GasCityDiagnosticSchema>;
 export type SupervisorDiscovery = z.infer<typeof SupervisorDiscoverySchema>;
 export type WorkspaceRigMapping = z.infer<typeof WorkspaceRigMappingSchema>;
@@ -392,6 +418,8 @@ export type GasCitySession = z.infer<typeof GasCitySessionSchema>;
 export type SessionList = z.infer<typeof SessionListSchema>;
 export type GasCityConvoy = z.infer<typeof GasCityConvoySchema>;
 export type ConvoyList = z.infer<typeof ConvoyListSchema>;
+export type GasCityWorkItem = z.infer<typeof GasCityWorkItemSchema>;
+export type WorkList = z.infer<typeof WorkListSchema>;
 export type GasCityEvent = z.infer<typeof GasCityEventSchema>;
 export type EventList = z.infer<typeof EventListSchema>;
 export type AttentionItem = z.infer<typeof AttentionItemSchema>;
@@ -400,5 +428,3 @@ export type DispatchRequest = z.infer<typeof DispatchRequestSchema>;
 export type DispatchResult = z.infer<typeof DispatchResultSchema>;
 export type SessionActionRequest = z.infer<typeof SessionActionRequestSchema>;
 export type SessionActionResult = z.infer<typeof SessionActionResultSchema>;
-export type GasCityProviderSelection = z.infer<typeof GasCityProviderSelectionSchema>;
-export type ProviderSelectionList = z.infer<typeof ProviderSelectionListSchema>;

@@ -12,6 +12,7 @@ import {
   type GasCitySettings,
   gasCitySettings,
   resolveWorkspaceRig,
+  toGasCityRpcSettings,
   type WorkspaceRigMapping,
 } from "../shared";
 import { CityOperations } from "./city-operations";
@@ -61,6 +62,7 @@ function ReadyFactoryPanel({
   settings,
 }: PluginWorkspacePanelProps & { settings: GasCitySettings }) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
+  const rpcSettings = useMemo(() => toGasCityRpcSettings(settings), [settings]);
   const workspace = useWorkspace(workspaceId, ({ directory, name, title }) => ({
     directory,
     name,
@@ -68,8 +70,8 @@ function ReadyFactoryPanel({
   }));
   const loadMapping = useRpc(resolveWorkspaceRig);
   const mapping = useQuery({
-    queryKey: ["gas-city", host.id, "workspace-mapping", workspaceId],
-    queryFn: () => loadMapping({ workspaceId }),
+    queryKey: ["gas-city", host.id, settings.endpointUrl, "workspace-mapping", workspaceId],
+    queryFn: () => loadMapping({ settings: rpcSettings, workspaceId }),
     refetchInterval: settings.refreshIntervalMs,
   });
   const retryMapping = () => void mapping.refetch();
@@ -173,9 +175,7 @@ function ReadyFactoryPanel({
           host={host}
           cityName={resolved.cityName}
           rigName={resolved.rigName}
-          eventLimit={settings.eventLimit}
-          refreshIntervalMs={settings.refreshIntervalMs}
-          mutationsEnabled={settings.mutationsEnabled}
+          settings={settings}
           slingIntent={slingIntent}
           onDismissSlingIntent={dismissIntent}
         />

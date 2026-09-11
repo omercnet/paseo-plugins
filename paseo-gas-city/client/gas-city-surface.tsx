@@ -1,10 +1,16 @@
 import { type PluginSurfaceProps, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import { discoverSupervisor, type GasCitySettings, gasCitySettings } from "../shared";
+import {
+  discoverSupervisor,
+  type GasCitySettings,
+  gasCitySettings,
+  toGasCityRpcSettings,
+} from "../shared";
 import { CityOperations } from "./city-operations";
+import { selectAvailableCity } from "./view-model";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An unexpected error occurred.";
@@ -43,19 +49,15 @@ function ReadyGasCitySurface({
   settings,
 }: PluginSurfaceProps & { settings: GasCitySettings }) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
+  const rpcSettings = useMemo(() => toGasCityRpcSettings(settings), [settings]);
   const loadDiscovery = useRpc(discoverSupervisor);
   const discovery = useQuery({
-    queryKey: ["gas-city", host.id, "discovery"],
-    queryFn: () => loadDiscovery({}),
+    queryKey: ["gas-city", host.id, settings.endpointUrl, "discovery"],
+    queryFn: () => loadDiscovery({ settings: rpcSettings }),
     refetchInterval: settings.refreshIntervalMs,
   });
   const retryDiscovery = () => void discovery.refetch();
-  const [selectedCity, setSelectedCity] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (selectedCity && discovery.data?.cities.some((city) => city.name === selectedCity)) return;
-    setSelectedCity(discovery.data?.cities[0]?.name ?? null);
-  }, [discovery.data?.cities, selectedCity]);
+  const [preferredCity, setPreferredCity] = useState<string | null>(null);
 
   if (discovery.isPending && !discovery.data) {
     return (
@@ -98,6 +100,7 @@ function ReadyGasCitySurface({
   }
 
   const data = discovery.data;
+  const selectedCity = selectAvailableCity(preferredCity, data.cities);
   if (data.state !== "available" || !data.supervisor) {
     const diagnostic = data.diagnostics.map((item) => item.message).join(" ");
     return (
@@ -158,7 +161,7 @@ function ReadyGasCitySurface({
                 accessibilityRole="button"
                 accessibilityLabel={`Show ${city.name} city operations`}
                 accessibilityState={{ selected }}
-                onPress={() => setSelectedCity(city.name)}
+                onPress={() => setPreferredCity(city.name)}
                 style={({ pressed }) => [
                   styles.cityChip,
                   selected && styles.cityChipSelected,
@@ -191,9 +194,7 @@ function ReadyGasCitySurface({
             host={host}
             cityName={selectedCity}
             rigName={null}
-            eventLimit={settings.eventLimit}
-            refreshIntervalMs={settings.refreshIntervalMs}
-            mutationsEnabled={settings.mutationsEnabled}
+            settings={settings}
           />
         ) : (
           <SurfaceState
