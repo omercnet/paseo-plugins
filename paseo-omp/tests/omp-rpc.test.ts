@@ -195,19 +195,20 @@ describe("OMP RPC transport", () => {
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
+    const futureSelector = `provider/${"m".repeat(4_096)}:future-thinking`;
     const frames: OmpRpcEvent[] = [
       { type: "model_changed" },
-      { type: "thinking_level_changed" },
+      { type: "thinking_level_changed", thinkingLevel: "future-thinking" },
       {
         type: "retry_fallback_applied",
-        from: "anthropic/claude-sonnet-4-5",
-        to: "openai/gpt-5.4:high",
-        role: "default",
+        from: futureSelector,
+        to: futureSelector,
+        role: futureSelector,
       },
       {
         type: "retry_fallback_succeeded",
-        model: "openai/gpt-5.4:high",
-        role: "default",
+        model: futureSelector,
+        role: futureSelector,
       },
     ];
 

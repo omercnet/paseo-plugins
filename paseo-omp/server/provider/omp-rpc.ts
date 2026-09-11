@@ -25,7 +25,7 @@ const MAX_CHUNK_COUNT = MAX_REASSEMBLED_FRAME_BYTES / MAX_CHUNK_BYTES;
 const MAX_ID_LENGTH = 256;
 const MAX_NAME_LENGTH = 256;
 const MAX_MODEL_SELECTOR_BYTES = MAX_NAME_LENGTH * 2 + 1;
-const MAX_FALLBACK_SELECTOR_BYTES = MAX_MODEL_SELECTOR_BYTES + 33;
+const MAX_CONFIG_EVENT_TEXT_BYTES = 64 * 1024;
 const MAX_TEXT_LENGTH = 1024 * 1024;
 const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
 const MAX_SYSTEM_PROMPT_LENGTH = 64 * 1024;
@@ -226,18 +226,18 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("model_changed") }),
   z.object({
     type: z.literal("thinking_level_changed"),
-    thinkingLevel: OmpThinkingLevelSchema.optional(),
+    thinkingLevel: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
   }),
   z.object({
     type: z.literal("retry_fallback_applied"),
-    from: boundedString(MAX_FALLBACK_SELECTOR_BYTES, 1),
-    to: boundedString(MAX_FALLBACK_SELECTOR_BYTES, 1),
-    role: boundedString(MAX_FALLBACK_SELECTOR_BYTES, 1),
+    from: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
+    to: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
+    role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
   }),
   z.object({
     type: z.literal("retry_fallback_succeeded"),
-    model: boundedString(MAX_FALLBACK_SELECTOR_BYTES, 1),
-    role: boundedString(MAX_FALLBACK_SELECTOR_BYTES, 1),
+    model: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
+    role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
   }),
   z.object({
     type: z.literal("available_commands_update"),

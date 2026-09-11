@@ -38,7 +38,8 @@ type SessionCloseInput = Extract<ProviderInput, { type: "session.close" }>;
 type Emit = (event: ProviderEvent) => void;
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
-const CONFIG_REFRESH_RETRY_MS = 250;
+const CONFIG_REFRESH_RETRY_BASE_MS = 250;
+const CONFIG_REFRESH_MAX_ATTEMPTS = 3;
 const MAX_PROMPT_PARTS = 64;
 const MAX_PROMPT_TEXT_LENGTH = 1024 * 1024;
 const MAX_TRACKED_ENTRY_IDS = 1_024;
@@ -229,6 +230,7 @@ export class OmpProviderSession {
   private recoveryPromise: Promise<void> | null = null;
   private configRefreshInFlight: Promise<void> | null = null;
   private configRefreshDirty = false;
+  private configRefreshAttempts = 0;
   private configMutationInFlight = false;
   private configRevision = 0;
   private recoveryUsesNativeConfig = false;
@@ -766,9 +768,16 @@ export class OmpProviderSession {
         }
       }
       if (refreshFailed) {
+        this.configRefreshAttempts += 1;
+        if (this.configRefreshAttempts >= CONFIG_REFRESH_MAX_ATTEMPTS) {
+          this.configRefreshDirty = false;
+          this.handleRuntimeFailure("OMP runtime configuration state remained unavailable");
+          return;
+        }
         this.configRefreshDirty = true;
         const retry = Promise.withResolvers<void>();
-        const timer = this.scheduler.set(retry.resolve, CONFIG_REFRESH_RETRY_MS);
+        const delayMs = CONFIG_REFRESH_RETRY_BASE_MS * 2 ** (this.configRefreshAttempts - 1);
+        const timer = this.scheduler.set(retry.resolve, delayMs);
         await retry.promise;
         try {
           this.scheduler.clear(timer);
@@ -776,6 +785,8 @@ export class OmpProviderSession {
           // The one-shot callback already fired; a cleanup failure must not wedge refreshes.
         }
         if (!this.isCurrentRuntime(runtime, generation)) return;
+      } else {
+        this.configRefreshAttempts = 0;
       }
     } while (this.configRefreshDirty && this.isCurrentRuntime(runtime, generation));
   }
@@ -820,6 +831,7 @@ export class OmpProviderSession {
     ) {
       throw new OmpCatalogEscape("OMP runtime selected an unsupported thinking level");
     }
+    this.configRefreshAttempts = 0;
     const nextConfig: ProviderConfigState = {
       ...this.configState,
       ...(publicModelId ? { model: publicModelId } : { model: undefined }),
@@ -890,6 +902,8 @@ export class OmpProviderSession {
       }
     }
     this.closed = true;
+    this.configRefreshAttempts = 0;
+    this.configRefreshDirty = false;
     this.lifetime.abort(new Error("OMP provider session closed"));
     this.projector.close();
     this.unsubscribe();
@@ -907,6 +921,7 @@ export class OmpProviderSession {
   private bindRuntime(runtime: OmpRuntimeSession): void {
     this.unsubscribe();
     this.runtime = runtime;
+    this.configRefreshAttempts = 0;
     const generation = this.generation;
     this.unsubscribe = runtime.onEvent((event) => {
       if (generation !== this.generation) return;
@@ -1556,6 +1571,7 @@ export class OmpProviderSession {
       this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
     this.generation += 1;
     this.runtimeDead = message;
+    this.configRefreshAttempts = 0;
     this.unsubscribe();
     this.unsubscribe = () => {};
     this.runtimeDisposal ??= this.runtime.close();

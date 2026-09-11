@@ -1080,7 +1080,7 @@ describe("OMP direct provider", () => {
         event.config.model === MODEL_PUBLIC_ID &&
         event.config.thinkingOption === "high",
     );
-    session.emit({ type: "thinking_level_changed", thinkingLevel: "high" });
+    session.emit({ type: "thinking_level_changed", thinkingLevel: "future-thinking" });
     await thinkingChanged;
 
     const latest = events.findLast((event) => event.type === "session.config");
@@ -1376,8 +1376,31 @@ describe("OMP direct provider", () => {
     expect(scheduler.delays.at(-1)).toBe(250);
     await scheduler.flush();
     await afterTimeout;
+    expect(scheduler.delays.filter((delay) => delay < 2_000)).toEqual([250, 250]);
 
     await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("invalidates after bounded persistent config refresh failures", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineLookups = session.stateLookups;
+    const closed = Promise.withResolvers<void>();
+    session.closeObserved = closed.resolve;
+    session.stateError = new Error("persistent state failure");
+
+    session.emit({ type: "model_changed" });
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.delays.filter((delay) => delay < 2_000)).toEqual([250]);
+    await scheduler.flush();
+    expect(scheduler.delays.filter((delay) => delay < 2_000)).toEqual([250, 500]);
+    await scheduler.flush();
+    await closed.promise;
+
+    expect(session.stateLookups).toBe(baselineLookups + 3);
+    expect(session.closes).toBe(1);
     await connection.close();
   });
 
