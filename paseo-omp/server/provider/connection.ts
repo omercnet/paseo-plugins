@@ -24,6 +24,7 @@ const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "session.configure": true,
   "session.list": true,
   "session.persistence": true,
+  "session.revert.conversation": true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   catalog: true,
@@ -32,6 +33,7 @@ const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   "session.prompt": true,
   "session.configure": true,
   "session.permission": true,
+  "session.revert": true,
   "session.interrupt": true,
   "session.close": true,
 };
@@ -340,7 +342,8 @@ export function createOmpConnection(
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) =>
       SUPPORTED_CAPABILITIES[capability] &&
-      (capability !== "session.persistence" || runtime.supportsPersistence),
+      ((capability !== "session.persistence" && capability !== "session.revert.conversation") ||
+        runtime.supportsPersistence),
   );
   const listeners = new Set<(event: ProviderEvent) => void>();
   const sessions = new Map<
@@ -557,6 +560,15 @@ export function createOmpConnection(
           return;
         }
         await session.configure(input);
+        return;
+      }
+      case "session.revert": {
+        const session = sessions.get(input.sessionId)?.session;
+        if (!session) {
+          requestFailure(input.requestId, new OmpPublicError("Unknown OMP session"));
+          return;
+        }
+        await session.revert(input);
         return;
       }
       case "session.interrupt": {

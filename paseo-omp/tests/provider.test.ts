@@ -250,6 +250,15 @@ class FakeOmpSession implements OmpRuntimeSession {
   branchMessagesGate: Promise<void> | null = null;
   branchMessagesError: Error | null = null;
   branchMessageLookups = 0;
+  branchGate: Promise<void> | null = null;
+  branchObserved: (() => void) | null = null;
+  branchError: Error | null = null;
+  branchCancelled = false;
+  branchHistoryAfter: OmpMessage[] | null = null;
+  branchModelAfter: OmpModel | null = null;
+  branchThinkingAfter: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null =
+    null;
+  readonly branches: string[] = [];
   closeGate: Promise<void> | null = null;
   closeObserved: (() => void) | null = null;
   abortGate: Promise<void> | null = null;
@@ -375,6 +384,26 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (this.steerGate) await this.steerGate;
     if (this.steerError) throw this.steerError;
     this.steers.push(message);
+  }
+
+  async branch(entryId: string) {
+    this.branches.push(entryId);
+    this.branchObserved?.();
+    if (this.branchGate) await this.branchGate;
+    if (this.branchError) throw this.branchError;
+    if (!this.branchCancelled && this.branchHistoryAfter) {
+      this.historyMessages = this.branchHistoryAfter;
+    }
+    if (!this.branchCancelled && this.branchModelAfter) {
+      this.currentModel = this.branchModelAfter;
+    }
+    if (!this.branchCancelled && this.branchThinkingAfter) {
+      this.thinkingLevel = this.branchThinkingAfter;
+    }
+    return {
+      text: this.branchMessages.find((message) => message.entryId === entryId)?.text ?? "",
+      cancelled: this.branchCancelled,
+    };
   }
 
   async getBranchMessages() {
@@ -1036,6 +1065,311 @@ describe("OMP direct provider", () => {
     expect(runtime.starts[2]?.systemPrompt).toBeUndefined();
     await finishTurn(events, sessionAt(runtime, 2), recoveryTurn);
     await connection.close();
+  });
+  test("rewinds to an earlier native message and replays the active branch once", async () => {
+    const firstUser = { role: "user" as const, entryId: "entry-user-1", content: "first" };
+    const firstAssistant = {
+      role: "assistant" as const,
+      entryId: "entry-assistant-1",
+      content: "first reply",
+    };
+    const secondUser = { role: "user" as const, entryId: "entry-user-2", content: "second" };
+    const secondAssistant = {
+      role: "assistant" as const,
+      entryId: "entry-assistant-2",
+      content: "second reply",
+    };
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = [firstUser, firstAssistant, secondUser, secondAssistant];
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.revert.conversation",
+      "session.revert.files",
+      "session.revert.both",
+    ]);
+    expect(connection.capabilities).toEqual([
+      "prompt.message",
+      "session.persistence",
+      "session.revert.conversation",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "rewind-open",
+      sessionId: "rewind-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "rewind-open",
+    );
+    const target = events.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.text === "second",
+    );
+    if (target?.type !== "timeline.item" || target.item.type !== "user_message") {
+      throw new Error("Missing rewind target");
+    }
+    const token = target.item.revertToken;
+    if (typeof token !== "string") throw new Error("Missing opaque rewind token");
+    expect(token).not.toContain("entry-user-2");
+
+    const session = sessionAt(runtime);
+    session.branchMessages = [
+      { entryId: "entry-user-1", text: "first" },
+      { entryId: "entry-user-2", text: "second" },
+    ];
+    session.branchHistoryAfter = [firstUser, firstAssistant];
+    session.branchModelAfter = ALTERNATE_MODEL;
+    session.branchThinkingAfter = "high";
+    const baseline = events.length;
+    await connection.send({
+      type: "session.revert",
+      requestId: "rewind-earlier",
+      sessionId: "rewind-session",
+      token,
+      scope: "conversation",
+    });
+    const rewindOutcome = await events.waitFor(
+      (event) =>
+        (event.type === "request.completed" || event.type === "request.failed") &&
+        event.requestId === "rewind-earlier",
+    );
+    expect(rewindOutcome).toEqual({ type: "request.completed", requestId: "rewind-earlier" });
+
+    expect(session.branches).toEqual(["entry-user-2"]);
+    expect(session.historyRequests).toBe(2);
+    expect(session.modelChanges).toEqual([{ provider: MODEL.provider, modelId: MODEL.id }]);
+    expect(session.thinkingChanges).toEqual(["medium"]);
+    expect(session.currentModel).toEqual(MODEL);
+    expect(session.thinkingLevel).toBe("medium");
+    expect(
+      events
+        .slice(baseline)
+        .flatMap((event) =>
+          event.type === "timeline.item" &&
+          (event.item.type === "user_message" || event.item.type === "assistant_message")
+            ? [event.item.text]
+            : [],
+        ),
+    ).toEqual(["first", "first reply"]);
+
+    const replacementUser = events
+      .slice(baseline)
+      .find((event) => event.type === "timeline.item" && event.item.type === "user_message");
+    if (replacementUser?.type !== "timeline.item" || replacementUser.item.type !== "user_message") {
+      throw new Error("Missing replacement rewind target");
+    }
+    expect(replacementUser.item.revertToken).not.toBe(token);
+
+    session.promptEvents = [
+      { type: "message_end", message: firstAssistant },
+      {
+        type: "message_end",
+        message: { role: "assistant", entryId: "entry-assistant-live", content: "live reply" },
+      },
+    ];
+    const liveBaseline = events.length;
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "after-rewind", "continue", "rewind-session"),
+    );
+    expect(
+      events
+        .slice(liveBaseline)
+        .flatMap((event) =>
+          event.type === "timeline.item" && event.item.type === "assistant_message"
+            ? [event.item.text]
+            : [],
+        ),
+    ).toEqual(["live reply"]);
+    await finishTurn(events, session, turnId);
+
+    await connection.send({
+      type: "session.revert",
+      requestId: "stale-rewind",
+      sessionId: "rewind-session",
+      token,
+      scope: "conversation",
+    });
+    const stale = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "stale-rewind",
+    );
+    expect(stale).toEqual(
+      expect.objectContaining({ error: { message: "OMP conversation rewind token is stale" } }),
+    );
+    expect(session.branches).toEqual(["entry-user-2"]);
+    await connection.close();
+  });
+
+  test("rejects active-turn and unsupported rewind requests before branching", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = [{ role: "user", entryId: "active-entry", content: "earlier" }];
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.revert.conversation",
+      "session.revert.files",
+      "session.revert.both",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "active-rewind-open",
+      sessionId: "active-rewind-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "active-rewind-open",
+    );
+    const user = events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "user_message",
+    );
+    if (user?.type !== "timeline.item" || user.item.type !== "user_message") {
+      throw new Error("Missing active rewind target");
+    }
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "active-prompt", "work", "active-rewind-session"),
+    );
+    for (const scope of ["conversation", "files", "both"] as const) {
+      await connection.send({
+        type: "session.revert",
+        requestId: `active-rewind-${scope}`,
+        sessionId: "active-rewind-session",
+        token: user.item.revertToken ?? null,
+        scope,
+      });
+      await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === `active-rewind-${scope}`,
+      );
+    }
+    expect(sessionAt(runtime).branches).toEqual([]);
+    await finishTurn(events, sessionAt(runtime), turnId);
+    await connection.close();
+  });
+
+  test("fails closed for malformed and foreign rewind tokens", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.revert.conversation",
+    ]);
+    await openSession(
+      connection,
+      events,
+      "token-open",
+      "token-session",
+      {},
+      MODEL_PUBLIC_ID,
+      "medium",
+    );
+    const foreignEvents: ProviderEvent[] = [];
+    const foreignProjector = new OmpTimelineProjector(
+      "foreign",
+      (event) => foreignEvents.push(event),
+      new ManualScheduler(),
+      [],
+      true,
+    );
+    foreignProjector.publishUser("foreign", "foreign-client", "foreign-entry");
+    const foreign = foreignEvents.find(
+      (event) => event.type === "timeline.item" && event.item.type === "user_message",
+    );
+    if (foreign?.type !== "timeline.item" || foreign.item.type !== "user_message") {
+      throw new Error("Missing foreign rewind token");
+    }
+
+    for (const [requestId, token] of [
+      ["malformed-rewind", { entryId: "forged" }],
+      ["foreign-rewind", foreign.item.revertToken ?? null],
+    ] as const) {
+      await connection.send({
+        type: "session.revert",
+        requestId,
+        sessionId: "token-session",
+        token,
+        scope: "conversation",
+      });
+      await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === requestId,
+      );
+    }
+    expect(sessionAt(runtime).branches).toEqual([]);
+    await connection.close();
+  });
+
+  test("contains native branch failures and remains closable", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = [{ role: "user", entryId: "failure-entry", content: "earlier" }];
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.revert.conversation",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "failure-open",
+      sessionId: "failure-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "failure-open",
+    );
+    const user = events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "user_message",
+    );
+    if (user?.type !== "timeline.item" || user.item.type !== "user_message") {
+      throw new Error("Missing failed rewind target");
+    }
+    const session = sessionAt(runtime);
+    session.branchMessages = [{ entryId: "failure-entry", text: "earlier" }];
+    session.branchError = new Error("native branch secret");
+    await connection.send({
+      type: "session.revert",
+      requestId: "failed-native-rewind",
+      sessionId: "failure-session",
+      token: user.item.revertToken ?? null,
+      scope: "conversation",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "failed-native-rewind",
+    );
+    expect(failure).toEqual(
+      expect.objectContaining({ error: { message: "OMP conversation rewind failed" } }),
+    );
+    expect(JSON.stringify(failure)).not.toContain("native branch secret");
+    expect(session.historyRequests).toBe(1);
+    await expect(connection.close()).resolves.toBeUndefined();
+    expect(session.closes).toBe(1);
   });
   test("keeps replay-boundary counts beyond 1,024 occurrences", async () => {
     const runtime = new FakeOmpRuntime();
@@ -2233,12 +2567,13 @@ describe("OMP direct provider", () => {
     await ready.connection.close();
   });
 
-  test("does not negotiate persistence when history replay is unavailable", async () => {
+  test("does not negotiate persistence or rewind when history replay is unavailable", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.supportsPersistence = false;
     const { connection } = await createHarness(runtime, new ManualScheduler(), [
       "prompt.message",
       "session.persistence",
+      "session.revert.conversation",
     ]);
     expect(connection.capabilities).toEqual(["prompt.message"]);
     await connection.close();

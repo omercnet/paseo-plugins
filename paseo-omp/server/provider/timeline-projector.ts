@@ -1,11 +1,17 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type {
   ProviderEvent,
   ProviderTimelineItem,
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
-import { boundedJsonBytes, type JsonValue, OmpPublicDataFilter, utf8Bytes } from "./security";
+import {
+  boundedJsonBytes,
+  type JsonValue,
+  OmpPublicDataFilter,
+  OmpPublicError,
+  utf8Bytes,
+} from "./security";
 
 const STREAM_FRAME_MS = 32;
 const MAX_STREAM_CONTENT_BLOCKS = 64;
@@ -16,6 +22,8 @@ const MAX_TURN_NATIVE_IDENTITIES = 1_024;
 const MAX_REPLAY_NATIVE_IDENTITIES = 100_000;
 const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
 const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
+const MAX_REVERT_TARGETS = MAX_REPLAY_NATIVE_IDENTITIES;
+const REVERT_TOKEN_PATTERN = /^omp-revert:[A-Za-z0-9_-]{43}$/u;
 
 type Emit = (event: ProviderEvent) => void;
 
@@ -124,15 +132,17 @@ export class OmpTimelineProjector {
   private readonly replayOverflowCandidates = new Map<string, string>();
   private projectingReplay = false;
   private activeToolBytes = 0;
+  private readonly revertEntryByToken = new Map<string, string>();
+  private readonly revertTokenByEntry = new Map<string, string>();
   private commandText = "";
   private commandPublishedText = "";
   private closed = false;
-
   constructor(
     private readonly sessionId: string,
     private readonly emit: Emit,
     private readonly scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
     sensitiveValues: Iterable<string> = [],
+    private readonly conversationRevertEnabled = false,
   ) {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
   }
@@ -331,13 +341,50 @@ export class OmpTimelineProjector {
       ? createHash("sha256").update(nativeId).digest("base64url").slice(0, 12)
       : "local";
     const messageId = `omp:user:${this.userSequence}:${nativeHash}`;
+    const revertToken =
+      nativeId && this.conversationRevertEnabled ? this.revertTokenFor(nativeId) : undefined;
     this.publish({
       type: "user_message",
       id: messageId,
       messageId,
       clientMessageId,
       text: this.dataFilter.text(text),
+      ...(revertToken ? { revertToken } : {}),
     });
+  }
+
+  resolveRevertToken(token: unknown): string {
+    if (typeof token !== "string" || !REVERT_TOKEN_PATTERN.test(token)) {
+      throw new OmpPublicError("Invalid OMP conversation rewind token");
+    }
+    const entryId = this.revertEntryByToken.get(token);
+    if (!entryId) throw new OmpPublicError("OMP conversation rewind token is stale");
+    return entryId;
+  }
+
+  resetForRewindReplay(): void {
+    this.clearFlushTimer();
+    this.stream = null;
+    this.currentTurnId = null;
+    this.assistantSequence = 0;
+    this.turnNativeMessageIds.clear();
+    this.nativeIdentitySaturated = false;
+    this.assistantIdentitySequence = 0;
+    this.toolSequence = 0;
+    this.userSequence = 0;
+    this.replayTurnId = null;
+    this.replaySequence = 0;
+    this.replayBoundaryOccurrences.clear();
+    this.replayBoundaryOccurrenceCount = 0;
+    this.replayCandidates.clear();
+    this.replayOverflowCandidates.clear();
+    this.projectingReplay = false;
+    this.activeToolBytes = 0;
+    this.tools.clear();
+    this.commandText = "";
+    this.commandPublishedText = "";
+    this.revertEntryByToken.clear();
+    this.revertTokenByEntry.clear();
   }
 
   projectReplayMessage(message: OmpMessage): void {
@@ -744,6 +791,25 @@ export class OmpTimelineProjector {
     if (this.flushTimer === undefined) return;
     this.scheduler.clear(this.flushTimer);
     this.flushTimer = undefined;
+  }
+
+  private revertTokenFor(entryId: string): string | undefined {
+    const existing = this.revertTokenByEntry.get(entryId);
+    if (existing) return existing;
+    if (this.revertTokenByEntry.size >= MAX_REVERT_TARGETS) return undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let token: string;
+      try {
+        token = `omp-revert:${randomBytes(32).toString("base64url")}`;
+      } catch {
+        return undefined;
+      }
+      if (this.revertEntryByToken.has(token)) continue;
+      this.revertTokenByEntry.set(entryId, token);
+      this.revertEntryByToken.set(token, entryId);
+      return token;
+    }
+    return undefined;
   }
 
   private publishTool(snapshot: ToolSnapshot, status: "running" | "completed"): void;

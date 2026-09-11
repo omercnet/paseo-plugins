@@ -631,6 +631,52 @@ describe("OMP RPC transport", () => {
     expect(messages.at(-1)).toEqual({ entryId: "entry-1023", text: "x" });
     await session.close();
   });
+  test("sends bounded native branch identifiers and validates branch results", async () => {
+    const child = new FakeRpcChild();
+    let branchCount = 0;
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type !== "branch") return;
+      branchCount += 1;
+      if (branchCount === 1) {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { text: "selected prompt", cancelled: false },
+        });
+      } else {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { text: 42, cancelled: false },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await expect(session.branch("entry-1")).resolves.toEqual({
+      text: "selected prompt",
+      cancelled: false,
+    });
+    await expect(session.branch("entry-2")).rejects.toThrow("OMP RPC response is invalid");
+    await expect(session.branch("x".repeat(257))).rejects.toThrow(
+      "Invalid OMP branch entry identifier",
+    );
+    expect(branchCount).toBe(2);
+    await session.close();
+  });
 
   test("enforces chunked UTF-8 assistant and image boundaries without stale corruption", async () => {
     const child = new FakeRpcChild();
