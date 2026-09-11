@@ -5739,18 +5739,54 @@ describe("OMP direct provider", () => {
     await expect(connection.close()).resolves.toBeUndefined();
   });
 
-  test("retains failed recovery startup cleanup until explicit close", async () => {
+  test("releases recovery cleanup quarantine after verification", async () => {
     const runtime = new FakeOmpRuntime();
-    const { connection, events } = await createHarness(runtime);
-    await openSession(connection, events);
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const cleanup = Promise.withResolvers<void>();
+    const provider = createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV });
+    const connect = async () => {
+      const connection = await provider.connect({
+        versions: [1],
+        capabilities: ["prompt.message", "session.persistence"],
+      });
+      const events = new EventLog();
+      connection.onEvent((event) => events.push(event));
+      return { connection, events };
+    };
+    const first = await connect();
+    const second = await connect();
+    await first.connection.send({
+      type: "session.open",
+      requestId: "recovery-cleanup-open",
+      sessionId: "recovery-cleanup-owner",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await first.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "recovery-cleanup-open",
+    );
+
     runtime.nextStartError = new OmpCleanupFailure(
       "recovery startup cleanup failed",
-      Promise.resolve(),
+      cleanup.promise,
     );
     sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
-
     for (const clientMessageId of ["failed-recovery-start", "blocked-recovery-retry"]) {
-      const result = await startPrompt(connection, events, clientMessageId, "continue");
+      const result = await startPrompt(
+        first.connection,
+        first.events,
+        clientMessageId,
+        "continue",
+        "recovery-cleanup-owner",
+      );
       expect(result).toEqual(
         expect.objectContaining({
           result: expect.objectContaining({
@@ -5761,20 +5797,61 @@ describe("OMP direct provider", () => {
       );
     }
     expect(runtime.starts).toHaveLength(2);
-
-    await connection.send({
+    await first.connection.send({
       type: "session.close",
-      requestId: "failed-recovery-close",
-      sessionId: "session-1",
+      requestId: "recovery-cleanup-close",
+      sessionId: "recovery-cleanup-owner",
     });
-    const closeFailure = await events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "failed-recovery-close",
+    await first.events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "recovery-cleanup-close",
     );
-    expect(closeFailure).toEqual(
-      expect.objectContaining({ error: { message: "OMP session close failed" } }),
+    await first.connection.close();
+
+    await second.connection.send({
+      type: "session.open",
+      requestId: "recovery-cleanup-blocked",
+      sessionId: "recovery-cleanup-successor",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    const blocked = await second.events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "recovery-cleanup-blocked",
     );
-    expect(runtime.starts).toHaveLength(2);
-    await expect(connection.close()).resolves.toBeUndefined();
+    expect(blocked).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP native session cleanup quarantine is active" },
+      }),
+    );
+
+    cleanup.resolve();
+    await cleanup.promise;
+    await Promise.resolve();
+    await second.connection.send({
+      type: "session.open",
+      requestId: "recovery-cleanup-released",
+      sessionId: "recovery-cleanup-successor",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await second.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "recovery-cleanup-released",
+    );
+    expect(runtime.starts).toHaveLength(3);
+    await second.connection.close();
   });
 
   test("fails a degraded terminal frame with no outcome messages", async () => {

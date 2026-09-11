@@ -1134,14 +1134,7 @@ export class OmpProviderSession {
       });
     } catch (error) {
       if (isOmpCleanupFailure(error)) {
-        this.runtimeDisposal = error.cleanup.then(
-          () => {
-            throw new Error("OMP recovery cleanup failed");
-          },
-          () => {
-            throw new Error("OMP recovery cleanup failed");
-          },
-        );
+        this.runtimeDisposal = Promise.reject(error);
         void this.runtimeDisposal.catch(() => undefined);
       }
       throw error;

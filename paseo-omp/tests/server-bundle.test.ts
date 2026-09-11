@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   negotiateProviderCapabilities,
   type ProviderRegistration,
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import { build } from "esbuild";
+import { unzipSync } from "fflate";
 
 const pluginRoot = join(import.meta.dirname, "..");
 const nodeRequire = createRequire(join(pluginRoot, "index.server.ts"));
@@ -81,6 +83,42 @@ describe("plugin server bundle", () => {
       expect(typeof cleanup).toBe("function");
     } finally {
       process.chdir(originalCwd);
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("loads the server entrypoint from the extracted release archive", async () => {
+    await mkdir(join(pluginRoot, "dist"), { recursive: true });
+    const temporaryDirectory = await mkdtemp(join(pluginRoot, "dist", "release-load-"));
+    const archivePath = join(temporaryDirectory, "paseo-omp.zip");
+    const extractionRoot = join(temporaryDirectory, "extracted");
+    try {
+      const packaging = Bun.spawn([process.execPath, "scripts/package-release.ts", archivePath], {
+        cwd: pluginRoot,
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      const [exitCode, stderr] = await Promise.all([
+        packaging.exited,
+        new Response(packaging.stderr).text(),
+      ]);
+      expect(stderr).toBe("");
+      expect(exitCode).toBe(0);
+
+      const files = unzipSync(await Bun.file(archivePath).bytes());
+      expect(files["paseo-omp/server/provider/security.ts"]).toBeDefined();
+      for (const [path, content] of Object.entries(files)) {
+        const outputPath = join(extractionRoot, path);
+        await mkdir(dirname(outputPath), { recursive: true });
+        await writeFile(outputPath, content);
+      }
+
+      // Dynamic import intentionally exercises the extracted plugin's runtime module boundary.
+      const entrypoint = await import(
+        pathToFileURL(join(extractionRoot, "paseo-omp", "index.server.ts")).href
+      );
+      expect(typeof entrypoint.default).toBe("function");
+    } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
   });
