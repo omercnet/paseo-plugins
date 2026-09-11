@@ -5,7 +5,14 @@ import type {
   ProviderInput,
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
-import { mapOmpModels, OMP_MODES, ompModelId, parseOmpModelId, thinkingForModel } from "./catalog";
+import {
+  mapOmpModels,
+  nativeOmpModelId,
+  OMP_MODES,
+  ompModelId,
+  parseOmpModelId,
+  thinkingForModel,
+} from "./catalog";
 import type {
   OmpMessage,
   OmpRpcEvent,
@@ -209,6 +216,7 @@ export class OmpProviderSession {
   private readonly unclaimedBranchEntries: Array<{ entryId: string; text: string }> = [];
   private readonly scheduler: OmpTimelineScheduler;
   private readonly dataFilter: OmpPublicDataFilter;
+  private readonly nativeModelsByPublicId: ReadonlyMap<string, OmpModel>;
   private readonly lifetime = new AbortController();
   private generation = 0;
   private runtimeDead: string | null = null;
@@ -224,6 +232,7 @@ export class OmpProviderSession {
     private nativeSessionId: string,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
+    nativeModelsByPublicId: ReadonlyMap<string, OmpModel>,
     private readonly capabilities: readonly string[],
     private readonly slashCommands: Set<string>,
     private commandDiscoveryAvailable: boolean,
@@ -238,6 +247,7 @@ export class OmpProviderSession {
       ...(runtime.redactionValues ?? []),
     ];
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
+    this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
     this.bindRuntime(runtime);
   }
@@ -277,7 +287,7 @@ export class OmpProviderSession {
     const startOptions: OmpStartOptions = {
       cwd: input.config.cwd,
       env: input.config.env,
-      model: input.config.model,
+      ...(input.config.model?.startsWith("omp:model:") ? {} : { model: input.config.model }),
       mode: "full",
       thinkingOption: input.config.thinkingOption,
       systemPrompt: input.config.systemPrompt,
@@ -286,7 +296,7 @@ export class OmpProviderSession {
     buildOmpSpawnRequest(startOptions);
     const native = await runtime.startSession(startOptions);
     try {
-      const [state, nativeModels, commandDiscovery] = await Promise.all([
+      const [initialState, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
         native.getAvailableModels(),
         native.getAvailableCommands().then(
@@ -294,14 +304,28 @@ export class OmpProviderSession {
           () => ({ available: false, commands: [] }),
         ),
       ]);
-      const models = mapOmpModels(nativeModels);
+      let state = initialState;
+      const filter = new OmpPublicDataFilter([
+        ...Object.values(input.config.env ?? {}),
+        ...(native.redactionValues ?? []),
+      ]);
+      const models = mapOmpModels(nativeModels, filter);
+      const nativeModelsByPublicId = new Map(
+        nativeModels.map((model) => [ompModelId(model, filter), model] as const),
+      );
+      if (input.config.model?.startsWith("omp:model:")) {
+        const selected = nativeModelsByPublicId.get(input.config.model);
+        if (!selected) throw new OmpPublicError("OMP model selection is unavailable");
+        await native.setModel(selected.provider, selected.id);
+        state = await native.getState();
+      }
       const currentModel = state.model
         ? nativeModels.find(
             (model) => model.provider === state.model?.provider && model.id === state.model.id,
           )
         : undefined;
       const configState: ProviderConfigState = {
-        ...(state.model ? { model: ompModelId(state.model) } : {}),
+        ...(state.model ? { model: ompModelId(state.model, filter) } : {}),
         mode: "full",
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
         models,
@@ -314,7 +338,7 @@ export class OmpProviderSession {
         env: input.config.env,
         mode: "full",
         systemPrompt: input.config.systemPrompt,
-        ...(state.model ? { model: ompModelId(state.model) } : {}),
+        ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
       };
       return new OmpProviderSession(
@@ -325,6 +349,7 @@ export class OmpProviderSession {
         state.sessionId,
         input.config,
         configState,
+        nativeModelsByPublicId,
         capabilities,
         new Set(
           commandDiscovery.commands.flatMap((command) => [
@@ -546,7 +571,10 @@ export class OmpProviderSession {
         throw new Error("OMP model and thinking selections cannot be cleared");
       }
       if (input.changes.model) {
-        const model = parseOmpModelId(input.changes.model);
+        const nativeModel = this.nativeModelsByPublicId.get(input.changes.model);
+        const model = nativeModel
+          ? { provider: nativeModel.provider, modelId: nativeModel.id }
+          : parseOmpModelId(input.changes.model);
         await this.runtime.setModel(model.provider, model.modelId);
       }
       if (input.changes.thinkingOption) {
@@ -570,7 +598,7 @@ export class OmpProviderSession {
   private publishCommittedConfig(state: OmpSessionState): void {
     this.configState = {
       ...this.configState,
-      ...(state.model ? { model: ompModelId(state.model) } : { model: undefined }),
+      ...(state.model ? { model: ompModelId(state.model, this.dataFilter) } : { model: undefined }),
       ...(state.thinkingLevel
         ? { thinkingOption: state.thinkingLevel }
         : { thinkingOption: undefined }),
@@ -581,7 +609,7 @@ export class OmpProviderSession {
       env: this.recoveryOptions.env,
       mode: "full",
       systemPrompt: this.recoveryOptions.systemPrompt,
-      ...(this.configState.model ? { model: this.configState.model } : {}),
+      ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
       ...(this.configState.thinkingOption
         ? { thinkingOption: this.configState.thinkingOption }
         : {}),

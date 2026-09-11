@@ -10,11 +10,14 @@ const MAX_PUBLIC_STRING_BYTES = 1024 * 1024;
 const MAX_PUBLIC_COLLECTION_ITEMS = 128;
 const MAX_PUBLIC_DEPTH = 16;
 const MAX_PUBLIC_NODES = 2_048;
+const MAX_SENSITIVE_VALUES = 256;
+const MAX_SENSITIVE_VALUE_BYTES = 256 * 1024;
 const REDACTED = "<redacted>";
 const OMITTED = "<omitted>";
 
 const SENSITIVE_KEY =
   /(?:^|_)(?:api_?key|access_?token|refresh_?token|auth|authorization|cookie|credential|password|private_?key|secret|session_?token)(?:$|_)/iu;
+const AUTHORIZATION_CREDENTIAL = /\bAuthorization\s*:\s*[^\r\n,;]+/giu;
 const BEARER_CREDENTIAL = /\bBearer\s+[A-Za-z0-9._~+/=-]{1,}/giu;
 const CREDENTIAL_ASSIGNMENT =
   /\b(api[ _-]?key|access[ _-]?token|refresh[ _-]?token|authorization|cookie|credential|password|private[ _-]?key|secret|session[ _-]?token)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
@@ -117,20 +120,41 @@ export class BoundedStringSet {
 export class OmpPublicError extends Error {}
 
 export class OmpPublicDataFilter {
-  private sensitiveValues: string[] = [];
+  private readonly sensitiveValueSet = new Set<string>();
+  private readonly sensitiveValues: string[] = [];
+  private sensitiveValueBytes = 0;
 
   constructor(values: Iterable<string> = []) {
     this.addSensitiveValues(values);
   }
 
   addSensitiveValues(values: Iterable<string>): void {
-    this.sensitiveValues = [...new Set([...this.sensitiveValues, ...values])]
-      .filter((value) => value.length > 0)
-      .sort((left, right) => right.length - left.length);
+    const additions: string[] = [];
+    let addedBytes = 0;
+    for (const value of values) {
+      if (!value || this.sensitiveValueSet.has(value) || additions.includes(value)) continue;
+      additions.push(value);
+      addedBytes += utf8Bytes(value);
+    }
+    if (
+      this.sensitiveValues.length + additions.length > MAX_SENSITIVE_VALUES ||
+      this.sensitiveValueBytes + addedBytes > MAX_SENSITIVE_VALUE_BYTES
+    ) {
+      throw new Error("OMP sensitive-value redaction budget exceeded");
+    }
+    additions.sort((left, right) => right.length - left.length);
+    for (const value of additions) {
+      this.sensitiveValueSet.add(value);
+      this.sensitiveValueBytes += utf8Bytes(value);
+      const index = this.sensitiveValues.findIndex((existing) => existing.length < value.length);
+      if (index < 0) this.sensitiveValues.push(value);
+      else this.sensitiveValues.splice(index, 0, value);
+    }
   }
 
   text(input: string, maxBytes = MAX_PUBLIC_STRING_BYTES): string {
-    let output = input.replace(BEARER_CREDENTIAL, `Bearer ${REDACTED}`);
+    let output = input.replace(AUTHORIZATION_CREDENTIAL, `Authorization: ${REDACTED}`);
+    output = output.replace(BEARER_CREDENTIAL, `Bearer ${REDACTED}`);
     for (const value of this.sensitiveValues) output = output.split(value).join(REDACTED);
     output = output
       .replace(CREDENTIAL_ASSIGNMENT, (_match, name: string, separator: string) => {

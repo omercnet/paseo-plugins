@@ -378,6 +378,41 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("accepts 513 branch entries and isolates an oversized response", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        return;
+      }
+      if (command.type !== "get_branch_messages") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: {
+          messages: Array.from({ length: 1_025 }, (_, index) => ({ entryId: `bad-${index}`, text: "x" })),
+        },
+      });
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: {
+          messages: Array.from({ length: 513 }, (_, index) => ({ entryId: `entry-${index}`, text: "x" })),
+        },
+      });
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const messages = await session.getBranchMessages();
+    expect(messages).toHaveLength(513);
+    expect(messages.at(-1)).toEqual({ entryId: "entry-512", text: "x" });
+    await session.close();
+  });
+
   test("isolates malformed recognized and physical frames from later valid events", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
@@ -661,7 +696,7 @@ describe("OMP RPC transport", () => {
         servers: {
           remote: {
             type: "http",
-            url: "https://example.test/mcp?token=url-secret",
+            url: "https://user%40name:pass%20word@example.test/mcp?token=url%2Dsecret",
             headers: { Authorization: "Bearer header-secret" },
           },
           local: { type: "stdio", command: "server", env: { API_KEY: "env-secret" } },
@@ -675,7 +710,10 @@ describe("OMP RPC transport", () => {
       );
       expect(request.sensitiveValues).toEqual(
         expect.arrayContaining([
-          "https://example.test/mcp?token=url-secret",
+          "https://user%40name:pass%20word@example.test/mcp?token=url%2Dsecret",
+          "user@name",
+          "pass word",
+          "url-secret",
           "Bearer header-secret",
           "env-secret",
         ]),

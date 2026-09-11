@@ -261,16 +261,17 @@ export class OmpTimelineProjector {
     for (const contentIndex of indexes) {
       const block = stream.blocks.get(contentIndex);
       if (!block?.text) continue;
+      const publicText = this.dataFilter.text(block.text);
       const suffix = block.kind === "reasoning" ? "reasoning" : "text";
       const id = `${stream.messageId}:content:${contentIndex}:${suffix}`;
       if (block.kind === "reasoning") {
-        this.publish({ type: "reasoning", id, text: block.text });
+        this.publish({ type: "reasoning", id, text: publicText });
       } else {
         this.publish({
           type: "assistant_message",
           id,
           messageId: stream.messageId,
-          text: block.text,
+          text: publicText,
         });
       }
       stream.published = true;
@@ -417,15 +418,14 @@ export class OmpTimelineProjector {
     snapshot: StreamBlockSnapshot,
   ): void {
     if (!this.isValidContentIndex(contentIndex)) return;
-    const sanitized = { ...snapshot, text: this.dataFilter.text(snapshot.text) };
-    let totalLength = utf8Bytes(sanitized.text);
+    let totalLength = utf8Bytes(snapshot.text);
     for (const [index, block] of stream.blocks) {
       if (index !== contentIndex) totalLength += utf8Bytes(block.text);
       if (totalLength > MAX_STREAM_TEXT_LENGTH) return;
     }
     const previous = stream.blocks.get(contentIndex);
-    if (previous?.kind === sanitized.kind && previous.text === sanitized.text) return;
-    stream.blocks.set(contentIndex, sanitized);
+    if (previous?.kind === snapshot.kind && previous.text === snapshot.text) return;
+    stream.blocks.set(contentIndex, snapshot);
     stream.dirtyBlocks.add(contentIndex);
   }
 

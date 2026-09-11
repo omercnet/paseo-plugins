@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import type {
   ProviderCatalog,
@@ -6,6 +7,7 @@ import type {
   ProviderThinkingOption,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpModel, OmpRuntime } from "./omp-rpc";
+import { OmpPublicDataFilter } from "./security";
 
 export const OMP_MODES: readonly ProviderMode[] = [
   {
@@ -28,25 +30,41 @@ const THINKING_OPTIONS: readonly ProviderThinkingOption[] = [
   { id: "max", label: "Max", description: "Maximum reasoning" },
 ];
 
-export function ompModelId(model: OmpModel): string {
+export function nativeOmpModelId(model: OmpModel): string {
   return `${model.provider}/${model.id}`;
 }
+
+export function ompModelId(model: OmpModel, filter = new OmpPublicDataFilter()): string {
+  const nativeId = nativeOmpModelId(model);
+  const safeProvider = filter.text(model.provider, 256);
+  const safeModelId = filter.text(model.id, 256);
+  if (safeProvider === model.provider && safeModelId === model.id) return nativeId;
+  const digest = createHash("sha256").update(nativeId).digest("base64url").slice(0, 16);
+  return `omp:model:${digest}`;
+}
+
 export function parseOmpModelId(id: string): { provider: string; modelId: string } {
   const separator = id.indexOf("/");
   if (separator <= 0 || separator === id.length - 1) {
-    throw new Error(`OMP model '${id}' must use provider/model format`);
+    throw new Error("OMP model selection is invalid");
   }
   return { provider: id.slice(0, separator), modelId: id.slice(separator + 1) };
 }
 
-export function mapOmpModels(models: readonly OmpModel[]): ProviderModel[] {
+export function mapOmpModels(
+  models: readonly OmpModel[],
+  filter = new OmpPublicDataFilter(),
+): ProviderModel[] {
   return models.map((model) => {
     const thinkingOptions = model.reasoning ? thinkingForModel(model) : undefined;
-    const id = ompModelId(model);
+    const id = ompModelId(model, filter);
+    const provider = filter.text(model.provider, 256);
+    const modelId = filter.text(model.id, 256);
+    const name = model.name ? filter.text(model.name, 256) : modelId;
     return {
       id,
-      label: model.name ? `${model.provider}/${model.name}` : id,
-      description: id,
+      label: `${provider}/${name}`,
+      description: `${provider}/${modelId}`,
       ...(typeof model.contextWindow === "number"
         ? { contextWindowMaxTokens: model.contextWindow }
         : {}),
@@ -57,7 +75,7 @@ export function mapOmpModels(models: readonly OmpModel[]): ProviderModel[] {
               thinkingOptions.find((option) => option.isDefault)?.id ?? thinkingOptions[0]?.id,
           }
         : {}),
-      metadata: { provider: model.provider, modelId: model.id },
+      metadata: { provider, modelId },
     };
   });
 }
@@ -91,9 +109,10 @@ export async function discoverOmpCatalog(
       session.getAvailableModels(),
       session.getState(),
     ]);
-    const models = mapOmpModels(nativeModels);
+    const filter = new OmpPublicDataFilter(session.redactionValues ?? []);
+    const models = mapOmpModels(nativeModels, filter);
     if (models.length === 0) throw new Error("OMP reported no available models");
-    const defaultModel = state.model ? ompModelId(state.model) : models[0]?.id;
+    const defaultModel = state.model ? ompModelId(state.model, filter) : models[0]?.id;
     const currentModel = state.model
       ? nativeModels.find(
           (model) => model.provider === state.model?.provider && model.id === state.model.id,

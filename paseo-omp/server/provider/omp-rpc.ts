@@ -1,10 +1,10 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { boundedJsonBytes, utf8Bytes } from "./security";
+import { boundedJsonBytes, OmpPublicDataFilter, utf8Bytes } from "./security";
 
 const READY_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -140,10 +140,7 @@ const OmpResponseFrameSchema = z.object({
   type: z.literal("response"),
   id: IDENTIFIER,
   success: z.boolean(),
-  data: z
-    .unknown()
-    .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES))
-    .optional(),
+  data: z.unknown().optional(),
   error: boundedString(4_096).optional(),
 });
 const OmpChunkFrameSchema = z.object({
@@ -301,6 +298,7 @@ type PendingRequest = {
   reject(error: Error): void;
   timer: NodeJS.Timeout;
   bytes: number;
+  command: string;
 };
 type StartedRequest = { id: string; promise: Promise<unknown> };
 
@@ -488,17 +486,48 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
       }
     }
   };
-  for (const path of paths) {
-    let raw: string;
+  const collectUrlSecrets = (value: string) => {
+    collectStrings(value);
     try {
-      const stats = statSync(path);
-      if (!stats.isFile() || stats.size > MAX_MCP_CONFIG_BYTES) {
-        throw new Error("OMP MCP configuration cannot be secured");
+      const url = new URL(value);
+      if (url.username) collectStrings(decodeURIComponent(url.username));
+      if (url.password) collectStrings(decodeURIComponent(url.password));
+      for (const [name, parameter] of url.searchParams) {
+        if (/(?:key|token|secret|password|auth|credential)/iu.test(name)) {
+          collectStrings(parameter);
+        }
       }
-      raw = readFileSync(path, "utf8");
+    } catch {
+      // Non-URL values are still retained as complete sensitive literals above.
+    }
+  };
+  for (const path of paths) {
+    let descriptor: number;
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
       throw new Error("OMP MCP configuration cannot be secured");
+    }
+    let raw: string;
+    try {
+      const stats = fstatSync(descriptor);
+      if (!stats.isFile() || stats.size > MAX_MCP_CONFIG_BYTES) {
+        throw new Error("OMP MCP configuration cannot be secured");
+      }
+      const buffer = Buffer.allocUnsafe(MAX_MCP_CONFIG_BYTES + 1);
+      let bytesRead = 0;
+      while (bytesRead <= MAX_MCP_CONFIG_BYTES) {
+        const count = readSync(descriptor, buffer, bytesRead, buffer.length - bytesRead, null);
+        if (count === 0) break;
+        bytesRead += count;
+      }
+      if (bytesRead > MAX_MCP_CONFIG_BYTES) {
+        throw new Error("OMP MCP configuration cannot be secured");
+      }
+      raw = buffer.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      closeSync(descriptor);
     }
     let parsed: unknown;
     try {
@@ -519,8 +548,13 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
       for (const key in value) {
         if (!Object.hasOwn(value, key)) continue;
         const child = (value as Record<string, unknown>)[key];
-        if (sensitiveContainers[key.toLowerCase()]) collectStrings(child);
-        else if (child && typeof child === "object") stack.push(child);
+        if (key.toLowerCase() === "url" && typeof child === "string") {
+          collectUrlSecrets(child);
+        } else if (sensitiveContainers[key.toLowerCase()]) {
+          collectStrings(child);
+        } else if (child && typeof child === "object") {
+          stack.push(child);
+        }
       }
     }
   }
@@ -567,6 +601,7 @@ export function buildOmpSpawnRequest(
     ...environment.sensitiveValues,
     ...collectAmbientMcpSecrets(cwd, environment.env),
   ];
+  new OmpPublicDataFilter(sensitiveValues);
   return {
     command,
     args,
@@ -835,6 +870,7 @@ class OmpRpcProcess {
       reject: result.reject,
       timer,
       bytes: payload.byteLength,
+      command: typeof command.type === "string" ? command.type : "unknown",
     });
     this.pendingWriteBytes += payload.byteLength;
     try {
@@ -1024,6 +1060,13 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
+    if (
+      boundedJsonBytes(frame, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH) ===
+      Number.POSITIVE_INFINITY
+    ) {
+      this.recordProtocolViolation();
+      return;
+    }
     if (type === "rpc_chunk") {
       const chunk = OmpChunkFrameSchema.safeParse(frame);
       if (!chunk.success) this.rejectChunk();
@@ -1060,6 +1103,24 @@ class OmpRpcProcess {
       }
       const pending = this.pending.get(response.data.id);
       if (!pending) return;
+      const responseItemLimit = pending.command === "get_branch_messages" ? 1_024 : MAX_ARRAY_ITEMS;
+      const responseByteLimit =
+        pending.command === "get_branch_messages" ? MAX_SEMANTIC_FRAME_BYTES : 2 * 1024 * 1024;
+      if (
+        response.data.data !== undefined &&
+        boundedJsonBytes(
+          response.data.data,
+          responseByteLimit,
+          responseItemLimit,
+          MAX_IMAGE_DATA_LENGTH,
+        ) === Number.POSITIVE_INFINITY
+      ) {
+        clearTimeout(pending.timer);
+        this.pending.delete(response.data.id);
+        this.pendingWriteBytes -= pending.bytes;
+        pending.reject(new Error("OMP RPC response exceeded command limits"));
+        return;
+      }
       clearTimeout(pending.timer);
       this.pending.delete(response.data.id);
       this.pendingWriteBytes -= pending.bytes;

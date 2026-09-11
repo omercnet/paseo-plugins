@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import { PassThrough } from "node:stream";
 import type {
   ProviderConnection,
   ProviderEvent,
   ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
-import type {
-  OmpModel,
-  OmpRpcEvent,
-  OmpRuntime,
-  OmpRuntimeSession,
-  OmpStartOptions,
+import {
+  type OmpModel,
+  type OmpRpcEvent,
+  OmpRpcRuntime,
+  type OmpRuntime,
+  type OmpRuntimeSession,
+  type OmpStartOptions,
 } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
 import type { OmpTimelineScheduler } from "../server/provider/timeline-projector";
@@ -111,6 +115,51 @@ class EventLog extends Array<ProviderEvent> {
     return promise;
   }
 }
+class ProviderRpcChild extends EventEmitter {
+  readonly stdin = new PassThrough();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly pid = 515_151;
+  private didClose = false;
+
+  constructor(handler: (command: Record<string, unknown>) => void) {
+    super();
+    let buffered = "";
+    this.stdin.on("data", (chunk: Buffer | string) => {
+      buffered += String(chunk);
+      while (true) {
+        const newline = buffered.indexOf("\n");
+        if (newline < 0) return;
+        const line = buffered.slice(0, newline);
+        buffered = buffered.slice(newline + 1);
+        handler(JSON.parse(line) as Record<string, unknown>);
+      }
+    });
+    this.stdin.once("finish", () => this.close());
+  }
+
+  write(frame: Record<string, unknown>): void {
+    this.stdout.write(`${JSON.stringify(frame)}\n`);
+  }
+
+  close(): void {
+    if (this.didClose) return;
+    this.didClose = true;
+    this.stdout.end();
+    this.stderr.end();
+    this.emit("close", 0, null);
+  }
+
+  kill(): boolean {
+    this.close();
+    return true;
+  }
+
+  asChildProcess(): ChildProcessWithoutNullStreams {
+    return this as unknown as ChildProcessWithoutNullStreams;
+  }
+}
+
 
 class ManualScheduler implements OmpTimelineScheduler {
   private nextId = 1;
@@ -173,6 +222,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly thinkingChanges: string[] = [];
   branchMessages: Array<{ entryId: string; text: string }> = [];
   currentModel = MODEL;
+  availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   nativeSessionId = "native-session";
   stateGate: Promise<void> | null = null;
   stateError: Error | null = null;
@@ -207,7 +257,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   }
 
   getAvailableModels() {
-    return Promise.resolve([MODEL, ALTERNATE_MODEL]);
+    return Promise.resolve(this.availableModels);
   }
 
   async getAvailableCommands() {
@@ -231,7 +281,7 @@ class FakeOmpSession implements OmpRuntimeSession {
 
   setModel(provider: string, modelId: string) {
     this.modelChanges.push({ provider, modelId });
-    const model = [MODEL, ALTERNATE_MODEL].find(
+    const model = this.availableModels.find(
       (candidate) => candidate.provider === provider && candidate.id === modelId,
     );
     if (!model) return Promise.reject(new Error("unknown model"));
@@ -286,6 +336,7 @@ class FakeOmpRuntime implements OmpRuntime {
   startObserved: (() => void) | null = null;
   commandDiscoveryError: Error | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
+  availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     this.starts.push(options);
     this.startObserved?.();
@@ -296,6 +347,7 @@ class FakeOmpRuntime implements OmpRuntime {
       ...command,
       ...(command.aliases ? { aliases: [...command.aliases] } : {}),
     }));
+    session.availableModels = this.availableModels.map((model) => ({ ...model }));
     session.nativeSessionId = this.sessionIds.shift() ?? session.nativeSessionId;
     if (this.nextModel) {
       session.currentModel = this.nextModel;
@@ -420,6 +472,51 @@ describe("OMP direct provider", () => {
     });
     expect(runtime.starts[0]).toEqual(expect.objectContaining({ cwd: "/repo", noSession: true }));
     expect(sessionAt(runtime).closes).toBe(1);
+    await connection.close();
+  });
+
+  test("sanitizes malicious model fields while preserving native runtime identity", async () => {
+    const maliciousModel: OmpModel = {
+      provider: "API_KEY=provider-secret",
+      id: "/home/private/model",
+      name: "Authorization: Basic model-secret",
+      reasoning: false,
+    };
+    const runtime = new FakeOmpRuntime();
+    runtime.availableModels = [maliciousModel];
+    runtime.nextModel = maliciousModel;
+    const { connection, events } = await createHarness(runtime);
+    await connection.send({ type: "catalog", requestId: "malicious-catalog", cwd: "/repo" });
+    const catalog = await events.waitFor(
+      (event) => event.type === "catalog" && event.requestId === "malicious-catalog",
+    );
+    runtime.nextModel = maliciousModel;
+    await openSession(connection, events, "malicious-open");
+    const config = events.find(
+      (event) => event.type === "session.config" && event.sessionId === "session-1",
+    );
+    const visible = JSON.stringify([catalog, config]);
+    if (catalog.type !== "catalog") throw new Error("Expected catalog event");
+    const publicModelId = catalog.catalog.models[0]?.id;
+    if (!publicModelId) throw new Error("Expected projected model");
+    await connection.send({
+      type: "session.configure",
+      requestId: "malicious-model-select",
+      sessionId: "session-1",
+      changes: { model: publicModelId },
+    });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "malicious-model-select",
+    );
+    expect(visible).not.toContain("provider-secret");
+    expect(visible).not.toContain("/home/private/model");
+    expect(visible).not.toContain("model-secret");
+    expect(visible).toContain("omp:model:");
+    expect(runtime.starts[1]?.model).toBe("anthropic/claude-sonnet-4-5");
+    expect(sessionAt(runtime, 1).modelChanges).toContainEqual({
+      provider: maliciousModel.provider,
+      modelId: maliciousModel.id,
+    });
     await connection.close();
   });
 
@@ -3102,6 +3199,8 @@ describe("OMP direct provider", () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events, "redacted-open", "session-1", {
       MY_RUNTIME_SECRET: "credential-value-1234",
+      ASSISTANT_SECRET: "split-assistant-secret",
+      REASONING_SECRET: "split-reasoning-secret",
     });
     const turnId = turnIdFrom(await startPrompt(connection, events, "redacted-prompt", "work"));
     const session = sessionAt(runtime);
@@ -3130,8 +3229,30 @@ describe("OMP direct provider", () => {
       level: "warning",
       message: "Authorization: Bearer token-not-from-env",
     });
+    session.emit({
+      type: "notice",
+      level: "warning",
+      message: "Authorization: Basic basic-token-not-from-env",
+    });
     session.emit({ type: "command_output", text: "credential-value-" });
     session.emit({ type: "command_output", text: "1234" });
+    for (const [type, contentIndex, first, second] of [
+      ["text_delta", 1, "split-assistant-", "secret"],
+      ["thinking_delta", 2, "split-reasoning-", "secret"],
+    ] as const) {
+      session.emit({
+        type: "message_update",
+        assistantMessageEvent: { type, contentIndex, delta: first },
+        message: { role: "assistant", responseId: "split-stream", content: [] },
+      });
+      await scheduler.flush();
+      session.emit({
+        type: "message_update",
+        assistantMessageEvent: { type, contentIndex, delta: second },
+        message: { role: "assistant", responseId: "split-stream", content: [] },
+      });
+      await scheduler.flush();
+    }
     session.emit({
       type: "message_update",
       assistantMessageEvent: {
@@ -3155,6 +3276,25 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("provider-internal-tool-id");
     expect(visible).not.toContain("provider-internal-response-id");
     expect(visible).not.toContain("token-not-from-env");
+    expect(visible).not.toContain("basic-token-not-from-env");
+    expect(visible).not.toContain("split-assistant-secret");
+    expect(visible).not.toContain("split-reasoning-secret");
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "assistant_message" &&
+          event.item.text === "<redacted>",
+      ),
+    ).toBe(true);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "reasoning" &&
+          event.item.text === "<redacted>",
+      ),
+    ).toBe(true);
     const toolIds = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "tool_call" ? [event.item.callId] : [],
     );
@@ -3696,8 +3836,7 @@ describe("OMP direct provider", () => {
       isTerminal: true,
     });
     const terminal = await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      (event) => event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
     const assistantIds = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "assistant_message"
@@ -3709,6 +3848,120 @@ describe("OMP direct provider", () => {
     expect(terminal).toEqual(
       expect.objectContaining({ state: "failed", error: { message: "OMP assistant turn failed" } }),
     );
+    await connection.close();
+  });
+
+  test("preserves structural protocol data through OmpRpcRuntime", async () => {
+    const nativeSessionId = "native-session-secret";
+    const children: ProviderRpcChild[] = [];
+    const launchArgs: string[][] = [];
+    const runtime = new OmpRpcRuntime({
+      spawnProcess(request) {
+        launchArgs.push([...request.args]);
+        let child: ProviderRpcChild;
+        child = new ProviderRpcChild((command) => {
+          const type = command.type;
+          if (type === "negotiate_protocol") {
+            child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+          } else if (type === "get_state") {
+            child.write({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: {
+                model: MODEL,
+                thinkingLevel: "medium",
+                isStreaming: false,
+                isCompacting: false,
+                sessionId: nativeSessionId,
+              },
+            });
+          } else if (type === "get_available_models") {
+            child.write({ type: "response", id: command.id, success: true, data: { models: [MODEL] } });
+          } else if (type === "get_available_commands") {
+            child.write({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: {
+                commands: [
+                  ...Array.from({ length: 128 }, (_, index) => ({ name: `command-${index}` })),
+                  { name: "late-command" },
+                ],
+              },
+            });
+          } else if (type === "prompt" || type === "steer") {
+            child.write({ type: "response", id: command.id, success: true, data: { agentInvoked: true } });
+          } else if (type === "get_branch_messages") {
+            child.write({ type: "response", id: command.id, success: true, data: { messages: [] } });
+          }
+        });
+        children.push(child);
+        queueMicrotask(() =>
+          child.write({
+            type: "ready",
+            protocolVersion: 1,
+            supportedProtocolVersions: [1, 2],
+            maxFrameBytes: 1_048_576,
+            maxReassembledFrameBytes: 67_108_864,
+          }),
+        );
+        return child.asChildProcess();
+      },
+      terminateProcessTree: () => Promise.resolve(true),
+    });
+    const connection = await createOmpProvider({ runtime }).connect({
+      versions: [1],
+      capabilities: ["prompt.message", "prompt.steer", "session.configure"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await openSession(connection, events, "transport-open", "session-1", {
+      NATIVE_SECRET: nativeSessionId,
+    });
+    const turnId = turnIdFrom(await startPrompt(connection, events, "transport-prompt", "work"));
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "missing-command",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/command-128" }] },
+      },
+    });
+    const rejected = await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "missing-command",
+    );
+    expect(rejected).toEqual(expect.objectContaining({ result: expect.objectContaining({ type: "failed" }) }));
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "transport-late-command",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "/late-command" }] },
+      },
+    });
+    await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "transport-late-command",
+    );
+    children[0]?.write({
+      type: "agent_end",
+      messages: [
+        ...Array.from({ length: 128 }, () => ({ role: "assistant", content: "ok" })),
+        { role: "assistant", content: "failed", stopReason: "error", errorMessage: "private" },
+      ],
+      isTerminal: true,
+    });
+    await events.waitFor(
+      (event) => event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    children[0]?.close();
+    const recovered = await startPrompt(connection, events, "transport-recovery", "continue");
+    expect(recovered).toEqual(expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }));
+    expect(launchArgs[1]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
+    expect(JSON.stringify(events)).not.toContain(nativeSessionId);
+    expect(children).toHaveLength(2);
     await connection.close();
   });
 
