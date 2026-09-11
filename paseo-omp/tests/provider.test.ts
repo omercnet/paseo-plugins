@@ -188,7 +188,10 @@ class ProviderRpcChild extends EventEmitter {
 
 class ManualScheduler implements OmpTimelineScheduler {
   private nextId = 1;
-  private readonly callbacks = new Map<number, () => void | Promise<void>>();
+  private readonly callbacks = new Map<
+    number,
+    { callback: () => void | Promise<void>; delayMs: number }
+  >();
   readonly delays: number[] = [];
   clearError: Error | null = null;
   get pendingCount(): number {
@@ -199,7 +202,7 @@ class ManualScheduler implements OmpTimelineScheduler {
     const id = this.nextId;
     this.delays.push(delayMs);
     this.nextId += 1;
-    this.callbacks.set(id, callback);
+    this.callbacks.set(id, { callback, delayMs });
     return id;
   }
 
@@ -212,20 +215,22 @@ class ManualScheduler implements OmpTimelineScheduler {
     }
   }
 
-  runPending(): Promise<void>[] {
-    const callbacks = [...this.callbacks.values()];
-    this.callbacks.clear();
-    return callbacks.map((callback) => {
+  runPending(delayMs?: number): Promise<void>[] {
+    const callbacks = [...this.callbacks.entries()].filter(
+      ([, pending]) => delayMs === undefined || pending.delayMs === delayMs,
+    );
+    for (const [id] of callbacks) this.callbacks.delete(id);
+    return callbacks.map(([, pending]) => {
       try {
-        return Promise.resolve(callback());
+        return Promise.resolve(pending.callback());
       } catch (error) {
         return Promise.reject(error);
       }
     });
   }
 
-  async flush(): Promise<void> {
-    await Promise.all(this.runPending());
+  async flush(delayMs?: number): Promise<void> {
+    await Promise.all(this.runPending(delayMs));
     await Promise.resolve();
     await Promise.resolve();
   }
@@ -238,6 +243,11 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly steers: string[] = [];
   promptGate: Promise<void> | null = null;
   promptObserved: (() => void) | null = null;
+  compactGate: Promise<void> | null = null;
+  compactObserved: (() => void) | null = null;
+  compactError: Error | null = null;
+  compactTokensBefore = 1_000;
+  readonly compactions: Array<string | undefined> = [];
   steerGate: Promise<void> | null = null;
   steerObserved: (() => void) | null = null;
   branchMessagesGate: Promise<void> | null = null;
@@ -264,6 +274,11 @@ class FakeOmpSession implements OmpRuntimeSession {
   modelChangeError: Error | null = null;
   branchMessages: Array<{ entryId: string; text: string }> = [];
   currentModel = MODEL;
+  stateObserved: (() => void) | null = null;
+  activeStateLookups = 0;
+  maxActiveStateLookups = 0;
+  activeStatsLookups = 0;
+  maxActiveStatsLookups = 0;
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   nativeSessionId = "native-session";
   stateGate: Promise<void> | null = null;
@@ -303,10 +318,10 @@ class FakeOmpSession implements OmpRuntimeSession {
 
   async getState() {
     this.stateLookups += 1;
+    this.activeStateLookups += 1;
+    this.maxActiveStateLookups = Math.max(this.maxActiveStateLookups, this.activeStateLookups);
     this.stateObserved?.();
-    if (this.stateGate) await this.stateGate;
-    if (this.stateError) throw this.stateError;
-    return {
+    const state = {
       model: this.stateModelOverride !== undefined ? this.stateModelOverride : this.currentModel,
       thinkingLevel: this.thinkingLevel,
       isStreaming: this.isStreaming,
@@ -322,25 +337,35 @@ class FakeOmpSession implements OmpRuntimeSession {
           }
         : {}),
     };
+    try {
+      if (this.stateGate) await this.stateGate;
+      if (this.stateError) throw this.stateError;
+      return state;
+    } finally {
+      this.activeStateLookups -= 1;
+    }
   }
 
   async getSessionStats() {
     this.statsLookups += 1;
-    if (!this.usageAvailable) throw new Error("usage unavailable");
-    if (this.statsGate) await this.statsGate;
-    if (this.statsError) throw this.statsError;
-    return {
-      tokens: {
-        input: this.inputTokens,
-        output: this.outputTokens,
-        cacheRead: this.cachedInputTokens,
-      },
-      cost: this.totalCostUsd,
-      contextUsage: { tokens: this.contextTokens, contextWindow: this.contextWindow, percent: 0 },
-    };
-    if (this.stateGate) await this.stateGate;
-    if (this.stateError) throw this.stateError;
-    return state;
+    this.activeStatsLookups += 1;
+    this.maxActiveStatsLookups = Math.max(this.maxActiveStatsLookups, this.activeStatsLookups);
+    try {
+      if (!this.usageAvailable) throw new Error("usage unavailable");
+      if (this.statsGate) await this.statsGate;
+      if (this.statsError) throw this.statsError;
+      return {
+        tokens: {
+          input: this.inputTokens,
+          output: this.outputTokens,
+          cacheRead: this.cachedInputTokens,
+        },
+        cost: this.totalCostUsd,
+        contextUsage: { tokens: this.contextTokens, contextWindow: this.contextWindow, percent: 0 },
+      };
+    } finally {
+      this.activeStatsLookups -= 1;
+    }
   }
 
   getAvailableModels() {
@@ -364,6 +389,14 @@ class FakeOmpSession implements OmpRuntimeSession {
       requestId: `rpc-prompt-${this.promptCount}`,
       agentInvoked: this.promptAgentInvoked,
     };
+  }
+
+  async compact(customInstructions?: string) {
+    this.compactions.push(customInstructions);
+    this.compactObserved?.();
+    if (this.compactGate) await this.compactGate;
+    if (this.compactError) throw this.compactError;
+    return { tokensBefore: this.compactTokensBefore };
   }
 
   async setModel(provider: string, modelId: string) {
@@ -3915,7 +3948,7 @@ describe("OMP direct provider", () => {
       await registry.shutdown();
     }
   });
-  test("publishes live and terminal usage across compaction and model fallback", async () => {
+  test("publishes periodic, compacted, fallback, and terminal usage", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -3942,6 +3975,17 @@ describe("OMP direct provider", () => {
       },
     });
 
+    session.contextTokens = 700;
+    await Promise.resolve();
+    await Promise.resolve();
+    await scheduler.flush(1_000);
+    await events.waitFor(
+      (event) =>
+        event.type === "session.usage" &&
+        event.turnId === turnId &&
+        event.usage.contextWindowUsedTokens === 700,
+    );
+
     session.contextTokens = 320;
     session.contextWindow = 128_000;
     session.currentModel = ALTERNATE_MODEL;
@@ -3949,6 +3993,10 @@ describe("OMP direct provider", () => {
     session.cachedInputTokens = 250;
     session.outputTokens = 120;
     session.totalCostUsd = 0.3;
+    await Promise.resolve();
+    await Promise.resolve();
+    const lookupsBeforeRefresh = session.stateLookups;
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
     session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
     session.emit({
       type: "auto_compaction_end",
@@ -3957,39 +4005,38 @@ describe("OMP direct provider", () => {
       aborted: false,
       willRetry: false,
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await scheduler.flush();
+    session.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      result: { tokensBefore: 1_000 },
+      aborted: false,
+      willRetry: false,
+    });
+    await scheduler.flush(1_000);
     await events.waitFor(
       (event) =>
         event.type === "session.usage" &&
         event.turnId === turnId &&
         event.usage.contextWindowUsedTokens === 320,
     );
+    expect(session.stateLookups).toBe(lookupsBeforeRefresh + 1);
 
     const compaction = events.filter(
       (event) => event.type === "timeline.item" && event.item.type === "compaction",
     );
     expect(compaction).toHaveLength(2);
-    expect(compaction[0]).toEqual(
-      expect.objectContaining({
-        item: expect.objectContaining({ status: "loading", trigger: "auto" }),
-      }),
-    );
-    expect(compaction[1]).toEqual(
-      expect.objectContaining({
-        item: expect.objectContaining({
-          id:
-            compaction[0]?.type === "timeline.item" && compaction[0].item.type === "compaction"
-              ? compaction[0].item.id
-              : "missing",
-          status: "completed",
-          trigger: "auto",
-          preTokens: 1_000,
-        }),
-      }),
-    );
+    if (
+      compaction[0]?.type !== "timeline.item" ||
+      compaction[0].item.type !== "compaction" ||
+      compaction[1]?.type !== "timeline.item" ||
+      compaction[1].item.type !== "compaction"
+    ) {
+      throw new Error("Expected compaction operation updates");
+    }
+    expect(compaction[0].item.status).toBe("loading");
+    expect(compaction[1].item.status).toBe("completed");
+    expect(compaction[1].item.id).toBe(compaction[0].item.id);
+    expect(compaction[1].item.preTokens).toBe(1_000);
 
     session.contextTokens = 280;
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
@@ -4009,60 +4056,155 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("tracks one manual compaction operation without executing it twice", async () => {
+  test("keeps a long manual compaction loading and reuses its operation id", async () => {
     const runtime = new FakeOmpRuntime();
-    runtime.availableCommands = [{ name: "compact" }];
+    const compact = Promise.withResolvers<void>();
     const { connection, events, scheduler } = await createHarness(runtime);
     await openSession(connection, events);
     const session = sessionAt(runtime);
     session.usageAvailable = true;
-    session.promptAgentInvoked = false;
+    session.compactGate = compact.promise;
     session.isCompacting = true;
     const turnId = turnIdFrom(
       await startPrompt(connection, events, "manual-compact", "/compact focus on decisions"),
     );
-    await events.waitFor(
-      (event) =>
-        event.type === "session.usage" &&
-        event.turnId === turnId &&
-        event.usage.contextWindowUsedTokens === 1_000,
-    );
+    await events.waitFor((event) => event.type === "session.usage" && event.turnId === turnId);
+    await scheduler.flush(1_000);
 
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await scheduler.flush();
-    session.emit({ type: "command_output", text: "Compaction complete." });
+    const loading = events.filter(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "compaction" &&
+        event.item.status === "loading",
+    );
+    expect(loading).toHaveLength(1);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
+
+    session.isCompacting = false;
+    compact.resolve();
     await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
     );
-
     const operations = events.filter(
       (event) => event.type === "timeline.item" && event.item.type === "compaction",
     );
     expect(operations).toHaveLength(2);
-    expect(
-      operations.map((event) =>
-        event.type === "timeline.item" && event.item.type === "compaction" ? event.item.status : "",
-      ),
-    ).toEqual(["loading", "completed"]);
-    expect(session.prompts).toEqual(["/compact focus on decisions"]);
+    if (
+      operations[0]?.type !== "timeline.item" ||
+      operations[0].item.type !== "compaction" ||
+      operations[1]?.type !== "timeline.item" ||
+      operations[1].item.type !== "compaction"
+    ) {
+      throw new Error("Expected compaction operation updates");
+    }
+    expect([operations[0].item.status, operations[1].item.status]).toEqual([
+      "loading",
+      "completed",
+    ]);
+    expect(operations[1].item.id).toBe(operations[0].item.id);
+    expect(session.compactions).toEqual(["focus on decisions"]);
+    expect(session.prompts).toEqual([]);
     await connection.close();
   });
 
-  test("keeps terminalization running while state is unknown and stops polling afterward", async () => {
-    const { connection, events, runtime, scheduler } = await createHarness();
+  test("terminalizes a fast manual compaction even when polling misses the running state", async () => {
+    const runtime = new FakeOmpRuntime();
+    const compact = Promise.withResolvers<void>();
+    const { connection, events, scheduler } = await createHarness(runtime);
     await openSession(connection, events);
     const session = sessionAt(runtime);
     session.usageAvailable = true;
-    const turnId = turnIdFrom(await startPrompt(connection, events, "unknown-state", "work"));
-    await events.waitFor((event) => event.type === "session.usage" && event.turnId === turnId);
+    session.compactGate = compact.promise;
+    session.isCompacting = false;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "fast-compact", "/compact"));
 
-    session.stateError = new Error("OMP RPC request timed out");
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await Promise.resolve();
-    await scheduler.flush();
+    await Promise.resolve();
+    await scheduler.flush(100);
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    compact.resolve();
+    await Promise.resolve();
+    const operations = events.filter(
+      (event) => event.type === "timeline.item" && event.item.type === "compaction",
+    );
+    expect(operations).toHaveLength(2);
+    if (
+      operations[0]?.type !== "timeline.item" ||
+      operations[0].item.type !== "compaction" ||
+      operations[1]?.type !== "timeline.item" ||
+      operations[1].item.type !== "compaction"
+    ) {
+      throw new Error("Expected compaction operation updates");
+    }
+    expect(operations[1].item.id).toBe(operations[0].item.id);
+    expect(session.compactions).toEqual([undefined]);
+    await connection.close();
+  });
+
+  test("keeps a lost compaction waiter running until OMP confirms failure", async () => {
+    const runtime = new FakeOmpRuntime();
+    const compact = Promise.withResolvers<void>();
+    const { connection, events, scheduler } = await createHarness(runtime);
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.compactGate = compact.promise;
+    session.compactError = new Error("credential-secret native failure");
+    session.stateError = new Error("OMP RPC request timed out");
+    const turnId = turnIdFrom(await startPrompt(connection, events, "lost-compact", "/compact"));
+
+    await scheduler.flush(1_000);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
+    expect(
+      events.filter((event) => event.type === "timeline.item" && event.item.type === "compaction"),
+    ).toHaveLength(1);
+
+    compact.resolve();
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    expect(terminal).toEqual(
+      expect.objectContaining({ error: { message: "OMP compaction failed" } }),
+    );
+    expect(JSON.stringify(events)).not.toContain("credential-secret");
+    const operations = events.filter(
+      (event) => event.type === "timeline.item" && event.item.type === "compaction",
+    );
+    expect(operations).toHaveLength(2);
+    if (
+      operations[0]?.type !== "timeline.item" ||
+      operations[0].item.type !== "compaction" ||
+      operations[1]?.type !== "timeline.item" ||
+      operations[1].item.type !== "compaction"
+    ) {
+      throw new Error("Expected compaction operation updates");
+    }
+    expect(operations[1].item.id).toBe(operations[0].item.id);
+    await connection.close();
+  });
+
+  test("bounds agent-end settlement while state stays unknown or active", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.stateError = new Error("OMP RPC request timed out");
+    const turnId = turnIdFrom(await startPrompt(connection, events, "unknown-state", "work"));
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await scheduler.flush(250);
     expect(
       events.some(
         (event) =>
@@ -4072,16 +4214,14 @@ describe("OMP direct provider", () => {
 
     session.stateError = null;
     session.isStreaming = true;
-    await scheduler.flush();
+    await scheduler.flush(1_000);
     expect(
       events.some(
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
     ).toBe(false);
-
-    session.isStreaming = false;
-    await scheduler.flush();
+    await scheduler.flush(5_000);
     await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
@@ -4095,6 +4235,254 @@ describe("OMP direct provider", () => {
           event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
       ),
     ).toBe(false);
+    await connection.close();
+  });
+
+  test("clears stale compaction state before a later operation", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const first = sessionAt(runtime);
+    const firstTurnId = turnIdFrom(await startPrompt(connection, events, "stale-compact", "work"));
+    first.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    first.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === firstTurnId &&
+        event.state === "completed",
+    );
+
+    const secondTurnId = turnIdFrom(await startPrompt(connection, events, "next-compact", "more"));
+    first.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    const loading = events.filter(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "compaction" &&
+        event.item.status === "loading",
+    );
+    expect(loading).toHaveLength(2);
+    if (
+      loading[0]?.type !== "timeline.item" ||
+      loading[0].item.type !== "compaction" ||
+      loading[1]?.type !== "timeline.item" ||
+      loading[1].item.type !== "compaction"
+    ) {
+      throw new Error("Expected compaction loading updates");
+    }
+    expect(loading[1].item.id).not.toBe(loading[0].item.id);
+    first.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      result: { tokensBefore: 900 },
+      aborted: false,
+      willRetry: false,
+    });
+    first.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === secondTurnId &&
+        event.state === "completed",
+    );
+    await connection.close();
+  });
+
+  test("publishes a terminal turn after the final usage snapshot deadline", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    const state = Promise.withResolvers<void>();
+    const stats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = state.promise;
+    session.statsGate = stats.promise;
+    session.stateObserved = observed.resolve;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "bounded-final", "work"));
+    await observed.promise;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+
+    await scheduler.flush(5_000);
+    await scheduler.flush(250);
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    state.resolve();
+    stats.resolve();
+    await connection.close();
+  });
+
+  test("lets close override a deferred final usage snapshot", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "close-race", "work"));
+    await events.waitFor((event) => event.type === "session.usage" && event.turnId === turnId);
+    await Promise.resolve();
+    const state = Promise.withResolvers<void>();
+    const stats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = state.promise;
+    session.statsGate = stats.promise;
+    session.stateObserved = observed.resolve;
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await observed.promise;
+
+    const closing = connection.close();
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "canceled",
+    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "canceled" }));
+    state.resolve();
+    stats.resolve();
+    await closing;
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toHaveLength(1);
+    const closeOperations = events.filter(
+      (event) => event.type === "timeline.item" && event.item.type === "compaction",
+    );
+    expect(closeOperations).toHaveLength(2);
+  });
+
+  test("lets runtime death override a deferred final usage snapshot", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "death-race", "work"));
+    await events.waitFor((event) => event.type === "session.usage" && event.turnId === turnId);
+    await Promise.resolve();
+    const state = Promise.withResolvers<void>();
+    const stats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = state.promise;
+    session.statsGate = stats.promise;
+    session.stateObserved = observed.resolve;
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await observed.promise;
+    session.emit({ type: "process_exit", error: "OMP exited" });
+
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    state.resolve();
+    stats.resolve();
+    await Promise.resolve();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toHaveLength(1);
+    const deathOperations = events.filter(
+      (event) => event.type === "timeline.item" && event.item.type === "compaction",
+    );
+    expect(deathOperations).toHaveLength(2);
+    await connection.close();
+  });
+
+  test("keeps refresh and terminal sampling single-flight", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    const state = Promise.withResolvers<void>();
+    const stats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = state.promise;
+    session.statsGate = stats.promise;
+    session.stateObserved = observed.resolve;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "single-flight", "work"));
+    await observed.promise;
+    const stateLookups = session.stateLookups;
+    const statsLookups = session.statsLookups;
+
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    for (let index = 0; index < 5; index += 1) {
+      session.emit({
+        type: "auto_compaction_end",
+        action: "context-full",
+        result: { tokensBefore: 1_000 },
+        aborted: false,
+        willRetry: false,
+      });
+    }
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await scheduler.flush(100);
+    await scheduler.flush(250);
+    expect(session.stateLookups).toBe(stateLookups);
+    expect(session.statsLookups).toBe(statsLookups);
+    expect(session.maxActiveStateLookups).toBe(1);
+    expect(session.maxActiveStatsLookups).toBe(1);
+
+    session.emit({ type: "process_exit", error: "OMP exited" });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    state.resolve();
+    stats.resolve();
+    await connection.close();
+  });
+
+  test("drops cached usage when recovering a runtime", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const first = sessionAt(runtime);
+    first.usageAvailable = true;
+    const firstTurnId = turnIdFrom(
+      await startPrompt(connection, events, "usage-before-death", "work"),
+    );
+    await events.waitFor((event) => event.type === "session.usage" && event.turnId === firstTurnId);
+    first.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === firstTurnId &&
+        event.state === "completed",
+    );
+    first.emit({ type: "process_exit", error: "OMP exited" });
+
+    const secondTurnId = turnIdFrom(
+      await startPrompt(connection, events, "usage-after-death", "more"),
+    );
+    const recovered = sessionAt(runtime, 1);
+    recovered.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    const loading = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "compaction" &&
+        event.item.status === "loading",
+    );
+    if (loading?.type !== "timeline.item" || loading.item.type !== "compaction") {
+      throw new Error("Expected recovered compaction operation");
+    }
+    expect(loading.item.preTokens).toBeUndefined();
+    recovered.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      result: { tokensBefore: 500 },
+      aborted: false,
+      willRetry: false,
+    });
+    recovered.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === secondTurnId &&
+        event.state === "completed",
+    );
     await connection.close();
   });
 

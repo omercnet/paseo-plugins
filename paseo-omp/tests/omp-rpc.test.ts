@@ -445,6 +445,15 @@ describe("OMP RPC transport", () => {
           },
         });
       }
+      if (command.type === "compact") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "compact",
+          success: true,
+          data: { tokensBefore: 1_500, summary: "not exposed" },
+        });
+      }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
     child.write({ type: "ready" });
@@ -458,7 +467,50 @@ describe("OMP RPC transport", () => {
       cost: 0.12,
       contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
     });
+    expect(await session.compact("focus")).toEqual({ tokensBefore: 1_500 });
+    expect(commands).toContainEqual(
+      expect.objectContaining({ type: "compact", customInstructions: "focus" }),
+    );
     expect(commands.some((command) => command.type === "negotiate_protocol")).toBe(false);
+    await session.close();
+  });
+
+  test("rejects fractional and unbounded usage numerics", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      const response = {
+        type: "response",
+        id: command.id,
+        command: command.type,
+        success: true,
+      };
+      if (command.type === "get_state") {
+        child.write({
+          ...response,
+          data: {
+            model: null,
+            isStreaming: false,
+            isCompacting: false,
+            sessionId: "invalid-usage",
+            contextUsage: { tokens: 1.5, contextWindow: 200_000, percent: 0.1 },
+          },
+        });
+      } else if (command.type === "get_session_stats") {
+        child.write({
+          ...response,
+          data: {
+            tokens: { input: Number.MAX_SAFE_INTEGER + 1, output: 0, cacheRead: 0 },
+            cost: 0,
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ type: "ready" });
+    const session = await opening;
+
+    await expect(session.getState()).rejects.toThrow();
+    await expect(session.getSessionStats()).rejects.toThrow();
     await session.close();
   });
 
