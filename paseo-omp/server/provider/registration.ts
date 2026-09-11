@@ -8,12 +8,15 @@ import type { OmpTimelineScheduler } from "./timeline-projector";
 
 const CAPABILITIES = [
   "prompt.message",
+  "prompt.command",
+  "prompt.image",
   "prompt.steer",
   "session.configure",
   "session.list",
   "session.persistence",
   "session.subsession",
   "session.revert.conversation",
+  "permission",
 ] as const;
 const ConnectRequestSchema = z.object({
   versions: z.array(z.number().int().positive().max(16)).min(1).max(8),

@@ -22,12 +22,15 @@ import type { OmpTimelineScheduler } from "./timeline-projector";
 
 const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.message": true,
+  "prompt.command": true,
+  "prompt.image": true,
   "prompt.steer": true,
   "session.configure": true,
   "session.list": true,
   "session.persistence": true,
   "session.subsession": true,
   "session.revert.conversation": true,
+  permission: true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   catalog: true,
@@ -605,6 +608,12 @@ export function createOmpConnection(
         await session.prompt(input);
         return;
       }
+      case "session.permission": {
+        const session = sessions.get(input.sessionId)?.session;
+        if (!session) throw new OmpPublicError("Unknown OMP session");
+        await session.permission(input);
+        return;
+      }
       case "session.configure": {
         const session = sessions.get(input.sessionId)?.session;
         if (!session) {
@@ -770,7 +779,12 @@ export function createOmpConnection(
       }
       const operation = Promise.resolve()
         .then(async () => {
-          if (closing || closed) return;
+          if (closing || closed) {
+            if (input.type === "session.permission") {
+              throw new Error("OMP provider connection is closed");
+            }
+            return;
+          }
           await dispatch(input);
         })
         .catch((error) => {
@@ -781,12 +795,18 @@ export function createOmpConnection(
               clientMessageId: input.prompt.clientMessageId,
               result: { type: "failed", error: errorDetails(error, "OMP prompt failed") },
             });
+          } else if (input.type === "session.permission") {
+            throw error;
           } else if ("requestId" in input) {
             requestFailure(input.requestId, error, "OMP provider request failed");
           }
         });
       activeOperations.add(operation);
-      void operation.finally(() => activeOperations.delete(operation));
+      void operation.then(
+        () => activeOperations.delete(operation),
+        () => activeOperations.delete(operation),
+      );
+      if (input.type === "session.permission") await operation;
     },
     onEvent(listener) {
       listeners.add(listener);
