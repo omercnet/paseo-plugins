@@ -171,12 +171,8 @@ function ReadyFactoryPanel({
           theme={theme}
           layout={layout}
           host={host}
-          navigation={navigation}
           cityName={resolved.cityName}
           rigName={resolved.rigName}
-          workspaceId={workspaceId}
-          cwd={workspace?.directory ?? resolved.workspacePath ?? resolved.rigPath ?? "."}
-          endpointUrl={settings.endpointUrl}
           eventLimit={settings.eventLimit}
           refreshIntervalMs={settings.refreshIntervalMs}
           mutationsEnabled={settings.mutationsEnabled}

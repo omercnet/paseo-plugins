@@ -11,7 +11,6 @@ import {
   handlePerformSessionAction,
   handleResolveWorkspaceRig,
 } from "./server/handlers";
-import { registerGasCitySessionProvider } from "./server/provider";
 import {
   discoverSupervisor,
   dispatchWork,
@@ -38,6 +37,5 @@ export default function contribute(server: PluginServerContext) {
   server.handle(dispatchWork, handleDispatchWork);
   server.handle(performSessionAction, handlePerformSessionAction);
   server.handle(listProviderSelections, handleListProviderSelections);
-  registerGasCitySessionProvider(server);
   return () => {};
 }
