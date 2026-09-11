@@ -461,6 +461,18 @@ describe("OMP RPC transport", () => {
     await expect(opening).rejects.toThrow("incomplete protocol metadata");
   });
 
+  test("rejects a frame limit too small for a maximum-ID terminal host result", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => commands.push(command));
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ ...READY_FRAME, maxFrameBytes: 400 });
+
+    await expect(opening).rejects.toThrow("cannot carry terminal host tool results");
+    expect(commands).toEqual([]);
+    expect(child.stdin.writableEnded).toBe(true);
+  });
+
   test("rejects an invalid v2 negotiation result", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {

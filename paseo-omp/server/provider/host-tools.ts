@@ -10,6 +10,7 @@ import {
   connectMcpServer,
 } from "./mcp-transport";
 import {
+  OMP_HOST_TOOL_FRAME_LIMIT_ERROR,
   type OmpHostToolCall,
   type OmpHostToolDefinition,
   type OmpHostToolResult,
@@ -610,7 +611,7 @@ export class OmpHostToolsBridge {
     } catch {
       // Fall through to the bounded error result.
     }
-    return errorResult(result.id, "MCP host tool result exceeds the OMP RPC frame limit");
+    return errorResult(result.id, OMP_HOST_TOOL_FRAME_LIMIT_ERROR);
   }
 
   private sendTerminal(

@@ -47,6 +47,20 @@ const MAX_ENV_TOTAL_LENGTH = 1024 * 1024;
 const MAX_PATH_LENGTH = 4_096;
 const WINDOWS_DEFAULT_SYSTEM_ROOT = "C:\\Windows";
 
+export const OMP_HOST_TOOL_FRAME_LIMIT_ERROR =
+  "MCP host tool result exceeds the OMP RPC frame limit";
+const MIN_HOST_TOOL_RESULT_FRAME_BYTES = Buffer.byteLength(
+  `${JSON.stringify({
+    type: "host_tool_result",
+    id: "\0".repeat(MAX_ID_LENGTH),
+    result: {
+      content: [{ type: "text", text: OMP_HOST_TOOL_FRAME_LIMIT_ERROR }],
+      details: {},
+      isError: true,
+    },
+    isError: true,
+  })}\n`,
+);
 function boundedString(maxBytes: number, minBytes = 0) {
   return z.string().refine((value) => {
     const bytes = utf8Bytes(value);
@@ -1754,6 +1768,9 @@ function validateReadyMetadata(frame: ReadyFrame): "legacy-v1" | "v1" | "v2" {
     frame.maxReassembledFrameBytes < frame.maxFrameBytes
   ) {
     throw new Error("OMP ready frame advertises unsupported protocol limits");
+  }
+  if (frame.maxFrameBytes < MIN_HOST_TOOL_RESULT_FRAME_BYTES) {
+    throw new Error("OMP ready frame cannot carry terminal host tool results");
   }
   return frame.supportedProtocolVersions.includes(2) ? "v2" : "v1";
 }
