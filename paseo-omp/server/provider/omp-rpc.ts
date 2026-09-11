@@ -465,7 +465,10 @@ function buildOmpEnvironment(
       throw new OmpPublicError("OMP proxy URL components cannot be decoded safely");
     }
     for (const [name, parameter] of proxy.searchParams) {
-      collectComponent(parameter, parameter.length > 0 && SESSION_CREDENTIAL_ENV.test(name.toUpperCase()));
+      collectComponent(
+        parameter,
+        parameter.length > 0 && SESSION_CREDENTIAL_ENV.test(name.toUpperCase()),
+      );
     }
   };
   for (const [name, value] of Object.entries(sourceEnv)) {

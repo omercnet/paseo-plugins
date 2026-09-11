@@ -943,9 +943,9 @@ describe("OMP RPC transport", () => {
         TEST_RUNTIME_ENV,
       ),
     ).toThrow("system prompt");
-    expect(() =>
-      buildOmpSpawnRequest({ cwd: "relative", mode: "full" }, TEST_RUNTIME_ENV),
-    ).toThrow("absolute");
+    expect(() => buildOmpSpawnRequest({ cwd: "relative", mode: "full" }, TEST_RUNTIME_ENV)).toThrow(
+      "absolute",
+    );
   });
 
   test("collects ambient MCP URL, header, and environment secrets for redaction", () => {

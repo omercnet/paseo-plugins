@@ -624,7 +624,6 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-
   test("publishes opened, committed config, then ready", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -4279,8 +4278,7 @@ describe("OMP direct provider", () => {
 
   test("preserves structural protocol data through OmpRpcRuntime", async () => {
     const nativeSessionId = "native-session-secret";
-    const proxyUrl =
-      "https://proxy%2Duser:proxy%2Dpass@example.test?access_token=proxy%2Dtoken";
+    const proxyUrl = "https://proxy%2Duser:proxy%2Dpass@example.test?access_token=proxy%2Dtoken";
     const sessionProxyUrl =
       "https://session%2Duser:session%2Dpass@example.test/session%2Dpath?code=session%2Dquery";
     const children: ProviderRpcChild[] = [];
@@ -4382,7 +4380,7 @@ describe("OMP direct provider", () => {
     );
     expect(proxyNotice).toEqual(
       expect.objectContaining({
-        item: expect.objectContaining({ message: expect.stringContaining("[REDACTED]") }),
+        item: expect.objectContaining({ message: expect.stringContaining("<redacted>") }),
       }),
     );
     expect(JSON.stringify(proxyNotice)).not.toContain("proxy-user");
