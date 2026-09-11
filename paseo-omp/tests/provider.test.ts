@@ -1894,9 +1894,10 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         model: undefined,
         thinkingOption: undefined,
-        resumeSessionId: "native-session",
+        noSession: true,
       }),
     );
+    expect(runtime.starts[1]?.resumeSessionId).toBeUndefined();
     expect(events.findLast((event) => event.type === "session.config")).toEqual(
       expect.objectContaining({
         config: expect.objectContaining({
@@ -1943,9 +1944,10 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         model: undefined,
         thinkingOption: undefined,
-        resumeSessionId: "native-session",
+        noSession: true,
       }),
     );
+    expect(runtime.starts[1]?.resumeSessionId).toBeUndefined();
     expect(events.findLast((event) => event.type === "session.config")).toEqual(
       expect.objectContaining({
         config: expect.objectContaining({
