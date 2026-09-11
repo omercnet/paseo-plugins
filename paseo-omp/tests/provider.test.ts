@@ -4211,7 +4211,6 @@ describe("OMP direct provider", () => {
       );
       expect(terminalEvents).toHaveLength(1);
       expect(terminalEvents[0]).toEqual(expect.objectContaining({ state: "failed" }));
-      expect(terminalEvents.some((event) => event.state === "completed")).toBe(false);
     }
     const later = await startPrompt(connection, events, "after-degraded-terminal", "continue");
     expect(later).toEqual(
