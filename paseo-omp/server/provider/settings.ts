@@ -1,0 +1,58 @@
+import { z } from "zod";
+
+const MAX_COMMAND_PARTS = 64;
+const MAX_TEXT_BYTES = 64 * 1024;
+const MAX_MODEL_SELECTOR_BYTES = 513;
+const MAX_PATH_BYTES = 4_096;
+const MAX_RPC_TIMEOUT_MS = 10 * 60 * 1_000;
+
+function boundedString(maxBytes: number) {
+  return z
+    .string()
+    .min(1)
+    .refine((value) => Buffer.byteLength(value, "utf8") <= maxBytes);
+}
+
+const CommandPartSchema = boundedString(MAX_PATH_BYTES).refine(
+  (value) => !value.includes("\0") && !/[\r\n]/u.test(value),
+  "command arguments cannot contain NUL or line breaks",
+);
+const EnvironmentNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/u);
+const EnvironmentValueSchema = z
+  .string()
+  .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_TEXT_BYTES && !value.includes("\0"));
+const ModelSelectorSchema = boundedString(MAX_MODEL_SELECTOR_BYTES).refine(
+  (value) => !value.includes("\0"),
+);
+
+export const OmpModeSchema = z.enum(["full", "write", "ask"]);
+
+export const OmpProviderParamsSchema = z
+  .object({
+    sessionDir: boundedString(MAX_PATH_BYTES).optional(),
+    rpcTimeoutMs: z.number().int().positive().max(MAX_RPC_TIMEOUT_MS).optional(),
+    smolModel: ModelSelectorSchema.optional(),
+    slowModel: ModelSelectorSchema.optional(),
+    planModel: ModelSelectorSchema.optional(),
+  })
+  .strict();
+
+/**
+ * Session-scoped migration target for the legacy `agents.providers.omp` override.
+ *
+ * `models`, `additionalModels`, and `disallowedTools` are recognized only so the provider can
+ * reject those public-API gaps with a precise error instead of silently stripping them.
+ */
+export const OmpProviderOptionsSchema = z
+  .object({
+    command: z.array(CommandPartSchema).min(1).max(MAX_COMMAND_PARTS).optional(),
+    env: z.record(EnvironmentNameSchema, EnvironmentValueSchema).optional(),
+    params: OmpProviderParamsSchema.optional(),
+    models: z.array(z.unknown()).max(512).optional(),
+    additionalModels: z.array(z.unknown()).max(512).optional(),
+    disallowedTools: z.array(boundedString(256)).max(512).optional(),
+  })
+  .strict();
+
+export type OmpMode = z.infer<typeof OmpModeSchema>;
+export type OmpProviderOptions = z.infer<typeof OmpProviderOptionsSchema>;

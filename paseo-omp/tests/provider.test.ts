@@ -552,18 +552,119 @@ describe("OMP direct provider", () => {
           expect.objectContaining({ id: MODEL_PUBLIC_ID }),
           expect.objectContaining({ id: ALTERNATE_MODEL_PUBLIC_ID }),
         ]),
-        modes: [expect.objectContaining({ id: "full" })],
+        modes: [
+          expect.objectContaining({ id: "full" }),
+          expect.objectContaining({ id: "write" }),
+          expect.objectContaining({ id: "ask" }),
+        ],
       }),
     });
     if (event.type !== "catalog") throw new Error("Expected catalog event");
     const alternate = event.catalog.models.find((model) => model.id === ALTERNATE_MODEL_PUBLIC_ID);
     expect(alternate?.contextWindowMaxTokens).toBeUndefined();
     expect(alternate?.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
-    expect(event.catalog.modes.map((mode) => mode.id)).toEqual(["full"]);
+    expect(event.catalog.modes.map((mode) => mode.id)).toEqual(["full", "write", "ask"]);
     expect(runtime.starts[0]).toEqual(
       expect.objectContaining({ cwd: "/repo", noSession: true, environment: TEST_RUNTIME_ENV }),
     );
     expect(sessionAt(runtime).closes).toBe(1);
+    await connection.close();
+  });
+
+  test("applies migrated provider options before opening an ephemeral session", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await connection.send({
+      type: "session.open",
+      requestId: "profile-open",
+      sessionId: "profile-session",
+      config: {
+        cwd: "/repo",
+        env: { SESSION_VALUE: "session" },
+        mcpServers: {},
+        mode: "ask",
+        settings: {},
+        providerOptions: {
+          command: ["/opt/omp-wrapper", "omp"],
+          env: { PROFILE_VALUE: "profile" },
+          params: {
+            sessionDir: "/sessions/custom",
+            rpcTimeoutMs: 8_000,
+            smolModel: "openai/gpt-5-mini",
+          },
+        },
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "profile-open",
+    );
+
+    expect(runtime.starts[0]).toEqual(
+      expect.objectContaining({
+        command: ["/opt/omp-wrapper", "omp"],
+        env: { PROFILE_VALUE: "profile", SESSION_VALUE: "session" },
+        mode: "ask",
+        noSession: true,
+        readyTimeoutMs: 8_000,
+        requestTimeoutMs: 8_000,
+        roleModels: { smol: "openai/gpt-5-mini" },
+        sessionDir: "/sessions/custom",
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.config",
+        sessionId: "profile-session",
+        config: expect.objectContaining({ mode: "ask" }),
+      }),
+    );
+    sessionAt(runtime).emit({ type: "process_exit", error: "restart profile" });
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "profile-recovery", "continue", "profile-session"),
+    );
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({
+        command: ["/opt/omp-wrapper", "omp"],
+        env: { PROFILE_VALUE: "profile", SESSION_VALUE: "session" },
+        mode: "ask",
+        noSession: true,
+        requestTimeoutMs: 8_000,
+        roleModels: { smol: "openai/gpt-5-mini" },
+        sessionDir: "/sessions/custom",
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("reports unsupported legacy profile fields before spawning OMP", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await connection.send({
+      type: "session.open",
+      requestId: "unsupported-profile",
+      sessionId: "unsupported-profile-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        providerOptions: { disallowedTools: ["bash"] },
+        persist: true,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unsupported-profile",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: expect.objectContaining({ message: expect.stringContaining("disallowedTools") }),
+      }),
+    );
+    expect(runtime.starts).toHaveLength(0);
     await connection.close();
   });
   test("omits thinking options without recognized effort metadata", () => {
@@ -758,7 +859,11 @@ describe("OMP direct provider", () => {
         config: expect.objectContaining({
           model: MODEL_PUBLIC_ID,
           mode: "full",
-          modes: [expect.objectContaining({ id: "full" })],
+          modes: [
+            expect.objectContaining({ id: "full" }),
+            expect.objectContaining({ id: "write" }),
+            expect.objectContaining({ id: "ask" }),
+          ],
           thinkingOption: "medium",
         }),
       }),
@@ -3830,6 +3935,7 @@ describe("OMP direct provider", () => {
     let unsubscribe: (() => void) | undefined;
     try {
       session = await client.createSession(config, launchContext, { persistSession: false });
+      expect(runtime.starts[0]?.noSession).toBe(true);
       const sessionId = session.id;
       const terminals: HostTerminalEvent[] = [];
       const firstTerminal = Promise.withResolvers<HostTerminalEvent>();
@@ -3861,7 +3967,7 @@ describe("OMP direct provider", () => {
       secondTurnId = second.turnId;
       expect(session.id).toBe(sessionId);
       expect(runtime.starts[1]).toEqual(
-        expect.objectContaining({ resumeSessionId: "native-session" }),
+        expect.objectContaining({ noSession: true, resumeSessionId: "native-session" }),
       );
       sessionAt(runtime, 1).emit({ type: "agent_end", messages: [], isTerminal: true });
       await expect(secondTerminal.promise).resolves.toEqual(

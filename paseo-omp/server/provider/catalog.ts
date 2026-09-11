@@ -18,6 +18,22 @@ export const OMP_MODES: readonly ProviderMode[] = [
     colorTier: "dangerous",
     isUnattended: true,
   },
+  {
+    id: "write",
+    label: "Approve Writes",
+    description: "Asks before write and execution tools.",
+    icon: "ShieldCheck",
+    colorTier: "cautious",
+    isUnattended: false,
+  },
+  {
+    id: "ask",
+    label: "Always Ask",
+    description: "Asks before every tool except read-only operations.",
+    icon: "Shield",
+    colorTier: "safe",
+    isUnattended: false,
+  },
 ];
 
 const THINKING_OPTIONS: readonly ProviderThinkingOption[] = [

@@ -290,10 +290,15 @@ export interface OmpStartOptions {
   env?: Readonly<Record<string, string>>;
   /** Server-owned environment source; tests provide isolated roots instead of ambient process.env. */
   environment?: NodeJS.ProcessEnv;
+  command?: readonly string[];
   model?: string;
-  mode?: "full";
+  mode?: "full" | "write" | "ask";
   thinkingOption?: string;
   systemPrompt?: string;
+  roleModels?: Readonly<{ smol?: string; slow?: string; plan?: string }>;
+  sessionDir?: string;
+  readyTimeoutMs?: number;
+  requestTimeoutMs?: number;
   /** Resume this exact native OMP session; never use this to start a new conversation. */
   resumeSessionId?: string;
   noSession?: boolean;
@@ -755,17 +760,21 @@ export function buildOmpSpawnRequest(
   const environmentSource = options.environment ?? sourceEnv;
   const cwd = validateBoundedText(options.cwd, "working directory", MAX_PATH_LENGTH);
   if (!isAbsolute(cwd)) throw new Error("OMP working directory must be absolute");
-  const command = validateBoundedText(
-    environmentSource.OMP_COMMAND ?? "omp",
-    "command",
-    MAX_PATH_LENGTH,
+  const commandPrefix = options.command ?? [environmentSource.OMP_COMMAND ?? "omp"];
+  if (commandPrefix.length === 0) throw new Error("Invalid OMP command");
+  const [rawCommand, ...rawPrefixArgs] = commandPrefix;
+  const command = validateBoundedText(rawCommand, "command", MAX_PATH_LENGTH);
+  const args = rawPrefixArgs.map((argument) =>
+    validateBoundedText(argument, "command argument", MAX_PATH_LENGTH),
   );
   if (/[\r\n]/u.test(command)) throw new Error("Invalid OMP command");
-  if (options.mode !== undefined && options.mode !== "full") throw new Error("Invalid OMP mode");
-  if (options.noSession !== undefined && typeof options.noSession !== "boolean") {
-    throw new Error("Invalid OMP no-session option");
+  const mode = options.mode ?? "full";
+  if (mode !== "full" && mode !== "write" && mode !== "ask") throw new Error("Invalid OMP mode");
+  const approvalMode = mode === "full" ? "yolo" : mode === "write" ? "write" : "always-ask";
+  if (!args.some((argument) => argument === "--mode" || argument.startsWith("--mode="))) {
+    args.push("--mode", "rpc-ui");
   }
-  const args = ["--mode", "rpc-ui", "--approval-mode", "yolo"];
+  args.push("--approval-mode", approvalMode);
   if (options.model !== undefined) {
     args.push("--model", validateBoundedText(options.model, "model", MAX_MODEL_SELECTOR_BYTES));
   }
@@ -773,6 +782,30 @@ export function buildOmpSpawnRequest(
     const thinking = OmpThinkingLevelSchema.safeParse(options.thinkingOption);
     if (!thinking.success) throw new Error("Invalid OMP thinking option");
     args.push("--thinking", thinking.data);
+  }
+  if (options.roleModels?.smol) {
+    args.push(
+      "--smol",
+      validateBoundedText(options.roleModels.smol, "smol model", MAX_MODEL_SELECTOR_BYTES),
+    );
+  }
+  if (options.roleModels?.slow) {
+    args.push(
+      "--slow",
+      validateBoundedText(options.roleModels.slow, "slow model", MAX_MODEL_SELECTOR_BYTES),
+    );
+  }
+  if (options.roleModels?.plan) {
+    args.push(
+      "--plan",
+      validateBoundedText(options.roleModels.plan, "plan model", MAX_MODEL_SELECTOR_BYTES),
+    );
+  }
+  if (options.sessionDir !== undefined) {
+    args.push(
+      "--session-dir",
+      validateBoundedText(options.sessionDir, "session directory", MAX_PATH_LENGTH),
+    );
   }
   if (options.resumeSessionId !== undefined) {
     args.push(
@@ -1741,16 +1774,17 @@ export class OmpRpcRuntime implements OmpRuntime {
       effectiveOptions,
       this.options.spawnProcess,
       this.options.terminateProcessTree,
-      this.options.requestTimeoutMs,
+      options.requestTimeoutMs ?? this.options.requestTimeoutMs,
     );
     const abort = () => void process.close().catch(() => undefined);
     options.signal?.addEventListener("abort", abort, { once: true });
     const removeAbortListener = () => options.signal?.removeEventListener("abort", abort);
     try {
+      const readyTimeoutMs = options.readyTimeoutMs ?? READY_TIMEOUT_MS;
       const ready = await waitWithTimeout(
         process.ready,
-        READY_TIMEOUT_MS,
-        `OMP RPC did not become ready within ${READY_TIMEOUT_MS}ms`,
+        readyTimeoutMs,
+        `OMP RPC did not become ready within ${readyTimeoutMs}ms`,
       );
       const protocol = validateReadyMetadata(ready);
       process.applyReadyLimits(ready);

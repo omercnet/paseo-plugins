@@ -69,8 +69,8 @@ function preflightProviderInput(input: unknown): void {
     if (config?.toolPolicy !== undefined) {
       throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
     }
-    if (hasOwnEntries(config?.providerOptions) || hasOwnEntries(config?.settings)) {
-      throw new OmpPublicError("OMP Plugin Preview does not support provider options");
+    if (hasOwnEntries(config?.settings)) {
+      throw new OmpPublicError("OMP Plugin Preview does not expose live provider settings");
     }
   }
   if (record.type === "session.prompt") {

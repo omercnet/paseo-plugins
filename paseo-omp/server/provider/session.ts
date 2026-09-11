@@ -6,6 +6,7 @@ import type {
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
+import { normalizeOmpSessionConfig } from "./config-normalization";
 import type {
   OmpMessage,
   OmpModel,
@@ -281,31 +282,19 @@ export class OmpProviderSession {
     if (input.history !== "skip") {
       throw new OmpPublicError("OMP Plugin Preview does not support history replay");
     }
-    if (input.config.mode && input.config.mode !== "full") {
-      throw new OmpPublicError("OMP Plugin Preview supports Full Access mode only");
-    }
+    const normalizedConfig = normalizeOmpSessionConfig(input.config);
     if (Object.keys(input.config.mcpServers ?? {}).length > 0) {
       throw new OmpPublicError("OMP Plugin Preview does not support host MCP servers");
     }
     if (input.config.toolPolicy) {
       throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
     }
-    if (input.config.providerOptions && Object.keys(input.config.providerOptions).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support provider options");
-    }
-    if (Object.keys(input.config.settings ?? {}).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support provider settings");
-    }
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
     const startOptions: OmpStartOptions = {
-      cwd: input.config.cwd,
-      env: input.config.env,
+      ...normalizedConfig,
       // Model selection is authorized only after this runtime reports its exact catalog.
-      mode: "full",
-      thinkingOption: input.config.thinkingOption,
-      systemPrompt: input.config.systemPrompt,
       signal,
       environment,
     };
@@ -322,7 +311,7 @@ export class OmpProviderSession {
       ]);
       let state = initialState;
       const filter = new OmpPublicDataFilter([
-        ...Object.values(input.config.env ?? {}),
+        ...Object.values(startOptions.env ?? {}),
         ...(native.redactionValues ?? []),
       ]);
       const models = mapOmpModels(nativeModels, filter);
@@ -360,20 +349,22 @@ export class OmpProviderSession {
       }
       const configState: ProviderConfigState = {
         ...(state.model ? { model: ompModelId(state.model) } : {}),
-        mode: "full",
+        mode: normalizedConfig.mode,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
         models,
         modes: OMP_MODES,
         thinkingOptions,
         settings: [],
       };
+      const {
+        signal: _signal,
+        model: _model,
+        thinkingOption: _thinking,
+        ...recoveryBase
+      } = startOptions;
       const recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal"> = {
-        cwd: input.config.cwd,
-        env: input.config.env,
-        mode: "full",
-        systemPrompt: input.config.systemPrompt,
+        ...recoveryBase,
         ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
-        environment,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
       };
       return new OmpProviderSession(
