@@ -480,48 +480,70 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
   const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
   const secrets: string[] = [];
   const credentialKey = /(?:authorization|cookie|credential|api.?key|token|secret|password)/iu;
-  const collectStrings = (root: unknown, rootKey?: string) => {
-    const stack: Array<{ value: unknown; key?: string }> = [{ value: root, key: rootKey }];
+  const benignHeaders: Readonly<Record<string, true>> = {
+    ACCEPT: true,
+    "CONTENT-TYPE": true,
+    "USER-AGENT": true,
+  };
+  const benignEnv: Readonly<Record<string, true>> = { DEBUG: true, NODE_ENV: true };
+  const collectCredential = (value: string) => {
+    if (value.length === 0) return;
+    if (utf8Bytes(value) < 4) {
+      throw new OmpPublicError("OMP MCP credential is too short for safe redaction");
+    }
+    secrets.push(value);
+  };
+  const collectContainer = (root: unknown, kind: "auth" | "env" | "headers" | "oauth") => {
+    const stack: Array<{ value: unknown; sensitive: boolean }> = [
+      { value: root, sensitive: kind === "auth" || kind === "oauth" },
+    ];
     while (stack.length > 0) {
       const current = stack.pop();
       if (!current) break;
-      const value = current.value;
-      if (typeof value === "string") {
-        if (value.length === 0) continue;
-        if (utf8Bytes(value) < 4) {
-          if (current.key && credentialKey.test(current.key)) {
-            throw new OmpPublicError("OMP MCP credential is too short for safe redaction");
-          }
-          continue;
-        }
-        secrets.push(value);
-      } else if (Array.isArray(value)) {
-        if (value.length > MAX_ARRAY_ITEMS) {
+      if (typeof current.value === "string") {
+        if (current.sensitive) collectCredential(current.value);
+        continue;
+      }
+      if (Array.isArray(current.value)) {
+        if (current.value.length > MAX_ARRAY_ITEMS) {
           throw new OmpPublicError("OMP MCP configuration exceeds safe limits");
         }
-        for (let index = value.length - 1; index >= 0; index -= 1) {
-          stack.push({ value: value[index], key: current.key });
+        for (let index = current.value.length - 1; index >= 0; index -= 1) {
+          stack.push({ value: current.value[index], sensitive: current.sensitive });
         }
-      } else if (value && typeof value === "object") {
-        for (const key in value) {
-          if (Object.hasOwn(value, key)) {
-            stack.push({ value: (value as Record<string, unknown>)[key], key });
-          }
-        }
+        continue;
+      }
+      if (!current.value || typeof current.value !== "object") continue;
+      for (const key in current.value) {
+        if (!Object.hasOwn(current.value, key)) continue;
+        const normalized = key.toUpperCase();
+        const sensitive =
+          current.sensitive ||
+          (kind === "headers" ? !benignHeaders[normalized] : !benignEnv[normalized]);
+        stack.push({
+          value: (current.value as Record<string, unknown>)[key],
+          sensitive,
+        });
       }
     }
   };
   const collectUrlSecrets = (value: string) => {
-    collectStrings(value, "url");
+    collectCredential(value);
+    let url: URL;
     try {
-      const url = new URL(value);
-      if (url.username) collectStrings(decodeURIComponent(url.username), "credential");
-      if (url.password) collectStrings(decodeURIComponent(url.password), "password");
-      for (const [name, parameter] of url.searchParams) {
-        if (credentialKey.test(name)) collectStrings(parameter, name);
-      }
+      url = new URL(value);
     } catch {
-      // Non-URL values are still retained as complete sensitive literals above.
+      return;
+    }
+    try {
+      if (url.username) collectCredential(decodeURIComponent(url.username));
+      if (url.password) collectCredential(decodeURIComponent(url.password));
+    } catch (error) {
+      if (error instanceof OmpPublicError) throw error;
+      throw new OmpPublicError("OMP MCP URL credentials cannot be decoded safely");
+    }
+    for (const [name, parameter] of url.searchParams) {
+      if (credentialKey.test(name)) collectCredential(parameter);
     }
   };
   for (const path of paths) {
@@ -573,14 +595,20 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
       for (const key in value) {
         if (!Object.hasOwn(value, key)) continue;
         const child = (value as Record<string, unknown>)[key];
-        if (key.toLowerCase() === "url" && typeof child === "string") {
+        const normalized = key.toLowerCase();
+        if (normalized === "url" && typeof child === "string") {
           collectUrlSecrets(child);
+        } else if (
+          child &&
+          typeof child === "object" &&
+          (normalized === "auth" ||
+            normalized === "env" ||
+            normalized === "headers" ||
+            normalized === "oauth")
+        ) {
+          collectContainer(child, normalized);
         } else if (child && typeof child === "object") {
-          if (["auth", "env", "headers", "oauth"].includes(key.toLowerCase())) {
-            collectStrings(child);
-          } else {
-            stack.push(child);
-          }
+          stack.push(child);
         }
       }
     }
