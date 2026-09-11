@@ -1658,7 +1658,7 @@ describe("OMP direct provider", () => {
     expect(runtime.starts).toHaveLength(1);
     await connection.close();
   });
-  test("blocks a different resume until provider-global cleanup is verified", async () => {
+  test("blocks persistent and nonpersistent opens until cleanup is verified", async () => {
     const otherNativeSessionId = "01a08f6b-8da9-72cb-9080-fc50139bdfcb";
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push(
@@ -1740,6 +1740,28 @@ describe("OMP direct provider", () => {
       }),
     );
     expect(runtime.starts).toHaveLength(1);
+    await second.connection.send({
+      type: "session.open",
+      requestId: "nonpersistent-blocked",
+      sessionId: "nonpersistent-during-quarantine",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    const nonpersistentFailure = await second.events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "nonpersistent-blocked",
+    );
+    expect(nonpersistentFailure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP native session cleanup quarantine is active" },
+      }),
+    );
 
     cleanup.resolve();
     await cleanup.promise;
@@ -1752,6 +1774,23 @@ describe("OMP direct provider", () => {
     await second.events.waitFor(
       (event) => event.type === "sessions" && event.requestId === "released-list",
     );
+    await second.connection.send({
+      type: "session.open",
+      requestId: "nonpersistent-released",
+      sessionId: "nonpersistent-during-quarantine",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await second.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "nonpersistent-released",
+    );
     await openResume(
       second.connection,
       "different-resume-released",
@@ -1761,7 +1800,7 @@ describe("OMP direct provider", () => {
     await second.events.waitFor(
       (event) => event.type === "session.ready" && event.requestId === "different-resume-released",
     );
-    expect(runtime.starts).toHaveLength(2);
+    expect(runtime.starts).toHaveLength(3);
     await second.connection.close();
   });
 

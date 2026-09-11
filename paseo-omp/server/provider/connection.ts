@@ -210,23 +210,24 @@ export class OmpNativeSessionReservations {
   private readonly unknownQuarantines = new Set<symbol>();
   private openingOwner: symbol | null = null;
   private overflowQuarantines = 0;
+  assertOpenable(): void {
+    if (this.hasQuarantine()) {
+      throw new OmpPublicError("OMP native session cleanup quarantine is active");
+    }
+  }
 
   assertListable(): void {
     if (this.openingOwner) {
       throw new OmpPublicError("OMP persistent session registration is in progress");
     }
-    if (this.hasQuarantine()) {
-      throw new OmpPublicError("OMP native session cleanup quarantine is active");
-    }
+    this.assertOpenable();
   }
 
   beginPersistentOpen(owner: symbol): void {
     if (this.openingOwner && this.openingOwner !== owner) {
       throw new OmpPublicError("OMP persistent session registration is in progress");
     }
-    if (this.hasQuarantine()) {
-      throw new OmpPublicError("OMP native session cleanup quarantine is active");
-    }
+    this.assertOpenable();
     if (!this.openingOwner) this.assertCapacity();
     this.openingOwner = owner;
   }
@@ -235,9 +236,7 @@ export class OmpNativeSessionReservations {
     if (this.openingOwner && this.openingOwner !== owner) {
       throw new OmpPublicError("OMP persistent session registration is in progress");
     }
-    if (this.hasQuarantine()) {
-      throw new OmpPublicError("OMP native session cleanup quarantine is active");
-    }
+    this.assertOpenable();
     const existing = this.reservations.get(nativeSessionId);
     if (existing) {
       if (existing.owner !== owner) throw new OmpPublicError("OMP native session is already open");
@@ -445,6 +444,7 @@ export function createOmpConnection(
         let nativeSessionId: string | undefined;
         let persistentOpening = false;
         try {
+          nativeReservations.assertOpenable();
           nativeSessionId = ompPersistenceSessionId(input);
           if (nativeSessionId) nativeReservations.reserve(nativeSessionId, token);
           else if (input.config.persist) {
