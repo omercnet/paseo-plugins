@@ -254,6 +254,7 @@ export class OmpProviderSession {
     emit: Emit,
     scheduler?: OmpTimelineScheduler,
     signal?: AbortSignal,
+    environment?: NodeJS.ProcessEnv,
   ): Promise<OmpProviderSession> {
     if (input.persistence) {
       throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
@@ -287,6 +288,7 @@ export class OmpProviderSession {
       thinkingOption: input.config.thinkingOption,
       systemPrompt: input.config.systemPrompt,
       signal,
+      environment,
     };
     buildOmpSpawnRequest(startOptions);
     const native = await runtime.startSession(startOptions);
@@ -336,6 +338,7 @@ export class OmpProviderSession {
         mode: "full",
         systemPrompt: input.config.systemPrompt,
         ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
+        environment,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
       };
       return new OmpProviderSession(

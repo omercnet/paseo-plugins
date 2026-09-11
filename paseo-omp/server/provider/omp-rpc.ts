@@ -270,6 +270,8 @@ export type OmpRpcEvent =
 export interface OmpStartOptions {
   cwd: string;
   env?: Readonly<Record<string, string>>;
+  /** Server-owned environment source; tests provide isolated roots instead of ambient process.env. */
+  environment?: NodeJS.ProcessEnv;
   model?: string;
   mode?: "full";
   thinkingOption?: string;
@@ -311,6 +313,7 @@ export interface OmpSpawnRequest {
 export interface OmpRpcRuntimeOptions {
   spawnProcess?: (request: OmpSpawnRequest) => ChildProcessWithoutNullStreams;
   terminateProcessTree?: (pid: number) => Promise<boolean | "uncertain">;
+  environment?: NodeJS.ProcessEnv;
 }
 
 type PendingRequest = {
@@ -626,9 +629,14 @@ export function buildOmpSpawnRequest(
   options: OmpStartOptions,
   sourceEnv: NodeJS.ProcessEnv = process.env,
 ): OmpSpawnRequest {
+  const environmentSource = options.environment ?? sourceEnv;
   const cwd = validateBoundedText(options.cwd, "working directory", MAX_PATH_LENGTH);
   if (!isAbsolute(cwd)) throw new Error("OMP working directory must be absolute");
-  const command = validateBoundedText(sourceEnv.OMP_COMMAND ?? "omp", "command", MAX_PATH_LENGTH);
+  const command = validateBoundedText(
+    environmentSource.OMP_COMMAND ?? "omp",
+    "command",
+    MAX_PATH_LENGTH,
+  );
   if (/[\r\n]/u.test(command)) throw new Error("Invalid OMP command");
   if (options.mode !== undefined && options.mode !== "full") throw new Error("Invalid OMP mode");
   if (options.noSession !== undefined && typeof options.noSession !== "boolean") {
@@ -657,7 +665,7 @@ export function buildOmpSpawnRequest(
       validateBoundedText(systemPrompt, "system prompt", MAX_SYSTEM_PROMPT_LENGTH),
     );
   }
-  const environment = buildOmpEnvironment(options.env, sourceEnv);
+  const environment = buildOmpEnvironment(options.env, environmentSource);
   const sensitiveValues = [
     ...environment.sensitiveValues,
     ...collectAmbientMcpSecrets(cwd, environment.env),
@@ -1513,8 +1521,12 @@ export class OmpRpcRuntime implements OmpRuntime {
 
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     options.signal?.throwIfAborted();
+    const effectiveOptions = {
+      ...options,
+      environment: options.environment ?? this.options.environment,
+    };
     const process = new OmpRpcProcess(
-      options,
+      effectiveOptions,
       this.options.spawnProcess,
       this.options.terminateProcessTree,
     );

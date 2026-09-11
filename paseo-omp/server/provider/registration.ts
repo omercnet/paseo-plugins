@@ -14,6 +14,7 @@ const ConnectRequestSchema = z.object({
 export interface OmpProviderOptions {
   runtime?: OmpRuntime;
   timelineScheduler?: OmpTimelineScheduler;
+  environment?: NodeJS.ProcessEnv;
 }
 
 export function createOmpProvider(options: OmpProviderOptions = {}): ProviderRegistration {
@@ -35,9 +36,10 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         requestedCapabilities.has(capability),
       );
       return createOmpConnection(
-        options.runtime ?? new OmpRpcRuntime(),
+        options.runtime ?? new OmpRpcRuntime({ environment: options.environment }),
         capabilities,
         options.timelineScheduler,
+        options.environment,
       );
     },
   };

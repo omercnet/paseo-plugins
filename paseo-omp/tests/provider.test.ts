@@ -81,6 +81,12 @@ const ALTERNATE_MODEL: OmpModel = {
 };
 const MODEL_PUBLIC_ID = ompModelId(MODEL);
 const ALTERNATE_MODEL_PUBLIC_ID = ompModelId(ALTERNATE_MODEL);
+const TEST_RUNTIME_ENV: NodeJS.ProcessEnv = {
+  HOME: "/__paseo_omp_test_no_home__",
+  PATH: "/usr/bin",
+  PI_CODING_AGENT_DIR: "/__paseo_omp_test_no_agent_dir__",
+  PI_CONFIG_DIR: ".omp-no-config",
+};
 const THINKING_LEVELS: Readonly<Record<string, true>> = {
   high: true,
   low: true,
@@ -399,7 +405,11 @@ function sessionAt(runtime: FakeOmpRuntime, index = 0): FakeOmpSession {
 }
 
 async function createHarness(runtime = new FakeOmpRuntime(), scheduler = new ManualScheduler()) {
-  const connection = await createOmpProvider({ runtime, timelineScheduler: scheduler }).connect({
+  const connection = await createOmpProvider({
+    runtime,
+    timelineScheduler: scheduler,
+    environment: TEST_RUNTIME_ENV,
+  }).connect({
     versions: [1],
     capabilities: ["prompt.message", "prompt.steer", "session.configure"],
   });
@@ -621,7 +631,10 @@ describe("OMP direct provider", () => {
   });
 
   test("rejects malformed capabilities and filters unsupported capability names", async () => {
-    const provider = createOmpProvider({ runtime: new FakeOmpRuntime() });
+    const provider = createOmpProvider({
+      runtime: new FakeOmpRuntime(),
+      environment: TEST_RUNTIME_ENV,
+    });
     await expect(
       provider.connect({ versions: [1], capabilities: ["prompt.message", 42] } as never),
     ).rejects.toThrow("valid provider protocol version 1 request");
@@ -641,7 +654,7 @@ describe("OMP direct provider", () => {
   });
   test("rejects malformed and unsupported permission responses", async () => {
     const runtime = new FakeOmpRuntime();
-    const connection = await createOmpProvider({ runtime }).connect({
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
       versions: [1],
       capabilities: ["prompt.message", "permission"],
     });
@@ -669,7 +682,7 @@ describe("OMP direct provider", () => {
 
   test("rejects unsupported MCP configuration and dangerous environment before spawn", async () => {
     const runtime = new FakeOmpRuntime();
-    const connection = await createOmpProvider({ runtime }).connect({
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
       versions: [1],
       capabilities: ["prompt.message"],
     });
@@ -2781,7 +2794,11 @@ describe("OMP direct provider", () => {
   });
   test("real Paseo provider host keeps a recovered session reachable", async () => {
     const runtime = new FakeOmpRuntime();
-    const registration = createOmpProvider({ runtime, timelineScheduler: new ManualScheduler() });
+    const registration = createOmpProvider({
+      runtime,
+      timelineScheduler: new ManualScheduler(),
+      environment: TEST_RUNTIME_ENV,
+    });
     // Static imports resolve the host's incompatible Node/Zod declaration graph in this package.
     const adapter = (await import(pluginProviderModulePath)) as unknown as {
       PluginAgentClientRegistry: HostRegistryConstructor;
@@ -3812,7 +3829,7 @@ describe("OMP direct provider", () => {
       },
       terminateProcessTree: () => Promise.resolve(false),
     });
-    const connection = await createOmpProvider({ runtime }).connect({
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
       versions: [1],
       capabilities: ["prompt.message"],
     });
@@ -4207,7 +4224,7 @@ describe("OMP direct provider", () => {
       },
       terminateProcessTree: () => Promise.resolve(true),
     });
-    const connection = await createOmpProvider({ runtime }).connect({
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
       versions: [1],
       capabilities: ["prompt.message", "prompt.steer", "session.configure"],
     });

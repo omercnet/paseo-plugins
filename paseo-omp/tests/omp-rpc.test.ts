@@ -20,6 +20,12 @@ const READY_FRAME = {
   maxFrameBytes: 1_048_576,
   maxReassembledFrameBytes: 67_108_864,
 } as const;
+const TEST_RUNTIME_ENV: NodeJS.ProcessEnv = {
+  HOME: "/__paseo_omp_test_no_home__",
+  PATH: "/usr/bin",
+  PI_CODING_AGENT_DIR: "/__paseo_omp_test_no_agent_dir__",
+  PI_CONFIG_DIR: ".omp-no-config",
+};
 
 class FakeRpcChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -99,6 +105,7 @@ function runtimeFor(child: FakeRpcChild, launches: OmpSpawnRequest[] = []): OmpR
       launches.push(request);
       return child.asChildProcess();
     },
+    environment: TEST_RUNTIME_ENV,
     terminateProcessTree: () => Promise.resolve(true),
   });
 }
@@ -911,6 +918,11 @@ describe("OMP RPC transport", () => {
           servers: { unsafe: { type: "stdio", command: "server", env: { token: "x" } } },
         }),
       );
+      const isolated = buildOmpSpawnRequest(
+        { cwd: "/repo", mode: "full", environment: TEST_RUNTIME_ENV },
+        { PATH: "/usr/bin", HOME: root, PI_CODING_AGENT_DIR: agentDir },
+      );
+      expect(isolated.sensitiveValues).toEqual([]);
       expect(() =>
         buildOmpSpawnRequest(
           { cwd: root, mode: "full" },
@@ -962,6 +974,7 @@ describe("OMP RPC transport", () => {
         cleanedPids.push(pid);
         return cleanup.promise;
       },
+      environment: TEST_RUNTIME_ENV,
     });
     const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
@@ -989,6 +1002,7 @@ describe("OMP RPC transport", () => {
     const runtime = new OmpRpcRuntime({
       spawnProcess: () => child.asChildProcess(),
       terminateProcessTree: () => Promise.resolve(false),
+      environment: TEST_RUNTIME_ENV,
     });
     const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
@@ -1010,6 +1024,7 @@ describe("OMP RPC transport", () => {
     const runtime = new OmpRpcRuntime({
       spawnProcess: () => child.asChildProcess(),
       terminateProcessTree: () => Promise.resolve("uncertain"),
+      environment: TEST_RUNTIME_ENV,
     });
     const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
@@ -1058,6 +1073,7 @@ describe("OMP RPC transport", () => {
             stdio: ["pipe", "pipe", "pipe"],
           });
         },
+        environment: TEST_RUNTIME_ENV,
       });
       const session = await runtime.startSession({ cwd: process.cwd(), mode: "full" });
       const descendantPid = nextEvent((listener) => session.onEvent(listener));
