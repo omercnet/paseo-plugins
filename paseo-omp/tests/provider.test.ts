@@ -4192,6 +4192,27 @@ describe("OMP direct provider", () => {
           event.type === "session.turn" && event.turnId === nestedTurn && event.state !== "started",
       ),
     ).toHaveLength(1);
+    for (const [index, messages] of ["bad", null].entries()) {
+      const malformedTurn = turnIdFrom(
+        await startPrompt(connection, events, `malformed-terminal-${index}`, "continue"),
+      );
+      children[1]?.write({ type: "agent_end", messages, isTerminal: true });
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === malformedTurn &&
+          event.state === "failed",
+      );
+      const terminalEvents = events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === malformedTurn &&
+          event.state !== "started",
+      );
+      expect(terminalEvents).toHaveLength(1);
+      expect(terminalEvents[0]).toEqual(expect.objectContaining({ state: "failed" }));
+      expect(terminalEvents.some((event) => event.state === "completed")).toBe(false);
+    }
     const later = await startPrompt(connection, events, "after-degraded-terminal", "continue");
     expect(later).toEqual(
       expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),

@@ -1135,7 +1135,11 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return true;
     }
-    const observedCount = Array.isArray(frame.messages) ? frame.messages.length : 0;
+    const observedCount = Array.isArray(frame.messages)
+      ? frame.messages.length
+      : Object.hasOwn(frame, "messages")
+        ? 1
+        : 0;
     this.emit({
       ...envelope.data,
       messageCount: Math.max(envelope.data.messageCount ?? 0, observedCount),
