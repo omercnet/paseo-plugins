@@ -5,13 +5,7 @@ import type {
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
-import {
-  BoundedStringSet,
-  boundedJsonBytes,
-  type JsonValue,
-  OmpPublicDataFilter,
-  utf8Bytes,
-} from "./security";
+import { boundedJsonBytes, type JsonValue, OmpPublicDataFilter, utf8Bytes } from "./security";
 
 const STREAM_FRAME_MS = 32;
 const MAX_STREAM_CONTENT_BLOCKS = 64;
@@ -69,6 +63,12 @@ function assistantIdentity(message: OmpMessage, allowMessageId = false): string 
   if (message.role !== "assistant") return;
   return message.responseId ?? message.entryId ?? (allowMessageId ? message.id : undefined);
 }
+function assistantContentFingerprint(message: OmpAssistantMessage): string {
+  const encoded =
+    typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? null);
+  return createHash("sha256").update(encoded).digest("base64url");
+}
+
 type OmpAssistantMessage = Extract<OmpMessage, { role: "assistant" }>;
 
 function blockText(
@@ -99,7 +99,8 @@ export class OmpTimelineProjector {
   private userSequence = 0;
   private replayTurnId: string | null = null;
   private replaySequence = 0;
-  private readonly replayedNativeMessageIds = new BoundedStringSet(MAX_REPLAY_NATIVE_IDENTITIES);
+  private readonly replayedAssistantSignatures = new Map<string, Set<string>>();
+  private replayedAssistantOccurrences = 0;
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -121,13 +122,13 @@ export class OmpTimelineProjector {
 
   project(event: OmpRpcEvent, turnId: string): void {
     if (this.closed) return;
-    const replayedIdentity =
+    const replayedMessage =
       event.type === "message_start" ||
       event.type === "message_update" ||
       event.type === "message_end"
-        ? assistantIdentity(event.message)
+        ? event.message
         : undefined;
-    if (replayedIdentity && this.replayedNativeMessageIds.has(replayedIdentity)) return;
+    if (replayedMessage?.role === "assistant" && this.isReplayDuplicate(replayedMessage)) return;
     if (
       event.type === "todo_reminder" ||
       event.type === "notice" ||
@@ -311,7 +312,6 @@ export class OmpTimelineProjector {
   projectReplayMessage(message: OmpMessage): void {
     if (this.closed) return;
     const nativeIdentity = assistantIdentity(message, true);
-    if (nativeIdentity && this.replayedNativeMessageIds.has(nativeIdentity)) return;
     this.replaySequence += 1;
     if (message.role === "user") {
       if (this.replayTurnId) this.finishTurn(this.replayTurnId);
@@ -336,7 +336,7 @@ export class OmpTimelineProjector {
       this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
       this.project({ type: "message_start", message }, this.replayTurnId);
       this.project({ type: "message_end", message }, this.replayTurnId);
-      if (nativeIdentity) this.replayedNativeMessageIds.add(nativeIdentity);
+      if (nativeIdentity) this.rememberReplayOccurrence(nativeIdentity, message);
       return;
     }
     this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
@@ -371,9 +371,32 @@ export class OmpTimelineProjector {
       this.replayTurnId = null;
     }
   }
+
   finishReplay(): void {
     if (this.replayTurnId) this.finishTurn(this.replayTurnId);
     this.replayTurnId = null;
+  }
+  private rememberReplayOccurrence(identity: string, message: OmpAssistantMessage): void {
+    if (this.replayedAssistantOccurrences >= MAX_REPLAY_NATIVE_IDENTITIES) return;
+    this.replayedAssistantOccurrences += 1;
+    const signatures = this.replayedAssistantSignatures.get(identity) ?? new Set<string>();
+    signatures.add(assistantContentFingerprint(message));
+    this.replayedAssistantSignatures.set(identity, signatures);
+  }
+
+  private isReplayDuplicate(message: OmpAssistantMessage): boolean {
+    const identity = assistantIdentity(message);
+    if (!identity) return false;
+    const signatures = this.replayedAssistantSignatures.get(identity);
+    if (!signatures) return false;
+    if (
+      message.content === undefined ||
+      message.content === "" ||
+      (Array.isArray(message.content) && message.content.length === 0)
+    ) {
+      return true;
+    }
+    return signatures.has(assistantContentFingerprint(message));
   }
 
   flush(finalizeFallback = false): void {

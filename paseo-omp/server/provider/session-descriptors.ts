@@ -52,6 +52,22 @@ function safeText(value: unknown, maxBytes: number): string | undefined {
   }
   return sanitized.trim() || undefined;
 }
+function validatedCwd(value: unknown): string | undefined {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.includes("\0") ||
+    Buffer.byteLength(value, "utf8") > 4_096 ||
+    !isAbsolute(value)
+  ) {
+    return;
+  }
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint < 32 || codePoint === 127) return;
+  }
+  return value;
+}
 
 function completePrefixLines(buffer: Buffer): Buffer[] {
   const lines: Buffer[] = [];
@@ -101,8 +117,8 @@ function parseDescriptor(file: string): OmpSessionDescriptor | undefined {
       }
       if (record.type !== "session") continue;
       const id = validateNativeSessionId(record.id);
-      const cwd = safeText(record.cwd, 4_096);
-      if (!cwd || !isAbsolute(cwd)) return;
+      const cwd = validatedCwd(record.cwd);
+      if (!cwd) return;
       const headerTitle = safeText(record.title, 512);
       return {
         id,

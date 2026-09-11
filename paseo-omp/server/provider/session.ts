@@ -411,6 +411,7 @@ export class OmpProviderSession {
       }
       const thinkingOptions = thinkingForModel(currentModel);
       if (
+        !resumeSessionId &&
         input.config.thinkingOption !== undefined &&
         !thinkingOptions.some((option) => option.id === input.config.thinkingOption)
       ) {
@@ -435,7 +436,9 @@ export class OmpProviderSession {
         cwd: effectiveConfig.cwd,
         env: effectiveConfig.env,
         mode: "full",
-        systemPrompt: effectiveConfig.systemPrompt,
+        ...(!resumeSessionId && effectiveConfig.systemPrompt
+          ? { systemPrompt: effectiveConfig.systemPrompt }
+          : {}),
         ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
         environment,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),

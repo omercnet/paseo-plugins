@@ -1018,6 +1018,17 @@ describe("OMP direct provider", () => {
         }),
       }),
     );
+    sessionAt(runtime, 1).emit({ type: "process_exit", error: "restart persisted session" });
+    runtime.nextModel = MODEL;
+    runtime.nextThinkingLevel = "medium";
+    const recoveryTurn = turnIdFrom(
+      await startPrompt(connection, events, "persisted-recovery", "continue", "resumed-session"),
+    );
+    expect(runtime.starts[2]).toEqual(
+      expect.objectContaining({ resumeSessionId: NATIVE_SESSION_ID }),
+    );
+    expect(runtime.starts[2]?.systemPrompt).toBeUndefined();
+    await finishTurn(events, sessionAt(runtime, 2), recoveryTurn);
     await connection.close();
   });
   test("suppresses the first replayed assistant after more than 1,024 identities", async () => {
@@ -1027,7 +1038,7 @@ describe("OMP direct provider", () => {
       { role: "user", id: `large-user-${index}`, content: `prompt ${index}` },
       {
         role: "assistant",
-        responseId: `large-response-${index}`,
+        responseId: "shared-replay-response",
         content: `answer ${index}`,
       },
     ]).flat();
@@ -1053,6 +1064,12 @@ describe("OMP direct provider", () => {
     await events.waitFor(
       (event) => event.type === "session.ready" && event.requestId === "large-dedup-open",
     );
+    const replayedAssistants = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "assistant_message" ? [event.item] : [],
+    );
+
+    expect(replayedAssistants).toHaveLength(1_025);
+    expect(new Set(replayedAssistants.map((item) => item.id)).size).toBe(1_025);
     const liveTurn = turnIdFrom(
       await startPrompt(connection, events, "large-dedup-live", "continue", "large-dedup-session"),
     );
@@ -1061,7 +1078,7 @@ describe("OMP direct provider", () => {
       type: "message_end",
       message: {
         role: "assistant",
-        responseId: "large-response-0",
+        responseId: "shared-replay-response",
         content: "answer 0",
       },
     });
@@ -1071,6 +1088,43 @@ describe("OMP direct provider", () => {
         .some((event) => event.type === "timeline.item" && event.item.type === "assistant_message"),
     ).toBe(false);
     await finishTurn(events, sessionAt(runtime), liveTurn);
+    await connection.close();
+  });
+  test("ignores stale resume thinking and rejects unsupported restored thinking", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextThinkingLevel = "max";
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "unsupported-restored-thinking",
+      sessionId: "unsupported-restored-thinking-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        thinkingOption: "low",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    const failure = await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "unsupported-restored-thinking",
+    );
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP runtime selected an unsupported thinking level" },
+      }),
+    );
+    expect(runtime.starts[0]?.thinkingOption).toBeUndefined();
+    expect(events.some((event) => event.type === "session.ready")).toBe(false);
     await connection.close();
   });
 

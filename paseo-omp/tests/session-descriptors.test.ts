@@ -7,6 +7,7 @@ import { listOmpSessionDescriptors } from "../server/provider/session-descriptor
 const roots: string[] = [];
 const SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";
 const OTHER_ID = "native_session_01";
+const EXACT_CWD_ID = "native_exact_cwd_01";
 
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "paseo-omp-sessions-"));
@@ -66,6 +67,7 @@ describe("OMP session descriptor discovery", () => {
       splitUtf8Suffix,
     );
     await writeSession(sessionRoot, "other", OTHER_ID, "/other");
+    await writeSession(sessionRoot, "exact", EXACT_CWD_ID, "/repo ");
 
     const sessions = listOmpSessionDescriptors(
       { cwd: "/repo", limit: 10 },
@@ -74,6 +76,9 @@ describe("OMP session descriptor discovery", () => {
     expect(sessions).toEqual([
       expect.objectContaining({ id: SESSION_ID, cwd: "/repo", title: "Safe Title" }),
     ]);
+    expect(
+      listOmpSessionDescriptors({ cwd: "/repo ", limit: 10 }, { OMP_SESSION_DIR: sessionRoot }),
+    ).toEqual([expect.objectContaining({ id: EXACT_CWD_ID, cwd: "/repo " })]);
   });
 
   test("resolves configured and environment-specific session roots", async () => {
