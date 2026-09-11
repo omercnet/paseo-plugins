@@ -400,6 +400,7 @@ class FakeOmpRuntime implements OmpRuntime {
   commandDiscoveryError: Error | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
+  nextAvailableModels: OmpModel[] | null = null;
   redactionValues: readonly string[] = [];
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     this.starts.push(options);
@@ -417,7 +418,10 @@ class FakeOmpRuntime implements OmpRuntime {
       ...(command.aliases ? { aliases: [...command.aliases] } : {}),
     }));
     session.redactionValues = this.redactionValues;
-    session.availableModels = this.availableModels.map((model) => ({ ...model }));
+    session.availableModels = (this.nextAvailableModels ?? this.availableModels).map((model) => ({
+      ...model,
+    }));
+    this.nextAvailableModels = null;
     session.nativeSessionId = this.sessionIds.shift() ?? session.nativeSessionId;
     if (this.nextModel) {
       session.currentModel = this.nextModel;
@@ -485,10 +489,10 @@ async function openSession(
       systemPrompt: "Be precise",
       mcpServers: {},
       model,
+      persist: true,
       mode: "full",
       ...(thinkingOption ? { thinkingOption } : {}),
       settings: {},
-      persist: false,
     },
     history: "skip",
   });
@@ -552,18 +556,14 @@ describe("OMP direct provider", () => {
           expect.objectContaining({ id: MODEL_PUBLIC_ID }),
           expect.objectContaining({ id: ALTERNATE_MODEL_PUBLIC_ID }),
         ]),
-        modes: [
-          expect.objectContaining({ id: "full" }),
-          expect.objectContaining({ id: "write" }),
-          expect.objectContaining({ id: "ask" }),
-        ],
+        modes: [expect.objectContaining({ id: "full" })],
       }),
     });
     if (event.type !== "catalog") throw new Error("Expected catalog event");
     const alternate = event.catalog.models.find((model) => model.id === ALTERNATE_MODEL_PUBLIC_ID);
     expect(alternate?.contextWindowMaxTokens).toBeUndefined();
     expect(alternate?.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
-    expect(event.catalog.modes.map((mode) => mode.id)).toEqual(["full", "write", "ask"]);
+    expect(event.catalog.modes.map((mode) => mode.id)).toEqual(["full"]);
     expect(runtime.starts[0]).toEqual(
       expect.objectContaining({ cwd: "/repo", noSession: true, environment: TEST_RUNTIME_ENV }),
     );
@@ -571,7 +571,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("applies migrated provider options before opening an ephemeral session", async () => {
+  test("preserves the complete profile through refresh and repeated recovery", async () => {
     const { connection, events, runtime } = await createHarness();
     await connection.send({
       type: "session.open",
@@ -581,7 +581,7 @@ describe("OMP direct provider", () => {
         cwd: "/repo",
         env: { SESSION_VALUE: "session" },
         mcpServers: {},
-        mode: "ask",
+        mode: "full",
         settings: {},
         providerOptions: {
           command: ["/opt/omp-wrapper", "omp"],
@@ -592,49 +592,189 @@ describe("OMP direct provider", () => {
             smolModel: "openai/gpt-5-mini",
           },
         },
-        persist: false,
+        systemPrompt: "profile system prompt",
+        persist: true,
       },
       history: "skip",
     });
     await events.waitFor(
       (event) => event.type === "session.ready" && event.requestId === "profile-open",
     );
+    const expectedTemplate = {
+      command: ["/opt/omp-wrapper", "omp"],
+      env: { PROFILE_VALUE: "profile", SESSION_VALUE: "session" },
+      mode: "full",
+      noSession: false,
+      readyTimeoutMs: 8_000,
+      requestTimeoutMs: 8_000,
+      roleModels: { smol: "openai/gpt-5-mini" },
+      sessionDir: "/sessions/custom",
+      systemPrompt: "profile system prompt",
+    } as const;
+    expect(runtime.starts[0]).toEqual(expect.objectContaining(expectedTemplate));
 
+    const initial = sessionAt(runtime);
+    initial.currentModel = ALTERNATE_MODEL;
+    initial.thinkingLevel = "high";
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.sessionId === "profile-session" &&
+        event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    initial.emit({ type: "model_changed" });
+    await refreshed;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    for (let recovery = 1; recovery <= 2; recovery += 1) {
+      runtime.nextModel = ALTERNATE_MODEL;
+      runtime.nextThinkingLevel = "high";
+      sessionAt(runtime, recovery - 1).emit({ type: "process_exit", error: "restart profile" });
+      const turnId = turnIdFrom(
+        await startPrompt(
+          connection,
+          events,
+          `profile-recovery-${recovery}`,
+          "continue",
+          "profile-session",
+        ),
+      );
+      expect(runtime.starts[recovery]).toEqual(
+        expect.objectContaining({
+          ...expectedTemplate,
+          model: "openai/gpt-5.4",
+          thinkingOption: "high",
+          resumeSessionId: "native-session",
+        }),
+      );
+      await finishTurn(events, sessionAt(runtime, recovery), turnId);
+    }
+    await connection.close();
+  });
+
+  test("fails recovery without resuming an ephemeral native session", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await connection.send({
+      type: "session.open",
+      requestId: "ephemeral-open",
+      sessionId: "ephemeral-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        providerOptions: { command: ["/opt/ephemeral-omp"] },
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "ephemeral-open",
+    );
+    expect(runtime.starts[0]).toEqual(
+      expect.objectContaining({ command: ["/opt/ephemeral-omp"], noSession: true }),
+    );
+
+    sessionAt(runtime).emit({ type: "process_exit", error: "ephemeral runtime stopped" });
+    const result = await startPrompt(
+      connection,
+      events,
+      "ephemeral-recovery",
+      "continue",
+      "ephemeral-session",
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        result: {
+          type: "failed",
+          error: {
+            message: "OMP cannot recover a non-persisted session; create a new session instead",
+          },
+        },
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("validates model selection against the configured session runtime catalog", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextAvailableModels = [ALTERNATE_MODEL];
+    runtime.nextModel = ALTERNATE_MODEL;
+    const { connection, events } = await createHarness(runtime);
+    await connection.send({
+      type: "session.open",
+      requestId: "custom-runtime-model",
+      sessionId: "custom-runtime-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        providerOptions: {
+          command: ["/opt/custom-omp"],
+          env: { PROFILE_NAME: "custom" },
+          params: { sessionDir: "/sessions/custom" },
+        },
+        persist: true,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "custom-runtime-model",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP model is not advertised by the configured session runtime" },
+      }),
+    );
     expect(runtime.starts[0]).toEqual(
       expect.objectContaining({
-        command: ["/opt/omp-wrapper", "omp"],
-        env: { PROFILE_VALUE: "profile", SESSION_VALUE: "session" },
-        mode: "ask",
-        noSession: true,
-        readyTimeoutMs: 8_000,
-        requestTimeoutMs: 8_000,
-        roleModels: { smol: "openai/gpt-5-mini" },
+        command: ["/opt/custom-omp"],
+        env: { PROFILE_NAME: "custom" },
         sessionDir: "/sessions/custom",
       }),
     );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "session.config",
-        sessionId: "profile-session",
-        config: expect.objectContaining({ mode: "ask" }),
-      }),
-    );
-    sessionAt(runtime).emit({ type: "process_exit", error: "restart profile" });
-    const turnId = turnIdFrom(
-      await startPrompt(connection, events, "profile-recovery", "continue", "profile-session"),
-    );
-    expect(runtime.starts[1]).toEqual(
-      expect.objectContaining({
-        command: ["/opt/omp-wrapper", "omp"],
-        env: { PROFILE_VALUE: "profile", SESSION_VALUE: "session" },
-        mode: "ask",
-        noSession: true,
-        requestTimeoutMs: 8_000,
-        roleModels: { smol: "openai/gpt-5-mini" },
-        sessionDir: "/sessions/custom",
-      }),
-    );
-    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    expect(sessionAt(runtime).modelChanges).toHaveLength(0);
+    expect(sessionAt(runtime).closes).toBe(1);
+    await connection.close();
+  });
+
+  test("rejects approval-requiring modes before spawning without permission support", async () => {
+    const { connection, events, runtime } = await createHarness();
+    for (const mode of ["write", "ask"] as const) {
+      const requestId = `unsupported-${mode}-mode`;
+      await connection.send({
+        type: "session.open",
+        requestId,
+        sessionId: `${mode}-session`,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode,
+          settings: {},
+          persist: true,
+        },
+        history: "skip",
+      });
+      const failure = await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === requestId,
+      );
+      expect(failure).toEqual(
+        expect.objectContaining({
+          error: expect.objectContaining({
+            message: expect.stringContaining("requires interactive permission support"),
+          }),
+        }),
+      );
+    }
+    expect(runtime.starts).toHaveLength(0);
     await connection.close();
   });
 
@@ -859,11 +999,7 @@ describe("OMP direct provider", () => {
         config: expect.objectContaining({
           model: MODEL_PUBLIC_ID,
           mode: "full",
-          modes: [
-            expect.objectContaining({ id: "full" }),
-            expect.objectContaining({ id: "write" }),
-            expect.objectContaining({ id: "ask" }),
-          ],
+          modes: [expect.objectContaining({ id: "full" })],
           thinkingOption: "medium",
         }),
       }),
@@ -906,7 +1042,9 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "raw-model-open",
     );
     expect(failure).toEqual(
-      expect.objectContaining({ error: { message: "OMP model selection is unavailable" } }),
+      expect.objectContaining({
+        error: { message: "OMP model is not advertised by the configured session runtime" },
+      }),
     );
     expect(events.some((event) => event.type === "session.ready")).toBe(false);
     expect(sessionAt(runtime).modelChanges).toHaveLength(0);
@@ -3934,8 +4072,8 @@ describe("OMP direct provider", () => {
     let session: HostSession | undefined;
     let unsubscribe: (() => void) | undefined;
     try {
-      session = await client.createSession(config, launchContext, { persistSession: false });
-      expect(runtime.starts[0]?.noSession).toBe(true);
+      session = await client.createSession(config, launchContext, { persistSession: true });
+      expect(runtime.starts[0]?.noSession).toBe(false);
       const sessionId = session.id;
       const terminals: HostTerminalEvent[] = [];
       const firstTerminal = Promise.withResolvers<HostTerminalEvent>();
@@ -3967,7 +4105,7 @@ describe("OMP direct provider", () => {
       secondTurnId = second.turnId;
       expect(session.id).toBe(sessionId);
       expect(runtime.starts[1]).toEqual(
-        expect.objectContaining({ noSession: true, resumeSessionId: "native-session" }),
+        expect.objectContaining({ noSession: false, resumeSessionId: "native-session" }),
       );
       sessionAt(runtime, 1).emit({ type: "agent_end", messages: [], isTerminal: true });
       await expect(secondTerminal.promise).resolves.toEqual(
@@ -4025,7 +4163,7 @@ describe("OMP direct provider", () => {
         mcpServers: {},
         mode: "full",
         settings: {},
-        persist: false,
+        persist: true,
       },
       history: "skip",
     });

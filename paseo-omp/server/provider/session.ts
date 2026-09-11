@@ -6,7 +6,11 @@ import type {
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
-import { normalizeOmpSessionConfig } from "./config-normalization";
+import {
+  normalizeOmpSessionConfig,
+  type OmpRecoveryOptions,
+  withCommittedOmpSelection,
+} from "./config-normalization";
 import type {
   OmpMessage,
   OmpModel,
@@ -243,7 +247,7 @@ export class OmpProviderSession {
     id: string,
     private runtime: OmpRuntimeSession,
     private readonly runtimeFactory: OmpRuntime,
-    private recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal">,
+    private recoveryOptions: OmpRecoveryOptions,
     private nativeSessionId: string,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
@@ -320,7 +324,9 @@ export class OmpProviderSession {
       );
       if (input.config.model) {
         const selected = nativeModelsByPublicId.get(input.config.model);
-        if (!selected) throw new OmpPublicError("OMP model selection is unavailable");
+        if (!selected) {
+          throw new OmpPublicError("OMP model is not advertised by the configured session runtime");
+        }
         if (state.model?.provider !== selected.provider || state.model.id !== selected.id) {
           await native.setModel(selected.provider, selected.id);
           state = await native.getState();
@@ -356,17 +362,11 @@ export class OmpProviderSession {
         thinkingOptions,
         settings: [],
       };
-      const {
-        signal: _signal,
-        model: _model,
-        thinkingOption: _thinking,
-        ...recoveryBase
-      } = startOptions;
-      const recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal"> = {
-        ...recoveryBase,
-        ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
-        ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
-      };
+      const { signal: _signal, ...recoveryTemplate } = startOptions;
+      const recoveryOptions = withCommittedOmpSelection(recoveryTemplate, {
+        model: state.model ? nativeOmpModelId(state.model) : undefined,
+        thinkingOption: state.thinkingLevel,
+      });
       return new OmpProviderSession(
         input.sessionId,
         native,
@@ -880,17 +880,10 @@ export class OmpProviderSession {
           option.isDefault !== this.configState.thinkingOptions[index]?.isDefault,
       );
     this.configState = nextConfig;
-    this.recoveryOptions = {
-      cwd: this.recoveryOptions.cwd,
-      env: this.recoveryOptions.env,
-      mode: "full",
-      systemPrompt: this.recoveryOptions.systemPrompt,
-      environment: this.recoveryOptions.environment,
-      ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
-      ...(this.configState.thinkingOption
-        ? { thinkingOption: this.configState.thinkingOption }
-        : {}),
-    };
+    this.recoveryOptions = withCommittedOmpSelection(this.recoveryOptions, {
+      model: state.model ? nativeOmpModelId(state.model) : undefined,
+      thinkingOption: this.configState.thinkingOption,
+    });
     if (changed) {
       this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
     }
@@ -975,6 +968,11 @@ export class OmpProviderSession {
   }
 
   private async startRecovery(): Promise<void> {
+    if (this.recoveryOptions.noSession) {
+      throw new OmpPublicError(
+        "OMP cannot recover a non-persisted session; create a new session instead",
+      );
+    }
     const expectedSessionId = this.nativeSessionId;
     if (!expectedSessionId) {
       throw new Error("OMP cannot recover because the original native session handle is missing");

@@ -26,14 +26,14 @@ export function parseOmpProviderOptions(input: unknown): ParsedOmpProviderOption
     throw error;
   }
 
-  if ((options.models?.length ?? 0) > 0 || (options.additionalModels?.length ?? 0) > 0) {
+  if (options.models !== undefined || options.additionalModels !== undefined) {
     throw new OmpPublicError(
-      "OMP model overrides cannot be migrated: @getpaseo/plugin 0.8 catalog requests do not expose providerOptions",
+      "OMP model overrides cannot be migrated: @getpaseo/plugin 0.8 catalog requests do not expose providerOptions and Paseo does not merge configured models into plugin providers",
     );
   }
-  if ((options.disallowedTools?.length ?? 0) > 0) {
+  if (options.disallowedTools !== undefined) {
     throw new OmpPublicError(
-      "OMP disallowedTools cannot be migrated: @getpaseo/plugin 0.8 has no plugin-provider tool restriction contract",
+      "OMP disallowedTools cannot be migrated: @getpaseo/plugin 0.8 toolPolicy supports MCP preapproval but has no generic tool deny-list semantics",
     );
   }
   return options;

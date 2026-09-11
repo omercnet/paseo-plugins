@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
-import { normalizeOmpSessionConfig } from "../server/provider/config-normalization";
+import {
+  normalizeOmpSessionConfig,
+  withCommittedOmpSelection,
+} from "../server/provider/config-normalization";
 import { buildOmpSpawnRequest } from "../server/provider/omp-rpc";
 import { parseOmpProviderOptions } from "../server/provider/provider-options";
 
@@ -22,11 +25,11 @@ function sessionConfig(overrides: Partial<ProviderSessionConfig> = {}): Provider
 }
 
 describe("OMP provider option migration", () => {
-  test("maps legacy command, environment, params, modes, and ephemeral sessions to argv", () => {
+  test("maps legacy command, environment, params, and ephemeral sessions to argv", () => {
     const normalized = normalizeOmpSessionConfig(
       sessionConfig({
         env: { SESSION_VALUE: "session-wins" },
-        mode: "write",
+        mode: "full",
         providerOptions: {
           command: ["/usr/bin/env", "omp-custom", "--mode=rpc-ui"],
           env: { PROFILE_VALUE: "profile", SESSION_VALUE: "profile-loses" },
@@ -48,7 +51,7 @@ describe("OMP provider option migration", () => {
       "omp-custom",
       "--mode=rpc-ui",
       "--approval-mode",
-      "write",
+      "yolo",
       "--smol",
       "openai/gpt-5-mini",
       "--slow",
@@ -68,25 +71,52 @@ describe("OMP provider option migration", () => {
     expect(normalized.requestTimeoutMs).toBe(12_345);
   });
 
-  test("maps every public mode to the matching OMP approval policy", () => {
-    const approvalModes = { full: "yolo", write: "write", ask: "always-ask" } as const;
-    for (const [mode, approvalMode] of Object.entries(approvalModes)) {
-      const normalized = normalizeOmpSessionConfig(sessionConfig({ mode }));
-      const request = buildOmpSpawnRequest({ ...normalized, environment: TEST_ENV });
-      expect(request.args).toContain("--approval-mode");
-      expect(request.args[request.args.indexOf("--approval-mode") + 1]).toBe(approvalMode);
+  test("keeps interactive launch modes ready without advertising unsupported parity", () => {
+    for (const [mode, approvalMode] of [
+      ["write", "write"],
+      ["ask", "always-ask"],
+    ] as const) {
+      const nativeLaunch = buildOmpSpawnRequest({ cwd: "/repo", mode }, TEST_ENV);
+      expect(nativeLaunch.args.slice(-2)).toEqual(["--approval-mode", approvalMode]);
+      expect(() => normalizeOmpSessionConfig(sessionConfig({ mode }))).toThrow(
+        "requires interactive permission support",
+      );
+      const template = {
+        cwd: "/repo",
+        command: ["/opt/omp", "--mode=rpc-ui"],
+        env: { PROFILE: mode },
+        mode,
+        roleModels: { smol: "fast", slow: "slow", plan: "planner" },
+        sessionDir: `/sessions/${mode}`,
+        readyTimeoutMs: 12_000,
+        requestTimeoutMs: 34_000,
+        noSession: true,
+        systemPrompt: `system-${mode}`,
+      } as const;
+      const refreshed = withCommittedOmpSelection(template, {
+        model: "provider/first",
+        thinkingOption: "medium",
+      });
+      const recoveredAgain = withCommittedOmpSelection(refreshed, {
+        model: "provider/second",
+        thinkingOption: "high",
+      });
+      expect(recoveredAgain).toEqual({
+        ...template,
+        model: "provider/second",
+        thinkingOption: "high",
+      });
     }
   });
 
-  test("fails visibly for plugin-provider API gaps", () => {
-    expect(() => parseOmpProviderOptions({ models: [{ id: "custom" }] })).toThrow(
-      "catalog requests do not expose providerOptions",
-    );
-    expect(() => parseOmpProviderOptions({ additionalModels: [{ id: "custom" }] })).toThrow(
-      "catalog requests do not expose providerOptions",
-    );
-    expect(() => parseOmpProviderOptions({ disallowedTools: ["bash"] })).toThrow(
-      "no plugin-provider tool restriction contract",
+  test("fails visibly for plugin-provider API gaps even when legacy arrays are empty", () => {
+    for (const field of ["models", "additionalModels"] as const) {
+      expect(() => parseOmpProviderOptions({ [field]: [] })).toThrow(
+        "Paseo does not merge configured models into plugin providers",
+      );
+    }
+    expect(() => parseOmpProviderOptions({ disallowedTools: [] })).toThrow(
+      "toolPolicy supports MCP preapproval but has no generic tool deny-list semantics",
     );
   });
 

@@ -25,15 +25,27 @@ const ModelSelectorSchema = boundedString(MAX_MODEL_SELECTOR_BYTES).refine(
   (value) => !value.includes("\0"),
 );
 
+/** All native launch modes. `write` and `ask` remain recovery-ready for the permission branch. */
 export const OmpModeSchema = z.enum(["full", "write", "ask"]);
+
+/** Expand only when the provider both handles and advertises the public permission capability. */
+export const OmpAdvertisedModeSchema = z.literal("full");
 
 export const OmpProviderParamsSchema = z
   .object({
-    sessionDir: boundedString(MAX_PATH_BYTES).optional(),
-    rpcTimeoutMs: z.number().int().positive().max(MAX_RPC_TIMEOUT_MS).optional(),
-    smolModel: ModelSelectorSchema.optional(),
-    slowModel: ModelSelectorSchema.optional(),
-    planModel: ModelSelectorSchema.optional(),
+    sessionDir: boundedString(MAX_PATH_BYTES)
+      .describe("OMP session directory passed through --session-dir")
+      .optional(),
+    rpcTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_RPC_TIMEOUT_MS)
+      .describe("Shared OMP startup and RPC timeout in milliseconds")
+      .optional(),
+    smolModel: ModelSelectorSchema.describe("OMP smol role model selector").optional(),
+    slowModel: ModelSelectorSchema.describe("OMP slow role model selector").optional(),
+    planModel: ModelSelectorSchema.describe("OMP plan role model selector").optional(),
   })
   .strict();
 
@@ -45,8 +57,16 @@ export const OmpProviderParamsSchema = z
  */
 export const OmpProviderOptionsSchema = z
   .object({
-    command: z.array(CommandPartSchema).min(1).max(MAX_COMMAND_PARTS).optional(),
-    env: z.record(EnvironmentNameSchema, EnvironmentValueSchema).optional(),
+    command: z
+      .array(CommandPartSchema)
+      .min(1)
+      .max(MAX_COMMAND_PARTS)
+      .describe("Complete OMP executable and argument prefix")
+      .optional(),
+    env: z
+      .record(EnvironmentNameSchema, EnvironmentValueSchema)
+      .describe("Profile environment applied before session launch environment")
+      .optional(),
     params: OmpProviderParamsSchema.optional(),
     models: z.array(z.unknown()).max(512).optional(),
     additionalModels: z.array(z.unknown()).max(512).optional(),

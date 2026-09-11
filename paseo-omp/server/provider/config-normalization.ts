@@ -2,9 +2,23 @@ import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import type { OmpStartOptions } from "./omp-rpc";
 import { parseOmpProviderOptions } from "./provider-options";
 import { OmpPublicError } from "./security";
-import { OmpModeSchema } from "./settings";
+import { OmpAdvertisedModeSchema } from "./settings";
 
 export type NormalizedOmpStartOptions = Omit<OmpStartOptions, "environment" | "signal">;
+export type OmpRecoveryOptions = Omit<OmpStartOptions, "resumeSessionId" | "signal">;
+
+/** Replace only runtime-committed selection fields on an immutable recovery template. */
+export function withCommittedOmpSelection(
+  template: OmpRecoveryOptions,
+  selection: Readonly<{ model?: string; thinkingOption?: string }>,
+): OmpRecoveryOptions {
+  const next = { ...template };
+  if (selection.model === undefined) delete next.model;
+  else next.model = selection.model;
+  if (selection.thinkingOption === undefined) delete next.thinkingOption;
+  else next.thinkingOption = selection.thinkingOption;
+  return next;
+}
 
 /** Convert the public plugin session envelope into the native OMP launch contract. */
 export function normalizeOmpSessionConfig(
@@ -13,9 +27,11 @@ export function normalizeOmpSessionConfig(
   if (Object.keys(config.settings).length > 0) {
     throw new OmpPublicError("OMP Plugin Preview does not expose live provider settings");
   }
-  const parsedMode = OmpModeSchema.safeParse(config.mode ?? "full");
+  const parsedMode = OmpAdvertisedModeSchema.safeParse(config.mode ?? "full");
   if (!parsedMode.success) {
-    throw new OmpPublicError(`Unsupported OMP mode '${String(config.mode)}'`);
+    throw new OmpPublicError(
+      `OMP mode '${String(config.mode)}' requires interactive permission support, which this provider does not advertise`,
+    );
   }
   const options = parseOmpProviderOptions(config.providerOptions);
   const params = options.params ?? {};
