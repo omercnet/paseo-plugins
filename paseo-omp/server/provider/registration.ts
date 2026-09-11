@@ -21,6 +21,7 @@ export interface OmpProviderOptions {
   runtime?: OmpRuntime;
   timelineScheduler?: OmpTimelineScheduler;
   environment?: NodeJS.ProcessEnv;
+  mcpInitializationTimeoutMs?: number;
   mcpConnector?: OmpMcpConnector;
 }
 
@@ -48,6 +49,7 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         options.timelineScheduler,
         options.environment,
         options.mcpConnector,
+        options.mcpInitializationTimeoutMs,
       );
     },
   };

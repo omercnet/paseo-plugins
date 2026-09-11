@@ -286,7 +286,7 @@ export async function connectMcpTransport(
   const interrupted = Promise.withResolvers<never>();
   let abortCleanup: Promise<void> | null = null;
   const abort = () => {
-    abortCleanup ??= transport.close();
+    abortCleanup ??= Promise.resolve().then(() => transport.close());
     void abortCleanup.catch(() => undefined);
     interrupted.reject(
       new OmpCleanupFailure("OMP MCP connection initialization was interrupted", abortCleanup),
@@ -303,7 +303,7 @@ export async function connectMcpTransport(
     await Promise.race([connecting, interrupted.promise]);
   } catch (error) {
     if (error instanceof OmpCleanupFailure) throw error;
-    const cleanup = abortCleanup ?? transport.close();
+    const cleanup = abortCleanup ?? Promise.resolve().then(() => transport.close());
     try {
       await cleanup;
     } catch {

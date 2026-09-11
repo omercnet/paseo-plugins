@@ -39,6 +39,7 @@ class FakeRuntime
   updates: OmpHostToolUpdate[] = [];
   acceptedNames: string[] | null = null;
   throwUpdates = false;
+  throwResults = false;
 
   setHostTools(tools: readonly OmpHostToolDefinition[]): Promise<string[]> {
     this.catalogs.push(structuredClone([...tools]));
@@ -46,6 +47,7 @@ class FakeRuntime
   }
 
   sendHostToolResult(result: OmpHostToolResult): void {
+    if (this.throwResults) throw new Error("OMP RPC has too many pending writes");
     this.results.push(structuredClone(result));
   }
 
@@ -321,7 +323,7 @@ describe("OMP host tool bridge", () => {
       { connectMcp: connector, initializationTimeoutMs: 5 },
     );
 
-    await expect(opening).rejects.toThrow("cancelled or timed out");
+    await expect(opening).rejects.toThrow("initialization cleanup pending");
     expect(signals).toHaveLength(2);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(first.closes).toBe(1);
@@ -512,6 +514,47 @@ describe("OMP host tool bridge", () => {
       await bridge.close();
     }
     expect(observed).toEqual(["C:\\Users\\agent\\repo", "/mnt/c/Users/agent/repo"]);
+  });
+
+  test("invalidates and drains when terminal result delivery saturates the RPC writer", async () => {
+    const connection = new FakeConnection([{ name: "read", inputSchema: { type: "object" } }], {
+      content: [{ type: "text", text: "done" }],
+    });
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+      { connectMcp: async () => connection },
+    );
+    const saturated = new FakeRuntime();
+    saturated.throwResults = true;
+    const failed = Promise.withResolvers<Error>();
+    bridge.onFatal(failed.resolve);
+    await bridge.bind(saturated as unknown as OmpRuntimeSession);
+    bridge.handle({
+      type: "host_tool_call",
+      id: "saturated-result",
+      toolCallId: "tool-saturated-result",
+      toolName: "mcp__repo_read",
+      arguments: {},
+    });
+    await expect(failed.promise).resolves.toEqual(
+      expect.objectContaining({ message: "OMP RPC has too many pending writes" }),
+    );
+
+    const recovered = new FakeRuntime();
+    bridge.onFatal(() => {});
+    await bridge.bind(recovered as unknown as OmpRuntimeSession);
+    bridge.handle({
+      type: "host_tool_call",
+      id: "after-drain",
+      toolCallId: "tool-after-drain",
+      toolName: "mcp__repo_read",
+      arguments: {},
+    });
+    await flushMicrotasks();
+    expect(recovered.results).toEqual([
+      expect.objectContaining({ type: "host_tool_result", id: "after-drain" }),
+    ]);
+    await bridge.close();
   });
 
   test("keeps failed close ownership and rejects a mismatched OMP catalog", async () => {

@@ -283,12 +283,20 @@ function errorResult(id: string, message: string): OmpHostToolResult {
   };
 }
 
+async function settleCleanup(promises: readonly Promise<void>[]): Promise<void> {
+  const results = await Promise.allSettled(promises);
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (failures.length > 0) throw new AggregateError(failures, "OMP MCP cleanup failed");
+}
 export class OmpHostToolsBridge {
   private runtime: OmpRuntimeSession | null = null;
   private readonly pending = new Map<string, PendingCall>();
   private pendingBytes = 0;
   private generation = 0;
   private closePromise: Promise<void> | null = null;
+  private fatalHandler: ((error: Error) => void) | null = null;
 
   private constructor(
     private readonly connections: readonly OmpMcpConnection[],
@@ -331,8 +339,15 @@ export class OmpHostToolsBridge {
               ? await connecting
               : await abortable(connecting, initialization.signal);
         } catch (error) {
-          if (connectMcp !== connectMcpServer) {
-            void connecting.then((lateConnection) => lateConnection.close()).catch(() => undefined);
+          if (connectMcp !== connectMcpServer && initialization.signal.aborted) {
+            const cleanup = connecting.then(
+              (lateConnection) => lateConnection.close(),
+              () => undefined,
+            );
+            throw new OmpCleanupFailure(
+              "OMP MCP connection initialization was interrupted",
+              cleanup,
+            );
           }
           throw error;
         }
@@ -388,21 +403,20 @@ export class OmpHostToolsBridge {
       }
       return new OmpHostToolsBridge(connections, definitions, targets);
     } catch (error) {
-      const cleanup = Promise.all(connections.map((connection) => connection.close())).then(
-        () => undefined,
-      );
+      const cleanupTasks = [
+        ...connections.map((connection) => Promise.resolve().then(() => connection.close())),
+        ...(error instanceof OmpCleanupFailure ? [error.cleanup] : []),
+      ];
+      const cleanup = settleCleanup(cleanupTasks);
+      if (initialization.signal.aborted || error instanceof OmpCleanupFailure) {
+        throw new OmpCleanupFailure("OMP MCP host tool initialization cleanup pending", cleanup);
+      }
       try {
         await cleanup;
       } catch {
-        throw new OmpCleanupFailure(
-          "OMP MCP host tool cleanup failed",
-          cleanup.catch(() => undefined),
-        );
+        throw new OmpCleanupFailure("OMP MCP host tool cleanup failed", cleanup);
       }
-      if (initialization.signal.aborted) {
-        throw new OmpPublicError("OMP MCP host tool initialization was cancelled or timed out");
-      }
-      if (error instanceof OmpCleanupFailure || error instanceof OmpPublicError) throw error;
+      if (error instanceof OmpPublicError) throw error;
       throw new OmpPublicError("OMP could not initialize configured MCP host tools");
     } finally {
       clearTimeout(timeout);
@@ -426,6 +440,10 @@ export class OmpHostToolsBridge {
     this.runtime = runtime;
   }
 
+  onFatal(handler: (error: Error) => void): void {
+    this.fatalHandler = handler;
+  }
+
   handle(
     event: OmpHostToolCall | { type: "host_tool_cancel"; id: string; targetId: string },
   ): boolean {
@@ -443,7 +461,7 @@ export class OmpHostToolsBridge {
     if (!runtime) return true;
     const target = this.targets.get(event.toolName);
     if (!target) {
-      runtime.sendHostToolResult(errorResult(event.id, "Unknown OMP host tool"));
+      this.sendTerminal(runtime, errorResult(event.id, "Unknown OMP host tool"));
       return true;
     }
     const retainedBytes = boundedJsonBytes(
@@ -459,7 +477,7 @@ export class OmpHostToolsBridge {
       retainedBytes === Number.POSITIVE_INFINITY ||
       this.pendingBytes + retainedBytes > MAX_PENDING_HOST_TOOL_BYTES
     ) {
-      runtime.sendHostToolResult(errorResult(event.id, "OMP host tool bridge is at capacity"));
+      this.sendTerminal(runtime, errorResult(event.id, "OMP host tool bridge is at capacity"));
       return true;
     }
     const pending: PendingCall = {
@@ -491,21 +509,27 @@ export class OmpHostToolsBridge {
       })
       .then((result) => {
         if (!this.isCurrent(event.id, pending)) return;
+        let terminal: OmpHostToolResult;
         try {
           const normalized = normalizeResult(result);
-          runtime.sendHostToolResult({
+          terminal = {
             type: "host_tool_result",
             id: event.id,
             result: normalized,
             ...(normalized.isError !== undefined ? { isError: normalized.isError } : {}),
-          });
+          };
         } catch {
-          runtime.sendHostToolResult(errorResult(event.id, "MCP host tool execution failed"));
+          terminal = errorResult(event.id, "MCP host tool execution failed");
         }
+        this.sendTerminal(runtime, terminal, pending);
       })
       .catch(() => {
         if (!this.isCurrent(event.id, pending)) return;
-        runtime.sendHostToolResult(errorResult(event.id, "MCP host tool execution failed"));
+        this.sendTerminal(
+          runtime,
+          errorResult(event.id, "MCP host tool execution failed"),
+          pending,
+        );
       })
       .catch(() => undefined)
       .finally(() => this.releasePending(event.id, pending));
@@ -526,6 +550,28 @@ export class OmpHostToolsBridge {
     return this.closePromise;
   }
 
+  private sendTerminal(
+    runtime: OmpRuntimeSession,
+    result: OmpHostToolResult,
+    pending?: PendingCall,
+  ): void {
+    if (pending && !this.isCurrent(result.id, pending)) return;
+    try {
+      runtime.sendHostToolResult(result);
+    } catch (error) {
+      this.failRuntime(runtime, error);
+    }
+  }
+
+  private failRuntime(runtime: OmpRuntimeSession, error: unknown): void {
+    if (this.runtime !== runtime) return;
+    const failure =
+      error instanceof Error ? error : new Error("OMP host tool result delivery failed");
+    this.detach();
+    if (this.fatalHandler) this.fatalHandler(failure);
+    else void runtime.close().catch(() => undefined);
+  }
+
   private isCurrent(id: string, pending: PendingCall): boolean {
     return (
       this.pending.get(id) === pending &&
@@ -543,12 +589,9 @@ export class OmpHostToolsBridge {
 
   private async closeConnections(): Promise<void> {
     this.detach();
-    const results = await Promise.allSettled(
-      this.connections.map((connection) => connection.close()),
+    await settleCleanup(
+      this.connections.map((connection) => Promise.resolve().then(() => connection.close())),
     );
-    if (results.some((result) => result.status === "rejected")) {
-      throw new Error("OMP MCP host tool cleanup failed");
-    }
   }
 }
 

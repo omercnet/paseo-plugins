@@ -293,6 +293,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   promptEvents: OmpRpcEvent[] = [];
   steerError: Error | null = null;
   closeError: Error | null = null;
+  hostToolResultError: Error | null = null;
   aborts = 0;
   promptCount = 0;
   closes = 0;
@@ -381,6 +382,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   }
 
   sendHostToolResult(result: OmpHostToolResult) {
+    if (this.hostToolResultError) throw this.hostToolResultError;
     this.hostToolResults.push(structuredClone(result));
     this.hostToolResultObserved?.();
   }
@@ -1004,6 +1006,99 @@ describe("OMP direct provider", () => {
     );
     expect(connections).toBe(0);
     expect(runtime.starts).toHaveLength(0);
+    await connection.close();
+  });
+  test("tombstones timed-out MCP initialization until every owned close settles", async () => {
+    const runtime = new FakeOmpRuntime();
+    const lateConnection = Promise.withResolvers<{
+      listTools(): Promise<{ tools: [] }>;
+      callTool(): Promise<{ content: [] }>;
+      close(): Promise<void>;
+    }>();
+    const lateCloseStarted = Promise.withResolvers<void>();
+    const releaseLateClose = Promise.withResolvers<void>();
+    let connectorCalls = 0;
+    let firstCloses = 0;
+    let lateCloses = 0;
+    const connection = await createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      mcpInitializationTimeoutMs: 5,
+      mcpConnector: async () => {
+        connectorCalls += 1;
+        if (connectorCalls === 1) {
+          return {
+            listTools: async () => ({ tools: [] }),
+            callTool: async () => ({ content: [] }),
+            close: async () => {
+              firstCloses += 1;
+              throw new Error("first close failed");
+            },
+          };
+        }
+        return await lateConnection.promise;
+      },
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    const open = (requestId: string) =>
+      connection.send({
+        type: "session.open",
+        requestId,
+        sessionId: "mcp-timeout-session",
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {
+            first: { type: "stdio", command: "first" },
+            second: { type: "stdio", command: "second" },
+          },
+          model: MODEL_PUBLIC_ID,
+          mode: "full",
+          settings: {},
+          persist: false,
+        },
+        history: "skip",
+      });
+
+    await open("mcp-timeout-open");
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "mcp-timeout-open",
+    );
+    await open("mcp-timeout-reopen-pending");
+    await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "mcp-timeout-reopen-pending",
+    );
+    expect(connectorCalls).toBe(2);
+    expect(runtime.starts).toHaveLength(0);
+
+    lateConnection.resolve({
+      listTools: async () => ({ tools: [] }),
+      callTool: async () => ({ content: [] }),
+      close: async () => {
+        lateCloses += 1;
+        lateCloseStarted.resolve();
+        await releaseLateClose.promise;
+        throw new Error("late close failed");
+      },
+    });
+    await lateCloseStarted.promise;
+    expect(firstCloses).toBe(1);
+    expect(lateCloses).toBe(1);
+    await open("mcp-timeout-reopen-closing");
+    await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "mcp-timeout-reopen-closing",
+    );
+    releaseLateClose.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await open("mcp-timeout-reopen-failed");
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "mcp-timeout-reopen-failed",
+    );
+    expect(connectorCalls).toBe(2);
     await connection.close();
   });
 
@@ -4181,6 +4276,68 @@ describe("OMP direct provider", () => {
       mcpServer.stop(true);
     }
   });
+  test("invalidates the runtime when a terminal host-tool frame cannot be queued", async () => {
+    const runtime = new FakeOmpRuntime();
+    const connection = await createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async () => ({
+        listTools: async () => ({
+          tools: [{ name: "read", inputSchema: { type: "object" } }],
+        }),
+        callTool: async () => ({ content: [{ type: "text", text: "done" }] }),
+        close: async () => {},
+      }),
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({
+      type: "session.open",
+      requestId: "host-result-open",
+      sessionId: "host-result-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: { repo: { type: "stdio", command: "repo" } },
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "host-result-open",
+    );
+    const first = sessionAt(runtime);
+    const closed = Promise.withResolvers<void>();
+    first.closeObserved = closed.resolve;
+    first.hostToolResultError = new Error("OMP RPC has too many pending writes");
+    first.emit({
+      type: "host_tool_call",
+      id: "host-result-call",
+      toolCallId: "host-result-tool-call",
+      toolName: "mcp__repo_read",
+      arguments: {},
+    });
+    await closed.promise;
+
+    const prompt = await startPrompt(
+      connection,
+      events,
+      "host-result-recovery",
+      "continue",
+      "host-result-session",
+    );
+    expect(runtime.starts).toHaveLength(2);
+    expect(sessionAt(runtime, 1).hostToolCatalogs).toHaveLength(1);
+    const turnId = turnIdFrom(prompt);
+    expect(await finishTurn(events, sessionAt(runtime, 1), turnId)).toEqual(
+      expect.objectContaining({ state: "completed" }),
+    );
+    await connection.close();
+  });
+
   test("recovers a dead idle runtime by resuming the same native session", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);

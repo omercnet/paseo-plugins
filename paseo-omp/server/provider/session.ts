@@ -265,6 +265,7 @@ export class OmpProviderSession {
     ];
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
+    this.hostTools.onFatal(() => this.handleRuntimeFailure());
     this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
     this.bindRuntime(runtime);
   }
@@ -278,6 +279,7 @@ export class OmpProviderSession {
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
     mcpConnector?: OmpMcpConnector,
+    mcpInitializationTimeoutMs?: number,
   ): Promise<OmpProviderSession> {
     if (input.persistence) {
       throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
@@ -312,6 +314,7 @@ export class OmpProviderSession {
     const hostTools = await OmpHostToolsBridge.open(input.config, {
       connectMcp: mcpConnector,
       signal,
+      initializationTimeoutMs: mcpInitializationTimeoutMs,
     });
     let native: OmpRuntimeSession | undefined;
     try {
