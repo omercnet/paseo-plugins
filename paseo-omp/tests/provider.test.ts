@@ -327,12 +327,13 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (this.availableCommandsError) throw this.availableCommandsError;
     return this.availableCommands;
   }
-  async prompt(message: string) {
+  async prompt(message: string, onAccepted?: () => void) {
     this.prompts.push(message);
     this.promptCount += 1;
     this.promptObserved?.();
     if (this.promptGate) await this.promptGate;
     for (const event of this.promptEvents) this.emit(event);
+    onAccepted?.();
     return {
       requestId: `rpc-prompt-${this.promptCount}`,
       agentInvoked: this.promptAgentInvoked,
@@ -1752,6 +1753,162 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         detail: expect.objectContaining({ input: { path: "selected.ts" } }),
       }),
+    );
+    await connection.close();
+  });
+  test("advances replay suppression at an in-chunk prompt acknowledgement", async () => {
+    const duplicate = {
+      role: "assistant" as const,
+      entryId: "transport-shared-entry",
+      responseId: "transport-shared-response",
+      content: "same answer",
+    };
+    const preAckDuplicate = {
+      ...duplicate,
+      content: [
+        { type: "thinking" as const, thinking: "pre-ack replay duplicate" },
+        { type: "text" as const, text: "same answer" },
+      ],
+    };
+    let child: ProviderRpcChild;
+    child = new ProviderRpcChild((command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_state") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            model: MODEL,
+            thinkingLevel: "medium",
+            isStreaming: false,
+            isCompacting: false,
+            sessionId: NATIVE_SESSION_ID,
+          },
+        });
+      } else if (command.type === "get_available_models") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { models: [MODEL] },
+        });
+      } else if (command.type === "get_available_commands") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { commands: [] },
+        });
+      } else if (command.type === "get_messages") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            messages: [
+              { role: "user", entryId: "transport-user-1", content: "first" },
+              preAckDuplicate,
+              { role: "user", entryId: "transport-user-2", content: "second" },
+              duplicate,
+            ],
+          },
+        });
+      } else if (command.type === "prompt") {
+        child.stdout.write(
+          [
+            { type: "message_end", message: preAckDuplicate },
+            {
+              type: "response",
+              id: command.id,
+              success: true,
+              data: { agentInvoked: true },
+            },
+            { type: "message_end", message: duplicate },
+          ]
+            .map((frame) => JSON.stringify(frame))
+            .join("\n") + "\n",
+        );
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => Promise.resolve(true),
+      environment: TEST_RUNTIME_ENV,
+      listSessions: () => [{ id: NATIVE_SESSION_ID, cwd: "/repo" }],
+    });
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.persistence"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    queueMicrotask(() =>
+      child.write({
+        type: "ready",
+        protocolVersion: 1,
+        supportedProtocolVersions: [1, 2],
+        maxFrameBytes: 1_048_576,
+        maxReassembledFrameBytes: 67_108_864,
+      }),
+    );
+    await connection.send({
+      type: "session.open",
+      requestId: "transport-boundary-open",
+      sessionId: "transport-boundary-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "transport-boundary-open",
+    );
+    const replayedAssistants = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "assistant_message" ? [event.item] : [],
+    );
+    expect(replayedAssistants.map((item) => item.text)).toEqual(["same answer", "same answer"]);
+
+    const baseline = events.length;
+    const turnId = turnIdFrom(
+      await startPrompt(
+        connection,
+        events,
+        "transport-boundary-prompt",
+        "continue",
+        "transport-boundary-session",
+      ),
+    );
+    expect(
+      events
+        .slice(baseline)
+        .flatMap((event) =>
+          event.type === "timeline.item" && event.item.type === "assistant_message"
+            ? [event.item.text]
+            : [],
+        ),
+    ).toEqual(["same answer"]);
+    expect(
+      events
+        .slice(baseline)
+        .some((event) => event.type === "timeline.item" && event.item.type === "reasoning"),
+    ).toBe(false);
+    child.write({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
     );
     await connection.close();
   });

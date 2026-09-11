@@ -134,6 +134,7 @@ type ActiveTurn = {
   localOnlyDisabled: boolean;
   localOnlyEligible: boolean;
   nativeRequestId?: string;
+  promptAcceptedEventIndex?: number;
   localOnlyTimer?: unknown;
   terminalizing: boolean;
   steersInFlight: number;
@@ -635,7 +636,9 @@ export class OmpProviderSession {
     };
     this.activeTurn = turn;
     try {
-      const acknowledgement = await this.runtime.prompt(text);
+      const acknowledgement = await this.runtime.prompt(text, () => {
+        turn.promptAcceptedEventIndex ??= turn.bufferedEvents.length;
+      });
       if (this.closed || turn.terminal) return;
       turn.nativeRequestId = acknowledgement.requestId;
       this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
@@ -646,8 +649,13 @@ export class OmpProviderSession {
         this.scheduleLocalOnlyCompletion(turn);
       }
       const bufferedEvents = turn.bufferedEvents.splice(0);
-      for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
+      const preAcceptanceEvents = bufferedEvents.splice(
+        0,
+        turn.promptAcceptedEventIndex ?? bufferedEvents.length,
+      );
+      for (const event of preAcceptanceEvents) this.handleTurnEvent(turn, event);
       this.projector.acceptLiveTurn(turn.turnId);
+      for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
     } catch (error) {
       this.publishPendingUsers(turn);
       const failure = providerError(error, "OMP prompt failed");

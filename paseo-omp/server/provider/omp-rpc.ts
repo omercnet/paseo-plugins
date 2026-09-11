@@ -397,7 +397,10 @@ export interface OmpRuntimeSession {
   getState(): Promise<OmpSessionState>;
   getAvailableModels(): Promise<OmpModel[]>;
   getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>>;
-  prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }>;
+  prompt(
+    message: string,
+    onAccepted?: () => void,
+  ): Promise<{ requestId: string; agentInvoked?: boolean }>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: string): Promise<void>;
   steer(message: string): Promise<void>;
@@ -438,6 +441,7 @@ type PendingRequest = {
   reject(error: Error): void;
   timer: NodeJS.Timeout;
   command: string;
+  beforeResolve?: (value: unknown) => void;
 };
 type StartedRequest = { id: string; promise: Promise<unknown> };
 
@@ -1158,6 +1162,7 @@ class OmpRpcProcess {
   startRequest(
     command: Record<string, unknown>,
     timeoutMs = this.requestTimeoutMs,
+    beforeResolve?: (value: unknown) => void,
   ): StartedRequest {
     const id = randomUUID();
     if (this.fatalError) return { id, promise: Promise.reject(this.fatalError) };
@@ -1192,6 +1197,7 @@ class OmpRpcProcess {
       reject: result.reject,
       timer,
       command: typeof command.type === "string" ? command.type : "unknown",
+      ...(beforeResolve ? { beforeResolve } : {}),
     });
     this.queuedWrites.set(id, payload.byteLength);
     this.pendingWriteBytes += payload.byteLength;
@@ -1483,8 +1489,14 @@ class OmpRpcProcess {
     }
     const settled = this.takePending(response.data.id);
     if (!settled) return;
-    if (response.data.success) settled.resolve(response.data.data);
-    else settled.reject(new Error("OMP RPC request failed"));
+    if (response.data.success) {
+      try {
+        settled.beforeResolve?.(response.data.data);
+        settled.resolve(response.data.data);
+      } catch {
+        settled.reject(new Error("OMP RPC response is invalid"));
+      }
+    } else settled.reject(new Error("OMP RPC request failed"));
   }
 
   private takePending(id: string): PendingRequest | undefined {
@@ -1819,12 +1831,24 @@ class OmpRpcSession implements OmpRuntimeSession {
     return result.messages;
   }
 
-  async prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }> {
+  async prompt(
+    message: string,
+    onAccepted?: () => void,
+  ): Promise<{ requestId: string; agentInvoked?: boolean }> {
     const safeMessage = validateBoundedText(message, "prompt", MAX_TEXT_LENGTH);
-    const request = this.process.startRequest({ type: "prompt", message: safeMessage });
-    const acknowledgement = OmpPromptAckSchema.parse(await request.promise) ?? {};
+    let acknowledgement: z.infer<typeof OmpPromptAckSchema> | undefined;
+    const request = this.process.startRequest(
+      { type: "prompt", message: safeMessage },
+      undefined,
+      (value) => {
+        acknowledgement = OmpPromptAckSchema.parse(value) ?? {};
+        onAccepted?.();
+      },
+    );
+    await request.promise;
     return { requestId: request.id, ...acknowledgement };
   }
+
   async steer(message: string): Promise<void> {
     const safeMessage = validateBoundedText(message, "steer", MAX_TEXT_LENGTH);
     await this.process.request({ type: "steer", message: safeMessage });
