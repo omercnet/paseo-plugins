@@ -157,11 +157,11 @@ export function listOmpSessionDescriptors(
   const matches: OmpSessionDescriptor[] = [];
   for (const file of sessionFiles(ompSessionDir(environment))) {
     const fileName = basename(file);
-    const candidateId = fileName.slice(fileName.lastIndexOf("_") + 1, -".jsonl".length);
-    if (!NATIVE_SESSION_ID.test(candidateId) || (requestedId && candidateId !== requestedId))
-      continue;
+    const stem = fileName.slice(0, -".jsonl".length);
+    if (requestedId && !stem.endsWith(`_${requestedId}`)) continue;
     const descriptor = parseDescriptor(file);
-    if (!descriptor || descriptor.id !== candidateId || descriptor.cwd !== options.cwd) continue;
+    if (!descriptor || !stem.endsWith(`_${descriptor.id}`) || descriptor.cwd !== options.cwd)
+      continue;
     if (
       query &&
       !descriptor.id.toLowerCase().includes(query) &&

@@ -5,7 +5,13 @@ import type {
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
-import { boundedJsonBytes, type JsonValue, OmpPublicDataFilter, utf8Bytes } from "./security";
+import {
+  BoundedStringSet,
+  boundedJsonBytes,
+  type JsonValue,
+  OmpPublicDataFilter,
+  utf8Bytes,
+} from "./security";
 
 const STREAM_FRAME_MS = 32;
 const MAX_STREAM_CONTENT_BLOCKS = 64;
@@ -62,9 +68,10 @@ function assistantIdentity(message: OmpMessage, allowMessageId = false): string 
   if (message.role !== "assistant") return;
   return message.responseId ?? message.entryId ?? (allowMessageId ? message.id : undefined);
 }
+type OmpAssistantMessage = Extract<OmpMessage, { role: "assistant" }>;
 
 function blockText(
-  message: OmpMessage,
+  message: OmpAssistantMessage,
   contentIndex: number,
 ): { kind: StreamBlockKind; text: string } | undefined {
   if (typeof message.content === "string") {
@@ -91,7 +98,7 @@ export class OmpTimelineProjector {
   private userSequence = 0;
   private replayTurnId: string | null = null;
   private replaySequence = 0;
-  private readonly replayedNativeMessageIds = new Set<string>();
+  private readonly replayedNativeMessageIds = new BoundedStringSet(MAX_TURN_NATIVE_IDENTITIES);
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -312,7 +319,7 @@ export class OmpTimelineProjector {
         typeof message.content === "string"
           ? message.content
           : message.content
-              ?.filter((part) => part.type === "text" && typeof part.text === "string")
+              .filter((part) => part.type === "text" && typeof part.text === "string")
               .map((part) => part.text ?? "")
               .join("\n\n");
       if (text) {
@@ -324,17 +331,48 @@ export class OmpTimelineProjector {
       }
       return;
     }
-    if (message.role !== "assistant") return;
+    if (message.role === "assistant") {
+      this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
+      this.project({ type: "message_start", message }, this.replayTurnId);
+      this.project({ type: "message_end", message }, this.replayTurnId);
+      if (nativeIdentity) this.replayedNativeMessageIds.add(nativeIdentity);
+      return;
+    }
     this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
-    this.project({ type: "message_start", message }, this.replayTurnId);
-    this.project({ type: "message_end", message }, this.replayTurnId);
-    if (nativeIdentity) this.replayedNativeMessageIds.add(nativeIdentity);
+    if (message.role === "toolResult") {
+      this.project(
+        {
+          type: "tool_execution_start",
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          args: null,
+        },
+        this.replayTurnId,
+      );
+      this.project(
+        {
+          type: "tool_execution_end",
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          result: message.content,
+          isError: message.isError,
+        },
+        this.replayTurnId,
+      );
+      return;
+    }
+    if (message.role === "bashExecution") {
+      const text = message.output
+        ? `$ ${message.command}\n${message.output}`
+        : `$ ${message.command}`;
+      this.project({ type: "command_output", text }, this.replayTurnId);
+      this.finishTurn(this.replayTurnId);
+      this.replayTurnId = null;
+    }
   }
-
   finishReplay(): void {
     if (this.replayTurnId) this.finishTurn(this.replayTurnId);
     this.replayTurnId = null;
-    this.replayedNativeMessageIds.clear();
   }
 
   flush(finalizeFallback = false): void {
@@ -400,7 +438,7 @@ export class OmpTimelineProjector {
     this.commandPublishedText = "";
   }
 
-  private beginStream(message: OmpMessage, turnId: string): StreamSnapshot | null {
+  private beginStream(message: OmpAssistantMessage, turnId: string): StreamSnapshot | null {
     this.assistantSequence += 1;
     const nativeIdentity = assistantIdentity(message);
     const messageId = nativeIdentity
@@ -437,7 +475,11 @@ export class OmpTimelineProjector {
     return `omp:assistant:${this.assistantIdentitySequence}:${digest}`;
   }
 
-  private updateStream(message: OmpMessage, turnId: string, update?: AssistantMessageEvent): void {
+  private updateStream(
+    message: OmpAssistantMessage,
+    turnId: string,
+    update?: AssistantMessageEvent,
+  ): void {
     const nativeIdentity = assistantIdentity(message);
     if (this.stream && nativeIdentity && this.stream.nativeIdentity !== nativeIdentity) {
       if (!this.stream.nativeIdentity && !this.stream.published) {
@@ -462,7 +504,7 @@ export class OmpTimelineProjector {
     this.updateAllBlocks(message);
   }
 
-  private updateAllBlocks(message: OmpMessage): void {
+  private updateAllBlocks(message: OmpAssistantMessage): void {
     const stream = this.stream;
     if (!stream) return;
     if (typeof message.content === "string") {
@@ -479,7 +521,7 @@ export class OmpTimelineProjector {
 
   private updateBlock(
     stream: StreamSnapshot,
-    message: OmpMessage,
+    message: OmpAssistantMessage,
     contentIndex: number,
     update: NonNullable<AssistantMessageEvent>,
   ): void {

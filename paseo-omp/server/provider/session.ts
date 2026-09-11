@@ -436,6 +436,7 @@ export class OmpProviderSession {
         ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
         environment,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
+        ...(!effectiveConfig.persist ? { noSession: true } : {}),
       };
       return new OmpProviderSession(
         input.sessionId,
@@ -991,6 +992,7 @@ export class OmpProviderSession {
     this.recoveryOptions = {
       cwd: this.recoveryOptions.cwd,
       env: this.recoveryOptions.env,
+      noSession: this.recoveryOptions.noSession,
       mode: "full",
 
       systemPrompt: this.recoveryOptions.systemPrompt,
@@ -1089,8 +1091,8 @@ export class OmpProviderSession {
   }
 
   private async startRecovery(): Promise<void> {
-    const expectedSessionId = this.nativeSessionId;
-    if (!expectedSessionId) {
+    const expectedSessionId = this.persistSession ? this.nativeSessionId : undefined;
+    if (this.persistSession && !expectedSessionId) {
       throw new Error("OMP cannot recover because the original native session handle is missing");
     }
     const recoverFromNativeConfig = this.recoveryUsesNativeConfig;
@@ -1101,7 +1103,7 @@ export class OmpProviderSession {
       recovered = await this.runtimeFactory.startSession({
         ...this.recoveryOptions,
         ...(recoverFromNativeConfig ? { model: undefined, thinkingOption: undefined } : {}),
-        resumeSessionId: expectedSessionId,
+        ...(expectedSessionId ? { resumeSessionId: expectedSessionId } : {}),
         signal: this.lifetime.signal,
       });
     } catch (error) {
@@ -1120,11 +1122,12 @@ export class OmpProviderSession {
     }
     try {
       const state = await recovered.getState();
-      if (state.sessionId !== expectedSessionId) {
+      if (expectedSessionId && state.sessionId !== expectedSessionId) {
         throw new Error(
           `OMP resumed native session '${state.sessionId}' instead of '${expectedSessionId}'`,
         );
       }
+      if (!expectedSessionId) this.nativeSessionId = state.sessionId;
       const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
       if (!recoverFromNativeConfig && recoveredModel !== this.recoveryOptions.model) {
         throw new Error("OMP recovered with a different model");

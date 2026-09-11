@@ -911,11 +911,23 @@ describe("OMP direct provider", () => {
 
     runtime.nextHistoryMessages = Array.from(
       { length: 260 },
-      (_, index): OmpMessage => ({
-        role: index % 2 === 0 ? "user" : "assistant",
-        id: `history-${index}`,
-        content: `message ${index}`,
-      }),
+      (_, index): OmpMessage =>
+        index % 2 === 0
+          ? { role: "user", id: `history-${index}`, content: `message ${index}` }
+          : {
+              role: "assistant",
+              responseId: index === 1 ? "replayed-response" : `history-${index}`,
+              content: `message ${index}`,
+            },
+    );
+    runtime.nextHistoryMessages.push(
+      {
+        role: "toolResult",
+        toolCallId: "history-tool",
+        toolName: "read",
+        content: { content: [{ type: "text", text: "tool output" }] },
+      },
+      { role: "bashExecution", command: "pwd", output: "/repo\n", exitCode: 0 },
     );
     runtime.nextModel = MODEL;
     runtime.nextThinkingLevel = "medium";
@@ -957,27 +969,35 @@ describe("OMP direct provider", () => {
           item.type === "user_message" || item.type === "assistant_message" ? item.text : null,
         ),
     ).toEqual(["message 0", "message 1", "message 2", "message 3"]);
-    expect(timelineItems).toHaveLength(260);
-    expect(new Set(timelineItems.map((item) => item.id)).size).toBe(260);
+    expect(timelineItems).toHaveLength(263);
+    expect(new Set(timelineItems.map((item) => item.id)).size).toBe(262);
+    expect(timelineItems).toContainEqual(
+      expect.objectContaining({ type: "tool_call", name: "read", status: "completed" }),
+    );
+    expect(timelineItems).toContainEqual(
+      expect.objectContaining({
+        type: "assistant_message",
+        id: expect.stringMatching(/^omp:command:/u),
+        text: expect.stringContaining("$ pwd"),
+      }),
+    );
     const liveTurn = turnIdFrom(
       await startPrompt(connection, events, "live-after-replay", "next", "resumed-session"),
     );
     const liveBaseline = events.length;
-    for (const text of ["live", "live updated"]) {
-      sessionAt(runtime, 1).emit({
-        type: "message_end",
-        message: { role: "assistant", responseId: "live-duplicate", content: text },
-      });
-    }
-    const liveDuplicates = events
-      .slice(liveBaseline)
-      .flatMap((event) =>
-        event.type === "timeline.item" && event.item.type === "assistant_message"
-          ? [event.item]
-          : [],
-      );
-    expect(liveDuplicates).toHaveLength(2);
-    expect(new Set(liveDuplicates.map((item) => item.id)).size).toBe(1);
+    sessionAt(runtime, 1).emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        responseId: "replayed-response",
+        content: "message 1",
+      },
+    });
+    expect(
+      events
+        .slice(liveBaseline)
+        .some((event) => event.type === "timeline.item" && event.item.type === "assistant_message"),
+    ).toBe(false);
     await finishTurn(events, sessionAt(runtime, 1), liveTurn);
     expect(runtime.starts[1]).toEqual(
       expect.objectContaining({
@@ -1003,6 +1023,7 @@ describe("OMP direct provider", () => {
 
   test("rejects path-shaped or unresolved persistence without starting OMP", async () => {
     const runtime = new FakeOmpRuntime();
+
     runtime.resolveSessions = false;
     const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
       "prompt.message",
@@ -1035,6 +1056,134 @@ describe("OMP direct provider", () => {
     expect(runtime.sessionListRequests).toEqual([
       { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2 },
     ]);
+    await connection.close();
+  });
+  test("publishes selected branch history from chunked OMP RPC before ready", async () => {
+    const largeText = "x".repeat(600_000);
+    let child: ProviderRpcChild;
+    child = new ProviderRpcChild((command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_state") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            model: MODEL,
+            thinkingLevel: "medium",
+            isStreaming: false,
+            isCompacting: false,
+            sessionId: NATIVE_SESSION_ID,
+          },
+        });
+      } else if (command.type === "get_available_models") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { models: [MODEL] },
+        });
+      } else if (command.type === "get_available_commands") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { commands: [] },
+        });
+      } else if (command.type === "get_messages") {
+        child.writeChunked(
+          {
+            type: "response",
+            id: command.id,
+            success: true,
+            data: {
+              messages: [
+                { role: "user", id: "selected-user", content: "selected branch" },
+                {
+                  role: "assistant",
+                  responseId: "selected-assistant-1",
+                  content: largeText,
+                },
+                {
+                  role: "toolResult",
+                  toolCallId: "selected-tool",
+                  toolName: "read",
+                  content: [{ type: "text", text: "selected result" }],
+                },
+                { role: "bashExecution", command: "pwd", output: "/repo\n", exitCode: 0 },
+                {
+                  role: "assistant",
+                  responseId: "selected-assistant-2",
+                  content: largeText,
+                },
+              ],
+            },
+          },
+          "selected-history",
+        );
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => Promise.resolve(true),
+      environment: TEST_RUNTIME_ENV,
+      listSessions: () => [{ id: NATIVE_SESSION_ID, cwd: "/repo" }],
+    });
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.persistence"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    queueMicrotask(() =>
+      child.write({
+        type: "ready",
+        protocolVersion: 1,
+        supportedProtocolVersions: [1, 2],
+        maxFrameBytes: 1_048_576,
+        maxReassembledFrameBytes: 67_108_864,
+      }),
+    );
+    await connection.send({
+      type: "session.open",
+      requestId: "selected-branch-open",
+      sessionId: "selected-branch-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "selected-branch-open",
+    );
+    const readyIndex = events.findIndex((event) => event.type === "session.ready");
+    const timeline = events.flatMap((event, index) =>
+      event.type === "timeline.item" ? [{ index, item: event.item }] : [],
+    );
+    expect(timeline.every((entry) => entry.index < readyIndex)).toBe(true);
+    expect(timeline.map((entry) => entry.item.type)).toEqual([
+      "user_message",
+      "assistant_message",
+      "tool_call",
+      "tool_call",
+      "assistant_message",
+      "assistant_message",
+    ]);
+    expect(timeline.filter((entry) => entry.item.type === "assistant_message")[0]?.item).toEqual(
+      expect.objectContaining({ text: largeText }),
+    );
     await connection.close();
   });
   test("rejects cwd relocation and unscoped listing before touching OMP", async () => {
@@ -2227,7 +2376,7 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         environment: TEST_RUNTIME_ENV,
         model: "openai/gpt-5.4",
-        resumeSessionId: NATIVE_SESSION_ID,
+        noSession: true,
       }),
     );
     await finishTurn(events, sessionAt(runtime, 1), turnId);
@@ -2884,7 +3033,7 @@ describe("OMP direct provider", () => {
     const hiddenNotice = {
       type: "message_end" as const,
       message: {
-        role: "custom",
+        role: "custom" as const,
         content: "Mounted development tools",
         customType: "xdev-mount-notice",
         display: false,
@@ -4275,9 +4424,7 @@ describe("OMP direct provider", () => {
       const second = await session.startTurn("continue", { clientMessageId: "host-recovered" });
       secondTurnId = second.turnId;
       expect(session.id).toBe(sessionId);
-      expect(runtime.starts[1]).toEqual(
-        expect.objectContaining({ resumeSessionId: NATIVE_SESSION_ID }),
-      );
+      expect(runtime.starts[1]).toEqual(expect.objectContaining({ noSession: true }));
       sessionAt(runtime, 1).emit({ type: "agent_end", messages: [], isTerminal: true });
       await expect(secondTerminal.promise).resolves.toEqual(
         expect.objectContaining({ type: "turn_completed", turnId: second.turnId }),
@@ -4311,7 +4458,7 @@ describe("OMP direct provider", () => {
         mode: "full",
         thinkingOption: "medium",
         systemPrompt: "Be precise",
-        resumeSessionId: NATIVE_SESSION_ID,
+        noSession: true,
       }),
     );
     expect(await finishTurn(events, recovered, turnId)).toEqual(
@@ -4350,7 +4497,7 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         model: "openai/gpt-5.4",
         thinkingOption: "high",
-        resumeSessionId: NATIVE_SESSION_ID,
+        noSession: true,
       }),
     );
     expect(events.slice(baseline)).toContainEqual(
@@ -4505,9 +4652,7 @@ describe("OMP direct provider", () => {
     const recoveredTurn = turnIdFrom(
       await startPrompt(connection, events, "after-unavailable", "continue"),
     );
-    expect(runtime.starts[1]).toEqual(
-      expect.objectContaining({ resumeSessionId: NATIVE_SESSION_ID }),
-    );
+    expect(runtime.starts[1]).toEqual(expect.objectContaining({ noSession: true }));
     await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
     await connection.close();
   });
@@ -4540,13 +4685,11 @@ describe("OMP direct provider", () => {
     ).toBe(true);
     expect(session.closes).toBe(1);
     await startPrompt(connection, events, "after-active", "continue");
-    expect(runtime.starts[1]).toEqual(
-      expect.objectContaining({ resumeSessionId: NATIVE_SESSION_ID }),
-    );
+    expect(runtime.starts[1]).toEqual(expect.objectContaining({ noSession: true }));
     await connection.close();
   });
 
-  test("rejects recovery when the initial native session handle is absent", async () => {
+  test("recovers an ephemeral session without a native transcript handle", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.sessionIds.push("");
     const { connection, events } = await createHarness(runtime);
@@ -4554,17 +4697,11 @@ describe("OMP direct provider", () => {
     sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
 
     const result = await startPrompt(connection, events, "missing-handle", "continue");
-    expect(result).toEqual(
-      expect.objectContaining({
-        result: expect.objectContaining({
-          type: "failed",
-          error: expect.objectContaining({
-            message: "OMP session recovery failed",
-          }),
-        }),
-      }),
-    );
-    expect(runtime.starts).toHaveLength(1);
+    const turnId = turnIdFrom(result);
+    expect(runtime.starts).toHaveLength(2);
+    expect(runtime.starts[1]).toEqual(expect.objectContaining({ noSession: true }));
+    expect(runtime.starts[1]?.resumeSessionId).toBeUndefined();
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
     await connection.close();
   });
 
@@ -4588,11 +4725,11 @@ describe("OMP direct provider", () => {
     expect(runtime.starts).toHaveLength(1);
     await connection.close().catch(() => undefined);
   });
-  test("retains failed replacement cleanup until explicit close reports it", async () => {
+  test("retains failed fresh replacement cleanup until explicit close reports it", async () => {
     const runtime = new FakeOmpRuntime();
-    runtime.sessionIds.push(NATIVE_SESSION_ID, "wrong-session");
     const { connection, events } = await createHarness(runtime);
     await openSession(connection, events);
+    runtime.nextModel = ALTERNATE_MODEL;
     runtime.nextCloseError = new Error("candidate close failed");
     sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
 
@@ -5817,7 +5954,7 @@ describe("OMP direct provider", () => {
     session.emit({
       type: "agent_end",
       messages: [
-        ...Array.from({ length: 128 }, () => ({ role: "assistant", content: "ok" })),
+        ...Array.from({ length: 128 }, () => ({ role: "assistant" as const, content: "ok" })),
         { role: "assistant", content: "failed", stopReason: "error", errorMessage: "private" },
       ],
       isTerminal: true,
@@ -6048,7 +6185,7 @@ describe("OMP direct provider", () => {
     children[0]?.write({
       type: "agent_end",
       messages: [
-        ...Array.from({ length: 128 }, () => ({ role: "assistant", content: "ok" })),
+        ...Array.from({ length: 128 }, () => ({ role: "assistant" as const, content: "ok" })),
         { role: "assistant", content: "failed", stopReason: "error", errorMessage: "private" },
       ],
       isTerminal: true,
@@ -6193,7 +6330,8 @@ describe("OMP direct provider", () => {
       expect(recovered).toEqual(
         expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
       );
-      expect(launchArgs[index + 2]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
+      expect(launchArgs[index + 2]).toContain("--no-session");
+      expect(launchArgs[index + 2]).not.toContain("--resume");
     }
 
     children.at(-1)?.write({
@@ -6219,7 +6357,8 @@ describe("OMP direct provider", () => {
     const finalTurn = turnIdFrom(
       await startPrompt(connection, events, "after-invalid-nonterminal", "continue"),
     );
-    expect(launchArgs[5]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
+    expect(launchArgs[5]).toContain("--no-session");
+    expect(launchArgs[5]).not.toContain("--resume");
     children.at(-1)?.write({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
       (event) =>

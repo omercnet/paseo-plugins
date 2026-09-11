@@ -6,7 +6,7 @@ import { listOmpSessionDescriptors } from "../server/provider/session-descriptor
 
 const roots: string[] = [];
 const SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";
-const OTHER_ID = "01a08f6b-9aa5-745c-a293-be9c44f1edae";
+const OTHER_ID = "native_session_01";
 
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "paseo-omp-sessions-"));

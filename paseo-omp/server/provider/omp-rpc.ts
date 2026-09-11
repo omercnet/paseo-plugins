@@ -96,6 +96,87 @@ const OmpContentPartSchema = z
       context.addIssue({ code: "custom", message: "invalid image payload" });
     }
   });
+const OmpDisplayContentSchema = z.union([
+  TEXT,
+  z.array(OmpContentPartSchema).max(MAX_CONTENT_PARTS),
+]);
+const OmpMessageIdentityShape = {
+  id: IDENTIFIER.optional(),
+  entryId: IDENTIFIER.optional(),
+  responseId: IDENTIFIER.optional(),
+};
+type OmpContentPart = z.infer<typeof OmpContentPartSchema>;
+type OmpMessageIdentity = { id?: string; entryId?: string; responseId?: string };
+export type OmpMessage = OmpMessageIdentity &
+  (
+    | {
+        role: "assistant";
+        content?: string | OmpContentPart[];
+        errorMessage?: string | null;
+        stopReason?: string;
+      }
+    | { role: "user"; content: string | OmpContentPart[] }
+    | {
+        role: "toolResult";
+        toolCallId: string;
+        toolName: string;
+        content: unknown;
+        isError?: boolean;
+      }
+    | {
+        role: "bashExecution";
+        command: string;
+        output?: string;
+        exitCode?: number | null;
+        cancelled?: boolean;
+        truncated?: boolean;
+      }
+    | { role: "custom"; customType?: string; content?: unknown; display?: boolean }
+  );
+
+const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
+  z.object({
+    role: z.literal("assistant"),
+    content: OmpDisplayContentSchema.optional(),
+    ...OmpMessageIdentityShape,
+    errorMessage: boundedString(4_096).nullable().optional(),
+    stopReason: boundedString(64).optional(),
+  }),
+  z.object({
+    role: z.literal("user"),
+    content: OmpDisplayContentSchema,
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("toolResult"),
+    toolCallId: IDENTIFIER,
+    toolName: NAME,
+    content: z
+      .unknown()
+      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192)),
+    isError: z.boolean().optional(),
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("bashExecution"),
+    command: TEXT,
+    output: TEXT.optional(),
+    exitCode: z.number().int().nullable().optional(),
+    cancelled: z.boolean().optional(),
+    truncated: z.boolean().optional(),
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("custom"),
+    customType: NAME.optional(),
+    content: z
+      .unknown()
+      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192))
+      .optional(),
+    display: z.boolean().optional(),
+    ...OmpMessageIdentityShape,
+  }),
+]);
 const OmpAssistantMessageEventSchema = z
   .object({
     type: NAME,
@@ -118,15 +199,6 @@ const OmpAssistantMessageEventSchema = z
       context.addIssue({ code: "custom", message: "invalid image event" });
     }
   });
-const OmpMessageSchema = z.object({
-  role: boundedString(32, 1),
-  content: z.union([TEXT, z.array(OmpContentPartSchema).max(MAX_CONTENT_PARTS)]).optional(),
-  id: IDENTIFIER.optional(),
-  entryId: IDENTIFIER.optional(),
-  responseId: IDENTIFIER.optional(),
-  errorMessage: boundedString(4_096).nullable().optional(),
-  stopReason: boundedString(64).optional(),
-});
 const OmpAvailableCommandSchema = z.object({
   name: NAME,
   aliases: z.array(NAME).max(32).optional(),
@@ -288,7 +360,6 @@ const OmpMessagesResultSchema = z.object({
 });
 const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2) });
 
-export type OmpMessage = z.infer<typeof OmpMessageSchema>;
 export type OmpModel = z.infer<typeof OmpModelSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
 export type OmpRpcEvent =
@@ -347,6 +418,9 @@ export interface OmpRpcRuntimeOptions {
   terminateProcessTree?: (pid: number) => Promise<boolean | "uncertain">;
   environment?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
+  listSessions?: (
+    options: OmpSessionListOptions,
+  ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
 }
 
 type PendingRequest = {
@@ -1741,7 +1815,6 @@ class OmpRpcSession implements OmpRuntimeSession {
     const acknowledgement = OmpPromptAckSchema.parse(await request.promise) ?? {};
     return { requestId: request.id, ...acknowledgement };
   }
-
   async steer(message: string): Promise<void> {
     const safeMessage = validateBoundedText(message, "steer", MAX_TEXT_LENGTH);
     await this.process.request({ type: "steer", message: safeMessage });
@@ -1762,7 +1835,8 @@ export class OmpRpcRuntime implements OmpRuntime {
   constructor(private readonly options: OmpRpcRuntimeOptions = {}) {}
   listSessions(options: OmpSessionListOptions): Promise<OmpSessionDescriptor[]> {
     return Promise.resolve(
-      listOmpSessionDescriptors(options, this.options.environment ?? process.env),
+      this.options.listSessions?.(options) ??
+        listOmpSessionDescriptors(options, this.options.environment ?? process.env),
     );
   }
 

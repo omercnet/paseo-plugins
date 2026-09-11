@@ -514,6 +514,13 @@ describe("OMP RPC transport", () => {
             data: {
               messages: [
                 { role: "user", id: "history-user", content: text },
+                {
+                  role: "toolResult",
+                  toolCallId: "call-1",
+                  toolName: "read",
+                  content: { content: [{ type: "text", text: "result" }], details: { count: 1 } },
+                },
+                { role: "bashExecution", command: "pwd", exitCode: 0, cancelled: false },
                 { role: "assistant", id: "history-assistant", content: text },
                 { role: "user", id: "history-user-2", content: text },
               ],
@@ -529,12 +536,22 @@ describe("OMP RPC transport", () => {
 
     expect(session.canReplayHistory).toBe(true);
     const messages = await session.getMessages();
-    expect(messages.map((message) => message.id)).toEqual([
-      "history-user",
-      "history-assistant",
-      "history-user-2",
+    expect(messages.map((message) => message.role)).toEqual([
+      "user",
+      "toolResult",
+      "bashExecution",
+      "assistant",
+      "user",
     ]);
-    expect(messages[1]?.content).toHaveLength(350_000);
+    expect(messages[1]).toEqual(
+      expect.objectContaining({ role: "toolResult", toolCallId: "call-1", toolName: "read" }),
+    );
+    expect(messages[2]).toEqual(expect.objectContaining({ role: "bashExecution", command: "pwd" }));
+    expect(messages[2]).not.toHaveProperty("content");
+    const assistant = messages[3];
+    expect(assistant && "content" in assistant ? assistant.content : undefined).toHaveLength(
+      350_000,
+    );
     await session.close();
   });
 
@@ -691,9 +708,11 @@ describe("OMP RPC transport", () => {
 
     expect(events).toHaveLength(3);
     const receivedText = events[0];
-    expect(receivedText?.type === "message_update" ? receivedText.message.content : null).toBe(
-      nearText,
-    );
+    expect(
+      receivedText?.type === "message_update" && receivedText.message.role === "assistant"
+        ? receivedText.message.content
+        : null,
+    ).toBe(nearText);
     const receivedImage = events[1];
     expect(
       receivedImage?.type === "message_update" &&
