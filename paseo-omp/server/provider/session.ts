@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   ProviderConfigState,
+  ProviderContent,
   ProviderEvent,
   ProviderInput,
   ProviderPermissionResponse,
@@ -14,7 +15,7 @@ import {
   withCommittedOmpSelection,
 } from "./config-normalization";
 import { OmpHostToolsBridge, type OmpMcpConnector, validateOmpHostToolConfig } from "./host-tools";
-import { isValidImagePayload } from "./image";
+import { isOmpImageMimeType, isValidImagePayload, OmpImageMaterializer } from "./image";
 import type {
   OmpAvailableCommand,
   OmpCompactionResult,
@@ -91,6 +92,40 @@ const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
 class OmpCatalogEscape extends OmpPublicError {}
 const MAX_REPLAY_MESSAGES = 100_000;
 const REPLAY_TIMEOUT_MS = 20_000;
+const OMP_ASK_USER_FREEFORM_SENTINEL = "✏️ Type custom response...";
+const MAX_FREEFORM_RESPONSE_BYTES = 64 * 1024;
+const OMP_BUILTIN_COMMANDS: readonly OmpAvailableCommand[] = [
+  {
+    name: "compact",
+    description: "Manually compact the session context",
+    input: { hint: "[instructions]" },
+    source: "builtin",
+  },
+  {
+    name: "autocompact",
+    description: "Toggle automatic context compaction",
+    input: { hint: "[on|off|toggle]" },
+    source: "builtin",
+  },
+  {
+    name: "handoff",
+    description: "Hand off from planning to implementation",
+    input: { hint: "[instructions]" },
+    source: "builtin",
+  },
+  {
+    name: "steer",
+    description: "Steer the active OMP turn",
+    input: { hint: "<message>" },
+    source: "builtin",
+  },
+  {
+    name: "follow-up",
+    description: "Queue a follow-up message for OMP",
+    input: { hint: "<message>" },
+    source: "builtin",
+  },
+];
 
 export function ompPersistenceSessionId(input: SessionOpenInput): string | undefined {
   if (!input.persistence) return;
@@ -118,8 +153,9 @@ async function authorizeNativeSession(
   runtime: OmpRuntime,
   sessionId: string,
   cwd: string,
+  sessionDir?: string,
 ): Promise<OmpSessionDescriptor> {
-  const matches = await runtime.listSessions({ sessionId, cwd, limit: 2 });
+  const matches = await runtime.listSessions({ sessionId, cwd, limit: 2, sessionDir });
   const descriptor = matches[0];
   if (matches.length !== 1 || descriptor?.id !== sessionId) {
     throw new OmpPublicError("OMP session could not be resolved in this workspace");
@@ -234,6 +270,15 @@ type PendingPermission = {
   timer?: unknown;
   turnId?: string;
   request: OmpQuestionRequest;
+  freeformSentinel?: string;
+};
+
+type PendingFreeformSelection = {
+  value: string;
+  nativeSelectId: string;
+  generation: number;
+  runtime: OmpRuntimeSession;
+  turnId?: string;
 };
 
 function permissionFingerprint(request: OmpQuestionRequest): string {
@@ -292,6 +337,81 @@ function isSafeCommandName(name: string): boolean {
 
 type OmpPromptPayload = { text: string; images: OmpImage[]; commandName?: string };
 
+function forgeLabel(forge: string | undefined): string {
+  if (!forge || forge === "github") return "GitHub";
+  if (forge === "gitlab") return "GitLab";
+  if (forge === "bitbucket") return "Bitbucket";
+  if (forge === "azure-devops") return "Azure DevOps";
+  return forge;
+}
+
+function renderPromptAttachment(part: ProviderContent): string {
+  if (part.type === "text") return part.text;
+  if (part.type === "image") throw new OmpPublicError("Invalid attachment renderer input");
+  if (part.type === "forge_change_request" || part.type === "github_pr") {
+    const forge = part.type === "github_pr" ? "github" : part.forge;
+    const abbreviation = forge === "gitlab" ? "MR" : "PR";
+    const number = forge === "gitlab" ? `!${part.number}` : `#${part.number}`;
+    return [
+      `${forgeLabel(forge)} ${abbreviation} ${number}: ${part.title}`,
+      part.url,
+      "projectPath" in part && part.projectPath ? `Project: ${part.projectPath}` : undefined,
+      part.baseRefName ? `Base: ${part.baseRefName}` : undefined,
+      part.headRefName ? `Head: ${part.headRefName}` : undefined,
+      part.body ? `\n${part.body}` : undefined,
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join("\n");
+  }
+  if (part.type === "forge_issue" || part.type === "github_issue") {
+    const forge = part.type === "github_issue" ? "github" : part.forge;
+    return [
+      `${forgeLabel(forge)} Issue #${part.number}: ${part.title}`,
+      part.url,
+      "projectPath" in part && part.projectPath ? `Project: ${part.projectPath}` : undefined,
+      part.body ? `\n${part.body}` : undefined,
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join("\n");
+  }
+  if (part.type === "review") {
+    const lines = [`Paseo review attachment (${part.mode})`, `CWD: ${part.cwd}`];
+    if (part.baseRef) lines.push(`Base: ${part.baseRef}`);
+    for (const [index, comment] of part.comments.entries()) {
+      lines.push(
+        "",
+        `Comment ${index + 1}: ${comment.filePath}:${comment.side}:${comment.lineNumber}`,
+        comment.body,
+        comment.context.hunkHeader,
+      );
+      for (const line of comment.context.lines) {
+        const target = comment.context.targetLine;
+        const selected =
+          line.oldLineNumber === target.oldLineNumber &&
+          line.newLineNumber === target.newLineNumber &&
+          line.type === target.type &&
+          line.content === target.content;
+        const marker = line.type === "add" ? "+" : line.type === "remove" ? "-" : " ";
+        lines.push(
+          `${selected ? "> " : "  "}${String(line.oldLineNumber ?? "-").padStart(2)} ${String(
+            line.newLineNumber ?? "-",
+          ).padStart(2)} ${marker}${line.content}`,
+        );
+      }
+    }
+    return lines.join("\n");
+  }
+  if (part.type === "uploaded_file") {
+    return [
+      `Uploaded file: ${part.fileName}`,
+      `Path: ${part.path}`,
+      `MIME: ${part.mimeType}`,
+      `Size: ${part.size} bytes`,
+    ].join("\n");
+  }
+  throw new OmpPublicError("Unsupported OMP prompt attachment");
+}
+
 function promptPayload(input: SessionPromptInput): OmpPromptPayload {
   if (input.prompt.outputSchema !== undefined || input.prompt.clearPendingPermissions) {
     throw new OmpPublicError("OMP does not support structured output or permission controls");
@@ -311,11 +431,14 @@ function promptPayload(input: SessionPromptInput): OmpPromptPayload {
   const parts: string[] = [];
   const images: OmpImage[] = [];
   let length = 0;
+  const appendText = (text: string) => {
+    length += utf8Bytes(text) + (parts.length > 0 ? 2 : 0);
+    if (length > MAX_PROMPT_TEXT_LENGTH) throw new OmpPublicError("OMP prompt is too large");
+    parts.push(text);
+  };
   for (const part of input.prompt.input.content) {
     if (part.type === "text") {
-      length += utf8Bytes(part.text) + (parts.length > 0 ? 2 : 0);
-      if (length > MAX_PROMPT_TEXT_LENGTH) throw new OmpPublicError("OMP prompt is too large");
-      parts.push(part.text);
+      appendText(part.text);
       continue;
     }
     if (part.type === "image") {
@@ -325,7 +448,7 @@ function promptPayload(input: SessionPromptInput): OmpPromptPayload {
       images.push({ type: "image", data: part.data, mimeType: part.mimeType });
       continue;
     }
-    throw new OmpPublicError("OMP supports text messages only");
+    appendText(renderPromptAttachment(part));
   }
   const text = parts.join("\n\n").trim();
   if (!text && images.length === 0) throw new OmpPublicError("OMP prompt cannot be empty");
@@ -402,6 +525,54 @@ function isPassiveUiMethod(method: string): boolean {
     method === "set_editor_text"
   );
 }
+function createActiveTurn(
+  clientMessageId: string,
+  text: string,
+  generation: number,
+  terminalOwnershipRequired: boolean,
+  manualCompaction = false,
+): ActiveTurn {
+  return {
+    turnId: randomUUID(),
+    clientMessageId,
+    agentInvoked: undefined,
+    generation,
+    promptResultEmitted: false,
+    started: false,
+    terminal: false,
+    awaitingPermissionEvidence: false,
+    interrupted: false,
+    starting: true,
+    nativeActivity: false,
+    userEchoObserved: false,
+    localOnlyDisabled: false,
+    localOnlyEligible: false,
+    usageSampleFloor: 0,
+    agentEndPending: false,
+    terminalizing: false,
+    manualCompactionPending: manualCompaction,
+    manualCompaction,
+    activitySequence: 0,
+    acknowledged: false,
+    terminalOwnershipEvidence: false,
+    replayingBufferedEvents: false,
+    terminalOwnershipRequired,
+    steersInFlight: 0,
+    userCorrelationActive: false,
+    userLookups: new Set(),
+    userEchoes: [],
+    bufferedEvents: [],
+    pendingUsers: [
+      {
+        clientMessageId,
+        text,
+        accepted: true,
+        fallbackOnFinish: true,
+        bufferedEchoes: [],
+      },
+    ],
+  };
+}
 
 export class OmpProviderSession {
   readonly id: string;
@@ -457,6 +628,7 @@ export class OmpProviderSession {
   private readonly permissionNamespace = randomUUID();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly inFlightPermissions = new Map<string, PendingPermission>();
+  private pendingFreeformSelection: PendingFreeformSelection | null = null;
 
   private constructor(
     id: string,
@@ -518,6 +690,7 @@ export class OmpProviderSession {
     return this.persistSession ? this.nativeSessionId : undefined;
   }
 
+  private readonly imageMaterializer = new OmpImageMaterializer();
   static async open(
     input: SessionOpenInput,
     runtime: OmpRuntime,
@@ -543,11 +716,19 @@ export class OmpProviderSession {
     if (input.history === "skip" && resumeSessionId) {
       throw new OmpPublicError("OMP persisted sessions require history replay");
     }
-    const persistedDescriptor = resumeSessionId
-      ? await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd)
-      : undefined;
     const effectiveConfig: ProviderSessionConfig = { ...input.config };
-    const normalizedConfig = normalizeOmpSessionConfig(effectiveConfig);
+    const normalizedConfig = normalizeOmpSessionConfig(
+      effectiveConfig,
+      capabilities.includes("permission"),
+    );
+    const persistedDescriptor = resumeSessionId
+      ? await authorizeNativeSession(
+          runtime,
+          resumeSessionId,
+          input.config.cwd,
+          normalizedConfig.sessionDir,
+        )
+      : undefined;
     validateOmpHostToolConfig(effectiveConfig);
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
@@ -685,12 +866,13 @@ export class OmpProviderSession {
         configState,
         nativeModelsByPublicId,
         sessionCapabilities,
-        new Set(
-          commandDiscovery.commands.flatMap((command) => [
+        new Set([
+          ...OMP_BUILTIN_COMMANDS.map((command) => command.name),
+          ...commandDiscovery.commands.flatMap((command) => [
             command.name,
             ...(command.aliases ?? []),
           ]),
-        ),
+        ]),
         commandDiscovery.commands,
         commandDiscovery.available,
         emit,
@@ -1273,7 +1455,15 @@ export class OmpProviderSession {
     }
 
     if (input.prompt.delivery === "steer") {
-      await this.steer(input.prompt.clientMessageId, payload.text, payload.images);
+      await this.steer(input.prompt.clientMessageId, payload);
+      return;
+    }
+    if (
+      payload.commandName &&
+      payload.commandName !== "compact" &&
+      OMP_BUILTIN_COMMANDS.some((command) => command.name === payload.commandName)
+    ) {
+      await this.runBuiltinCommand(input.prompt.clientMessageId, payload);
       return;
     }
     if (this.activeTurn) {
@@ -1348,46 +1538,28 @@ export class OmpProviderSession {
       });
       return;
     }
-    const turn: ActiveTurn = {
-      turnId: randomUUID(),
-      clientMessageId: input.prompt.clientMessageId,
-      agentInvoked: undefined,
-      generation: this.generation,
-      promptResultEmitted: false,
-      started: false,
-      terminal: false,
-      awaitingPermissionEvidence: false,
-      interrupted: false,
-      starting: true,
-      nativeActivity: false,
-      userEchoObserved: false,
-      localOnlyDisabled: false,
-      localOnlyEligible: false,
-      usageSampleFloor: 0,
-      agentEndPending: false,
-      terminalizing: false,
-      manualCompactionPending: slashCommandName(payload.text) === "compact",
-      manualCompaction: slashCommandName(payload.text) === "compact",
-      activitySequence: 0,
-      acknowledged: false,
-      terminalOwnershipEvidence: false,
-      replayingBufferedEvents: false,
-      terminalOwnershipRequired: this.runtimeTurnCompleted,
-      steersInFlight: 0,
-      userCorrelationActive: false,
-      userLookups: new Set(),
-      userEchoes: [],
-      bufferedEvents: [],
-      pendingUsers: [
-        {
-          clientMessageId: input.prompt.clientMessageId,
-          text: payload.text,
-          accepted: true,
-          fallbackOnFinish: true,
-          bufferedEchoes: [],
-        },
-      ],
-    };
+    let materializedPaths: string[] = [];
+    try {
+      const prepared = this.preparePromptPayload(payload);
+      payload = prepared.payload;
+      materializedPaths = prepared.materializedPaths;
+    } catch (error) {
+      this.imageMaterializer.release(materializedPaths);
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId: input.prompt.clientMessageId,
+        result: { type: "failed", error: providerError(error, "OMP prompt was rejected") },
+      });
+      return;
+    }
+    const turn = createActiveTurn(
+      input.prompt.clientMessageId,
+      payload.text,
+      this.generation,
+      this.runtimeTurnCompleted,
+      slashCommandName(payload.text) === "compact",
+    );
     this.activeTurn = turn;
     const runtime = this.runtime;
     try {
@@ -1454,6 +1626,7 @@ export class OmpProviderSession {
         this.scheduleLocalOnlyCompletion(turn);
       }
     } catch (error) {
+      this.imageMaterializer.release(materializedPaths);
       const failure = providerError(error, "OMP prompt failed");
       if (this.isCurrentRuntime(runtime, turn.generation)) {
         this.handleRuntimeFailure(failure.message);
@@ -1470,6 +1643,140 @@ export class OmpProviderSession {
         this.projector.finishTurn(turn.turnId);
         if (this.activeTurn === turn) this.activeTurn = null;
       }
+    }
+  }
+  private preparePromptPayload(payload: OmpPromptPayload): {
+    payload: OmpPromptPayload;
+    materializedPaths: string[];
+  } {
+    const currentModel = this.configState.model
+      ? this.nativeModelsByPublicId.get(this.configState.model)
+      : undefined;
+    if (payload.images.length === 0 || currentModel?.input?.includes("image")) {
+      return { payload, materializedPaths: [] };
+    }
+    const materializedPaths: string[] = [];
+    try {
+      for (const image of payload.images) {
+        if (!isOmpImageMimeType(image.mimeType)) {
+          throw new OmpPublicError("OMP prompt image is invalid");
+        }
+        materializedPaths.push(this.imageMaterializer.materialize(image.data, image.mimeType));
+      }
+      const hints = materializedPaths.map((path) => `[Image available at: ${path}]`);
+      const text = [payload.text, ...hints].filter(Boolean).join("\n\n");
+      if (utf8Bytes(text) > MAX_PROMPT_TEXT_LENGTH) {
+        throw new OmpPublicError("OMP prompt is too large");
+      }
+      return { payload: { ...payload, text, images: [] }, materializedPaths };
+    } catch (error) {
+      this.imageMaterializer.release(materializedPaths);
+      throw error;
+    }
+  }
+
+  private async runBuiltinCommand(
+    clientMessageId: string,
+    payload: OmpPromptPayload,
+  ): Promise<void> {
+    const commandName = payload.commandName;
+    if (!commandName) return;
+    const argumentsText = payload.text.slice(commandName.length + 1).trim();
+    try {
+      if (commandName === "steer") {
+        if (!argumentsText) throw new OmpPublicError("Usage: /steer <message>");
+        await this.steer(clientMessageId, { text: argumentsText, images: [] });
+        return;
+      }
+      if (this.activeTurn && (commandName === "handoff" || commandName === "follow-up")) {
+        throw new OmpPublicError("OMP already has an active turn; send this message as a steer");
+      }
+      await this.recoverRuntime();
+      if (this.closed) throw new OmpPublicError("OMP session is closed");
+      if (commandName === "follow-up") {
+        if (!argumentsText) throw new OmpPublicError("Usage: /follow-up <message>");
+        await this.startNativeCommandTurn(clientMessageId, argumentsText, () =>
+          this.runtime.followUp(argumentsText),
+        );
+        return;
+      }
+      if (commandName === "handoff") {
+        await this.startNativeCommandTurn(clientMessageId, payload.text, () =>
+          this.runtime.handoff(argumentsText || undefined),
+        );
+        return;
+      }
+      if (commandName === "autocompact") {
+        const requested = argumentsText.toLowerCase() || "toggle";
+        if (!["on", "off", "toggle"].includes(requested)) {
+          throw new OmpPublicError("Usage: /autocompact [on|off|toggle]");
+        }
+        let enabled = requested === "on";
+        if (requested === "toggle") {
+          const state = await this.runtime.getState();
+          if (typeof state.autoCompactionEnabled !== "boolean") {
+            throw new OmpPublicError(
+              "Auto-compaction state is unavailable. Use /autocompact on or /autocompact off.",
+            );
+          }
+          enabled = !state.autoCompactionEnabled;
+        }
+        await this.runtime.setAutoCompaction(enabled);
+        this.emit({
+          type: "timeline.item",
+          sessionId: this.id,
+          item: {
+            id: `omp:command:${randomUUID()}`,
+            type: "assistant_message",
+            text: `Auto-compaction ${enabled ? "enabled" : "disabled"}.`,
+          },
+        });
+      }
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId,
+        result: { type: "completed" },
+      });
+    } catch (error) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId,
+        result: { type: "failed", error: providerError(error, "OMP command failed") },
+      });
+    }
+  }
+
+  private async startNativeCommandTurn(
+    clientMessageId: string,
+    text: string,
+    invoke: () => Promise<void>,
+  ): Promise<void> {
+    const turn = createActiveTurn(clientMessageId, text, this.generation, false);
+    this.activeTurn = turn;
+    try {
+      await invoke();
+      if (this.closed || turn.terminal || this.activeTurn !== turn) return;
+      this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
+      turn.starting = false;
+      turn.acknowledged = true;
+      this.startTurn(turn);
+      const bufferedEvents = turn.bufferedEvents.splice(0);
+      turn.replayingBufferedEvents = true;
+      this.projector.acceptLiveTurn(turn.turnId);
+      for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
+      turn.replayingBufferedEvents = false;
+    } catch (error) {
+      if (turn.terminal || this.activeTurn !== turn) return;
+      const failure = providerError(error, "OMP command failed");
+      this.publishPendingUsers(turn);
+      this.publishPromptResult(turn, { type: "failed", error: failure });
+      turn.terminal = true;
+      this.imageMaterializer.clear();
+      this.resolveTurnPermissions(turn.turnId);
+      this.projector.finishTurn(turn.turnId);
+      this.activeTurn = null;
     }
   }
 
@@ -1894,9 +2201,22 @@ export class OmpProviderSession {
     this.inFlightPermissions.set(input.permissionId, pending);
     if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
     try {
+      const freeformValue = this.freeformSelection(pending, input.response);
+      if (freeformValue !== undefined) {
+        this.pendingFreeformSelection = {
+          value: freeformValue,
+          nativeSelectId: pending.nativeId,
+          generation,
+          runtime,
+          ...(pending.turnId ? { turnId: pending.turnId } : {}),
+        };
+      }
       const response = this.extensionUiResponse(pending, input.response);
       await runtime.respondToExtensionUi(response);
     } catch (error) {
+      if (this.pendingFreeformSelection?.nativeSelectId === pending.nativeId) {
+        this.pendingFreeformSelection = null;
+      }
       if (this.inFlightPermissions.get(input.permissionId) !== pending) return;
       this.inFlightPermissions.delete(input.permissionId);
       if (
@@ -1957,6 +2277,7 @@ export class OmpProviderSession {
         if (this.activeTurn === turn) this.activeTurn = null;
       }
     }
+    this.imageMaterializer.clear();
     this.finishCompaction("canceled");
     this.resolveAllPermissions(true);
     this.closed = true;
@@ -2142,17 +2463,13 @@ export class OmpProviderSession {
       throw error;
     }
   }
-  private async steer(
-    clientMessageId: string,
-    text: string,
-    images: readonly OmpImage[],
-  ): Promise<void> {
+  private async steer(clientMessageId: string, payload: OmpPromptPayload): Promise<void> {
     const turn = this.activeTurn;
     if (!this.isSteerableTurn(turn)) {
       this.publishSteerFailure(clientMessageId, "There is no active OMP turn to steer");
       return;
     }
-    const commandName = slashCommandName(text);
+    const commandName = slashCommandName(payload.text);
     const slashCommandUnavailable = commandName
       ? await this.slashSteerUnavailable(commandName)
       : false;
@@ -2168,9 +2485,19 @@ export class OmpProviderSession {
       return;
     }
 
+    let materializedPaths: string[] = [];
+    try {
+      const prepared = this.preparePromptPayload(payload);
+      payload = prepared.payload;
+      materializedPaths = prepared.materializedPaths;
+    } catch (error) {
+      this.imageMaterializer.release(materializedPaths);
+      this.publishSteerFailure(clientMessageId, providerError(error, "OMP steer failed").message);
+      return;
+    }
     const pending: PendingUser = {
       clientMessageId,
-      text,
+      text: payload.text,
       accepted: false,
       fallbackOnFinish: false,
       bufferedEchoes: [],
@@ -2181,6 +2508,7 @@ export class OmpProviderSession {
         boundedJsonBytes(pending, MAX_PENDING_USER_BYTES, MAX_USER_ECHOES) >
         MAX_PENDING_USER_BYTES
     ) {
+      this.imageMaterializer.release(materializedPaths);
       this.publishSteerFailure(clientMessageId, "OMP has too many pending steer messages");
       return;
     }
@@ -2188,9 +2516,10 @@ export class OmpProviderSession {
     turn.steersInFlight += 1;
     this.cancelLocalOnlyCompletion(turn);
     try {
-      await this.runtime.steer(text, images);
+      await this.runtime.steer(payload.text, payload.images);
       turn.steersInFlight -= 1;
       if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) {
+        this.imageMaterializer.release(materializedPaths);
         this.removePendingUser(turn, pending);
         this.emit({
           type: "session.prompt_result",
@@ -2214,6 +2543,7 @@ export class OmpProviderSession {
         result: { type: "steer", turnId: turn.turnId },
       });
     } catch (error) {
+      this.imageMaterializer.release(materializedPaths);
       turn.steersInFlight -= 1;
       this.removePendingUser(turn, pending);
       this.emit({
@@ -2248,9 +2578,13 @@ export class OmpProviderSession {
     }
     if (event.type === "extension_ui_request") {
       if (event.method === "cancel") {
+        if (this.pendingFreeformSelection?.nativeSelectId === event.targetId) {
+          this.pendingFreeformSelection = null;
+        }
         this.resolvePermissionByNativeId(event.targetId ?? "");
         return;
       }
+      if (event.method === "input" && this.submitPendingFreeformSelection(event)) return;
       if (
         event.method === "select" ||
         event.method === "confirm" ||
@@ -2264,6 +2598,7 @@ export class OmpProviderSession {
         this.publishPermission(event);
         return;
       }
+
       if (isPassiveUiMethod(event.method)) {
         this.projector.projectPassive(event);
         return;
@@ -2401,6 +2736,9 @@ export class OmpProviderSession {
       return;
     }
     if (event.type === "agent_end" && turn.manualCompactionPending) return;
+    if (event.type === "tool_execution_end" && event.toolName === "ask_user") {
+      this.pendingFreeformSelection = null;
+    }
     if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
       try {
         this.subsessions?.observeSessionEvent(this.id, event);
@@ -2618,9 +2956,27 @@ export class OmpProviderSession {
     });
   }
 
+  private submitPendingFreeformSelection(
+    request: Extract<OmpQuestionRequest, { method: "input" }>,
+  ): boolean {
+    const pending = this.pendingFreeformSelection;
+    if (!pending) return false;
+    this.pendingFreeformSelection = null;
+    if (
+      pending.generation !== this.generation ||
+      pending.runtime !== this.runtime ||
+      (pending.turnId !== undefined && this.activeTurn?.turnId !== pending.turnId)
+    ) {
+      return false;
+    }
+    void pending.runtime
+      .respondToExtensionUi({ type: "extension_ui_response", id: request.id, value: pending.value })
+      .catch(() => this.handleRuntimeFailure("OMP freeform response failed"));
+    return true;
+  }
   private replaceSlashCommands(commands: OmpAvailableCommand[]): void {
     this.slashCommands.clear();
-    for (const command of commands) {
+    for (const command of [...OMP_BUILTIN_COMMANDS, ...commands]) {
       if (isSafeCommandName(command.name)) this.slashCommands.add(command.name);
       for (const alias of command.aliases ?? []) {
         if (isSafeCommandName(alias)) this.slashCommands.add(alias);
@@ -2630,10 +2986,12 @@ export class OmpProviderSession {
   }
 
   private publishCommands(commands: OmpAvailableCommand[]): void {
+    const merged = new Map(OMP_BUILTIN_COMMANDS.map((command) => [command.name, command] as const));
+    for (const command of commands) merged.set(command.name, command);
     this.emit({
       type: "session.commands",
       sessionId: this.id,
-      commands: commands
+      commands: [...merged.values()]
         .filter((command) => isSafeCommandName(command.name))
         .map((command) => {
           const name = this.dataFilter.text(command.name, 256);
@@ -2686,13 +3044,23 @@ export class OmpProviderSession {
     const id =
       existingId ?? `omp:permission:${this.permissionNamespace}:${this.permissionSequence}`;
     const header = this.dataFilter.text(request.title ?? "OMP question", 4_096);
+    const freeformSentinel =
+      request.method === "select" && request.options.includes(OMP_ASK_USER_FREEFORM_SENTINEL)
+        ? OMP_ASK_USER_FREEFORM_SENTINEL
+        : undefined;
     const optionValues = new Map<string, string>();
     const displayValues = new Map<string, string>();
     const usedOptionLabels = new Set<string>();
     const optionDetails = request.method === "select" ? request.optionDetails : undefined;
+    const selectableOptions =
+      request.method === "select"
+        ? request.options.flatMap((nativeValue, index) =>
+            nativeValue === freeformSentinel ? [] : [{ nativeValue, index }],
+          )
+        : [];
     const options =
       request.method === "select"
-        ? request.options.map((nativeValue, index) => {
+        ? selectableOptions.map(({ nativeValue, index }) => {
             const baseLabel = this.dataFilter.text(nativeValue, 4_096);
             let label = baseLabel;
             let suffix = 2;
@@ -2750,7 +3118,6 @@ export class OmpProviderSession {
               variant: "secondary" as const,
             },
           ];
-    // OMP passes rpc-ui dialog timeouts directly to setTimeout, so the wire unit is milliseconds.
     const pending: PendingPermission = {
       nativeId: request.id,
       header,
@@ -2770,6 +3137,7 @@ export class OmpProviderSession {
       ),
       ...(this.activeTurn ? { turnId: this.activeTurn.turnId } : {}),
       ...(request.timeout !== undefined ? { expiresAt: Date.now() + request.timeout } : {}),
+      ...(freeformSentinel ? { freeformSentinel } : {}),
     };
     let retainedPermissionBytes = pending.retainedBytes;
     for (const [permissionId, retained] of this.pendingPermissions) {
@@ -2821,6 +3189,7 @@ export class OmpProviderSession {
               ),
               options: questionOptions,
               multiSelect: false,
+              ...(freeformSentinel ? { allowOther: true } : {}),
               ...(request.method === "input" && request.placeholder
                 ? { placeholder: this.dataFilter.text(request.placeholder, 4_096) }
                 : {}),
@@ -2849,6 +3218,42 @@ export class OmpProviderSession {
     void this.runtime
       .respondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true })
       .catch(() => this.handleRuntimeFailure());
+  }
+
+  private freeformSelection(
+    pending: PendingPermission,
+    response: ProviderPermissionResponse,
+  ): string | undefined {
+    if (
+      pending.request.method !== "select" ||
+      !pending.freeformSentinel ||
+      response.behavior !== "allow" ||
+      response.selectedActionId !== undefined
+    ) {
+      return;
+    }
+    const answers = response.updatedInput?.answers;
+    const answer =
+      answers && typeof answers === "object" && !Array.isArray(answers)
+        ? answers[pending.header]
+        : undefined;
+    const value = Array.isArray(answer) ? answer[0] : answer;
+    if (
+      typeof value !== "string" ||
+      pending.optionValues.has(value) ||
+      pending.displayValues.has(value)
+    ) {
+      return;
+    }
+    if (
+      value === pending.freeformSentinel ||
+      value.trim().length === 0 ||
+      value.includes("\0") ||
+      utf8Bytes(value) > MAX_FREEFORM_RESPONSE_BYTES
+    ) {
+      throw new OmpPublicError("OMP freeform response is invalid");
+    }
+    return value;
   }
 
   private extensionUiResponse(
@@ -2896,6 +3301,33 @@ export class OmpProviderSession {
     if (typeof publicValue !== "string") {
       throw new OmpPublicError("OMP question response is invalid");
     }
+    if (
+      request.method === "select" &&
+      pending.freeformSentinel &&
+      publicValue !== pending.freeformSentinel &&
+      !pending.displayValues.has(publicValue) &&
+      !pending.optionValues.has(publicValue)
+    ) {
+      if (
+        publicValue.trim().length === 0 ||
+        publicValue.includes("\0") ||
+        utf8Bytes(publicValue) > MAX_FREEFORM_RESPONSE_BYTES
+      ) {
+        throw new OmpPublicError("OMP freeform response is invalid");
+      }
+      this.pendingFreeformSelection = {
+        value: publicValue,
+        nativeSelectId: pending.nativeId,
+        generation: pending.generation,
+        runtime: pending.runtime,
+        ...(pending.turnId ? { turnId: pending.turnId } : {}),
+      };
+      return {
+        type: "extension_ui_response",
+        id: nativeId,
+        value: pending.freeformSentinel,
+      };
+    }
     if (request.method === "select") {
       const mapped =
         pending.optionValues.get(publicValue) ?? pending.displayValues.get(publicValue);
@@ -2921,9 +3353,11 @@ export class OmpProviderSession {
   }
 
   private resolveTurnPermissions(turnId: string): void {
+    if (this.pendingFreeformSelection?.turnId === turnId) this.pendingFreeformSelection = null;
     this.resolvePermissions((pending) => pending.turnId === turnId, true);
   }
   private resolveAllPermissions(cancelNative = false): void {
+    this.pendingFreeformSelection = null;
     this.resolvePermissions(() => true, cancelNative);
   }
 
@@ -3418,6 +3852,7 @@ export class OmpProviderSession {
           usageSampled: true,
         };
       }
+      this.imageMaterializer.clear();
       turn.terminal = true;
       if (this.usageSample?.turn === turn) this.usageSample = null;
       if (!preserveCompactions && this.activeCompaction) {
@@ -3450,6 +3885,7 @@ export class OmpProviderSession {
     message: string,
     compactionState: "failed" | "canceled" = "failed",
   ): void {
+    this.imageMaterializer.clear();
     if (this.closed || this.runtimeDead) return;
     this.discardedCompactionEnds = 0;
     this.resolveAllPermissions();

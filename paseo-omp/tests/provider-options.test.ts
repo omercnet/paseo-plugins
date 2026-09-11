@@ -71,16 +71,14 @@ describe("OMP provider option migration", () => {
     expect(normalized.requestTimeoutMs).toBe(12_345);
   });
 
-  test("keeps interactive launch modes ready without advertising unsupported parity", () => {
+  test("maps every interactive launch mode after permission bridging", () => {
     for (const [mode, approvalMode] of [
       ["write", "write"],
       ["ask", "always-ask"],
     ] as const) {
       const nativeLaunch = buildOmpSpawnRequest({ cwd: "/repo", mode }, TEST_ENV);
       expect(nativeLaunch.args.slice(-2)).toEqual(["--approval-mode", approvalMode]);
-      expect(() => normalizeOmpSessionConfig(sessionConfig({ mode }))).toThrow(
-        "requires interactive permission support",
-      );
+      expect(normalizeOmpSessionConfig(sessionConfig({ mode }), true).mode).toBe(mode);
       const template = {
         cwd: "/repo",
         command: ["/opt/omp", "--mode=rpc-ui"],

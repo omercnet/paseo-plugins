@@ -18,6 +18,21 @@ export const OMP_MODES: readonly ProviderMode[] = [
     colorTier: "dangerous",
     isUnattended: true,
   },
+  {
+    id: "write",
+    label: "Write Approval",
+    description:
+      "Launches OMP with write approval mode; reads are free and writes require approval.",
+    icon: "ShieldAlert",
+    colorTier: "moderate",
+  },
+  {
+    id: "ask",
+    label: "Always Ask",
+    description: "Launches OMP with always-ask approval mode for write and exec tools.",
+    icon: "ShieldCheck",
+    colorTier: "safe",
+  },
 ];
 
 const THINKING_OPTIONS: readonly ProviderThinkingOption[] = [

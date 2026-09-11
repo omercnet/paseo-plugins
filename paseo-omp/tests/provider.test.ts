@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { PassThrough } from "node:stream";
 import type {
@@ -113,6 +114,7 @@ const MODEL: OmpModel = {
   reasoning: true,
   thinking: { efforts: ["low", "medium", "high"], defaultLevel: "medium" },
   contextWindow: 200_000,
+  input: ["text", "image"],
 };
 const ALTERNATE_MODEL: OmpModel = {
   provider: "openai",
@@ -121,6 +123,7 @@ const ALTERNATE_MODEL: OmpModel = {
   reasoning: true,
   thinking: { efforts: ["low", "high"], defaultLevel: "high" },
   contextWindow: null,
+  input: ["text"],
 };
 const MODEL_PUBLIC_ID = ompModelId(MODEL);
 const ALTERNATE_MODEL_PUBLIC_ID = ompModelId(ALTERNATE_MODEL);
@@ -301,6 +304,10 @@ class FakeOmpSession implements OmpRuntimeSession {
   compactError: Error | null = null;
   compactTokensBefore = 1_000;
   readonly compactions: Array<string | undefined> = [];
+  readonly autoCompactionChanges: boolean[] = [];
+  readonly handoffs: Array<string | undefined> = [];
+  readonly followUps: string[] = [];
+  autoCompactionEnabled = true;
   steerGate: Promise<void> | null = null;
   steerObserved: (() => void) | null = null;
   branchMessagesGate: Promise<void> | null = null;
@@ -412,6 +419,7 @@ class FakeOmpSession implements OmpRuntimeSession {
       thinkingLevel: this.thinkingLevel,
       isStreaming: this.isStreaming,
       isCompacting: this.isCompacting,
+      autoCompactionEnabled: this.autoCompactionEnabled,
       contextTokens: this.contextTokens,
       contextWindow: this.contextWindow,
       usageAvailable: this.usageAvailable,
@@ -430,6 +438,7 @@ class FakeOmpSession implements OmpRuntimeSession {
             thinkingLevel: this.thinkingLevel,
             isStreaming: this.isStreaming,
             isCompacting: this.isCompacting,
+            autoCompactionEnabled: this.autoCompactionEnabled,
             contextTokens: this.contextTokens,
             contextWindow: this.contextWindow,
             usageAvailable: this.usageAvailable,
@@ -440,6 +449,7 @@ class FakeOmpSession implements OmpRuntimeSession {
         thinkingLevel: requested.thinkingLevel,
         isStreaming: value.isStreaming,
         isCompacting: value.isCompacting,
+        autoCompactionEnabled: value.autoCompactionEnabled,
         sessionId: this.nativeSessionId,
         ...(value.usageAvailable
           ? {
@@ -552,6 +562,10 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (this.compactError) throw this.compactError;
     return { tokensBefore: this.compactTokensBefore };
   }
+  async setAutoCompaction(enabled: boolean) {
+    this.autoCompactionChanges.push(enabled);
+    this.autoCompactionEnabled = enabled;
+  }
 
   async setModel(provider: string, modelId: string) {
     this.modelChanges.push({ provider, modelId });
@@ -606,6 +620,13 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (this.steerError) throw this.steerError;
     this.steers.push(message);
     this.steerImages.push([...images]);
+  }
+  async followUp(message: string) {
+    this.followUps.push(message);
+  }
+
+  async handoff(customInstructions?: string) {
+    this.handoffs.push(customInstructions);
   }
 
   async respondToExtensionUi(response: OmpExtensionUiResponse) {
@@ -720,8 +741,15 @@ class FakeOmpRuntime implements OmpRuntime {
     query?: string;
     limit?: number;
     sessionId?: string;
+    sessionDir?: string;
   }> = [];
-  listSessions(options: { cwd: string; query?: string; limit?: number; sessionId?: string }) {
+  listSessions(options: {
+    cwd: string;
+    query?: string;
+    limit?: number;
+    sessionId?: string;
+    sessionDir?: string;
+  }) {
     this.sessionListRequests.push(options);
     const source =
       this.descriptors.length > 0
@@ -1017,7 +1045,7 @@ function finishTurn(events: EventLog, session: FakeOmpSession, turnId: string) {
 }
 
 describe("OMP direct provider", () => {
-  test("discovers real models and exposes Full Access only", async () => {
+  test("discovers real models and all approval modes", async () => {
     const { connection, events, runtime } = await createHarness();
     await connection.send({ type: "catalog", requestId: "catalog-1", cwd: "/repo" });
     const event = await events.waitFor((candidate) => candidate.type === "catalog");
@@ -1032,14 +1060,18 @@ describe("OMP direct provider", () => {
           expect.objectContaining({ id: MODEL_PUBLIC_ID }),
           expect.objectContaining({ id: ALTERNATE_MODEL_PUBLIC_ID }),
         ]),
-        modes: [expect.objectContaining({ id: "full" })],
+        modes: expect.arrayContaining([
+          expect.objectContaining({ id: "full" }),
+          expect.objectContaining({ id: "write" }),
+          expect.objectContaining({ id: "ask" }),
+        ]),
       }),
     });
     if (event.type !== "catalog") throw new Error("Expected catalog event");
     const alternate = event.catalog.models.find((model) => model.id === ALTERNATE_MODEL_PUBLIC_ID);
     expect(alternate?.contextWindowMaxTokens).toBeUndefined();
     expect(alternate?.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
-    expect(event.catalog.modes.map((mode) => mode.id)).toEqual(["full"]);
+    expect(event.catalog.modes.map((mode) => mode.id)).toEqual(["full", "write", "ask"]);
     expect(runtime.starts[0]).toEqual(
       expect.objectContaining({ cwd: "/repo", noSession: true, environment: TEST_RUNTIME_ENV }),
     );
@@ -1221,14 +1253,15 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("rejects approval-requiring modes before spawning without permission support", async () => {
+  test("opens every advertised approval mode with permission bridging", async () => {
     const { connection, events, runtime } = await createHarness();
     for (const mode of ["write", "ask"] as const) {
-      const requestId = `unsupported-${mode}-mode`;
+      const requestId = `${mode}-mode`;
+      const sessionId = `${mode}-session`;
       await connection.send({
         type: "session.open",
         requestId,
-        sessionId: `${mode}-session`,
+        sessionId,
         config: {
           cwd: "/repo",
           env: {},
@@ -1239,18 +1272,114 @@ describe("OMP direct provider", () => {
         },
         history: "skip",
       });
-      const failure = await events.waitFor(
-        (event) => event.type === "request.failed" && event.requestId === requestId,
+      await events.waitFor(
+        (event) => event.type === "session.ready" && event.requestId === requestId,
       );
-      expect(failure).toEqual(
-        expect.objectContaining({
-          error: expect.objectContaining({
-            message: expect.stringContaining("requires interactive permission support"),
-          }),
-        }),
+      const openedSession = sessionAt(runtime, runtime.starts.length - 1);
+      openedSession.emit({
+        type: "extension_ui_request",
+        id: `approval-${mode}`,
+        method: "select",
+        title: "Allow tool: bash\nCommand: git status",
+        options: ["Approve", "Deny"],
+      });
+      const permission = events.findLast(
+        (event) =>
+          event.type === "session.permission" && event.request.title?.startsWith("Allow tool:"),
+      );
+      if (permission?.type !== "session.permission") throw new Error("Expected permission");
+      expect(permission.request).toMatchObject({
+        kind: "question",
+        title: "Allow tool: bash\nCommand: git status",
+      });
+      const approve = permission.request.actions?.find((action) => action.label === "Approve");
+      if (!approve) throw new Error("Expected approve action");
+      await connection.send({
+        type: "session.permission",
+        sessionId,
+        permissionId: permission.request.id,
+        response: { behavior: "allow", selectedActionId: approve.id },
+      });
+      expect(openedSession.extensionUiResponses.at(-1)).toEqual({
+        type: "extension_ui_response",
+        id: `approval-${mode}`,
+        value: "Approve",
+      });
+      expect(runtime.starts.at(-1)?.mode).toBe(mode);
+      await connection.send({ type: "session.close", requestId: `close-${mode}`, sessionId });
+      await events.waitFor(
+        (event) => event.type === "request.completed" && event.requestId === `close-${mode}`,
       );
     }
-    expect(runtime.starts).toHaveLength(0);
+    await connection.close();
+  });
+
+  test("hides and rejects interactive modes without negotiated permissions", async () => {
+    const runtime = new FakeOmpRuntime();
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
+      versions: [1],
+      capabilities: ["prompt.message"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({ type: "catalog", requestId: "limited-catalog", cwd: "/repo" });
+    const catalog = await events.waitFor(
+      (event) => event.type === "catalog" && event.requestId === "limited-catalog",
+    );
+    if (catalog.type !== "catalog") throw new Error("Expected limited catalog");
+    expect(catalog.catalog.modes.map((mode) => mode.id)).toEqual(["full"]);
+
+    await connection.send({
+      type: "session.open",
+      requestId: "limited-open",
+      sessionId: "limited-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "ask",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await expect(
+      events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === "limited-open",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        error: { message: "OMP mode 'ask' requires negotiated permission support" },
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    await connection.close();
+  });
+  test("keeps text-shaped tool approvals generic and filters their public input", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events, "spoofed-approval-open", "session-1", {
+      API_TOKEN: "credential-secret",
+    });
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "extension_ui_request",
+      id: "spoofed-tool-approval",
+      method: "select",
+      title: "Allow tool: bash\nCommand: cat /home/private/file credential-secret\u0007",
+      options: ["Approve", "Deny"],
+    });
+    const permission = events.findLast(
+      (event) =>
+        event.type === "session.permission" && event.request.title?.startsWith("Allow tool:"),
+    );
+    if (permission?.type !== "session.permission") throw new Error("Expected generic permission");
+    expect(permission.request.kind).toBe("question");
+    expect(permission.request.detail).toBeUndefined();
+    const visible = JSON.stringify(permission.request);
+    expect(visible).not.toContain("credential-secret");
+    expect(visible).not.toContain("/home/private/file");
+    expect(visible).not.toContain("\\u0007");
+    expect(Buffer.byteLength(visible, "utf8")).toBeLessThan(128 * 1024);
     await connection.close();
   });
 
@@ -1476,7 +1605,11 @@ describe("OMP direct provider", () => {
         config: expect.objectContaining({
           model: MODEL_PUBLIC_ID,
           mode: "full",
-          modes: [expect.objectContaining({ id: "full" })],
+          modes: expect.arrayContaining([
+            expect.objectContaining({ id: "full" }),
+            expect.objectContaining({ id: "write" }),
+            expect.objectContaining({ id: "ask" }),
+          ]),
           thinkingOption: "medium",
         }),
       }),
@@ -1609,6 +1742,7 @@ describe("OMP direct provider", () => {
         mode: "full",
         thinkingOption: "high",
         settings: {},
+        providerOptions: { params: { sessionDir: "/sessions/custom" } },
         persist: true,
       },
       persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
@@ -1617,6 +1751,12 @@ describe("OMP direct provider", () => {
     await events.waitFor(
       (event) => event.type === "session.ready" && event.requestId === "resume-persisted",
     );
+    expect(runtime.sessionListRequests.at(-1)).toEqual({
+      sessionId: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      limit: 2,
+      sessionDir: "/sessions/custom",
+    });
     const replayEvents = events.slice(replayStart);
     const readyIndex = replayEvents.findIndex((event) => event.type === "session.ready");
     const timelineIndexes = replayEvents.flatMap((event, index) =>
@@ -4138,7 +4278,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("rejects uploaded prompt content before invoking OMP", async () => {
+  test("renders structured prompt attachments before invoking OMP", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -4146,35 +4286,128 @@ describe("OMP direct provider", () => {
       type: "session.prompt",
       sessionId: "session-1",
       prompt: {
-        clientMessageId: "uploaded-file",
+        clientMessageId: "attachments",
         delivery: "auto",
         input: {
           type: "message",
           content: [
+            { type: "text", text: "Review these" },
+            {
+              type: "forge_change_request",
+              mimeType: "application/paseo-forge-change-request",
+              forge: "gitlab",
+              number: 42,
+              title: "Fix auth",
+              url: "https://gitlab.example/p/merge_requests/42",
+              projectPath: "team/project",
+              baseRefName: "main",
+              headRefName: "fix/auth",
+              body: "Closes the gap.",
+            },
+            {
+              type: "github_pr",
+              mimeType: "application/github-pr",
+              number: 7,
+              title: "Legacy pull request",
+              url: "https://github.example/p/pull/7",
+            },
+            {
+              type: "forge_issue",
+              mimeType: "application/paseo-forge-issue",
+              forge: "bitbucket",
+              number: 9,
+              title: "Current issue",
+              url: "https://bitbucket.example/p/issues/9",
+              projectPath: "team/project",
+            },
+            {
+              type: "github_issue",
+              mimeType: "application/github-issue",
+              number: 11,
+              title: "Legacy issue",
+              url: "https://github.example/p/issues/11",
+            },
+            {
+              type: "text",
+              mimeType: "text/plain",
+              title: "Context",
+              text: "Attached text context",
+            },
+            {
+              type: "review",
+              mimeType: "application/paseo-review",
+              cwd: "/repo",
+              mode: "base",
+              baseRef: "main",
+              comments: [
+                {
+                  filePath: "src/auth.ts",
+                  side: "new",
+                  lineNumber: 2,
+                  body: "Check this branch.",
+                  context: {
+                    hunkHeader: "@@ -1,2 +1,2 @@",
+                    targetLine: {
+                      oldLineNumber: 2,
+                      newLineNumber: 2,
+                      type: "add",
+                      content: "secure();",
+                    },
+                    lines: [
+                      {
+                        oldLineNumber: 2,
+                        newLineNumber: 2,
+                        type: "add",
+                        content: "secure();",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
             {
               type: "uploaded_file",
               id: "upload-1",
-              fileName: "secret.txt",
+              fileName: "spec.txt",
               mimeType: "text/plain",
               size: 12,
-              path: "/etc/passwd",
+              path: "/repo/spec.txt",
             },
           ],
         },
       },
     });
-    const result = await events.waitFor(
-      (event) =>
-        event.type === "session.prompt_result" && event.clientMessageId === "uploaded-file",
+    await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "attachments",
     );
+    const renderedPrompt = session.prompts.at(-1);
+    expect(renderedPrompt).toContain("Review these");
+    expect(renderedPrompt).toContain(
+      "GitLab MR !42: Fix auth\nhttps://gitlab.example/p/merge_requests/42\nProject: team/project\nBase: main\nHead: fix/auth\n\nCloses the gap.",
+    );
+    expect(renderedPrompt).toContain(
+      "GitHub PR #7: Legacy pull request\nhttps://github.example/p/pull/7",
+    );
+    expect(renderedPrompt).toContain(
+      "Bitbucket Issue #9: Current issue\nhttps://bitbucket.example/p/issues/9\nProject: team/project",
+    );
+    expect(renderedPrompt).toContain(
+      "GitHub Issue #11: Legacy issue\nhttps://github.example/p/issues/11",
+    );
+    expect(renderedPrompt).toContain("Attached text context");
+    expect(renderedPrompt).toContain(
+      "Paseo review attachment (base)\nCWD: /repo\nBase: main\n\nComment 1: src/auth.ts:new:2\nCheck this branch.\n@@ -1,2 +1,2 @@\n>  2  2 +secure();",
+    );
+    expect(renderedPrompt).toContain(
+      "Uploaded file: spec.txt\nPath: /repo/spec.txt\nMIME: text/plain\nSize: 12 bytes",
+    );
+    const attachmentResult = events.findLast(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "attachments",
+    );
+    if (!attachmentResult) throw new Error("Expected attachment prompt result");
+    const turnId = turnIdFrom(attachmentResult);
+    await finishTurn(events, session, turnId);
 
-    expect(result).toEqual(
-      expect.objectContaining({
-        result: { type: "failed", error: { message: "OMP supports text messages only" } },
-      }),
-    );
-    expect(session.promptCount).toBe(0);
-    expect(JSON.stringify(events)).not.toContain("/etc/passwd");
     await connection.send({
       type: "session.prompt",
       sessionId: "session-1",
@@ -4196,8 +4429,121 @@ describe("OMP direct provider", () => {
         result: { type: "failed", error: { message: "OMP prompt has too many content parts" } },
       }),
     );
-    expect(session.promptCount).toBe(0);
     await connection.close();
+  });
+
+  test("materializes images for text-only models", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(
+      connection,
+      events,
+      "text-image-open",
+      "session-1",
+      {},
+      ALTERNATE_MODEL_PUBLIC_ID,
+      "high",
+    );
+    const session = sessionAt(runtime);
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "text-only-image",
+        delivery: "auto",
+        input: {
+          type: "message",
+          content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+        },
+      },
+    });
+    const result = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "text-only-image",
+    );
+    expect(session.promptImages.at(-1)).toEqual([]);
+    const materialized = session.prompts
+      .at(-1)
+      ?.match(/^\[Image available at: (?<path>.*\/[0-9a-f]{64}\.png)\]$/u)?.groups?.path;
+    if (!materialized) throw new Error("Expected materialized image path");
+    expect(existsSync(materialized)).toBe(true);
+    await finishTurn(events, session, turnIdFrom(result));
+    expect(existsSync(materialized)).toBe(false);
+    await connection.close();
+  });
+  test("cleans materialized images after prompt failure and connection close", async () => {
+    const failed = await createHarness();
+    await openSession(
+      failed.connection,
+      failed.events,
+      "failed-image-open",
+      "session-1",
+      {},
+      ALTERNATE_MODEL_PUBLIC_ID,
+      "high",
+    );
+    const failedSession = sessionAt(failed.runtime);
+    failedSession.promptError = new Error("native prompt failed");
+    await failed.connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "failed-image",
+        delivery: "auto",
+        input: {
+          type: "message",
+          content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+        },
+      },
+    });
+    await failed.events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "failed-image",
+    );
+    const failedPath = failedSession.prompts
+      .at(-1)
+      ?.match(/^\[Image available at: (?<path>.*\/[0-9a-f]{64}\.png)\]$/u)?.groups?.path;
+    if (!failedPath) throw new Error("Expected failed prompt image path");
+    expect(existsSync(failedPath)).toBe(false);
+    await failed.connection.close();
+
+    const closing = await createHarness();
+    await openSession(
+      closing.connection,
+      closing.events,
+      "closing-image-open",
+      "session-1",
+      {},
+      ALTERNATE_MODEL_PUBLIC_ID,
+      "high",
+    );
+    const closingSession = sessionAt(closing.runtime);
+    turnIdFrom(
+      await startPrompt(closing.connection, closing.events, "closing-image", "show image"),
+    );
+    const imagePayload = {
+      type: "session.prompt" as const,
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "closing-image-steer",
+        delivery: "steer" as const,
+        input: {
+          type: "message" as const,
+          content: [{ type: "image" as const, data: "iVBORw0KGgo=", mimeType: "image/png" }],
+        },
+      },
+    };
+    await closing.connection.send(imagePayload);
+    await closing.events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "closing-image-steer",
+    );
+    const closingPath = closingSession.steers
+      .at(-1)
+      ?.match(/^\[Image available at: (?<path>.*\/[0-9a-f]{64}\.png)\]$/u)?.groups?.path;
+    if (!closingPath) throw new Error("Expected closing prompt image path");
+    expect(existsSync(closingPath)).toBe(true);
+    await closing.connection.close();
+    expect(existsSync(closingPath)).toBe(false);
   });
 
   test("commits an actual model and thinking change", async () => {
@@ -13216,6 +13562,129 @@ describe("OMP direct provider", () => {
     await connection.close().catch(() => undefined);
   });
 
+  test("publishes and executes OMP out-of-band commands", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const commands = events.findLast((event) => event.type === "session.commands");
+    if (commands?.type !== "session.commands") throw new Error("Expected OMP command catalog");
+    expect(commands.commands.map((command) => command.name)).toEqual(
+      expect.arrayContaining(["compact", "autocompact", "handoff", "steer", "follow-up"]),
+    );
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "autocompact-command",
+        delivery: "auto",
+        input: { type: "command", name: "autocompact", arguments: "off" },
+      },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "autocompact-command",
+    );
+    expect(session.autoCompactionChanges).toEqual([false]);
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "autocompact-toggle",
+        delivery: "auto",
+        input: { type: "command", name: "autocompact", arguments: "toggle" },
+      },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "autocompact-toggle",
+    );
+    expect(session.autoCompactionChanges).toEqual([false, true]);
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "session-1",
+      item: expect.objectContaining({
+        type: "assistant_message",
+        text: "Auto-compaction disabled.",
+      }),
+    });
+
+    for (const [name, argumentsText] of [
+      ["handoff", "finish implementation"],
+      ["follow-up", "run verification"],
+    ] as const) {
+      const clientMessageId = `${name}-command`;
+      await connection.send({
+        type: "session.prompt",
+        sessionId: "session-1",
+        prompt: {
+          clientMessageId,
+          delivery: "auto",
+          input: { type: "command", name, arguments: argumentsText },
+        },
+      });
+      const result = await events.waitFor(
+        (event) =>
+          event.type === "session.prompt_result" && event.clientMessageId === clientMessageId,
+      );
+      const commandTurnId = turnIdFrom(result);
+      expect(events).toContainEqual({
+        type: "session.turn",
+        sessionId: "session-1",
+        turnId: commandTurnId,
+        state: "started",
+      });
+      session.emit({
+        type: "message_start",
+        message: { role: "assistant", responseId: `${name}-response`, content: [] },
+      });
+      session.emit({
+        type: "message_update",
+        message: { role: "assistant", responseId: `${name}-response`, content: [] },
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: `${name} output` },
+      });
+      await scheduler.flush();
+      session.emit({
+        type: "agent_end",
+        messages: [
+          { role: "assistant", responseId: `${name}-response`, content: `${name} output` },
+        ],
+        isTerminal: true,
+      });
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === commandTurnId &&
+          event.state === "completed",
+      );
+      expect(events).toContainEqual({
+        type: "timeline.item",
+        sessionId: "session-1",
+        item: expect.objectContaining({ type: "assistant_message", text: `${name} output` }),
+      });
+    }
+    expect(session.handoffs).toEqual(["finish implementation"]);
+    expect(session.followUps).toEqual(["run verification"]);
+
+    const turnId = turnIdFrom(await startPrompt(connection, events, "active-command", "work"));
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "steer-command",
+        delivery: "auto",
+        input: { type: "command", name: "steer", arguments: "focus" },
+      },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "steer-command",
+    );
+    expect(session.steers).toEqual(["focus"]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
   test("publishes command metadata and dispatches structured commands and images", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.availableCommands = [
@@ -13234,7 +13703,32 @@ describe("OMP direct provider", () => {
     expect(events).toContainEqual({
       type: "session.commands",
       sessionId: "session-1",
-      commands: [
+      commands: expect.arrayContaining([
+        {
+          name: "compact",
+          description: "Manually compact the session context",
+          argumentHint: "[instructions]",
+        },
+        {
+          name: "autocompact",
+          description: "Toggle automatic context compaction",
+          argumentHint: "[on|off|toggle]",
+        },
+        {
+          name: "handoff",
+          description: "Hand off from planning to implementation",
+          argumentHint: "[instructions]",
+        },
+        {
+          name: "steer",
+          description: "Steer the active OMP turn",
+          argumentHint: "<message>",
+        },
+        {
+          name: "follow-up",
+          description: "Queue a follow-up message for OMP",
+          argumentHint: "<message>",
+        },
         {
           name: "review",
           description: "Review the current change",
@@ -13244,7 +13738,7 @@ describe("OMP direct provider", () => {
           name: "git:status",
           description: "Show repository status",
         },
-      ],
+      ]),
     });
 
     const session = sessionAt(runtime);
@@ -13396,6 +13890,18 @@ describe("OMP direct provider", () => {
         response: { behavior: "allow", selectedActionId: "submit" },
       }),
     ).rejects.toThrow("OMP permission action is invalid");
+    expect(session.extensionUiResponses).toHaveLength(0);
+    await expect(
+      connection.send({
+        type: "session.permission",
+        sessionId: "session-1",
+        permissionId: permission.request.id,
+        response: {
+          behavior: "allow",
+          updatedInput: { answers: { Deployment: "Unlisted target" } },
+        },
+      }),
+    ).rejects.toThrow("OMP selection response is invalid");
     expect(session.extensionUiResponses).toHaveLength(0);
     await connection.send({
       type: "session.permission",
@@ -13566,6 +14072,126 @@ describe("OMP direct provider", () => {
       message: {
         role: "assistant",
         responseId: "ask-answer",
+        content: [{ type: "text", text: "Continuing" }],
+      },
+    });
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("routes an allowed freeform select through OMP's native follow-up input", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "freeform-turn", "choose"));
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "freeform-ask",
+      toolName: "ask_user",
+      args: { question: "Deployment", allowFreeform: true },
+    });
+    session.emit({
+      type: "extension_ui_request",
+      id: "native-freeform-select",
+      method: "select",
+      title: "Deployment",
+      options: ["Preview", "✏️ Type custom response..."],
+    });
+    const permission = events.findLast(
+      (event) => event.type === "session.permission" && event.request.title === "Deployment",
+    );
+    if (permission?.type !== "session.permission") throw new Error("Expected freeform permission");
+    expect(permission.request.input?.questions).toEqual([
+      {
+        header: "Deployment",
+        question: "Deployment",
+        options: [
+          {
+            label: "Preview",
+            value: expect.stringMatching(/:option:0$/u),
+          },
+        ],
+        multiSelect: false,
+        allowOther: true,
+      },
+    ]);
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+      response: {
+        behavior: "allow",
+        updatedInput: { answers: { Deployment: "Custom staging ring" } },
+      },
+    });
+    expect(session.extensionUiResponses).toEqual([
+      {
+        type: "extension_ui_response",
+        id: "native-freeform-select",
+        value: "✏️ Type custom response...",
+      },
+    ]);
+    session.emit({
+      type: "extension_ui_request",
+      id: "native-freeform-input",
+      method: "input",
+      title: "Custom response",
+    });
+    await Promise.resolve();
+    expect(session.extensionUiResponses).toEqual([
+      {
+        type: "extension_ui_response",
+        id: "native-freeform-select",
+        value: "✏️ Type custom response...",
+      },
+      {
+        type: "extension_ui_response",
+        id: "native-freeform-input",
+        value: "Custom staging ring",
+      },
+    ]);
+
+    session.emit({
+      type: "extension_ui_request",
+      id: "native-oversized-select",
+      method: "select",
+      title: "Another deployment",
+      options: ["Preview", "✏️ Type custom response..."],
+    });
+    const oversized = events.findLast(
+      (event) =>
+        event.type === "session.permission" && event.request.title === "Another deployment",
+    );
+    if (oversized?.type !== "session.permission") throw new Error("Expected bounded permission");
+    await expect(
+      connection.send({
+        type: "session.permission",
+        sessionId: "session-1",
+        permissionId: oversized.request.id,
+        response: {
+          behavior: "allow",
+          updatedInput: { answers: { "Another deployment": "x".repeat(64 * 1024 + 1) } },
+        },
+      }),
+    ).rejects.toThrow("OMP freeform response is invalid");
+    expect(session.extensionUiResponses).toHaveLength(2);
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: oversized.request.id,
+      response: { behavior: "deny" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "freeform-ask",
+      toolName: "ask_user",
+      result: { answer: "Custom staging ring" },
+    });
+    session.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        responseId: "freeform-answer",
         content: [{ type: "text", text: "Continuing" }],
       },
     });
