@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-gas-city-v0.0.1...paseo-gas-city-v0.1.0) (2026-09-11)
+
+
+### Features
+
+* **gas-city:** add operator control-plane plugin ([#15](https://github.com/omercnet/paseo-plugins/issues/15)) ([42b17ce](https://github.com/omercnet/paseo-plugins/commit/42b17ce9e894f8c39c02be2cdc288cac78fb0124))
+
 ## 0.0.1 (2026-09-11)
 
 ### Features
