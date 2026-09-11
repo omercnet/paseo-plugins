@@ -1043,7 +1043,10 @@ class OmpRpcProcess {
     }
   }
 
-  startRequest(command: Record<string, unknown>, timeoutMs = this.requestTimeoutMs): StartedRequest {
+  startRequest(
+    command: Record<string, unknown>,
+    timeoutMs = this.requestTimeoutMs,
+  ): StartedRequest {
     const id = randomUUID();
     if (this.fatalError) return { id, promise: Promise.reject(this.fatalError) };
     if (this.closed || this.exited || !this.child.stdin.writable) {

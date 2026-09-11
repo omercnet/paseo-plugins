@@ -257,7 +257,6 @@ export class OmpPublicDataFilter {
     return false;
   }
 
-
   text(input: string, maxBytes = MAX_PUBLIC_STRING_BYTES): string {
     let output = input.replace(AUTHORIZATION_CREDENTIAL, `Authorization: ${REDACTED}`);
     output = output.replace(BEARER_CREDENTIAL, `Bearer ${REDACTED}`);

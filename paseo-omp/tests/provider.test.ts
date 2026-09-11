@@ -3729,8 +3729,7 @@ describe("OMP direct provider", () => {
         : null,
     ).toBe("<redacted>");
     expect(
-      splitAuthorization?.type === "timeline.item" &&
-        splitAuthorization.item.type === "reasoning"
+      splitAuthorization?.type === "timeline.item" && splitAuthorization.item.type === "reasoning"
         ? splitAuthorization.item.text
         : null,
     ).toBe("Authorization: <redacted>");

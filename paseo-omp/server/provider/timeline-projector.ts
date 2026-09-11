@@ -173,7 +173,10 @@ export class OmpTimelineProjector {
       case "tool_execution_update": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
-        if (previous.unsafePartialOutput || this.dataFilter.hasUnsafeStreamSuffix(event.partialResult)) {
+        if (
+          previous.unsafePartialOutput ||
+          this.dataFilter.hasUnsafeStreamSuffix(event.partialResult)
+        ) {
           this.tools.set(event.toolCallId, { ...previous, unsafePartialOutput: true });
           return;
         }
