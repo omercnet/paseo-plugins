@@ -1603,8 +1603,12 @@ describe("OMP direct provider", () => {
     });
     await observed.promise;
     session.emit({ type: "process_exit", error: "runtime exited" });
+    const failure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-invalidated",
+    );
     session.stateGate = null;
     gate.resolve();
+    await failure;
     await configuring;
 
     expect(events.slice(baseline).some((event) => event.type === "session.config")).toBe(false);
