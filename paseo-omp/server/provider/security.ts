@@ -133,12 +133,20 @@ export class BoundedStringSet {
 }
 
 export class OmpPublicError extends Error {}
+export class OmpCleanupFailure extends Error {
+  constructor(
+    message: string,
+    readonly cleanup: Promise<void>,
+  ) {
+    super(message);
+  }
+}
+
 
 export class OmpPublicDataFilter {
   private readonly sensitiveValueSet = new Set<string>();
   private readonly sensitiveValues: string[] = [];
   private sensitiveValueBytes = 0;
-  private suppressAll = false;
 
   constructor(values: Iterable<string> = []) {
     this.addSensitiveValues(values);
@@ -148,7 +156,8 @@ export class OmpPublicDataFilter {
     const additions: string[] = [];
     let addedBytes = 0;
     for (const value of values) {
-      if (!value || this.sensitiveValueSet.has(value) || additions.includes(value)) continue;
+      if (utf8Bytes(value) < 4) continue;
+      if (this.sensitiveValueSet.has(value) || additions.includes(value)) continue;
       additions.push(value);
       addedBytes += utf8Bytes(value);
     }
@@ -162,10 +171,6 @@ export class OmpPublicDataFilter {
     for (const value of additions) {
       this.sensitiveValueSet.add(value);
       this.sensitiveValueBytes += utf8Bytes(value);
-      if (utf8Bytes(value) < 4) {
-        this.suppressAll = true;
-        continue;
-      }
       const index = this.sensitiveValues.findIndex((existing) => existing.length < value.length);
       if (index < 0) this.sensitiveValues.push(value);
       else this.sensitiveValues.splice(index, 0, value);
@@ -173,7 +178,6 @@ export class OmpPublicDataFilter {
   }
 
   text(input: string, maxBytes = MAX_PUBLIC_STRING_BYTES): string {
-    if (this.suppressAll) return REDACTED;
     let output = input.replace(AUTHORIZATION_CREDENTIAL, `Authorization: ${REDACTED}`);
     output = output.replace(BEARER_CREDENTIAL, `Bearer ${REDACTED}`);
     for (const value of this.sensitiveValues) output = output.split(value).join(REDACTED);

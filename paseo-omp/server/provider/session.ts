@@ -19,6 +19,7 @@ import { buildOmpSpawnRequest } from "./omp-rpc";
 import {
   BoundedStringSet,
   boundedJsonBytes,
+  OmpCleanupFailure,
   OmpPublicDataFilter,
   OmpPublicError,
   utf8Bytes,
@@ -358,7 +359,15 @@ export class OmpProviderSession {
         scheduler,
       );
     } catch (error) {
-      await native.close().catch(() => undefined);
+      const cleanup = native.close();
+      try {
+        await cleanup;
+      } catch {
+        throw new OmpCleanupFailure(
+          "OMP session initialization cleanup failed",
+          cleanup.catch(() => undefined),
+        );
+      }
       throw error;
     }
   }

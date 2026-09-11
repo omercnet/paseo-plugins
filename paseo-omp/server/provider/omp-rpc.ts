@@ -396,6 +396,8 @@ const INHERITED_PROVIDER_AUTH_ENV: Readonly<Record<string, true>> = {
 };
 const BLOCKED_SESSION_ENV =
   /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|DYLD_.*|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|OMP_COMMAND|PATH|PATHEXT|PERL5LIB|PERL5OPT|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SYSTEMROOT|USERPROFILE|_JAVA_OPTIONS)$/u;
+const SESSION_CREDENTIAL_ENV =
+  /(?:^|_)(?:API_KEY|ACCESS_KEY|AUTH|AUTHORIZATION|COOKIE|CREDENTIALS|PASSWORD|PRIVATE_KEY|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 
 function validateBoundedText(value: unknown, field: string, maxBytes: number): string {
@@ -457,13 +459,17 @@ function buildOmpEnvironment(
     ) {
       throw new Error("OMP session environment contains an invalid value");
     }
-    if (value.length > 0 && utf8Bytes(value) < 4) {
-      throw new Error("OMP session environment contains a value too short for safe redaction");
+    const valueBytes = utf8Bytes(value);
+    const isCredential =
+      name.toUpperCase() in INHERITED_PROVIDER_AUTH_ENV ||
+      SESSION_CREDENTIAL_ENV.test(name.toUpperCase());
+    if (valueBytes > 0 && valueBytes < 4 && isCredential) {
+      throw new OmpPublicError("OMP session credential is too short for safe redaction");
     }
-    totalBytes += utf8Bytes(name) + utf8Bytes(value);
+    totalBytes += utf8Bytes(name) + valueBytes;
     if (totalBytes > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP session environment is too large");
     env[name] = value;
-    if (value.length > 0) sensitiveValues.push(value);
+    if (valueBytes >= 4) sensitiveValues.push(value);
   }
   return { env, sensitiveValues };
 }
@@ -473,34 +479,46 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
   const agentDir = env.PI_CODING_AGENT_DIR ?? join(home, env.PI_CONFIG_DIR ?? ".omp", "agent");
   const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
   const secrets: string[] = [];
-  const collectStrings = (root: unknown) => {
-    const stack: unknown[] = [root];
+  const credentialKey = /(?:authorization|cookie|credential|api.?key|token|secret|password)/iu;
+  const collectStrings = (root: unknown, rootKey?: string) => {
+    const stack: Array<{ value: unknown; key?: string }> = [{ value: root, key: rootKey }];
     while (stack.length > 0) {
-      const value = stack.pop();
+      const current = stack.pop();
+      if (!current) break;
+      const value = current.value;
       if (typeof value === "string") {
-        if (value.length > 0) secrets.push(value);
+        if (value.length === 0) continue;
+        if (utf8Bytes(value) < 4) {
+          if (current.key && credentialKey.test(current.key)) {
+            throw new OmpPublicError("OMP MCP credential is too short for safe redaction");
+          }
+          continue;
+        }
+        secrets.push(value);
       } else if (Array.isArray(value)) {
         if (value.length > MAX_ARRAY_ITEMS) {
           throw new OmpPublicError("OMP MCP configuration exceeds safe limits");
         }
-        for (let index = value.length - 1; index >= 0; index -= 1) stack.push(value[index]);
+        for (let index = value.length - 1; index >= 0; index -= 1) {
+          stack.push({ value: value[index], key: current.key });
+        }
       } else if (value && typeof value === "object") {
         for (const key in value) {
-          if (Object.hasOwn(value, key)) stack.push((value as Record<string, unknown>)[key]);
+          if (Object.hasOwn(value, key)) {
+            stack.push({ value: (value as Record<string, unknown>)[key], key });
+          }
         }
       }
     }
   };
   const collectUrlSecrets = (value: string) => {
-    collectStrings(value);
+    collectStrings(value, "url");
     try {
       const url = new URL(value);
-      if (url.username) collectStrings(decodeURIComponent(url.username));
-      if (url.password) collectStrings(decodeURIComponent(url.password));
+      if (url.username) collectStrings(decodeURIComponent(url.username), "credential");
+      if (url.password) collectStrings(decodeURIComponent(url.password), "password");
       for (const [name, parameter] of url.searchParams) {
-        if (/(?:key|token|secret|password|auth|credential)/iu.test(name)) {
-          collectStrings(parameter);
-        }
+        if (credentialKey.test(name)) collectStrings(parameter, name);
       }
     } catch {
       // Non-URL values are still retained as complete sensitive literals above.

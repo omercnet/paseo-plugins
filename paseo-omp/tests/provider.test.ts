@@ -3167,6 +3167,25 @@ describe("OMP direct provider", () => {
         error: { message: "OMP session close failed" },
       }),
     );
+    await connection.send({
+      type: "session.open",
+      requestId: "candidate-reopen",
+      sessionId: "session-1",
+      config: {
+        cwd: "/repo",
+        env: { TEST_ENV: "test-value" },
+        mcpServers: {},
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "candidate-reopen",
+    );
+    expect(runtime.starts).toHaveLength(2);
     await expect(connection.close()).resolves.toBeUndefined();
   });
 
@@ -3263,6 +3282,22 @@ describe("OMP direct provider", () => {
     const turnId = turnIdFrom(await startPrompt(connection, events, "after-passive", "continue"));
     const terminal = await finishTurn(events, session, turnId);
     expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    await connection.close();
+  });
+
+  test("preserves normal output with benign short environment values", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events, "short-env-open", "session-1", {
+      DEBUG: "1",
+      NODE_ENV: "dev",
+    });
+    sessionAt(runtime).emit({ type: "notice", level: "info", message: "value 1 in dev" });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({ type: "notification", message: "value 1 in dev" }),
+      }),
+    );
     await connection.close();
   });
 
@@ -3700,10 +3735,73 @@ describe("OMP direct provider", () => {
         error: { message: "OMP session close failed" },
       }),
     );
-    await openSession(connection, events, "reopen-after-close-failure", "session-1");
-    expect(runtime.starts).toHaveLength(2);
+    await connection.send({
+      type: "session.open",
+      requestId: "reopen-after-close-failure",
+      sessionId: "session-1",
+      config: {
+        cwd: "/repo",
+        env: { TEST_ENV: "test-value" },
+        mcpServers: {},
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "reopen-after-close-failure",
+    );
+    expect(runtime.starts).toHaveLength(1);
     await expect(connection.close()).resolves.toBeUndefined();
   });
+  test("retains failed initialization cleanup ownership and blocks same-ID reopen", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.availableModels = [];
+    runtime.nextCloseError = new Error("initial cleanup failed");
+    const { connection, events } = await createHarness(runtime);
+    await connection.send({
+      type: "session.open",
+      requestId: "failed-initial-open",
+      sessionId: "failed-initial-session",
+      config: {
+        cwd: "/repo",
+        env: { TEST_ENV: "test-value" },
+        mcpServers: {},
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "failed-initial-open",
+    );
+    await connection.send({
+      type: "session.open",
+      requestId: "blocked-reopen",
+      sessionId: "failed-initial-session",
+      config: {
+        cwd: "/repo",
+        env: { TEST_ENV: "test-value" },
+        mcpServers: {},
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "blocked-reopen",
+    );
+    expect(runtime.starts).toHaveLength(1);
+    await expect(connection.close()).resolves.toBeUndefined();
+  });
+
 
   test("close during open waits for the created runtime session cleanup", async () => {
     const runtime = new FakeOmpRuntime();

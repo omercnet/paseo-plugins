@@ -795,6 +795,18 @@ describe("OMP RPC transport", () => {
     expect(request.env.NODE_OPTIONS).toBeUndefined();
     expect(request.env.RANDOM_TOKEN).toBeUndefined();
     expect(request.env.node_options).toBeUndefined();
+    const benignShortValues = buildOmpSpawnRequest(
+      { cwd: "/repo", mode: "full", env: { DEBUG: "1", NODE_ENV: "dev" } },
+      { PATH: "/usr/bin" },
+    );
+    expect(benignShortValues.env).toEqual({ PATH: "/usr/bin", DEBUG: "1", NODE_ENV: "dev" });
+    expect(benignShortValues.sensitiveValues).toEqual([]);
+    expect(() =>
+      buildOmpSpawnRequest(
+        { cwd: "/repo", mode: "full", env: { API_TOKEN: "x" } },
+        { PATH: "/usr/bin" },
+      ),
+    ).toThrow("credential is too short");
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", env: { LD_PRELOAD: "/tmp/evil.so" } },
@@ -873,7 +885,17 @@ describe("OMP RPC transport", () => {
           "custom-secret",
         ]),
       );
-      expect(request.sensitiveValues).toContain("1");
+      expect(request.sensitiveValues).not.toContain("1");
+      writeFileSync(
+        join(agentDir, "mcp.json"),
+        JSON.stringify({ servers: { unsafe: { type: "stdio", command: "server", env: { token: "x" } } } }),
+      );
+      expect(() =>
+        buildOmpSpawnRequest(
+          { cwd: root, mode: "full" },
+          { PATH: "/usr/bin", HOME: root, PI_CODING_AGENT_DIR: agentDir },
+        ),
+      ).toThrow("credential is too short");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

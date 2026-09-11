@@ -7,7 +7,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { discoverOmpCatalog } from "./catalog";
 import type { OmpRuntime } from "./omp-rpc";
-import { boundedJsonBytes, OmpPublicError, utf8Bytes } from "./security";
+import { boundedJsonBytes, OmpCleanupFailure, OmpPublicError, utf8Bytes } from "./security";
 import { OmpProviderSession } from "./session";
 import type { OmpTimelineScheduler } from "./timeline-projector";
 
@@ -178,7 +178,7 @@ export function createOmpConnection(
   const listeners = new Set<(event: ProviderEvent) => void>();
   const sessions = new Map<string, { token: symbol; session: OmpProviderSession }>();
   const opening = new Map<string, { token: symbol; promise: Promise<OmpProviderSession> }>();
-  const failedCleanup = new Map<symbol, Promise<void>>();
+  const failedCleanup = new Map<string, { token: symbol; cleanup: Promise<void> }>();
   const shutdown = new AbortController();
   const activeOperations = new Set<Promise<void>>();
   let closing = false;
@@ -212,11 +212,11 @@ export function createOmpConnection(
         }
         return;
       case "session.open": {
-        if (sessions.has(input.sessionId) || opening.has(input.sessionId)) {
+        if (sessions.has(input.sessionId) || opening.has(input.sessionId) || failedCleanup.has(input.sessionId)) {
           requestFailure(input.requestId, new OmpPublicError("OMP session already exists"));
           return;
         }
-        if (sessions.size + opening.size >= MAX_CONNECTION_SESSIONS) {
+        if (sessions.size + opening.size + failedCleanup.size >= MAX_CONNECTION_SESSIONS) {
           requestFailure(input.requestId, new OmpPublicError("OMP session limit reached"));
           return;
         }
@@ -249,13 +249,15 @@ export function createOmpConnection(
           session.publishOpened(input.requestId);
         } catch (error) {
           if (opening.get(input.sessionId)?.token === token) {
+            if (error instanceof OmpCleanupFailure) {
+              failedCleanup.set(input.sessionId, { token, cleanup: error.cleanup });
+            }
             const details = errorDetails(error, "OMP session failed to open");
             emit({ type: "request.failed", requestId: input.requestId, error: details });
             emit({ type: "session.closed", sessionId: input.sessionId, error: details });
           }
         } finally {
           if (opening.get(input.sessionId)?.token === token) opening.delete(input.sessionId);
-          if (!sessions.has(input.sessionId)) opening.delete(input.sessionId);
         }
         return;
       }
@@ -304,14 +306,10 @@ export function createOmpConnection(
           await slot.session.close();
         } catch {
           if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
-          failedCleanup.set(
-            slot.token,
-            slot.session.close().catch(() => undefined),
-          );
-          if (failedCleanup.size > MAX_CONNECTION_SESSIONS) {
-            const oldest = failedCleanup.keys().next().value;
-            if (oldest !== undefined) failedCleanup.delete(oldest);
-          }
+          failedCleanup.set(input.sessionId, {
+            token: slot.token,
+            cleanup: slot.session.close().catch(() => undefined),
+          });
           throw new OmpPublicError("OMP session close failed");
         }
         if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
@@ -330,7 +328,7 @@ export function createOmpConnection(
     shutdown.abort(new Error("OMP provider connection closed"));
     const sessionClosures = Promise.allSettled([
       ...[...sessions.values()].map(({ session }) => session.close()),
-      ...failedCleanup.values(),
+      ...[...failedCleanup.values()].map(({ cleanup }) => cleanup),
     ]);
     await Promise.all([Promise.all(activeOperations), sessionClosures]);
     const pending = await Promise.allSettled([...opening.values()].map((slot) => slot.promise));
