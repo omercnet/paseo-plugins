@@ -408,7 +408,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("accepts 1,024 branch entries and isolates an oversized response", async () => {
+  test("rejects invalid branch responses immediately and accepts the next valid response", async () => {
     const child = new FakeRpcChild();
     let branchRequestCount = 0;
     observeCommands(child, (command) => {
@@ -423,14 +423,19 @@ describe("OMP RPC transport", () => {
       }
       if (command.type !== "get_branch_messages") return;
       branchRequestCount += 1;
-      const messageCount = branchRequestCount === 1 ? 1_024 : 1_025;
+      if (branchRequestCount === 1) {
+        child.write({ type: "response", id: "unrelated-response", success: "invalid" });
+        child.write({ type: "response", id: command.id, success: "invalid" });
+        return;
+      }
+      const messageCount = branchRequestCount === 2 ? 1_025 : 1_024;
       child.write({
         type: "response",
         id: command.id,
         success: true,
         data: {
           messages: Array.from({ length: messageCount }, (_, index) => ({
-            entryId: `${branchRequestCount === 1 ? "entry" : "bad"}-${index}`,
+            entryId: `${messageCount === 1_024 ? "entry" : "bad"}-${index}`,
             text: "x",
           })),
         },
@@ -440,10 +445,33 @@ describe("OMP RPC transport", () => {
     child.write(READY_FRAME);
     const session = await opening;
 
+    let malformedOutcome: string | undefined;
+    void session.getBranchMessages().then(
+      () => {
+        malformedOutcome = "resolved";
+      },
+      (error) => {
+        malformedOutcome = error instanceof Error ? error.message : String(error);
+      },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(malformedOutcome).toBe("OMP RPC response is invalid");
+    let oversizedOutcome: string | undefined;
+    void session.getBranchMessages().then(
+      () => {
+        oversizedOutcome = "resolved";
+      },
+      (error) => {
+        oversizedOutcome = error instanceof Error ? error.message : String(error);
+      },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(oversizedOutcome).toBe("OMP RPC response exceeded command limits");
     const messages = await session.getBranchMessages();
     expect(messages).toHaveLength(1_024);
     expect(messages.at(-1)).toEqual({ entryId: "entry-1023", text: "x" });
-    await expect(session.getBranchMessages()).rejects.toThrow("exceeded command limits");
     await session.close();
   });
 

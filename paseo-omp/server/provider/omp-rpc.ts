@@ -1215,6 +1215,7 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
+    if (this.receiveKnownResponse(decoded)) return;
     if (this.receiveDegradedAgentEnd(decoded, true)) return;
     if (
       boundedJsonBytes(decoded, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
@@ -1292,6 +1293,7 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
+    if (this.receiveKnownResponse(decodedFrame)) return;
     if (this.receiveDegradedAgentEnd(decodedFrame, true)) return;
     if (
       boundedJsonBytes(
@@ -1311,6 +1313,62 @@ class OmpRpcProcess {
       return;
     }
     this.receiveFrame(frameObject.data);
+  }
+
+  private receiveKnownResponse(value: unknown): boolean {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const frame = value as Record<string, unknown>;
+    if (frame.type !== "response" || typeof frame.id !== "string" || !this.pending.has(frame.id)) {
+      return false;
+    }
+    this.receiveResponse(frame);
+    return true;
+  }
+
+  private receiveResponse(frame: Record<string, unknown>): void {
+    const rawId = typeof frame.id === "string" ? frame.id : undefined;
+    const knownPending = rawId ? this.pending.get(rawId) : undefined;
+    const response = OmpResponseFrameSchema.safeParse(frame);
+    if (!response.success) {
+      if (rawId && knownPending) {
+        this.takePending(rawId)?.reject(new Error("OMP RPC response is invalid"));
+      } else {
+        this.recordProtocolViolation();
+      }
+      return;
+    }
+    const pending = this.pending.get(response.data.id);
+    if (!pending) return;
+    const responseItemLimit = pending.command === "get_branch_messages" ? 1_024 : MAX_ARRAY_ITEMS;
+    const responseByteLimit =
+      pending.command === "get_branch_messages" ? MAX_SEMANTIC_FRAME_BYTES : 2 * 1024 * 1024;
+    if (
+      boundedJsonBytes(
+        frame,
+        responseByteLimit,
+        responseItemLimit,
+        MAX_IMAGE_DATA_LENGTH,
+        responseItemLimit === 1_024 ? 4_096 : 2_048,
+      ) === Number.POSITIVE_INFINITY
+    ) {
+      this.takePending(response.data.id)?.reject(
+        new Error("OMP RPC response exceeded command limits"),
+      );
+      return;
+    }
+    const settled = this.takePending(response.data.id);
+    if (!settled) return;
+    if (response.data.success) settled.resolve(response.data.data);
+    else settled.reject(new Error("OMP RPC request failed"));
+  }
+
+  private takePending(id: string): PendingRequest | undefined {
+    const pending = this.pending.get(id);
+    if (!pending) return undefined;
+    clearTimeout(pending.timer);
+    this.pending.delete(id);
+    this.pendingWriteBytes -= pending.bytes;
+    return pending;
   }
 
   private receiveDegradedAgentEnd(value: unknown, onlyUnsafePayload: boolean): boolean {
@@ -1335,13 +1393,8 @@ class OmpRpcProcess {
         ) !== Number.POSITIVE_INFINITY);
     const payloadIsSafe =
       messagesAreSafe &&
-      boundedJsonBytes(
-        frame,
-        MAX_SEMANTIC_FRAME_BYTES,
-        1_024,
-        MAX_IMAGE_DATA_LENGTH,
-        4_096,
-      ) !== Number.POSITIVE_INFINITY;
+      boundedJsonBytes(frame, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) !==
+        Number.POSITIVE_INFINITY;
     if (onlyUnsafePayload && payloadIsSafe) return false;
     if (envelope.data.isTerminal === false) {
       this.fail(new Error("OMP emitted an invalid nonterminal agent_end payload"));
@@ -1409,37 +1462,7 @@ class OmpRpcProcess {
       return;
     }
     if (type === "response") {
-      const response = OmpResponseFrameSchema.safeParse(frame);
-      if (!response.success) {
-        this.recordProtocolViolation();
-        return;
-      }
-      const pending = this.pending.get(response.data.id);
-      if (!pending) return;
-      const responseItemLimit = pending.command === "get_branch_messages" ? 1_024 : MAX_ARRAY_ITEMS;
-      const responseByteLimit =
-        pending.command === "get_branch_messages" ? MAX_SEMANTIC_FRAME_BYTES : 2 * 1024 * 1024;
-      if (
-        response.data.data !== undefined &&
-        boundedJsonBytes(
-          response.data.data,
-          responseByteLimit,
-          responseItemLimit,
-          MAX_IMAGE_DATA_LENGTH,
-          responseItemLimit === 1_024 ? 4_096 : 2_048,
-        ) === Number.POSITIVE_INFINITY
-      ) {
-        clearTimeout(pending.timer);
-        this.pending.delete(response.data.id);
-        this.pendingWriteBytes -= pending.bytes;
-        pending.reject(new Error("OMP RPC response exceeded command limits"));
-        return;
-      }
-      clearTimeout(pending.timer);
-      this.pending.delete(response.data.id);
-      this.pendingWriteBytes -= pending.bytes;
-      if (response.data.success) pending.resolve(response.data.data);
-      else pending.reject(new Error("OMP RPC request failed"));
+      this.receiveResponse(frame);
       return;
     }
     const event = OmpRuntimeEventSchema.safeParse(frame);
