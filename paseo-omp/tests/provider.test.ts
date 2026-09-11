@@ -193,6 +193,7 @@ class ManualScheduler implements OmpTimelineScheduler {
     { callback: () => void | Promise<void>; delayMs: number }
   >();
   readonly delays: number[] = [];
+  onSchedule: ((delayMs: number) => void) | null = null;
   clearError: Error | null = null;
   get pendingCount(): number {
     return this.callbacks.size;
@@ -203,6 +204,7 @@ class ManualScheduler implements OmpTimelineScheduler {
     this.delays.push(delayMs);
     this.nextId += 1;
     this.callbacks.set(id, { callback, delayMs });
+    this.onSchedule?.(delayMs);
     return id;
   }
 
@@ -4269,6 +4271,55 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("starts fresh terminal usage while the pre-compaction sample remains hung", async () => {
+    const runtime = new FakeOmpRuntime();
+    const compact = Promise.withResolvers<void>();
+    const staleState = Promise.withResolvers<void>();
+    const staleStats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    session.captureUsageOnRequest = true;
+    session.compactGate = compact.promise;
+    session.stateGate = staleState.promise;
+    session.statsGate = staleStats.promise;
+    session.stateObserved = observed.resolve;
+    session.contextTokens = 9_000;
+    session.inputTokens = 8_000;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "hung-usage", "/compact"));
+    await observed.promise;
+
+    try {
+      session.stateGate = null;
+      session.statsGate = null;
+      session.contextTokens = 700;
+      session.inputTokens = 650;
+      compact.resolve();
+
+      const freshUsage = await events.waitFor(
+        (event) =>
+          event.type === "session.usage" &&
+          event.turnId === turnId &&
+          event.usage.contextWindowUsedTokens === 700,
+      );
+      const terminal = await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+      );
+      expect(events.indexOf(freshUsage)).toBeLessThan(events.indexOf(terminal));
+      expect(session.activeStateLookups).toBe(1);
+      expect(session.activeStatsLookups).toBe(1);
+      expect(session.stateLookups).toBe(3);
+      expect(session.statsLookups).toBe(2);
+    } finally {
+      staleState.resolve();
+      staleStats.resolve();
+      await connection.close();
+    }
+  });
+
   test("drops obsolete deferred samples before a later turn", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
@@ -4437,6 +4488,139 @@ describe("OMP direct provider", () => {
     expect(operations[1].item.id).toBe(operations[0].item.id);
     expect(session.compactions).toEqual(["focus on decisions"]);
     expect(session.prompts).toEqual([]);
+    await connection.close();
+  });
+
+  test("keeps a real RPC compaction pending past ordinary request timeout", async () => {
+    const scheduler = new ManualScheduler();
+    const compactObserved = Promise.withResolvers<void>();
+    const usageRequestsObserved = Promise.withResolvers<void>();
+    const ordinaryRequestsTimedOut = Promise.withResolvers<void>();
+    scheduler.onSchedule = (delayMs) => {
+      if (delayMs === 1_000) ordinaryRequestsTimedOut.resolve();
+    };
+    let child: ProviderRpcChild | undefined;
+    let compactRequestId: string | undefined;
+    let compactRequests = 0;
+    let holdUsageRequests = false;
+    let heldStateRequests = 0;
+    let heldStatsRequests = 0;
+    const respond = (command: Record<string, unknown>, data: unknown) => {
+      if (!child) throw new Error("OMP RPC child is unavailable");
+      child.write({ type: "response", id: command.id, success: true, data });
+    };
+    const runtime = new OmpRpcRuntime({
+      requestTimeoutMs: 10,
+      spawnProcess() {
+        const spawned = new ProviderRpcChild((command) => {
+          const type = command.type;
+          if (type === "get_available_models") {
+            respond(command, { models: [MODEL] });
+          } else if (type === "get_available_commands") {
+            respond(command, { commands: [{ name: "compact" }] });
+          } else if (type === "get_state") {
+            if (holdUsageRequests) {
+              heldStateRequests += 1;
+              if (heldStatsRequests > 0) usageRequestsObserved.resolve();
+              return;
+            }
+            respond(command, {
+              model: MODEL,
+              thinkingLevel: "medium",
+              isStreaming: false,
+              isCompacting: false,
+              sessionId: "native-session",
+              contextUsage: { tokens: 400, contextWindow: 200_000, percent: 0.2 },
+            });
+          } else if (type === "get_session_stats") {
+            if (holdUsageRequests) {
+              heldStatsRequests += 1;
+              if (heldStateRequests > 0) usageRequestsObserved.resolve();
+              return;
+            }
+            respond(command, {
+              tokens: { input: 350, output: 50, cacheRead: 25 },
+              cost: 0.4,
+              contextUsage: { tokens: 400, contextWindow: 200_000, percent: 0.2 },
+            });
+          } else if (type === "compact") {
+            compactRequests += 1;
+            compactRequestId = String(command.id);
+            holdUsageRequests = true;
+            compactObserved.resolve();
+          }
+        });
+        child = spawned;
+        queueMicrotask(() => spawned.write({ type: "ready" }));
+        return spawned.asChildProcess();
+      },
+      terminateProcessTree: () => Promise.resolve(true),
+      environment: TEST_RUNTIME_ENV,
+    });
+    const connection = await createOmpProvider({
+      runtime,
+      timelineScheduler: scheduler,
+      environment: TEST_RUNTIME_ENV,
+    }).connect({
+      versions: [1],
+      capabilities: ["prompt.message", "prompt.steer", "session.configure"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await openSession(connection, events);
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "real-timeout-compact", "/compact focus"),
+    );
+    await compactObserved.promise;
+    await usageRequestsObserved.promise;
+    await ordinaryRequestsTimedOut.promise;
+
+    expect(compactRequests).toBe(1);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+
+    holdUsageRequests = false;
+    if (!compactRequestId || !child) throw new Error("Expected compact request");
+    child.write({
+      type: "response",
+      id: compactRequestId,
+      success: true,
+      data: { tokensBefore: 1_000 },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+
+    const operations = events.filter(
+      (event) => event.type === "timeline.item" && event.item.type === "compaction",
+    );
+    expect(operations).toHaveLength(2);
+    if (
+      operations[0]?.type !== "timeline.item" ||
+      operations[0].item.type !== "compaction" ||
+      operations[1]?.type !== "timeline.item" ||
+      operations[1].item.type !== "compaction"
+    ) {
+      throw new Error("Expected compaction operation updates");
+    }
+    expect([operations[0].item.status, operations[1].item.status]).toEqual([
+      "loading",
+      "completed",
+    ]);
+    expect(operations[1].item.id).toBe(operations[0].item.id);
+    expect(compactRequests).toBe(1);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual([expect.objectContaining({ state: "completed" })]);
     await connection.close();
   });
 

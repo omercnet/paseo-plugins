@@ -688,6 +688,11 @@ export class OmpProviderSession {
     this.projector.flush(true);
     if (state === "completed") {
       this.usageEpoch += 1;
+      const staleSample = this.usageSample;
+      if (staleSample && staleSample.epoch < this.usageEpoch) {
+        this.usageSample = null;
+        staleSample.turn.usagePoll = undefined;
+      }
       this.lastUsage = null;
     }
     if (state !== "completed") {
