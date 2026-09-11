@@ -271,6 +271,17 @@ class FakeOmpSession implements OmpRuntimeSession {
   stateLookups = 0;
   stateObserved: (() => void) | null = null;
   stateError: Error | null = null;
+  usageAvailable = false;
+  stateLookups = 0;
+  statsGate: Promise<void> | null = null;
+  statsError: Error | null = null;
+  statsLookups = 0;
+  contextTokens = 1_000;
+  contextWindow = 200_000;
+  inputTokens = 800;
+  cachedInputTokens = 200;
+  outputTokens = 100;
+  totalCostUsd = 0.25;
   isStreaming = false;
   isCompacting = false;
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined =
@@ -293,12 +304,39 @@ class FakeOmpSession implements OmpRuntimeSession {
   async getState() {
     this.stateLookups += 1;
     this.stateObserved?.();
-    const state = {
+    if (this.stateGate) await this.stateGate;
+    if (this.stateError) throw this.stateError;
+    return {
       model: this.stateModelOverride !== undefined ? this.stateModelOverride : this.currentModel,
       thinkingLevel: this.thinkingLevel,
       isStreaming: this.isStreaming,
       isCompacting: this.isCompacting,
       sessionId: this.nativeSessionId,
+      ...(this.usageAvailable
+        ? {
+            contextUsage: {
+              tokens: this.contextTokens,
+              contextWindow: this.contextWindow,
+              percent: (this.contextTokens / this.contextWindow) * 100,
+            },
+          }
+        : {}),
+    };
+  }
+
+  async getSessionStats() {
+    this.statsLookups += 1;
+    if (!this.usageAvailable) throw new Error("usage unavailable");
+    if (this.statsGate) await this.statsGate;
+    if (this.statsError) throw this.statsError;
+    return {
+      tokens: {
+        input: this.inputTokens,
+        output: this.outputTokens,
+        cacheRead: this.cachedInputTokens,
+      },
+      cost: this.totalCostUsd,
+      contextUsage: { tokens: this.contextTokens, contextWindow: this.contextWindow, percent: 0 },
     };
     if (this.stateGate) await this.stateGate;
     if (this.stateError) throw this.stateError;
@@ -3877,6 +3915,189 @@ describe("OMP direct provider", () => {
       await registry.shutdown();
     }
   });
+  test("publishes live and terminal usage across compaction and model fallback", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "usage-1", "work"));
+
+    await events.waitFor(
+      (event) =>
+        event.type === "session.usage" &&
+        event.turnId === turnId &&
+        event.usage.contextWindowUsedTokens === 1_000,
+    );
+    expect(events).toContainEqual({
+      type: "session.usage",
+      sessionId: "session-1",
+      turnId,
+      usage: {
+        inputTokens: 800,
+        cachedInputTokens: 200,
+        outputTokens: 100,
+        totalCostUsd: 0.25,
+        contextWindowUsedTokens: 1_000,
+        contextWindowMaxTokens: 200_000,
+      },
+    });
+
+    session.contextTokens = 320;
+    session.contextWindow = 128_000;
+    session.currentModel = ALTERNATE_MODEL;
+    session.inputTokens = 900;
+    session.cachedInputTokens = 250;
+    session.outputTokens = 120;
+    session.totalCostUsd = 0.3;
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      result: { tokensBefore: 1_000 },
+      aborted: false,
+      willRetry: false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await scheduler.flush();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.usage" &&
+        event.turnId === turnId &&
+        event.usage.contextWindowUsedTokens === 320,
+    );
+
+    const compaction = events.filter(
+      (event) => event.type === "timeline.item" && event.item.type === "compaction",
+    );
+    expect(compaction).toHaveLength(2);
+    expect(compaction[0]).toEqual(
+      expect.objectContaining({
+        item: expect.objectContaining({ status: "loading", trigger: "auto" }),
+      }),
+    );
+    expect(compaction[1]).toEqual(
+      expect.objectContaining({
+        item: expect.objectContaining({
+          id:
+            compaction[0]?.type === "timeline.item" && compaction[0].item.type === "compaction"
+              ? compaction[0].item.id
+              : "missing",
+          status: "completed",
+          trigger: "auto",
+          preTokens: 1_000,
+        }),
+      }),
+    );
+
+    session.contextTokens = 280;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    const terminalUsage = await events.waitFor(
+      (event) =>
+        event.type === "session.usage" &&
+        event.turnId === turnId &&
+        event.usage.contextWindowUsedTokens === 280,
+    );
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    expect(events.indexOf(terminalUsage)).toBeLessThan(events.indexOf(terminal));
+    if (terminalUsage.type !== "session.usage") throw new Error("Expected terminal usage");
+    expect(terminalUsage.usage.contextWindowMaxTokens).toBe(128_000);
+    await connection.close();
+  });
+
+  test("tracks one manual compaction operation without executing it twice", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.availableCommands = [{ name: "compact" }];
+    const { connection, events, scheduler } = await createHarness(runtime);
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    session.promptAgentInvoked = false;
+    session.isCompacting = true;
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "manual-compact", "/compact focus on decisions"),
+    );
+    await events.waitFor(
+      (event) =>
+        event.type === "session.usage" &&
+        event.turnId === turnId &&
+        event.usage.contextWindowUsedTokens === 1_000,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await scheduler.flush();
+    session.emit({ type: "command_output", text: "Compaction complete." });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+
+    const operations = events.filter(
+      (event) => event.type === "timeline.item" && event.item.type === "compaction",
+    );
+    expect(operations).toHaveLength(2);
+    expect(
+      operations.map((event) =>
+        event.type === "timeline.item" && event.item.type === "compaction" ? event.item.status : "",
+      ),
+    ).toEqual(["loading", "completed"]);
+    expect(session.prompts).toEqual(["/compact focus on decisions"]);
+    await connection.close();
+  });
+
+  test("keeps terminalization running while state is unknown and stops polling afterward", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "unknown-state", "work"));
+    await events.waitFor((event) => event.type === "session.usage" && event.turnId === turnId);
+
+    session.stateError = new Error("OMP RPC request timed out");
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await Promise.resolve();
+    await scheduler.flush();
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
+
+    session.stateError = null;
+    session.isStreaming = true;
+    await scheduler.flush();
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
+
+    session.isStreaming = false;
+    await scheduler.flush();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    const lookupsAfterTerminal = session.stateLookups;
+    await scheduler.flush();
+    expect(session.stateLookups).toBe(lookupsAfterTerminal);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+      ),
+    ).toBe(false);
+    await connection.close();
+  });
+
   test("recovers a dead idle runtime by resuming the same native session", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -4017,117 +4238,6 @@ describe("OMP direct provider", () => {
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
     ).toEqual([expect.objectContaining({ state: "failed" })]);
-    await connection.close();
-  });
-
-  test("retires timed-out state confirmation after completing the authoritative agent_end", async () => {
-    const { connection, events, runtime, scheduler } = await createHarness();
-    await openSession(connection, events);
-    const session = sessionAt(runtime);
-    const staleListener = [...session.listeners][0];
-    if (!staleListener) throw new Error("expected native event listener");
-    const branch = Promise.withResolvers<void>();
-    const state = Promise.withResolvers<void>();
-    session.branchMessagesGate = branch.promise;
-    session.stateGate = state.promise;
-    const turnId = turnIdFrom(await startPrompt(connection, events, "stuck-state", "work"));
-
-    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
-    await Promise.resolve();
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    branch.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await scheduler.flush();
-    const terminal = await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-    );
-    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
-    expect(session.closes).toBe(1);
-    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
-
-    const recoveredTurn = turnIdFrom(
-      await startPrompt(connection, events, "after-stuck", "continue"),
-    );
-    staleListener({ type: "agent_end", messages: [], isTerminal: true });
-    staleListener({ type: "turn_end" });
-    await Promise.resolve();
-    expect(
-      events.filter(
-        (event) =>
-          event.type === "session.turn" &&
-          event.turnId === recoveredTurn &&
-          event.state !== "started",
-      ),
-    ).toHaveLength(0);
-    await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
-    state.resolve();
-    await connection.close();
-  });
-
-  test("retires unavailable state confirmation after completing agent_end", async () => {
-    const { connection, events, runtime } = await createHarness();
-    await openSession(connection, events);
-    const session = sessionAt(runtime);
-    const branch = Promise.withResolvers<void>();
-    session.branchMessagesGate = branch.promise;
-    session.stateError = new Error("runtime state unavailable");
-    const turnId = turnIdFrom(await startPrompt(connection, events, "unavailable-state", "work"));
-
-    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
-    await Promise.resolve();
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    branch.resolve();
-    const terminal = await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-    );
-    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
-    expect(session.closes).toBe(1);
-    const recoveredTurn = turnIdFrom(
-      await startPrompt(connection, events, "after-unavailable", "continue"),
-    );
-    expect(runtime.starts[1]).toEqual(
-      expect.objectContaining({ resumeSessionId: "native-session" }),
-    );
-    await finishTurn(events, sessionAt(runtime, 1), recoveredTurn);
-    await connection.close();
-  });
-
-  test("fails and retires a still-active completion state", async () => {
-    const { connection, events, runtime } = await createHarness();
-    await openSession(connection, events);
-    const session = sessionAt(runtime);
-    const branch = Promise.withResolvers<void>();
-    session.branchMessagesGate = branch.promise;
-    session.isStreaming = true;
-    const turnId = turnIdFrom(await startPrompt(connection, events, "active-state", "work"));
-
-    session.emit({ type: "message_end", message: { role: "user", content: "work" } });
-    await Promise.resolve();
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    branch.resolve();
-    const terminal = await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-    );
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: { message: "OMP agent_end arrived while the native runtime remained active" },
-      }),
-    );
-    expect(
-      events.some((event) => event.type === "timeline.item" && event.item.type === "user_message"),
-    ).toBe(true);
-    expect(session.closes).toBe(1);
-    await startPrompt(connection, events, "after-active", "continue");
-    expect(runtime.starts[1]).toEqual(
-      expect.objectContaining({ resumeSessionId: "native-session" }),
-    );
     await connection.close();
   });
 
@@ -5456,6 +5566,13 @@ describe("OMP direct provider", () => {
                 isCompacting: false,
                 sessionId: nativeSessionId,
               },
+            });
+          } else if (type === "get_session_stats") {
+            child.write({
+              type: "response",
+              id: command.id,
+              success: false,
+              error: "stats unavailable in transport fixture",
             });
           } else if (type === "get_available_models") {
             child.write({

@@ -137,12 +137,27 @@ const OmpModelSchema = z.object({
     .optional(),
   contextWindow: z.number().int().nonnegative().max(100_000_000).nullable().optional(),
 });
+const OmpContextUsageSchema = z.object({
+  tokens: z.number().finite().nonnegative(),
+  contextWindow: z.number().finite().nonnegative(),
+  percent: z.number().finite().nonnegative().optional(),
+});
+const OmpSessionStatsSchema = z.object({
+  tokens: z.object({
+    input: z.number().finite().nonnegative(),
+    output: z.number().finite().nonnegative(),
+    cacheRead: z.number().finite().nonnegative(),
+  }),
+  cost: z.number().finite().nonnegative(),
+  contextUsage: OmpContextUsageSchema.optional(),
+});
 const OmpSessionStateSchema = z.object({
   model: OmpModelSchema.nullable().optional(),
   thinkingLevel: OmpThinkingLevelSchema.optional(),
   isStreaming: z.boolean(),
   isCompacting: z.boolean(),
   sessionId: IDENTIFIER,
+  contextUsage: OmpContextUsageSchema.optional(),
 });
 const OmpReadyFrameSchema = z.object({
   type: z.literal("ready"),
@@ -240,6 +255,20 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
   }),
   z.object({
+    type: z.literal("auto_compaction_start"),
+    reason: NAME,
+    action: NAME,
+  }),
+  z.object({
+    type: z.literal("auto_compaction_end"),
+    action: NAME,
+    result: z.object({ tokensBefore: z.number().finite().nonnegative() }).optional(),
+    aborted: z.boolean(),
+    willRetry: z.boolean(),
+    errorMessage: boundedString(64 * 1024).optional(),
+    skipped: z.boolean().optional(),
+  }),
+  z.object({
     type: z.literal("available_commands_update"),
     commands: z.array(OmpAvailableCommandSchema).max(MAX_ARRAY_ITEMS),
   }),
@@ -281,6 +310,7 @@ const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2)
 export type OmpMessage = z.infer<typeof OmpMessageSchema>;
 export type OmpModel = z.infer<typeof OmpModelSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
+export type OmpSessionStats = z.infer<typeof OmpSessionStatsSchema>;
 export type OmpRpcEvent =
   | z.infer<typeof OmpRuntimeEventSchema>
   | { type: "process_exit"; error: string };
@@ -304,6 +334,7 @@ export interface OmpRuntimeSession {
   readonly redactionValues?: readonly string[];
   onEvent(listener: (event: OmpRpcEvent) => void): () => void;
   getState(): Promise<OmpSessionState>;
+  getSessionStats(): Promise<OmpSessionStats>;
   getAvailableModels(): Promise<OmpModel[]>;
   getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>>;
   prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }>;
@@ -1665,6 +1696,10 @@ class OmpRpcSession implements OmpRuntimeSession {
 
   async getState(): Promise<OmpSessionState> {
     return OmpSessionStateSchema.parse(await this.process.request({ type: "get_state" }));
+  }
+
+  async getSessionStats(): Promise<OmpSessionStats> {
+    return OmpSessionStatsSchema.parse(await this.process.request({ type: "get_session_stats" }));
   }
 
   async getAvailableModels(): Promise<OmpModel[]> {

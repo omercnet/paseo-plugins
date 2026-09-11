@@ -428,6 +428,20 @@ describe("OMP RPC transport", () => {
             isStreaming: false,
             isCompacting: false,
             sessionId: "legacy",
+            contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
+          },
+        });
+      }
+      if (command.type === "get_session_stats") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "get_session_stats",
+          success: true,
+          data: {
+            tokens: { input: 120, output: 30, cacheRead: 40 },
+            cost: 0.12,
+            contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
           },
         });
       }
@@ -439,6 +453,11 @@ describe("OMP RPC transport", () => {
     expect(await session.getState()).toEqual(
       expect.objectContaining({ sessionId: "legacy", isStreaming: false }),
     );
+    expect(await session.getSessionStats()).toEqual({
+      tokens: { input: 120, output: 30, cacheRead: 40 },
+      cost: 0.12,
+      contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
+    });
     expect(commands.some((command) => command.type === "negotiate_protocol")).toBe(false);
     await session.close();
   });
