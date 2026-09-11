@@ -18,7 +18,7 @@ import {
   type OmpStartOptions,
 } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
-import { OmpCleanupFailure } from "../server/provider/security";
+import { OmpCleanupFailure, OmpPublicDataFilter } from "../server/provider/security";
 import type { OmpTimelineScheduler } from "../server/provider/timeline-projector";
 
 type HostLogger = object;
@@ -3495,6 +3495,24 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("holds credential markers split within their first three characters", () => {
+    const filter = new OmpPublicDataFilter();
+    const cases = [
+      ["Authorization: Basic header-secret", "Authorization: <redacted>"],
+      ["Bearer bearer-secret", "Bearer <redacted>"],
+      ["ghp_abcdefgh", "<redacted>"],
+    ] as const;
+
+    for (const [value, expected] of cases) {
+      for (const split of [1, 2, 3]) {
+        expect(filter.streamText(value.slice(0, split))).toEqual({ text: "", pending: true });
+        expect(filter.streamText(value).text).toBe(expected);
+      }
+    }
+    expect(filter.streamText("normal output").text).toBe("normal output");
+    expect(filter.streamText("Aut", true)).toEqual({ text: "Aut", pending: false });
+  });
+
   test("redacts provider-owned timeline payloads and native identifiers", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.redactionValues = ["license-secret", "custom-secret"];
@@ -3533,6 +3551,33 @@ describe("OMP direct provider", () => {
       args: { value: "safe" },
     });
     session.emit({
+      type: "tool_execution_start",
+      toolCallId: "split-authorization-tool",
+      toolName: "auth-write",
+      args: { value: "safe" },
+    });
+    const splitToolBaseline = events.length;
+    session.emit({
+      type: "tool_execution_update",
+      toolCallId: "split-authorization-tool",
+      toolName: "auth-write",
+      partialResult: { content: "Au" },
+    });
+    expect(events).toHaveLength(splitToolBaseline);
+    session.emit({
+      type: "tool_execution_update",
+      toolCallId: "split-authorization-tool",
+      toolName: "auth-write",
+      partialResult: { content: "thorization: Basic tool-secret" },
+    });
+    expect(events).toHaveLength(splitToolBaseline);
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "split-authorization-tool",
+      toolName: "auth-write",
+      result: { content: "Authorization: Basic tool-secret" },
+    });
+    session.emit({
       type: "tool_execution_update",
       toolCallId: "credential-value-1234",
       toolName: "write",
@@ -3567,6 +3612,11 @@ describe("OMP direct provider", () => {
     session.emit({ type: "command_output", text: "credential-value-" });
     expect(JSON.stringify(events)).not.toContain("credential-value-");
     session.emit({ type: "command_output", text: "1234" });
+    session.emit({ type: "command_output", text: " g" });
+    expect(JSON.stringify(events.findLast((event) => event.type === "timeline.item"))).not.toContain(
+      " g",
+    );
+    session.emit({ type: "command_output", text: "hp_abcdefgh" });
     for (const [type, contentIndex, first, second] of [
       ["text_delta", 1, "Bearer alpha", "beta"],
       ["thinking_delta", 2, "Bearer alpha", "beta"],
@@ -3574,6 +3624,15 @@ describe("OMP direct provider", () => {
       ["thinking_delta", 4, "credential-value-", "1234"],
       ["text_delta", 5, "ghp_abc", "defgh"],
       ["thinking_delta", 6, "Authoriz", "ation: Basic header-secret"],
+      ["text_delta", 7, "A", "uthorization: Basic assistant-one"],
+      ["thinking_delta", 8, "Au", "thorization: Basic reasoning-two"],
+      ["text_delta", 9, "Aut", "horization: Basic assistant-three"],
+      ["thinking_delta", 10, "B", "earer bearer-one"],
+      ["text_delta", 11, "Be", "arer bearer-two"],
+      ["thinking_delta", 12, "Bea", "rer bearer-three"],
+      ["text_delta", 13, "g", "hp_abcdefgh"],
+      ["thinking_delta", 14, "gh", "p_abcdefgh"],
+      ["text_delta", 15, "ghp", "_abcdefgh"],
     ] as const) {
       const splitBaseline = events.length;
       session.emit({
@@ -3702,7 +3761,7 @@ describe("OMP direct provider", () => {
       command?.type === "timeline.item" && command.item.type === "assistant_message"
         ? command.item.text
         : null,
-    ).toBe("<redacted>");
+    ).toBe("<redacted> <redacted>");
     const streamedTool = events.flatMap((event) =>
       event.type === "timeline.item" &&
       event.item.type === "tool_call" &&
@@ -3712,6 +3771,15 @@ describe("OMP direct provider", () => {
         : [],
     );
     expect(streamedTool).toEqual([null, "<redacted>"]);
+    const deferredTool = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "tool_call" &&
+      event.item.name === "auth-write" &&
+      event.item.detail.type === "unknown"
+        ? [event.item.detail.output]
+        : [],
+    );
+    expect(deferredTool).toEqual([null, "<redacted>"]);
     const splitToken = events.findLast(
       (event) =>
         event.type === "timeline.item" &&
@@ -3734,10 +3802,33 @@ describe("OMP direct provider", () => {
         ? splitAuthorization.item.text
         : null,
     ).toBe("Authorization: <redacted>");
+    const earlySplitSnapshots = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      (event.item.type === "assistant_message" || event.item.type === "reasoning")
+        ? [event.item]
+        : [],
+    );
+    for (const [contentIndex, itemType, expected] of [
+      [7, "assistant_message", "Authorization: <redacted>"],
+      [8, "reasoning", "Authorization: <redacted>"],
+      [9, "assistant_message", "Authorization: <redacted>"],
+      [10, "reasoning", "Bearer <redacted>"],
+      [11, "assistant_message", "Bearer <redacted>"],
+      [12, "reasoning", "Bearer <redacted>"],
+      [13, "assistant_message", "<redacted>"],
+      [14, "reasoning", "<redacted>"],
+      [15, "assistant_message", "<redacted>"],
+    ] as const) {
+      const suffix = itemType === "reasoning" ? "reasoning" : "text";
+      const snapshot = earlySplitSnapshots.findLast(
+        (item) => item.type === itemType && item.id.endsWith(`:content:${contentIndex}:${suffix}`),
+      );
+      expect(snapshot?.text).toBe(expected);
+    }
     const toolIds = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "tool_call" ? [event.item.callId] : [],
     );
-    expect(new Set(toolIds).size).toBe(2);
+    expect(new Set(toolIds).size).toBe(3);
     const firstTool = events.find(
       (event) => event.type === "timeline.item" && event.item.type === "tool_call",
     );

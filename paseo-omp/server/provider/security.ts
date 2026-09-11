@@ -25,7 +25,18 @@ const CREDENTIAL_ASSIGNMENT =
 const TOKEN_CREDENTIAL = /\b(?:sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_-]{8,}\b/gu;
 const INCOMPLETE_TOKEN_CREDENTIAL =
   /(?:^|[^A-Za-z0-9_])((?:sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_-]{0,7})$/u;
-const STREAM_CREDENTIAL_MARKERS = ["authorization", "bearer "] as const;
+const STREAM_CREDENTIAL_MARKERS = [
+  "authorization",
+  "bearer ",
+  "github_pat",
+  "ghp",
+  "sk",
+  "xoxa",
+  "xoxb",
+  "xoxp",
+  "xoxr",
+  "xoxs",
+] as const;
 const POSIX_ABSOLUTE_PATH = /(^|[\s("'=:[])(\/(?!\/)[^\s"'`<>\])},;]+)/gu;
 const WINDOWS_ABSOLUTE_PATH = /\b[A-Za-z]:\\[^\s"'`<>\])},;]+/gu;
 
@@ -219,7 +230,7 @@ export class OmpPublicDataFilter {
     const lowerInput = input.toLowerCase();
     for (const marker of STREAM_CREDENTIAL_MARKERS) {
       const maxLength = Math.min(lowerInput.length, marker.length);
-      for (let length = maxLength; length >= 4 && length > holdback; length -= 1) {
+      for (let length = maxLength; length >= 1 && length > holdback; length -= 1) {
         if (lowerInput.endsWith(marker.slice(0, length))) {
           holdback = length;
           break;
