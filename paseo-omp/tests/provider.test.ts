@@ -9,6 +9,7 @@ import type {
   ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
+import { withOmpWorkspaceIdentity } from "../server/provider/host-tools";
 import {
   type OmpHostToolDefinition,
   type OmpHostToolResult,
@@ -57,10 +58,20 @@ type HostClient = {
 };
 type HostRegistry = {
   replace(registrations: readonly ProviderRegistration[]): void;
+  definitions(): Record<string, unknown>;
   clients(): Record<string, HostClient>;
   shutdown(): Promise<void>;
 };
 type HostRegistryConstructor = new (logger: HostLogger) => HostRegistry;
+type HostAgentManager = {
+  createAgent(
+    config: HostSessionConfig,
+    agentId: string | undefined,
+    options: { workspaceId: string; persistSession?: boolean },
+  ): Promise<{ id: string }>;
+  closeAgent(agentId: string): Promise<void>;
+};
+type HostAgentManagerConstructor = new (options: Record<string, unknown>) => HostAgentManager;
 
 const pluginProviderModulePath: string =
   "../node_modules/@getpaseo/server/dist/server/server/agent/plugin-provider.js";
@@ -908,6 +919,41 @@ describe("OMP direct provider", () => {
       }),
     ).rejects.toThrow();
     expect(connection.capabilities).not.toContain("permission");
+    expect(runtime.starts).toHaveLength(0);
+    await connection.close();
+  });
+
+  test("validates the OMP spawn before opening configured MCP transports", async () => {
+    const runtime = new FakeOmpRuntime();
+    let connections = 0;
+    const connection = await createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async () => {
+        connections += 1;
+        throw new Error("must not connect");
+      },
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({
+      type: "session.open",
+      requestId: "invalid-spawn-before-mcp",
+      sessionId: "session-invalid-spawn",
+      config: {
+        cwd: "relative/workspace",
+        env: {},
+        mcpServers: { repo: { type: "stdio", command: "repo-mcp" } },
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "invalid-spawn-before-mcp",
+    );
+    expect(connections).toBe(0);
     expect(runtime.starts).toHaveLength(0);
     await connection.close();
   });
@@ -3906,6 +3952,145 @@ describe("OMP direct provider", () => {
       await registry.shutdown();
     }
   });
+  test("AgentManager preserves caller workspace identity through a real host-tool execution", async () => {
+    const runtime = new FakeOmpRuntime();
+    const agentId = "00000000-0000-4000-8000-000000000001";
+    const connected: Array<{
+      name: string;
+      cwd: string;
+      config: unknown;
+      ownerPid: number;
+      signal: AbortSignal;
+    }> = [];
+    let mcpCloses = 0;
+    const calls: Array<{ name: string; input: Record<string, unknown>; ownerPid: number }> = [];
+    const registration = createOmpProvider({
+      runtime,
+      timelineScheduler: new ManualScheduler(),
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async (name, config, cwd, signal) => {
+        connected.push({ name, config, cwd, ownerPid: process.pid, signal });
+        return {
+          listTools: async ({ signal: discoverySignal }) => {
+            expect(discoverySignal).toBe(signal);
+            return [
+              {
+                name: "workspace_probe",
+                description: "Return caller workspace identity",
+                inputSchema: { type: "object" },
+              },
+            ];
+          },
+          callTool: async (toolName, input) => {
+            calls.push({ name: toolName, input, ownerPid: process.pid });
+            return { content: [{ type: "text", text: "workspace-1" }] };
+          },
+          close: async () => {
+            mcpCloses += 1;
+          },
+        };
+      },
+    });
+    // Dynamic imports intentionally exercise the installed daemon's CJS/ESM plugin boundary.
+    const adapter = (await import(pluginProviderModulePath)) as unknown as {
+      PluginAgentClientRegistry: HostRegistryConstructor;
+    };
+    const agentManagerModule = (await import(
+      "../node_modules/@getpaseo/server/dist/server/server/agent/agent-manager.js"
+    )) as unknown as { AgentManager: HostAgentManagerConstructor };
+    const registry = new adapter.PluginAgentClientRegistry(pino({ enabled: false }));
+    registry.replace([registration]);
+    const lifecycle = {
+      async before(name: string, request: unknown) {
+        if (name !== "agent.session_open") return request;
+        return withOmpWorkspaceIdentity(
+          request as { workspaceId: string | null; env: Record<string, string> },
+        );
+      },
+      emit() {},
+    };
+    const manager = new agentManagerModule.AgentManager({
+      logger: pino({ enabled: false }),
+      clients: registry.clients(),
+      providerDefinitions: registry.definitions(),
+      pluginLifecycle: lifecycle,
+      mcpBaseUrl: "http://127.0.0.1:4567/mcp/agents",
+      mcpAuthToken: "host-capability-token",
+      paseoToolsEnabled: true,
+      idFactory: () => agentId,
+    });
+
+    let createdAgentId: string | undefined;
+    try {
+      const agent = await manager.createAgent(
+        {
+          provider: registration.id,
+          cwd: process.cwd(),
+          model: MODEL_PUBLIC_ID,
+          modeId: "full",
+          featureValues: {},
+        },
+        undefined,
+        { workspaceId: "workspace-1", persistSession: false },
+      );
+      createdAgentId = agent.id;
+      expect(agent.id).toBe(agentId);
+      expect(runtime.starts[0]?.env).toEqual(
+        expect.objectContaining({
+          PASEO_AGENT_ID: agentId,
+          PASEO_AGENT_CWD: process.cwd(),
+          PASEO_WORKSPACE_ID: "workspace-1",
+        }),
+      );
+      expect(connected).toEqual([
+        expect.objectContaining({
+          name: "paseo",
+          cwd: process.cwd(),
+          ownerPid: process.pid,
+          config: {
+            type: "http",
+            url: `http://127.0.0.1:4567/mcp/agents?callerAgentId=${agentId}`,
+            headers: { Authorization: "Bearer host-capability-token" },
+          },
+        }),
+      ]);
+      const native = sessionAt(runtime);
+      expect(native.hostToolCatalogs[0]).toEqual([
+        expect.objectContaining({
+          name: "mcp__paseo_workspace_probe",
+          loadMode: "essential",
+        }),
+      ]);
+      native.emit({
+        type: "host_tool_call",
+        id: "host-call-1",
+        toolCallId: "tool-call-1",
+        toolName: "mcp__paseo_workspace_probe",
+        arguments: { expectedWorkspaceId: "workspace-1" },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(calls).toEqual([
+        {
+          name: "workspace_probe",
+          input: { expectedWorkspaceId: "workspace-1" },
+          ownerPid: process.pid,
+        },
+      ]);
+      expect(native.hostToolResults).toEqual([
+        expect.objectContaining({
+          type: "host_tool_result",
+          id: "host-call-1",
+          result: expect.objectContaining({ content: [{ type: "text", text: "workspace-1" }] }),
+        }),
+      ]);
+      native.emit({ type: "process_exit", error: "OMP exited after host tool execution" });
+    } finally {
+      if (createdAgentId) await manager.closeAgent(createdAgentId);
+      await registry.shutdown();
+    }
+    expect(mcpCloses).toBe(1);
+  });
   test("recovers a dead idle runtime by resuming the same native session", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -5080,6 +5265,72 @@ describe("OMP direct provider", () => {
     expect(runtime.starts).toHaveLength(1);
     await expect(connection.close()).resolves.toBeUndefined();
   });
+  test("tombstones failed MCP host cleanup independently of runtime disposal", async () => {
+    const runtime = new FakeOmpRuntime();
+    let hostCloses = 0;
+    const connection = await createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async () => ({
+        listTools: async () => [],
+        callTool: async () => ({ content: [] }),
+        close: async () => {
+          hostCloses += 1;
+          throw new Error("host cleanup failed");
+        },
+      }),
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({
+      type: "session.open",
+      requestId: "host-cleanup-open",
+      sessionId: "host-cleanup-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: { repo: { type: "stdio", command: "repo-mcp" } },
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "host-cleanup-open",
+    );
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited" });
+    await connection.send({
+      type: "session.close",
+      requestId: "host-cleanup-close",
+      sessionId: "host-cleanup-session",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "host-cleanup-close",
+    );
+    await connection.send({
+      type: "session.open",
+      requestId: "host-cleanup-reopen",
+      sessionId: "host-cleanup-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "host-cleanup-reopen",
+    );
+    expect(runtime.starts).toHaveLength(1);
+    expect(hostCloses).toBe(1);
+    await connection.close();
+  });
+
   test("retains failed initialization cleanup ownership and blocks same-ID reopen", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.availableModels = [];

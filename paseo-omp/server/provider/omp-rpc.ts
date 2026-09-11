@@ -33,6 +33,7 @@ const MAX_IMAGE_DATA_LENGTH = 8 * 1024 * 1024;
 const MAX_TOOL_PAYLOAD_LENGTH = 256 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
 const MAX_HOST_TOOLS = 256;
+type TimerHandle = ReturnType<typeof setTimeout>;
 const MAX_PENDING_REQUESTS = 256;
 const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const MAX_LINE_PARTS = 4_096;
@@ -384,7 +385,7 @@ export interface OmpRpcRuntimeOptions {
 type PendingRequest = {
   resolve(value: unknown): void;
   reject(error: Error): void;
-  timer: NodeJS.Timeout;
+  timer: TimerHandle;
   command: string;
 };
 type StartedRequest = { id: string; promise: Promise<unknown> };
@@ -398,7 +399,7 @@ type ChunkState = {
   byteLength: number;
   parts: Buffer[];
   receivedBytes: number;
-  timer: NodeJS.Timeout;
+  timer: TimerHandle;
 };
 
 // The daemon contributes only process/runtime discovery variables plus provider authentication
@@ -939,8 +940,8 @@ async function stopWindowsTree(pid: number): Promise<ProcessTreeCleanup> {
   taskkill.stdout.resume();
   taskkill.stderr.resume();
   let settled = false;
-  let deadline: NodeJS.Timeout | undefined;
-  let finalDeadline: NodeJS.Timeout | undefined;
+  let deadline: TimerHandle | undefined;
+  let finalDeadline: TimerHandle | undefined;
   const finish = (outcome: ProcessTreeCleanup) => {
     if (settled) return;
     settled = true;

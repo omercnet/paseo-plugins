@@ -228,6 +228,7 @@ export class OmpProviderSession {
   private generation = 0;
   private runtimeDead: string | null = null;
   private runtimeDisposal: Promise<void> | null = null;
+  private hostToolsDisposal: Promise<void> | null = null;
   private recoveryPromise: Promise<void> | null = null;
   private configRefreshInFlight: Promise<void> | null = null;
   private configRefreshDirty = false;
@@ -296,7 +297,6 @@ export class OmpProviderSession {
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
-    const hostTools = await OmpHostToolsBridge.open(input.config, mcpConnector);
     const startOptions: OmpStartOptions = {
       cwd: input.config.cwd,
       env: input.config.env,
@@ -307,9 +307,13 @@ export class OmpProviderSession {
       signal,
       environment,
     };
+    buildOmpSpawnRequest(startOptions);
+    const hostTools = await OmpHostToolsBridge.open(input.config, {
+      connectMcp: mcpConnector,
+      signal,
+    });
     let native: OmpRuntimeSession | undefined;
     try {
-      buildOmpSpawnRequest(startOptions);
       native = await runtime.startSession(startOptions);
       await hostTools.bind(native);
       const [initialState, nativeModels, commandDiscovery] = await Promise.all([
@@ -950,15 +954,22 @@ export class OmpProviderSession {
     this.projector.close();
     this.unsubscribe();
     this.hostTools.detach();
-    this.runtimeDisposal ??= Promise.all([this.runtime.close(), this.hostTools.close()]).then(
-      () => undefined,
-    );
-    await Promise.allSettled([
+    this.runtimeDisposal ??= this.runtime.close();
+    this.hostToolsDisposal ??= this.hostTools.close();
+    const [runtimeResult, hostToolsResult] = await Promise.allSettled([
       this.runtimeDisposal,
+      this.hostToolsDisposal,
+    ]);
+    await Promise.allSettled([
       this.recoveryPromise,
       ...(configRefresh ? [configRefresh] : []),
     ]);
-    await this.runtimeDisposal;
+    const cleanupErrors = [runtimeResult, hostToolsResult]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "OMP session cleanup failed");
+    }
   }
 
   private publishSessionClosed(error?: { message: string }): void {
