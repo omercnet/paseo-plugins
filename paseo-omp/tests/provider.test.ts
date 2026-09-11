@@ -3500,6 +3500,10 @@ describe("OMP direct provider", () => {
     const cases = [
       ["Authorization: Basic header-secret", "Authorization: <redacted>"],
       ["Bearer bearer-secret", "Bearer <redacted>"],
+      ["API_KEY=api-secret", "API_KEY=<redacted>"],
+      ["password=password-secret", "password=<redacted>"],
+      ["private-key=private-secret", "private-key=<redacted>"],
+      ["session token=session-secret", "session token=<redacted>"],
       ["ghp_abcdefgh", "<redacted>"],
     ] as const;
 
@@ -4190,6 +4194,7 @@ describe("OMP direct provider", () => {
         return child.asChildProcess();
       },
       terminateProcessTree: () => Promise.resolve(false),
+      environment: TEST_RUNTIME_ENV,
     });
     const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
       versions: [1],
@@ -4588,6 +4593,7 @@ describe("OMP direct provider", () => {
         return child.asChildProcess();
       },
       terminateProcessTree: () => Promise.resolve(true),
+      environment: TEST_RUNTIME_ENV,
     });
     const connection = await createOmpProvider({
       runtime,

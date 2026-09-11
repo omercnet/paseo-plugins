@@ -954,6 +954,9 @@ describe("OMP RPC transport", () => {
     ).toThrow("credential is too short");
     for (const proxy of [
       "https://abc:long-password@example.test",
+      "https://example.test/abc",
+      "https://example.test?arbitrary=xyz",
+      "https://example.test#abc",
       "https://example.test?token=xyz",
     ]) {
       expect(() =>

@@ -503,7 +503,7 @@ function buildOmpEnvironment(
     collectUrlComponents(
       value,
       (key) => SESSION_CREDENTIAL_ENV.test(key),
-      collectComponent,
+      (component) => collectComponent(component, true),
       "OMP proxy URL components cannot be decoded safely",
     );
   };
@@ -1416,13 +1416,10 @@ class OmpRpcProcess {
       : Object.hasOwn(frame, "messages")
         ? 1
         : undefined;
-    const messageCount =
-      observedCount === undefined
-        ? envelope.data.messageCount
-        : Math.max(envelope.data.messageCount ?? 0, observedCount);
+    const messageCount = Math.max(envelope.data.messageCount ?? 0, observedCount ?? 0, 1);
     this.emit({
       ...envelope.data,
-      ...(messageCount === undefined ? {} : { messageCount }),
+      messageCount,
     });
     this.streamedBlocks.clear();
     this.commandTextLength = 0;
