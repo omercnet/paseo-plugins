@@ -815,18 +815,13 @@ class OmpRpcProcess {
     this.exitPromise = exited.promise;
     this.child.once("close", (code, signal) => {
       this.exited = true;
-      const cleanup = this.startTreeCleanup();
+      this.startTreeCleanup();
       const detail = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
       const error = new Error(`OMP RPC process exited (${detail})`);
       this.rejectReady(error);
       this.failPending(error);
       exited.resolve();
-      if (!this.closed && !this.fatalError) {
-        void cleanup.then((outcome) => {
-          const suffix = outcome === "uncertain" ? "; descendant cleanup unverified" : "";
-          this.fail(new Error(`${error.message}${suffix}`));
-        });
-      }
+      if (!this.closed && !this.fatalError) this.fail(error);
     });
     this.child.once("error", (cause) => {
       const code = (cause as NodeJS.ErrnoException)?.code;
