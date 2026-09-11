@@ -48,7 +48,7 @@ export function mapOmpModels(
 ): ProviderModel[] {
   const seenIds = new Map<string, string>();
   return models.map((model) => {
-    const thinkingOptions = model.reasoning ? thinkingForModel(model) : undefined;
+    const thinkingOptions = thinkingForModel(model);
     const id = ompModelId(model);
     const nativeIdentity = nativeOmpModelId(model);
     const existing = seenIds.get(id);
@@ -67,7 +67,7 @@ export function mapOmpModels(
       ...(typeof model.contextWindow === "number"
         ? { contextWindowMaxTokens: model.contextWindow }
         : {}),
-      ...(thinkingOptions
+      ...(thinkingOptions.length > 0
         ? {
             thinkingOptions,
             defaultThinkingOptionId:
@@ -81,10 +81,8 @@ export function mapOmpModels(
 
 export function thinkingForModel(model: OmpModel | null | undefined): ProviderThinkingOption[] {
   if (!model?.reasoning) return [];
-  const efforts = model.thinking?.efforts;
-  if (!efforts?.length) return THINKING_OPTIONS.map((option) => ({ ...option }));
+  const efforts = model.thinking?.efforts ?? [];
   const supported = THINKING_OPTIONS.filter((option) => efforts.includes(option.id));
-  if (supported.length === 0) return THINKING_OPTIONS.map((option) => ({ ...option }));
   const defaultLevel = model.thinking?.defaultLevel;
   const selectedDefault = supported.some((option) => option.id === defaultLevel)
     ? defaultLevel
@@ -133,13 +131,18 @@ export async function discoverOmpCatalog(
       : nativeModels[0];
     if (state.model && !currentModel) throw new Error("OMP reported an unadvertised active model");
     const thinkingOptions = thinkingForModel(currentModel);
+    const defaultThinkingOption = thinkingOptions.some(
+      (option) => option.id === state.thinkingLevel,
+    )
+      ? state.thinkingLevel
+      : undefined;
     return {
       models,
       modes: OMP_MODES,
       thinkingOptions,
       defaultModel,
       defaultMode: "full",
-      ...(state.thinkingLevel ? { defaultThinkingOption: state.thinkingLevel } : {}),
+      ...(defaultThinkingOption ? { defaultThinkingOption } : {}),
     };
   } finally {
     await closeCatalogSession(session);

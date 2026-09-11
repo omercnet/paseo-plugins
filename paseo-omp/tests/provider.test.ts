@@ -8,7 +8,7 @@ import type {
   ProviderEvent,
   ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
-import { ompModelId } from "../server/provider/catalog";
+import { mapOmpModels, ompModelId } from "../server/provider/catalog";
 import {
   type OmpModel,
   type OmpRpcEvent,
@@ -190,6 +190,10 @@ class ManualScheduler implements OmpTimelineScheduler {
   private nextId = 1;
   private readonly callbacks = new Map<number, () => void | Promise<void>>();
   readonly delays: number[] = [];
+  clearError: Error | null = null;
+  get pendingCount(): number {
+    return this.callbacks.size;
+  }
 
   set(callback: () => void | Promise<void>, delayMs: number): number {
     const id = this.nextId;
@@ -201,6 +205,11 @@ class ManualScheduler implements OmpTimelineScheduler {
 
   clear(handle: unknown): void {
     if (typeof handle === "number") this.callbacks.delete(handle);
+    if (this.clearError) {
+      const error = this.clearError;
+      this.clearError = null;
+      throw error;
+    }
   }
 
   runPending(): Promise<void>[] {
@@ -245,16 +254,27 @@ class FakeOmpSession implements OmpRuntimeSession {
   availableCommandsGate: Promise<void> | null = null;
   availableCommandsObserved: (() => void) | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
+  modelResponseGate: Promise<void> | null = null;
+  modelResponseObserved: (() => void) | null = null;
   readonly thinkingChanges: string[] = [];
+  applyModelChanges = true;
+  applyThinkingChanges = true;
+  modelChangeGate: Promise<void> | null = null;
+  modelChangeObserved: (() => void) | null = null;
+  modelChangeError: Error | null = null;
   branchMessages: Array<{ entryId: string; text: string }> = [];
   currentModel = MODEL;
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   nativeSessionId = "native-session";
   stateGate: Promise<void> | null = null;
+  stateModelOverride: OmpModel | null | undefined;
+  stateLookups = 0;
+  stateObserved: (() => void) | null = null;
   stateError: Error | null = null;
   isStreaming = false;
   isCompacting = false;
-  thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" = "medium";
+  thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined =
+    "medium";
   promptAgentInvoked: boolean | undefined = true;
   promptEvents: OmpRpcEvent[] = [];
   steerError: Error | null = null;
@@ -271,15 +291,18 @@ class FakeOmpSession implements OmpRuntimeSession {
   }
 
   async getState() {
-    if (this.stateGate) await this.stateGate;
-    if (this.stateError) throw this.stateError;
-    return {
-      model: this.currentModel,
+    this.stateLookups += 1;
+    this.stateObserved?.();
+    const state = {
+      model: this.stateModelOverride !== undefined ? this.stateModelOverride : this.currentModel,
       thinkingLevel: this.thinkingLevel,
       isStreaming: this.isStreaming,
       isCompacting: this.isCompacting,
       sessionId: this.nativeSessionId,
     };
+    if (this.stateGate) await this.stateGate;
+    if (this.stateError) throw this.stateError;
+    return state;
   }
 
   getAvailableModels() {
@@ -305,20 +328,32 @@ class FakeOmpSession implements OmpRuntimeSession {
     };
   }
 
-  setModel(provider: string, modelId: string) {
+  async setModel(provider: string, modelId: string) {
     this.modelChanges.push({ provider, modelId });
     const model = this.availableModels.find(
       (candidate) => candidate.provider === provider && candidate.id === modelId,
     );
-    if (!model) return Promise.reject(new Error("unknown model"));
-    this.currentModel = model;
-    return Promise.resolve(model);
+    if (!model) throw new Error("unknown model");
+    this.modelChangeObserved?.();
+    if (this.modelChangeGate) await this.modelChangeGate;
+    if (this.modelChangeError) throw this.modelChangeError;
+    if (this.applyModelChanges) {
+      this.currentModel = model;
+      const efforts = model.thinking?.efforts ?? [];
+      if (!this.thinkingLevel || !efforts.includes(this.thinkingLevel)) {
+        const defaultLevel = model.thinking?.defaultLevel ?? "";
+        this.thinkingLevel = isThinkingLevel(defaultLevel) ? defaultLevel : undefined;
+      }
+    }
+    this.modelResponseObserved?.();
+    if (this.modelResponseGate) await this.modelResponseGate;
+    return model;
   }
 
   setThinkingLevel(level: string) {
     this.thinkingChanges.push(level);
     if (!isThinkingLevel(level)) return Promise.reject(new Error("invalid thinking level"));
-    this.thinkingLevel = level;
+    if (this.applyThinkingChanges) this.thinkingLevel = level;
     return Promise.resolve();
   }
 
@@ -357,6 +392,7 @@ class FakeOmpRuntime implements OmpRuntime {
   readonly sessionIds: string[] = [];
   nextModel: OmpModel | null = null;
   nextThinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null = null;
+  omitNextThinkingLevel = false;
   nextCloseError: Error | null = null;
   nextStartError: Error | null = null;
   startGate: Promise<void> | null = null;
@@ -390,6 +426,10 @@ class FakeOmpRuntime implements OmpRuntime {
     if (this.nextThinkingLevel) {
       session.thinkingLevel = this.nextThinkingLevel;
       this.nextThinkingLevel = null;
+    }
+    if (this.omitNextThinkingLevel) {
+      session.thinkingLevel = undefined;
+      this.omitNextThinkingLevel = false;
     }
     if (this.nextCloseError) {
       session.closeError = this.nextCloseError;
@@ -433,6 +473,7 @@ async function openSession(
   sessionId = "session-1",
   env: Record<string, string> = { TEST_ENV: "test-value" },
   model = MODEL_PUBLIC_ID,
+  thinkingOption: string | null = "medium",
 ) {
   await connection.send({
     type: "session.open",
@@ -445,13 +486,18 @@ async function openSession(
       mcpServers: {},
       model,
       mode: "full",
-      thinkingOption: "medium",
+      ...(thinkingOption ? { thinkingOption } : {}),
       settings: {},
       persist: false,
     },
     history: "skip",
   });
-  await events.waitFor((event) => event.type === "session.ready" && event.requestId === requestId);
+  const outcome = await events.waitFor(
+    (event) =>
+      (event.type === "session.ready" && event.requestId === requestId) ||
+      (event.type === "request.failed" && event.requestId === requestId),
+  );
+  if (outcome.type === "request.failed") throw new Error(outcome.error.message);
 }
 
 async function startPrompt(
@@ -509,12 +555,75 @@ describe("OMP direct provider", () => {
         modes: [expect.objectContaining({ id: "full" })],
       }),
     });
+    if (event.type !== "catalog") throw new Error("Expected catalog event");
+    const alternate = event.catalog.models.find((model) => model.id === ALTERNATE_MODEL_PUBLIC_ID);
+    expect(alternate?.contextWindowMaxTokens).toBeUndefined();
+    expect(alternate?.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
+    expect(event.catalog.modes.map((mode) => mode.id)).toEqual(["full"]);
     expect(runtime.starts[0]).toEqual(
       expect.objectContaining({ cwd: "/repo", noSession: true, environment: TEST_RUNTIME_ENV }),
     );
     expect(sessionAt(runtime).closes).toBe(1);
     await connection.close();
   });
+  test("omits thinking options without recognized effort metadata", () => {
+    const variants: OmpModel[] = [
+      { provider: "test", id: "absent", reasoning: true },
+      { provider: "test", id: "empty", reasoning: true, thinking: { efforts: [] } },
+      {
+        provider: "test",
+        id: "unknown",
+        reasoning: true,
+        thinking: { efforts: ["ultra", "extreme"] },
+      },
+    ];
+
+    for (const model of mapOmpModels(variants)) {
+      expect(model.thinkingOptions).toBeUndefined();
+      expect(model.defaultThinkingOptionId).toBeUndefined();
+    }
+  });
+
+  test("accepts catalog state without a thinking level", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.omitNextThinkingLevel = true;
+    const { connection, events } = await createHarness(runtime);
+
+    await connection.send({ type: "catalog", requestId: "catalog-no-thinking", cwd: "/repo" });
+    const event = await events.waitFor(
+      (candidate) => candidate.type === "catalog" && candidate.requestId === "catalog-no-thinking",
+    );
+
+    expect(event).toEqual(
+      expect.objectContaining({
+        catalog: expect.not.objectContaining({ defaultThinkingOption: expect.anything() }),
+      }),
+    );
+    await connection.close();
+  });
+
+  test("omits an unsupported active thinking level from catalog defaults", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "medium";
+    const { connection, events } = await createHarness(runtime);
+
+    await connection.send({
+      type: "catalog",
+      requestId: "catalog-unsupported-default",
+      cwd: "/repo",
+    });
+    const event = await events.waitFor(
+      (candidate) =>
+        candidate.type === "catalog" && candidate.requestId === "catalog-unsupported-default",
+    );
+    if (event.type !== "catalog") throw new Error("Expected catalog event");
+
+    expect(event.catalog.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
+    expect("defaultThinkingOption" in event.catalog).toBe(false);
+    await connection.close();
+  });
+
   test("blocks repeated catalog discovery after unverified cleanup", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.nextCloseError = new Error("catalog cleanup failed");
@@ -579,6 +688,7 @@ describe("OMP direct provider", () => {
     const publicModelId = catalog.catalog.models[0]?.id;
     if (!publicModelId) throw new Error("Expected projected model");
     runtime.nextModel = maliciousModel;
+    runtime.omitNextThinkingLevel = true;
     await openSession(
       connection,
       events,
@@ -586,6 +696,7 @@ describe("OMP direct provider", () => {
       "session-1",
       { TEST_ENV: "test-value" },
       publicModelId,
+      null,
     );
     const config = events.find(
       (event) => event.type === "session.config" && event.sessionId === "session-1",
@@ -694,6 +805,41 @@ describe("OMP direct provider", () => {
     );
     expect(events.some((event) => event.type === "session.ready")).toBe(false);
     expect(sessionAt(runtime).modelChanges).toHaveLength(0);
+    await connection.close();
+  });
+
+  test("rejects unsupported thinking after resolving the committed open model", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextModel = ALTERNATE_MODEL;
+    const { connection, events } = await createHarness(runtime);
+
+    await connection.send({
+      type: "session.open",
+      requestId: "unsupported-thinking-open",
+      sessionId: "unsupported-thinking-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        model: ALTERNATE_MODEL_PUBLIC_ID,
+        mode: "full",
+        thinkingOption: "medium",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unsupported-thinking-open",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP thinking level is unavailable for the selected model" },
+      }),
+    );
+    expect(events.some((event) => event.type === "session.ready")).toBe(false);
+    expect(sessionAt(runtime).closes).toBe(1);
     await connection.close();
   });
 
@@ -890,6 +1036,758 @@ describe("OMP direct provider", () => {
     ]);
     await connection.close();
   });
+  test("publishes native fallback and revert state", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+    const fallback = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === ALTERNATE_MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "high",
+    );
+    session.emit({
+      type: "retry_fallback_succeeded",
+      model: "openai/gpt-5.4:high",
+      role: "default",
+    });
+    const fallbackConfig = await fallback;
+    if (fallbackConfig.type !== "session.config") throw new Error("Expected config event");
+    expect(fallbackConfig.config.thinkingOptions.map((option) => option.id)).toEqual([
+      "low",
+      "high",
+    ]);
+
+    session.currentModel = MODEL;
+    session.thinkingLevel = "low";
+    const reverted = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "low",
+    );
+    session.emit({ type: "model_changed" });
+    const revertedConfig = await reverted;
+    if (revertedConfig.type !== "session.config") throw new Error("Expected config event");
+    expect(revertedConfig.config.thinkingOptions.map((option) => option.id)).toEqual([
+      "low",
+      "medium",
+      "high",
+    ]);
+    session.thinkingLevel = "high";
+    const thinkingChanged = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "high",
+    );
+    session.emit({ type: "thinking_level_changed", thinkingLevel: "future-thinking" });
+    await thinkingChanged;
+
+    const latest = events.findLast((event) => event.type === "session.config");
+    expect(latest).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+          thinkingOptions: expect.arrayContaining([expect.objectContaining({ id: "low" })]),
+        }),
+      }),
+    );
+    await connection.close();
+  });
+
+  test("coalesces a runtime config event flood and publishes only changed state", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineLookups = session.stateLookups;
+    const baselineConfigs = events.filter((event) => event.type === "session.config").length;
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = gate.promise;
+    session.stateObserved = observed.resolve;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+
+    session.emit({ type: "model_changed" });
+    await observed.promise;
+    for (let index = 0; index < 100; index += 1) {
+      session.emit({ type: "model_changed" });
+    }
+    expect(session.stateLookups).toBe(baselineLookups + 1);
+
+    const committed = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    session.stateGate = null;
+    gate.resolve();
+    await committed;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(session.stateLookups).toBe(baselineLookups + 2);
+    expect(events.filter((event) => event.type === "session.config").length - baselineConfigs).toBe(
+      1,
+    );
+    await connection.close();
+  });
+  test("clears a detached refresh after scheduler cleanup throws", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineLookups = session.stateLookups;
+    scheduler.clearError = new Error("timer cleanup failed");
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+
+    const fallback = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    session.emit({ type: "model_changed" });
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.pendingCount).toBe(1);
+    await scheduler.flush();
+    await fallback;
+    expect(session.stateLookups).toBe(baselineLookups + 2);
+
+    session.currentModel = MODEL;
+    session.thinkingLevel = "low";
+    const reverted = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "low",
+    );
+    session.emit({ type: "model_changed" });
+    await reverted;
+    await connection.close();
+  });
+  test("preserves a deferred native refresh across rejected configure validation", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = gate.promise;
+    session.stateObserved = observed.resolve;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+
+    session.emit({ type: "model_changed" });
+    await observed.promise;
+    await connection.send({
+      type: "session.configure",
+      requestId: "invalid-during-refresh",
+      sessionId: "session-1",
+      changes: { mode: "write" },
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "invalid-during-refresh",
+    );
+
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    session.stateGate = null;
+    gate.resolve();
+    await refreshed;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    session.emit({ type: "process_exit", error: "restart after native change" });
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "refresh-recovery", "continue"),
+    );
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({ model: "openai/gpt-5.4", thinkingOption: "high" }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("recovers from native state after fallback immediately precedes process exit", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = gate.promise;
+    session.stateObserved = observed.resolve;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+
+    session.emit({
+      type: "retry_fallback_succeeded",
+      model: "openai/gpt-5.4:high",
+      role: "default",
+    });
+    await observed.promise;
+    session.emit({ type: "process_exit", error: "fallback runtime exited" });
+    session.stateGate = null;
+    gate.resolve();
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
+
+    const turnId = turnIdFrom(await startPrompt(connection, events, "fallback-exit", "continue"));
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({
+        model: undefined,
+        thinkingOption: undefined,
+        resumeSessionId: "native-session",
+      }),
+    );
+    expect(events.findLast((event) => event.type === "session.config")).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("recovers native state when setModel commits immediately before process exit", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const responseGate = Promise.withResolvers<void>();
+    const responseObserved = Promise.withResolvers<void>();
+    session.modelResponseGate = responseGate.promise;
+    session.modelResponseObserved = responseObserved.resolve;
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-exit-after-model-commit",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await responseObserved.promise;
+    const failed = events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "configure-exit-after-model-commit",
+    );
+    session.emit({ type: "process_exit", error: "exit before set_model response" });
+    session.modelResponseGate = null;
+    responseGate.resolve();
+    await failed;
+
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "configure-exit-recovery", "continue"),
+    );
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({
+        model: undefined,
+        thinkingOption: undefined,
+        resumeSessionId: "native-session",
+      }),
+    );
+    expect(events.findLast((event) => event.type === "session.config")).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("invalidates runtime state with a thinking level outside the model catalog", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineConfigs = events.filter((event) => event.type === "session.config").length;
+    const closed = Promise.withResolvers<void>();
+    session.closeObserved = closed.resolve;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "medium";
+
+    session.emit({ type: "model_changed" });
+    await closed.promise;
+
+    expect(session.closes).toBe(1);
+    expect(events.filter((event) => event.type === "session.config")).toHaveLength(baselineConfigs);
+    await connection.close();
+  });
+
+  test("retries failed and timed-out config refreshes without killing an active turn", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "refresh-timeout", "work"));
+
+    session.stateError = new Error("transient state failure");
+    session.emit({ type: "model_changed" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(session.closes).toBe(0);
+
+    session.stateError = null;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.delays.at(-1)).toBe(250);
+    const afterRejection = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    await scheduler.flush();
+    await afterRejection;
+
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = gate.promise;
+    session.stateObserved = observed.resolve;
+    session.currentModel = MODEL;
+    session.thinkingLevel = "low";
+    session.emit({ type: "model_changed" });
+    await observed.promise;
+    await scheduler.flush();
+    const timedOutLookups = session.stateLookups;
+    for (let index = 0; index < 100; index += 1) {
+      session.emit({ type: "model_changed" });
+    }
+    expect(session.stateLookups).toBe(timedOutLookups);
+
+    expect(session.closes).toBe(0);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+      ),
+    ).toBe(false);
+
+    const afterTimeout = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "low",
+    );
+    session.stateGate = null;
+    gate.resolve();
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.delays.at(-1)).toBe(250);
+    await scheduler.flush();
+    await afterTimeout;
+    expect(scheduler.delays.filter((delay) => delay < 2_000)).toEqual([250, 250]);
+
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("retries after a never-settling refresh request times out", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const neverSettles = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = neverSettles.promise;
+    session.stateObserved = observed.resolve;
+
+    session.emit({ type: "model_changed" });
+    await observed.promise;
+    await scheduler.flush();
+    expect(scheduler.pendingCount).toBe(1);
+
+    session.stateGate = null;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    await scheduler.flush();
+    await refreshed;
+
+    expect(session.stateLookups).toBe(3);
+    await connection.close();
+  });
+
+  test("ignores a late timed-out state result after a newer refresh commits", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineConfigs = events.filter((event) => event.type === "session.config").length;
+    const late = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+    session.stateGate = late.promise;
+    session.stateObserved = observed.resolve;
+
+    session.emit({ type: "model_changed" });
+    await observed.promise;
+    await scheduler.flush();
+
+    session.stateGate = null;
+    session.currentModel = MODEL;
+    session.thinkingLevel = "low";
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "low",
+    );
+    await scheduler.flush();
+    await refreshed;
+    const committedConfigs = events.filter((event) => event.type === "session.config").length;
+
+    late.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events.filter((event) => event.type === "session.config")).toHaveLength(
+      committedConfigs,
+    );
+    expect(committedConfigs).toBe(baselineConfigs + 1);
+    await connection.close();
+  });
+
+  test("invalidates after bounded persistent config refresh failures", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineLookups = session.stateLookups;
+    const closed = Promise.withResolvers<void>();
+    session.closeObserved = closed.resolve;
+    session.stateError = new Error("persistent state failure");
+
+    session.emit({ type: "model_changed" });
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.delays.filter((delay) => delay < 2_000)).toEqual([250]);
+    await scheduler.flush();
+    expect(scheduler.delays.filter((delay) => delay < 2_000)).toEqual([250, 500]);
+    await scheduler.flush();
+    await closed.promise;
+
+    expect(session.stateLookups).toBe(baselineLookups + 3);
+    expect(session.closes).toBe(1);
+    await connection.close();
+  });
+
+  test("cancels and drains a config refresh backoff on close", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.stateError = new Error("state unavailable before close");
+    session.emit({ type: "model_changed" });
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.pendingCount).toBe(1);
+    const stateLookups = session.stateLookups;
+
+    await connection.close();
+
+    expect(scheduler.pendingCount).toBe(0);
+    await scheduler.flush();
+    expect(session.stateLookups).toBe(stateLookups);
+  });
+
+  test("cancels and drains a config refresh backoff on runtime invalidation", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.stateError = new Error("state unavailable before invalidation");
+    session.emit({ type: "model_changed" });
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.pendingCount).toBe(1);
+    const stateLookups = session.stateLookups;
+
+    session.emit({ type: "process_exit", error: "runtime exited during refresh backoff" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(scheduler.pendingCount).toBe(0);
+    await scheduler.flush();
+    expect(session.stateLookups).toBe(stateLookups);
+    expect(session.closes).toBe(1);
+    await connection.close();
+  });
+
+  test("fails configure when OMP does not commit the requested selection", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.applyModelChanges = false;
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-uncommitted",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-uncommitted",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({ error: { message: "OMP did not commit the requested model" } }),
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "request.completed" && event.requestId === "configure-uncommitted",
+      ),
+    ).toBe(false);
+    expect(events.findLast((event) => event.type === "session.config")).toEqual(
+      expect.objectContaining({ config: expect.objectContaining({ model: MODEL_PUBLIC_ID }) }),
+    );
+    session.applyModelChanges = true;
+    session.applyThinkingChanges = false;
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-uncommitted-thinking",
+      sessionId: "session-1",
+      changes: { thinkingOption: "low" },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "configure-uncommitted-thinking",
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "request.completed" &&
+          event.requestId === "configure-uncommitted-thinking",
+      ),
+    ).toBe(false);
+    await connection.close();
+  });
+  test("bounds state reconciliation after a configure mutation failure", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const stateGate = Promise.withResolvers<void>();
+    const stateObserved = Promise.withResolvers<void>();
+    session.modelChangeError = new Error("model mutation failed");
+    session.stateGate = stateGate.promise;
+    session.stateObserved = stateObserved.resolve;
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-reconcile-timeout",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await stateObserved.promise;
+    await Promise.resolve();
+    const failure = events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "configure-reconcile-timeout",
+    );
+    expect(scheduler.delays.at(-1)).toBe(2_000);
+    await scheduler.flush();
+
+    await failure;
+    expect(scheduler.delays).toContain(2_000);
+    expect(session.closes).toBe(0);
+    stateGate.resolve();
+    await connection.close();
+  });
+
+  test("rejects unsupported thinking before changing the target model", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-unsupported-thinking",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID, thinkingOption: "medium" },
+    });
+    const failure = await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "configure-unsupported-thinking",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP thinking level is unavailable for the selected model" },
+      }),
+    );
+    expect(session.modelChanges).toEqual([]);
+    expect(session.thinkingChanges).toEqual([]);
+    await connection.close();
+  });
+
+  test("invalidates the runtime when configure observes a catalog escape", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.stateModelOverride = {
+      provider: "escaped",
+      id: "unadvertised",
+      reasoning: false,
+    };
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-catalog-escape",
+      sessionId: "session-1",
+      changes: { mode: "full" },
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-catalog-escape",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({ error: { message: "OMP runtime selected an unadvertised model" } }),
+    );
+    expect(session.closes).toBe(1);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "request.completed" && event.requestId === "configure-catalog-escape",
+      ),
+    ).toBe(false);
+    await connection.close();
+  });
+
+  test("does not publish deferred configure success after runtime invalidation", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baseline = events.length;
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = gate.promise;
+    session.stateObserved = observed.resolve;
+
+    const configuring = connection.send({
+      type: "session.configure",
+      requestId: "configure-invalidated",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await observed.promise;
+    session.emit({ type: "process_exit", error: "runtime exited" });
+    const failure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-invalidated",
+    );
+    session.stateGate = null;
+    gate.resolve();
+    await failure;
+    await configuring;
+
+    expect(events.slice(baseline).some((event) => event.type === "session.config")).toBe(false);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "request.completed" && event.requestId === "configure-invalidated",
+      ),
+    ).toBe(false);
+    await connection.close();
+  });
+
+  test("fails a deferred getState configure request after close", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baseline = events.length;
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = gate.promise;
+    session.stateObserved = observed.resolve;
+
+    const configuring = connection.send({
+      type: "session.configure",
+      requestId: "configure-closed",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await observed.promise;
+    const failure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-closed",
+    );
+    const closing = connection.close();
+    session.stateGate = null;
+    gate.resolve();
+    await failure;
+    await Promise.all([configuring, closing]);
+
+    expect(events.slice(baseline).some((event) => event.type === "session.config")).toBe(false);
+    expect(
+      events.filter(
+        (event) => event.type === "request.completed" && event.requestId === "configure-closed",
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("fails a deferred setModel configure request after close", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baseline = events.length;
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.modelChangeGate = gate.promise;
+    session.modelChangeObserved = observed.resolve;
+
+    const configuring = connection.send({
+      type: "session.configure",
+      requestId: "configure-model-closed",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await observed.promise;
+    const failure = events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-model-closed",
+    );
+    const closing = connection.close();
+    session.modelChangeGate = null;
+    gate.resolve();
+    await failure;
+    await Promise.all([configuring, closing]);
+
+    expect(events.slice(baseline).some((event) => event.type === "session.config")).toBe(false);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "request.completed" && event.requestId === "configure-model-closed",
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("rejects approval mode changes without claiming success", async () => {
+    const { connection, events } = await createHarness();
+    await openSession(connection, events);
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-mode",
+      sessionId: "session-1",
+      changes: { mode: "write" },
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-mode",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP approval mode cannot change live; create a new session instead" },
+      }),
+    );
+    expect(
+      events.some(
+        (event) => event.type === "request.completed" && event.requestId === "configure-mode",
+      ),
+    ).toBe(false);
+    await connection.close();
+  });
+
   test("preserves isolated environment after configure and recovery", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
