@@ -7,7 +7,7 @@ import type {
   ProviderThinkingOption,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpModel, OmpRuntime } from "./omp-rpc";
-import { OmpPublicDataFilter } from "./security";
+import { OmpCleanupFailure, OmpPublicDataFilter } from "./security";
 
 export const OMP_MODES: readonly ProviderMode[] = [
   {
@@ -39,13 +39,6 @@ export function ompModelId(model: OmpModel): string {
   return `omp:model:${createHash("sha256").update(nativeIdentity).digest("hex")}`;
 }
 
-export function parseOmpModelId(id: string): { provider: string; modelId: string } {
-  const separator = id.indexOf("/");
-  if (separator <= 0 || separator === id.length - 1) {
-    throw new Error("OMP model selection is invalid");
-  }
-  return { provider: id.slice(0, separator), modelId: id.slice(separator + 1) };
-}
 
 export function mapOmpModels(
   models: readonly OmpModel[],
@@ -101,12 +94,14 @@ export async function discoverOmpCatalog(
   runtime: OmpRuntime,
   cwd?: string,
   signal?: AbortSignal,
+  environment?: NodeJS.ProcessEnv,
 ): Promise<ProviderCatalog> {
   const session = await runtime.startSession({
     cwd: cwd ?? homedir(),
     mode: "full",
     noSession: true,
     signal,
+    environment,
   });
   try {
     const [nativeModels, state] = await Promise.all([
@@ -122,6 +117,7 @@ export async function discoverOmpCatalog(
           (model) => model.provider === state.model?.provider && model.id === state.model.id,
         )
       : nativeModels[0];
+    if (state.model && !currentModel) throw new Error("OMP reported an unadvertised active model");
     const thinkingOptions = thinkingForModel(currentModel);
     return {
       models,
@@ -132,6 +128,14 @@ export async function discoverOmpCatalog(
       ...(state.thinkingLevel ? { defaultThinkingOption: state.thinkingLevel } : {}),
     };
   } finally {
-    await session.close();
+    const cleanup = session.close();
+    try {
+      await cleanup;
+    } catch {
+      throw new OmpCleanupFailure(
+        "OMP catalog cleanup failed",
+        cleanup.catch(() => undefined),
+      );
+    }
   }
 }

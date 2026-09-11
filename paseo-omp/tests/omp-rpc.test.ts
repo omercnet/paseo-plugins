@@ -179,6 +179,7 @@ describe("OMP RPC transport", () => {
   test("passes an exact native session handle to OMP resume", async () => {
     const child = new FakeRpcChild();
     const launches: OmpSpawnRequest[] = [];
+    const modelSelector = `${"p".repeat(256)}/${"m".repeat(256)}`;
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
         child.write({
@@ -194,11 +195,13 @@ describe("OMP RPC transport", () => {
       cwd: "/repo",
       mode: "full",
       resumeSessionId: "native-session-42",
+      model: modelSelector,
     });
     child.write(READY_FRAME);
     const session = await opening;
 
     expect(launches[0]?.args).toEqual(expect.arrayContaining(["--resume", "native-session-42"]));
+    expect(launches[0]?.args).toEqual(expect.arrayContaining(["--model", modelSelector]));
     await session.close();
   });
 
@@ -579,14 +582,6 @@ describe("OMP RPC transport", () => {
       byteLength: 4,
       data: "e30=",
     });
-    child.write({
-      type: "rpc_chunk",
-      chunkId: "semantic-overflow",
-      index: 0,
-      count: 1,
-      byteLength: 13 * 1024 * 1024,
-      data: "e30=",
-    });
     for (let index = 0; index < 100; index += 1) {
       child.write({ type: `unknown_${index}`, detail: "API_KEY=must-not-surface" });
     }
@@ -599,6 +594,25 @@ describe("OMP RPC transport", () => {
     });
     await session.close();
   });
+  test("fails the runtime on a complete oversized physical frame", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const failure = nextEvent((listener) => session.onEvent(listener));
+    child.writeRaw(`${"x".repeat(12 * 1024 * 1024 + 1)}\n`);
+    await expect(failure).resolves.toEqual({
+      type: "process_exit",
+      error: "OMP RPC frame exceeds the semantic byte limit",
+    });
+    await session.close();
+  });
+
 
   test("preserves validated events internally while keeping stderr out of failures", async () => {
     const child = new FakeRpcChild();
@@ -770,6 +784,7 @@ describe("OMP RPC transport", () => {
   });
 
   test("builds argv-only launches with a minimal authenticated environment", () => {
+    const proxy = "https://proxy-user:proxy-pass@example.test?token=proxy-token";
     const request = buildOmpSpawnRequest(
       {
         cwd: "/repo",
@@ -781,6 +796,7 @@ describe("OMP RPC transport", () => {
         OMP_COMMAND: "/opt/omp/bin/omp",
         PATH: "/usr/bin",
         HOME: "/home/runner",
+        HTTPS_PROXY: proxy,
         OPENAI_API_KEY: "daemon-secret",
         UNRELATED_DAEMON_VALUE: "must-not-pass",
         NODE_OPTIONS: "--require attacker.js",
@@ -794,10 +810,14 @@ describe("OMP RPC transport", () => {
     expect(request.env).toEqual({
       PATH: "/usr/bin",
       HOME: "/home/runner",
+      HTTPS_PROXY: proxy,
       OPENAI_API_KEY: "daemon-secret",
       TEST_ENV: "explicit",
       CUSTOMER_API_KEY: "session-secret",
     });
+    expect(request.sensitiveValues).toEqual(
+      expect.arrayContaining(["proxy-user", "proxy-pass", "proxy-token"]),
+    );
     expect(request.env.UNRELATED_DAEMON_VALUE).toBeUndefined();
     expect(request.env.NODE_OPTIONS).toBeUndefined();
     expect(request.env.RANDOM_TOKEN).toBeUndefined();
@@ -866,12 +886,23 @@ describe("OMP RPC transport", () => {
             headers: {
               Authorization: "Bearer header-secret",
               "X-License": "license-secret",
+              "User-Agent": "agent-secret",
             },
           },
           local: {
             type: "stdio",
             command: "server",
-            env: { API_KEY: "env-secret", CUSTOM_VALUE: "custom-secret", DEBUG: "1" },
+            env: {
+              API_KEY: "env-secret",
+              CUSTOM_VALUE: "custom-secret",
+              DEBUG: "1",
+              NODE_ENV: "dev",
+            },
+          },
+          debugSecret: {
+            type: "stdio",
+            command: "server",
+            env: { DEBUG: "debug-secret" },
           },
         },
       }),
@@ -891,6 +922,8 @@ describe("OMP RPC transport", () => {
           "env-secret",
           "license-secret",
           "custom-secret",
+          "agent-secret",
+          "debug-secret",
         ]),
       );
       expect(request.sensitiveValues).not.toContain("1");

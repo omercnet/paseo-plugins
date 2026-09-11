@@ -181,6 +181,7 @@ export function createOmpConnection(
   const opening = new Map<string, { token: symbol; promise: Promise<OmpProviderSession> }>();
   const failedCleanup = new Map<string, { token: symbol; cleanup: Promise<void> }>();
   const shutdown = new AbortController();
+  let catalogCleanup: Promise<void> | null = null;
   const activeOperations = new Set<Promise<void>>();
   let closing = false;
   let closed = false;
@@ -202,13 +203,18 @@ export function createOmpConnection(
   const dispatch = async (input: ProviderInput): Promise<void> => {
     switch (input.type) {
       case "catalog":
+        if (catalogCleanup) {
+          requestFailure(input.requestId, new OmpPublicError("OMP catalog cleanup is incomplete"));
+          return;
+        }
         try {
           emit({
             type: "catalog",
             requestId: input.requestId,
-            catalog: await discoverOmpCatalog(runtime, input.cwd, shutdown.signal),
+            catalog: await discoverOmpCatalog(runtime, input.cwd, shutdown.signal, environment),
           });
         } catch (error) {
+          if (error instanceof OmpCleanupFailure) catalogCleanup = error.cleanup;
           if (!closing) requestFailure(input.requestId, error, "OMP catalog discovery failed");
         }
         return;
@@ -328,13 +334,13 @@ export function createOmpConnection(
         }
     }
   };
-
   const disposeConnection = async (): Promise<void> => {
     closing = true;
     shutdown.abort(new Error("OMP provider connection closed"));
     const sessionClosures = Promise.allSettled([
       ...[...sessions.values()].map(({ session }) => session.close()),
       ...[...failedCleanup.values()].map(({ cleanup }) => cleanup),
+      ...(catalogCleanup ? [catalogCleanup] : []),
     ]);
     await Promise.all([Promise.all(activeOperations), sessionClosures]);
     const pending = await Promise.allSettled([...opening.values()].map((slot) => slot.promise));

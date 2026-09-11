@@ -323,6 +323,9 @@ export class OmpProviderSession {
             (model) => model.provider === state.model?.provider && model.id === state.model.id,
           )
         : undefined;
+      if (state.model && !currentModel) {
+        throw new OmpPublicError("OMP runtime selected an unadvertised model");
+      }
       const configState: ProviderConfigState = {
         ...(state.model ? { model: ompModelId(state.model) } : {}),
         mode: "full",
@@ -602,6 +605,9 @@ export class OmpProviderSession {
   }
 
   private publishCommittedConfig(state: OmpSessionState): void {
+    if (state.model && !this.nativeModelsByPublicId.has(ompModelId(state.model))) {
+      throw new OmpPublicError("OMP runtime selected an unadvertised model");
+    }
     this.configState = {
       ...this.configState,
       ...(state.model ? { model: ompModelId(state.model) } : { model: undefined }),
@@ -615,6 +621,7 @@ export class OmpProviderSession {
       env: this.recoveryOptions.env,
       mode: "full",
       systemPrompt: this.recoveryOptions.systemPrompt,
+      environment: this.recoveryOptions.environment,
       ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
       ...(this.configState.thinkingOption
         ? { thinkingOption: this.configState.thinkingOption }
@@ -709,6 +716,9 @@ export class OmpProviderSession {
         throw new Error(
           `OMP resumed native session '${state.sessionId}' instead of '${expectedSessionId}'`,
         );
+      }
+      if (state.model && !this.nativeModelsByPublicId.has(ompModelId(state.model))) {
+        throw new Error("OMP recovered with an unadvertised model");
       }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);

@@ -16,7 +16,6 @@ const READY_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const PROCESS_STOP_TIMEOUT_MS = 750;
 const CHUNK_STALE_MS = 30_000;
-const MAX_UNKNOWN_DIAGNOSTICS = 8;
 const MAX_PHYSICAL_FRAME_BYTES = 1024 * 1024;
 const MAX_CHUNK_BYTES = 256 * 1024;
 const MAX_ENCODED_CHUNK_BYTES = Math.ceil(MAX_CHUNK_BYTES / 3) * 4;
@@ -25,6 +24,7 @@ const MAX_SEMANTIC_FRAME_BYTES = 12 * 1024 * 1024;
 const MAX_CHUNK_COUNT = MAX_REASSEMBLED_FRAME_BYTES / MAX_CHUNK_BYTES;
 const MAX_ID_LENGTH = 256;
 const MAX_NAME_LENGTH = 256;
+const MAX_MODEL_SELECTOR_BYTES = MAX_NAME_LENGTH * 2 + 1;
 const MAX_TEXT_LENGTH = 1024 * 1024;
 const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
 const MAX_SYSTEM_PROMPT_LENGTH = 64 * 1024;
@@ -341,6 +341,7 @@ type ChunkState = {
 // families. Session-scoped values are explicit host input and are overlaid after rejecting loader
 // and executable-resolution controls; this keeps provider credentials available without copying
 const INHERITED_RUNTIME_ENV: Readonly<Record<string, true>> = {
+  ALL_PROXY: true,
   APPDATA: true,
   COLORTERM: true,
   HOME: true,
@@ -404,7 +405,7 @@ const INHERITED_PROVIDER_AUTH_ENV: Readonly<Record<string, true>> = {
   XAI_API_KEY: true,
 };
 const BLOCKED_SESSION_ENV =
-  /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|DYLD_.*|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|OMP_COMMAND|PATH|PATHEXT|PERL5LIB|PERL5OPT|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SYSTEMROOT|USERPROFILE|_JAVA_OPTIONS)$/u;
+  /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|DYLD_.*|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|OMP_COMMAND|OMP_PROFILE|PATH|PATHEXT|PERL5LIB|PERL5OPT|PI_CODING_AGENT_DIR|PI_CONFIG_DIR|PI_PROFILE|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SYSTEMROOT|USERPROFILE|XDG_CONFIG_HOME|_JAVA_OPTIONS)$/u;
 const SESSION_CREDENTIAL_ENV =
   /(?:^|_)(?:API_KEY|ACCESS_KEY|AUTH|AUTHORIZATION|COOKIE|CREDENTIALS|PASSWORD|PRIVATE_KEY|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
@@ -434,6 +435,29 @@ function buildOmpEnvironment(
   const env: NodeJS.ProcessEnv = {};
   const sensitiveValues: string[] = [];
   let totalBytes = 0;
+  const collectProxyCredentials = (value: string) => {
+    if (utf8Bytes(value) >= 4) sensitiveValues.push(value);
+    let proxy: URL;
+    try {
+      proxy = new URL(value);
+    } catch {
+      return;
+    }
+    const credentials = [
+      proxy.username ? decodeURIComponent(proxy.username) : "",
+      proxy.password ? decodeURIComponent(proxy.password) : "",
+      ...[...proxy.searchParams]
+        .filter(([key]) => SESSION_CREDENTIAL_ENV.test(key.toUpperCase()))
+        .map(([, parameter]) => parameter),
+    ];
+    for (const credential of credentials) {
+      if (!credential) continue;
+      if (utf8Bytes(credential) < 4) {
+        throw new OmpPublicError("OMP proxy credential is too short for safe redaction");
+      }
+      sensitiveValues.push(credential);
+    }
+  };
   for (const [name, value] of Object.entries(sourceEnv)) {
     if (value === undefined || name.toUpperCase() === "OMP_COMMAND") continue;
     const normalizedName = name.toUpperCase();
@@ -446,26 +470,29 @@ function buildOmpEnvironment(
       throw new Error("OMP provider credential is too short for safe redaction");
     }
     totalBytes += utf8Bytes(name) + valueBytes;
-    if (totalBytes > MAX_ENV_TOTAL_LENGTH)
-      throw new Error("OMP inherited environment is too large");
+    if (totalBytes > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP inherited environment is too large");
     env[name] = value;
     if (isProviderAuth && value.length > 0) sensitiveValues.push(value);
+    if (
+      isRuntime &&
+      (normalizedName === "HTTP_PROXY" ||
+        normalizedName === "HTTPS_PROXY" ||
+        normalizedName === "ALL_PROXY") &&
+      value.length > 0
+    ) {
+      collectProxyCredentials(value);
+    }
   }
   let entryCount = 0;
   for (const name in sessionEnv ?? {}) {
     if (!Object.hasOwn(sessionEnv ?? {}, name)) continue;
     entryCount += 1;
-    if (entryCount > MAX_ENV_ENTRIES)
-      throw new Error("OMP session environment has too many entries");
+    if (entryCount > MAX_ENV_ENTRIES) throw new Error("OMP session environment has too many entries");
     const value = (sessionEnv as Readonly<Record<string, string>>)[name];
     if (!ENV_NAME.test(name) || BLOCKED_SESSION_ENV.test(name.toUpperCase())) {
       throw new Error("OMP session environment contains a forbidden variable");
     }
-    if (
-      typeof value !== "string" ||
-      utf8Bytes(value) > MAX_ENV_VALUE_LENGTH ||
-      value.includes("\0")
-    ) {
+    if (typeof value !== "string" || utf8Bytes(value) > MAX_ENV_VALUE_LENGTH || value.includes("\0")) {
       throw new Error("OMP session environment contains an invalid value");
     }
     const valueBytes = utf8Bytes(value);
@@ -510,7 +537,9 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
       const current = stack.pop();
       if (!current) break;
       if (typeof current.value === "string") {
-        if (current.sensitive) collectCredential(current.value);
+        if (current.sensitive || utf8Bytes(current.value) >= 4) {
+          collectCredential(current.value);
+        }
         continue;
       }
       if (Array.isArray(current.value)) {
@@ -558,7 +587,10 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
   for (const path of paths) {
     let descriptor: number;
     try {
-      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      descriptor = openSync(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "EISDIR") continue;
@@ -644,7 +676,7 @@ export function buildOmpSpawnRequest(
   }
   const args = ["--mode", "rpc-ui", "--approval-mode", "yolo"];
   if (options.model !== undefined) {
-    args.push("--model", validateBoundedText(options.model, "model", MAX_NAME_LENGTH));
+    args.push("--model", validateBoundedText(options.model, "model", MAX_MODEL_SELECTOR_BYTES));
   }
   if (options.thinkingOption !== undefined) {
     const thinking = OmpThinkingLevelSchema.safeParse(options.thinkingOption);
@@ -810,11 +842,11 @@ class OmpRpcProcess {
   private readonly streamedBlocks = new Map<number, string>();
   private readonly activeToolCallIds = new Set<string>();
   private pendingWriteBytes = 0;
-  private unknownDiagnosticCount = 0;
   private commandTextLength = 0;
   private lineParts: Buffer[] = [];
   private lineBytes = 0;
   private discardingLine = false;
+  private discardedLineBytes = 0;
   private chunk: ChunkState | null = null;
   private physicalFrameLimit = MAX_PHYSICAL_FRAME_BYTES;
   private reassembledFrameLimit = MAX_REASSEMBLED_FRAME_BYTES;
@@ -1026,25 +1058,45 @@ class OmpRpcProcess {
     let start = 0;
     for (let index = 0; index < bytes.length; index += 1) {
       if (bytes[index] !== 10) continue;
-      if (!this.discardingLine) this.appendLinePart(bytes.subarray(start, index));
+      const part = bytes.subarray(start, index);
       if (this.discardingLine) {
+        this.discardedLineBytes += part.byteLength;
+        if (this.discardedLineBytes > MAX_SEMANTIC_FRAME_BYTES) {
+          this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
+          return;
+        }
         this.discardingLine = false;
+        this.discardedLineBytes = 0;
         this.lineParts = [];
         this.lineBytes = 0;
       } else {
-        this.completeLine();
+        this.appendLinePart(part);
+        if (this.fatalError) return;
+        if (!this.discardingLine) this.completeLine();
       }
       start = index + 1;
     }
-    if (start < bytes.length && !this.discardingLine) this.appendLinePart(bytes.subarray(start));
+    if (start >= bytes.length) return;
+    const trailing = bytes.subarray(start);
+    if (this.discardingLine) {
+      this.discardedLineBytes += trailing.byteLength;
+      if (this.discardedLineBytes > MAX_SEMANTIC_FRAME_BYTES) {
+        this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
+      }
+    } else {
+      this.appendLinePart(trailing);
+    }
   }
 
   private appendLinePart(part: Buffer): void {
     if (part.byteLength === 0) return;
-    if (
-      this.lineParts.length >= MAX_LINE_PARTS ||
-      this.lineBytes + part.byteLength > this.physicalFrameLimit
-    ) {
+    const nextBytes = this.lineBytes + part.byteLength;
+    if (nextBytes > MAX_SEMANTIC_FRAME_BYTES) {
+      this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
+      return;
+    }
+    if (this.lineParts.length >= MAX_LINE_PARTS || nextBytes > this.physicalFrameLimit) {
+      this.discardedLineBytes = nextBytes;
       this.lineParts = [];
       this.lineBytes = 0;
       this.discardingLine = true;
@@ -1052,7 +1104,7 @@ class OmpRpcProcess {
       return;
     }
     this.lineParts.push(part);
-    this.lineBytes += part.byteLength;
+    this.lineBytes = nextBytes;
   }
 
   private completeLine(): void {
@@ -1062,7 +1114,7 @@ class OmpRpcProcess {
     this.lineBytes = 0;
     const payload = line.at(-1) === 13 ? line.subarray(0, -1) : line;
     if (payload.byteLength > MAX_SEMANTIC_FRAME_BYTES) {
-      this.recordProtocolViolation();
+      this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
       return;
     }
     let decoded: unknown;
@@ -1089,10 +1141,13 @@ class OmpRpcProcess {
   }
 
   private receiveChunk(frame: ChunkFrame): void {
+    if (frame.byteLength > MAX_SEMANTIC_FRAME_BYTES) {
+      this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
+      return;
+    }
     if (
       frame.index >= frame.count ||
       frame.byteLength > this.reassembledFrameLimit ||
-      frame.byteLength > MAX_SEMANTIC_FRAME_BYTES ||
       frame.data.length % 4 !== 0 ||
       !/^[A-Za-z0-9+/]*={0,2}$/u.test(frame.data)
     ) {
@@ -1380,7 +1435,7 @@ class OmpRpcProcess {
   }
 
   private recordProtocolViolation(): void {
-    if (this.unknownDiagnosticCount < MAX_UNKNOWN_DIAGNOSTICS) this.unknownDiagnosticCount += 1;
+    // Malformed bounded frames are isolated so the following frame starts from clean state.
   }
 
   private fail(error: Error): void {

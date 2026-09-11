@@ -501,10 +501,57 @@ describe("OMP direct provider", () => {
         modes: [expect.objectContaining({ id: "full" })],
       }),
     });
-    expect(runtime.starts[0]).toEqual(expect.objectContaining({ cwd: "/repo", noSession: true }));
+    expect(runtime.starts[0]).toEqual(
+      expect.objectContaining({ cwd: "/repo", noSession: true, environment: TEST_RUNTIME_ENV }),
+    );
     expect(sessionAt(runtime).closes).toBe(1);
     await connection.close();
   });
+  test("blocks repeated catalog discovery after unverified cleanup", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextCloseError = new Error("catalog cleanup failed");
+    const { connection, events } = await createHarness(runtime);
+    for (const requestId of ["catalog-cleanup-failure", "catalog-cleanup-retry"]) {
+      await connection.send({ type: "catalog", requestId, cwd: "/repo" });
+      await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === requestId,
+      );
+    }
+    expect(runtime.starts).toHaveLength(1);
+    await expect(connection.close()).resolves.toBeUndefined();
+  });
+
+  test("rejects unadvertised catalog and session state models", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.availableModels = [MODEL];
+    runtime.nextModel = ALTERNATE_MODEL;
+    const { connection, events } = await createHarness(runtime);
+    await connection.send({ type: "catalog", requestId: "unadvertised-catalog", cwd: "/repo" });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unadvertised-catalog",
+    );
+    runtime.nextModel = ALTERNATE_MODEL;
+    await connection.send({
+      type: "session.open",
+      requestId: "unadvertised-open",
+      sessionId: "unadvertised-session",
+      config: {
+        cwd: "/repo",
+        env: { TEST_ENV: "test-value" },
+        mcpServers: {},
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "unadvertised-open",
+    );
+    await connection.close();
+  });
+
 
   test("sanitizes malicious model fields while preserving native runtime identity", async () => {
     const maliciousModel: OmpModel = {
@@ -823,6 +870,33 @@ describe("OMP direct provider", () => {
     ]);
     await connection.close();
   });
+  test("preserves isolated environment after configure and recovery", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-before-recovery",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "configure-before-recovery",
+    );
+    sessionAt(runtime).emit({ type: "process_exit", error: "closed" });
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "configured-recovery", "continue"),
+    );
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({
+        environment: TEST_RUNTIME_ENV,
+        model: "openai/gpt-5.4",
+        resumeSessionId: "native-session",
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
 
   test("coalesces streams, preserves tool snapshots, and resets IDs between turns", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
@@ -4306,7 +4380,14 @@ describe("OMP direct provider", () => {
     expect(terminal).toEqual(
       expect.objectContaining({ error: { message: "OMP assistant turn failed" } }),
     );
-    children[0]?.close();
+    children[0]?.write({
+      type: "rpc_chunk",
+      chunkId: "oversized-runtime-frame",
+      index: 0,
+      count: 1,
+      byteLength: 12 * 1024 * 1024 + 1,
+      data: "e30=",
+    });
     const recovered = await startPrompt(connection, events, "transport-recovery", "continue");
     expect(recovered).toEqual(
       expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
