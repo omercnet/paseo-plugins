@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
   buildOmpSpawnRequest,
+  collectAmbientMcpSecrets,
+  type OmpMcpFileOps,
   type OmpRpcEvent,
   OmpRpcRuntime,
   type OmpSpawnRequest,
@@ -834,8 +836,8 @@ describe("OMP RPC transport", () => {
         env: { TEST_ENV: "explicit", CUSTOMER_API_KEY: "session-secret" },
       },
       {
+        ...TEST_RUNTIME_ENV,
         OMP_COMMAND: "/opt/omp/bin/omp",
-        PATH: "/usr/bin",
         HOME: "/home/runner",
         HTTPS_PROXY: proxy,
         OPENAI_API_KEY: "daemon-secret",
@@ -850,6 +852,8 @@ describe("OMP RPC transport", () => {
     expect(request.args).toContain("provider/model; touch /tmp/not-run");
     expect(request.env).toEqual({
       PATH: "/usr/bin",
+      PI_CODING_AGENT_DIR: "/__paseo_omp_test_no_agent_dir__",
+      PI_CONFIG_DIR: ".omp-no-config",
       HOME: "/home/runner",
       HTTPS_PROXY: proxy,
       OPENAI_API_KEY: "daemon-secret",
@@ -865,49 +869,82 @@ describe("OMP RPC transport", () => {
     expect(request.env.node_options).toBeUndefined();
     const benignShortValues = buildOmpSpawnRequest(
       { cwd: "/repo", mode: "full", env: { DEBUG: "1", NODE_ENV: "dev" } },
-      { PATH: "/usr/bin" },
+      TEST_RUNTIME_ENV,
     );
-    expect(benignShortValues.env).toEqual({ PATH: "/usr/bin", DEBUG: "1", NODE_ENV: "dev" });
-    expect(benignShortValues.sensitiveValues).not.toContain("1");
-    expect(benignShortValues.sensitiveValues).not.toContain("dev");
+    expect(benignShortValues.env).toEqual({
+      ...TEST_RUNTIME_ENV,
+      DEBUG: "1",
+      NODE_ENV: "dev",
+    });
+    expect(benignShortValues.sensitiveValues).toEqual([]);
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", env: { API_TOKEN: "x" } },
-        { PATH: "/usr/bin" },
+        TEST_RUNTIME_ENV,
       ),
     ).toThrow("credential is too short");
+    for (const proxy of [
+      "https://abc:long-password@example.test",
+      "https://example.test?token=xyz",
+    ]) {
+      expect(() =>
+        buildOmpSpawnRequest(
+          { cwd: "/repo", mode: "full", env: { HTTPS_PROXY: proxy } },
+          TEST_RUNTIME_ENV,
+        ),
+      ).toThrow("proxy credential is too short");
+    }
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", env: { LD_PRELOAD: "/tmp/evil.so" } },
-        { PATH: "/usr/bin" },
+        TEST_RUNTIME_ENV,
       ),
     ).toThrow("forbidden variable");
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", env: { node_options: "--require attacker.js" } },
-        { PATH: "/usr/bin" },
+        TEST_RUNTIME_ENV,
       ),
     ).toThrow("forbidden variable");
+    for (const name of [
+      "PI_CONFIG_FILES",
+      "PI_SHELL_PREFIX",
+      "CLAUDE_CODE_SHELL_PREFIX",
+      "PI_CODING_AGENT_SESSION_DIR",
+      "OMP_WORKTREE_DIR",
+      "XDG_DATA_HOME",
+      "PATH",
+      "HOME",
+      "LD_PRELOAD",
+      "NODE_OPTIONS",
+    ].flatMap((name) => [name, name.toLowerCase()])) {
+      expect(() =>
+        buildOmpSpawnRequest(
+          { cwd: "/repo", mode: "full", env: { [name]: "/tmp/redirect" } },
+          TEST_RUNTIME_ENV,
+        ),
+      ).toThrow("forbidden variable");
+    }
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full" },
-        { PATH: "/usr/bin", OPENAI_API_KEY: "x" },
+        { ...TEST_RUNTIME_ENV, OPENAI_API_KEY: "x" },
       ),
     ).toThrow("too short");
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", systemPrompt: "x".repeat(64 * 1024 + 1) },
-        { PATH: "/usr/bin" },
+        TEST_RUNTIME_ENV,
       ),
     ).toThrow("system prompt");
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", systemPrompt: "é".repeat(40_000) },
-        { PATH: "/usr/bin" },
+        TEST_RUNTIME_ENV,
       ),
     ).toThrow("system prompt");
     expect(() =>
-      buildOmpSpawnRequest({ cwd: "relative", mode: "full" }, { PATH: "/usr/bin" }),
+      buildOmpSpawnRequest({ cwd: "relative", mode: "full" }, TEST_RUNTIME_ENV),
     ).toThrow("absolute");
   });
 
@@ -923,7 +960,7 @@ describe("OMP RPC transport", () => {
         servers: {
           remote: {
             type: "http",
-            url: "https://user%40name:pass%20word@example.test/mcp?token=url%2Dsecret",
+            url: "https://user%40name:pass%20word@example.test/long%2Dsecret%2Dpath?token=url%2Dsecret&code=long%2Dprivate%2Dvalue",
             headers: {
               Authorization: "Bearer header-secret",
               "X-License": "license-secret",
@@ -955,10 +992,12 @@ describe("OMP RPC transport", () => {
       );
       expect(request.sensitiveValues).toEqual(
         expect.arrayContaining([
-          "https://user%40name:pass%20word@example.test/mcp?token=url%2Dsecret",
+          "https://user%40name:pass%20word@example.test/long%2Dsecret%2Dpath?token=url%2Dsecret&code=long%2Dprivate%2Dvalue",
           "user@name",
           "pass word",
           "url-secret",
+          "long-secret-path",
+          "long-private-value",
           "Bearer header-secret",
           "env-secret",
           "license-secret",
@@ -1006,6 +1045,41 @@ describe("OMP RPC transport", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("opens MCP candidates nonblocking and never reads non-regular descriptors", () => {
+    const opens: Array<{ path: string; flags: number }> = [];
+    const closed: number[] = [];
+    let reads = 0;
+    const fileOps: OmpMcpFileOps = {
+      open(path, flags) {
+        opens.push({ path, flags });
+        return opens.length;
+      },
+      stat() {
+        return { size: 0, isFile: () => false };
+      },
+      read() {
+        reads += 1;
+        return 0;
+      },
+      close(descriptor) {
+        closed.push(descriptor);
+      },
+    };
+
+    expect(collectAmbientMcpSecrets("/repo", { HOME: "/home/runner" }, fileOps)).toEqual([]);
+    expect(opens.map(({ path }) => path)).toEqual([
+      "/home/runner/.omp/agent/mcp.json",
+      "/repo/.omp/mcp.json",
+    ]);
+    expect(opens.every(({ flags }) => (flags & constants.O_NONBLOCK) !== 0)).toBe(true);
+    const noFollow = constants.O_NOFOLLOW;
+    if (typeof noFollow === "number" && noFollow !== 0) {
+      expect(opens.every(({ flags }) => (flags & noFollow) !== 0)).toBe(true);
+    }
+    expect(reads).toBe(0);
+    expect(closed).toEqual([1, 2]);
   });
 
   test("terminates a surviving POSIX process group after its leader exited", async () => {

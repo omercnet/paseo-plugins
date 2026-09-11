@@ -605,16 +605,20 @@ export class OmpProviderSession {
   }
 
   private publishCommittedConfig(state: OmpSessionState): void {
-    if (state.model && !this.nativeModelsByPublicId.has(ompModelId(state.model))) {
+    const publicModelId = state.model ? ompModelId(state.model) : undefined;
+    const advertisedModel = publicModelId
+      ? this.nativeModelsByPublicId.get(publicModelId)
+      : undefined;
+    if (state.model && !advertisedModel) {
       throw new OmpPublicError("OMP runtime selected an unadvertised model");
     }
     this.configState = {
       ...this.configState,
-      ...(state.model ? { model: ompModelId(state.model) } : { model: undefined }),
+      ...(publicModelId ? { model: publicModelId } : { model: undefined }),
       ...(state.thinkingLevel
         ? { thinkingOption: state.thinkingLevel }
         : { thinkingOption: undefined }),
-      thinkingOptions: thinkingForModel(state.model),
+      thinkingOptions: thinkingForModel(advertisedModel),
     };
     this.recoveryOptions = {
       cwd: this.recoveryOptions.cwd,
@@ -717,12 +721,17 @@ export class OmpProviderSession {
           `OMP resumed native session '${state.sessionId}' instead of '${expectedSessionId}'`,
         );
       }
+      const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
+      if (recoveredModel !== this.recoveryOptions.model) {
+        throw new Error("OMP recovered with a different model");
+      }
       if (state.model && !this.nativeModelsByPublicId.has(ompModelId(state.model))) {
         throw new Error("OMP recovered with an unadvertised model");
       }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
       this.projector.addSensitiveValues(recovered.redactionValues ?? []);
+      this.publishCommittedConfig(state);
       this.generation += 1;
       this.runtimeDead = null;
       this.runtimeDisposal = null;

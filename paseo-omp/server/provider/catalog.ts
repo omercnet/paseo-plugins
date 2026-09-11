@@ -7,7 +7,7 @@ import type {
   ProviderThinkingOption,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpModel, OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
-import { OmpCleanupFailure, OmpPublicDataFilter } from "./security";
+import { OmpCleanupFailure, OmpPublicDataFilter, OmpPublicError } from "./security";
 
 export const OMP_MODES: readonly ProviderMode[] = [
   {
@@ -31,6 +31,9 @@ const THINKING_OPTIONS: readonly ProviderThinkingOption[] = [
 ];
 
 export function nativeOmpModelId(model: OmpModel): string {
+  if (model.provider.includes("/")) {
+    throw new OmpPublicError("OMP reported an invalid model provider");
+  }
   return `${model.provider}/${model.id}`;
 }
 

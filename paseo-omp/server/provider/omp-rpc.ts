@@ -53,6 +53,7 @@ function boundedString(maxBytes: number, minBytes = 0) {
 
 const IDENTIFIER = boundedString(MAX_ID_LENGTH, 1);
 const NAME = boundedString(MAX_NAME_LENGTH, 1);
+const OMP_PROVIDER_NAME = NAME.refine((provider) => !provider.includes("/"));
 const TEXT = boundedString(MAX_TEXT_LENGTH);
 const OmpThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -123,7 +124,7 @@ const OmpAvailableCommandSchema = z.object({
   aliases: z.array(NAME).max(32).optional(),
 });
 const OmpModelSchema = z.object({
-  provider: NAME,
+  provider: OMP_PROVIDER_NAME,
   id: NAME,
   name: boundedString(MAX_NAME_LENGTH).optional(),
   reasoning: z.boolean().optional(),
@@ -405,7 +406,7 @@ const INHERITED_PROVIDER_AUTH_ENV: Readonly<Record<string, true>> = {
   XAI_API_KEY: true,
 };
 const BLOCKED_SESSION_ENV =
-  /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|DYLD_.*|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|OMP_COMMAND|OMP_PROFILE|PATH|PATHEXT|PERL5LIB|PERL5OPT|PI_CODING_AGENT_DIR|PI_CONFIG_DIR|PI_PROFILE|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SYSTEMROOT|USERPROFILE|XDG_CONFIG_HOME|_JAVA_OPTIONS)$/u;
+  /^(?:BASH_ENV|BUN_INSTALL.*|BUN_OPTIONS|CLASSPATH|CLAUDE_CODE_SHELL_PREFIX|DYLD_.*|ELECTRON_RUN_AS_NODE|ENV|GEM_HOME|GEM_PATH|GIT_CONFIG.*|GIT_SSH_COMMAND|HOME|JAVA_TOOL_OPTIONS|LD_.*|NODE_OPTIONS|NODE_PATH|NPM_CONFIG_.*|OMP_COMMAND|OMP_PROFILE|OMP_WORKTREE_DIR|PATH|PATHEXT|PERL5LIB|PERL5OPT|PI_CODING_AGENT_DIR|PI_CODING_AGENT_SESSION_DIR|PI_CONFIG_DIR|PI_CONFIG_FILES|PI_PROFILE|PI_SHELL_PREFIX|PYTHONHOME|PYTHONINSPECT|PYTHONPATH|PYTHONSTARTUP|RUBYLIB|RUBYOPT|SHELL|SYSTEMROOT|USERPROFILE|XDG_CONFIG_HOME|XDG_DATA_HOME|_JAVA_OPTIONS)$/u;
 const SESSION_CREDENTIAL_ENV =
   /(?:^|_)(?:API_KEY|ACCESS_KEY|AUTH|AUTHORIZATION|COOKIE|CREDENTIALS|PASSWORD|PRIVATE_KEY|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
@@ -443,19 +444,28 @@ function buildOmpEnvironment(
     } catch {
       return;
     }
-    const credentials = [
-      proxy.username ? decodeURIComponent(proxy.username) : "",
-      proxy.password ? decodeURIComponent(proxy.password) : "",
-      ...[...proxy.searchParams]
-        .filter(([key]) => SESSION_CREDENTIAL_ENV.test(key.toUpperCase()))
-        .map(([, parameter]) => parameter),
-    ];
-    for (const credential of credentials) {
-      if (!credential) continue;
-      if (utf8Bytes(credential) < 4) {
-        throw new OmpPublicError("OMP proxy credential is too short for safe redaction");
+    const collectComponent = (component: string, required: boolean) => {
+      if (!component) return;
+      if (utf8Bytes(component) < 4) {
+        if (required) {
+          throw new OmpPublicError("OMP proxy credential is too short for safe redaction");
+        }
+        return;
       }
-      sensitiveValues.push(credential);
+      sensitiveValues.push(component);
+    };
+    try {
+      collectComponent(proxy.username ? decodeURIComponent(proxy.username) : "", true);
+      collectComponent(proxy.password ? decodeURIComponent(proxy.password) : "", true);
+      for (const segment of proxy.pathname.split("/")) {
+        if (segment) collectComponent(decodeURIComponent(segment), false);
+      }
+    } catch (error) {
+      if (error instanceof OmpPublicError) throw error;
+      throw new OmpPublicError("OMP proxy URL components cannot be decoded safely");
+    }
+    for (const [name, parameter] of proxy.searchParams) {
+      collectComponent(parameter, parameter.length > 0 && SESSION_CREDENTIAL_ENV.test(name.toUpperCase()));
     }
   };
   for (const [name, value] of Object.entries(sourceEnv)) {
@@ -491,7 +501,8 @@ function buildOmpEnvironment(
     if (entryCount > MAX_ENV_ENTRIES)
       throw new Error("OMP session environment has too many entries");
     const value = (sessionEnv as Readonly<Record<string, string>>)[name];
-    if (!ENV_NAME.test(name) || BLOCKED_SESSION_ENV.test(name.toUpperCase())) {
+    const normalizedName = name.toUpperCase();
+    if (!ENV_NAME.test(name) || BLOCKED_SESSION_ENV.test(normalizedName)) {
       throw new Error("OMP session environment contains a forbidden variable");
     }
     if (
@@ -503,20 +514,49 @@ function buildOmpEnvironment(
     }
     const valueBytes = utf8Bytes(value);
     const isCredential =
-      name.toUpperCase() in INHERITED_PROVIDER_AUTH_ENV ||
-      SESSION_CREDENTIAL_ENV.test(name.toUpperCase());
+      normalizedName in INHERITED_PROVIDER_AUTH_ENV || SESSION_CREDENTIAL_ENV.test(normalizedName);
     if (valueBytes > 0 && valueBytes < 4 && isCredential) {
       throw new OmpPublicError("OMP session credential is too short for safe redaction");
     }
     totalBytes += utf8Bytes(name) + valueBytes;
     if (totalBytes > MAX_ENV_TOTAL_LENGTH) throw new Error("OMP session environment is too large");
     env[name] = value;
-    if (valueBytes >= 4) sensitiveValues.push(value);
+    const isProxy =
+      normalizedName === "HTTP_PROXY" ||
+      normalizedName === "HTTPS_PROXY" ||
+      normalizedName === "ALL_PROXY";
+    if (isProxy && value.length > 0) collectProxyCredentials(value);
+    else if (valueBytes >= 4) sensitiveValues.push(value);
   }
   return { env, sensitiveValues };
 }
 
-function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[] {
+export interface OmpMcpFileOps {
+  open(path: string, flags: number): number;
+  stat(descriptor: number): { size: number; isFile(): boolean };
+  read(
+    descriptor: number,
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number | null,
+  ): number;
+  close(descriptor: number): void;
+}
+
+const DEFAULT_MCP_FILE_OPS: OmpMcpFileOps = {
+  open: (path, flags) => openSync(path, flags),
+  stat: (descriptor) => fstatSync(descriptor),
+  read: (descriptor, buffer, offset, length, position) =>
+    readSync(descriptor, buffer, offset, length, position),
+  close: (descriptor) => closeSync(descriptor),
+};
+
+export function collectAmbientMcpSecrets(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  fileOps: OmpMcpFileOps = DEFAULT_MCP_FILE_OPS,
+): string[] {
   const home = env.HOME ?? env.USERPROFILE ?? homedir();
   const agentDir = env.PI_CODING_AGENT_DIR ?? join(home, env.PI_CONFIG_DIR ?? ".omp", "agent");
   const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
@@ -582,18 +622,28 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
     try {
       if (url.username) collectCredential(decodeURIComponent(url.username));
       if (url.password) collectCredential(decodeURIComponent(url.password));
+      for (const segment of url.pathname.split("/")) {
+        if (!segment) continue;
+        const decoded = decodeURIComponent(segment);
+        if (utf8Bytes(decoded) >= 4) collectCredential(decoded);
+      }
     } catch (error) {
       if (error instanceof OmpPublicError) throw error;
-      throw new OmpPublicError("OMP MCP URL credentials cannot be decoded safely");
+      throw new OmpPublicError("OMP MCP URL components cannot be decoded safely");
     }
     for (const [name, parameter] of url.searchParams) {
-      if (credentialKey.test(name)) collectCredential(parameter);
+      if (utf8Bytes(parameter) >= 4 || (parameter.length > 0 && credentialKey.test(name))) {
+        collectCredential(parameter);
+      }
     }
   };
   for (const path of paths) {
     let descriptor: number;
     try {
-      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      descriptor = fileOps.open(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "EISDIR") continue;
@@ -601,7 +651,7 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
     }
     let raw: string;
     try {
-      const stats = fstatSync(descriptor);
+      const stats = fileOps.stat(descriptor);
       if (!stats.isFile()) continue;
       if (stats.size > MAX_MCP_CONFIG_BYTES) {
         throw new OmpPublicError("OMP MCP configuration exceeds safe limits");
@@ -609,7 +659,7 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
       const buffer = Buffer.allocUnsafe(MAX_MCP_CONFIG_BYTES + 1);
       let bytesRead = 0;
       while (bytesRead <= MAX_MCP_CONFIG_BYTES) {
-        const count = readSync(descriptor, buffer, bytesRead, buffer.length - bytesRead, null);
+        const count = fileOps.read(descriptor, buffer, bytesRead, buffer.length - bytesRead, null);
         if (count === 0) break;
         bytesRead += count;
       }
@@ -618,7 +668,7 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
       }
       raw = buffer.subarray(0, bytesRead).toString("utf8");
     } finally {
-      closeSync(descriptor);
+      fileOps.close(descriptor);
     }
     let parsed: unknown;
     try {

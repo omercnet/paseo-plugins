@@ -558,10 +558,9 @@ describe("OMP direct provider", () => {
       name: "Authorization: Basic model-secret",
       reasoning: false,
     };
-    const slashModelA: OmpModel = { provider: "a/b", id: "c", name: "A\u0000name" };
-    const slashModelB: OmpModel = { provider: "a", id: "b/c", name: "B\u0007name" };
+    const slashIdModel: OmpModel = { provider: "a", id: "b/c", name: "B\u0007name" };
     const runtime = new FakeOmpRuntime();
-    runtime.availableModels = [maliciousModel, slashModelA, slashModelB];
+    runtime.availableModels = [maliciousModel, slashIdModel];
     runtime.nextModel = maliciousModel;
     const { connection, events } = await createHarness(runtime);
     await connection.send({ type: "catalog", requestId: "malicious-catalog", cwd: "/repo" });
@@ -598,7 +597,7 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("model-secret");
     expect(visible).toContain("omp:model:");
     if (catalog.type !== "catalog") throw new Error("Expected catalog event");
-    expect(new Set(catalog.catalog.models.map((model) => model.id)).size).toBe(3);
+    expect(new Set(catalog.catalog.models.map((model) => model.id)).size).toBe(2);
     expect(catalog.catalog.models.every((model) => model.id.startsWith("omp:model:"))).toBe(true);
     expect(visible).not.toContain("\u0000");
     expect(visible).not.toContain("\u0007");
@@ -609,6 +608,22 @@ describe("OMP direct provider", () => {
     });
     await connection.close();
   });
+  test("rejects slash-containing native model providers", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.availableModels = [{ provider: "ambiguous/provider", id: "model/id" }];
+    runtime.nextModel = runtime.availableModels[0] ?? null;
+    const { connection, events } = await createHarness(runtime);
+
+    await connection.send({ type: "catalog", requestId: "slash-provider", cwd: "/repo" });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "slash-provider",
+    );
+    expect(failure).toEqual(
+      expect.objectContaining({ error: { message: "OMP reported an invalid model provider" } }),
+    );
+    await connection.close();
+  });
+
 
   test("publishes opened, committed config, then ready", async () => {
     const { connection, events, runtime } = await createHarness();
@@ -881,6 +896,9 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "request.completed" && event.requestId === "configure-before-recovery",
     );
+    const recoveryBaseline = events.length;
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "low";
     sessionAt(runtime).emit({ type: "process_exit", error: "closed" });
     const turnId = turnIdFrom(
       await startPrompt(connection, events, "configured-recovery", "continue"),
@@ -893,6 +911,15 @@ describe("OMP direct provider", () => {
       }),
     );
     await finishTurn(events, sessionAt(runtime, 1), turnId);
+    expect(events.slice(recoveryBaseline)).toContainEqual(
+      expect.objectContaining({
+        type: "session.config",
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "low",
+        }),
+      }),
+    );
     await connection.close();
   });
 
@@ -2989,7 +3016,9 @@ describe("OMP direct provider", () => {
     await events.waitFor(
       (event) => event.type === "session.ready" && event.requestId === "open-default-config",
     );
-
+    const baseline = events.length;
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
     sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
     const turnId = turnIdFrom(await startPrompt(connection, events, "observed-config", "continue"));
     expect(runtime.starts[1]).toEqual(
@@ -2999,7 +3028,37 @@ describe("OMP direct provider", () => {
         resumeSessionId: "native-session",
       }),
     );
+    expect(events.slice(baseline)).toContainEqual(
+      expect.objectContaining({
+        type: "session.config",
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
+      }),
+    );
     await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("rejects recovery when runtime falls back to another advertised model", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const baseline = events.length;
+    runtime.nextModel = ALTERNATE_MODEL;
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    const result = await startPrompt(connection, events, "fallback-recovery", "continue");
+    expect(result).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          type: "failed",
+          error: { message: "OMP session recovery failed" },
+        }),
+      }),
+    );
+    expect(sessionAt(runtime, 1).closes).toBe(1);
+    expect(events.slice(baseline).some((event) => event.type === "session.config")).toBe(false);
     await connection.close();
   });
 
@@ -4220,6 +4279,10 @@ describe("OMP direct provider", () => {
 
   test("preserves structural protocol data through OmpRpcRuntime", async () => {
     const nativeSessionId = "native-session-secret";
+    const proxyUrl =
+      "https://proxy%2Duser:proxy%2Dpass@example.test?access_token=proxy%2Dtoken";
+    const sessionProxyUrl =
+      "https://session%2Duser:session%2Dpass@example.test/session%2Dpath?code=session%2Dquery";
     const children: ProviderRpcChild[] = [];
     const launchArgs: string[][] = [];
     const runtime = new OmpRpcRuntime({
@@ -4296,7 +4359,10 @@ describe("OMP direct provider", () => {
       },
       terminateProcessTree: () => Promise.resolve(true),
     });
-    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
+    const connection = await createOmpProvider({
+      runtime,
+      environment: { ...TEST_RUNTIME_ENV, HTTPS_PROXY: proxyUrl },
+    }).connect({
       versions: [1],
       capabilities: ["prompt.message", "prompt.steer", "session.configure"],
     });
@@ -4304,7 +4370,28 @@ describe("OMP direct provider", () => {
     connection.onEvent((event) => events.push(event));
     await openSession(connection, events, "transport-open", "session-1", {
       NATIVE_SECRET: nativeSessionId,
+      ALL_PROXY: sessionProxyUrl,
     });
+    children[0]?.write({
+      type: "notice",
+      level: "warning",
+      message: `${proxyUrl} proxy-user proxy-pass proxy-token session-user session-pass session-query session-path`,
+    });
+    const proxyNotice = events.findLast(
+      (event) => event.type === "timeline.item" && event.item.type === "notification",
+    );
+    expect(proxyNotice).toEqual(
+      expect.objectContaining({
+        item: expect.objectContaining({ message: expect.stringContaining("[REDACTED]") }),
+      }),
+    );
+    expect(JSON.stringify(proxyNotice)).not.toContain("proxy-user");
+    expect(JSON.stringify(proxyNotice)).not.toContain("proxy-pass");
+    expect(JSON.stringify(proxyNotice)).not.toContain("proxy-token");
+    expect(JSON.stringify(proxyNotice)).not.toContain("session-user");
+    expect(JSON.stringify(proxyNotice)).not.toContain("session-pass");
+    expect(JSON.stringify(proxyNotice)).not.toContain("session-query");
+    expect(JSON.stringify(proxyNotice)).not.toContain("session-path");
     const turnId = turnIdFrom(await startPrompt(connection, events, "transport-prompt", "work"));
     await connection.send({
       type: "session.prompt",
