@@ -408,7 +408,12 @@ export function createOmpConnection(
       }
       const operation = Promise.resolve()
         .then(async () => {
-          if (closing || closed) return;
+          if (closing || closed) {
+            if (input.type === "session.permission") {
+              throw new Error("OMP provider connection is closed");
+            }
+            return;
+          }
           await dispatch(input);
         })
         .catch((error) => {
@@ -420,22 +425,17 @@ export function createOmpConnection(
               result: { type: "failed", error: errorDetails(error, "OMP prompt failed") },
             });
           } else if (input.type === "session.permission") {
-            emit({
-              type: "session.notice",
-              sessionId: input.sessionId,
-              notice: {
-                id: `omp:permission-error:${input.permissionId}`,
-                severity: "error",
-                title: "OMP permission response failed",
-                description: errorDetails(error, "OMP permission response failed").message,
-              },
-            });
+            throw error;
           } else if ("requestId" in input) {
             requestFailure(input.requestId, error, "OMP provider request failed");
           }
         });
       activeOperations.add(operation);
-      void operation.finally(() => activeOperations.delete(operation));
+      void operation.then(
+        () => activeOperations.delete(operation),
+        () => activeOperations.delete(operation),
+      );
+      if (input.type === "session.permission") await operation;
     },
     onEvent(listener) {
       listeners.add(listener);

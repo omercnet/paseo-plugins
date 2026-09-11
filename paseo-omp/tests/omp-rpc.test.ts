@@ -260,7 +260,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("accepts model, thinking, and fallback session events", async () => {
+  test("accepts current goal retry compaction and subagent events", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
@@ -291,6 +291,91 @@ describe("OMP RPC transport", () => {
         model: futureSelector,
         role: futureSelector,
       },
+      {
+        type: "goal_updated",
+        goal: {
+          id: "goal-1",
+          objective: "Ship the provider",
+          status: "active",
+          tokenBudget: 10_000,
+          tokensUsed: 2_000,
+          timeUsedSeconds: 42,
+          createdAt: "2026-09-11T00:00:00Z",
+          updatedAt: "2026-09-11T00:01:00Z",
+        },
+        state: { enabled: true, mode: "focused", reason: "user requested", goal: undefined },
+      },
+      {
+        type: "auto_retry_start",
+        attempt: 2,
+        maxAttempts: 4,
+        delayMs: 1_500,
+        errorMessage: "rate limited",
+        errorId: 429,
+      },
+      {
+        type: "auto_retry_end",
+        success: false,
+        attempt: 2,
+        finalError: "still rate limited",
+        recoveredErrors: [{ id: 429 }],
+      },
+      { type: "auto_compaction_start", reason: "future", action: "future-action" },
+      { type: "auto_compaction_end", aborted: false, willRetry: false },
+      {
+        type: "subagent_lifecycle",
+        payload: {
+          id: "child-1",
+          agent: "scout",
+          agentSource: "builtin",
+          description: "Inspect protocol",
+          status: "started",
+          sessionFile: "/tmp/child.jsonl",
+          parentToolCallId: "tool-1",
+          index: 0,
+          detached: false,
+        },
+      },
+      {
+        type: "subagent_progress",
+        payload: {
+          index: 0,
+          agent: "scout",
+          task: "Inspect protocol",
+          progress: {
+            id: "child-1",
+            status: "running",
+            description: "Reading schemas",
+            currentTool: { name: "read" },
+            recentTools: [{ name: "grep" }],
+            recentOutput: [{ text: "found" }],
+            resolvedModel: "openai/gpt-5.4",
+          },
+        },
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "bashExecution",
+          command: "pwd",
+          output: "/repo",
+          exitCode: 0,
+          timestamp: 1,
+          images: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+        },
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "custom",
+          customType: "advisor",
+          content: "",
+          details: {
+            notes: [{ note: "Fix the race", severity: "blocker", advisor: "reviewer" }],
+          },
+        },
+      },
+      { type: "subagent_event", payload: { id: "child-1", event: { type: "agent_start" } } },
     ];
 
     for (const frame of frames) {
@@ -298,6 +383,17 @@ describe("OMP RPC transport", () => {
       child.write(frame);
       await expect(received).resolves.toEqual(frame);
     }
+    const afterMalformed = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "goal_updated",
+      goal: { id: "goal-oversized", status: "x".repeat(257) },
+    });
+    child.write({ type: "notice", level: "info", message: "after malformed current event" });
+    await expect(afterMalformed).resolves.toEqual({
+      type: "notice",
+      level: "info",
+      message: "after malformed current event",
+    });
     await session.close();
   });
 
@@ -1787,5 +1883,24 @@ describe("OMP RPC transport", () => {
     });
     await closing.session.close();
     await expect(pending).rejects.toThrow("OMP RPC process was closed");
+
+    const saturated = await start(10_000);
+    const pendingWrites = Array.from({ length: 256 }, (_, index) =>
+      saturated.session.respondToExtensionUi({
+        type: "extension_ui_response",
+        id: `pending-${index}`,
+        value: "answer",
+      }),
+    );
+    const settledWrites = Promise.allSettled(pendingWrites);
+    await expect(
+      saturated.session.respondToExtensionUi({
+        type: "extension_ui_response",
+        id: "overflow",
+        value: "answer",
+      }),
+    ).rejects.toThrow("OMP RPC has too many pending writes");
+    await saturated.session.close();
+    expect((await settledWrites).every((result) => result.status === "rejected")).toBe(true);
   });
 });

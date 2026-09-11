@@ -19,6 +19,7 @@ const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGE_ENCODED_LENGTH = 8 * 1024 * 1024;
 const MAX_STREAM_TOTAL_BYTES = (MAX_IMAGE_ENCODED_LENGTH + 256) * 2;
 const MAX_NATIVE_IMAGE_RESULT_BYTES = 12 * 1024 * 1024;
+const MAX_RETIRED_TOOL_IDS = 1_024;
 
 type Emit = (event: ProviderEvent) => void;
 type NativeImageMimeType = Exclude<OmpImageMimeType, "image/webp">;
@@ -53,6 +54,8 @@ type StreamSnapshot = {
 };
 
 type ToolSnapshot = {
+  turnId: string;
+  generation: number;
   publicId: string;
   nativeName: string;
   name: string;
@@ -270,6 +273,10 @@ export class OmpTimelineProjector {
   private compactionSequence = 0;
   private activeCompaction: CompactionSlot | null = null;
   private discardedCompactionEnds = 0;
+  private goalItemId: string | null = null;
+  private runtimeGeneration = 0;
+  private readonly retiredToolCallIds = new Set<string>();
+  private toolIdentitySaturated = false;
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -334,6 +341,7 @@ export class OmpTimelineProjector {
         return;
       case "tool_execution_start": {
         this.flush(true);
+        if (this.toolIdentitySaturated || this.retiredToolCallIds.has(event.toolCallId)) return;
         const previous = this.tools.get(event.toolCallId);
         if (!previous && this.tools.size >= MAX_ACTIVE_TOOLS) return;
         const input = this.dataFilter.json(
@@ -356,6 +364,8 @@ export class OmpTimelineProjector {
           input,
           output: null,
           retainedBytes,
+          turnId,
+          generation: this.runtimeGeneration,
           unsafePartialOutput: previous?.unsafePartialOutput ?? false,
           specializedRendered: previous?.specializedRendered ?? false,
           silent: ["ask_user", "todo"].includes(event.toolName.toLowerCase()),
@@ -368,6 +378,7 @@ export class OmpTimelineProjector {
       case "tool_execution_update": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
+        if (previous.turnId !== turnId || previous.generation !== this.runtimeGeneration) return;
         if (
           previous.unsafePartialOutput ||
           this.dataFilter.hasUnsafeStreamSuffix(event.partialResult)
@@ -394,6 +405,7 @@ export class OmpTimelineProjector {
       case "tool_execution_end": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
+        if (previous.turnId !== turnId || previous.generation !== this.runtimeGeneration) return;
         const preservedImage = nativeImageResult(event.result, this.dataFilter);
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
@@ -473,6 +485,18 @@ export class OmpTimelineProjector {
                 : todo.status,
         })),
       });
+      return;
+    }
+    if (event.type === "goal_updated") {
+      this.publishGoal(event);
+      return;
+    }
+    if (event.type === "auto_retry_start" || event.type === "auto_retry_end") {
+      this.publishAutoRetry(event);
+      return;
+    }
+    if (event.type === "retry_fallback_applied" || event.type === "retry_fallback_succeeded") {
+      this.publishRetryFallback(event);
       return;
     }
     if (event.type === "notice") {
@@ -563,7 +587,7 @@ export class OmpTimelineProjector {
         });
         return;
       }
-      if (slot.trigger !== trigger || slot.action !== action) {
+      if (slot.trigger !== trigger || (action !== undefined && slot.action !== action)) {
         this.retireCompactions("OMP emitted overlapping compactions");
         this.discardedCompactionEnds = 1;
         return;
@@ -597,6 +621,21 @@ export class OmpTimelineProjector {
           ),
         });
       }
+    }
+  }
+
+  projectSubagent(
+    event: Extract<
+      OmpRpcEvent,
+      { type: "subagent_lifecycle" | "subagent_progress" | "subagent_event" }
+    >,
+  ): void {
+    if (this.closed) return;
+    switch (event.type) {
+      case "subagent_lifecycle":
+      case "subagent_progress":
+      case "subagent_event":
+        return;
     }
   }
 
@@ -641,10 +680,9 @@ export class OmpTimelineProjector {
           : this.dataFilter.streamText(block.text, finalizeFallback);
       if (publicText.pending) stream.dirtyBlocks.add(contentIndex);
       if (!publicText.text || block.publishedText === publicText.text) continue;
-      const previousPublishedBytes = utf8Bytes(block.publishedText ?? "");
       const nextPublishedBytes = utf8Bytes(publicText.text);
       if (
-        stream.retainedBytes + stream.publishedBytes - previousPublishedBytes + nextPublishedBytes >
+        stream.retainedBytes + stream.publishedBytes + nextPublishedBytes >
         MAX_STREAM_TOTAL_BYTES
       ) {
         continue;
@@ -665,7 +703,7 @@ export class OmpTimelineProjector {
           text: publicText.text,
         });
       }
-      stream.publishedBytes += nextPublishedBytes - previousPublishedBytes;
+      stream.publishedBytes += nextPublishedBytes;
       block.publishedText = publicText.text;
       stream.published = true;
     }
@@ -675,10 +713,9 @@ export class OmpTimelineProjector {
     if (!preserveCompactions) this.retireCompactions("OMP compaction ended with the turn");
     if (this.currentTurnId !== turnId) return;
     this.flush(true);
+    this.retireTools("OMP tool ended with the turn");
     this.publishCommand(turnId, true);
     this.stream = null;
-    this.activeToolBytes = 0;
-    this.tools.clear();
     this.commandText = "";
     this.currentTurnId = null;
     this.assistantSequence = 0;
@@ -698,6 +735,7 @@ export class OmpTimelineProjector {
   }
 
   retireCompactions(message: string): void {
+    this.discardedCompactionEnds = 0;
     const slot = this.activeCompaction;
     if (!slot) return;
     this.activeCompaction = null;
@@ -705,6 +743,28 @@ export class OmpTimelineProjector {
     this.publish({ type: "error", id: `${slot.id}:error`, message });
   }
 
+  resetRuntimeGeneration(message: string): void {
+    this.retireCompactions(message);
+    this.retireTools(message);
+    this.retiredToolCallIds.clear();
+    this.toolIdentitySaturated = false;
+    this.runtimeGeneration += 1;
+  }
+
+  private retireTools(message: string): void {
+    for (const [nativeId, snapshot] of this.tools) {
+      if (!snapshot.silent || !snapshot.specializedRendered) {
+        this.publishTool(snapshot, "failed", message);
+      }
+      if (this.retiredToolCallIds.size < MAX_RETIRED_TOOL_IDS) {
+        this.retiredToolCallIds.add(nativeId);
+      } else {
+        this.toolIdentitySaturated = true;
+      }
+    }
+    this.activeToolBytes = 0;
+    this.tools.clear();
+  }
   private ensureTurn(turnId: string): void {
     if (this.currentTurnId === turnId) return;
     if (this.currentTurnId) this.finishTurn(this.currentTurnId);
@@ -922,23 +982,23 @@ export class OmpTimelineProjector {
     const id = nativeIdentity
       ? `omp:custom:${createHash("sha256").update(nativeIdentity).digest("base64url").slice(0, 12)}`
       : `omp:custom:${this.customSequence}`;
+    const contentParts = Array.isArray(message.content) ? message.content : [];
     const imageResult = nativeImageResult(
-      { content: Array.isArray(message.content) ? message.content : [], details: message.details },
+      {
+        content:
+          message.role === "bashExecution"
+            ? [...contentParts, ...(message.images ?? [])]
+            : contentParts,
+        details: message.details,
+      },
       this.dataFilter,
     );
-    if (imageResult) {
-      if ("error" in imageResult) this.publishImageError(`${id}:images`, imageResult.error);
-      else this.publishImages(id, publicType, imageResult.image);
-      return;
-    }
     const content =
       typeof message.content === "string"
         ? message.content
-        : Array.isArray(message.content)
-          ? message.content
-              .flatMap((part) => (part.type === "text" && part.text ? [part.text] : []))
-              .join("\n\n")
-          : "";
+        : contentParts
+            .flatMap((part) => (part.type === "text" && part.text ? [part.text] : []))
+            .join("\n\n");
     if (message.role === "bashExecution" || /bash|shell|python/u.test(lowerType)) {
       const command = this.dataFilter.text(
         message.command ?? firstString(details, "command", "input") ?? publicType,
@@ -960,43 +1020,57 @@ export class OmpTimelineProjector {
               ? { exitCode: details.exitCode }
               : {}),
         },
-        status: "completed",
+        status: message.cancelled ? "canceled" : "completed",
         error: null,
       });
+      if (imageResult) {
+        if ("error" in imageResult) this.publishImageError(`${id}:images`, imageResult.error);
+        else this.publishImages(id, publicType, imageResult.image);
+      }
+      return;
+    }
+    if (imageResult) {
+      if ("error" in imageResult) this.publishImageError(`${id}:images`, imageResult.error);
+      else this.publishImages(id, publicType, imageResult.image);
       return;
     }
     const advisor = lowerType.includes("advisor") || lowerType === "aside";
     const sharedSeverity = firstString(details, "severity");
-    const sharedAttribution = firstString(details, "attribution", "advisor", "name", "source");
+    const sharedAdvisor = firstString(details, "advisor", "attribution", "name", "source");
     const noteLines = Array.isArray(details?.notes)
       ? details.notes.flatMap((note) => {
           const record = jsonRecord(note);
           const noteText =
             typeof note === "string"
               ? note
-              : (firstString(record, "text", "content", "message") ?? "");
+              : (firstString(record, "note", "text", "content", "message") ?? "");
           const severity = firstString(record, "severity") ?? sharedSeverity;
-          const attribution =
-            firstString(record, "attribution", "advisor", "name", "source") ?? sharedAttribution;
-          const prefix = [severity ? `[${severity}]` : undefined, attribution]
+          const noteAdvisor =
+            firstString(record, "advisor", "attribution", "name", "source") ?? sharedAdvisor;
+          const prefix = [
+            severity ? `[${severity}]` : undefined,
+            noteAdvisor ? `[${noteAdvisor}]` : undefined,
+          ]
             .filter(Boolean)
             .join(" ");
-          const line = [prefix, noteText].filter(Boolean).join(": ");
+          const line = [prefix, noteText].filter(Boolean).join(" ");
           return line ? [line] : [];
         })
       : typeof details?.notes === "string"
         ? [
             [
-              [sharedSeverity ? `[${sharedSeverity}]` : undefined, sharedAttribution]
-                .filter(Boolean)
-                .join(" "),
+              sharedSeverity ? `[${sharedSeverity}]` : undefined,
+              sharedAdvisor ? `[${sharedAdvisor}]` : undefined,
               details.notes,
             ]
               .filter(Boolean)
-              .join(": "),
+              .join(" "),
           ]
         : [];
-    const advisorMetadata = [sharedSeverity ? `[${sharedSeverity}]` : undefined, sharedAttribution]
+    const advisorMetadata = [
+      sharedSeverity ? `[${sharedSeverity}]` : undefined,
+      sharedAdvisor ? `[${sharedAdvisor}]` : undefined,
+    ]
       .filter(Boolean)
       .join(" ");
     const text = [content, ...noteLines].filter(Boolean).join("\n\n") || advisorMetadata;
@@ -1177,6 +1251,135 @@ export class OmpTimelineProjector {
       return { type: "plan", text: resultText ?? JSON.stringify(snapshot.input) };
     }
     return { type: "unknown", input: snapshot.input, output: snapshot.output };
+  }
+
+  private publishGoal(event: Extract<OmpRpcEvent, { type: "goal_updated" }>): void {
+    const goal = event.goal ?? event.state?.goal;
+    if (goal?.id) {
+      const digest = createHash("sha256").update(goal.id).digest("base64url").slice(0, 12);
+      this.goalItemId = `omp:goal:${digest}`;
+    }
+    const id = this.goalItemId ?? "omp:goal";
+    const lines = goal
+      ? [
+          goal.objective || "OMP goal updated.",
+          goal.status ? `Status: ${goal.status}` : undefined,
+          goal.tokensUsed !== undefined ? `Tokens used: ${goal.tokensUsed}` : undefined,
+          goal.tokenBudget !== undefined ? `Token budget: ${goal.tokenBudget}` : undefined,
+          goal.timeUsedSeconds !== undefined ? `Time used: ${goal.timeUsedSeconds}s` : undefined,
+          event.state?.mode ? `Mode: ${event.state.mode}` : undefined,
+          event.state?.reason ? `Reason: ${event.state.reason}` : undefined,
+        ]
+      : ["OMP goal cleared.", event.state?.reason];
+    this.publishStatusItem({
+      id,
+      name: "omp_goal_updated",
+      label: goal?.status ? `OMP goal ${goal.status}` : "OMP goal updated",
+      text: lines.filter((line): line is string => Boolean(line)).join("\n"),
+      icon: "brain",
+      status: "completed",
+    });
+    if (!goal) this.goalItemId = null;
+  }
+
+  private publishAutoRetry(
+    event: Extract<OmpRpcEvent, { type: "auto_retry_start" | "auto_retry_end" }>,
+  ): void {
+    const id = `omp:auto-retry:${event.attempt}`;
+    if (event.type === "auto_retry_start") {
+      const delay =
+        event.delayMs < 1_000
+          ? `${event.delayMs}ms`
+          : event.delayMs % 1_000 === 0
+            ? `${event.delayMs / 1_000}s`
+            : `${(event.delayMs / 1_000).toFixed(1)}s`;
+      this.publishStatusItem({
+        id,
+        name: "omp_auto_retry",
+        label: `OMP retry ${event.attempt}/${event.maxAttempts}`,
+        text: `Retrying in ${delay}: ${event.errorMessage}`,
+        icon: "sparkles",
+        status: "running",
+      });
+      return;
+    }
+    const text = event.finalError ?? (event.success ? "Retry recovered." : "Retry failed.");
+    this.publishStatusItem({
+      id,
+      name: "omp_auto_retry",
+      label: event.success
+        ? `OMP retry ${event.attempt} recovered`
+        : `OMP retry ${event.attempt} failed`,
+      text,
+      icon: "sparkles",
+      status: event.success ? "completed" : "failed",
+      ...(event.success ? {} : { error: text }),
+    });
+  }
+
+  private publishRetryFallback(
+    event: Extract<OmpRpcEvent, { type: "retry_fallback_applied" | "retry_fallback_succeeded" }>,
+  ): void {
+    const role = this.dataFilter.text(event.role, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
+    const digest = createHash("sha256").update(role).digest("base64url").slice(0, 12);
+    const id = `omp:retry-fallback:${digest}`;
+    if (event.type === "retry_fallback_applied") {
+      this.publishStatusItem({
+        id,
+        name: "omp_retry_fallback",
+        label: `OMP fallback applied for ${role}`,
+        text: `${event.from} -> ${event.to}`,
+        icon: "sparkles",
+        status: "running",
+      });
+      return;
+    }
+    this.publishStatusItem({
+      id,
+      name: "omp_retry_fallback",
+      label: `OMP fallback succeeded for ${role}`,
+      text: `Using ${event.model}`,
+      icon: "sparkles",
+      status: "completed",
+    });
+  }
+
+  private publishStatusItem(input: {
+    id: string;
+    name: string;
+    label: string;
+    text: string;
+    icon: "brain" | "sparkles";
+    status: "running" | "completed" | "failed";
+    error?: string;
+  }): void {
+    const detail = {
+      type: "plain_text" as const,
+      label: this.dataFilter.text(input.label, 4_096),
+      text: this.dataFilter.text(input.text, 64 * 1024),
+      icon: input.icon,
+    };
+    if (input.status === "failed") {
+      this.publish({
+        type: "tool_call",
+        id: input.id,
+        callId: input.id,
+        name: input.name,
+        detail,
+        status: "failed",
+        error: this.dataFilter.text(input.error ?? input.text, 64 * 1024),
+      });
+      return;
+    }
+    this.publish({
+      type: "tool_call",
+      id: input.id,
+      callId: input.id,
+      name: input.name,
+      detail,
+      status: input.status,
+      error: null,
+    });
   }
 
   private publishImageError(id: string, message: string): void {
