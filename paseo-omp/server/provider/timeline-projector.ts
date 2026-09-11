@@ -42,6 +42,7 @@ type StreamSnapshot = {
 
 type ToolSnapshot = {
   publicId: string;
+  nativeName: string;
   name: string;
   input: JsonValue;
   output: JsonValue;
@@ -134,7 +135,7 @@ function resultDetails(value: JsonValue): Record<string, JsonValue> | undefined 
   return jsonRecord(envelope?.details);
 }
 
-function nativeImageResult(value: unknown): JsonValue | undefined {
+function nativeImageResult(value: unknown, filter: OmpPublicDataFilter): JsonValue | undefined {
   if (
     boundedJsonBytes(
       value,
@@ -149,29 +150,41 @@ function nativeImageResult(value: unknown): JsonValue | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value) || !("content" in value)) {
     return undefined;
   }
-  const content = value.content;
-  if (!Array.isArray(content)) return undefined;
+  if (!Array.isArray(value.content)) return undefined;
   let hasImage = false;
-  for (const part of content) {
-    if (!part || typeof part !== "object" || Array.isArray(part) || !("type" in part)) continue;
-    if (part.type !== "image") continue;
+  const content: JsonValue[] = [];
+  for (const part of value.content) {
     if (
-      !("data" in part) ||
-      typeof part.data !== "string" ||
-      part.data.length === 0 ||
-      part.data.length % 4 !== 0 ||
-      !/^[A-Za-z0-9+/]*={0,2}$/u.test(part.data) ||
-      !("mimeType" in part) ||
-      typeof part.mimeType !== "string" ||
-      !/^image\/(?:gif|jpeg|png|webp)$/u.test(part.mimeType)
+      part &&
+      typeof part === "object" &&
+      !Array.isArray(part) &&
+      "type" in part &&
+      part.type === "image"
     ) {
-      return undefined;
+      if (
+        !("data" in part) ||
+        typeof part.data !== "string" ||
+        part.data.length === 0 ||
+        part.data.length % 4 !== 0 ||
+        !/^[A-Za-z0-9+/]*={0,2}$/u.test(part.data) ||
+        !("mimeType" in part) ||
+        typeof part.mimeType !== "string" ||
+        !/^image\/(?:gif|jpeg|png|webp)$/u.test(part.mimeType)
+      ) {
+        return undefined;
+      }
+      hasImage = true;
+      content.push({ type: "image", data: part.data, mimeType: part.mimeType });
+      continue;
     }
-    hasImage = true;
+    content.push(filter.json(part, MAX_PUBLIC_TOOL_PAYLOAD_BYTES, MAX_PUBLIC_TOOL_PAYLOAD_BYTES));
   }
   if (!hasImage) return undefined;
-  // The bounded recursive check above proves this transport value is JSON-compatible.
-  return structuredClone(value) as JsonValue;
+  const details =
+    "details" in value
+      ? filter.json(value.details, MAX_PUBLIC_TOOL_PAYLOAD_BYTES, MAX_PUBLIC_TOOL_PAYLOAD_BYTES)
+      : undefined;
+  return { content, ...(details !== undefined ? { details } : {}) };
 }
 
 type CompactionSlot = { id: string; retrying: boolean };
@@ -275,6 +288,7 @@ export class OmpTimelineProjector {
         if (!previous) this.toolSequence += 1;
         const snapshot: ToolSnapshot = {
           publicId: previous?.publicId ?? `omp:tool:${this.toolSequence}`,
+          nativeName: event.toolName,
           name: this.dataFilter.text(event.toolName, 256),
           input,
           output: null,
@@ -317,8 +331,8 @@ export class OmpTimelineProjector {
       case "tool_execution_end": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
-        const preservedImage = previous.name.startsWith("browser_")
-          ? nativeImageResult(event.result)
+        const preservedImage = previous.nativeName.startsWith("browser_")
+          ? nativeImageResult(event.result, this.dataFilter)
           : undefined;
         const output =
           preservedImage ??
@@ -333,7 +347,7 @@ export class OmpTimelineProjector {
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
         const specializedRendered =
-          snapshot.name.toLowerCase() === "todo" && !event.isError
+          previous.nativeName.toLowerCase() === "todo" && !event.isError
             ? this.publishTodoResult(snapshot)
             : snapshot.specializedRendered;
         if (snapshot.silent && (event.isError || !specializedRendered)) {
@@ -492,7 +506,7 @@ export class OmpTimelineProjector {
     const snapshots = [...this.tools.values()];
     for (let index = snapshots.length - 1; index >= 0; index -= 1) {
       const snapshot = snapshots[index];
-      if (snapshot?.name.toLowerCase() !== "ask_user") continue;
+      if (snapshot?.nativeName.toLowerCase() !== "ask_user") continue;
       snapshot.specializedRendered = true;
       return;
     }
@@ -938,7 +952,7 @@ export class OmpTimelineProjector {
     const output = jsonRecord(snapshot.output);
     const details = resultDetails(snapshot.output);
     const resultText = displayText(snapshot.output);
-    const name = snapshot.name.toLowerCase();
+    const name = snapshot.nativeName.toLowerCase();
     if (["bash", "shell", "exec", "run_command"].includes(name)) {
       const exitCode = details?.exitCode ?? output?.exitCode;
       return {

@@ -121,13 +121,22 @@ type PendingAbort = {
 type PendingPermission = {
   nativeId: string;
   header: string;
+  fingerprint: string;
   optionValues: ReadonlyMap<string, string>;
   displayValues: ReadonlyMap<string, readonly string[]>;
+  generation: number;
+  runtime: OmpRuntimeSession;
   expiresAt?: number;
   timer?: unknown;
   turnId?: string;
   request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>;
 };
+
+function permissionFingerprint(
+  request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>,
+): string {
+  return createHash("sha256").update(JSON.stringify(request)).digest("base64url");
+}
 
 function providerError(error: unknown, fallback: string): { message: string } {
   return { message: error instanceof OmpPublicError ? error.message : fallback };
@@ -273,6 +282,7 @@ export class OmpProviderSession {
   private activeAbort: PendingAbort | null = null;
   private commandCatalog: OmpAvailableCommand[];
   private permissionSequence = 0;
+  private readonly permissionNamespace = randomUUID();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly inFlightPermissions = new Map<string, PendingPermission>();
 
@@ -965,8 +975,17 @@ export class OmpProviderSession {
   async permission(input: SessionPermissionInput): Promise<void> {
     const pending = this.pendingPermissions.get(input.permissionId);
     if (!pending) throw new OmpPublicError("Unknown OMP permission request");
-    const generation = this.generation;
-    const runtime = this.runtime;
+    if (!this.permissionOwnerIsCurrent(pending)) {
+      this.pendingPermissions.delete(input.permissionId);
+      if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+      this.emit({
+        type: "session.permission_resolved",
+        sessionId: this.id,
+        permissionId: input.permissionId,
+      });
+      throw new OmpPublicError("OMP permission request is no longer active");
+    }
+    const { generation, runtime } = pending;
     this.pendingPermissions.delete(input.permissionId);
     this.inFlightPermissions.set(input.permissionId, pending);
     if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
@@ -977,9 +996,7 @@ export class OmpProviderSession {
       if (this.inFlightPermissions.get(input.permissionId) !== pending) return;
       this.inFlightPermissions.delete(input.permissionId);
       if (
-        !this.closed &&
-        !this.runtimeDead &&
-        !this.activeTurn?.terminal &&
+        this.permissionOwnerIsCurrent(pending) &&
         generation === this.generation &&
         runtime === this.runtime
       ) {
@@ -1558,17 +1575,26 @@ export class OmpProviderSession {
       this.handleRuntimeFailure();
       return;
     }
+    const fingerprint = permissionFingerprint(request);
     let existingId: string | undefined;
     let existingPending: PendingPermission | undefined;
     for (const [permissionId, pending] of this.pendingPermissions) {
       if (pending.nativeId !== request.id) continue;
-      existingId = permissionId;
-      existingPending = pending;
+      if (pending.fingerprint === fingerprint) {
+        existingId = permissionId;
+        existingPending = pending;
+      } else {
+        this.pendingPermissions.delete(permissionId);
+        if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+      }
       break;
     }
     if (!existingId) {
       for (const pending of this.inFlightPermissions.values()) {
-        if (pending.nativeId === request.id) return;
+        if (pending.nativeId !== request.id) continue;
+        if (pending.fingerprint !== fingerprint) this.handleRuntimeFailure();
+        return;
       }
     }
     if (
@@ -1596,14 +1622,14 @@ export class OmpProviderSession {
     }
     if (existingPending?.timer !== undefined) this.scheduler.clear(existingPending.timer);
     if (!existingId) this.permissionSequence += 1;
-    const id = existingId ?? `omp:permission:${this.permissionSequence}`;
+    const id =
+      existingId ?? `omp:permission:${this.permissionNamespace}:${this.permissionSequence}`;
     const header = this.dataFilter.text(request.title ?? "OMP question", 4_096);
     const optionValues = new Map<string, string>();
     const displayValues = new Map<string, string[]>();
     const options = request.options?.map((nativeValue, index) => {
       const label = this.dataFilter.text(nativeValue, 4_096);
-      const digest = createHash("sha256").update(nativeValue).digest("base64url").slice(0, 8);
-      const value = `option:${index}:${digest}`;
+      const value = `${id}:option:${index}`;
       optionValues.set(value, nativeValue);
       displayValues.set(label, [...(displayValues.get(label) ?? []), nativeValue]);
       return {
@@ -1623,8 +1649,11 @@ export class OmpProviderSession {
     const pending: PendingPermission = {
       nativeId: request.id,
       header,
+      fingerprint,
       optionValues,
       displayValues,
+      generation: this.generation,
+      runtime: this.runtime,
       request,
       ...(this.activeTurn ? { turnId: this.activeTurn.turnId } : {}),
       ...(request.timeout !== undefined ? { expiresAt: Date.now() + request.timeout } : {}),
@@ -1784,7 +1813,7 @@ export class OmpProviderSession {
         if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
         permissionIds.add(permissionId);
         if (cancelNative && permissions === this.pendingPermissions) {
-          void this.runtime
+          void pending.runtime
             .respondToExtensionUi({
               type: "extension_ui_response",
               id: pending.nativeId,
@@ -1810,8 +1839,13 @@ export class OmpProviderSession {
     pending.timer = this.scheduler.set(() => {
       if (this.pendingPermissions.get(permissionId) !== pending) return;
       this.pendingPermissions.delete(permissionId);
+      if (!this.permissionOwnerIsCurrent(pending)) {
+        this.clearPermissionEvidenceIfSettled();
+        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+        return;
+      }
       this.inFlightPermissions.set(permissionId, pending);
-      void this.runtime
+      void pending.runtime
         .respondToExtensionUi({
           type: "extension_ui_response",
           id: pending.nativeId,
@@ -1830,13 +1864,28 @@ export class OmpProviderSession {
     }, remainingMs);
   }
 
-  private clearPermissionEvidenceIfSettled(): void {
+  private permissionOwnerIsCurrent(pending: PendingPermission): boolean {
     if (
-      this.pendingPermissions.size === 0 &&
-      this.inFlightPermissions.size === 0 &&
-      this.activeTurn
+      this.closed ||
+      this.runtimeDead ||
+      pending.generation !== this.generation ||
+      pending.runtime !== this.runtime
     ) {
-      this.activeTurn.awaitingPermissionEvidence = false;
+      return false;
+    }
+    if (pending.turnId === undefined) return true;
+    return this.activeTurn?.turnId === pending.turnId && !this.activeTurn.terminal;
+  }
+
+  private clearPermissionEvidenceIfSettled(): void {
+    const turn = this.activeTurn;
+    if (!turn) return;
+    const ownsTurn = (pending: PendingPermission) => pending.turnId === turn.turnId;
+    if (
+      ![...this.pendingPermissions.values()].some(ownsTurn) &&
+      ![...this.inFlightPermissions.values()].some(ownsTurn)
+    ) {
+      turn.awaitingPermissionEvidence = false;
     }
   }
 

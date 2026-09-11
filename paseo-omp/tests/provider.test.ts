@@ -6015,19 +6015,19 @@ describe("OMP direct provider", () => {
         options: [
           {
             label: "<redacted>",
-            value: expect.stringMatching(/^option:0:/u),
+            value: expect.stringMatching(/:option:0$/u),
             description: "Safe sandbox",
           },
           {
             label: "<redacted>",
-            value: expect.stringMatching(/^option:1:/u),
+            value: expect.stringMatching(/:option:1$/u),
             description: "Live traffic",
           },
         ],
       },
     ]);
     const optionActions =
-      permission.request.actions?.filter((action) => action.id.startsWith("option:")) ?? [];
+      permission.request.actions?.filter((action) => action.id.includes(":option:")) ?? [];
     expect(new Set(optionActions.map((action) => action.id)).size).toBe(2);
     const productionAction = optionActions[1];
     if (!productionAction) throw new Error("Expected production action");
@@ -6192,42 +6192,26 @@ describe("OMP direct provider", () => {
     const permissionCountBeforeUpdate = events.filter(
       (event) => event.type === "session.permission",
     ).length;
-    session.emit({
-      type: "extension_ui_request",
+    const replacementRequest = {
+      type: "extension_ui_request" as const,
       id: "native-race",
-      method: "confirm",
+      method: "confirm" as const,
       title: "Continue updated",
       message: "Proceed now?",
-    });
+    };
+    session.emit(replacementRequest);
     const updatedPermissions = events.filter((event) => event.type === "session.permission");
     expect(updatedPermissions).toHaveLength(permissionCountBeforeUpdate + 1);
-    expect(updatedPermissions.at(-1)).toEqual(
-      expect.objectContaining({ request: expect.objectContaining({ id: permission.request.id }) }),
-    );
-    const gate = Promise.withResolvers<void>();
-    const observed = Promise.withResolvers<void>();
-    session.extensionUiResponseGate = gate.promise;
-    session.extensionUiResponseObserved = observed.resolve;
-    await connection.send({
-      type: "session.permission",
+    const updatedPermission = updatedPermissions.at(-1);
+    if (updatedPermission?.type !== "session.permission") {
+      throw new Error("Expected updated permission");
+    }
+    expect(updatedPermission.request.id).not.toBe(permission.request.id);
+    expect(events).toContainEqual({
+      type: "session.permission_resolved",
       sessionId: "session-1",
       permissionId: permission.request.id,
-      response: { behavior: "allow", selectedActionId: "submit" },
     });
-    await observed.promise;
-    const permissionCountInFlight = events.filter(
-      (event) => event.type === "session.permission",
-    ).length;
-    session.emit({
-      type: "extension_ui_request",
-      id: "native-race",
-      method: "confirm",
-      title: "Ignored in flight",
-      message: "Duplicate",
-    });
-    expect(events.filter((event) => event.type === "session.permission")).toHaveLength(
-      permissionCountInFlight,
-    );
     await connection.send({
       type: "session.permission",
       sessionId: "session-1",
@@ -6239,11 +6223,41 @@ describe("OMP direct provider", () => {
         event.type === "session.notice" &&
         event.notice.id === `omp:permission-error:${permission.request.id}`,
     );
+
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.extensionUiResponseGate = gate.promise;
+    session.extensionUiResponseObserved = observed.resolve;
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: updatedPermission.request.id,
+      response: { behavior: "allow", selectedActionId: "submit" },
+    });
+    await observed.promise;
+    const permissionCountInFlight = events.filter(
+      (event) => event.type === "session.permission",
+    ).length;
+    session.emit(replacementRequest);
+    expect(events.filter((event) => event.type === "session.permission")).toHaveLength(
+      permissionCountInFlight,
+    );
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: updatedPermission.request.id,
+      response: { behavior: "deny" },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.notice" &&
+        event.notice.id === `omp:permission-error:${updatedPermission.request.id}`,
+    );
     gate.resolve();
     await events.waitFor(
       (event) =>
         event.type === "session.permission_resolved" &&
-        event.permissionId === permission.request.id,
+        event.permissionId === updatedPermission.request.id,
     );
     expect(session.extensionUiResponses).toEqual([
       { type: "extension_ui_response", id: "native-race", confirmed: true },
@@ -6260,7 +6274,7 @@ describe("OMP direct provider", () => {
       timeout: 1_000,
     });
     const retryPermission = await events.waitFor(
-      (event) => event.type === "session.permission" && event.request.id !== permission.request.id,
+      (event) => event.type === "session.permission" && event.request.title === "Retry input",
     );
     if (retryPermission.type !== "session.permission") throw new Error("Expected retry permission");
     const retryResponse = {
@@ -6279,6 +6293,8 @@ describe("OMP direct provider", () => {
         event.notice.id === `omp:permission-error:${retryPermission.request.id}`,
     );
     expect(scheduler.delays.at(-1)).toBeLessThanOrEqual(1_000);
+    const retryObserved = Promise.withResolvers<void>();
+    session.extensionUiResponseObserved = retryObserved.resolve;
     session.extensionUiResponseError = null;
     await connection.send({
       type: "session.permission",
@@ -6286,11 +6302,13 @@ describe("OMP direct provider", () => {
       permissionId: retryPermission.request.id,
       response: retryResponse,
     });
-    await events.waitFor(
-      (event) =>
-        event.type === "session.permission_resolved" &&
-        event.permissionId === retryPermission.request.id,
-    );
+    await retryObserved.promise;
+    await Promise.resolve();
+    expect(session.extensionUiResponses.at(-1)).toEqual({
+      type: "extension_ui_response",
+      id: "native-retry",
+      value: "value",
+    });
     session.emit({
       type: "extension_ui_request",
       id: "native-timeout",
@@ -6299,10 +6317,7 @@ describe("OMP direct provider", () => {
       timeout: 250,
     });
     const timed = await events.waitFor(
-      (event) =>
-        event.type === "session.permission" &&
-        event.request.id !== permission.request.id &&
-        event.request.id !== retryPermission.request.id,
+      (event) => event.type === "session.permission" && event.request.title === "Timed input",
     );
     if (timed.type !== "session.permission") throw new Error("Expected timed permission");
     const responsesBeforeTimeout = session.extensionUiResponses.length;
@@ -6319,6 +6334,68 @@ describe("OMP direct provider", () => {
       cancelled: true,
       timedOut: true,
     });
+
+    await connection.close();
+  });
+  test("scopes permission evidence to its turn and never reuses public ids", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const firstSession = sessionAt(runtime);
+    firstSession.emit({
+      type: "extension_ui_request",
+      id: "reused-native-id",
+      method: "confirm",
+      title: "Idle question",
+      message: "Idle?",
+    });
+    const idlePermission = events.findLast((event) => event.type === "session.permission");
+    if (idlePermission?.type !== "session.permission") throw new Error("Expected idle permission");
+
+    const turnId = turnIdFrom(await startPrompt(connection, events, "scoped-turn", "work"));
+    firstSession.emit({
+      type: "extension_ui_request",
+      id: "turn-question",
+      method: "confirm",
+      title: "Turn question",
+      message: "Continue?",
+    });
+    const turnPermission = events.findLast((event) => event.type === "session.permission");
+    if (turnPermission?.type !== "session.permission") throw new Error("Expected turn permission");
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: turnPermission.request.id,
+      response: { behavior: "allow", selectedActionId: "submit" },
+    });
+    await Promise.resolve();
+    firstSession.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    await connection.send({
+      type: "session.close",
+      requestId: "close-first",
+      sessionId: "session-1",
+    });
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "close-first",
+    );
+
+    await openSession(connection, events, "open-second", "session-2");
+    sessionAt(runtime, 1).emit({
+      type: "extension_ui_request",
+      id: "reused-native-id",
+      method: "confirm",
+      title: "Idle question",
+      message: "Idle?",
+    });
+    const secondPermission = events.findLast(
+      (event) => event.type === "session.permission" && event.sessionId === "session-2",
+    );
+    if (secondPermission?.type !== "session.permission")
+      throw new Error("Expected second permission");
+    expect(secondPermission.request.id).not.toBe(idlePermission.request.id);
     await connection.close();
   });
 
@@ -6450,8 +6527,11 @@ describe("OMP direct provider", () => {
       toolCallId: "browser-shot",
       toolName: "browser_screenshot",
       result: {
-        content: [{ type: "image", data: screenshotBytes, mimeType: "image/png" }],
-        details: { width: 1280, height: 720 },
+        content: [
+          { type: "text", text: "token test-value" },
+          { type: "image", data: screenshotBytes, mimeType: "image/png" },
+        ],
+        details: { width: 1280, height: 720, authorization: "test-value" },
       },
     });
     const browserScreenshot = events.findLast(
@@ -6471,8 +6551,11 @@ describe("OMP direct provider", () => {
     const screenshotOutput = browserScreenshot.item.detail.output;
     expect(JSON.stringify(screenshotOutput).length).toBeGreaterThan(256 * 1024);
     expect(screenshotOutput).toEqual({
-      content: [{ type: "image", data: screenshotBytes, mimeType: "image/png" }],
-      details: { width: 1280, height: 720 },
+      content: [
+        { type: "text", text: "token <redacted>" },
+        { type: "image", data: screenshotBytes, mimeType: "image/png" },
+      ],
+      details: { width: 1280, height: 720, authorization: "<redacted>" },
     });
     const completedMappedTools = events.flatMap((event) =>
       event.type === "timeline.item" &&
