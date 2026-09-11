@@ -4525,6 +4525,60 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("reconciles configuration events while binding a recovered runtime", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const initial = sessionAt(runtime);
+    const stateGate = Promise.withResolvers<void>();
+    const stateObserved = Promise.withResolvers<void>();
+    runtime.sessionCreated = (recovered) => {
+      recovered.stateGate = stateGate.promise;
+      recovered.stateObserved = stateObserved.resolve;
+    };
+
+    initial.emit({ type: "process_exit", error: "OMP exited between turns" });
+    const firstPrompt = startPrompt(connection, events, "recovery-config-race", "continue");
+    await stateObserved.promise;
+    const recovered = sessionAt(runtime, 1);
+    recovered.currentModel = ALTERNATE_MODEL;
+    recovered.thinkingLevel = "high";
+    recovered.emit({
+      type: "retry_fallback_succeeded",
+      model: "openai/gpt-5.4:high",
+      role: "default",
+    });
+    recovered.stateGate = null;
+    stateGate.resolve();
+
+    const firstTurnId = turnIdFrom(await firstPrompt);
+    expect(recovered.stateLookups).toBe(2);
+    expect(events.findLast((event) => event.type === "session.config")).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
+      }),
+    );
+    await finishTurn(events, recovered, firstTurnId);
+
+    runtime.sessionCreated = null;
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
+    recovered.emit({ type: "process_exit", error: "OMP exited after recovered fallback" });
+    const secondTurnId = turnIdFrom(
+      await startPrompt(connection, events, "recovery-config-race-again", "continue"),
+    );
+    expect(runtime.starts[2]).toEqual(
+      expect.objectContaining({
+        model: "openai/gpt-5.4",
+        thinkingOption: "high",
+        resumeSessionId: "native-session",
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime, 2), secondTurnId);
+    await connection.close();
+  });
   test("rejects recovery when runtime falls back to another advertised model", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);

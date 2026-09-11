@@ -1090,16 +1090,27 @@ export class OmpProviderSession {
       }
       throw error;
     }
+    let unsubscribeBootstrap = () => {};
     try {
       await this.hostTools.bind(recovered);
-      const state = await recovered.getState();
+      let bootstrapConfigRevision = 0;
+      unsubscribeBootstrap = recovered.onEvent((event) => {
+        if (isRuntimeConfigEvent(event)) bootstrapConfigRevision += 1;
+      });
+      let state = await recovered.getState();
+      const reconciledConfigRevision = bootstrapConfigRevision;
+      state = await recovered.getState();
       if (state.sessionId !== expectedSessionId) {
         throw new Error(
           `OMP resumed native session '${state.sessionId}' instead of '${expectedSessionId}'`,
         );
       }
       const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
-      if (!recoverFromNativeConfig && recoveredModel !== this.recoveryOptions.model) {
+      if (
+        !recoverFromNativeConfig &&
+        bootstrapConfigRevision === 0 &&
+        recoveredModel !== this.recoveryOptions.model
+      ) {
         throw new Error("OMP recovered with a different model");
       }
       const advertisedModel = state.model
@@ -1125,7 +1136,13 @@ export class OmpProviderSession {
         throw new Error("OMP session changed while recovery configuration was pending");
       }
       this.recoveryUsesNativeConfig = false;
+      unsubscribeBootstrap();
+      unsubscribeBootstrap = () => {};
+      if (bootstrapConfigRevision !== reconciledConfigRevision) {
+        this.scheduleCommittedConfigRefresh();
+      }
     } catch (error) {
+      unsubscribeBootstrap();
       this.hostTools.detach();
       this.runtimeDisposal = recovered.close();
       void this.runtimeDisposal.catch(() => undefined);
