@@ -16,6 +16,7 @@ import {
   listOmpSessionDescriptors,
   type OmpSessionDescriptor,
   type OmpSessionListOptions,
+  readOmpPersistedSubagentTranscript,
   validateNativeSessionId,
 } from "./session-descriptors";
 
@@ -467,6 +468,12 @@ export interface OmpSubagentMessagesResult {
   reset: boolean;
   messages: OmpMessage[];
 }
+export interface OmpPersistedSubagentMessages {
+  sessionFile: string;
+  nativeSessionId: string;
+  byteLength: number;
+  messages: OmpMessage[];
+}
 
 export interface OmpStartOptions {
   cwd: string;
@@ -513,6 +520,12 @@ export interface OmpRuntime {
   readonly supportsPersistence: boolean;
   startSession(options: OmpStartOptions): Promise<OmpRuntimeSession>;
   listSessions(options: OmpSessionListOptions): Promise<OmpSessionDescriptor[]>;
+  readPersistedSubagentTranscript(options: {
+    parentSessionFile: string;
+    childTranscriptId: string;
+    cwd: string;
+    signal?: AbortSignal;
+  }): Promise<OmpPersistedSubagentMessages>;
 }
 
 export interface OmpSpawnRequest {
@@ -2003,6 +2016,23 @@ export class OmpRpcRuntime implements OmpRuntime {
       this.options.listSessions?.(options) ??
         listOmpSessionDescriptors(options, this.options.environment ?? process.env),
     );
+  }
+  async readPersistedSubagentTranscript(options: {
+    parentSessionFile: string;
+    childTranscriptId: string;
+    cwd: string;
+    signal?: AbortSignal;
+  }): Promise<OmpPersistedSubagentMessages> {
+    const transcript = await readOmpPersistedSubagentTranscript(
+      options.parentSessionFile,
+      options.childTranscriptId,
+      options.cwd,
+      options.signal,
+    );
+    return {
+      ...transcript,
+      messages: z.array(OmpMessageSchema).max(100_000).parse(transcript.messages),
+    };
   }
 
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {

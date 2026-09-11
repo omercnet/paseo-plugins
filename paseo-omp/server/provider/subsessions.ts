@@ -5,6 +5,7 @@ import { z } from "zod";
 import type {
   OmpAgentSessionEvent,
   OmpMessage,
+  OmpRuntime,
   OmpRuntimeSession,
   OmpSubagentEvent,
   OmpSubagentSnapshot,
@@ -12,6 +13,7 @@ import type {
 import {
   BoundedStringSet,
   boundedJsonBytes,
+  boundedJsonMetrics,
   OmpPublicDataFilter,
   OmpPublicError,
 } from "./security";
@@ -23,6 +25,8 @@ const MAX_BUFFERED_EVENTS = 1_024;
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 const MAX_CHILD_MESSAGE_IDENTITIES = 2_048;
 const MAX_REPLAY_MESSAGES = 100_000;
+const MAX_REPLAY_BYTES = 64 * 1024 * 1024;
+const MAX_REPLAY_NODES = 400_000;
 const MAX_REPLAY_DEPTH = 16;
 
 type Emit = (event: ProviderEvent) => void;
@@ -57,8 +61,7 @@ type TaskDispatch = {
   childSessionIds: Set<string>;
   acknowledged: boolean;
 };
-type ReplayBudget = { messages: number };
-
+type ReplayBudget = { messages: number; bytes: number; nodes: number };
 const TaskArgsSchema = z.object({
   tasks: z.array(z.unknown()).max(MAX_CHILDREN).optional(),
   agent: z.string().optional(),
@@ -69,6 +72,16 @@ const TaskArgsSchema = z.object({
   task: z.string().optional(),
   prompt: z.string().optional(),
   assignment: z.string().optional(),
+});
+const TaskProgressSchema = z.object({
+  index: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(MAX_CHILDREN - 1),
+  id: z.string().min(1),
+  agent: z.string().optional(),
+  status: z.enum(["pending", "running", "completed", "failed", "aborted"]),
 });
 const TaskResultDetailsSchema = z.object({
   results: z
@@ -82,6 +95,7 @@ const TaskResultDetailsSchema = z.object({
       }),
     )
     .max(MAX_CHILDREN),
+  progress: z.array(TaskProgressSchema).max(MAX_CHILDREN).optional(),
 });
 const TaskResultEnvelopeSchema = z.object({ details: TaskResultDetailsSchema });
 
@@ -91,11 +105,28 @@ function expectedTaskChildren(value: unknown): number {
   return Math.max(1, parsed.data.tasks.length);
 }
 
-function taskResultCount(value: unknown): number | undefined {
+function taskResultExpectedChildren(value: unknown): number | undefined {
   const parsed = TaskResultEnvelopeSchema.safeParse(value);
-  return parsed.success ? parsed.data.details.results.length : undefined;
+  if (!parsed.success) return;
+  const progressCount = parsed.data.details.progress?.reduce(
+    (count, item) => Math.max(count, item.index + 1),
+    0,
+  );
+  const observed = Math.max(parsed.data.details.results.length, progressCount ?? 0);
+  return observed > 0 ? observed : undefined;
 }
 
+async function waitForReplay<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  const aborted = Promise.withResolvers<never>();
+  const onAbort = () => aborted.reject(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([work, aborted.promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
 function taskDescription(value: unknown): string | undefined {
   const parsed = TaskArgsSchema.safeParse(value);
   if (!parsed.success) return;
@@ -156,13 +187,25 @@ function replayChildren(messages: readonly OmpMessage[]): ReplayChildRef[] {
         (typeof result.exitCode === "number" && result.exitCode !== 0);
       children.push({
         id: result.id,
-        agent: typeof result.agent === "string" ? result.agent : call?.title,
+        agent: result.agent ?? call?.title,
         description: call?.description,
         parentToolCallId: message.toolCallId,
-        status: failed ? "failed" : result.aborted === true ? "canceled" : "completed",
+        status: result.aborted === true ? "canceled" : failed ? "failed" : "completed",
       });
     }
-    if (results.length > 0) continue;
+    const resultIds = new Set(results.map((result) => result.id));
+    const progress = details?.progress ?? [];
+    for (const item of progress) {
+      if (resultIds.has(item.id)) continue;
+      children.push({
+        id: item.id,
+        agent: item.agent ?? call?.title,
+        description: call?.description,
+        parentToolCallId: message.toolCallId,
+        status: terminalStatus(item.status) ?? "completed",
+      });
+    }
+    if (results.length > 0 || progress.length > 0) continue;
     const text = Array.isArray(message.content)
       ? message.content
           .flatMap((part) => (part.type === "text" && part.text ? [part.text] : []))
@@ -245,7 +288,7 @@ export class OmpSubsessionProjector {
           acknowledged: false,
         });
       }
-      this.toolOwners.set(event.toolCallId, ownerSessionId);
+      this.registerToolOwner(event.toolCallId, ownerSessionId);
       return;
     }
     if (event.type !== "tool_execution_end" || event.toolName !== "task") return;
@@ -253,12 +296,15 @@ export class OmpSubsessionProjector {
     if (!dispatch) return;
     if (event.isError) {
       this.dispatches.delete(event.toolCallId);
+      this.toolOwners.delete(event.toolCallId);
       this.onActivityChange();
       return;
     }
     dispatch.acknowledged = true;
-    const resultCount = taskResultCount(event.result);
-    if (resultCount !== undefined) dispatch.expectedChildren = resultCount;
+    const observedChildren = taskResultExpectedChildren(event.result);
+    if (observedChildren !== undefined) {
+      dispatch.expectedChildren = Math.max(dispatch.expectedChildren, observedChildren);
+    }
     this.settleDispatch(event.toolCallId, dispatch);
   }
 
@@ -278,24 +324,45 @@ export class OmpSubsessionProjector {
     }
     this.apply(event);
   }
-
-  async replay(messages: readonly OmpMessage[], runtime: OmpRuntimeSession): Promise<void> {
+  async replay(
+    messages: readonly OmpMessage[],
+    runtimeSession: OmpRuntimeSession,
+    runtime: OmpRuntime,
+    signal: AbortSignal,
+  ): Promise<void> {
     this.replaying = true;
+    let completed = false;
     try {
-      const budget: ReplayBudget = { messages: messages.length };
-      if (budget.messages > MAX_REPLAY_MESSAGES) {
-        throw new OmpPublicError("OMP subagent history exceeds replay limits");
-      }
+      const budget: ReplayBudget = { messages: 0, bytes: 0, nodes: 0 };
+      this.accountReplay(messages, budget, signal);
       const visited = new Set<string>();
-      await this.replayChildren(this.rootSessionId, messages, runtime, visited, budget, 0);
-      const snapshots = await runtime.getSubagents();
-      await this.replaySnapshots(snapshots, runtime, visited, budget);
+      await this.replayChildren(
+        this.rootSessionId,
+        this.rootSessionFile,
+        messages,
+        runtime,
+        visited,
+        budget,
+        signal,
+        0,
+      );
+      const snapshots = await waitForReplay(runtimeSession.getSubagents(), signal);
+      await this.replaySnapshots(snapshots, runtimeSession, runtime, visited, budget, signal);
+      signal.throwIfAborted();
       this.reconcileSnapshots(snapshots);
+      completed = true;
     } finally {
       this.replaying = false;
       const buffered = this.bufferedEvents.splice(0);
       this.bufferedBytes = 0;
-      for (const event of buffered) this.apply(event);
+      if (completed && !signal.aborted) {
+        for (const event of buffered) this.apply(event);
+      } else {
+        this.closed = true;
+        for (const child of this.children.values()) child.projector.close();
+        this.dispatches.clear();
+        this.toolOwners.clear();
+      }
     }
   }
 
@@ -388,6 +455,8 @@ export class OmpSubsessionProjector {
     if (existing) return existing;
     if (this.children.size >= MAX_CHILDREN) throw new OmpPublicError("OMP subagent limit reached");
     const digest = createHash("sha256")
+      .update(this.rootSessionId)
+      .update("\0")
       .update(this.rootNativeSessionId)
       .update("\0")
       .update(ref.id)
@@ -484,6 +553,7 @@ export class OmpSubsessionProjector {
     for (const sessionId of dispatch.childSessionIds) {
       if (this.children.get(sessionId)?.status === "running") return;
     }
+    this.toolOwners.delete(toolCallId);
     this.dispatches.delete(toolCallId);
     const owner = this.children.get(dispatch.ownerSessionId);
     if (owner?.terminalRequested && !this.hasDirectActivity(owner.sessionId)) {
@@ -541,76 +611,142 @@ export class OmpSubsessionProjector {
 
   private async replaySnapshots(
     snapshots: readonly OmpSubagentSnapshot[],
-    runtime: OmpRuntimeSession,
+    runtimeSession: OmpRuntimeSession,
+    runtime: OmpRuntime,
     visited: Set<string>,
     budget: ReplayBudget,
+    signal: AbortSignal,
   ): Promise<void> {
     const ordered = [...snapshots].sort(
       (left, right) =>
         (left.sessionFile?.split("/").length ?? 0) - (right.sessionFile?.split("/").length ?? 0),
     );
     for (const snapshot of ordered) {
+      signal.throwIfAborted();
       if (this.sessionIdByNativeId.has(snapshot.id)) continue;
-      const history = await runtime.getSubagentMessages({ subagentId: snapshot.id });
-      budget.messages += history.messages.length;
-      if (budget.messages > MAX_REPLAY_MESSAGES) {
-        throw new OmpPublicError("OMP subagent history exceeds replay limits");
-      }
+      const history = await waitForReplay(
+        runtimeSession.getSubagentMessages({ subagentId: snapshot.id }),
+        signal,
+      );
+      this.accountReplay(history.messages, budget, signal);
+      signal.throwIfAborted();
       const parentSessionId = this.resolveParent(snapshot.parentToolCallId, history.sessionFile);
       const child = this.ensureChild(
         { ...snapshot, sessionFile: history.sessionFile },
         parentSessionId,
       );
-      this.projectReplay(child, history.messages);
-      visited.add(snapshot.id);
-      await this.replayChildren(child.sessionId, history.messages, runtime, visited, budget, 1);
+      this.projectReplay(child, history.messages, signal);
+      visited.add(`${history.sessionFile}\0${snapshot.id}`);
+      await this.replayChildren(
+        child.sessionId,
+        history.sessionFile,
+        history.messages,
+        runtime,
+        visited,
+        budget,
+        signal,
+        1,
+      );
+    }
+    const activeToolCallIds = new Set(
+      snapshots.flatMap((snapshot) =>
+        snapshot.parentToolCallId ? [snapshot.parentToolCallId] : [],
+      ),
+    );
+    for (const toolCallId of this.toolOwners.keys()) {
+      if (!activeToolCallIds.has(toolCallId) && !this.dispatches.has(toolCallId)) {
+        this.toolOwners.delete(toolCallId);
+      }
     }
   }
 
   private async replayChildren(
     parentSessionId: string,
+    parentSessionFile: string | undefined,
     messages: readonly OmpMessage[],
-    runtime: OmpRuntimeSession,
+    runtime: OmpRuntime,
     visited: Set<string>,
     budget: ReplayBudget,
+    signal: AbortSignal,
     depth: number,
   ): Promise<void> {
+    signal.throwIfAborted();
     if (depth > MAX_REPLAY_DEPTH) throw new OmpPublicError("OMP subagent history is too deep");
     this.indexTaskCalls(parentSessionId, messages);
     for (const ref of replayChildren(messages)) {
-      if (visited.has(ref.id)) continue;
-      visited.add(ref.id);
-      const history = await runtime.getSubagentMessages(
-        ref.sessionFile ? { sessionFile: ref.sessionFile } : { subagentId: ref.id },
-      );
-      budget.messages += history.messages.length;
-      if (budget.messages > MAX_REPLAY_MESSAGES) {
-        throw new OmpPublicError("OMP subagent history exceeds replay limits");
+      signal.throwIfAborted();
+      if (!parentSessionFile) {
+        throw new OmpPublicError("OMP parent transcript identity is unavailable");
       }
+      const visitKey = `${parentSessionFile}\0${ref.id}`;
+      if (visited.has(visitKey)) continue;
+      visited.add(visitKey);
+      const history = await waitForReplay(
+        runtime.readPersistedSubagentTranscript({
+          parentSessionFile,
+          childTranscriptId: ref.id,
+          cwd: this.cwd,
+          signal,
+        }),
+        signal,
+      );
+      this.accountReplay(history.messages, budget, signal);
+      signal.throwIfAborted();
       const child = this.ensureChild({ ...ref, sessionFile: history.sessionFile }, parentSessionId);
-      this.projectReplay(child, history.messages);
+      this.projectReplay(child, history.messages, signal);
       await this.replayChildren(
         child.sessionId,
+        history.sessionFile,
         history.messages,
         runtime,
         visited,
         budget,
+        signal,
         depth + 1,
       );
+      signal.throwIfAborted();
       this.requestTerminal(child, ref.status);
     }
   }
 
-  private projectReplay(child: ChildState, messages: readonly OmpMessage[]): void {
+  private projectReplay(
+    child: ChildState,
+    messages: readonly OmpMessage[],
+    signal: AbortSignal,
+  ): void {
     this.indexTaskCalls(child.sessionId, messages);
     for (const message of messages) {
+      signal.throwIfAborted();
       child.projector.projectReplayMessage(message);
       if (message.role === "assistant") {
         const identity = message.entryId ?? message.responseId ?? message.id;
         if (identity) child.seenAssistantIdentities.add(identity);
       }
     }
+    signal.throwIfAborted();
     child.projector.finishReplay();
+  }
+
+  private accountReplay(
+    messages: readonly OmpMessage[],
+    budget: ReplayBudget,
+    signal: AbortSignal,
+  ): void {
+    signal.throwIfAborted();
+    if (budget.messages + messages.length > MAX_REPLAY_MESSAGES) {
+      throw new OmpPublicError("OMP subagent history exceeds replay limits");
+    }
+    const metrics = boundedJsonMetrics(
+      messages,
+      MAX_REPLAY_BYTES - budget.bytes,
+      MAX_REPLAY_MESSAGES,
+      MAX_REPLAY_BYTES,
+      MAX_REPLAY_NODES - budget.nodes,
+    );
+    if (!metrics) throw new OmpPublicError("OMP subagent history exceeds replay limits");
+    budget.messages += messages.length;
+    budget.bytes += metrics.bytes;
+    budget.nodes += metrics.nodes;
   }
 
   private indexTaskCalls(ownerSessionId: string, messages: readonly OmpMessage[]): void {
@@ -618,11 +754,19 @@ export class OmpSubsessionProjector {
       if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
       for (const part of message.content) {
         if (part.type !== "toolCall" || part.name !== "task" || !part.id) continue;
-        if (!this.toolOwners.has(part.id) && this.toolOwners.size >= MAX_TASK_DISPATCHES) {
-          throw new OmpPublicError("OMP subagent dispatch limit reached");
-        }
-        this.toolOwners.set(part.id, ownerSessionId);
+        this.registerToolOwner(part.id, ownerSessionId);
       }
     }
+  }
+
+  private registerToolOwner(toolCallId: string, ownerSessionId: string): void {
+    const existing = this.toolOwners.get(toolCallId);
+    if (existing && existing !== ownerSessionId) {
+      throw new OmpPublicError("OMP reused a task tool identifier across child sessions");
+    }
+    if (!existing && this.toolOwners.size >= MAX_TASK_DISPATCHES) {
+      throw new OmpPublicError("OMP subagent dispatch limit reached");
+    }
+    this.toolOwners.set(toolCallId, ownerSessionId);
   }
 }

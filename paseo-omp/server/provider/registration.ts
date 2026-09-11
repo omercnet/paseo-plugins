@@ -21,6 +21,7 @@ const ConnectRequestSchema = z.object({
 export interface OmpProviderOptions {
   runtime?: OmpRuntime;
   timelineScheduler?: OmpTimelineScheduler;
+  replayTimeoutMs?: number;
   environment?: NodeJS.ProcessEnv;
 }
 
@@ -50,6 +51,7 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         options.timelineScheduler,
         options.environment,
         nativeReservations,
+        options.replayTimeoutMs,
       );
     },
   };

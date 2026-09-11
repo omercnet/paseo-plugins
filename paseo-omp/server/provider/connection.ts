@@ -337,6 +337,7 @@ export function createOmpConnection(
   scheduler?: OmpTimelineScheduler,
   environment?: NodeJS.ProcessEnv,
   nativeReservations = new OmpNativeSessionReservations(),
+  replayTimeoutMs?: number,
 ): ProviderConnection {
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) =>
@@ -473,6 +474,7 @@ export function createOmpConnection(
           safeCapabilities,
           sessionEmit,
           scheduler,
+          replayTimeoutMs,
           shutdown.signal,
           environment,
         );

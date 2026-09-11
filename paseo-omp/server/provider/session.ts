@@ -26,6 +26,7 @@ import {
   OmpPublicError,
   utf8Bytes,
 } from "./security";
+import type { OmpSessionDescriptor } from "./session-descriptors";
 import { validateNativeSessionId } from "./session-descriptors";
 import { OmpSubsessionProjector } from "./subsessions";
 import {
@@ -87,14 +88,16 @@ async function authorizeNativeSession(
   runtime: OmpRuntime,
   sessionId: string,
   cwd: string,
-): Promise<void> {
+): Promise<OmpSessionDescriptor> {
   const matches = await runtime.listSessions({ sessionId, cwd, limit: 2 });
-  if (matches.length !== 1 || matches[0]?.id !== sessionId) {
+  const descriptor = matches[0];
+  if (matches.length !== 1 || descriptor?.id !== sessionId) {
     throw new OmpPublicError("OMP session could not be resolved in this workspace");
   }
-  if (matches[0].cwd !== cwd) {
+  if (descriptor.cwd !== cwd) {
     throw new OmpPublicError("OMP session belongs to a different working directory");
   }
+  return descriptor;
 }
 
 function retainedBytes(values: readonly unknown[], maxBytes: number): number {
@@ -112,6 +115,18 @@ function retainedBytes(values: readonly unknown[], maxBytes: number): number {
     if (total > maxBytes) return Number.POSITIVE_INFINITY;
   }
   return total;
+}
+
+async function waitForReplay<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  const aborted = Promise.withResolvers<never>();
+  const onAbort = () => aborted.reject(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([operation, aborted.promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 type PendingUser = {
@@ -298,6 +313,7 @@ export class OmpProviderSession {
     private readonly emit: Emit,
     private readonly replayHistoryOnOpen: boolean,
     private readonly persistSession: boolean,
+    private readonly replayTimeoutMs: number,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -334,6 +350,7 @@ export class OmpProviderSession {
     capabilities: readonly string[],
     emit: Emit,
     scheduler?: OmpTimelineScheduler,
+    replayTimeoutMs = REPLAY_TIMEOUT_MS,
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
   ): Promise<OmpProviderSession> {
@@ -365,9 +382,9 @@ export class OmpProviderSession {
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
-    if (resumeSessionId) {
-      await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd);
-    }
+    const persistedDescriptor = resumeSessionId
+      ? await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd)
+      : undefined;
     const effectiveConfig: ProviderSessionConfig = { ...input.config };
     const startOptions: OmpStartOptions = {
       cwd: effectiveConfig.cwd,
@@ -481,7 +498,7 @@ export class OmpProviderSession {
         runtime,
         recoveryOptions,
         state.sessionId,
-        state.sessionFile,
+        persistedDescriptor?.transcriptFile ?? state.sessionFile,
         effectiveConfig,
         configState,
         nativeModelsByPublicId,
@@ -496,6 +513,7 @@ export class OmpProviderSession {
         emit,
         input.history === "replay",
         effectiveConfig.persist,
+        replayTimeoutMs,
         scheduler,
       );
     } catch (error) {
@@ -536,31 +554,30 @@ export class OmpProviderSession {
       throw new OmpPublicError("OMP session history cannot be replayed safely");
     }
     this.lifetime.signal.throwIfAborted();
-    const timeout = Promise.withResolvers<never>();
-    const timeoutHandle = setTimeout(
-      () => timeout.reject(new OmpPublicError("OMP session history replay timed out")),
-      REPLAY_TIMEOUT_MS,
-    );
-    const aborted = Promise.withResolvers<never>();
+    const replay = new AbortController();
     const onAbort = () =>
-      aborted.reject(new OmpPublicError("OMP session history replay was canceled"));
+      replay.abort(new OmpPublicError("OMP session history replay was canceled"));
     this.lifetime.signal.addEventListener("abort", onAbort, { once: true });
+    const timeoutHandle = setTimeout(
+      () => replay.abort(new OmpPublicError("OMP session history replay timed out")),
+      this.replayTimeoutMs,
+    );
     try {
-      const messages = await Promise.race([
-        this.runtime.getMessages(),
-        timeout.promise,
-        aborted.promise,
-      ]);
-      this.lifetime.signal.throwIfAborted();
+      const messages = await waitForReplay(this.runtime.getMessages(), replay.signal);
+      replay.signal.throwIfAborted();
       if (messages.length > MAX_REPLAY_MESSAGES) {
         throw new OmpPublicError("OMP session history exceeds replay limits");
       }
       for (const message of messages) {
-        this.lifetime.signal.throwIfAborted();
+        replay.signal.throwIfAborted();
         this.projector.projectReplayMessage(message);
       }
       this.projector.finishReplay();
-      await this.subsessions?.replay(messages, this.runtime);
+      await this.subsessions?.replay(messages, this.runtime, this.runtimeFactory, replay.signal);
+      replay.signal.throwIfAborted();
+    } catch (error) {
+      if (replay.signal.aborted) throw replay.signal.reason;
+      throw error;
     } finally {
       clearTimeout(timeoutHandle);
       this.lifetime.signal.removeEventListener("abort", onAbort);

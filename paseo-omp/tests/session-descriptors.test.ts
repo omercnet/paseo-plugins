@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listOmpSessionDescriptors } from "../server/provider/session-descriptors";
+import {
+  listOmpSessionDescriptors,
+  readOmpPersistedSubagentTranscript,
+} from "../server/provider/session-descriptors";
 
 const roots: string[] = [];
 const SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";
@@ -131,6 +134,47 @@ describe("OMP session descriptor discovery", () => {
     const sessions = await scan;
     expect(sessions.length).toBeLessThanOrEqual(7);
     expect(new Set(sessions.map((session) => session.id)).size).toBe(sessions.length);
+  });
+
+  test("reads only canonically owned child transcripts", async () => {
+    const root = await temporaryRoot();
+    const sessionRoot = join(root, "sessions");
+    await writeSession(sessionRoot, "", SESSION_ID, "/repo");
+    const parentFile = join(sessionRoot, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
+    const childDirectory = parentFile.slice(0, -".jsonl".length);
+    await mkdir(childDirectory);
+    const childFile = join(childDirectory, "ChildOne.jsonl");
+    await writeFile(
+      childFile,
+      `${JSON.stringify({ type: "session", version: 3, id: OTHER_ID, cwd: "/repo" })}\n${JSON.stringify(
+        {
+          type: "message",
+          message: { role: "assistant", content: "safe child output" },
+        },
+      )}\n`,
+    );
+
+    await expect(
+      readOmpPersistedSubagentTranscript(parentFile, "ChildOne", "/repo"),
+    ).resolves.toEqual({
+      sessionFile: childFile,
+      nativeSessionId: OTHER_ID,
+      byteLength: expect.any(Number),
+      messages: [{ role: "assistant", content: "safe child output" }],
+    });
+    await expect(
+      readOmpPersistedSubagentTranscript(parentFile, "../outside", "/repo"),
+    ).rejects.toThrow("Invalid OMP child transcript descriptor");
+
+    const outside = join(root, "outside.jsonl");
+    await writeFile(
+      outside,
+      `${JSON.stringify({ type: "session", version: 3, id: OTHER_ID, cwd: "/repo" })}\n`,
+    );
+    await symlink(outside, join(childDirectory, "Linked.jsonl"));
+    await expect(readOmpPersistedSubagentTranscript(parentFile, "Linked", "/repo")).rejects.toThrow(
+      "could not be opened",
+    );
   });
 
   test("rejects unscoped listing", async () => {
