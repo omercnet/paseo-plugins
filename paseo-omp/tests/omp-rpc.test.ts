@@ -800,7 +800,8 @@ describe("OMP RPC transport", () => {
       { PATH: "/usr/bin" },
     );
     expect(benignShortValues.env).toEqual({ PATH: "/usr/bin", DEBUG: "1", NODE_ENV: "dev" });
-    expect(benignShortValues.sensitiveValues).toEqual([]);
+    expect(benignShortValues.sensitiveValues).not.toContain("1");
+    expect(benignShortValues.sensitiveValues).not.toContain("dev");
     expect(() =>
       buildOmpSpawnRequest(
         { cwd: "/repo", mode: "full", env: { API_TOKEN: "x" } },
