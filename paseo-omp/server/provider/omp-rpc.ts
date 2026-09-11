@@ -141,45 +141,57 @@ const OmpModelSchema = z.object({
   contextWindow: z.number().int().nonnegative().max(100_000_000).nullable().optional(),
 });
 const TokenCountSchema = z.number().int().nonnegative().max(MAX_TOKEN_COUNT);
+const OptionalTokenCountSchema = TokenCountSchema.nullable().optional();
+const OptionalCostSchema = z
+  .number()
+  .finite()
+  .nonnegative()
+  .max(MAX_COST_USD)
+  .nullable()
+  .optional();
 const OmpContextUsageSchema = z.object({
-  tokens: TokenCountSchema,
-  contextWindow: TokenCountSchema.max(100_000_000),
-  percent: z.number().finite().nonnegative().max(MAX_CONTEXT_PERCENT).optional(),
+  tokens: OptionalTokenCountSchema,
+  contextWindow: TokenCountSchema.max(100_000_000).nullable().optional(),
+  percent: z.number().finite().nonnegative().max(MAX_CONTEXT_PERCENT).nullable().optional(),
 });
 const OmpSessionStatsSchema = z.object({
-  userMessages: TokenCountSchema.optional(),
-  assistantMessages: TokenCountSchema.optional(),
-  toolCalls: TokenCountSchema.optional(),
-  toolResults: TokenCountSchema.optional(),
-  totalMessages: TokenCountSchema.optional(),
-  tokens: z.object({
-    input: TokenCountSchema,
-    output: TokenCountSchema,
-    reasoning: TokenCountSchema.optional(),
-    cacheRead: TokenCountSchema,
-    cacheWrite: TokenCountSchema.optional(),
-    total: TokenCountSchema.optional(),
-  }),
-  cost: z.number().finite().nonnegative().max(MAX_COST_USD),
-  premiumRequests: TokenCountSchema.optional(),
+  userMessages: OptionalTokenCountSchema,
+  assistantMessages: OptionalTokenCountSchema,
+  toolCalls: OptionalTokenCountSchema,
+  toolResults: OptionalTokenCountSchema,
+  totalMessages: OptionalTokenCountSchema,
+  tokens: z
+    .object({
+      input: OptionalTokenCountSchema,
+      output: OptionalTokenCountSchema,
+      reasoning: OptionalTokenCountSchema,
+      cacheRead: OptionalTokenCountSchema,
+      cacheWrite: OptionalTokenCountSchema,
+      total: OptionalTokenCountSchema,
+    })
+    .nullable()
+    .optional(),
+  cost: OptionalCostSchema,
+  premiumRequests: OptionalTokenCountSchema,
   credits: z
     .object({
-      cost: z.number().finite().nonnegative().max(MAX_COST_USD),
-      committedCost: z.number().finite().nonnegative().max(MAX_COST_USD),
-      acuCost: z.number().finite().nonnegative().max(MAX_COST_USD),
+      cost: OptionalCostSchema,
+      committedCost: OptionalCostSchema,
+      acuCost: OptionalCostSchema,
     })
+    .nullable()
     .optional(),
-  routedModels: z.record(NAME, TokenCountSchema).optional(),
-  contextUsage: OmpContextUsageSchema.optional(),
+  routedModels: z.record(NAME, OptionalTokenCountSchema).nullable().optional(),
+  contextUsage: OmpContextUsageSchema.nullable().optional(),
 });
-const OmpCompactionResultSchema = z.object({ tokensBefore: TokenCountSchema });
+const OmpCompactionResultSchema = z.object({ tokensBefore: OptionalTokenCountSchema });
 const OmpSessionStateSchema = z.object({
   model: OmpModelSchema.nullable().optional(),
   thinkingLevel: OmpThinkingLevelSchema.optional(),
   isStreaming: z.boolean(),
   isCompacting: z.boolean(),
   sessionId: IDENTIFIER,
-  contextUsage: OmpContextUsageSchema.optional(),
+  contextUsage: OmpContextUsageSchema.nullable().optional(),
 });
 const OmpReadyFrameSchema = z.object({
   type: z.literal("ready"),
@@ -283,10 +295,10 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("auto_compaction_end"),
-    action: NAME,
-    result: OmpCompactionResultSchema.optional(),
-    aborted: z.boolean(),
-    willRetry: z.boolean(),
+    action: NAME.optional(),
+    result: OmpCompactionResultSchema.nullable().optional(),
+    aborted: z.boolean().optional(),
+    willRetry: z.boolean().optional(),
     errorMessage: boundedString(64 * 1024).optional(),
     skipped: z.boolean().optional(),
   }),

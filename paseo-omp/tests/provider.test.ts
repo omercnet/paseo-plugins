@@ -4056,6 +4056,68 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("flushes streams and terminalizes unsuccessful compactions honestly", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events, "compaction-outcomes", "session-1", {
+      SECRET: "credential-secret",
+    });
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "auto-outcomes", "work"));
+    session.emit({
+      type: "message_start",
+      message: { role: "assistant", responseId: "before-compaction", content: [] },
+    });
+    session.emit({
+      type: "message_update",
+      message: { role: "assistant", responseId: "before-compaction", content: [] },
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "before" },
+    });
+
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({ type: "auto_compaction_end", aborted: true, willRetry: false });
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({
+      type: "auto_compaction_end",
+      aborted: false,
+      willRetry: false,
+      errorMessage: "credential-secret failed",
+    });
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({ type: "auto_compaction_end", aborted: false, willRetry: false, skipped: true });
+
+    const items = events.flatMap((event) => (event.type === "timeline.item" ? [event.item] : []));
+    const assistantIndex = items.findIndex((item) => item.type === "assistant_message");
+    const loading = items.filter((item) => item.type === "compaction" && item.status === "loading");
+    expect(loading).toHaveLength(3);
+    const firstLoading = loading[0];
+    if (!firstLoading) throw new Error("Expected compaction loading update");
+    expect(assistantIndex).toBeLessThan(items.indexOf(firstLoading));
+    for (const operation of loading) {
+      expect(items.some((item) => item.type === "notification" && item.id === operation.id)).toBe(
+        true,
+      );
+    }
+    expect(items.some((item) => item.type === "compaction" && item.status === "completed")).toBe(
+      false,
+    );
+    expect(JSON.stringify(items)).not.toContain("credential-secret");
+    expect(
+      items.some(
+        (item) =>
+          item.type === "notification" &&
+          item.level === "error" &&
+          item.message === "<redacted> failed",
+      ),
+    ).toBe(true);
+
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    await connection.close();
+  });
+
   test("keeps a long manual compaction loading and reuses its operation id", async () => {
     const runtime = new FakeOmpRuntime();
     const compact = Promise.withResolvers<void>();
@@ -4115,24 +4177,17 @@ describe("OMP direct provider", () => {
 
   test("terminalizes a fast manual compaction even when polling misses the running state", async () => {
     const runtime = new FakeOmpRuntime();
-    const compact = Promise.withResolvers<void>();
-    const { connection, events, scheduler } = await createHarness(runtime);
+    const { connection, events } = await createHarness(runtime);
     await openSession(connection, events);
     const session = sessionAt(runtime);
     session.usageAvailable = true;
-    session.compactGate = compact.promise;
     session.isCompacting = false;
     const turnId = turnIdFrom(await startPrompt(connection, events, "fast-compact", "/compact"));
 
-    await Promise.resolve();
-    await Promise.resolve();
-    await scheduler.flush(100);
     await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
     );
-    compact.resolve();
-    await Promise.resolve();
     const operations = events.filter(
       (event) => event.type === "timeline.item" && event.item.type === "compaction",
     );
@@ -4181,19 +4236,79 @@ describe("OMP direct provider", () => {
       expect.objectContaining({ error: { message: "OMP compaction failed" } }),
     );
     expect(JSON.stringify(events)).not.toContain("credential-secret");
-    const operations = events.filter(
-      (event) => event.type === "timeline.item" && event.item.type === "compaction",
+    const loading = events.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "compaction" &&
+        event.item.status === "loading",
     );
-    expect(operations).toHaveLength(2);
-    if (
-      operations[0]?.type !== "timeline.item" ||
-      operations[0].item.type !== "compaction" ||
-      operations[1]?.type !== "timeline.item" ||
-      operations[1].item.type !== "compaction"
-    ) {
-      throw new Error("Expected compaction operation updates");
-    }
-    expect(operations[1].item.id).toBe(operations[0].item.id);
+    if (loading?.type !== "timeline.item") throw new Error("Expected compaction loading update");
+    expect(
+      events.find(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "notification" &&
+          event.item.id === loading.item.id,
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        item: expect.objectContaining({ level: "error", message: "OMP compaction failed" }),
+      }),
+    );
+    await connection.close();
+  });
+
+  test("cancels a wedged manual compaction at the provider deadline", async () => {
+    const runtime = new FakeOmpRuntime();
+    const compact = Promise.withResolvers<void>();
+    const { connection, events, scheduler } = await createHarness(runtime);
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.compactGate = compact.promise;
+    session.isCompacting = true;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "wedged-compact", "/compact"));
+
+    await scheduler.flush(300_000);
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "canceled",
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+      ),
+    ).toBe(false);
+    compact.resolve();
+    await connection.close();
+  });
+
+  test("interrupts a wedged manual compaction without waiting for its RPC", async () => {
+    const runtime = new FakeOmpRuntime();
+    const compact = Promise.withResolvers<void>();
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.compactGate = compact.promise;
+    session.isCompacting = true;
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "interrupt-compact", "/compact"),
+    );
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "interrupt-compact",
+      sessionId: "session-1",
+    });
+
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "canceled",
+    );
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "interrupt-compact",
+    );
+    expect(session.aborts).toBe(0);
+    compact.resolve();
     await connection.close();
   });
 
@@ -4347,10 +4462,19 @@ describe("OMP direct provider", () => {
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
     ).toHaveLength(1);
-    const closeOperations = events.filter(
+    const closeLoading = events.find(
       (event) => event.type === "timeline.item" && event.item.type === "compaction",
     );
-    expect(closeOperations).toHaveLength(2);
+    if (closeLoading?.type !== "timeline.item")
+      throw new Error("Expected compaction loading update");
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "notification" &&
+          event.item.id === closeLoading.item.id,
+      ),
+    ).toBe(true);
   });
 
   test("lets runtime death override a deferred final usage snapshot", async () => {
@@ -4385,10 +4509,19 @@ describe("OMP direct provider", () => {
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
     ).toHaveLength(1);
-    const deathOperations = events.filter(
+    const deathLoading = events.find(
       (event) => event.type === "timeline.item" && event.item.type === "compaction",
     );
-    expect(deathOperations).toHaveLength(2);
+    if (deathLoading?.type !== "timeline.item")
+      throw new Error("Expected compaction loading update");
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "notification" &&
+          event.item.id === deathLoading.item.id,
+      ),
+    ).toBe(true);
     await connection.close();
   });
 

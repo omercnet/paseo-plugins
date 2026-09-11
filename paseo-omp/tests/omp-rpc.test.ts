@@ -475,6 +475,62 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("accepts nullable usage and sparse compaction payloads", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      const response = {
+        type: "response",
+        id: command.id,
+        command: command.type,
+        success: true,
+      };
+      if (command.type === "get_state") {
+        child.write({
+          ...response,
+          data: {
+            model: null,
+            isStreaming: false,
+            isCompacting: false,
+            sessionId: "nullable-usage",
+            contextUsage: { tokens: null, contextWindow: null, percent: null },
+          },
+        });
+      } else if (command.type === "get_session_stats") {
+        child.write({
+          ...response,
+          data: {
+            tokens: { input: null, output: null, cacheRead: null },
+            cost: null,
+            contextUsage: null,
+          },
+        });
+      } else if (command.type === "compact") {
+        child.write({ ...response, data: {} });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ type: "ready" });
+    const session = await opening;
+    const compactionEvent = nextEvent((listener) => session.onEvent(listener));
+
+    expect(await session.getState()).toEqual(
+      expect.objectContaining({
+        contextUsage: { tokens: null, contextWindow: null, percent: null },
+      }),
+    );
+    expect(await session.getSessionStats()).toEqual({
+      tokens: { input: null, output: null, cacheRead: null },
+      cost: null,
+      contextUsage: null,
+    });
+    expect(await session.compact()).toEqual({});
+    child.write({ type: "auto_compaction_end", aborted: false, willRetry: false });
+    await expect(compactionEvent).resolves.toEqual(
+      expect.objectContaining({ type: "auto_compaction_end" }),
+    );
+    await session.close();
+  });
+
   test("rejects fractional and unbounded usage numerics", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {

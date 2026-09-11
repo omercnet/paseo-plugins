@@ -46,6 +46,7 @@ const CONFIG_REFRESH_MAX_ATTEMPTS = 3;
 const USAGE_POLL_MS = 1_000;
 const USAGE_REFRESH_MS = 100;
 const FINAL_USAGE_WAIT_MS = 250;
+const COMPACTION_MAX_WAIT_MS = 5 * 60_000;
 const AGENT_END_SETTLE_MS = 5_000;
 const MAX_PROMPT_PARTS = 64;
 const MAX_PROMPT_TEXT_LENGTH = 1024 * 1024;
@@ -104,7 +105,7 @@ type ActiveTurn = {
   usagePollTimer?: unknown;
   usagePoll?: Promise<void>;
   manualCompaction: boolean;
-  manualSettleTimer?: unknown;
+  manualCompactionDeadlineTimer?: unknown;
   agentEndPending: boolean;
   agentEndRetryTimer?: unknown;
   agentEndDeadlineTimer?: unknown;
@@ -478,17 +479,17 @@ export class OmpProviderSession {
     if (!state?.contextUsage && !stats) return undefined;
     const context = state?.contextUsage ?? stats?.contextUsage;
     const modelCapacity = state?.model?.contextWindow;
+    const inputTokens = stats?.tokens?.input;
+    const cachedInputTokens = stats?.tokens?.cacheRead;
+    const outputTokens = stats?.tokens?.output;
+    const totalCostUsd = stats?.cost;
     const usage: ProviderUsage = {
-      ...(stats
-        ? {
-            inputTokens: stats.tokens.input,
-            cachedInputTokens: stats.tokens.cacheRead,
-            outputTokens: stats.tokens.output,
-            totalCostUsd: stats.cost,
-          }
-        : {}),
-      ...(context ? { contextWindowUsedTokens: context.tokens } : {}),
-      ...(context?.contextWindow
+      ...(typeof inputTokens === "number" ? { inputTokens } : {}),
+      ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+      ...(typeof outputTokens === "number" ? { outputTokens } : {}),
+      ...(typeof totalCostUsd === "number" ? { totalCostUsd } : {}),
+      ...(typeof context?.tokens === "number" ? { contextWindowUsedTokens: context.tokens } : {}),
+      ...(typeof context?.contextWindow === "number" && context.contextWindow > 0
         ? { contextWindowMaxTokens: context.contextWindow }
         : typeof modelCapacity === "number" && modelCapacity > 0
           ? { contextWindowMaxTokens: modelCapacity }
@@ -529,7 +530,6 @@ export class OmpProviderSession {
           this.lastUsage = usage;
           this.emit({ type: "session.usage", sessionId: this.id, turnId: turn.turnId, usage });
         }
-        if (state) this.observeCompactionState(turn, state);
         return state;
       },
     );
@@ -598,6 +598,7 @@ export class OmpProviderSession {
       preTokens: this.lastUsage?.contextWindowUsedTokens,
     };
     this.activeCompaction = operation;
+    this.projector.flush(true);
     this.emit({
       type: "timeline.item",
       sessionId: this.id,
@@ -611,10 +612,34 @@ export class OmpProviderSession {
     });
   }
 
-  private finishCompaction(tokensBefore?: number): void {
+  private finishCompaction(
+    state: "completed" | "failed" | "canceled" | "skipped",
+    options: { tokensBefore?: number | null; message?: string } = {},
+  ): void {
     const operation = this.activeCompaction;
     if (!operation) return;
     this.activeCompaction = null;
+    this.projector.flush(true);
+    if (state !== "completed") {
+      const defaultMessage =
+        state === "failed"
+          ? "OMP compaction failed"
+          : state === "canceled"
+            ? "OMP compaction canceled"
+            : "OMP compaction skipped";
+      this.emit({
+        type: "timeline.item",
+        sessionId: this.id,
+        item: {
+          id: operation.id,
+          type: "notification",
+          level: state === "failed" ? "error" : "info",
+          message: this.dataFilter.text(options.message ?? defaultMessage, 4_096),
+        },
+      });
+      return;
+    }
+    const tokensBefore = options.tokensBefore ?? operation.preTokens;
     this.emit({
       type: "timeline.item",
       sessionId: this.id,
@@ -623,30 +648,9 @@ export class OmpProviderSession {
         type: "compaction",
         status: "completed",
         trigger: operation.trigger,
-        ...(tokensBefore !== undefined
-          ? { preTokens: tokensBefore }
-          : operation.preTokens !== undefined
-            ? { preTokens: operation.preTokens }
-            : {}),
+        ...(tokensBefore !== undefined ? { preTokens: tokensBefore } : {}),
       },
     });
-  }
-
-  private observeCompactionState(turn: ActiveTurn, state: OmpSessionState): void {
-    if (
-      !turn.manualCompaction ||
-      this.activeCompaction?.turnId !== turn.turnId ||
-      state.isCompacting ||
-      turn.manualSettleTimer !== undefined
-    ) {
-      return;
-    }
-    turn.manualSettleTimer = this.scheduler.set(() => {
-      turn.manualSettleTimer = undefined;
-      if (this.activeCompaction?.turnId !== turn.turnId || turn.terminal) return;
-      this.finishCompaction();
-      void this.finishTurn(turn, "completed", undefined, true);
-    }, USAGE_REFRESH_MS);
   }
 
   async prompt(input: SessionPromptInput): Promise<void> {
@@ -764,6 +768,13 @@ export class OmpProviderSession {
         const bufferedEvents = turn.bufferedEvents.splice(0);
         for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
         void this.settleManualCompaction(turn, compaction);
+        turn.manualCompactionDeadlineTimer = this.scheduler.set(() => {
+          turn.manualCompactionDeadlineTimer = undefined;
+          if (turn.terminal || this.activeCompaction?.turnId !== turn.turnId) return;
+          const message = "OMP compaction was canceled after it stopped responding";
+          this.invalidateRuntime(message, "canceled");
+          void this.finishTurn(turn, "canceled", undefined, true, true);
+        }, COMPACTION_MAX_WAIT_MS);
         return;
       }
       const acknowledgement = await this.runtime.prompt(text);
@@ -785,7 +796,7 @@ export class OmpProviderSession {
       if (turn.started) await this.finishTurn(turn, "failed", failure);
       else {
         turn.terminal = true;
-        this.finishCompaction();
+        this.finishCompaction("failed", { message: "OMP prompt failed" });
         this.projector.finishTurn(turn.turnId);
         if (this.activeTurn === turn) this.activeTurn = null;
       }
@@ -799,20 +810,28 @@ export class OmpProviderSession {
     try {
       const result = await compaction;
       if (this.closed || this.runtimeDead || turn.generation !== this.generation) return;
-      this.finishCompaction(result.tokensBefore);
+      this.finishCompaction("completed", { tokensBefore: result.tokensBefore });
       await this.finishTurn(turn, turn.interrupted ? "canceled" : "completed");
     } catch (error) {
       if (this.closed || this.runtimeDead || turn.generation !== this.generation) return;
       const raw = providerError(error, "OMP compaction failed");
       const failure = { message: this.dataFilter.text(raw.message, 4_096) };
-      this.finishCompaction();
-      await this.finishTurn(turn, turn.interrupted ? "canceled" : "failed", failure, true, true);
+      const state = turn.interrupted ? "canceled" : "failed";
+      this.finishCompaction(state, { message: failure.message });
+      await this.finishTurn(turn, state, state === "failed" ? failure : undefined, true, true);
     }
   }
 
   async interrupt(input: SessionInterruptInput): Promise<void> {
     const turn = this.activeTurn;
     if (!turn) {
+      this.emit({ type: "request.completed", requestId: input.requestId });
+      return;
+    }
+    if (turn.manualCompaction) {
+      turn.interrupted = true;
+      this.invalidateRuntime("OMP compaction interrupted", "canceled");
+      await this.finishTurn(turn, "canceled", undefined, true, true);
       this.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
@@ -1197,12 +1216,12 @@ export class OmpProviderSession {
       else {
         turn.terminal = true;
         this.stopUsagePoll(turn);
-        this.finishCompaction();
+        this.finishCompaction("canceled");
         this.projector.finishTurn(turn.turnId);
         if (this.activeTurn === turn) this.activeTurn = null;
       }
     }
-    this.finishCompaction();
+    this.finishCompaction("canceled");
     this.closed = true;
     this.configRefreshAttempts = 0;
     this.configRefreshDirty = false;
@@ -1487,7 +1506,17 @@ export class OmpProviderSession {
       return;
     }
     if (event.type === "auto_compaction_end") {
-      this.finishCompaction(event.result?.tokensBefore);
+      const state = event.aborted
+        ? "canceled"
+        : event.errorMessage
+          ? "failed"
+          : event.skipped
+            ? "skipped"
+            : "completed";
+      this.finishCompaction(state, {
+        tokensBefore: event.result?.tokensBefore,
+        message: event.errorMessage,
+      });
       this.scheduleUsagePoll(turn, USAGE_REFRESH_MS);
       return;
     }
@@ -1905,9 +1934,9 @@ export class OmpProviderSession {
     turn.agentEndPending = false;
     this.cancelLocalOnlyCompletion(turn);
     this.stopUsagePoll(turn);
-    if (turn.manualSettleTimer !== undefined) {
-      this.scheduler.clear(turn.manualSettleTimer);
-      turn.manualSettleTimer = undefined;
+    if (turn.manualCompactionDeadlineTimer !== undefined) {
+      this.scheduler.clear(turn.manualCompactionDeadlineTimer);
+      turn.manualCompactionDeadlineTimer = undefined;
     }
     if (turn.agentEndRetryTimer !== undefined) {
       this.scheduler.clear(turn.agentEndRetryTimer);
@@ -1943,7 +1972,14 @@ export class OmpProviderSession {
         };
       }
       turn.terminal = true;
-      this.finishCompaction();
+      if (this.activeCompaction) {
+        if (outcome.state === "canceled") this.finishCompaction("canceled");
+        else {
+          this.finishCompaction("failed", {
+            message: outcome.error?.message ?? "OMP compaction ended without a terminal result",
+          });
+        }
+      }
       this.publishPendingUsers(turn);
       this.projector.finishTurn(turn.turnId);
       this.unclaimedBranchEntries.length = 0;
@@ -1960,13 +1996,16 @@ export class OmpProviderSession {
     return terminalization;
   }
 
-  private invalidateRuntime(message: string): void {
+  private invalidateRuntime(
+    message: string,
+    compactionState: "failed" | "canceled" = "failed",
+  ): void {
     if (this.closed || this.runtimeDead) return;
     this.recoveryUsesNativeConfig ||=
       this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
     const turn = this.activeTurn;
     if (turn) this.stopUsagePoll(turn);
-    this.finishCompaction();
+    this.finishCompaction(compactionState, { message });
     this.lastUsage = null;
     this.generation += 1;
     this.runtimeDead = message;
