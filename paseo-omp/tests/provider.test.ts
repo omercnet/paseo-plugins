@@ -506,6 +506,78 @@ async function createHarness(runtime = new FakeOmpRuntime(), scheduler = new Man
   return { connection, events, runtime, scheduler };
 }
 
+async function createHostToolHarness(runtime = new FakeOmpRuntime()) {
+  const connection = await createOmpProvider({
+    runtime,
+    timelineScheduler: new ManualScheduler(),
+    environment: TEST_RUNTIME_ENV,
+    mcpConnector: async () => ({
+      listTools: async () => ({
+        tools: [{ name: "read", inputSchema: { type: "object" } }],
+      }),
+      callTool: async () => ({ content: [{ type: "text", text: "bootstrap result" }] }),
+      close: async () => {},
+    }),
+  }).connect({
+    versions: [1],
+    capabilities: ["prompt.message", "prompt.steer", "session.configure"],
+  });
+  const events = new EventLog();
+  connection.onEvent((event) => events.push(event));
+  return { connection, events, runtime };
+}
+
+async function openHostToolSession(
+  connection: ProviderConnection,
+  events: EventLog,
+  requestId = "host-tool-open",
+): Promise<void> {
+  await connection.send({
+    type: "session.open",
+    requestId,
+    sessionId: "session-1",
+    config: {
+      cwd: "/repo",
+      env: {},
+      mcpServers: { repo: { type: "stdio", command: "repo" } },
+      model: MODEL_PUBLIC_ID,
+      mode: "full",
+      thinkingOption: "medium",
+      settings: {},
+      persist: false,
+    },
+    history: "skip",
+  });
+  const outcome = await events.waitFor(
+    (event) =>
+      (event.type === "session.ready" && event.requestId === requestId) ||
+      (event.type === "request.failed" && event.requestId === requestId),
+  );
+  if (outcome.type === "request.failed") throw new Error(outcome.error.message);
+}
+
+async function expectBootstrapHostToolTerminal(session: FakeOmpSession, id: string): Promise<void> {
+  const observed = Promise.withResolvers<void>();
+  session.hostToolResultObserved = observed.resolve;
+  session.emit({
+    type: "host_tool_call",
+    id,
+    toolCallId: `${id}-tool-call`,
+    toolName: "mcp__repo_read",
+    arguments: { phase: id },
+  });
+  await observed.promise;
+  expect(session.hostToolResults.filter((result) => result.id === id)).toEqual([
+    expect.objectContaining({
+      type: "host_tool_result",
+      id,
+      result: expect.objectContaining({
+        content: [{ type: "text", text: "bootstrap result" }],
+      }),
+    }),
+  ]);
+}
+
 async function openSession(
   connection: ProviderConnection,
   events: EventLog,
@@ -936,7 +1008,7 @@ describe("OMP direct provider", () => {
 
     const connection = await provider.connect({
       versions: [1],
-      capabilities: ["prompt.message", "provider.admin"],
+      capabilities: ["prompt.message", "permission.tool_policy", "provider.admin"],
     });
     expect(connection.capabilities).toEqual(["prompt.message"]);
     await connection.close();
@@ -1223,6 +1295,7 @@ describe("OMP direct provider", () => {
       versions: [1],
       capabilities: ["prompt.message", "permission.tool_policy"],
     });
+    expect(connection.capabilities).not.toContain("permission.tool_policy");
     const events = new EventLog();
     connection.onEvent((event) => events.push(event));
     await connection.send({
@@ -1244,11 +1317,7 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "unsupported-policy",
     );
     expect(preapprovalFailure).toEqual(
-      expect.objectContaining({
-        error: expect.objectContaining({
-          message: expect.stringContaining("exact MCP policy"),
-        }),
-      }),
+      expect.objectContaining({ error: { message: "OMP provider request failed" } }),
     );
     await connection.send({
       type: "session.open",
@@ -4388,6 +4457,111 @@ describe("OMP direct provider", () => {
       await registry.shutdown();
       mcpServer.stop(true);
     }
+  });
+  test("routes one host-tool result while initial host tools bind", async () => {
+    const runtime = new FakeOmpRuntime();
+    const bindGate = Promise.withResolvers<void>();
+    const bindObserved = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      session.hostToolBindGate = bindGate.promise;
+      session.hostToolBindObserved = bindObserved.resolve;
+    };
+    const { connection, events } = await createHostToolHarness(runtime);
+
+    const opening = openHostToolSession(connection, events, "host-tool-open-bind");
+    await bindObserved.promise;
+    const session = sessionAt(runtime);
+    await expectBootstrapHostToolTerminal(session, "open-bind-call");
+    session.emit({
+      type: "host_tool_call",
+      id: "open-bind-cancelled",
+      toolCallId: "open-bind-cancelled-tool-call",
+      toolName: "mcp__repo_read",
+      arguments: {},
+    });
+    session.emit({
+      type: "host_tool_cancel",
+      id: "open-bind-cancel",
+      targetId: "open-bind-cancelled",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(session.hostToolResults.some((result) => result.id === "open-bind-cancelled")).toBe(
+      false,
+    );
+    session.hostToolBindGate = null;
+    bindGate.resolve();
+    await opening;
+    await expectBootstrapHostToolTerminal(session, "open-bind-handoff-call");
+    await connection.close();
+  });
+
+  test("routes one host-tool result while initial state reconciles", async () => {
+    const runtime = new FakeOmpRuntime();
+    const stateGate = Promise.withResolvers<void>();
+    const stateObserved = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      session.stateGate = stateGate.promise;
+      session.stateObserved = stateObserved.resolve;
+    };
+    const { connection, events } = await createHostToolHarness(runtime);
+
+    const opening = openHostToolSession(connection, events, "host-tool-open-state");
+    await stateObserved.promise;
+    const session = sessionAt(runtime);
+    await expectBootstrapHostToolTerminal(session, "open-state-call");
+    session.stateGate = null;
+    stateGate.resolve();
+    await opening;
+    await connection.close();
+  });
+
+  test("routes one host-tool result while recovered host tools bind", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHostToolHarness(runtime);
+    await openHostToolSession(connection, events, "host-tool-recovery-bind-open");
+    const bindGate = Promise.withResolvers<void>();
+    const bindObserved = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      if (runtime.sessions.length !== 2) return;
+      session.hostToolBindGate = bindGate.promise;
+      session.hostToolBindObserved = bindObserved.resolve;
+    };
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    const prompting = startPrompt(connection, events, "host-tool-recovery-bind", "continue");
+    await bindObserved.promise;
+    const recovered = sessionAt(runtime, 1);
+    await expectBootstrapHostToolTerminal(recovered, "recovery-bind-call");
+    recovered.hostToolBindGate = null;
+    bindGate.resolve();
+    const turnId = turnIdFrom(await prompting);
+    await finishTurn(events, recovered, turnId);
+    await connection.close();
+  });
+
+  test("routes one host-tool result while recovered state reconciles", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHostToolHarness(runtime);
+    await openHostToolSession(connection, events, "host-tool-recovery-state-open");
+    const stateGate = Promise.withResolvers<void>();
+    const stateObserved = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      if (runtime.sessions.length !== 2) return;
+      session.stateGate = stateGate.promise;
+      session.stateObserved = stateObserved.resolve;
+    };
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    const prompting = startPrompt(connection, events, "host-tool-recovery-state", "continue");
+    await stateObserved.promise;
+    const recovered = sessionAt(runtime, 1);
+    await expectBootstrapHostToolTerminal(recovered, "recovery-state-call");
+    recovered.stateGate = null;
+    stateGate.resolve();
+    const turnId = turnIdFrom(await prompting);
+    await finishTurn(events, recovered, turnId);
+    await connection.close();
   });
   test("invalidates the runtime when a terminal host-tool frame cannot be queued", async () => {
     const runtime = new FakeOmpRuntime();

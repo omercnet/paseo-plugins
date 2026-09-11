@@ -15,7 +15,6 @@ import type { OmpTimelineScheduler } from "./timeline-projector";
 const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.message": true,
   "prompt.steer": true,
-  "permission.tool_policy": true,
   "session.configure": true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {

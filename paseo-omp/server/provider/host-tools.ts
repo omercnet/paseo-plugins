@@ -472,17 +472,25 @@ export class OmpHostToolsBridge {
   async bind(runtime: OmpRuntimeSession): Promise<void> {
     if (this.closePromise) throw new Error("OMP host tool bridge is closed");
     this.detach();
-    const accepted = await runtime.setHostTools([...this.definitions]);
-    const expected = this.definitions.map(({ name }) => name);
-    const uniqueAccepted = new Set(accepted);
-    if (
-      accepted.length !== expected.length ||
-      uniqueAccepted.size !== accepted.length ||
-      expected.some((name) => !uniqueAccepted.has(name))
-    ) {
-      throw new OmpPublicError("OMP rejected the configured host tool catalog");
-    }
     this.runtime = runtime;
+    try {
+      const accepted = await runtime.setHostTools([...this.definitions]);
+      const expected = this.definitions.map(({ name }) => name);
+      const uniqueAccepted = new Set(accepted);
+      if (
+        accepted.length !== expected.length ||
+        uniqueAccepted.size !== accepted.length ||
+        expected.some((name) => !uniqueAccepted.has(name))
+      ) {
+        throw new OmpPublicError("OMP rejected the configured host tool catalog");
+      }
+      if (this.runtime !== runtime) {
+        throw new Error("OMP runtime detached during host tool binding");
+      }
+    } catch (error) {
+      if (this.runtime === runtime) this.detach();
+      throw error;
+    }
   }
 
   onFatal(handler: (error: Error) => void): void {

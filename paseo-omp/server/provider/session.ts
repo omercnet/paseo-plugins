@@ -336,13 +336,17 @@ export class OmpProviderSession {
     });
     let native: OmpRuntimeSession | undefined;
     let unsubscribeBootstrap = () => {};
+    let bootstrapConfigRevision = 0;
     try {
       native = await runtime.startSession(startOptions);
-      await hostTools.bind(native);
-      let bootstrapConfigRevision = 0;
       unsubscribeBootstrap = native.onEvent((event) => {
+        if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+          hostTools.handle(event);
+          return;
+        }
         if (isRuntimeConfigEvent(event)) bootstrapConfigRevision += 1;
       });
+      await hostTools.bind(native);
       const [initialState, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
         native.getAvailableModels(),
@@ -409,6 +413,8 @@ export class OmpProviderSession {
         environment,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
       };
+      unsubscribeBootstrap();
+      unsubscribeBootstrap = () => {};
       const session = new OmpProviderSession(
         input.sessionId,
         native,
@@ -430,8 +436,7 @@ export class OmpProviderSession {
         emit,
         scheduler,
       );
-      unsubscribeBootstrap();
-      unsubscribeBootstrap = () => {};
+
       if (bootstrapConfigRevision !== reconciledConfigRevision) {
         session.configRefreshDirty = true;
       }
@@ -1094,6 +1099,10 @@ export class OmpProviderSession {
     let bootstrapConfigRevision = 0;
     try {
       unsubscribeBootstrap = recovered.onEvent((event) => {
+        if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+          this.hostTools.handle(event);
+          return;
+        }
         if (isRuntimeConfigEvent(event)) bootstrapConfigRevision += 1;
       });
       await this.hostTools.bind(recovered);
@@ -1131,13 +1140,14 @@ export class OmpProviderSession {
       this.generation += 1;
       this.runtimeDead = null;
       this.runtimeDisposal = null;
+      unsubscribeBootstrap();
+      unsubscribeBootstrap = () => {};
       this.bindRuntime(recovered);
       if (!this.publishCommittedConfig(state, recovered, this.generation, true)) {
         throw new Error("OMP session changed while recovery configuration was pending");
       }
       this.recoveryUsesNativeConfig = false;
-      unsubscribeBootstrap();
-      unsubscribeBootstrap = () => {};
+
       if (bootstrapConfigRevision !== reconciledConfigRevision) {
         this.scheduleCommittedConfigRefresh();
       }
