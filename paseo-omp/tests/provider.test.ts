@@ -4592,7 +4592,11 @@ describe("OMP direct provider", () => {
                 type: "tool_execution_start",
                 toolCallId: "buffered-large-tool",
                 toolName: "read",
-                args: Array.from({ length: 513 }, (_, index) => `buffered-${index}`),
+                args: Array.from({ length: 513 }, (_, index) => ({
+                  a: `buffered-a-${index}`,
+                  b: `buffered-b-${index}`,
+                  c: `buffered-c-${index}`,
+                })),
               });
             }
           } else if (type === "get_branch_messages") {
