@@ -23,6 +23,8 @@ const BEARER_CREDENTIAL = /\bBearer\s+[A-Za-z0-9._~+/=-]{1,}/giu;
 const CREDENTIAL_ASSIGNMENT =
   /\b(api[ _-]?key|access[ _-]?token|refresh[ _-]?token|authorization|cookie|credential|password|private[ _-]?key|secret|session[ _-]?token)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
 const TOKEN_CREDENTIAL = /\b(?:sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_-]{8,}\b/gu;
+const TOKEN_CREDENTIAL_AT_END =
+  /(?:^|[^A-Za-z0-9_])(?:sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_-]{8,}$/u;
 const INCOMPLETE_TOKEN_CREDENTIAL =
   /(?:^|[^A-Za-z0-9_])((?:sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_-]{0,7})$/u;
 const STREAM_CREDENTIAL_MARKERS = [
@@ -245,6 +247,9 @@ export class OmpPublicDataFilter {
     maxBytes = MAX_PUBLIC_STRING_BYTES,
   ): { text: string; pending: boolean } {
     if (final) return { text: this.text(input, maxBytes), pending: false };
+    if (TOKEN_CREDENTIAL_AT_END.test(input)) {
+      return { text: this.text(input, maxBytes), pending: false };
+    }
     let holdback = 0;
     for (const value of this.sensitiveValues) {
       const table = this.sensitivePrefixTables.get(value);

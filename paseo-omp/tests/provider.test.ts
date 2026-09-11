@@ -1026,14 +1026,14 @@ describe("OMP direct provider", () => {
     const firstAssistant = events.find(
       (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
     );
-    const firstReasoning = events.find(
+    const firstReasoning = events.findLast(
       (event) => event.type === "timeline.item" && event.item.type === "reasoning",
     );
     expect(firstAssistant).toEqual(
       expect.objectContaining({ item: expect.objectContaining({ text: "Hello" }) }),
     );
     expect(firstReasoning).toEqual(
-      expect.objectContaining({ item: expect.objectContaining({ text: "Thinking" }) }),
+      expect.objectContaining({ item: expect.objectContaining({ text: "Thinking more" }) }),
     );
     expect(firstTerminal).toEqual(expect.objectContaining({ state: "completed" }));
     const assistantSnapshots = events.flatMap((event) =>
