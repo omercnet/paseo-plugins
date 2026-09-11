@@ -3801,6 +3801,47 @@ describe("OMP direct provider", () => {
     expect(runtime.starts).toHaveLength(1);
     await expect(connection.close()).resolves.toBeUndefined();
   });
+  test("tombstones OmpRpcRuntime startup cleanup failures", async () => {
+    let starts = 0;
+    const runtime = new OmpRpcRuntime({
+      spawnProcess() {
+        starts += 1;
+        const child = new ProviderRpcChild(() => {});
+        queueMicrotask(() => child.write({ type: "ready", protocolVersion: 1 }));
+        return child.asChildProcess();
+      },
+      terminateProcessTree: () => Promise.resolve(false),
+    });
+    const connection = await createOmpProvider({ runtime }).connect({
+      versions: [1],
+      capabilities: ["prompt.message"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    for (const requestId of ["startup-failure", "blocked-startup-reopen"]) {
+      await connection.send({
+        type: "session.open",
+        requestId,
+        sessionId: "startup-failure-session",
+        config: {
+          cwd: "/repo",
+          env: { TEST_ENV: "test-value" },
+          mcpServers: {},
+          model: MODEL_PUBLIC_ID,
+          mode: "full",
+          settings: {},
+          persist: false,
+        },
+        history: "skip",
+      });
+      await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === requestId,
+      );
+    }
+    expect(starts).toBe(1);
+    await expect(connection.close()).resolves.toBeUndefined();
+  });
+
 
   test("close during open waits for the created runtime session cleanup", async () => {
     const runtime = new FakeOmpRuntime();

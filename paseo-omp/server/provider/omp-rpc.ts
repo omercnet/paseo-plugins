@@ -4,7 +4,13 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { boundedJsonBytes, OmpPublicDataFilter, OmpPublicError, utf8Bytes } from "./security";
+import {
+  boundedJsonBytes,
+  OmpCleanupFailure,
+  OmpPublicDataFilter,
+  OmpPublicError,
+  utf8Bytes,
+} from "./security";
 
 const READY_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -1533,7 +1539,15 @@ export class OmpRpcRuntime implements OmpRuntime {
       return new OmpRpcSession(process, removeAbortListener);
     } catch (error) {
       removeAbortListener();
-      await process.close().catch(() => undefined);
+      const cleanup = process.close();
+      try {
+        await cleanup;
+      } catch {
+        throw new OmpCleanupFailure(
+          "OMP runtime startup cleanup failed",
+          cleanup.catch(() => undefined),
+        );
+      }
       throw error;
     }
   }
