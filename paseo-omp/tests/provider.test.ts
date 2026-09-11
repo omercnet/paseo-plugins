@@ -421,7 +421,7 @@ async function openSession(
       env,
       systemPrompt: "Be precise",
       mcpServers: {},
-      model: "anthropic/claude-sonnet-4-5",
+      model: MODEL_PUBLIC_ID,
       mode: "full",
       thinkingOption: "medium",
       settings: {},
@@ -567,12 +567,12 @@ describe("OMP direct provider", () => {
     expect(runtime.starts[0]).toEqual(
       expect.objectContaining({
         cwd: "/repo",
-        model: "anthropic/claude-sonnet-4-5",
         mode: "full",
         thinkingOption: "medium",
         systemPrompt: "Be precise",
       }),
     );
+    expect(runtime.starts[0]?.model).toBeUndefined();
     expect(connection.capabilities).toEqual([
       "prompt.message",
       "prompt.steer",
@@ -580,6 +580,35 @@ describe("OMP direct provider", () => {
     ]);
     await connection.close();
   });
+  test("rejects unadvertised raw model identifiers", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHarness(runtime);
+    await connection.send({
+      type: "session.open",
+      requestId: "raw-model-open",
+      sessionId: "raw-model-session",
+      config: {
+        cwd: "/repo",
+        env: { TEST_ENV: "test-value" },
+        mcpServers: {},
+        model: "anthropic/claude-sonnet-4-5",
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "raw-model-open",
+    );
+    expect(failure).toEqual(
+      expect.objectContaining({ error: { message: "OMP model selection is unavailable" } }),
+    );
+    expect(events.some((event) => event.type === "session.ready")).toBe(false);
+    expect(sessionAt(runtime).modelChanges).toHaveLength(0);
+    await connection.close();
+  });
+
 
   test("rejects malformed capabilities and filters unsupported capability names", async () => {
     const provider = createOmpProvider({ runtime: new FakeOmpRuntime() });
@@ -3251,7 +3280,8 @@ describe("OMP direct provider", () => {
     for (const message of [
       "Authorization=Basic basic-equals-secret",
       "Authorization: Token token-scheme-secret",
-      "Authorization: Digest digest-alpha\r\n digest-beta",
+      "Authorization: Digest username=user, nonce=digest-nonce; response=digest-response\r\n\tqop=auth\nFollowing line",
+      "Authorization=AWS4-HMAC-SHA256 Credential=aws-credential, SignedHeaders=host, Signature=aws-signature\nNext line",
     ]) {
       session.emit({ type: "notice", level: "warning", message });
     }
@@ -3329,8 +3359,12 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("basic-token-not-from-env");
     expect(visible).not.toContain("basic-equals-secret");
     expect(visible).not.toContain("token-scheme-secret");
-    expect(visible).not.toContain("digest-alpha");
-    expect(visible).not.toContain("digest-beta");
+    expect(visible).not.toContain("digest-nonce");
+    expect(visible).not.toContain("digest-response");
+    expect(visible).not.toContain("aws-credential");
+    expect(visible).not.toContain("aws-signature");
+    expect(visible).toContain("Following line");
+    expect(visible).toContain("Next line");
     expect(
       events.some(
         (event) =>

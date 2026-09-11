@@ -831,7 +831,7 @@ class OmpRpcProcess {
     this.exitPromise = exited.promise;
     this.child.once("close", (code, signal) => {
       this.exited = true;
-      this.startTreeCleanup();
+      void this.startTreeCleanup();
       const detail = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
       const error = new Error(`OMP RPC process exited (${detail})`);
       this.rejectReady(error);

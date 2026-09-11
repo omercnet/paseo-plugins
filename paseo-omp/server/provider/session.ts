@@ -10,7 +10,6 @@ import {
   nativeOmpModelId,
   OMP_MODES,
   ompModelId,
-  parseOmpModelId,
   thinkingForModel,
 } from "./catalog";
 import type {
@@ -288,7 +287,7 @@ export class OmpProviderSession {
     const startOptions: OmpStartOptions = {
       cwd: input.config.cwd,
       env: input.config.env,
-      ...(input.config.model?.startsWith("omp:model:") ? {} : { model: input.config.model }),
+      // Model selection is authorized only after this runtime reports its exact catalog.
       mode: "full",
       thinkingOption: input.config.thinkingOption,
       systemPrompt: input.config.systemPrompt,
@@ -314,11 +313,13 @@ export class OmpProviderSession {
       const nativeModelsByPublicId = new Map(
         nativeModels.map((model) => [ompModelId(model), model] as const),
       );
-      if (input.config.model?.startsWith("omp:model:")) {
+      if (input.config.model) {
         const selected = nativeModelsByPublicId.get(input.config.model);
         if (!selected) throw new OmpPublicError("OMP model selection is unavailable");
-        await native.setModel(selected.provider, selected.id);
-        state = await native.getState();
+        if (state.model?.provider !== selected.provider || state.model.id !== selected.id) {
+          await native.setModel(selected.provider, selected.id);
+          state = await native.getState();
+        }
       }
       const currentModel = state.model
         ? nativeModels.find(
@@ -573,10 +574,8 @@ export class OmpProviderSession {
       }
       if (input.changes.model) {
         const nativeModel = this.nativeModelsByPublicId.get(input.changes.model);
-        const model = nativeModel
-          ? { provider: nativeModel.provider, modelId: nativeModel.id }
-          : parseOmpModelId(input.changes.model);
-        await this.runtime.setModel(model.provider, model.modelId);
+        if (!nativeModel) throw new OmpPublicError("OMP model selection is unavailable");
+        await this.runtime.setModel(nativeModel.provider, nativeModel.id);
       }
       if (input.changes.thinkingOption) {
         await this.runtime.setThinkingLevel(input.changes.thinkingOption);
