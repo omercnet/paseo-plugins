@@ -1,0 +1,68 @@
+{
+  "name": "@omercnet/paseo-gas-city",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "A Paseo control plane for observing and operating Gas City supervisors.",
+  "license": "MIT",
+  "author": "Omer Cohen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "paseo-gas-city"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/paseo-gas-city#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "bun@1.4.0",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "gas-city",
+    "orchestration",
+    "coding-agents"
+  ],
+  "files": [
+    "bun.lock",
+    "CHANGELOG.md",
+    "icon.svg",
+    "LICENSE",
+    "README.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "server",
+    "shared",
+    "paseo-plugin.json"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "typecheck": "tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.scripts.json",
+    "package:release": "bun scripts/package-release.ts",
+    "verify:package": "bun scripts/verify-package.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@getpaseo/cli": "0.8.0",
+    "@getpaseo/client": "0.8.0",
+    "@getpaseo/plugin": "0.8.0",
+    "@getpaseo/protocol": "0.8.0",
+    "@tanstack/react-query": "^5.102.3",
+    "@types/bun": "^1.4.0",
+    "@types/react": "~19.2.0",
+    "fflate": "^0.8.3",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}
