@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v0.0.1...paseo-beads-v0.1.0) (2026-09-11)
+
+
+### Features
+
+* **paseo-beads:** add workspace bead viewer ([#13](https://github.com/omercnet/paseo-plugins/issues/13)) ([96e02e5](https://github.com/omercnet/paseo-plugins/commit/96e02e5521521b738cf11e8240d3926849898c3e))
+
 ## 0.0.1 (2026-09-11)
 
 ### Features
