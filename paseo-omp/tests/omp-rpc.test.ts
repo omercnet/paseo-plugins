@@ -179,6 +179,46 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("accepts model, thinking, and fallback session events", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const frames: OmpRpcEvent[] = [
+      { type: "model_changed" },
+      { type: "thinking_level_changed" },
+      {
+        type: "retry_fallback_applied",
+        from: "anthropic/claude-sonnet-4-5",
+        to: "openai/gpt-5.4:high",
+        role: "default",
+      },
+      {
+        type: "retry_fallback_succeeded",
+        model: "openai/gpt-5.4:high",
+        role: "default",
+      },
+    ];
+
+    for (const frame of frames) {
+      const received = nextEvent((listener) => session.onEvent(listener));
+      child.write(frame);
+      await expect(received).resolves.toEqual(frame);
+    }
+    await session.close();
+  });
+
   test("passes an exact native session handle to OMP resume", async () => {
     const child = new FakeRpcChild();
     const launches: OmpSpawnRequest[] = [];
