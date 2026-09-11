@@ -22,6 +22,11 @@
       "package-name": "fresh-worktrees",
       "include-component-in-tag": true
     },
+    "paseo-beads": {
+      "release-type": "node",
+      "package-name": "paseo-beads",
+      "include-component-in-tag": true
+    },
     "paseo-dracula": {
       "release-type": "node",
       "package-name": "paseo-dracula",
