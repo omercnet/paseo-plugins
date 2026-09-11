@@ -31,6 +31,10 @@ jobs:
             check: true
             coverage: true
             verify-package: true
+          - plugin: paseo-gas-city
+            check: true
+            coverage: true
+            verify-package: true
           - plugin: pr-radar
             check: true
     defaults:

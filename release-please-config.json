@@ -37,6 +37,11 @@
       "package-name": "shared-browser",
       "include-component-in-tag": true
     },
+    "paseo-gas-city": {
+      "release-type": "node",
+      "package-name": "paseo-gas-city",
+      "include-component-in-tag": true
+    },
     "pr-radar": {
       "release-type": "node",
       "package-name": "pr-radar",
