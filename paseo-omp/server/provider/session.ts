@@ -98,6 +98,7 @@ type ActiveTurn = {
   nativeActivity: boolean;
   localOnlyDisabled: boolean;
   localOnlyEligible: boolean;
+  awaitingPermissionEvidence: boolean;
   nativeRequestId?: string;
   localOnlyTimer?: unknown;
   terminalizing: boolean;
@@ -150,7 +151,7 @@ function promptPayload(input: SessionPromptInput): OmpPromptPayload {
       continue;
     }
     if (part.type === "image") {
-      images.push({ data: part.data, mimeType: part.mimeType });
+      images.push({ type: "image", data: part.data, mimeType: part.mimeType });
       continue;
     }
     throw new OmpPublicError("OMP supports text messages only");
@@ -261,7 +262,12 @@ export class OmpProviderSession {
   private permissionSequence = 0;
   private readonly pendingPermissions = new Map<
     string,
-    { nativeId: string; request: Extract<OmpRpcEvent, { type: "extension_ui_request" }> }
+    {
+      nativeId: string;
+      header: string;
+      timer?: unknown;
+      request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>;
+    }
   >();
 
   private constructor(
@@ -542,6 +548,7 @@ export class OmpProviderSession {
       promptResultEmitted: false,
       started: false,
       terminal: false,
+      awaitingPermissionEvidence: false,
       interrupted: false,
       starting: true,
       nativeActivity: false,
@@ -573,7 +580,7 @@ export class OmpProviderSession {
       turn.starting = false;
       const bufferedEvents = turn.bufferedEvents.splice(0);
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
-      if (acknowledgement.agentInvoked !== true) {
+      if (acknowledgement.agentInvoked === false) {
         turn.localOnlyEligible = true;
         this.scheduleLocalOnlyCompletion(turn);
       }
@@ -948,9 +955,18 @@ export class OmpProviderSession {
   async permission(input: SessionPermissionInput): Promise<void> {
     const pending = this.pendingPermissions.get(input.permissionId);
     if (!pending) throw new OmpPublicError("Unknown OMP permission request");
-    const response = this.extensionUiResponse(pending.nativeId, pending.request, input.response);
-    await this.runtime.respondToExtensionUi(response);
     this.pendingPermissions.delete(input.permissionId);
+    if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+    try {
+      const response = this.extensionUiResponse(pending, input.response);
+      await this.runtime.respondToExtensionUi(response);
+    } catch (error) {
+      if (!this.closed && !this.pendingPermissions.has(input.permissionId)) {
+        pending.timer = undefined;
+        this.pendingPermissions.set(input.permissionId, pending);
+      }
+      throw error;
+    }
     this.emit({
       type: "session.permission_resolved",
       sessionId: this.id,
@@ -1229,7 +1245,9 @@ export class OmpProviderSession {
       event.type === "todo_reminder" ||
       event.type === "todo_auto_clear" ||
       event.type === "auto_compaction_start" ||
-      event.type === "auto_compaction_end"
+      event.type === "auto_compaction_end" ||
+      event.type === "compaction_start" ||
+      event.type === "compaction_end"
     ) {
       this.projector.projectPassive(event);
       return;
@@ -1291,21 +1309,33 @@ export class OmpProviderSession {
       }
       return;
     }
-    if (isNativeTurnActivity(event)) {
-      turn.nativeActivity = true;
-      this.cancelLocalOnlyCompletion(turn);
-    }
-    if (event.type === "message_end" && event.message.role === "user") {
-      this.projectUserEcho(turn, event.message);
-      return;
+    if (
+      (event.type === "message_start" ||
+        event.type === "message_update" ||
+        event.type === "message_end") &&
+      event.message.role === "assistant"
+    ) {
+      turn.awaitingPermissionEvidence = false;
     }
     if (event.type === "agent_end") {
+      const hasAssistantEvidence =
+        event.messages?.some((message) => message.role === "assistant") ?? false;
+      if (turn.awaitingPermissionEvidence && !hasAssistantEvidence) return;
+      if (hasAssistantEvidence) turn.awaitingPermissionEvidence = false;
       if (event.isTerminal === false || turn.terminalizing) return;
       if (turn.steersInFlight > 0) {
         turn.deferredAgentEnd = event;
         return;
       }
       this.beginTerminalization(turn, event);
+      return;
+    }
+    if (isNativeTurnActivity(event)) {
+      turn.nativeActivity = true;
+      this.cancelLocalOnlyCompletion(turn);
+    }
+    if (event.type === "message_end" && event.message.role === "user") {
+      this.projectUserEcho(turn, event.message);
       return;
     }
     this.projector.project(event, turn.turnId);
@@ -1484,18 +1514,35 @@ export class OmpProviderSession {
     this.emit({
       type: "session.commands",
       sessionId: this.id,
-      commands: commands.map((command) => ({
-        name: command.name,
-        description: this.dataFilter.text(command.description ?? `Run /${command.name}`, 4_096),
-        ...(command.input?.hint
-          ? { argumentHint: this.dataFilter.text(command.input.hint, 1_024) }
-          : {}),
-      })),
+      commands: commands.map((command) => {
+        const name = this.dataFilter.text(command.name, 256);
+        return {
+          name,
+          description: this.dataFilter.text(command.description ?? `Run /${name}`, 4_096),
+          ...(command.input?.hint
+            ? { argumentHint: this.dataFilter.text(command.input.hint, 1_024) }
+            : {}),
+        };
+      }),
     });
   }
 
   private publishPermission(request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>): void {
+    if (request.method === "select" && !request.options?.length) {
+      this.handleRuntimeFailure();
+      return;
+    }
     if (this.pendingPermissions.size >= MAX_PENDING_PERMISSIONS) {
+      this.emit({
+        type: "session.notice",
+        sessionId: this.id,
+        notice: {
+          id: `omp:permission-saturated:${this.permissionSequence + 1}`,
+          severity: "warning",
+          title: "OMP question canceled",
+          description: "Too many OMP questions are already pending",
+        },
+      });
       void this.runtime
         .respondToExtensionUi({
           type: "extension_ui_response",
@@ -1507,7 +1554,7 @@ export class OmpProviderSession {
     }
     this.permissionSequence += 1;
     const id = `omp:permission:${this.permissionSequence}`;
-    this.pendingPermissions.set(id, { nativeId: request.id, request });
+    const header = this.dataFilter.text(request.title ?? "OMP question", 4_096);
     const options = request.options?.map((label, index) => ({
       label: this.dataFilter.text(label, 4_096),
       ...(request.optionDetails?.[index]?.description
@@ -1519,28 +1566,21 @@ export class OmpProviderSession {
           }
         : {}),
     }));
-    const actions =
-      request.method === "select"
-        ? (options ?? []).map((option, index) => ({
-            id: `option:${index}`,
-            label: option.label,
-            behavior: "allow" as const,
-            variant: index === 0 ? ("primary" as const) : ("secondary" as const),
-          }))
-        : [
-            {
-              id: "allow",
-              label: request.method === "confirm" ? "Confirm" : "Submit",
-              behavior: "allow" as const,
-              variant: "primary" as const,
-            },
-            {
-              id: "deny",
-              label: "Cancel",
-              behavior: "deny" as const,
-              variant: "secondary" as const,
-            },
-          ];
+    const pending: {
+      nativeId: string;
+      header: string;
+      timer?: unknown;
+      request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>;
+    } = { nativeId: request.id, header, request };
+    if (request.timeout !== undefined && request.timeout > 0) {
+      pending.timer = this.scheduler.set(() => {
+        if (this.pendingPermissions.get(id) !== pending) return;
+        this.pendingPermissions.delete(id);
+        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId: id });
+      }, request.timeout);
+    }
+    this.pendingPermissions.set(id, pending);
+    if (this.activeTurn) this.activeTurn.awaitingPermissionEvidence = true;
     this.emit({
       type: "session.permission",
       sessionId: this.id,
@@ -1548,20 +1588,25 @@ export class OmpProviderSession {
         id,
         name: `omp.${request.method}`,
         kind: "question",
-        title: this.dataFilter.text(
-          request.title ?? (request.method === "open_url" ? "Open URL" : "OMP input"),
-          4_096,
-        ),
+        title: header,
         ...(request.message
           ? { description: this.dataFilter.text(request.message, 64 * 1024) }
           : {}),
         input: {
-          method: request.method,
-          ...(options ? { options } : {}),
-          ...(request.placeholder
-            ? { placeholder: this.dataFilter.text(request.placeholder, 4_096) }
-            : {}),
-          ...(request.prefill ? { prefill: this.dataFilter.text(request.prefill) } : {}),
+          questions: [
+            {
+              header,
+              question: this.dataFilter.text(
+                request.message ?? request.title ?? "OMP input",
+                64 * 1024,
+              ),
+              ...(options ? { options } : {}),
+              ...(request.placeholder
+                ? { placeholder: this.dataFilter.text(request.placeholder, 4_096) }
+                : {}),
+              ...(request.prefill ? { prefill: this.dataFilter.text(request.prefill) } : {}),
+            },
+          ],
           ...(request.url
             ? { url: this.dataFilter.text(request.launchUrl ?? request.url, 16_384) }
             : {}),
@@ -1569,16 +1614,28 @@ export class OmpProviderSession {
             ? { instructions: this.dataFilter.text(request.instructions, 64 * 1024) }
             : {}),
         },
-        actions,
+        actions: [
+          {
+            id: "submit",
+            label: request.method === "confirm" ? "Confirm" : "Submit",
+            behavior: "allow",
+            variant: "primary",
+          },
+          { id: "cancel", label: "Cancel", behavior: "deny", variant: "secondary" },
+        ],
       },
     });
   }
 
   private extensionUiResponse(
-    nativeId: string,
-    request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>,
+    pending: {
+      nativeId: string;
+      header: string;
+      request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>;
+    },
     response: ProviderPermissionResponse,
   ): OmpExtensionUiResponse {
+    const { nativeId, request, header } = pending;
     if (request.method === "confirm") {
       return {
         type: "extension_ui_response",
@@ -1589,13 +1646,6 @@ export class OmpProviderSession {
     if (response.behavior === "deny") {
       return { type: "extension_ui_response", id: nativeId, cancelled: true };
     }
-    if (request.method === "select") {
-      const match = /^option:(\d+)$/u.exec(response.selectedActionId ?? "");
-      const index = match ? Number(match[1]) : -1;
-      const value = request.options?.[index];
-      if (value === undefined) throw new OmpPublicError("Invalid OMP selection response");
-      return { type: "extension_ui_response", id: nativeId, value };
-    }
     if (request.method === "open_url") {
       return {
         type: "extension_ui_response",
@@ -1603,8 +1653,16 @@ export class OmpProviderSession {
         value: request.launchUrl ?? request.url ?? "",
       };
     }
-    const value = response.updatedInput?.value;
-    if (typeof value !== "string") throw new OmpPublicError("OMP input response requires a value");
+    const answers = response.updatedInput?.answers;
+    if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+      throw new OmpPublicError("OMP question response requires answers");
+    }
+    const answer = answers[header];
+    const value = Array.isArray(answer) ? answer[0] : answer;
+    if (typeof value !== "string") throw new OmpPublicError("OMP question response is invalid");
+    if (request.method === "select" && !request.options?.includes(value)) {
+      throw new OmpPublicError("OMP selection response is invalid");
+    }
     return { type: "extension_ui_response", id: nativeId, value };
   }
 
@@ -1612,13 +1670,15 @@ export class OmpProviderSession {
     for (const [permissionId, pending] of this.pendingPermissions) {
       if (pending.nativeId !== nativeId) continue;
       this.pendingPermissions.delete(permissionId);
+      if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
       this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
       return;
     }
   }
 
   private resolveAllPermissions(): void {
-    for (const permissionId of this.pendingPermissions.keys()) {
+    for (const [permissionId, pending] of this.pendingPermissions) {
+      if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
       this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
     }
     this.pendingPermissions.clear();

@@ -105,8 +105,15 @@ const OmpAssistantMessageEventSchema = z
       .optional(),
   })
   .superRefine((event, context) => {
-    if (!event.type.startsWith("image_")) return;
-    const image = OmpContentPartSchema.safeParse(event.content);
+    const content = event.content;
+    const imageLike =
+      content !== null &&
+      typeof content === "object" &&
+      !Array.isArray(content) &&
+      "type" in content &&
+      content.type === "image";
+    if (!event.type.startsWith("image_") && !imageLike) return;
+    const image = OmpContentPartSchema.safeParse(content);
     if (!image.success || image.data.type !== "image") {
       context.addIssue({ code: "custom", message: "invalid image event" });
     }
@@ -121,6 +128,9 @@ const OmpMessageSchema = z.object({
   stopReason: boundedString(64).optional(),
   customType: NAME.optional(),
   display: z.boolean().optional(),
+  command: TEXT.optional(),
+  output: TEXT.optional(),
+  exitCode: z.number().int().nullable().optional(),
   details: z
     .unknown()
     .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096))
@@ -130,7 +140,10 @@ const OmpAvailableCommandSchema = z.object({
   name: NAME,
   aliases: z.array(NAME).max(32).optional(),
   description: boundedString(4_096).optional(),
-  input: z.object({ hint: boundedString(1_024).optional() }).optional(),
+  input: z
+    .object({ hint: boundedString(1_024).optional() })
+    .nullable()
+    .optional(),
   subcommands: z
     .array(
       z.object({
@@ -314,7 +327,7 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     .superRefine((request, context) => {
       const invalid = () =>
         context.addIssue({ code: "custom", message: "invalid extension UI request" });
-      if (request.method === "select" && (!request.title || !request.options)) invalid();
+      if (request.method === "select" && (!request.title || !request.options?.length)) invalid();
       if (request.method === "confirm" && (!request.title || request.message === undefined))
         invalid();
       if ((request.method === "input" || request.method === "editor") && !request.title) invalid();
@@ -332,6 +345,17 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     type: z.literal("prompt_result"),
     id: IDENTIFIER.optional(),
     agentInvoked: z.boolean(),
+  }),
+  z.object({
+    type: z.literal("compaction_start"),
+  }),
+  z.object({
+    type: z.literal("compaction_end"),
+    result: BoundedToolPayloadSchema.optional(),
+    aborted: z.boolean().optional(),
+    willRetry: z.boolean().optional(),
+    errorMessage: boundedString(4_096).optional(),
+    skipped: z.boolean().optional(),
   }),
   z.object({
     type: z.literal("auto_compaction_start"),
@@ -385,7 +409,7 @@ export interface OmpStartOptions {
 }
 
 export type OmpAvailableCommand = z.infer<typeof OmpAvailableCommandSchema>;
-export type OmpImage = { data: string; mimeType: string };
+export type OmpImage = { type: "image"; data: string; mimeType: string };
 export type OmpExtensionUiResponse =
   | { type: "extension_ui_response"; id: string; value: string }
   | { type: "extension_ui_response"; id: string; confirmed: boolean }
@@ -1022,6 +1046,10 @@ class OmpRpcProcess {
   private readonly listeners = new Set<(event: OmpRpcEvent) => void>();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly queuedWrites = new Map<string, number>();
+  private readonly pendingOneWayWrites = new Map<
+    string,
+    { reject(error: Error): void; timer: NodeJS.Timeout }
+  >();
   private readonly exitPromise: Promise<void>;
   private readonly resolveExit: () => void;
   private readonly resolveReady: (frame: ReadyFrame) => void;
@@ -1211,7 +1239,7 @@ class OmpRpcProcess {
     return this.startRequest(command, timeoutMs).promise;
   }
 
-  sendFrame(frame: Record<string, unknown>): Promise<void> {
+  sendFrame(frame: Record<string, unknown>, timeoutMs = this.requestTimeoutMs): Promise<void> {
     if (this.fatalError) return Promise.reject(this.fatalError);
     if (this.closed || this.exited || !this.child.stdin.writable) {
       return Promise.reject(new Error("OMP RPC process is closed"));
@@ -1230,10 +1258,22 @@ class OmpRpcProcess {
     }
     const token = randomUUID();
     const written = Promise.withResolvers<void>();
+    const timer = setTimeout(() => {
+      if (!this.pendingOneWayWrites.delete(token)) return;
+      this.releaseQueuedWrite(token);
+      const error = new Error("OMP RPC write timed out");
+      written.reject(error);
+      this.fail(error);
+    }, timeoutMs);
+    this.pendingOneWayWrites.set(token, { reject: written.reject, timer });
     this.queuedWrites.set(token, payload.byteLength);
     this.pendingWriteBytes += payload.byteLength;
     try {
       this.child.stdin.write(payload, (cause) => {
+        const pending = this.pendingOneWayWrites.get(token);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        this.pendingOneWayWrites.delete(token);
         this.releaseQueuedWrite(token);
         if (cause) {
           const error = new Error("OMP RPC input channel failed");
@@ -1244,6 +1284,8 @@ class OmpRpcProcess {
         }
       });
     } catch {
+      clearTimeout(timer);
+      this.pendingOneWayWrites.delete(token);
       this.releaseQueuedWrite(token);
       const error = new Error("OMP RPC input channel failed");
       written.reject(error);
@@ -1751,6 +1793,11 @@ class OmpRpcProcess {
       pending.reject(error);
     }
     this.pending.clear();
+    for (const pending of this.pendingOneWayWrites.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pendingOneWayWrites.clear();
     this.queuedWrites.clear();
     this.pendingWriteBytes = 0;
   }
@@ -1858,7 +1905,7 @@ class OmpRpcSession implements OmpRuntimeSession {
 
   async steer(message: string, images: readonly OmpImage[] = []): Promise<void> {
     const safeMessage = validateBoundedText(message, "steer", MAX_TEXT_LENGTH);
-    await this.process.request({
+    await this.process.sendFrame({
       type: "steer",
       message: safeMessage,
       ...(images.length > 0 ? { images } : {}),

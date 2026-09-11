@@ -15,6 +15,7 @@ const MAX_TODOS = 256;
 const MAX_TURN_NATIVE_IDENTITIES = 1_024;
 const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
 const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
+const MAX_IMAGE_MARKDOWN_LENGTH = 8 * 1024 * 1024 + 256;
 
 type Emit = (event: ProviderEvent) => void;
 
@@ -80,7 +81,7 @@ function blockText(
   return undefined;
 }
 
-function jsonRecord(value: JsonValue): Record<string, JsonValue> | undefined {
+function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, JsonValue>)
     : undefined;
@@ -99,12 +100,29 @@ function firstString(
 
 function displayText(value: JsonValue): string | undefined {
   if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const text = value
+      .flatMap((part) => {
+        const record = jsonRecord(part);
+        return record?.type === "text" && typeof record.text === "string" ? [record.text] : [];
+      })
+      .join("\n");
+    return text || (value.length > 0 ? JSON.stringify(value) : undefined);
+  }
   const record = jsonRecord(value);
-  const direct = firstString(record, "content", "text", "output", "message", "result", "log");
+  const direct = firstString(record, "text", "output", "message", "result", "log");
   if (direct !== undefined) return direct;
+  if (record?.content !== undefined) return displayText(record.content);
   if (value === null) return undefined;
   return JSON.stringify(value);
 }
+
+function resultDetails(value: JsonValue): Record<string, JsonValue> | undefined {
+  const envelope = jsonRecord(value);
+  return jsonRecord(envelope?.details);
+}
+
+type CompactionSlot = { id: string; retrying: boolean };
 
 export class OmpTimelineProjector {
   private readonly tools = new Map<string, ToolSnapshot>();
@@ -120,7 +138,10 @@ export class OmpTimelineProjector {
   private userSequence = 0;
   private customSequence = 0;
   private compactionSequence = 0;
-  private activeCompactionId: string | null = null;
+  private readonly compactions: Record<"auto" | "manual", CompactionSlot[]> = {
+    auto: [],
+    manual: [],
+  };
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -148,7 +169,9 @@ export class OmpTimelineProjector {
       event.type === "notice" ||
       event.type === "extension_ui_request" ||
       event.type === "auto_compaction_start" ||
-      event.type === "auto_compaction_end"
+      event.type === "auto_compaction_end" ||
+      event.type === "compaction_start" ||
+      event.type === "compaction_end"
     ) {
       this.projectPassive(event);
       return;
@@ -171,7 +194,7 @@ export class OmpTimelineProjector {
         this.scheduleFlush();
         return;
       case "message_end":
-        if (event.message.role === "custom") {
+        if (event.message.role === "custom" || event.message.role === "bashExecution") {
           this.publishCustomMessage(event.message);
           return;
         }
@@ -204,7 +227,7 @@ export class OmpTimelineProjector {
           output: null,
           retainedBytes,
           unsafePartialOutput: previous?.unsafePartialOutput ?? false,
-          silent: event.toolName.toLowerCase() === "ask",
+          silent: ["ask_user", "todo"].includes(event.toolName.toLowerCase()),
         };
         this.activeToolBytes += retainedBytes - (previous?.retainedBytes ?? 0);
         this.tools.set(event.toolCallId, snapshot);
@@ -247,19 +270,13 @@ export class OmpTimelineProjector {
               MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
               MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
             );
-        const snapshot: ToolSnapshot = {
-          ...previous,
-          output,
-          retainedBytes: previous.retainedBytes,
-        };
+        const snapshot: ToolSnapshot = { ...previous, output };
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
+        if (snapshot.name.toLowerCase() === "todo") this.publishTodoResult(snapshot);
         if (!snapshot.silent) {
-          if (event.isError) {
-            this.publishTool(snapshot, "failed", snapshot.output);
-          } else {
-            this.publishTool(snapshot, "completed");
-          }
+          if (event.isError) this.publishTool(snapshot, "failed", snapshot.output);
+          else this.publishTool(snapshot, "completed");
         }
         return;
       }
@@ -316,31 +333,56 @@ export class OmpTimelineProjector {
       });
       return;
     }
-    if (event.type === "auto_compaction_start") {
+    if (event.type === "auto_compaction_start" || event.type === "compaction_start") {
+      const trigger = event.type === "auto_compaction_start" ? "auto" : "manual";
+      const active = this.compactions[trigger];
+      const retrying = active.at(-1);
+      if (retrying?.retrying) {
+        retrying.retrying = false;
+        return;
+      }
       this.compactionSequence += 1;
-      this.activeCompactionId = `omp:compaction:${this.compactionSequence}`;
-      this.publish({
-        type: "compaction",
-        id: this.activeCompactionId,
-        status: "loading",
-        trigger: "auto",
-      });
+      const slot = { id: `omp:compaction:${this.compactionSequence}`, retrying: false };
+      active.push(slot);
+      this.publish({ type: "compaction", id: slot.id, status: "loading", trigger });
       return;
     }
-    if (event.type === "auto_compaction_end") {
-      const id = this.activeCompactionId ?? `omp:compaction:${++this.compactionSequence}`;
+    if (event.type === "auto_compaction_end" || event.type === "compaction_end") {
+      const trigger = event.type === "auto_compaction_end" ? "auto" : "manual";
+      const active = this.compactions[trigger];
+      const slot = active[0] ?? {
+        id: `omp:compaction:${++this.compactionSequence}`,
+        retrying: false,
+      };
+      if (event.willRetry) {
+        slot.retrying = true;
+        if (active.length === 0) active.push(slot);
+        return;
+      }
+      if (active[0] === slot) active.shift();
       const result = jsonRecord(this.dataFilter.json(event.result ?? null));
       const rawPreTokens = result?.preTokens ?? result?.tokensBefore;
+      if (event.aborted || event.errorMessage) {
+        this.publish({
+          type: "error",
+          id: slot.id,
+          message: this.dataFilter.text(
+            event.errorMessage ??
+              (event.aborted ? "OMP compaction canceled" : "OMP compaction failed"),
+            4_096,
+          ),
+        });
+        return;
+      }
       this.publish({
         type: "compaction",
-        id,
+        id: slot.id,
         status: "completed",
-        trigger: "auto",
+        trigger,
         ...(typeof rawPreTokens === "number" && Number.isFinite(rawPreTokens)
           ? { preTokens: Math.max(0, Math.trunc(rawPreTokens)) }
           : {}),
       });
-      this.activeCompactionId = null;
     }
   }
 
@@ -369,7 +411,10 @@ export class OmpTimelineProjector {
     for (const contentIndex of indexes) {
       const block = stream.blocks.get(contentIndex);
       if (!block?.text) continue;
-      const publicText = this.dataFilter.streamText(block.text, finalizeFallback);
+      const publicText =
+        block.kind === "image"
+          ? { text: block.text, pending: false }
+          : this.dataFilter.streamText(block.text, finalizeFallback);
       if (publicText.pending) stream.dirtyBlocks.add(contentIndex);
       if (!publicText.text || block.publishedText === publicText.text) continue;
       const suffix = block.kind === "reasoning" ? "reasoning" : "text";
@@ -549,10 +594,14 @@ export class OmpTimelineProjector {
     snapshot: StreamBlockSnapshot,
   ): void {
     if (!this.isValidContentIndex(contentIndex)) return;
-    let totalLength = utf8Bytes(snapshot.text);
-    for (const [index, block] of stream.blocks) {
-      if (index !== contentIndex) totalLength += utf8Bytes(block.text);
-      if (totalLength > MAX_STREAM_TEXT_LENGTH) return;
+    if (snapshot.kind === "image") {
+      if (utf8Bytes(snapshot.text) > MAX_IMAGE_MARKDOWN_LENGTH) return;
+    } else {
+      let totalLength = utf8Bytes(snapshot.text);
+      for (const [index, block] of stream.blocks) {
+        if (index !== contentIndex && block.kind !== "image") totalLength += utf8Bytes(block.text);
+        if (totalLength > MAX_STREAM_TEXT_LENGTH) return;
+      }
     }
     const previous = stream.blocks.get(contentIndex);
     if (previous?.kind === snapshot.kind && previous.text === snapshot.text) return;
@@ -600,6 +649,10 @@ export class OmpTimelineProjector {
 
   private publishCustomMessage(message: OmpMessage): void {
     if (message.display === false) return;
+    const rawType = message.customType ?? message.role;
+    const publicType = this.dataFilter.text(rawType, 256);
+    const lowerType = rawType.toLowerCase();
+    const details = jsonRecord(this.dataFilter.json(message.details ?? null));
     const content =
       typeof message.content === "string"
         ? message.content
@@ -615,58 +668,138 @@ export class OmpTimelineProjector {
               .filter((part): part is string => part !== undefined)
               .join("\n\n")
           : "";
-    if (!content) return;
-    this.customSequence += 1;
-    const customType = message.customType ?? "custom";
-    const lowerType = customType.toLowerCase();
-    const details = jsonRecord(this.dataFilter.json(message.details ?? null));
-    const id = `omp:custom:${this.customSequence}`;
-    if (lowerType.includes("bash") || lowerType.includes("shell") || lowerType.includes("python")) {
+    const nativeIdentity = message.id ?? message.entryId ?? message.responseId;
+    if (!nativeIdentity) this.customSequence += 1;
+    const id = nativeIdentity
+      ? `omp:custom:${createHash("sha256").update(nativeIdentity).digest("base64url").slice(0, 12)}`
+      : `omp:custom:${this.customSequence}`;
+    if (message.role === "bashExecution" || /bash|shell|python/u.test(lowerType)) {
+      const command = this.dataFilter.text(
+        message.command ?? firstString(details, "command", "input") ?? publicType,
+      );
+      const output = message.output ?? content;
       this.publish({
         type: "tool_call",
         id,
         callId: id,
-        name: customType,
+        name: publicType,
         detail: {
           type: "shell",
-          command: firstString(details, "command", "input") ?? customType,
+          command,
           ...(firstString(details, "cwd") ? { cwd: firstString(details, "cwd") } : {}),
-          output: this.dataFilter.text(content),
-          ...(typeof details?.exitCode === "number" ? { exitCode: details.exitCode } : {}),
+          ...(output ? { output: this.dataFilter.text(output) } : {}),
+          ...(typeof message.exitCode === "number" || message.exitCode === null
+            ? { exitCode: message.exitCode }
+            : typeof details?.exitCode === "number"
+              ? { exitCode: details.exitCode }
+              : {}),
         },
         status: "completed",
         error: null,
       });
       return;
     }
+    const advisor = lowerType.includes("advisor") || lowerType === "aside";
+    const sharedSeverity = firstString(details, "severity");
+    const sharedAttribution = firstString(details, "attribution", "advisor", "name", "source");
+    const noteLines = Array.isArray(details?.notes)
+      ? details.notes.flatMap((note) => {
+          const record = jsonRecord(note);
+          const noteText =
+            typeof note === "string"
+              ? note
+              : (firstString(record, "text", "content", "message") ?? "");
+          const severity = firstString(record, "severity") ?? sharedSeverity;
+          const attribution =
+            firstString(record, "attribution", "advisor", "name", "source") ?? sharedAttribution;
+          const prefix = [severity ? `[${severity}]` : undefined, attribution]
+            .filter(Boolean)
+            .join(" ");
+          const line = [prefix, noteText].filter(Boolean).join(": ");
+          return line ? [line] : [];
+        })
+      : typeof details?.notes === "string"
+        ? [
+            [
+              [sharedSeverity ? `[${sharedSeverity}]` : undefined, sharedAttribution]
+                .filter(Boolean)
+                .join(" "),
+              details.notes,
+            ]
+              .filter(Boolean)
+              .join(": "),
+          ]
+        : [];
+    const advisorMetadata = [sharedSeverity ? `[${sharedSeverity}]` : undefined, sharedAttribution]
+      .filter(Boolean)
+      .join(" ");
+    const text = [content, ...noteLines].filter(Boolean).join("\n\n") || advisorMetadata;
+    if (!text && !advisor) return;
     this.publish({
       type: "tool_call",
       id,
       callId: id,
-      name: customType,
+      name: publicType,
       detail: {
         type: "plain_text",
-        label: lowerType.includes("advisor") || lowerType === "aside" ? "Advisor" : customType,
-        text: this.dataFilter.text(content),
-        icon: lowerType.includes("advisor") || lowerType === "aside" ? "brain" : "sparkles",
+        label: advisor ? "Advisor" : publicType,
+        text: this.dataFilter.text(text || "Advisor update"),
+        icon: advisor ? "brain" : "sparkles",
       },
       status: "completed",
       error: null,
     });
   }
 
+  private publishTodoResult(snapshot: ToolSnapshot): boolean {
+    const phases = resultDetails(snapshot.output)?.phases;
+    if (!Array.isArray(phases)) return false;
+    const items: Array<{
+      id: string;
+      text: string;
+      completed: boolean;
+      status: "pending" | "in_progress" | "completed";
+      activeForm?: string;
+    }> = [];
+    for (const phase of phases) {
+      const phaseRecord = jsonRecord(phase);
+      const tasks = phaseRecord?.tasks;
+      if (!Array.isArray(tasks)) continue;
+      const phaseName = firstString(phaseRecord, "name", "phase");
+      for (const task of tasks) {
+        if (items.length >= MAX_TODOS) break;
+        const taskRecord = jsonRecord(task);
+        const text = firstString(taskRecord, "content", "text");
+        if (!text) continue;
+        const status = firstString(taskRecord, "status");
+        const completed = status === "completed" || status === "abandoned";
+        items.push({
+          id: firstString(taskRecord, "id") ?? `omp:todo:${items.length}`,
+          text: this.dataFilter.text(text, 16_384),
+          completed,
+          status: completed ? "completed" : status === "in_progress" ? "in_progress" : "pending",
+          ...(phaseName ? { activeForm: this.dataFilter.text(phaseName, 256) } : {}),
+        });
+      }
+    }
+    this.publish({ type: "todo", id: "omp:todos", items });
+    return true;
+  }
+
   private toolDetail(snapshot: ToolSnapshot): ProviderToolCallDetail {
     const input = jsonRecord(snapshot.input);
     const output = jsonRecord(snapshot.output);
+    const details = resultDetails(snapshot.output);
     const resultText = displayText(snapshot.output);
     const name = snapshot.name.toLowerCase();
     if (["bash", "shell", "exec", "run_command"].includes(name)) {
+      const exitCode = details?.exitCode ?? output?.exitCode;
       return {
         type: "shell",
         command: firstString(input, "command", "cmd") ?? snapshot.name,
         ...(firstString(input, "cwd") ? { cwd: firstString(input, "cwd") } : {}),
         ...(resultText !== undefined ? { output: resultText } : {}),
-        ...(typeof output?.exitCode === "number" ? { exitCode: output.exitCode } : {}),
+        ...(typeof exitCode === "number" || exitCode === null ? { exitCode } : {}),
       };
     }
     if (name === "read") {
@@ -690,6 +823,9 @@ export class OmpTimelineProjector {
     if (name === "edit" || name === "apply_patch") {
       const filePath = firstString(input, "path", "filePath");
       if (!filePath) return { type: "unknown", input: snapshot.input, output: snapshot.output };
+      const unifiedDiff =
+        firstString(details, "unifiedDiff", "diff", "patch") ??
+        firstString(output, "unifiedDiff", "diff", "patch");
       return {
         type: "edit",
         filePath,
@@ -699,9 +835,7 @@ export class OmpTimelineProjector {
         ...(firstString(input, "newString", "new_text")
           ? { newString: firstString(input, "newString", "new_text") }
           : {}),
-        ...(firstString(output, "unifiedDiff", "diff")
-          ? { unifiedDiff: firstString(output, "unifiedDiff", "diff") }
-          : {}),
+        ...(unifiedDiff ? { unifiedDiff } : {}),
       };
     }
     if (name === "write") {
