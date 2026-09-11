@@ -767,7 +767,12 @@ describe("OMP RPC transport", () => {
     const cleanedPids: number[] = [];
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
-        child.write({ type: "response", id: command.id, success: true, data: { protocolVersion: 2 } });
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
       }
     });
     const runtime = new OmpRpcRuntime({

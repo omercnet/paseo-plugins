@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { boundedJsonBytes, OmpPublicDataFilter, utf8Bytes } from "./security";
+import { boundedJsonBytes, OmpPublicDataFilter, OmpPublicError, utf8Bytes } from "./security";
 
 const READY_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -940,7 +940,9 @@ class OmpRpcProcess {
     if (this.treeCleanupPromise) return this.treeCleanupPromise;
     const pid = this.child.pid;
     this.treeCleanupPromise = (
-      pid === undefined ? Promise.resolve<ProcessTreeCleanup>("uncertain") : this.terminateProcessTree(pid)
+      pid === undefined
+        ? Promise.resolve<ProcessTreeCleanup>("uncertain")
+        : this.terminateProcessTree(pid)
     ).catch(() => "failed");
     return this.treeCleanupPromise;
   }
@@ -1087,13 +1089,8 @@ class OmpRpcProcess {
       return;
     }
     if (
-      boundedJsonBytes(
-        frame,
-        MAX_SEMANTIC_FRAME_BYTES,
-        1_024,
-        MAX_IMAGE_DATA_LENGTH,
-        4_096,
-      ) === Number.POSITIVE_INFINITY
+      boundedJsonBytes(frame, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
+      Number.POSITIVE_INFINITY
     ) {
       this.recordProtocolViolation();
       return;

@@ -304,7 +304,10 @@ export function createOmpConnection(
           await slot.session.close();
         } catch {
           if (sessions.get(input.sessionId)?.token === slot.token) sessions.delete(input.sessionId);
-          failedCleanup.set(slot.token, slot.session.close().catch(() => undefined));
+          failedCleanup.set(
+            slot.token,
+            slot.session.close().catch(() => undefined),
+          );
           if (failedCleanup.size > MAX_CONNECTION_SESSIONS) {
             const oldest = failedCleanup.keys().next().value;
             if (oldest !== undefined) failedCleanup.delete(oldest);
