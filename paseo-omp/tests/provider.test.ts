@@ -9,6 +9,7 @@ import type {
   ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
+import { OmpNativeSessionReservations } from "../server/provider/connection";
 import {
   type OmpMessage,
   type OmpModel,
@@ -1466,6 +1467,103 @@ describe("OMP direct provider", () => {
     expect(runtime.starts).toHaveLength(2);
     await second.connection.close();
   });
+  test("blocks list and resume while a new persistent session acquires its native ID", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.sessionIds.push(NATIVE_SESSION_ID);
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const gate = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    runtime.startGate = gate.promise;
+    runtime.startObserved = started.resolve;
+    const provider = createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV });
+    const connect = async () => {
+      const connection = await provider.connect({
+        versions: [1],
+        capabilities: ["prompt.message", "session.list", "session.persistence"],
+      });
+      const events = new EventLog();
+      connection.onEvent((event) => events.push(event));
+      return { connection, events };
+    };
+    const first = await connect();
+    const second = await connect();
+    await first.connection.send({
+      type: "session.open",
+      requestId: "new-persistent-open",
+      sessionId: "new-persistent-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      history: "skip",
+    });
+    await started.promise;
+
+    const rejectionStartedAt = performance.now();
+    await second.connection.send({
+      type: "sessions",
+      requestId: "list-during-persistent-open",
+      cwd: "/repo",
+    });
+    await second.connection.send({
+      type: "session.open",
+      requestId: "resume-during-persistent-open",
+      sessionId: "resume-contender",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    const [listFailure, resumeFailure] = await Promise.all([
+      second.events.waitFor(
+        (event) =>
+          event.type === "request.failed" && event.requestId === "list-during-persistent-open",
+      ),
+      second.events.waitFor(
+        (event) =>
+          event.type === "request.failed" && event.requestId === "resume-during-persistent-open",
+      ),
+    ]);
+    expect(performance.now() - rejectionStartedAt).toBeLessThan(1_000);
+    expect(listFailure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP persistent session registration is in progress" },
+      }),
+    );
+    expect(resumeFailure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP persistent session registration is in progress" },
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    expect(runtime.sessionListRequests).toEqual([]);
+
+    runtime.startGate = null;
+    gate.resolve();
+    await first.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "new-persistent-open",
+    );
+    await second.connection.send({
+      type: "sessions",
+      requestId: "list-after-persistent-open",
+      cwd: "/repo",
+    });
+    await second.events.waitFor(
+      (event) => event.type === "sessions" && event.requestId === "list-after-persistent-open",
+    );
+    await first.connection.close();
+    await second.connection.close();
+  });
 
   test("keeps the native transcript reserved while its session recovers", async () => {
     const runtime = new FakeOmpRuntime();
@@ -1553,21 +1651,22 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "tombstone-contender-open",
     );
     expect(rejected).toEqual(
-      expect.objectContaining({ error: { message: "OMP native session is already open" } }),
+      expect.objectContaining({ error: { message: "OMP native session cleanup is unresolved" } }),
     );
     expect(runtime.starts).toHaveLength(1);
     await connection.close();
   });
-  test("keeps failed-cleanup tombstones across provider connections", async () => {
+  test("releases provider-global cleanup quarantine after verified cleanup", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const cleanup = Promise.withResolvers<void>();
     runtime.nextHistoryError = new Error("history failed");
-    runtime.nextCloseError = new Error("cleanup failed");
+    runtime.nextCloseError = new OmpCleanupFailure("cleanup unresolved", cleanup.promise);
     const provider = createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV });
     const connect = async () => {
       const connection = await provider.connect({
         versions: [1],
-        capabilities: ["prompt.message", "session.persistence"],
+        capabilities: ["prompt.message", "session.list", "session.persistence"],
       });
       const events = new EventLog();
       connection.onEvent((event) => events.push(event));
@@ -1596,20 +1695,64 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "failed-cleanup-first",
     );
     await first.connection.close();
-    await openResume(second.connection, "failed-cleanup-second", "failed-cleanup-contender");
-    const rejected = await second.events.waitFor(
-      (event) =>
-        (event.type === "request.failed" || event.type === "session.ready") &&
-        event.requestId === "failed-cleanup-second",
+
+    await second.connection.send({
+      type: "sessions",
+      requestId: "quarantined-list",
+      cwd: "/repo",
+    });
+    const listFailure = await second.events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "quarantined-list",
     );
-    expect(rejected).toEqual(
+    expect(listFailure).toEqual(
       expect.objectContaining({
-        type: "request.failed",
-        error: { message: "OMP native session is already open" },
+        error: { message: "OMP native session cleanup quarantine is active" },
+      }),
+    );
+    await openResume(second.connection, "failed-cleanup-second", "failed-cleanup-contender");
+    const resumeFailure = await second.events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "failed-cleanup-second",
+    );
+    expect(resumeFailure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP native session cleanup is unresolved" },
       }),
     );
     expect(runtime.starts).toHaveLength(1);
+
+    cleanup.resolve();
+    await cleanup.promise;
+    await Promise.resolve();
+    await second.connection.send({
+      type: "sessions",
+      requestId: "released-list",
+      cwd: "/repo",
+    });
+    await second.events.waitFor(
+      (event) => event.type === "sessions" && event.requestId === "released-list",
+    );
+    await openResume(second.connection, "released-resume", "released-session");
+    await second.events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "released-resume",
+    );
+    expect(runtime.starts).toHaveLength(2);
     await second.connection.close();
+  });
+
+  test("caps provider-global cleanup quarantine growth", () => {
+    const reservations = new OmpNativeSessionReservations();
+    for (let index = 0; index < 256; index += 1) {
+      const owner = Symbol(`quarantine-${index}`);
+      const nativeSessionId = `quarantined-native-${index}`;
+      reservations.reserve(nativeSessionId, owner);
+      reservations.quarantine(nativeSessionId, owner);
+    }
+    expect(() => reservations.reserve("quarantine-overflow", Symbol("overflow"))).toThrow(
+      "OMP persistent session registry limit reached",
+    );
+    expect(() => reservations.assertListable()).toThrow(
+      "OMP native session cleanup quarantine is active",
+    );
   });
 
   test("publishes selected branch history from chunked OMP RPC before ready", async () => {
@@ -1822,7 +1965,7 @@ describe("OMP direct provider", () => {
         });
       } else if (command.type === "prompt") {
         child.stdout.write(
-          [
+          `${[
             { type: "message_end", message: preAckDuplicate },
             {
               type: "response",
@@ -1833,7 +1976,7 @@ describe("OMP direct provider", () => {
             { type: "message_end", message: duplicate },
           ]
             .map((frame) => JSON.stringify(frame))
-            .join("\n") + "\n",
+            .join("\n")}\n`,
         );
       }
     });

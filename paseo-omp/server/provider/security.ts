@@ -212,6 +212,7 @@ export class OmpCleanupFailure extends Error {
   constructor(
     message: string,
     readonly cleanup: Promise<void>,
+    readonly nativeSessionId?: string,
   ) {
     super(message);
   }

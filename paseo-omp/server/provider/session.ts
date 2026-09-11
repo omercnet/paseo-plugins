@@ -371,6 +371,7 @@ export class OmpProviderSession {
     };
     buildOmpSpawnRequest(startOptions);
     const native = await runtime.startSession(startOptions);
+    let cleanupNativeSessionId: string | undefined;
     try {
       const [initialState, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
@@ -384,8 +385,9 @@ export class OmpProviderSession {
         throw new OmpPublicError("OMP session persistence requires negotiated RPC protocol v2");
       }
       let state = initialState;
-      if (effectiveConfig.persist || resumeSessionId)
-        validateNativeSessionId(initialState.sessionId);
+      if (effectiveConfig.persist || resumeSessionId) {
+        cleanupNativeSessionId = validateNativeSessionId(initialState.sessionId);
+      }
       if (resumeSessionId && initialState.sessionId !== resumeSessionId) {
         throw new OmpPublicError("OMP resumed a different native session");
       }
@@ -474,8 +476,12 @@ export class OmpProviderSession {
       const cleanup = native.close();
       try {
         await cleanup;
-      } catch {
-        throw new OmpCleanupFailure("OMP session initialization cleanup failed", cleanup);
+      } catch (cleanupError) {
+        throw new OmpCleanupFailure(
+          "OMP session initialization cleanup failed",
+          isOmpCleanupFailure(cleanupError) ? cleanupError.cleanup : cleanup,
+          cleanupNativeSessionId,
+        );
       }
       throw error;
     }
