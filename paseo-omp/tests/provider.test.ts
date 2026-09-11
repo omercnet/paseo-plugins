@@ -3613,9 +3613,9 @@ describe("OMP direct provider", () => {
     expect(JSON.stringify(events)).not.toContain("credential-value-");
     session.emit({ type: "command_output", text: "1234" });
     session.emit({ type: "command_output", text: " g" });
-    expect(JSON.stringify(events.findLast((event) => event.type === "timeline.item"))).not.toContain(
-      " g",
-    );
+    expect(
+      JSON.stringify(events.findLast((event) => event.type === "timeline.item")),
+    ).not.toContain(" g");
     session.emit({ type: "command_output", text: "hp_abcdefgh" });
     for (const [type, contentIndex, first, second] of [
       ["text_delta", 1, "Bearer alpha", "beta"],
