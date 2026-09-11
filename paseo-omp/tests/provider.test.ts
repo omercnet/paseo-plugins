@@ -251,6 +251,8 @@ class FakeOmpSession implements OmpRuntimeSession {
   availableCommandsGate: Promise<void> | null = null;
   availableCommandsObserved: (() => void) | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
+  modelResponseGate: Promise<void> | null = null;
+  modelResponseObserved: (() => void) | null = null;
   readonly thinkingChanges: string[] = [];
   applyModelChanges = true;
   applyThinkingChanges = true;
@@ -339,6 +341,8 @@ class FakeOmpSession implements OmpRuntimeSession {
         this.thinkingLevel = isThinkingLevel(defaultLevel) ? defaultLevel : undefined;
       }
     }
+    this.modelResponseObserved?.();
+    if (this.modelResponseGate) await this.modelResponseGate;
     return model;
   }
 
@@ -591,6 +595,28 @@ describe("OMP direct provider", () => {
         catalog: expect.not.objectContaining({ defaultThinkingOption: expect.anything() }),
       }),
     );
+    await connection.close();
+  });
+
+  test("omits an unsupported active thinking level from catalog defaults", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "medium";
+    const { connection, events } = await createHarness(runtime);
+
+    await connection.send({
+      type: "catalog",
+      requestId: "catalog-unsupported-default",
+      cwd: "/repo",
+    });
+    const event = await events.waitFor(
+      (candidate) =>
+        candidate.type === "catalog" && candidate.requestId === "catalog-unsupported-default",
+    );
+    if (event.type !== "catalog") throw new Error("Expected catalog event");
+
+    expect(event.catalog.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
+    expect("defaultThinkingOption" in event.catalog).toBe(false);
     await connection.close();
   });
 
@@ -1205,6 +1231,55 @@ describe("OMP direct provider", () => {
     runtime.nextThinkingLevel = "high";
 
     const turnId = turnIdFrom(await startPrompt(connection, events, "fallback-exit", "continue"));
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({
+        model: undefined,
+        thinkingOption: undefined,
+        resumeSessionId: "native-session",
+      }),
+    );
+    expect(events.findLast((event) => event.type === "session.config")).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("recovers native state when setModel commits immediately before process exit", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const responseGate = Promise.withResolvers<void>();
+    const responseObserved = Promise.withResolvers<void>();
+    session.modelResponseGate = responseGate.promise;
+    session.modelResponseObserved = responseObserved.resolve;
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-exit-after-model-commit",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
+    });
+    await responseObserved.promise;
+    const failed = events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "configure-exit-after-model-commit",
+    );
+    session.emit({ type: "process_exit", error: "exit before set_model response" });
+    session.modelResponseGate = null;
+    responseGate.resolve();
+    await failed;
+
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "configure-exit-recovery", "continue"),
+    );
     expect(runtime.starts[1]).toEqual(
       expect.objectContaining({
         model: undefined,

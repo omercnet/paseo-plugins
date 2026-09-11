@@ -131,13 +131,18 @@ export async function discoverOmpCatalog(
       : nativeModels[0];
     if (state.model && !currentModel) throw new Error("OMP reported an unadvertised active model");
     const thinkingOptions = thinkingForModel(currentModel);
+    const defaultThinkingOption = thinkingOptions.some(
+      (option) => option.id === state.thinkingLevel,
+    )
+      ? state.thinkingLevel
+      : undefined;
     return {
       models,
       modes: OMP_MODES,
       thinkingOptions,
       defaultModel,
       defaultMode: "full",
-      ...(state.thinkingLevel ? { defaultThinkingOption: state.thinkingLevel } : {}),
+      ...(defaultThinkingOption ? { defaultThinkingOption } : {}),
     };
   } finally {
     await closeCatalogSession(session);

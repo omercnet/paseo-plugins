@@ -1553,7 +1553,7 @@ export class OmpProviderSession {
   private invalidateRuntime(message: string): void {
     if (this.closed || this.runtimeDead) return;
     this.recoveryUsesNativeConfig ||=
-      this.configRefreshInFlight !== null || this.configRefreshDirty;
+      this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
     this.generation += 1;
     this.runtimeDead = message;
     this.unsubscribe();
