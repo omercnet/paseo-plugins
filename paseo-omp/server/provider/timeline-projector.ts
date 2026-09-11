@@ -19,6 +19,7 @@ const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
 const MAX_TODOS = 256;
 const MAX_TURN_NATIVE_IDENTITIES = 1_024;
+const MAX_REPLAY_NATIVE_IDENTITIES = 100_000;
 const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
 const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
 
@@ -98,7 +99,7 @@ export class OmpTimelineProjector {
   private userSequence = 0;
   private replayTurnId: string | null = null;
   private replaySequence = 0;
-  private readonly replayedNativeMessageIds = new BoundedStringSet(MAX_TURN_NATIVE_IDENTITIES);
+  private readonly replayedNativeMessageIds = new BoundedStringSet(MAX_REPLAY_NATIVE_IDENTITIES);
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";

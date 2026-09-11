@@ -319,6 +319,9 @@ export class OmpProviderSession {
     environment?: NodeJS.ProcessEnv,
   ): Promise<OmpProviderSession> {
     const resumeSessionId = persistedSessionId(input);
+    if (resumeSessionId && !input.config.persist) {
+      throw new OmpPublicError("OMP persisted sessions require persist: true");
+    }
     if (input.history === "replay" && !resumeSessionId) {
       throw new OmpPublicError("OMP history replay requires persisted session identity");
     }

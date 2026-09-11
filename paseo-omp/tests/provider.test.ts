@@ -1020,6 +1020,59 @@ describe("OMP direct provider", () => {
     );
     await connection.close();
   });
+  test("suppresses the first replayed assistant after more than 1,024 identities", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = Array.from({ length: 1_025 }, (_, index): OmpMessage[] => [
+      { role: "user", id: `large-user-${index}`, content: `prompt ${index}` },
+      {
+        role: "assistant",
+        responseId: `large-response-${index}`,
+        content: `answer ${index}`,
+      },
+    ]).flat();
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "large-dedup-open",
+      sessionId: "large-dedup-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "large-dedup-open",
+    );
+    const liveTurn = turnIdFrom(
+      await startPrompt(connection, events, "large-dedup-live", "continue", "large-dedup-session"),
+    );
+    const baseline = events.length;
+    sessionAt(runtime).emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        responseId: "large-response-0",
+        content: "answer 0",
+      },
+    });
+    expect(
+      events
+        .slice(baseline)
+        .some((event) => event.type === "timeline.item" && event.item.type === "assistant_message"),
+    ).toBe(false);
+    await finishTurn(events, sessionAt(runtime), liveTurn);
+    await connection.close();
+  });
 
   test("rejects path-shaped or unresolved persistence without starting OMP", async () => {
     const runtime = new FakeOmpRuntime();
@@ -1058,6 +1111,41 @@ describe("OMP direct provider", () => {
     ]);
     await connection.close();
   });
+  test("rejects a persistence descriptor when persist is false", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "nonpersistent-resume",
+      sessionId: "nonpersistent-resume-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "nonpersistent-resume",
+    );
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP persisted sessions require persist: true" },
+      }),
+    );
+    expect(runtime.sessionListRequests).toEqual([]);
+    expect(runtime.starts).toEqual([]);
+    await connection.close();
+  });
+
   test("publishes selected branch history from chunked OMP RPC before ready", async () => {
     const largeText = "x".repeat(600_000);
     let child: ProviderRpcChild;
