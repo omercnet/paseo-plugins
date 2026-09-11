@@ -69,7 +69,7 @@ describe("OMP session descriptor discovery", () => {
     await writeSession(sessionRoot, "other", OTHER_ID, "/other");
     await writeSession(sessionRoot, "exact", EXACT_CWD_ID, "/repo ");
 
-    const sessions = listOmpSessionDescriptors(
+    const sessions = await listOmpSessionDescriptors(
       { cwd: "/repo", limit: 10 },
       { OMP_SESSION_DIR: sessionRoot },
     );
@@ -77,7 +77,10 @@ describe("OMP session descriptor discovery", () => {
       expect.objectContaining({ id: SESSION_ID, cwd: "/repo", title: "Safe Title" }),
     ]);
     expect(
-      listOmpSessionDescriptors({ cwd: "/repo ", limit: 10 }, { OMP_SESSION_DIR: sessionRoot }),
+      await listOmpSessionDescriptors(
+        { cwd: "/repo ", limit: 10 },
+        { OMP_SESSION_DIR: sessionRoot },
+      ),
     ).toEqual([expect.objectContaining({ id: EXACT_CWD_ID, cwd: "/repo " })]);
   });
 
@@ -89,21 +92,50 @@ describe("OMP session descriptor discovery", () => {
     await writeFile(join(root, "settings.json"), JSON.stringify({ sessionDir: "configured" }));
     await writeSession(configured, "nested", SESSION_ID, "/repo");
     expect(
-      listOmpSessionDescriptors({ cwd: "/repo", limit: 1 }, { OMP_AGENT_DIR: agentDir }),
+      await listOmpSessionDescriptors({ cwd: "/repo", limit: 1 }, { OMP_AGENT_DIR: agentDir }),
     ).toHaveLength(1);
 
     const piRoot = await temporaryRoot();
     const piAgentDir = join(piRoot, "pi-agent");
     await writeSession(join(piAgentDir, "sessions"), "nested", OTHER_ID, "/repo");
     expect(
-      listOmpSessionDescriptors({ cwd: "/repo", limit: 1 }, { PI_CODING_AGENT_DIR: piAgentDir })[0]
-        ?.id,
+      (
+        await listOmpSessionDescriptors(
+          { cwd: "/repo", limit: 1 },
+          { PI_CODING_AGENT_DIR: piAgentDir },
+        )
+      )[0]?.id,
     ).toBe(OTHER_ID);
   });
+  test("yields while bounding large junk-root retention", async () => {
+    const root = await temporaryRoot();
+    const sessionRoot = join(root, "large-root");
+    await mkdir(sessionRoot, { recursive: true });
+    await Promise.all(
+      Array.from({ length: 1_500 }, (_, index) =>
+        writeFile(join(sessionRoot, `junk-${index}.txt`), "junk"),
+      ),
+    );
+    await Promise.all(
+      Array.from({ length: 25 }, (_, index) =>
+        writeSession(sessionRoot, `nested-${index}`, `bulk_session_${index}`, "/repo"),
+      ),
+    );
+    const yielded = Promise.withResolvers<void>();
+    setImmediate(yielded.resolve);
+    const scan = listOmpSessionDescriptors(
+      { cwd: "/repo", limit: 7 },
+      { OMP_SESSION_DIR: sessionRoot },
+    );
+    await yielded.promise;
+    const sessions = await scan;
+    expect(sessions.length).toBeLessThanOrEqual(7);
+    expect(new Set(sessions.map((session) => session.id)).size).toBe(sessions.length);
+  });
 
-  test("rejects unscoped listing", () => {
-    expect(() =>
+  test("rejects unscoped listing", async () => {
+    await expect(
       listOmpSessionDescriptors({ cwd: "" }, { OMP_SESSION_DIR: "/tmp/unused" }),
-    ).toThrow("requires an absolute working directory");
+    ).rejects.toThrow("requires an absolute working directory");
   });
 });

@@ -59,9 +59,9 @@ type AssistantMessageEvent = Extract<
   { type: "message_update" }
 >["assistantMessageEvent"];
 
-function assistantIdentity(message: OmpMessage, allowMessageId = false): string | undefined {
+function assistantIdentity(message: OmpMessage): string | undefined {
   if (message.role !== "assistant") return;
-  return message.responseId ?? message.entryId ?? (allowMessageId ? message.id : undefined);
+  return message.responseId ?? message.entryId ?? message.id;
 }
 function assistantContentFingerprint(message: OmpAssistantMessage): string {
   const encoded =
@@ -311,7 +311,7 @@ export class OmpTimelineProjector {
 
   projectReplayMessage(message: OmpMessage): void {
     if (this.closed) return;
-    const nativeIdentity = assistantIdentity(message, true);
+    const nativeIdentity = assistantIdentity(message);
     this.replaySequence += 1;
     if (message.role === "user") {
       if (this.replayTurnId) this.finishTurn(this.replayTurnId);

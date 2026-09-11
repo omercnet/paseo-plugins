@@ -436,7 +436,7 @@ export class OmpProviderSession {
         cwd: effectiveConfig.cwd,
         env: effectiveConfig.env,
         mode: "full",
-        ...(!resumeSessionId && effectiveConfig.systemPrompt
+        ...(!effectiveConfig.persist && effectiveConfig.systemPrompt
           ? { systemPrompt: effectiveConfig.systemPrompt }
           : {}),
         ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),

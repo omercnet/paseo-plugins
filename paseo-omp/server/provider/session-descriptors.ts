@@ -1,19 +1,15 @@
-import {
-  closeSync,
-  constants,
-  type Dirent,
-  fstatSync,
-  openSync,
-  readdirSync,
-  readSync,
-} from "node:fs";
+import { constants, type Dir } from "node:fs";
+import { type FileHandle, open, opendir } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { ompSessionDir } from "../paths";
 
 const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
 const MAX_DIRECTORY_DEPTH = 8;
-const MAX_SESSION_DIRECTORIES = 16_384;
-const MAX_SESSION_FILES = 100_000;
+const MAX_SCAN_DIRECTORIES = 1_024;
+const MAX_SCAN_FILES = 10_000;
+const MAX_SCAN_BYTES = 16 * 1024 * 1024;
+const MAX_SCAN_MS = 1_000;
+const SCAN_YIELD_INTERVAL = 128;
 const MAX_LIST_RESULTS = 500;
 const NATIVE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/u;
 
@@ -29,6 +25,15 @@ export interface OmpSessionListOptions {
   query?: string;
   limit?: number;
   sessionId?: string;
+}
+
+interface ScanBudget {
+  startedAt: number;
+  directories: number;
+  files: number;
+  bytes: number;
+  entries: number;
+  exhausted: boolean;
 }
 
 export function validateNativeSessionId(value: unknown): string {
@@ -52,6 +57,7 @@ function safeText(value: unknown, maxBytes: number): string | undefined {
   }
   return sanitized.trim() || undefined;
 }
+
 function validatedCwd(value: unknown): string | undefined {
   if (
     typeof value !== "string" ||
@@ -81,10 +87,29 @@ function completePrefixLines(buffer: Buffer): Buffer[] {
   return lines;
 }
 
-function parseDescriptor(file: string): OmpSessionDescriptor | undefined {
-  let descriptor: number;
+function budgetExceeded(budget: ScanBudget): boolean {
+  return (
+    budget.exhausted ||
+    budget.directories >= MAX_SCAN_DIRECTORIES ||
+    budget.files >= MAX_SCAN_FILES ||
+    budget.bytes >= MAX_SCAN_BYTES ||
+    Date.now() - budget.startedAt >= MAX_SCAN_MS
+  );
+}
+
+async function yieldToEventLoop(): Promise<void> {
+  const result = Promise.withResolvers<void>();
+  setImmediate(result.resolve);
+  await result.promise;
+}
+
+async function parseDescriptor(
+  file: string,
+  budget: ScanBudget,
+): Promise<OmpSessionDescriptor | undefined> {
+  let handle: FileHandle;
   try {
-    descriptor = openSync(
+    handle = await open(
       file,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
     );
@@ -92,12 +117,18 @@ function parseDescriptor(file: string): OmpSessionDescriptor | undefined {
     return;
   }
   try {
-    const stat = fstatSync(descriptor);
+    const stat = await handle.stat();
     if (!stat.isFile()) return;
-    const buffer = Buffer.allocUnsafe(Math.min(MAX_DESCRIPTOR_PREFIX_BYTES, stat.size));
-    const length = readSync(descriptor, buffer, 0, buffer.length, 0);
+    const prefixBytes = Math.min(MAX_DESCRIPTOR_PREFIX_BYTES, stat.size);
+    if (budget.bytes + prefixBytes > MAX_SCAN_BYTES) {
+      budget.exhausted = true;
+      return;
+    }
+    budget.bytes += prefixBytes;
+    const buffer = Buffer.allocUnsafe(prefixBytes);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     let title: string | undefined;
-    for (const bytes of completePrefixLines(buffer.subarray(0, length))) {
+    for (const bytes of completePrefixLines(buffer.subarray(0, bytesRead))) {
       if (bytes.length === 0) continue;
       let value: unknown;
       try {
@@ -130,63 +161,95 @@ function parseDescriptor(file: string): OmpSessionDescriptor | undefined {
   } catch {
     return;
   } finally {
-    closeSync(descriptor);
+    await handle.close().catch(() => undefined);
   }
 }
 
-function sessionFiles(root: string): string[] {
-  const files: string[] = [];
+function retainNewest(
+  descriptors: OmpSessionDescriptor[],
+  descriptor: OmpSessionDescriptor,
+  limit: number,
+): void {
+  descriptors.push(descriptor);
+  descriptors.sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
+  if (descriptors.length > limit) descriptors.pop();
+}
+
+async function scanSessionFiles(
+  root: string,
+  budget: ScanBudget,
+  visit: (file: string) => Promise<boolean>,
+): Promise<void> {
   const pending: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
-  let visitedDirectories = 0;
-  while (pending.length > 0 && visitedDirectories < MAX_SESSION_DIRECTORIES) {
+  while (pending.length > 0 && !budgetExceeded(budget)) {
     const current = pending.pop();
-    if (!current) break;
-    visitedDirectories += 1;
-    let entries: Dirent<string>[];
+    if (!current) return;
+    budget.directories += 1;
+    let directory: Dir;
     try {
-      entries = readdirSync(current.path, { withFileTypes: true });
+      directory = await opendir(current.path);
     } catch {
       continue;
     }
-    for (const entry of entries) {
-      if (files.length >= MAX_SESSION_FILES) return files;
-      const path = join(current.path, entry.name);
-      if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
-      else if (entry.isDirectory() && current.depth < MAX_DIRECTORY_DEPTH) {
-        pending.push({ path, depth: current.depth + 1 });
+    try {
+      for await (const entry of directory) {
+        budget.entries += 1;
+        if (budget.entries % SCAN_YIELD_INTERVAL === 0) await yieldToEventLoop();
+        if (budgetExceeded(budget)) return;
+        const path = join(current.path, entry.name);
+        if (entry.isDirectory() && current.depth < MAX_DIRECTORY_DEPTH) {
+          if (pending.length + budget.directories < MAX_SCAN_DIRECTORIES) {
+            pending.push({ path, depth: current.depth + 1 });
+          }
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        budget.files += 1;
+        if (!entry.name.endsWith(".jsonl")) continue;
+        if (!(await visit(path))) return;
       }
+    } finally {
+      await directory.close().catch(() => undefined);
     }
   }
-  return files;
 }
 
-export function listOmpSessionDescriptors(
+export async function listOmpSessionDescriptors(
   options: OmpSessionListOptions,
   environment: NodeJS.ProcessEnv = process.env,
-): OmpSessionDescriptor[] {
+): Promise<OmpSessionDescriptor[]> {
   if (!options.cwd || !isAbsolute(options.cwd) || options.cwd.includes("\0")) {
     throw new Error("OMP session listing requires an absolute working directory");
   }
   const requestedId = options.sessionId ? validateNativeSessionId(options.sessionId) : undefined;
   const limit = Math.min(Math.max(options.limit ?? 100, 1), MAX_LIST_RESULTS);
+  const retentionLimit = requestedId ? 2 : limit;
   const query = options.query?.trim().toLowerCase();
   const matches: OmpSessionDescriptor[] = [];
-  for (const file of sessionFiles(ompSessionDir(environment))) {
+  const budget: ScanBudget = {
+    startedAt: Date.now(),
+    directories: 0,
+    files: 0,
+    bytes: 0,
+    entries: 0,
+    exhausted: false,
+  };
+  await scanSessionFiles(ompSessionDir(environment), budget, async (file) => {
     const fileName = basename(file);
     const stem = fileName.slice(0, -".jsonl".length);
-    if (requestedId && !stem.endsWith(`_${requestedId}`)) continue;
-    const descriptor = parseDescriptor(file);
+    if (requestedId && !stem.endsWith(`_${requestedId}`)) return true;
+    const descriptor = await parseDescriptor(file, budget);
     if (!descriptor || !stem.endsWith(`_${descriptor.id}`) || descriptor.cwd !== options.cwd)
-      continue;
+      return !budgetExceeded(budget);
     if (
       query &&
       !descriptor.id.toLowerCase().includes(query) &&
       !descriptor.title?.toLowerCase().includes(query)
     ) {
-      continue;
+      return !budgetExceeded(budget);
     }
-    matches.push(descriptor);
-  }
-  matches.sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
-  return matches.slice(0, requestedId ? 2 : limit);
+    retainNewest(matches, descriptor, retentionLimit);
+    return !requestedId || matches.length < 2;
+  });
+  return matches;
 }
