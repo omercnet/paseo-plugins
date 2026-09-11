@@ -287,6 +287,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   stateObserved: (() => void) | null = null;
   stateError: Error | null = null;
   usageAvailable = false;
+  stateContextNull = false;
   stateLookups = 0;
   statsGate: Promise<void> | null = null;
   statsError: Error | null = null;
@@ -329,11 +330,13 @@ class FakeOmpSession implements OmpRuntimeSession {
       sessionId: this.nativeSessionId,
       ...(this.usageAvailable
         ? {
-            contextUsage: {
-              tokens: this.contextTokens,
-              contextWindow: this.contextWindow,
-              percent: (this.contextTokens / this.contextWindow) * 100,
-            },
+            contextUsage: this.stateContextNull
+              ? { tokens: null, contextWindow: null, percent: null }
+              : {
+                  tokens: this.contextTokens,
+                  contextWindow: this.contextWindow,
+                  percent: (this.contextTokens / this.contextWindow) * 100,
+                },
           }
         : {}),
     };
@@ -3945,8 +3948,39 @@ describe("OMP direct provider", () => {
     } finally {
       unsubscribe?.();
       await session?.close();
+
       await registry.shutdown();
     }
+  });
+  test("fills nullable state context fields from session stats", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    session.stateContextNull = true;
+    session.contextTokens = 4_321;
+    session.contextWindow = 180_000;
+    session.totalCostUsd = 1.25;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "nullable-context", "work"));
+
+    const usage = await events.waitFor(
+      (event) => event.type === "session.usage" && event.turnId === turnId,
+    );
+    expect(usage).toEqual({
+      type: "session.usage",
+      sessionId: "session-1",
+      turnId,
+      usage: {
+        inputTokens: 800,
+        cachedInputTokens: 200,
+        outputTokens: 100,
+        totalCostUsd: 1.25,
+        contextWindowUsedTokens: 4_321,
+        contextWindowMaxTokens: 180_000,
+      },
+    });
+    await finishTurn(events, session, turnId);
+    await connection.close();
   });
   test("publishes periodic, compacted, fallback, and terminal usage", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
@@ -4312,6 +4346,49 @@ describe("OMP direct provider", () => {
       ),
     ).toBe(false);
     compact.resolve();
+    await connection.close();
+  });
+
+  test("ignores stale agent-end until manual compaction settles", async () => {
+    const runtime = new FakeOmpRuntime();
+    const compact = Promise.withResolvers<void>();
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.compactGate = compact.promise;
+    session.isCompacting = true;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "stale-agent-end", "/compact"));
+
+    session.emit({
+      type: "agent_end",
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "stale failure" }],
+      isTerminal: true,
+    });
+    await Promise.resolve();
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
+    const rejected = await startPrompt(connection, events, "blocked-during-compact", "next");
+    expect(rejected).toEqual(
+      expect.objectContaining({ result: expect.objectContaining({ type: "failed" }) }),
+    );
+
+    session.isCompacting = false;
+    compact.resolve();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+      ),
+    ).toBe(false);
+    expect(session.compactions).toEqual([undefined]);
     await connection.close();
   });
 

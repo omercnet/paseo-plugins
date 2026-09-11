@@ -105,6 +105,7 @@ type ActiveTurn = {
   usagePollTimer?: unknown;
   usagePoll?: Promise<void>;
   manualCompaction: boolean;
+  manualCompactionPending: boolean;
   manualCompactionDeadlineTimer?: unknown;
   agentEndPending: boolean;
   agentEndRetryTimer?: unknown;
@@ -479,23 +480,34 @@ export class OmpProviderSession {
     stats: OmpSessionStats | undefined,
   ): ProviderUsage | undefined {
     if (!state?.contextUsage && !stats) return undefined;
-    const context = state?.contextUsage ?? stats?.contextUsage;
+    const stateContext = state?.contextUsage;
+    const statsContext = stats?.contextUsage;
     const modelCapacity = state?.model?.contextWindow;
     const inputTokens = stats?.tokens?.input;
     const cachedInputTokens = stats?.tokens?.cacheRead;
     const outputTokens = stats?.tokens?.output;
     const totalCostUsd = stats?.cost;
+    const contextTokens =
+      typeof stateContext?.tokens === "number"
+        ? stateContext.tokens
+        : typeof statsContext?.tokens === "number"
+          ? statsContext.tokens
+          : undefined;
+    const contextWindow =
+      typeof stateContext?.contextWindow === "number" && stateContext.contextWindow > 0
+        ? stateContext.contextWindow
+        : typeof statsContext?.contextWindow === "number" && statsContext.contextWindow > 0
+          ? statsContext.contextWindow
+          : typeof modelCapacity === "number" && modelCapacity > 0
+            ? modelCapacity
+            : undefined;
     const usage: ProviderUsage = {
       ...(typeof inputTokens === "number" ? { inputTokens } : {}),
       ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
       ...(typeof outputTokens === "number" ? { outputTokens } : {}),
       ...(typeof totalCostUsd === "number" ? { totalCostUsd } : {}),
-      ...(typeof context?.tokens === "number" ? { contextWindowUsedTokens: context.tokens } : {}),
-      ...(typeof context?.contextWindow === "number" && context.contextWindow > 0
-        ? { contextWindowMaxTokens: context.contextWindow }
-        : typeof modelCapacity === "number" && modelCapacity > 0
-          ? { contextWindowMaxTokens: modelCapacity }
-          : {}),
+      ...(contextTokens !== undefined ? { contextWindowUsedTokens: contextTokens } : {}),
+      ...(contextWindow !== undefined ? { contextWindowMaxTokens: contextWindow } : {}),
     };
     return Object.keys(usage).length > 0 ? usage : undefined;
   }
@@ -743,6 +755,7 @@ export class OmpProviderSession {
       localOnlyEligible: false,
       agentEndPending: false,
       terminalizing: false,
+      manualCompactionPending: slashCommandName(text) === "compact",
       manualCompaction: slashCommandName(text) === "compact",
       steersInFlight: 0,
       userCorrelationActive: false,
@@ -778,11 +791,12 @@ export class OmpProviderSession {
             turn.terminal ||
             this.activeTurn !== turn ||
             turn.generation !== this.generation ||
-            !turn.manualCompaction
+            !turn.manualCompactionPending
           ) {
             return;
           }
           const message = "OMP compaction was canceled after it stopped responding";
+          turn.manualCompactionPending = false;
           this.invalidateRuntime(message, "canceled");
           void this.finishTurn(turn, "canceled", undefined, true, true);
         }, COMPACTION_MAX_WAIT_MS);
@@ -820,11 +834,13 @@ export class OmpProviderSession {
   ): Promise<void> {
     try {
       const result = await compaction;
+      turn.manualCompactionPending = false;
       if (this.closed || this.runtimeDead || turn.generation !== this.generation) return;
       this.finishCompaction("completed", { tokensBefore: result.tokensBefore });
       await this.finishTurn(turn, turn.interrupted ? "canceled" : "completed");
     } catch (error) {
       if (this.closed || this.runtimeDead || turn.generation !== this.generation) return;
+      turn.manualCompactionPending = false;
       const raw = providerError(error, "OMP compaction failed");
       const failure = { message: this.dataFilter.text(raw.message, 4_096) };
       const state = turn.interrupted ? "canceled" : "failed";
@@ -841,6 +857,7 @@ export class OmpProviderSession {
     }
     if (turn.manualCompaction) {
       turn.interrupted = true;
+      turn.manualCompactionPending = false;
       this.invalidateRuntime("OMP compaction interrupted", "canceled");
       await this.finishTurn(turn, "canceled", undefined, true, true);
       this.emit({ type: "request.completed", requestId: input.requestId });
@@ -1540,6 +1557,7 @@ export class OmpProviderSession {
       this.scheduleUsagePoll(turn, USAGE_REFRESH_MS);
       return;
     }
+    if (event.type === "agent_end" && turn.manualCompactionPending) return;
     if (isNativeTurnActivity(event)) {
       turn.nativeActivity = true;
       this.cancelLocalOnlyCompletion(turn);
@@ -1951,6 +1969,7 @@ export class OmpProviderSession {
       return turn.terminalization;
     }
     turn.terminalizing = true;
+    turn.manualCompactionPending = false;
     turn.agentEndPending = false;
     this.cancelLocalOnlyCompletion(turn);
     this.stopUsagePoll(turn);
