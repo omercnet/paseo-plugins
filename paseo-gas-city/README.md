@@ -7,6 +7,7 @@ surface and a workspace-scoped Factory panel.
 
 These screenshots use a temporary local Gas City v1.4.1 fixture. They contain no private project
 or session data.
+Wide captures omit Paseo's host navigation so the plugin surface remains the focus.
 
 ### Wide overview
 

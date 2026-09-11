@@ -101,6 +101,13 @@ function statusColor(status: string, colors: PluginHostProps["theme"]["colors"])
   return colors.foregroundMuted;
 }
 
+function rowSignalColor(status: string, colors: PluginHostProps["theme"]["colors"]): string {
+  const normalized = status.toLowerCase();
+  if (/error|failed|critical|kill|quarantined/.test(normalized)) return colors.statusDanger;
+  if (/warn|blocked|pending|suspend|stale/.test(normalized)) return colors.statusWarning;
+  return colors.foregroundMuted;
+}
+
 function StateCard({
   body,
   loading,
@@ -150,6 +157,18 @@ function Stat({ label, value, styles }: { label: string; value: string | number;
   );
 }
 
+function activeSessionSummary(items: readonly GasCitySession[] | undefined): string | null {
+  if (!items) return null;
+  const active = items.filter((item) => item.running);
+  if (active.length === 0) return "No sessions active.";
+  const names = active
+    .slice(0, 3)
+    .map((item) => item.title)
+    .join(", ");
+  const overflow = active.length > 3 ? ` +${active.length - 3}` : "";
+  return `${active.length} ${active.length === 1 ? "session" : "sessions"} active · ${names}${overflow}`;
+}
+
 function Diagnostics({
   diagnostics,
   styles,
@@ -190,11 +209,11 @@ function AttentionRow({
   return (
     <View
       accessibilityLabel={`${item.severity} attention: ${item.title}. ${item.message}`}
-      style={styles.row}
+      style={styles.attentionRow}
     >
-      <View
-        style={[styles.statusRail, { backgroundColor: statusColor(item.severity, theme.colors) }]}
-      />
+      <View style={styles.rowSignal}>
+        <Icon name="TriangleAlert" size={15} color={statusColor(item.severity, theme.colors)} />
+      </View>
       <View style={styles.rowBody}>
         <View style={styles.rowTop}>
           <Text style={styles.rowTitle} numberOfLines={1}>
@@ -240,14 +259,15 @@ function ConvoyRow({
   return (
     <View
       accessibilityLabel={`${item.title}. ${item.status}. ${convoyProgress(item)}.`}
-      style={styles.row}
+      style={styles.ledgerRow}
     >
-      <View
-        style={[
-          styles.statusRail,
-          { backgroundColor: statusColor(item.blocked ? "blocked" : item.status, theme.colors) },
-        ]}
-      />
+      <View style={styles.rowSignal}>
+        <Icon
+          name="Workflow"
+          size={15}
+          color={rowSignalColor(item.blocked ? "blocked" : item.status, theme.colors)}
+        />
+      </View>
       <View style={styles.rowBody}>
         <View style={styles.rowTop}>
           <Text style={styles.rowTitle} numberOfLines={1}>
@@ -276,13 +296,17 @@ function WorkRow({
   theme: PluginHostProps["theme"];
 }) {
   return (
-    <View accessibilityLabel={`${item.title}. ${item.status}. ${item.type}.`} style={styles.row}>
-      <View
-        style={[
-          styles.statusRail,
-          { backgroundColor: statusColor(item.blocked ? "blocked" : item.status, theme.colors) },
-        ]}
-      />
+    <View
+      accessibilityLabel={`${item.title}. ${item.status}. ${item.type}.`}
+      style={styles.ledgerRow}
+    >
+      <View style={styles.rowSignal}>
+        <Icon
+          name="CircleDot"
+          size={15}
+          color={rowSignalColor(item.blocked ? "blocked" : item.status, theme.colors)}
+        />
+      </View>
       <View style={styles.rowBody}>
         <View style={styles.rowTop}>
           <Text style={styles.rowTitle} numberOfLines={1}>
@@ -315,9 +339,9 @@ function EventRow({
   return (
     <View
       accessibilityLabel={`${item.type}. ${item.message ?? "No message"}. ${relativeTime(item.timestamp)}.`}
-      style={styles.row}
+      style={styles.ledgerRow}
     >
-      <View style={[styles.eventMarker, { borderColor: theme.colors.accent }]} />
+      <View style={[styles.eventMarker, { borderColor: theme.colors.foregroundMuted }]} />
       <View style={styles.rowBody}>
         <View style={styles.rowTop}>
           <Text style={styles.rowTitle} numberOfLines={1}>
@@ -585,18 +609,19 @@ export function CityOperations({
     const actions = sessionActionsFor(item);
     return (
       <View accessibilityLabel={sessionAccessibilityLabel(item)} style={styles.row}>
-        <View
-          style={[
-            styles.statusRail,
-            { backgroundColor: statusColor(item.running ? "running" : item.state, theme.colors) },
-          ]}
-        />
+        <View style={styles.rowSignal}>
+          <Icon
+            name={item.running ? "Activity" : "CirclePause"}
+            size={15}
+            color={rowSignalColor(item.state, theme.colors)}
+          />
+        </View>
         <View style={styles.rowBody}>
           <View style={styles.rowTop}>
             <Text style={styles.rowTitle} numberOfLines={1}>
               {item.title}
             </Text>
-            <Text style={[styles.badgeText, { color: statusColor(item.state, theme.colors) }]}>
+            <Text style={[styles.badgeText, { color: rowSignalColor(item.state, theme.colors) }]}>
               {item.state}
             </Text>
           </View>
@@ -664,6 +689,7 @@ export function CityOperations({
   }
 
   const snapshot = snapshotQuery.data;
+  const sessionSummary = activeSessionSummary(sessionsQuery.data?.items);
   let body: ReactNode;
   if (snapshotQuery.isPending && !snapshot) {
     body = (
@@ -722,6 +748,7 @@ export function CityOperations({
           </Pressable>
         </View>
         <ScrollView
+          style={styles.statsScroller}
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.statsRail}
@@ -740,6 +767,7 @@ export function CityOperations({
           />
           <Stat label="city-wide open" value={snapshot.city.work.open} styles={styles} />
         </ScrollView>
+        {sessionSummary ? <Text style={styles.sessionSummary}>{sessionSummary}</Text> : null}
         {snapshot.rig ? (
           <View style={styles.rigCard}>
             <View>
@@ -1152,7 +1180,7 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
       gap: 10,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: theme.colors.border,
-      backgroundColor: theme.colors.surface1,
+      backgroundColor: theme.colors.surface0,
     },
     liveLabel: { minWidth: 0, flex: 1, flexDirection: "row", alignItems: "center", gap: 7 },
     liveDot: { width: 7, height: 7, borderRadius: 4 },
@@ -1200,22 +1228,33 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
       letterSpacing: -0.4,
     },
     summaryMeta: { color: theme.colors.foregroundMuted, fontSize: 12 },
-    statsRail: { gap: 7 },
+    sessionSummary: { color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 18 },
+    statsScroller: { flexGrow: 0 },
+    statsRail: {
+      gap: 0,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+    },
     stat: {
       minWidth: compact ? 78 : 94,
       gap: 2,
       paddingVertical: 9,
       paddingHorizontal: 11,
-      borderRadius: 8,
-      borderWidth: StyleSheet.hairlineWidth,
+      borderRightWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface1,
     },
-    statValue: { color: theme.colors.foreground, fontSize: 17, fontWeight: "800" },
+    statValue: {
+      color: theme.colors.foreground,
+      fontSize: 17,
+      fontWeight: "800",
+      fontVariant: ["tabular-nums"],
+    },
     statLabel: {
       color: theme.colors.foregroundMuted,
       fontSize: 10,
       fontWeight: "600",
+      letterSpacing: 0.7,
       textTransform: "uppercase",
     },
     rigCard: {
@@ -1224,10 +1263,10 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
       justifyContent: "space-between",
       gap: 12,
       padding: 10,
-      borderRadius: 8,
+      borderRadius: 6,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface1,
+      backgroundColor: theme.colors.surface0,
     },
     rigName: { color: theme.colors.foreground, fontSize: 13, fontWeight: "700" },
     rigRail: { gap: 7 },
@@ -1237,10 +1276,10 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
       gap: 6,
       paddingVertical: 7,
       paddingHorizontal: 9,
-      borderRadius: 7,
+      borderRadius: 6,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface1,
+      backgroundColor: theme.colors.surface0,
     },
     rigDot: { width: 6, height: 6, borderRadius: 3 },
     rigPillText: { color: theme.colors.foreground, fontSize: 11, fontWeight: "600" },
@@ -1257,13 +1296,19 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
     diagnostics: {
       gap: 5,
       padding: 10,
-      borderRadius: 8,
-      backgroundColor: theme.colors.surface1,
-      borderLeftWidth: 3,
-      borderLeftColor: theme.colors.statusWarning,
+      borderRadius: 6,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface0,
     },
     diagnosticsTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-    diagnosticsTitle: { color: theme.colors.foreground, fontSize: 12, fontWeight: "700" },
+    diagnosticsTitle: {
+      color: theme.colors.foreground,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.9,
+      textTransform: "uppercase",
+    },
     diagnosticText: { color: theme.colors.foregroundMuted, fontSize: 11, lineHeight: 16 },
     sectionHeader: {
       flexDirection: "row",
@@ -1276,30 +1321,44 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
     },
     sectionTitle: {
       color: theme.colors.foreground,
-      fontSize: 13,
-      fontWeight: "800",
-      letterSpacing: 0.2,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.9,
+      textTransform: "uppercase",
     },
     truncated: { color: theme.colors.statusWarning, fontSize: 10, textTransform: "uppercase" },
     row: {
       marginHorizontal: compact ? 12 : 18,
-      marginBottom: 6,
+      marginBottom: 8,
       minHeight: 70,
       flexDirection: "row",
-      overflow: "hidden",
-      borderRadius: 8,
+      borderRadius: 6,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border,
       backgroundColor: theme.colors.surface1,
     },
-    statusRail: { width: 3 },
+    attentionRow: {
+      marginHorizontal: compact ? 12 : 18,
+      minHeight: 68,
+      flexDirection: "row",
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+    },
+    ledgerRow: {
+      marginHorizontal: compact ? 12 : 18,
+      minHeight: 62,
+      flexDirection: "row",
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+    },
+    rowSignal: { width: 30, alignItems: "center", paddingTop: 13, paddingLeft: 6 },
     eventMarker: {
-      width: 9,
-      height: 9,
-      marginLeft: 10,
-      marginTop: 13,
-      borderRadius: 5,
-      borderWidth: 2,
+      width: 8,
+      height: 8,
+      marginLeft: 11,
+      marginTop: 15,
+      borderRadius: 999,
+      borderWidth: 1,
     },
     rowBody: { flex: 1, minWidth: 0, gap: 3, padding: 10 },
     rowTop: {
@@ -1315,6 +1374,7 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
       color: theme.colors.foregroundMuted,
       fontSize: 10,
       fontWeight: "700",
+      letterSpacing: 0.6,
       textTransform: "uppercase",
     },
     sequence: { color: theme.colors.foregroundMuted, fontSize: 10, fontVariant: ["tabular-nums"] },
@@ -1333,26 +1393,21 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
     inlineButtonText: { color: theme.colors.foreground, fontSize: 10, fontWeight: "600" },
     inlineState: {
       marginHorizontal: compact ? 12 : 18,
-      marginBottom: 6,
       flexDirection: "row",
       alignItems: "center",
       gap: 8,
-      padding: 10,
-      borderRadius: 8,
-      borderWidth: StyleSheet.hairlineWidth,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface1,
     },
     inlineStateText: { flex: 1, color: theme.colors.foregroundMuted, fontSize: 11 },
     emptyText: {
       marginHorizontal: compact ? 12 : 18,
-      marginBottom: 6,
-      padding: 14,
+      paddingVertical: 16,
       color: theme.colors.foregroundMuted,
       fontSize: 12,
       textAlign: "center",
-      borderRadius: 8,
-      borderWidth: StyleSheet.hairlineWidth,
+      borderBottomWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border,
     },
     stateCard: {
@@ -1360,7 +1415,7 @@ function createStyles(theme: PluginHostProps["theme"], compact: boolean) {
       padding: 22,
       alignItems: "center",
       gap: 8,
-      borderRadius: 10,
+      borderRadius: 6,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border,
       backgroundColor: theme.colors.surface1,
