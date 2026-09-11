@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { EventEmitter } from "node:events";
-import { constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { EventEmitter, once } from "node:events";
+import { constants, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -1212,14 +1212,16 @@ describe("OMP RPC transport", () => {
         });
         process.stdin.on("end", () => process.exit(0));
       `;
+      let leader: ChildProcessWithoutNullStreams | null = null;
       const runtime = new OmpRpcRuntime({
         spawnProcess(request) {
-          return spawn(process.execPath, ["-e", script], {
+          leader = spawn(process.execPath, ["-e", script], {
             cwd: request.cwd,
             env: request.env,
             detached: request.detached,
             stdio: ["pipe", "pipe", "pipe"],
           });
+          return leader;
         },
         environment: TEST_RUNTIME_ENV,
       });
@@ -1229,9 +1231,38 @@ describe("OMP RPC transport", () => {
       const notice = await descendantPid;
       if (notice.type !== "notice") throw new Error("Expected descendant PID notice");
       const pid = Number(notice.message);
+      const procfsAvailable = (() => {
+        try {
+          readFileSync("/proc/self/stat", "utf8");
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      const descendantIsExecuting = () => {
+        try {
+          if (procfsAvailable) {
+            const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+            const stateOffset = stat.lastIndexOf(")") + 2;
+            return stat[stateOffset] !== "Z";
+          }
+          process.kill(pid, 0);
+          return true;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ENOENT" || code === "ESRCH") return false;
+          throw error;
+        }
+      };
       try {
+        if (!leader) throw new Error("Expected OMP leader process");
+        const leaderExit = once(leader, "close");
+        leader.kill("SIGTERM");
+        await leaderExit;
         await session.close();
-        expect(() => process.kill(pid, 0)).toThrow();
+        const deadline = Date.now() + 2_000;
+        while (descendantIsExecuting() && Date.now() < deadline) await Bun.sleep(10);
+        expect(descendantIsExecuting()).toBe(false);
       } finally {
         try {
           process.kill(pid, "SIGKILL");
