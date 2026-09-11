@@ -189,6 +189,7 @@ function ReadyGasCitySurface({
       <View style={styles.body}>
         {selectedCity ? (
           <CityOperations
+            key={`${settings.endpointUrl}:${selectedCity}`}
             theme={theme}
             layout={layout}
             host={host}

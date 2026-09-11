@@ -367,6 +367,7 @@ export function CityOperations({
   const [sessionAction, setSessionAction] = useState<SessionAction>("message");
   const [sessionMessage, setSessionMessage] = useState("");
   const [interactionResponse, setInteractionResponse] = useState<InteractionResponse>("allow");
+  const [eventCursor, setEventCursor] = useState<string | null>(null);
   const rpcSettings = useMemo(() => toGasCityRpcSettings(settings), [settings]);
 
   useEffect(() => {
@@ -407,8 +408,9 @@ export function CityOperations({
     refetchInterval: settings.refreshIntervalMs,
   });
   const eventsQuery = useQuery({
-    queryKey: [...queryRoot, "events", settings.eventLimit],
-    queryFn: () => loadEvents({ settings: rpcSettings, scope: "city", cityName, cursor: null }),
+    queryKey: [...queryRoot, "events", settings.eventLimit, eventCursor],
+    queryFn: () =>
+      loadEvents({ settings: rpcSettings, scope: "city", cityName, cursor: eventCursor }),
     refetchInterval: settings.refreshIntervalMs,
   });
   const attentionQuery = useQuery({
@@ -866,6 +868,28 @@ export function CityOperations({
             {refresh.label}
           </Text>
         </View>
+        {eventCursor ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Return to latest Gas City events"
+            onPress={() => setEventCursor(null)}
+            style={({ pressed }) => [styles.refreshButton, pressed && styles.pressed]}
+          >
+            <Icon name="History" size={14} color={theme.colors.foreground} />
+            {!layout.compact ? <Text style={styles.refreshButtonText}>Latest</Text> : null}
+          </Pressable>
+        ) : null}
+        {eventsQuery.data?.cursor ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Load older Gas City events"
+            onPress={() => setEventCursor(eventsQuery.data?.cursor ?? null)}
+            style={({ pressed }) => [styles.refreshButton, pressed && styles.pressed]}
+          >
+            <Icon name="ChevronDown" size={14} color={theme.colors.foreground} />
+            {!layout.compact ? <Text style={styles.refreshButtonText}>Older</Text> : null}
+          </Pressable>
+        ) : null}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Refresh all Gas City data"

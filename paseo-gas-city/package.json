@@ -46,7 +46,7 @@
     "check:write": "biome check --write .",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
-    "typecheck": "tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.server.json",
+    "typecheck": "tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.scripts.json",
     "package:release": "bun scripts/package-release.ts",
     "verify:package": "bun scripts/verify-package.ts"
   },

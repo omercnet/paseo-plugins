@@ -195,20 +195,17 @@ export const UpstreamEventSchema = z
     session_id: optionalString,
     run_id: optionalString,
     step_id: optionalString,
-    payload: z.record(z.string(), z.unknown()),
+    payload: z.unknown().optional(),
     workflow: z.unknown().optional(),
   })
   .strict();
 
-export const UpstreamEventsSchema = nullableItems(
-  UpstreamEventSchema,
-  GAS_CITY_LIMITS.events,
-).strict();
+export const UpstreamEventsSchema = nullableItems(z.unknown(), GAS_CITY_LIMITS.events).strict();
 
 export const UpstreamSupervisorEventsSchema = z
   .object({
     event_cursor: z.string(),
-    items: z.array(UpstreamEventSchema).max(GAS_CITY_LIMITS.events),
+    items: z.array(z.unknown()).max(GAS_CITY_LIMITS.events).nullable(),
     total: nonnegativeInteger,
   })
   .strict();

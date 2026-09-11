@@ -476,6 +476,50 @@ describe("Gas City RPC handlers", () => {
     });
   });
 
+  test("accepts an empty supervisor event page", async () => {
+    const client = new GasCityClient({
+      endpointUrl: "http://127.0.0.1:8372",
+      allowRemoteEndpoint: false,
+      fetch: async () => jsonResponse({ event_cursor: "", items: null, total: 0 }),
+    });
+
+    await expect(client.supervisorEvents(10)).resolves.toEqual({
+      event_cursor: "",
+      items: null,
+      total: 0,
+    });
+  });
+
+  test("keeps valid custom events when a page also contains malformed events", async () => {
+    const { context, settings } = handlerFixture();
+    const handlers = createGasCityHandlers({
+      createClient: (requestSettings) =>
+        new GasCityClient({
+          endpointUrl: requestSettings.endpointUrl,
+          allowRemoteEndpoint: requestSettings.allowRemoteEndpoint,
+          fetch: async () =>
+            jsonResponse({
+              items: [
+                { ...events.items[0], payload: ["custom", "payload"] },
+                { seq: 43, type: "broken", actor: "test", payload: null },
+              ],
+              total: 2,
+            }),
+        }),
+      now: () => new Date("2026-09-11T06:00:00Z"),
+    });
+
+    await expect(
+      handlers.listEvents(
+        { settings, scope: "city", cityName: "alpha-city", cursor: null },
+        context,
+      ),
+    ).resolves.toMatchObject({
+      items: [{ sequence: 42, metadata: {} }],
+      truncated: true,
+    });
+  });
+
   test("uses the validated RPC settings for connection, limits, and mapping overrides", async () => {
     const settings = toGasCityRpcSettings(
       GasCitySettingsSchema.parse({

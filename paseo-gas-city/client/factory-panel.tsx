@@ -170,6 +170,7 @@ function ReadyFactoryPanel({
       ) : null}
       <View style={styles.body}>
         <CityOperations
+          key={`${settings.endpointUrl}:${resolved.cityName}:${resolved.rigName}`}
           theme={theme}
           layout={layout}
           host={host}

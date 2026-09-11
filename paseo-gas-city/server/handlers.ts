@@ -31,6 +31,7 @@ import {
   type UpstreamCity,
   type UpstreamConvoy,
   type UpstreamEvent,
+  UpstreamEventSchema,
   type UpstreamRig,
   type UpstreamSession,
   type UpstreamWorkItem,
@@ -264,15 +265,21 @@ function upstreamListTruncated(response: {
 
 function eventMetadata(event: UpstreamEvent) {
   const metadata: Record<string, string | number | boolean | null> = {};
-  for (const [key, value] of Object.entries(event.payload)) {
-    if (
-      Object.keys(metadata).length < GAS_CITY_LIMITS.metadataEntries &&
-      (typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean" ||
-        value === null)
-    ) {
-      metadata[key] = value;
+  if (
+    typeof event.payload === "object" &&
+    event.payload !== null &&
+    !Array.isArray(event.payload)
+  ) {
+    for (const [key, value] of Object.entries(event.payload)) {
+      if (
+        Object.keys(metadata).length < GAS_CITY_LIMITS.metadataEntries &&
+        (typeof value === "string" ||
+          typeof value === "number" ||
+          typeof value === "boolean" ||
+          value === null)
+      ) {
+        metadata[key] = value;
+      }
     }
   }
   for (const [key, value] of [
@@ -297,6 +304,17 @@ function eventItem(event: UpstreamEvent, fallbackCity: string | null) {
     timestamp: event.ts,
     metadata: eventMetadata(event),
   };
+}
+
+function parseEventItems(items: readonly unknown[] | null, fallbackCity: string | null) {
+  const parsed = [];
+  let dropped = 0;
+  for (const item of items ?? []) {
+    const result = UpstreamEventSchema.safeParse(item);
+    if (result.success) parsed.push(eventItem(result.data, fallbackCity));
+    else dropped += 1;
+  }
+  return { items: parsed, dropped };
 }
 
 function requireMutations(settings: GasCityRpcSettings, confirmed: boolean) {
@@ -527,20 +545,22 @@ export function createGasCityHandlers(
       try {
         if (input.scope === "supervisor") {
           const response = await client.supervisorEvents(settings.eventLimit);
+          const events = parseEventItems(response.items, null);
           return EventListSchema.parse({
             scope: "supervisor-head",
-            items: response.items.map((event) => eventItem(event, null)),
+            items: events.items,
             cursor: null,
-            truncated: response.total > response.items.length,
+            truncated: events.dropped > 0 || response.total > events.items.length,
             refreshedAt: refreshedAt(now),
           });
         }
         const response = await client.cityEvents(input.cityName, input.cursor, settings.eventLimit);
+        const events = parseEventItems(response.items, input.cityName);
         return EventListSchema.parse({
           scope: "city",
-          items: (response.items ?? []).map((event) => eventItem(event, input.cityName)),
+          items: events.items,
           cursor: nullable(response.next_cursor),
-          truncated: upstreamListTruncated(response),
+          truncated: events.dropped > 0 || upstreamListTruncated(response),
           refreshedAt: refreshedAt(now),
         });
       } catch (error) {
