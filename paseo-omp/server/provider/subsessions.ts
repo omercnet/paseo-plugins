@@ -39,12 +39,13 @@ type ChildRef = {
   sessionFile?: string;
   parentToolCallId?: string;
 };
-type ReplayChildRef = ChildRef & { status: ChildTerminalStatus };
+type ReplayChildRef = ChildRef & { status: ChildTerminalStatus | "derive" };
 type ChildState = {
   nativeId: string;
   sessionId: string;
   parentSessionId: string;
   turnId: string;
+  turnSequence: number;
   title: string;
   description?: string;
   sessionFile?: string;
@@ -105,15 +106,21 @@ function expectedTaskChildren(value: unknown): number {
   return Math.max(1, parsed.data.tasks.length);
 }
 
-function taskResultExpectedChildren(value: unknown): number | undefined {
+function taskResultActivity(value: unknown): {
+  expectedChildren?: number;
+  settleWithoutChildren: boolean;
+} {
   const parsed = TaskResultEnvelopeSchema.safeParse(value);
-  if (!parsed.success) return;
-  const progressCount = parsed.data.details.progress?.reduce(
-    (count, item) => Math.max(count, item.index + 1),
-    0,
+  if (!parsed.success) return { settleWithoutChildren: false };
+  const pending = (parsed.data.details.progress ?? []).filter(
+    (item) => item.status === "pending" || item.status === "running",
   );
-  const observed = Math.max(parsed.data.details.results.length, progressCount ?? 0);
-  return observed > 0 ? observed : undefined;
+  const progressCount = pending.reduce((count, item) => Math.max(count, item.index + 1), 0);
+  const observed = Math.max(parsed.data.details.results.length, progressCount);
+  return {
+    ...(observed > 0 ? { expectedChildren: observed } : {}),
+    settleWithoutChildren: parsed.data.details.results.length === 0 && pending.length === 0,
+  };
 }
 
 async function waitForReplay<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -197,12 +204,13 @@ function replayChildren(messages: readonly OmpMessage[]): ReplayChildRef[] {
     const progress = details?.progress ?? [];
     for (const item of progress) {
       if (resultIds.has(item.id)) continue;
+      const status = terminalStatus(item.status);
       children.push({
         id: item.id,
         agent: item.agent ?? call?.title,
         description: call?.description,
         parentToolCallId: message.toolCallId,
-        status: terminalStatus(item.status) ?? "completed",
+        status: status ?? "derive",
       });
     }
     if (results.length > 0 || progress.length > 0) continue;
@@ -228,6 +236,25 @@ function replayChildren(messages: readonly OmpMessage[]): ReplayChildRef[] {
     });
   }
   return children;
+}
+
+function replayTerminalStatus(messages: readonly OmpMessage[]): ChildTerminalStatus {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    const stopReason = message.stopReason?.toLowerCase();
+    if (stopReason === "aborted" || stopReason === "canceled" || stopReason === "cancelled") {
+      return "canceled";
+    }
+    if (stopReason === "error" || message.errorMessage) return "failed";
+    return "completed";
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "bashExecution" && message.cancelled) return "canceled";
+    if (message?.role === "toolResult" && message.isError) return "failed";
+  }
+  return "completed";
 }
 
 function terminalStatus(status: string): ChildTerminalStatus | undefined {
@@ -301,9 +328,10 @@ export class OmpSubsessionProjector {
       return;
     }
     dispatch.acknowledged = true;
-    const observedChildren = taskResultExpectedChildren(event.result);
-    if (observedChildren !== undefined) {
-      dispatch.expectedChildren = Math.max(dispatch.expectedChildren, observedChildren);
+    const activity = taskResultActivity(event.result);
+    if (activity.settleWithoutChildren) dispatch.expectedChildren = 0;
+    else if (activity.expectedChildren !== undefined) {
+      dispatch.expectedChildren = Math.max(dispatch.expectedChildren, activity.expectedChildren);
     }
     this.settleDispatch(event.toolCallId, dispatch);
   }
@@ -390,6 +418,7 @@ export class OmpSubsessionProjector {
     this.terminalize("canceled");
     this.closed = true;
     for (const child of this.children.values()) {
+      child.projector.close();
       if (child.sessionClosed) continue;
       child.sessionClosed = true;
       this.emit({ type: "session.closed", sessionId: child.sessionId });
@@ -412,6 +441,7 @@ export class OmpSubsessionProjector {
       );
       const terminal = terminalStatus(event.payload.status);
       if (terminal) this.requestTerminal(child, terminal);
+      else if (event.payload.status === "started") this.restartChild(child);
       this.onActivityChange();
       return;
     }
@@ -428,6 +458,7 @@ export class OmpSubsessionProjector {
       );
       const terminal = terminalStatus(event.payload.progress.status);
       if (terminal) this.requestTerminal(child, terminal);
+      else this.restartChild(child);
       this.onActivityChange();
       return;
     }
@@ -452,7 +483,11 @@ export class OmpSubsessionProjector {
   private ensureChild(ref: ChildRef, parentSessionId: string): ChildState {
     const existingSessionId = this.sessionIdByNativeId.get(ref.id);
     const existing = existingSessionId ? this.children.get(existingSessionId) : undefined;
-    if (existing) return existing;
+    if (existing) {
+      const dispatch = ref.parentToolCallId ? this.dispatches.get(ref.parentToolCallId) : undefined;
+      dispatch?.childSessionIds.add(existing.sessionId);
+      return existing;
+    }
     if (this.children.size >= MAX_CHILDREN) throw new OmpPublicError("OMP subagent limit reached");
     const digest = createHash("sha256")
       .update(this.rootIdentityKey)
@@ -461,7 +496,7 @@ export class OmpSubsessionProjector {
       .digest("base64url")
       .slice(0, 32);
     const sessionId = `omp:subsession:${digest}`;
-    const turnId = `${sessionId}:turn`;
+    const turnId = `${sessionId}:turn:1`;
     const title = this.dataFilter.text(ref.agent?.trim() || "OMP subagent", 256);
     const description = ref.description
       ? this.dataFilter.text(ref.description, 16 * 1024)
@@ -471,6 +506,7 @@ export class OmpSubsessionProjector {
       sessionId,
       parentSessionId,
       turnId,
+      turnSequence: 1,
       title,
       ...(description ? { description } : {}),
       ...(ref.sessionFile ? { sessionFile: ref.sessionFile } : {}),
@@ -504,6 +540,21 @@ export class OmpSubsessionProjector {
     return child;
   }
 
+  private restartChild(child: ChildState): void {
+    if (child.status === "running") return;
+    child.status = "running";
+    child.terminalRequested = undefined;
+    child.seenInSnapshot = false;
+    child.turnSequence += 1;
+    child.turnId = `${child.sessionId}:turn:${child.turnSequence}`;
+    this.emit({
+      type: "session.turn",
+      sessionId: child.sessionId,
+      turnId: child.turnId,
+      state: "started",
+    });
+  }
+
   private requestTerminal(child: ChildState, status: ChildTerminalStatus): void {
     if (child.status !== "running") return;
     child.terminalRequested = status;
@@ -518,7 +569,6 @@ export class OmpSubsessionProjector {
     }
     child.status = status;
     child.projector.finishTurn(child.turnId);
-    child.projector.close();
     this.emit({
       type: "session.turn",
       sessionId: child.sessionId,
@@ -598,6 +648,7 @@ export class OmpSubsessionProjector {
       child.seenInSnapshot = true;
       const terminal = terminalStatus(snapshot.status);
       if (terminal) this.requestTerminal(child, terminal);
+      else this.restartChild(child);
     }
     for (const child of this.children.values()) {
       if (child.status === "running" && child.seenInSnapshot && !present.has(child.nativeId)) {
@@ -703,7 +754,10 @@ export class OmpSubsessionProjector {
         depth + 1,
       );
       signal.throwIfAborted();
-      this.requestTerminal(child, ref.status);
+      this.requestTerminal(
+        child,
+        ref.status === "derive" ? replayTerminalStatus(history.messages) : ref.status,
+      );
     }
   }
 

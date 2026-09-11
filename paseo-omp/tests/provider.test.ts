@@ -7622,6 +7622,145 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("settles a successful task acknowledgement with no child evidence", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "task-no-child",
+      toolName: "task",
+      args: { tasks: [{ task: "cannot schedule" }] },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "task-no-child",
+      toolName: "task",
+      result: { details: { results: [], progress: [] }, message: "No agent was scheduled" },
+    });
+    await finishTurn(events, session, turnId);
+    expect(
+      events.filter((event) => event.type === "session.opened" && event.parentSessionId),
+    ).toHaveLength(0);
+    await connection.close();
+  });
+
+  test("restarts a terminal child id for follow-up work without losing history", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const runChildTurn = async (
+      parentClientMessageId: string,
+      taskCallId: string,
+      responseId: string,
+      text: string,
+    ) => {
+      const parentTurnId = turnIdFrom(
+        await startPrompt(connection, events, parentClientMessageId, text),
+      );
+      session.emit({
+        type: "tool_execution_start",
+        toolCallId: taskCallId,
+        toolName: "task",
+        args: { tasks: [{ task: text }] },
+      });
+      session.emit({
+        type: "tool_execution_end",
+        toolCallId: taskCallId,
+        toolName: "task",
+        result: { message: "spawned" },
+      });
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "reused-child",
+          agent: "scout",
+          status: "started",
+          parentToolCallId: taskCallId,
+          index: 0,
+        },
+      });
+      session.emit({
+        type: "subagent_event",
+        payload: {
+          id: "reused-child",
+          event: {
+            type: "message_end",
+            message: { role: "assistant", responseId, content: text },
+          },
+        },
+      });
+      session.emit({ type: "agent_end", messages: [], isTerminal: true });
+      await Promise.resolve();
+      expect(
+        events.some(
+          (event) =>
+            event.type === "session.turn" &&
+            event.turnId === parentTurnId &&
+            event.state === "completed",
+        ),
+      ).toBe(false);
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "reused-child",
+          agent: "scout",
+          status: "completed",
+          parentToolCallId: taskCallId,
+          index: 0,
+        },
+      });
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === parentTurnId &&
+          event.state === "completed",
+      );
+    };
+
+    await runChildTurn("follow-up-parent-one", "follow-up-task-one", "child-response-one", "first");
+    const childOpened = events.find(
+      (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
+    );
+    if (childOpened?.type !== "session.opened") throw new Error("Missing reused child");
+    await runChildTurn(
+      "follow-up-parent-two",
+      "follow-up-task-two",
+      "child-response-two",
+      "second",
+    );
+    expect(
+      events.filter(
+        (event) => event.type === "session.opened" && event.sessionId === childOpened.sessionId,
+      ),
+    ).toHaveLength(1);
+    const childTurns = events.flatMap((event) =>
+      event.type === "session.turn" && event.sessionId === childOpened.sessionId ? [event] : [],
+    );
+    expect(childTurns.filter((event) => event.state === "started")).toHaveLength(2);
+    expect(childTurns.filter((event) => event.state === "completed")).toHaveLength(2);
+    expect(new Set(childTurns.map((event) => event.turnId)).size).toBe(2);
+    expect(
+      events.flatMap((event) =>
+        event.type === "timeline.item" &&
+        event.sessionId === childOpened.sessionId &&
+        event.item.type === "assistant_message"
+          ? [event.item.text]
+          : [],
+      ),
+    ).toEqual(["first", "second"]);
+    await connection.close();
+  });
+
   test("keeps a batch dispatch active across gaps between child starts", async () => {
     const { connection, events, runtime } = await createHarness(
       new FakeOmpRuntime(),
@@ -8297,6 +8436,97 @@ describe("OMP direct provider", () => {
           (event) => "sessionId" in event && event.sessionId.startsWith("omp:subsession:"),
         ),
       ).toBe(false);
+      await connection.close();
+    }
+  });
+
+  test("derives pending cold async outcomes from child transcripts", async () => {
+    for (const outcome of ["canceled", "failed"] as const) {
+      const runtime = new FakeOmpRuntime();
+      runtime.descriptors.push({
+        id: NATIVE_SESSION_ID,
+        cwd: "/repo",
+        transcriptFile: "/sessions/root.jsonl",
+      });
+      runtime.nextHistoryMessages = [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: `pending-${outcome}-task`,
+              name: "task",
+              arguments: { task: outcome },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: `pending-${outcome}-task`,
+          toolName: "task",
+          content: [],
+          details: {
+            results: [],
+            progress: [
+              {
+                index: 0,
+                id: `pending-${outcome}-child`,
+                agent: "scout",
+                status: "pending",
+              },
+            ],
+          },
+        },
+      ];
+      runtime.persistedSubagentMessages.set(`/sessions/root.jsonl\0pending-${outcome}-child`, {
+        sessionFile: `/sessions/root/pending-${outcome}-child.jsonl`,
+        nativeSessionId: `native_pending_${outcome}`,
+        byteLength: 1,
+        messages: [
+          {
+            role: "assistant",
+            responseId: `pending-${outcome}-response`,
+            content: `${outcome} output`,
+            stopReason: outcome === "canceled" ? "aborted" : "error",
+            ...(outcome === "failed" ? { errorMessage: "child failed" } : {}),
+          },
+        ],
+      });
+      const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+        "prompt.message",
+        "session.persistence",
+        "session.subsession",
+      ]);
+      await connection.send({
+        type: "session.open",
+        requestId: `pending-${outcome}-open`,
+        sessionId: `pending-${outcome}-root`,
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+      await events.waitFor(
+        (event) => event.type === "session.ready" && event.requestId === `pending-${outcome}-open`,
+      );
+      const child = events.find(
+        (event) =>
+          event.type === "session.opened" && event.parentSessionId === `pending-${outcome}-root`,
+      );
+      if (child?.type !== "session.opened") throw new Error("Missing pending history child");
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session.turn",
+          sessionId: child.sessionId,
+          state: outcome,
+        }),
+      );
       await connection.close();
     }
   });
