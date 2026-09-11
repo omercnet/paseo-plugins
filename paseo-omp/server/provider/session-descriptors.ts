@@ -1,6 +1,7 @@
 import { constants, type Dir } from "node:fs";
 import { type FileHandle, open, opendir, realpath } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { ompSessionDir } from "../paths";
 
 const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
@@ -35,6 +36,7 @@ export interface OmpSessionListOptions {
   query?: string;
   limit?: number;
   sessionId?: string;
+  sessionDir?: string;
 }
 
 interface ScanBudget {
@@ -245,7 +247,12 @@ export async function listOmpSessionDescriptors(
     entries: 0,
     exhausted: false,
   };
-  await scanSessionFiles(ompSessionDir(environment), budget, async (file) => {
+  const root = options.sessionDir
+    ? options.sessionDir.startsWith("~/")
+      ? join(environment.HOME ?? environment.USERPROFILE ?? homedir(), options.sessionDir.slice(2))
+      : resolve(options.cwd, options.sessionDir)
+    : ompSessionDir(environment);
+  await scanSessionFiles(root, budget, async (file) => {
     const fileName = basename(file);
     const stem = fileName.slice(0, -".jsonl".length);
     if (requestedId && !stem.endsWith(`_${requestedId}`)) return true;

@@ -98,6 +98,12 @@ describe("OMP session descriptor discovery", () => {
       await listOmpSessionDescriptors({ cwd: "/repo", limit: 1 }, { OMP_AGENT_DIR: agentDir }),
     ).toHaveLength(1);
 
+    const explicit = join(root, "explicit");
+    await writeSession(explicit, "nested", EXACT_CWD_ID, "/repo");
+    await expect(
+      listOmpSessionDescriptors({ cwd: "/repo", limit: 1, sessionDir: explicit }),
+    ).resolves.toEqual([expect.objectContaining({ id: EXACT_CWD_ID, cwd: "/repo" })]);
+
     const piRoot = await temporaryRoot();
     const piAgentDir = join(piRoot, "pi-agent");
     await writeSession(join(piAgentDir, "sessions"), "nested", OTHER_ID, "/repo");

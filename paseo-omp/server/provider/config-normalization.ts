@@ -2,7 +2,7 @@ import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import type { OmpStartOptions } from "./omp-rpc";
 import { parseOmpProviderOptions } from "./provider-options";
 import { OmpPublicError } from "./security";
-import { OmpAdvertisedModeSchema } from "./settings";
+import { OmpModeSchema } from "./settings";
 
 export type NormalizedOmpStartOptions = Omit<OmpStartOptions, "environment" | "signal">;
 export type OmpRecoveryOptions = Omit<OmpStartOptions, "resumeSessionId" | "signal">;
@@ -23,14 +23,18 @@ export function withCommittedOmpSelection(
 /** Convert the public plugin session envelope into the native OMP launch contract. */
 export function normalizeOmpSessionConfig(
   config: ProviderSessionConfig,
+  permissionSupported = false,
 ): NormalizedOmpStartOptions {
   if (Object.keys(config.settings).length > 0) {
     throw new OmpPublicError("OMP Plugin Preview does not expose live provider settings");
   }
-  const parsedMode = OmpAdvertisedModeSchema.safeParse(config.mode ?? "full");
+  const parsedMode = OmpModeSchema.safeParse(config.mode ?? "full");
   if (!parsedMode.success) {
+    throw new OmpPublicError(`Unsupported OMP mode '${String(config.mode)}'`);
+  }
+  if (parsedMode.data !== "full" && !permissionSupported) {
     throw new OmpPublicError(
-      `OMP mode '${String(config.mode)}' requires interactive permission support, which this provider does not advertise`,
+      `OMP mode '${parsedMode.data}' requires negotiated permission support`,
     );
   }
   const options = parseOmpProviderOptions(config.providerOptions);

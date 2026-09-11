@@ -25,11 +25,8 @@ const ModelSelectorSchema = boundedString(MAX_MODEL_SELECTOR_BYTES).refine(
   (value) => !value.includes("\0"),
 );
 
-/** All native launch modes. `write` and `ask` remain recovery-ready for the permission branch. */
+/** Native approval modes are available because provider permissions are bridged to Paseo. */
 export const OmpModeSchema = z.enum(["full", "write", "ask"]);
-
-/** Expand only when the provider both handles and advertises the public permission capability. */
-export const OmpAdvertisedModeSchema = z.literal("full");
 
 export const OmpProviderParamsSchema = z
   .object({

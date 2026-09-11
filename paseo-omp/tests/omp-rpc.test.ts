@@ -131,7 +131,7 @@ function nextEvent(
 }
 
 describe("OMP RPC transport", () => {
-  test("sends steer one-way without waiting for a response", async () => {
+  test("sends steering and out-of-band commands with native wire shapes", async () => {
     const child = new FakeRpcChild();
     const launches: OmpSpawnRequest[] = [];
     const commands: Record<string, unknown>[] = [];
@@ -144,6 +144,15 @@ describe("OMP RPC transport", () => {
           command: "negotiate_protocol",
           success: true,
           data: { protocolVersion: 2 },
+        });
+      }
+      if (command.type === "set_auto_compaction" || command.type === "handoff") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: command.type,
+          success: true,
+          data: {},
         });
       }
     });
@@ -160,6 +169,9 @@ describe("OMP RPC transport", () => {
     });
 
     await session.steer("focus");
+    await session.followUp("verify");
+    await session.setAutoCompaction(false);
+    await session.handoff("implement now");
 
     expect(launches[0]).toEqual(
       expect.objectContaining({
@@ -173,6 +185,13 @@ describe("OMP RPC transport", () => {
       type: "steer",
       message: "focus",
     });
+    expect(commands).toContainEqual({ type: "follow_up", message: "verify" });
+    expect(commands).toContainEqual(
+      expect.objectContaining({ type: "set_auto_compaction", enabled: false }),
+    );
+    expect(commands).toContainEqual(
+      expect.objectContaining({ type: "handoff", customInstructions: "implement now" }),
+    );
     await session.close();
   });
 

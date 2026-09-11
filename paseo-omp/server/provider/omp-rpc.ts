@@ -299,6 +299,7 @@ const OmpModelSchema = z.object({
       defaultLevel: boundedString(32).optional(),
     })
     .optional(),
+  input: z.array(NAME).max(16).optional(),
   contextWindow: z.number().int().nonnegative().max(100_000_000).nullable().optional(),
 });
 const TokenCountSchema = z.number().int().nonnegative().max(MAX_TOKEN_COUNT);
@@ -355,6 +356,7 @@ const OmpSessionStateSchema = z.object({
   isStreaming: z.boolean(),
   isCompacting: z.boolean(),
   sessionId: IDENTIFIER,
+  autoCompactionEnabled: z.boolean().optional(),
   contextUsage: OmpContextUsageSchema.nullable().optional(),
   sessionFile: boundedString(MAX_PATH_LENGTH).optional(),
 });
@@ -845,9 +847,12 @@ export interface OmpRuntimeSession {
     onAccepted?: () => void,
   ): Promise<{ requestId: string; agentInvoked?: boolean }>;
   compact(customInstructions?: string): Promise<OmpCompactionResult>;
+  setAutoCompaction(enabled: boolean): Promise<void>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: string): Promise<void>;
   steer(message: string, images?: readonly OmpImage[]): Promise<void>;
+  followUp(message: string, images?: readonly OmpImage[]): Promise<void>;
+  handoff(customInstructions?: string): Promise<void>;
   respondToExtensionUi(response: OmpExtensionUiResponse): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
   branch(entryId: string): Promise<{ text: string; cancelled: boolean }>;
@@ -2453,6 +2458,9 @@ class OmpRpcSession implements OmpRuntimeSession {
       ),
     );
   }
+  async setAutoCompaction(enabled: boolean): Promise<void> {
+    await this.process.request({ type: "set_auto_compaction", enabled });
+  }
 
   async getAvailableModels(): Promise<OmpModel[]> {
     const result = OmpModelsResultSchema.parse(
@@ -2582,6 +2590,25 @@ class OmpRpcSession implements OmpRuntimeSession {
       type: "steer",
       message: safeMessage,
       ...(images.length > 0 ? { images } : {}),
+    });
+  }
+  async followUp(message: string, images: readonly OmpImage[] = []): Promise<void> {
+    const safeMessage = validateBoundedText(message, "follow-up", MAX_TEXT_LENGTH);
+    await this.process.sendFrame({
+      type: "follow_up",
+      message: safeMessage,
+      ...(images.length > 0 ? { images } : {}),
+    });
+  }
+
+  async handoff(customInstructions?: string): Promise<void> {
+    const instructions =
+      customInstructions === undefined
+        ? undefined
+        : validateBoundedText(customInstructions, "handoff instructions", MAX_TEXT_LENGTH);
+    await this.process.request({
+      type: "handoff",
+      ...(instructions ? { customInstructions: instructions } : {}),
     });
   }
 

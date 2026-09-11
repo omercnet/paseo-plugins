@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, statSync } from "node:fs";
+import { OmpImageMaterializer } from "../server/provider/image";
 import { ompImageTimelineSchema, transformOmpImageToolItem } from "../shared/provider-image";
 
 const PNG = "iVBORw0KGgo=";
@@ -85,5 +87,29 @@ describe("OMP image timeline transformer", () => {
       data: PNG,
       mimeType: "image/png",
     });
+  });
+
+  test("unlinks materialized images when their session scope ends", () => {
+    const materializer = new OmpImageMaterializer();
+    const path = materializer.materialize(PNG, "image/png");
+    expect(existsSync(path)).toBe(true);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+
+    materializer.clear();
+
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("caps aggregate materialized image bytes and releases retained files", () => {
+    const materializer = new OmpImageMaterializer(12);
+    const first = Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
+    const second = Buffer.from("89504e470d0a1a0aff", "hex").toString("base64");
+    const path = materializer.materialize(first, "image/png");
+
+    expect(() => materializer.materialize(second, "image/png")).toThrow(
+      "OMP materialized image budget exceeded",
+    );
+    materializer.release([path]);
+    expect(existsSync(path)).toBe(false);
   });
 });

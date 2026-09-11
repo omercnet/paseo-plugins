@@ -424,10 +424,22 @@ export function createOmpConnection(
           return;
         }
         try {
+          const catalog = await discoverOmpCatalog(
+            runtime,
+            input.cwd,
+            shutdown.signal,
+            environment,
+          );
           emit({
             type: "catalog",
             requestId: input.requestId,
-            catalog: await discoverOmpCatalog(runtime, input.cwd, shutdown.signal, environment),
+            catalog: safeCapabilities.includes("permission")
+              ? catalog
+              : {
+                  ...catalog,
+                  modes: catalog.modes.filter((mode) => mode.id === "full"),
+                  defaultMode: "full",
+                },
           });
         } catch (error) {
           if (isOmpCleanupFailure(error)) catalogCleanup = error.cleanup;
