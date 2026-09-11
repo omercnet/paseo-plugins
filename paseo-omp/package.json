@@ -32,8 +32,10 @@
     "check": "biome check .",
     "check:write": "biome check --write .",
     "test": "bun test",
-    "package:release": "bun scripts/package-release.ts",
     "test:coverage": "bun test --coverage",
+    "test:integration:docker": "bun scripts/test-docker-host-tools.ts",
+    "test:integration:wsl": "bun scripts/test-wsl-host-tools.ts",
+    "package:release": "bun scripts/package-release.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

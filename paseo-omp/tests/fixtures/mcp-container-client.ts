@@ -9,6 +9,9 @@ import type {
 const url = process.env.MCP_HOST_URL;
 const expectedHostCwd = process.env.EXPECTED_HOST_CWD;
 const expectedHostPid = Number(process.env.EXPECTED_HOST_PID);
+const expectedCallerAgentId = process.env.EXPECTED_CALLER_AGENT_ID ?? "docker-agent";
+const expectedWorkspaceId = process.env.EXPECTED_WORKSPACE_ID ?? "docker-workspace";
+const expectedOwnerMarker = process.env.EXPECTED_OWNER_MARKER ?? "host-daemon";
 if (!url || !expectedHostCwd || !Number.isInteger(expectedHostPid)) {
   throw new Error("MCP_HOST_URL, EXPECTED_HOST_CWD, and EXPECTED_HOST_PID are required");
 }
@@ -28,7 +31,7 @@ const runtime = {
 
 const bridge = await OmpHostToolsBridge.open({
   cwd: process.cwd(),
-  env: { PASEO_AGENT_ID: "docker-agent", PASEO_WORKSPACE_ID: "docker-workspace" },
+  env: { PASEO_AGENT_ID: expectedCallerAgentId, PASEO_WORKSPACE_ID: expectedWorkspaceId },
   mcpServers: { bridge: { type: "http", url } },
   settings: {},
   persist: false,
@@ -43,7 +46,7 @@ try {
     id: "docker-call",
     toolCallId: "docker-tool-call",
     toolName: "mcp__paseo_workspace_probe",
-    arguments: { workspaceId: "docker-workspace" },
+    arguments: { workspaceId: expectedWorkspaceId },
   });
   const deadline = Date.now() + 5_000;
   while (results.length === 0 && Date.now() < deadline) {
@@ -53,13 +56,15 @@ try {
   if (!text) throw new Error("Docker host tool did not return a result");
   const evidence = JSON.parse(text) as {
     callerAgentId?: string;
+    workspaceId?: string;
     ownerMarker?: string;
     ownerPid?: number;
     ownerCwd?: string;
   };
   if (
-    evidence.callerAgentId !== "docker-agent" ||
-    evidence.ownerMarker !== "host-daemon" ||
+    evidence.callerAgentId !== expectedCallerAgentId ||
+    evidence.workspaceId !== expectedWorkspaceId ||
+    evidence.ownerMarker !== expectedOwnerMarker ||
     evidence.ownerPid !== expectedHostPid ||
     evidence.ownerPid === process.pid ||
     evidence.ownerCwd !== expectedHostCwd

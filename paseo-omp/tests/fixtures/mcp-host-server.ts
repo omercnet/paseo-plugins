@@ -1,5 +1,5 @@
 const port = Number(process.env.MCP_HOST_PORT);
-if (!Number.isInteger(port) || port <= 0) throw new Error("MCP_HOST_PORT is required");
+if (!Number.isInteger(port) || port < 0) throw new Error("MCP_HOST_PORT is required");
 
 const server = Bun.serve({
   hostname: "0.0.0.0",
@@ -39,6 +39,8 @@ const server = Bun.serve({
             type: "text",
             text: JSON.stringify({
               callerAgentId: new URL(request.url).searchParams.get("callerAgentId"),
+              workspaceId: (payload.params as { arguments?: { workspaceId?: string } } | undefined)
+                ?.arguments?.workspaceId,
               ownerMarker: process.env.OWNER_MARKER,
               ownerPid: process.pid,
               ownerCwd: process.cwd(),
