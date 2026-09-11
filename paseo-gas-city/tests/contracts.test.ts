@@ -64,7 +64,7 @@ describe("Gas City shared contracts", () => {
 
   test("applies safe observe-only settings defaults", () => {
     expect(GasCitySettingsSchema.parse({})).toEqual({
-      endpointUrl: "http://127.0.0.1:7375",
+      endpointUrl: "http://127.0.0.1:8372",
       allowRemoteEndpoint: false,
       mutationsEnabled: false,
       refreshIntervalMs: 10_000,
