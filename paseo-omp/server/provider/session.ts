@@ -5,13 +5,7 @@ import type {
   ProviderInput,
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
-import {
-  mapOmpModels,
-  nativeOmpModelId,
-  OMP_MODES,
-  ompModelId,
-  thinkingForModel,
-} from "./catalog";
+import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
 import type {
   OmpMessage,
   OmpModel,

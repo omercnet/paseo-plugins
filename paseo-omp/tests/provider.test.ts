@@ -411,6 +411,7 @@ async function openSession(
   requestId = "open-1",
   sessionId = "session-1",
   env: Record<string, string> = { TEST_ENV: "test-value" },
+  model = MODEL_PUBLIC_ID,
 ) {
   await connection.send({
     type: "session.open",
@@ -421,7 +422,7 @@ async function openSession(
       env,
       systemPrompt: "Be precise",
       mcpServers: {},
-      model: MODEL_PUBLIC_ID,
+      model,
       mode: "full",
       thinkingOption: "medium",
       settings: {},
@@ -509,15 +510,22 @@ describe("OMP direct provider", () => {
     const catalog = await events.waitFor(
       (event) => event.type === "catalog" && event.requestId === "malicious-catalog",
     );
+    if (catalog.type !== "catalog") throw new Error("Expected catalog event");
+    const publicModelId = catalog.catalog.models[0]?.id;
+    if (!publicModelId) throw new Error("Expected projected model");
     runtime.nextModel = maliciousModel;
-    await openSession(connection, events, "malicious-open");
+    await openSession(
+      connection,
+      events,
+      "malicious-open",
+      "session-1",
+      { TEST_ENV: "test-value" },
+      publicModelId,
+    );
     const config = events.find(
       (event) => event.type === "session.config" && event.sessionId === "session-1",
     );
     const visible = JSON.stringify([catalog, config]);
-    if (catalog.type !== "catalog") throw new Error("Expected catalog event");
-    const publicModelId = catalog.catalog.models[0]?.id;
-    if (!publicModelId) throw new Error("Expected projected model");
     await connection.send({
       type: "session.configure",
       requestId: "malicious-model-select",
@@ -536,7 +544,7 @@ describe("OMP direct provider", () => {
     expect(catalog.catalog.models.every((model) => model.id.startsWith("omp:model:"))).toBe(true);
     expect(visible).not.toContain("\u0000");
     expect(visible).not.toContain("\u0007");
-    expect(runtime.starts[1]?.model).toBe("anthropic/claude-sonnet-4-5");
+    expect(runtime.starts[1]?.model).toBeUndefined();
     expect(sessionAt(runtime, 1).modelChanges).toContainEqual({
       provider: maliciousModel.provider,
       modelId: maliciousModel.id,
@@ -608,7 +616,6 @@ describe("OMP direct provider", () => {
     expect(sessionAt(runtime).modelChanges).toHaveLength(0);
     await connection.close();
   });
-
 
   test("rejects malformed capabilities and filters unsupported capability names", async () => {
     const provider = createOmpProvider({ runtime: new FakeOmpRuntime() });
