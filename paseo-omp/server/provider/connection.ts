@@ -13,8 +13,11 @@ import type { OmpTimelineScheduler } from "./timeline-projector";
 
 const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.message": true,
+  "prompt.command": true,
+  "prompt.image": true,
   "prompt.steer": true,
   "session.configure": true,
+  permission: true,
 };
 const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   catalog: true,
@@ -290,6 +293,12 @@ export function createOmpConnection(
         await session.prompt(input);
         return;
       }
+      case "session.permission": {
+        const session = sessions.get(input.sessionId)?.session;
+        if (!session) throw new OmpPublicError("Unknown OMP session");
+        await session.permission(input);
+        return;
+      }
       case "session.configure": {
         const session = sessions.get(input.sessionId)?.session;
         if (!session) {
@@ -409,6 +418,17 @@ export function createOmpConnection(
               sessionId: input.sessionId,
               clientMessageId: input.prompt.clientMessageId,
               result: { type: "failed", error: errorDetails(error, "OMP prompt failed") },
+            });
+          } else if (input.type === "session.permission") {
+            emit({
+              type: "session.notice",
+              sessionId: input.sessionId,
+              notice: {
+                id: `omp:permission-error:${input.permissionId}`,
+                severity: "error",
+                title: "OMP permission response failed",
+                description: errorDetails(error, "OMP permission response failed").message,
+              },
             });
           } else if ("requestId" in input) {
             requestFailure(input.requestId, error, "OMP provider request failed");

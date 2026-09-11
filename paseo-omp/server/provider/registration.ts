@@ -5,7 +5,14 @@ import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
 import { boundedJsonBytes } from "./security";
 import type { OmpTimelineScheduler } from "./timeline-projector";
 
-const CAPABILITIES = ["prompt.message", "prompt.steer", "session.configure"] as const;
+const CAPABILITIES = [
+  "prompt.message",
+  "prompt.command",
+  "prompt.image",
+  "prompt.steer",
+  "session.configure",
+  "permission",
+] as const;
 const ConnectRequestSchema = z.object({
   versions: z.array(z.number().int().positive().max(16)).min(1).max(8),
   capabilities: z.array(z.string().min(1).max(64)).max(32),

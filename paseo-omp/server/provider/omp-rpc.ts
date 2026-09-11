@@ -119,10 +119,29 @@ const OmpMessageSchema = z.object({
   responseId: IDENTIFIER.optional(),
   errorMessage: boundedString(4_096).nullable().optional(),
   stopReason: boundedString(64).optional(),
+  customType: NAME.optional(),
+  display: z.boolean().optional(),
+  details: z
+    .unknown()
+    .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096))
+    .optional(),
 });
 const OmpAvailableCommandSchema = z.object({
   name: NAME,
   aliases: z.array(NAME).max(32).optional(),
+  description: boundedString(4_096).optional(),
+  input: z.object({ hint: boundedString(1_024).optional() }).optional(),
+  subcommands: z
+    .array(
+      z.object({
+        name: NAME,
+        description: boundedString(4_096).optional(),
+        usage: boundedString(1_024).optional(),
+      }),
+    )
+    .max(128)
+    .optional(),
+  source: boundedString(64).optional(),
 });
 const OmpModelSchema = z.object({
   provider: OMP_PROVIDER_NAME,
@@ -239,6 +258,7 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     model: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
     role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
   }),
+  z.object({ type: z.literal("todo_auto_clear") }),
   z.object({
     type: z.literal("available_commands_update"),
     commands: z.array(OmpAvailableCommandSchema).max(MAX_ARRAY_ITEMS),
@@ -251,19 +271,83 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     source: boundedString(MAX_NAME_LENGTH).optional(),
   }),
   z.object({ type: z.literal("command_output"), text: TEXT.optional() }),
-  z.object({
-    type: z.literal("extension_ui_request"),
-    id: IDENTIFIER,
-    method: boundedString(64, 1),
-    title: boundedString(4_096).optional(),
-    message: boundedString(64 * 1024).optional(),
-    notifyType: z.enum(["info", "warning", "error"]).optional(),
-  }),
+  z
+    .object({
+      type: z.literal("extension_ui_request"),
+      id: IDENTIFIER,
+      method: z.enum([
+        "select",
+        "confirm",
+        "input",
+        "editor",
+        "cancel",
+        "notify",
+        "setStatus",
+        "setWidget",
+        "setTitle",
+        "set_editor_text",
+        "open_url",
+      ]),
+      title: boundedString(4_096).optional(),
+      message: boundedString(64 * 1024).optional(),
+      options: z.array(boundedString(4_096)).max(128).optional(),
+      optionDetails: z
+        .array(z.object({ description: boundedString(16_384).optional() }))
+        .max(128)
+        .optional(),
+      timeout: z.number().nonnegative().finite().optional(),
+      placeholder: boundedString(4_096).optional(),
+      prefill: TEXT.optional(),
+      promptStyle: z.boolean().optional(),
+      targetId: IDENTIFIER.optional(),
+      notifyType: z.enum(["info", "warning", "error"]).optional(),
+      statusKey: NAME.optional(),
+      statusText: boundedString(16_384).optional(),
+      widgetKey: NAME.optional(),
+      widgetLines: z.array(boundedString(16_384)).max(128).optional(),
+      widgetPlacement: z.enum(["aboveEditor", "belowEditor"]).optional(),
+      text: TEXT.optional(),
+      url: boundedString(16_384).optional(),
+      launchUrl: boundedString(16_384).optional(),
+      instructions: boundedString(64 * 1024).optional(),
+    })
+    .superRefine((request, context) => {
+      const invalid = () =>
+        context.addIssue({ code: "custom", message: "invalid extension UI request" });
+      if (request.method === "select" && (!request.title || !request.options)) invalid();
+      if (request.method === "confirm" && (!request.title || request.message === undefined))
+        invalid();
+      if ((request.method === "input" || request.method === "editor") && !request.title) invalid();
+      if (request.method === "cancel" && !request.targetId) invalid();
+      if (request.method === "notify" && request.message === undefined) invalid();
+      if (request.method === "setStatus" && !request.statusKey) invalid();
+      if (request.method === "setWidget" && !request.widgetKey) invalid();
+      if (request.method === "setTitle" && !request.title) invalid();
+      if (request.method === "set_editor_text" && request.text === undefined) invalid();
+      if (request.method === "open_url" && !request.url) invalid();
+      if (request.optionDetails && request.options?.length !== request.optionDetails.length)
+        invalid();
+    }),
   z.object({
     type: z.literal("prompt_result"),
     id: IDENTIFIER.optional(),
     agentInvoked: z.boolean(),
   }),
+  z.object({
+    type: z.literal("auto_compaction_start"),
+    reason: z.enum(["threshold", "overflow", "idle", "incomplete"]),
+    action: z.enum(["context-full", "remote", "handoff", "shake", "snapcompact"]),
+  }),
+  z.object({
+    type: z.literal("auto_compaction_end"),
+    action: z.enum(["context-full", "remote", "handoff", "shake", "snapcompact"]),
+    result: BoundedToolPayloadSchema.optional(),
+    aborted: z.boolean(),
+    willRetry: z.boolean(),
+    errorMessage: boundedString(4_096).optional(),
+    skipped: z.boolean().optional(),
+  }),
+  z.object({ type: z.literal("advisor_yielded") }),
 ]);
 const JsonObjectSchema = z.record(z.string(), z.unknown());
 const OmpModelsResultSchema = z.object({
@@ -300,16 +384,27 @@ export interface OmpStartOptions {
   signal?: AbortSignal;
 }
 
+export type OmpAvailableCommand = z.infer<typeof OmpAvailableCommandSchema>;
+export type OmpImage = { data: string; mimeType: string };
+export type OmpExtensionUiResponse =
+  | { type: "extension_ui_response"; id: string; value: string }
+  | { type: "extension_ui_response"; id: string; confirmed: boolean }
+  | { type: "extension_ui_response"; id: string; cancelled: true };
+
 export interface OmpRuntimeSession {
   readonly redactionValues?: readonly string[];
   onEvent(listener: (event: OmpRpcEvent) => void): () => void;
   getState(): Promise<OmpSessionState>;
   getAvailableModels(): Promise<OmpModel[]>;
-  getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>>;
-  prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }>;
+  getAvailableCommands(): Promise<OmpAvailableCommand[]>;
+  prompt(
+    message: string,
+    images?: readonly OmpImage[],
+  ): Promise<{ requestId: string; agentInvoked?: boolean }>;
   setModel(provider: string, modelId: string): Promise<OmpModel>;
   setThinkingLevel(level: string): Promise<void>;
-  steer(message: string): Promise<void>;
+  steer(message: string, images?: readonly OmpImage[]): Promise<void>;
+  respondToExtensionUi(response: OmpExtensionUiResponse): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -1116,6 +1211,47 @@ class OmpRpcProcess {
     return this.startRequest(command, timeoutMs).promise;
   }
 
+  sendFrame(frame: Record<string, unknown>): Promise<void> {
+    if (this.fatalError) return Promise.reject(this.fatalError);
+    if (this.closed || this.exited || !this.child.stdin.writable) {
+      return Promise.reject(new Error("OMP RPC process is closed"));
+    }
+    let payload: Buffer;
+    try {
+      payload = Buffer.from(`${JSON.stringify(frame)}\n`);
+    } catch {
+      return Promise.reject(new Error("OMP RPC frame could not be encoded"));
+    }
+    if (payload.byteLength > this.physicalFrameLimit) {
+      return Promise.reject(new Error("OMP RPC frame exceeds the negotiated frame limit"));
+    }
+    if (this.pendingWriteBytes + payload.byteLength > MAX_PENDING_WRITE_BYTES) {
+      return Promise.reject(new Error("OMP RPC has too many pending writes"));
+    }
+    const token = randomUUID();
+    const written = Promise.withResolvers<void>();
+    this.queuedWrites.set(token, payload.byteLength);
+    this.pendingWriteBytes += payload.byteLength;
+    try {
+      this.child.stdin.write(payload, (cause) => {
+        this.releaseQueuedWrite(token);
+        if (cause) {
+          const error = new Error("OMP RPC input channel failed");
+          written.reject(error);
+          this.fail(error);
+        } else {
+          written.resolve();
+        }
+      });
+    } catch {
+      this.releaseQueuedWrite(token);
+      const error = new Error("OMP RPC input channel failed");
+      written.reject(error);
+      this.fail(error);
+    }
+    return written.promise;
+  }
+
   close(): Promise<void> {
     this.closePromise ??= this.closeProcess();
     return this.closePromise;
@@ -1692,7 +1828,7 @@ class OmpRpcSession implements OmpRuntimeSession {
     await this.process.request({ type: "set_thinking_level", level: parsed });
   }
 
-  async getAvailableCommands(): Promise<Array<{ name: string; aliases?: string[] }>> {
+  async getAvailableCommands(): Promise<OmpAvailableCommand[]> {
     const result = OmpAvailableCommandsResultSchema.parse(
       await this.process.request({ type: "get_available_commands" }),
     );
@@ -1706,16 +1842,31 @@ class OmpRpcSession implements OmpRuntimeSession {
     return result.messages;
   }
 
-  async prompt(message: string): Promise<{ requestId: string; agentInvoked?: boolean }> {
+  async prompt(
+    message: string,
+    images: readonly OmpImage[] = [],
+  ): Promise<{ requestId: string; agentInvoked?: boolean }> {
     const safeMessage = validateBoundedText(message, "prompt", MAX_TEXT_LENGTH);
-    const request = this.process.startRequest({ type: "prompt", message: safeMessage });
+    const request = this.process.startRequest({
+      type: "prompt",
+      message: safeMessage,
+      ...(images.length > 0 ? { images } : {}),
+    });
     const acknowledgement = OmpPromptAckSchema.parse(await request.promise) ?? {};
     return { requestId: request.id, ...acknowledgement };
   }
 
-  async steer(message: string): Promise<void> {
+  async steer(message: string, images: readonly OmpImage[] = []): Promise<void> {
     const safeMessage = validateBoundedText(message, "steer", MAX_TEXT_LENGTH);
-    await this.process.request({ type: "steer", message: safeMessage });
+    await this.process.request({
+      type: "steer",
+      message: safeMessage,
+      ...(images.length > 0 ? { images } : {}),
+    });
+  }
+
+  respondToExtensionUi(response: OmpExtensionUiResponse): Promise<void> {
+    return this.process.sendFrame(response);
   }
 
   async abort(): Promise<void> {

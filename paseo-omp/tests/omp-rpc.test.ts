@@ -1543,4 +1543,67 @@ describe("OMP RPC transport", () => {
     await expect(session.steer("after-close")).rejects.toThrow();
     await session.close();
   });
+
+  test("writes extension UI responses without waiting for an RPC response", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => {
+      commands.push(command);
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const received: OmpRpcEvent[] = [];
+    session.onEvent((event) => received.push(event));
+    child.write({
+      type: "extension_ui_request",
+      id: "ui-select",
+      method: "select",
+      title: "Target",
+      options: ["Preview", "Production"],
+      optionDetails: [{ description: "Safe" }, { description: "Live" }],
+    });
+    child.write({
+      type: "auto_compaction_start",
+      reason: "threshold",
+      action: "context-full",
+    });
+    await Promise.resolve();
+    expect(received).toEqual([
+      {
+        type: "extension_ui_request",
+        id: "ui-select",
+        method: "select",
+        title: "Target",
+        options: ["Preview", "Production"],
+        optionDetails: [{ description: "Safe" }, { description: "Live" }],
+      },
+      {
+        type: "auto_compaction_start",
+        reason: "threshold",
+        action: "context-full",
+      },
+    ]);
+
+    await session.respondToExtensionUi({
+      type: "extension_ui_response",
+      id: "ui-select",
+      value: "Production",
+    });
+    expect(commands).toContainEqual({
+      type: "extension_ui_response",
+      id: "ui-select",
+      value: "Production",
+    });
+    await session.close();
+  });
 });

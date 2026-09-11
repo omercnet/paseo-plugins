@@ -10,6 +10,9 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
 import {
+  type OmpAvailableCommand,
+  type OmpExtensionUiResponse,
+  type OmpImage,
   type OmpModel,
   type OmpRpcEvent,
   OmpRpcRuntime,
@@ -235,7 +238,10 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly listeners = new Set<(event: OmpRpcEvent) => void>();
   redactionValues: readonly string[] = [];
   readonly prompts: string[] = [];
+  readonly promptImages: OmpImage[][] = [];
   readonly steers: string[] = [];
+  readonly steerImages: OmpImage[][] = [];
+  readonly extensionUiResponses: OmpExtensionUiResponse[] = [];
   promptGate: Promise<void> | null = null;
   promptObserved: (() => void) | null = null;
   steerGate: Promise<void> | null = null;
@@ -248,7 +254,9 @@ class FakeOmpSession implements OmpRuntimeSession {
   abortGate: Promise<void> | null = null;
   abortObserved: (() => void) | null = null;
   abortError: Error | null = null;
-  availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
+  availableCommands: OmpAvailableCommand[] = [
+    { name: "help", description: "Show help", source: "builtin" },
+  ];
   availableCommandsError: Error | null = null;
   availableCommandLookups = 0;
   availableCommandsGate: Promise<void> | null = null;
@@ -316,8 +324,9 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (this.availableCommandsError) throw this.availableCommandsError;
     return this.availableCommands;
   }
-  async prompt(message: string) {
+  async prompt(message: string, images: readonly OmpImage[] = []) {
     this.prompts.push(message);
+    this.promptImages.push([...images]);
     this.promptCount += 1;
     this.promptObserved?.();
     if (this.promptGate) await this.promptGate;
@@ -357,11 +366,17 @@ class FakeOmpSession implements OmpRuntimeSession {
     return Promise.resolve();
   }
 
-  async steer(message: string) {
+  async steer(message: string, images: readonly OmpImage[] = []) {
     this.steerObserved?.();
     if (this.steerGate) await this.steerGate;
     if (this.steerError) throw this.steerError;
     this.steers.push(message);
+    this.steerImages.push([...images]);
+  }
+
+  respondToExtensionUi(response: OmpExtensionUiResponse) {
+    this.extensionUiResponses.push(response);
+    return Promise.resolve();
   }
 
   async getBranchMessages() {
@@ -398,7 +413,9 @@ class FakeOmpRuntime implements OmpRuntime {
   startGate: Promise<void> | null = null;
   startObserved: (() => void) | null = null;
   commandDiscoveryError: Error | null = null;
-  availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
+  availableCommands: OmpAvailableCommand[] = [
+    { name: "help", description: "Show help", source: "builtin" },
+  ];
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
   redactionValues: readonly string[] = [];
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
@@ -459,7 +476,14 @@ async function createHarness(runtime = new FakeOmpRuntime(), scheduler = new Man
     environment: TEST_RUNTIME_ENV,
   }).connect({
     versions: [1],
-    capabilities: ["prompt.message", "prompt.steer", "session.configure"],
+    capabilities: [
+      "prompt.message",
+      "prompt.command",
+      "prompt.image",
+      "prompt.steer",
+      "session.configure",
+      "permission",
+    ],
   });
   const events = new EventLog();
   connection.onEvent((event) => events.push(event));
@@ -750,6 +774,7 @@ describe("OMP direct provider", () => {
     expect(events.map((event) => event.type)).toEqual([
       "session.opened",
       "session.config",
+      "session.commands",
       "session.ready",
     ]);
     expect(events[1]).toEqual(
@@ -774,8 +799,11 @@ describe("OMP direct provider", () => {
     expect(runtime.starts[0]?.model).toBeUndefined();
     expect(connection.capabilities).toEqual([
       "prompt.message",
+      "prompt.command",
+      "prompt.image",
       "prompt.steer",
       "session.configure",
+      "permission",
     ]);
     await connection.close();
   });
@@ -865,7 +893,7 @@ describe("OMP direct provider", () => {
     expect(connection.capabilities).toEqual(["prompt.message"]);
     await connection.close();
   });
-  test("rejects malformed and unsupported permission responses", async () => {
+  test("rejects malformed permission responses and advertises permission support", async () => {
     const runtime = new FakeOmpRuntime();
     const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
       versions: [1],
@@ -880,15 +908,7 @@ describe("OMP direct provider", () => {
         response: { behavior: "allow", updatedPermissions: Array.from({ length: 65 }, () => ({})) },
       } as never),
     ).rejects.toThrow("Invalid permission response");
-    await expect(
-      connection.send({
-        type: "session.permission",
-        sessionId: "session-1",
-        permissionId: "permission-1",
-        response: { behavior: "deny" },
-      }),
-    ).rejects.toThrow();
-    expect(connection.capabilities).not.toContain("permission");
+    expect(connection.capabilities).toContain("permission");
     expect(runtime.starts).toHaveLength(0);
     await connection.close();
   });
@@ -1966,7 +1986,7 @@ describe("OMP direct provider", () => {
         id: "omp:tool:1",
         callId: "omp:tool:1",
         name: "read",
-        detail: { type: "unknown", input: { path: "file.ts" }, output: null },
+        detail: { type: "read", filePath: "file.ts" },
         status: "running",
         error: null,
       },
@@ -1975,11 +1995,7 @@ describe("OMP direct provider", () => {
         id: "omp:tool:1",
         callId: "omp:tool:1",
         name: "read",
-        detail: {
-          type: "unknown",
-          input: { path: "file.ts" },
-          output: { content: "partial" },
-        },
+        detail: { type: "read", filePath: "file.ts", content: "partial" },
         status: "running",
         error: null,
       },
@@ -1988,11 +2004,7 @@ describe("OMP direct provider", () => {
         id: "omp:tool:1",
         callId: "omp:tool:1",
         name: "read",
-        detail: {
-          type: "unknown",
-          input: { path: "file.ts" },
-          output: { content: "complete" },
-        },
+        detail: { type: "read", filePath: "file.ts", content: "complete" },
         status: "completed",
         error: null,
       },
@@ -2363,6 +2375,12 @@ describe("OMP direct provider", () => {
     ).toEqual([
       expect.objectContaining({
         item: expect.objectContaining({
+          id: "omp:assistant:1:-588CG_nYBzM:content:0:text",
+          text: "![OMP image](data:image/png;base64,aW1hZ2U=)",
+        }),
+      }),
+      expect.objectContaining({
+        item: expect.objectContaining({
           id: "omp:assistant:1:-588CG_nYBzM:content:1:text",
           text: "after image",
         }),
@@ -2573,23 +2591,15 @@ describe("OMP direct provider", () => {
     expect(activeToolSnapshots).toEqual([
       expect.objectContaining({
         status: "running",
-        detail: { type: "unknown", input: { path: "active.ts" }, output: null },
+        detail: { type: "read", filePath: "active.ts" },
       }),
       expect.objectContaining({
         status: "running",
-        detail: {
-          type: "unknown",
-          input: { path: "active.ts" },
-          output: { content: "still active." },
-        },
+        detail: { type: "read", filePath: "active.ts", content: "still active." },
       }),
       expect.objectContaining({
         status: "completed",
-        detail: {
-          type: "unknown",
-          input: { path: "active.ts" },
-          output: { content: "done" },
-        },
+        detail: { type: "read", filePath: "active.ts", content: "done" },
       }),
     ]);
     expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
@@ -2763,7 +2773,7 @@ describe("OMP direct provider", () => {
           id: "omp:tool:1",
           callId: "omp:tool:1",
           name: "read",
-          detail: { type: "unknown", input: { path: "after.ts" }, output: null },
+          detail: { type: "read", filePath: "after.ts" },
           status: "running",
           error: null,
         },
@@ -2776,11 +2786,7 @@ describe("OMP direct provider", () => {
           id: "omp:tool:1",
           callId: "omp:tool:1",
           name: "read",
-          detail: {
-            type: "unknown",
-            input: { path: "after.ts" },
-            output: { content: "partial" },
-          },
+          detail: { type: "read", filePath: "after.ts", content: "partial" },
           status: "running",
           error: null,
         },
@@ -2793,11 +2799,7 @@ describe("OMP direct provider", () => {
           id: "omp:tool:1",
           callId: "omp:tool:1",
           name: "read",
-          detail: {
-            type: "unknown",
-            input: { path: "after.ts" },
-            output: { content: "done" },
-          },
+          detail: { type: "read", filePath: "after.ts", content: "done" },
           status: "completed",
           error: null,
         },
@@ -4832,7 +4834,13 @@ describe("OMP direct provider", () => {
   });
 
   test("fails unsupported interactive permission UI without reflecting its payload", async () => {
-    const { connection, events, runtime } = await createHarness();
+    const runtime = new FakeOmpRuntime();
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
+      versions: [1],
+      capabilities: ["prompt.message"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
     await openSession(connection, events);
     const turnId = turnIdFrom(await startPrompt(connection, events, "permission-turn", "work"));
     sessionAt(runtime).emit({
@@ -4840,6 +4848,7 @@ describe("OMP direct provider", () => {
       id: "permission-request",
       method: "confirm",
       title: "Approve API_KEY=secret-value from /home/private/file",
+      message: "Continue?",
     });
     const terminal = await events.waitFor(
       (event) =>
@@ -5889,5 +5898,264 @@ describe("OMP direct provider", () => {
       events.some((event) => event.type === "request.completed" && event.requestId === "close-1"),
     ).toBe(false);
     await connection.close().catch(() => undefined);
+  });
+
+  test("publishes command metadata and dispatches structured commands and images", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.availableCommands = [
+      {
+        name: "review",
+        aliases: ["rv"],
+        description: "Review the current change",
+        input: { hint: "[scope]" },
+        source: "extension",
+      },
+    ];
+    const { connection, events, scheduler } = await createHarness(runtime);
+    await openSession(connection, events);
+    expect(events).toContainEqual({
+      type: "session.commands",
+      sessionId: "session-1",
+      commands: [
+        {
+          name: "review",
+          description: "Review the current change",
+          argumentHint: "[scope]",
+        },
+      ],
+    });
+
+    const session = sessionAt(runtime);
+    session.promptAgentInvoked = false;
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "structured-command",
+        delivery: "auto",
+        input: { type: "command", name: "review", arguments: "src" },
+      },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "structured-command",
+    );
+    await scheduler.flush();
+    expect(session.prompts).toEqual(["/review src"]);
+
+    session.promptAgentInvoked = true;
+    const imageResult = connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "image-prompt",
+        delivery: "auto",
+        input: {
+          type: "message",
+          content: [
+            { type: "text", text: "inspect" },
+            { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          ],
+        },
+      },
+    });
+    await imageResult;
+    const imageTurn = turnIdFrom(
+      await events.waitFor(
+        (event) =>
+          event.type === "session.prompt_result" && event.clientMessageId === "image-prompt",
+      ),
+    );
+    expect(session.promptImages.at(-1)).toEqual([{ data: "aW1hZ2U=", mimeType: "image/png" }]);
+    await finishTurn(events, session, imageTurn);
+    await connection.close();
+  });
+
+  test("continues extension questions through native permissions", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "ask-turn", "choose"));
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "ask-tool",
+      toolName: "ask",
+      args: { question: "Deployment" },
+    });
+    session.emit({
+      type: "extension_ui_request",
+      id: "native-select",
+      method: "select",
+      title: "Deployment",
+      options: ["Preview", "Production"],
+      optionDetails: [{ description: "Safe sandbox" }, { description: "Live traffic" }],
+    });
+    const permission = await events.waitFor((event) => event.type === "session.permission");
+    if (permission.type !== "session.permission") throw new Error("Expected permission event");
+    expect(permission.request.input?.options).toEqual([
+      { label: "Preview", description: "Safe sandbox" },
+      { label: "Production", description: "Live traffic" },
+    ]);
+
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+      response: { behavior: "allow", selectedActionId: "option:1" },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.permission_resolved" &&
+        event.permissionId === permission.request.id,
+    );
+    expect(session.extensionUiResponses).toEqual([
+      { type: "extension_ui_response", id: "native-select", value: "Production" },
+    ]);
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "ask-tool",
+      toolName: "ask",
+      result: { answer: "Production" },
+    });
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "tool_call" &&
+          event.item.name === "ask",
+      ),
+    ).toBe(false);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+      ),
+    ).toBe(false);
+    session.emit({
+      type: "extension_ui_request",
+      id: "native-input",
+      method: "input",
+      title: "Branch name",
+      placeholder: "feature/...",
+    });
+    const inputPermission = await events.waitFor(
+      (event) => event.type === "session.permission" && event.request.id !== permission.request.id,
+    );
+    if (inputPermission.type !== "session.permission") throw new Error("Expected input permission");
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: inputPermission.request.id,
+      response: { behavior: "allow" },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.notice" &&
+        event.notice.id === `omp:permission-error:${inputPermission.request.id}`,
+    );
+    expect(session.extensionUiResponses).toHaveLength(1);
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: inputPermission.request.id,
+      response: { behavior: "deny" },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.permission_resolved" &&
+        event.permissionId === inputPermission.request.id,
+    );
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("renders native tools custom messages hidden notices and compaction once", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "render-turn", "work"));
+    for (const [toolCallId, toolName, args, result, detailType] of [
+      ["bash", "bash", { command: "pwd", cwd: "/repo" }, { output: "/repo", exitCode: 0 }, "shell"],
+      [
+        "edit",
+        "edit",
+        { path: "a.ts", oldString: "a", newString: "b" },
+        { diff: "-a\\n+b" },
+        "edit",
+      ],
+      ["write", "write", { path: "b.ts", content: "b" }, { ok: true }, "write"],
+      ["grep", "grep", { pattern: "needle" }, { content: "a.ts:1" }, "search"],
+      ["fetch", "fetch", { url: "https://example.com" }, { content: "page" }, "fetch"],
+      ["task", "task", { agent: "reviewer", description: "Review" }, { log: "done" }, "sub_agent"],
+      ["advisor", "advisor", { prompt: "Check" }, { content: "Concern" }, "plain_text"],
+      ["todo", "todo", { items: [] }, { content: "Updated" }, "plan"],
+      ["custom", "vendor_tool", { value: 1 }, { value: 2 }, "unknown"],
+    ] as const) {
+      session.emit({ type: "tool_execution_start", toolCallId, toolName, args });
+      session.emit({ type: "tool_execution_end", toolCallId, toolName, result });
+      const snapshots = events.flatMap((event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === toolName
+          ? [event.item]
+          : [],
+      );
+      expect(snapshots).toHaveLength(2);
+      expect(new Set(snapshots.map((item) => item.id)).size).toBe(1);
+      expect(snapshots.at(-1)?.detail.type).toBe(detailType);
+    }
+
+    const beforeCustom = events.length;
+    session.emit({
+      type: "message_end",
+      message: { role: "custom", customType: "internal-notice", display: false, content: "hidden" },
+    });
+    session.emit({
+      type: "message_end",
+      message: {
+        role: "custom",
+        customType: "advisor-message",
+        display: true,
+        content: "Check the race",
+      },
+    });
+    session.emit({
+      type: "message_end",
+      message: {
+        role: "custom",
+        customType: "bash-execution",
+        display: true,
+        content: "ok",
+        details: { command: "pwd", cwd: "/repo", exitCode: 0 },
+      },
+    });
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      result: { preTokens: 12_345 },
+      aborted: false,
+      willRetry: false,
+    });
+    const rendered = events.slice(beforeCustom).filter((event) => event.type === "timeline.item");
+    expect(JSON.stringify(rendered)).not.toContain("hidden");
+    expect(
+      rendered.filter((event) => event.type === "timeline.item" && event.item.type === "tool_call"),
+    ).toHaveLength(2);
+    const compactions = rendered.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "compaction" ? [event.item] : [],
+    );
+    expect(compactions).toEqual([
+      { type: "compaction", id: "omp:compaction:1", status: "loading", trigger: "auto" },
+      {
+        type: "compaction",
+        id: "omp:compaction:1",
+        status: "completed",
+        trigger: "auto",
+        preTokens: 12_345,
+      },
+    ]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
   });
 });

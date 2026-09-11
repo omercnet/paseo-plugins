@@ -3,10 +3,14 @@ import type {
   ProviderConfigState,
   ProviderEvent,
   ProviderInput,
+  ProviderPermissionResponse,
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
 import type {
+  OmpAvailableCommand,
+  OmpExtensionUiResponse,
+  OmpImage,
   OmpMessage,
   OmpModel,
   OmpRpcEvent,
@@ -35,6 +39,7 @@ type SessionPromptInput = Extract<ProviderInput, { type: "session.prompt" }>;
 type SessionInterruptInput = Extract<ProviderInput, { type: "session.interrupt" }>;
 type SessionConfigureInput = Extract<ProviderInput, { type: "session.configure" }>;
 type SessionCloseInput = Extract<ProviderInput, { type: "session.close" }>;
+type SessionPermissionInput = Extract<ProviderInput, { type: "session.permission" }>;
 type Emit = (event: ProviderEvent) => void;
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
@@ -45,6 +50,7 @@ const MAX_PROMPT_TEXT_LENGTH = 1024 * 1024;
 const MAX_TRACKED_ENTRY_IDS = 1_024;
 const MAX_UNCLAIMED_BRANCH_ENTRIES = 1_024;
 const MAX_PENDING_USERS = 256;
+const MAX_PENDING_PERMISSIONS = 32;
 const MAX_USER_ECHOES = 512;
 const MAX_BUFFERED_TURN_EVENTS = 512;
 const MAX_BUFFERED_VALUE_ITEMS = 1_024;
@@ -115,29 +121,43 @@ function providerError(error: unknown, fallback: string): { message: string } {
   return { message: error instanceof OmpPublicError ? error.message : fallback };
 }
 
-function textPrompt(input: SessionPromptInput): string {
+type OmpPromptPayload = { text: string; images: OmpImage[]; commandName?: string };
+
+function promptPayload(input: SessionPromptInput): OmpPromptPayload {
   if (input.prompt.outputSchema !== undefined || input.prompt.clearPendingPermissions) {
     throw new OmpPublicError("OMP does not support structured output or permission controls");
   }
-  if (input.prompt.input.type !== "message") {
-    throw new OmpPublicError("OMP supports text messages only");
+  if (input.prompt.input.type === "command") {
+    const name = input.prompt.input.name.trim();
+    if (!name || /[\s/:]/u.test(name)) throw new OmpPublicError("Invalid OMP command name");
+    const argumentsText = input.prompt.input.arguments.trim();
+    const text = `/${name}${argumentsText ? ` ${argumentsText}` : ""}`;
+    if (utf8Bytes(text) > MAX_PROMPT_TEXT_LENGTH)
+      throw new OmpPublicError("OMP command is too large");
+    return { text, images: [], commandName: name };
   }
   if (input.prompt.input.content.length > MAX_PROMPT_PARTS) {
     throw new OmpPublicError("OMP prompt has too many content parts");
   }
   const parts: string[] = [];
+  const images: OmpImage[] = [];
   let length = 0;
   for (const part of input.prompt.input.content) {
-    if (part.type !== "text" || typeof part.text !== "string") {
-      throw new OmpPublicError("OMP supports text messages only");
+    if (part.type === "text") {
+      length += utf8Bytes(part.text) + (parts.length > 0 ? 2 : 0);
+      if (length > MAX_PROMPT_TEXT_LENGTH) throw new OmpPublicError("OMP prompt is too large");
+      parts.push(part.text);
+      continue;
     }
-    length += utf8Bytes(part.text) + (parts.length > 0 ? 2 : 0);
-    if (length > MAX_PROMPT_TEXT_LENGTH) throw new OmpPublicError("OMP prompt is too large");
-    parts.push(part.text);
+    if (part.type === "image") {
+      images.push({ data: part.data, mimeType: part.mimeType });
+      continue;
+    }
+    throw new OmpPublicError("OMP supports text messages only");
   }
   const text = parts.join("\n\n").trim();
-  if (!text) throw new OmpPublicError("OMP prompt text cannot be empty");
-  return text;
+  if (!text && images.length === 0) throw new OmpPublicError("OMP prompt cannot be empty");
+  return { text, images };
 }
 
 function slashCommandName(text: string): string | undefined {
@@ -237,6 +257,12 @@ export class OmpProviderSession {
   private configRevision = 0;
   private recoveryUsesNativeConfig = false;
   private activeAbort: PendingAbort | null = null;
+  private commandCatalog: OmpAvailableCommand[];
+  private permissionSequence = 0;
+  private readonly pendingPermissions = new Map<
+    string,
+    { nativeId: string; request: Extract<OmpRpcEvent, { type: "extension_ui_request" }> }
+  >();
 
   private constructor(
     id: string,
@@ -249,6 +275,7 @@ export class OmpProviderSession {
     nativeModelsByPublicId: ReadonlyMap<string, OmpModel>,
     private readonly capabilities: readonly string[],
     private readonly slashCommands: Set<string>,
+    commandCatalog: OmpAvailableCommand[],
     private commandDiscoveryAvailable: boolean,
     private readonly emit: Emit,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
@@ -262,6 +289,7 @@ export class OmpProviderSession {
     ];
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
+    this.commandCatalog = commandCatalog;
     this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
     this.bindRuntime(runtime);
   }
@@ -392,6 +420,7 @@ export class OmpProviderSession {
             ...(command.aliases ?? []),
           ]),
         ),
+        commandDiscovery.commands,
         commandDiscovery.available,
         emit,
         scheduler,
@@ -421,13 +450,14 @@ export class OmpProviderSession {
       ...(this.config.title ? { title: this.dataFilter.text(this.config.title, 256) } : {}),
     });
     this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
+    this.publishCommands(this.commandCatalog);
     this.emit({ type: "session.ready", requestId, sessionId: this.id });
   }
 
   async prompt(input: SessionPromptInput): Promise<void> {
-    let text: string;
+    let payload: OmpPromptPayload;
     try {
-      text = textPrompt(input);
+      payload = promptPayload(input);
     } catch (error) {
       this.emit({
         type: "session.prompt_result",
@@ -439,7 +469,7 @@ export class OmpProviderSession {
     }
 
     if (input.prompt.delivery === "steer") {
-      await this.steer(input.prompt.clientMessageId, text);
+      await this.steer(input.prompt.clientMessageId, payload.text, payload.images);
       return;
     }
     if (this.activeTurn) {
@@ -496,6 +526,15 @@ export class OmpProviderSession {
       return;
     }
 
+    if (payload.commandName && !this.slashCommands.has(payload.commandName)) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId: input.prompt.clientMessageId,
+        result: { type: "failed", error: { message: "OMP command is unavailable" } },
+      });
+      return;
+    }
     const turn: ActiveTurn = {
       turnId: randomUUID(),
       clientMessageId: input.prompt.clientMessageId,
@@ -517,7 +556,7 @@ export class OmpProviderSession {
       pendingUsers: [
         {
           clientMessageId: input.prompt.clientMessageId,
-          text,
+          text: payload.text,
           accepted: true,
           fallbackOnFinish: true,
           bufferedEchoes: [],
@@ -526,18 +565,18 @@ export class OmpProviderSession {
     };
     this.activeTurn = turn;
     try {
-      const acknowledgement = await this.runtime.prompt(text);
+      const acknowledgement = await this.runtime.prompt(payload.text, payload.images);
       if (this.closed || turn.terminal) return;
       turn.nativeRequestId = acknowledgement.requestId;
       this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
       this.startTurn(turn);
       turn.starting = false;
+      const bufferedEvents = turn.bufferedEvents.splice(0);
+      for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
       if (acknowledgement.agentInvoked !== true) {
         turn.localOnlyEligible = true;
         this.scheduleLocalOnlyCompletion(turn);
       }
-      const bufferedEvents = turn.bufferedEvents.splice(0);
-      for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
     } catch (error) {
       this.publishPendingUsers(turn);
       const failure = providerError(error, "OMP prompt failed");
@@ -906,6 +945,19 @@ export class OmpProviderSession {
     return true;
   }
 
+  async permission(input: SessionPermissionInput): Promise<void> {
+    const pending = this.pendingPermissions.get(input.permissionId);
+    if (!pending) throw new OmpPublicError("Unknown OMP permission request");
+    const response = this.extensionUiResponse(pending.nativeId, pending.request, input.response);
+    await this.runtime.respondToExtensionUi(response);
+    this.pendingPermissions.delete(input.permissionId);
+    this.emit({
+      type: "session.permission_resolved",
+      sessionId: this.id,
+      permissionId: input.permissionId,
+    });
+  }
+
   close(input?: SessionCloseInput): Promise<void> {
     this.disposalPromise ??= this.disposeSession();
     return this.disposalPromise.then(
@@ -939,6 +991,7 @@ export class OmpProviderSession {
         this.projector.finishTurn(turn.turnId);
       }
     }
+    this.resolveAllPermissions();
     this.closed = true;
     this.configRefreshAttempts = 0;
     this.configRefreshDirty = false;
@@ -1053,7 +1106,11 @@ export class OmpProviderSession {
       throw error;
     }
   }
-  private async steer(clientMessageId: string, text: string): Promise<void> {
+  private async steer(
+    clientMessageId: string,
+    text: string,
+    images: readonly OmpImage[],
+  ): Promise<void> {
     const turn = this.activeTurn;
     if (!this.isSteerableTurn(turn)) {
       this.publishSteerFailure(clientMessageId, "There is no active OMP turn to steer");
@@ -1095,7 +1152,7 @@ export class OmpProviderSession {
     turn.steersInFlight += 1;
     this.cancelLocalOnlyCompletion(turn);
     try {
-      await this.runtime.steer(text);
+      await this.runtime.steer(text, images);
       turn.steersInFlight -= 1;
       if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) {
         this.removePendingUser(turn, pending);
@@ -1137,9 +1194,29 @@ export class OmpProviderSession {
     if (this.closed) return;
     if (event.type === "available_commands_update") {
       this.replaceSlashCommands(event.commands);
+      this.commandCatalog = event.commands;
+      this.publishCommands(event.commands);
       return;
     }
     if (event.type === "extension_ui_request") {
+      if (event.method === "cancel") {
+        this.resolvePermissionByNativeId(event.targetId ?? "");
+        return;
+      }
+      if (
+        event.method === "select" ||
+        event.method === "confirm" ||
+        event.method === "input" ||
+        event.method === "editor" ||
+        event.method === "open_url"
+      ) {
+        if (!this.capabilities.includes("permission")) {
+          this.handleRuntimeFailure();
+          return;
+        }
+        this.publishPermission(event);
+        return;
+      }
       if (isPassiveUiMethod(event.method)) {
         this.projector.projectPassive(event);
         return;
@@ -1147,7 +1224,13 @@ export class OmpProviderSession {
       this.handleRuntimeFailure();
       return;
     }
-    if (event.type === "notice" || event.type === "todo_reminder") {
+    if (
+      event.type === "notice" ||
+      event.type === "todo_reminder" ||
+      event.type === "todo_auto_clear" ||
+      event.type === "auto_compaction_start" ||
+      event.type === "auto_compaction_end"
+    ) {
       this.projector.projectPassive(event);
       return;
     }
@@ -1388,13 +1471,157 @@ export class OmpProviderSession {
     });
   }
 
-  private replaceSlashCommands(commands: Array<{ name: string; aliases?: string[] }>): void {
+  private replaceSlashCommands(commands: OmpAvailableCommand[]): void {
     this.slashCommands.clear();
     for (const command of commands) {
       this.slashCommands.add(command.name);
       for (const alias of command.aliases ?? []) this.slashCommands.add(alias);
     }
     this.commandDiscoveryAvailable = true;
+  }
+
+  private publishCommands(commands: OmpAvailableCommand[]): void {
+    this.emit({
+      type: "session.commands",
+      sessionId: this.id,
+      commands: commands.map((command) => ({
+        name: command.name,
+        description: this.dataFilter.text(command.description ?? `Run /${command.name}`, 4_096),
+        ...(command.input?.hint
+          ? { argumentHint: this.dataFilter.text(command.input.hint, 1_024) }
+          : {}),
+      })),
+    });
+  }
+
+  private publishPermission(request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>): void {
+    if (this.pendingPermissions.size >= MAX_PENDING_PERMISSIONS) {
+      void this.runtime
+        .respondToExtensionUi({
+          type: "extension_ui_response",
+          id: request.id,
+          cancelled: true,
+        })
+        .catch(() => this.handleRuntimeFailure());
+      return;
+    }
+    this.permissionSequence += 1;
+    const id = `omp:permission:${this.permissionSequence}`;
+    this.pendingPermissions.set(id, { nativeId: request.id, request });
+    const options = request.options?.map((label, index) => ({
+      label: this.dataFilter.text(label, 4_096),
+      ...(request.optionDetails?.[index]?.description
+        ? {
+            description: this.dataFilter.text(
+              request.optionDetails[index]?.description ?? "",
+              16_384,
+            ),
+          }
+        : {}),
+    }));
+    const actions =
+      request.method === "select"
+        ? (options ?? []).map((option, index) => ({
+            id: `option:${index}`,
+            label: option.label,
+            behavior: "allow" as const,
+            variant: index === 0 ? ("primary" as const) : ("secondary" as const),
+          }))
+        : [
+            {
+              id: "allow",
+              label: request.method === "confirm" ? "Confirm" : "Submit",
+              behavior: "allow" as const,
+              variant: "primary" as const,
+            },
+            {
+              id: "deny",
+              label: "Cancel",
+              behavior: "deny" as const,
+              variant: "secondary" as const,
+            },
+          ];
+    this.emit({
+      type: "session.permission",
+      sessionId: this.id,
+      request: {
+        id,
+        name: `omp.${request.method}`,
+        kind: "question",
+        title: this.dataFilter.text(
+          request.title ?? (request.method === "open_url" ? "Open URL" : "OMP input"),
+          4_096,
+        ),
+        ...(request.message
+          ? { description: this.dataFilter.text(request.message, 64 * 1024) }
+          : {}),
+        input: {
+          method: request.method,
+          ...(options ? { options } : {}),
+          ...(request.placeholder
+            ? { placeholder: this.dataFilter.text(request.placeholder, 4_096) }
+            : {}),
+          ...(request.prefill ? { prefill: this.dataFilter.text(request.prefill) } : {}),
+          ...(request.url
+            ? { url: this.dataFilter.text(request.launchUrl ?? request.url, 16_384) }
+            : {}),
+          ...(request.instructions
+            ? { instructions: this.dataFilter.text(request.instructions, 64 * 1024) }
+            : {}),
+        },
+        actions,
+      },
+    });
+  }
+
+  private extensionUiResponse(
+    nativeId: string,
+    request: Extract<OmpRpcEvent, { type: "extension_ui_request" }>,
+    response: ProviderPermissionResponse,
+  ): OmpExtensionUiResponse {
+    if (request.method === "confirm") {
+      return {
+        type: "extension_ui_response",
+        id: nativeId,
+        confirmed: response.behavior === "allow",
+      };
+    }
+    if (response.behavior === "deny") {
+      return { type: "extension_ui_response", id: nativeId, cancelled: true };
+    }
+    if (request.method === "select") {
+      const match = /^option:(\d+)$/u.exec(response.selectedActionId ?? "");
+      const index = match ? Number(match[1]) : -1;
+      const value = request.options?.[index];
+      if (value === undefined) throw new OmpPublicError("Invalid OMP selection response");
+      return { type: "extension_ui_response", id: nativeId, value };
+    }
+    if (request.method === "open_url") {
+      return {
+        type: "extension_ui_response",
+        id: nativeId,
+        value: request.launchUrl ?? request.url ?? "",
+      };
+    }
+    const value = response.updatedInput?.value;
+    if (typeof value !== "string") throw new OmpPublicError("OMP input response requires a value");
+    return { type: "extension_ui_response", id: nativeId, value };
+  }
+
+  private resolvePermissionByNativeId(nativeId: string): void {
+    for (const [permissionId, pending] of this.pendingPermissions) {
+      if (pending.nativeId !== nativeId) continue;
+      this.pendingPermissions.delete(permissionId);
+      this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+      return;
+    }
+  }
+
+  private resolveAllPermissions(): void {
+    for (const permissionId of this.pendingPermissions.keys()) {
+      this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+    }
+    this.pendingPermissions.clear();
   }
 
   private async slashSteerUnavailable(commandName: string): Promise<boolean> {
@@ -1630,6 +1857,7 @@ export class OmpProviderSession {
 
   private handleRuntimeFailure(message = "OMP runtime failed"): void {
     if (this.closed || this.runtimeDead) return;
+    this.resolveAllPermissions();
     this.invalidateRuntime(message);
     const turn = this.activeTurn;
     if (!turn) return;

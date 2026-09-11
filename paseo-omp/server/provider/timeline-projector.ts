@@ -18,7 +18,7 @@ const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
 
 type Emit = (event: ProviderEvent) => void;
 
-type StreamBlockKind = "assistant_message" | "reasoning";
+type StreamBlockKind = "assistant_message" | "reasoning" | "image";
 
 type StreamBlockSnapshot = {
   kind: StreamBlockKind;
@@ -41,6 +41,7 @@ type ToolSnapshot = {
   output: JsonValue;
   retainedBytes: number;
   unsafePartialOutput: boolean;
+  silent: boolean;
 };
 
 export interface OmpTimelineScheduler {
@@ -73,7 +74,36 @@ function blockText(
   const part = message.content[contentIndex];
   if (part?.type === "text") return { kind: "assistant_message", text: part.text ?? "" };
   if (part?.type === "thinking") return { kind: "reasoning", text: part.thinking ?? "" };
+  if (part?.type === "image" && part.data && part.mimeType) {
+    return { kind: "image", text: `![OMP image](data:${part.mimeType};base64,${part.data})` };
+  }
   return undefined;
+}
+
+function jsonRecord(value: JsonValue): Record<string, JsonValue> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, JsonValue>)
+    : undefined;
+}
+
+function firstString(
+  record: Record<string, JsonValue> | undefined,
+  ...keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = record?.[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+function displayText(value: JsonValue): string | undefined {
+  if (typeof value === "string") return value;
+  const record = jsonRecord(value);
+  const direct = firstString(record, "content", "text", "output", "message", "result", "log");
+  if (direct !== undefined) return direct;
+  if (value === null) return undefined;
+  return JSON.stringify(value);
 }
 
 export class OmpTimelineProjector {
@@ -88,6 +118,9 @@ export class OmpTimelineProjector {
   private noticeSequence = 0;
   private toolSequence = 0;
   private userSequence = 0;
+  private customSequence = 0;
+  private compactionSequence = 0;
+  private activeCompactionId: string | null = null;
   private activeToolBytes = 0;
   private commandText = "";
   private commandPublishedText = "";
@@ -111,8 +144,11 @@ export class OmpTimelineProjector {
     if (this.closed) return;
     if (
       event.type === "todo_reminder" ||
+      event.type === "todo_auto_clear" ||
       event.type === "notice" ||
-      event.type === "extension_ui_request"
+      event.type === "extension_ui_request" ||
+      event.type === "auto_compaction_start" ||
+      event.type === "auto_compaction_end"
     ) {
       this.projectPassive(event);
       return;
@@ -135,6 +171,10 @@ export class OmpTimelineProjector {
         this.scheduleFlush();
         return;
       case "message_end":
+        if (event.message.role === "custom") {
+          this.publishCustomMessage(event.message);
+          return;
+        }
         if (event.message.role !== "assistant") return;
         this.updateStream(event.message, turnId);
         this.flush(true);
@@ -164,10 +204,11 @@ export class OmpTimelineProjector {
           output: null,
           retainedBytes,
           unsafePartialOutput: previous?.unsafePartialOutput ?? false,
+          silent: event.toolName.toLowerCase() === "ask",
         };
         this.activeToolBytes += retainedBytes - (previous?.retainedBytes ?? 0);
         this.tools.set(event.toolCallId, snapshot);
-        this.publishTool(snapshot, "running");
+        if (!snapshot.silent) this.publishTool(snapshot, "running");
         return;
       }
       case "tool_execution_update": {
@@ -193,7 +234,7 @@ export class OmpTimelineProjector {
         const snapshot: ToolSnapshot = { ...previous, output, retainedBytes };
         this.activeToolBytes += retainedBytes - previous.retainedBytes;
         this.tools.set(event.toolCallId, snapshot);
-        this.publishTool(snapshot, "running");
+        if (!snapshot.silent) this.publishTool(snapshot, "running");
         return;
       }
       case "tool_execution_end": {
@@ -213,10 +254,12 @@ export class OmpTimelineProjector {
         };
         this.tools.delete(event.toolCallId);
         this.activeToolBytes -= previous.retainedBytes;
-        if (event.isError) {
-          this.publishTool(snapshot, "failed", snapshot.output);
-        } else {
-          this.publishTool(snapshot, "completed");
+        if (!snapshot.silent) {
+          if (event.isError) {
+            this.publishTool(snapshot, "failed", snapshot.output);
+          } else {
+            this.publishTool(snapshot, "completed");
+          }
         }
         return;
       }
@@ -233,11 +276,12 @@ export class OmpTimelineProjector {
 
   projectPassive(event: OmpRpcEvent): void {
     if (this.closed) return;
-    if (event.type === "todo_reminder") {
+    if (event.type === "todo_reminder" || event.type === "todo_auto_clear") {
+      const todos = event.type === "todo_reminder" ? event.todos : [];
       this.publish({
         type: "todo",
         id: "omp:todos",
-        items: event.todos.slice(0, MAX_TODOS).map((todo, index) => ({
+        items: todos.slice(0, MAX_TODOS).map((todo, index) => ({
           id: `omp:todo:${index}`,
           text: this.dataFilter.text(todo.content, 16_384),
           completed: todo.status === "completed" || todo.status === "abandoned",
@@ -262,15 +306,41 @@ export class OmpTimelineProjector {
       return;
     }
     if (event.type === "extension_ui_request" && event.method === "notify") {
-      const message = event.message ?? event.title;
-      if (!message) return;
+      if (!event.message) return;
       this.noticeSequence += 1;
       this.publish({
         type: "notification",
         id: `omp:ui:${this.noticeSequence}`,
         level: event.notifyType ?? "info",
-        message: this.dataFilter.text(message, 64 * 1024),
+        message: this.dataFilter.text(event.message, 64 * 1024),
       });
+      return;
+    }
+    if (event.type === "auto_compaction_start") {
+      this.compactionSequence += 1;
+      this.activeCompactionId = `omp:compaction:${this.compactionSequence}`;
+      this.publish({
+        type: "compaction",
+        id: this.activeCompactionId,
+        status: "loading",
+        trigger: "auto",
+      });
+      return;
+    }
+    if (event.type === "auto_compaction_end") {
+      const id = this.activeCompactionId ?? `omp:compaction:${++this.compactionSequence}`;
+      const result = jsonRecord(this.dataFilter.json(event.result ?? null));
+      const rawPreTokens = result?.preTokens ?? result?.tokensBefore;
+      this.publish({
+        type: "compaction",
+        id,
+        status: "completed",
+        trigger: "auto",
+        ...(typeof rawPreTokens === "number" && Number.isFinite(rawPreTokens)
+          ? { preTokens: Math.max(0, Math.trunc(rawPreTokens)) }
+          : {}),
+      });
+      this.activeCompactionId = null;
     }
   }
 
@@ -446,10 +516,25 @@ export class OmpTimelineProjector {
       ? "reasoning"
       : update.type.startsWith("text_")
         ? "assistant_message"
-        : undefined;
+        : update.type.startsWith("image_")
+          ? "image"
+          : undefined;
     if (!kind) return;
     const previous = stream.blocks.get(contentIndex);
-    const eventContent = typeof update.content === "string" ? update.content : undefined;
+    const content = update.content;
+    const eventContent =
+      typeof content === "string"
+        ? content
+        : content && typeof content === "object" && !Array.isArray(content)
+          ? (() => {
+              const image = content as { type?: unknown; data?: unknown; mimeType?: unknown };
+              return image.type === "image" &&
+                typeof image.data === "string" &&
+                typeof image.mimeType === "string"
+                ? `![OMP image](data:${image.mimeType};base64,${image.data})`
+                : undefined;
+            })()
+          : undefined;
     const text =
       eventContent ??
       (update.delta !== undefined && previous?.kind === kind
@@ -513,6 +598,166 @@ export class OmpTimelineProjector {
     this.flushTimer = undefined;
   }
 
+  private publishCustomMessage(message: OmpMessage): void {
+    if (message.display === false) return;
+    const content =
+      typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content
+              .map((part) =>
+                part.type === "text"
+                  ? part.text
+                  : part.type === "image" && part.data && part.mimeType
+                    ? `![OMP image](data:${part.mimeType};base64,${part.data})`
+                    : undefined,
+              )
+              .filter((part): part is string => part !== undefined)
+              .join("\n\n")
+          : "";
+    if (!content) return;
+    this.customSequence += 1;
+    const customType = message.customType ?? "custom";
+    const lowerType = customType.toLowerCase();
+    const details = jsonRecord(this.dataFilter.json(message.details ?? null));
+    const id = `omp:custom:${this.customSequence}`;
+    if (lowerType.includes("bash") || lowerType.includes("shell") || lowerType.includes("python")) {
+      this.publish({
+        type: "tool_call",
+        id,
+        callId: id,
+        name: customType,
+        detail: {
+          type: "shell",
+          command: firstString(details, "command", "input") ?? customType,
+          ...(firstString(details, "cwd") ? { cwd: firstString(details, "cwd") } : {}),
+          output: this.dataFilter.text(content),
+          ...(typeof details?.exitCode === "number" ? { exitCode: details.exitCode } : {}),
+        },
+        status: "completed",
+        error: null,
+      });
+      return;
+    }
+    this.publish({
+      type: "tool_call",
+      id,
+      callId: id,
+      name: customType,
+      detail: {
+        type: "plain_text",
+        label: lowerType.includes("advisor") || lowerType === "aside" ? "Advisor" : customType,
+        text: this.dataFilter.text(content),
+        icon: lowerType.includes("advisor") || lowerType === "aside" ? "brain" : "sparkles",
+      },
+      status: "completed",
+      error: null,
+    });
+  }
+
+  private toolDetail(snapshot: ToolSnapshot): ProviderToolCallDetail {
+    const input = jsonRecord(snapshot.input);
+    const output = jsonRecord(snapshot.output);
+    const resultText = displayText(snapshot.output);
+    const name = snapshot.name.toLowerCase();
+    if (["bash", "shell", "exec", "run_command"].includes(name)) {
+      return {
+        type: "shell",
+        command: firstString(input, "command", "cmd") ?? snapshot.name,
+        ...(firstString(input, "cwd") ? { cwd: firstString(input, "cwd") } : {}),
+        ...(resultText !== undefined ? { output: resultText } : {}),
+        ...(typeof output?.exitCode === "number" ? { exitCode: output.exitCode } : {}),
+      };
+    }
+    if (name === "read") {
+      const filePath = firstString(input, "path", "filePath", "url");
+      if (!filePath) return { type: "unknown", input: snapshot.input, output: snapshot.output };
+      if (/^https?:\/\//u.test(filePath)) {
+        return {
+          type: "fetch",
+          url: filePath,
+          ...(resultText !== undefined ? { result: resultText } : {}),
+        };
+      }
+      return {
+        type: "read",
+        filePath,
+        ...(resultText !== undefined ? { content: resultText } : {}),
+        ...(typeof input?.offset === "number" ? { offset: input.offset } : {}),
+        ...(typeof input?.limit === "number" ? { limit: input.limit } : {}),
+      };
+    }
+    if (name === "edit" || name === "apply_patch") {
+      const filePath = firstString(input, "path", "filePath");
+      if (!filePath) return { type: "unknown", input: snapshot.input, output: snapshot.output };
+      return {
+        type: "edit",
+        filePath,
+        ...(firstString(input, "oldString", "old_text")
+          ? { oldString: firstString(input, "oldString", "old_text") }
+          : {}),
+        ...(firstString(input, "newString", "new_text")
+          ? { newString: firstString(input, "newString", "new_text") }
+          : {}),
+        ...(firstString(output, "unifiedDiff", "diff")
+          ? { unifiedDiff: firstString(output, "unifiedDiff", "diff") }
+          : {}),
+      };
+    }
+    if (name === "write") {
+      const filePath = firstString(input, "path", "filePath");
+      if (!filePath) return { type: "unknown", input: snapshot.input, output: snapshot.output };
+      return {
+        type: "write",
+        filePath,
+        ...(firstString(input, "content") ? { content: firstString(input, "content") } : {}),
+      };
+    }
+    if (["grep", "glob", "search", "web_search"].includes(name)) {
+      const toolName =
+        name === "web_search"
+          ? "web_search"
+          : name === "glob"
+            ? "glob"
+            : name === "grep"
+              ? "grep"
+              : "search";
+      return {
+        type: "search",
+        query: firstString(input, "query", "pattern", "path") ?? "",
+        toolName,
+        ...(resultText !== undefined ? { content: resultText } : {}),
+      };
+    }
+    if (name === "fetch" || name === "web_fetch") {
+      return {
+        type: "fetch",
+        url: firstString(input, "url") ?? "",
+        ...(firstString(input, "prompt") ? { prompt: firstString(input, "prompt") } : {}),
+        ...(resultText !== undefined ? { result: resultText } : {}),
+      };
+    }
+    if (["task", "agent", "subagent"].includes(name)) {
+      return {
+        type: "sub_agent",
+        ...(firstString(input, "agent", "name")
+          ? { subAgentType: firstString(input, "agent", "name") }
+          : {}),
+        ...(firstString(input, "description", "task")
+          ? { description: firstString(input, "description", "task") }
+          : {}),
+        log: resultText ?? "",
+      };
+    }
+    if (name === "advisor") {
+      return { type: "plain_text", label: "Advisor", text: resultText, icon: "brain" };
+    }
+    if (name === "todo") {
+      return { type: "plan", text: resultText ?? JSON.stringify(snapshot.input) };
+    }
+    return { type: "unknown", input: snapshot.input, output: snapshot.output };
+  }
+
   private publishTool(snapshot: ToolSnapshot, status: "running" | "completed"): void;
   private publishTool(snapshot: ToolSnapshot, status: "failed", error: JsonValue): void;
   private publishTool(
@@ -520,11 +765,7 @@ export class OmpTimelineProjector {
     status: "running" | "completed" | "failed",
     error?: JsonValue,
   ): void {
-    const detail: ProviderToolCallDetail = {
-      type: "unknown",
-      input: snapshot.input,
-      output: snapshot.output,
-    };
+    const detail = this.toolDetail(snapshot);
     if (status === "failed") {
       this.publish({
         type: "tool_call",
