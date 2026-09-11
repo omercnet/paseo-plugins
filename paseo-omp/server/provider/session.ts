@@ -912,6 +912,9 @@ export class OmpProviderSession {
   private async settleInterrupt(requestId: string, abort: PendingAbort): Promise<void> {
     try {
       await abort.promise;
+      if (abort.turn.terminalizing && !abort.turn.terminal && this.activeTurn === abort.turn) {
+        await this.finishTurn(abort.turn, "canceled", undefined, true, true);
+      }
       this.emit({ type: "request.completed", requestId });
     } catch (error) {
       const { runtime, turn } = abort;
@@ -1567,7 +1570,7 @@ export class OmpProviderSession {
         operation?.trigger !== "auto" ||
         operation.turnId !== turn.turnId ||
         operation.generation !== turn.generation ||
-        (event.action !== undefined && operation.action !== event.action)
+        operation.action !== event.action
       ) {
         return;
       }
@@ -1754,6 +1757,7 @@ export class OmpProviderSession {
       !turn.terminalizing &&
       !turn.deferredAgentEnd &&
       !turn.agentEndPending &&
+      !turn.manualCompactionPending &&
       turn.started
     );
   }
@@ -1892,8 +1896,14 @@ export class OmpProviderSession {
     }
     const state = await this.boundedUsageSnapshot(turn, FINAL_USAGE_WAIT_MS);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
-    if (state && !state.isStreaming && !state.isCompacting) {
-      await this.completeAgentEnd(turn, event, true);
+    if (state) {
+      if (!state.isStreaming && !state.isCompacting) {
+        await this.completeAgentEnd(turn, event, true);
+        return;
+      }
+      const message = "OMP agent_end arrived while the native runtime remained active";
+      this.invalidateRuntime(message);
+      await this.finishTurn(turn, "failed", { message }, true, true);
       return;
     }
     if (turn.agentEndRetryTimer === undefined) {
@@ -2038,6 +2048,7 @@ export class OmpProviderSession {
         };
       }
       turn.terminal = true;
+      if (this.usageSample?.turn === turn) this.usageSample = null;
       if (this.activeCompaction) {
         if (outcome.state === "canceled") this.finishCompaction("canceled");
         else {
@@ -2071,6 +2082,7 @@ export class OmpProviderSession {
       this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
     const turn = this.activeTurn;
     if (turn) this.stopUsagePoll(turn);
+    this.usageSample = null;
     this.finishCompaction(compactionState, { message });
     this.lastUsage = null;
     this.generation += 1;

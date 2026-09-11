@@ -348,8 +348,8 @@ class FakeOmpSession implements OmpRuntimeSession {
             stateContextNull: this.stateContextNull,
           };
       return {
-        model: value.model,
-        thinkingLevel: value.thinkingLevel,
+        model: requested.model,
+        thinkingLevel: requested.thinkingLevel,
         isStreaming: value.isStreaming,
         isCompacting: value.isCompacting,
         sessionId: this.nativeSessionId,
@@ -4154,15 +4154,36 @@ describe("OMP direct provider", () => {
 
     session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
     session.emit({ type: "auto_compaction_end", aborted: true, willRetry: false });
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "compaction" &&
+          event.item.status === "completed",
+      ),
+    ).toHaveLength(0);
+    session.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      aborted: true,
+      willRetry: false,
+    });
     session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
     session.emit({
       type: "auto_compaction_end",
+      action: "context-full",
       aborted: false,
       willRetry: false,
       errorMessage: "credential-secret failed",
     });
     session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
-    session.emit({ type: "auto_compaction_end", aborted: false, willRetry: false, skipped: true });
+    session.emit({
+      type: "auto_compaction_end",
+      action: "context-full",
+      aborted: false,
+      willRetry: false,
+      skipped: true,
+    });
 
     const items = events.flatMap((event) => (event.type === "timeline.item" ? [event.item] : []));
     const assistantIndex = items.findIndex((item) => item.type === "assistant_message");
@@ -4282,6 +4303,8 @@ describe("OMP direct provider", () => {
     );
 
     const secondTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-b", "second"));
+    expect(session.stateLookups).toBe(3);
+    expect(session.statsLookups).toBe(2);
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await scheduler.flush(5_000);
     await scheduler.flush(250);
@@ -4293,6 +4316,8 @@ describe("OMP direct provider", () => {
     );
 
     const thirdTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-c", "third"));
+    expect(session.stateLookups).toBe(4);
+    expect(session.statsLookups).toBe(3);
     session.contextTokens = 333;
     state.resolve();
     stats.resolve();
@@ -4302,8 +4327,8 @@ describe("OMP direct provider", () => {
         event.turnId === thirdTurnId &&
         event.usage.contextWindowUsedTokens === 333,
     );
-    expect(session.stateLookups).toBe(3);
-    expect(session.statsLookups).toBe(2);
+    expect(session.stateLookups).toBe(4);
+    expect(session.statsLookups).toBe(3);
 
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
@@ -4369,6 +4394,48 @@ describe("OMP direct provider", () => {
     expect(operations[1].item.id).toBe(operations[0].item.id);
     expect(session.compactions).toEqual(["focus on decisions"]);
     expect(session.prompts).toEqual([]);
+    await connection.close();
+  });
+
+  test("rejects steering while manual compaction is unresolved", async () => {
+    const runtime = new FakeOmpRuntime();
+    const compact = Promise.withResolvers<void>();
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.compactGate = compact.promise;
+    session.isCompacting = true;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "compact-steer", "/compact"));
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "steer-during-compact",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: "too late" }] },
+      },
+    });
+    const rejected = await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "steer-during-compact",
+    );
+    expect(rejected).toEqual(
+      expect.objectContaining({
+        result: {
+          type: "failed",
+          error: { message: "There is no active OMP turn to steer" },
+        },
+      }),
+    );
+    expect(session.steers).toEqual([]);
+
+    session.isCompacting = false;
+    compact.resolve();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
     await connection.close();
   });
 
@@ -4584,14 +4651,15 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("bounds agent-end settlement while state stays unknown or active", async () => {
+  test("fails agent-end settlement when native state remains active", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
     session.stateError = new Error("OMP RPC request timed out");
-    const turnId = turnIdFrom(await startPrompt(connection, events, "unknown-state", "work"));
+    const turnId = turnIdFrom(await startPrompt(connection, events, "active-state", "work"));
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await scheduler.flush(250);
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
     expect(
       events.some(
         (event) =>
@@ -4602,24 +4670,20 @@ describe("OMP direct provider", () => {
     session.stateError = null;
     session.isStreaming = true;
     await scheduler.flush(1_000);
-    expect(
-      events.some(
-        (event) =>
-          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-      ),
-    ).toBe(false);
-    await scheduler.flush(5_000);
-    await events.waitFor(
+    const terminal = await events.waitFor(
       (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
     );
-    const lookupsAfterTerminal = session.stateLookups;
-    await scheduler.flush();
-    expect(session.stateLookups).toBe(lookupsAfterTerminal);
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP agent_end arrived while the native runtime remained active" },
+      }),
+    );
+    expect(session.closes).toBe(1);
     expect(
       events.some(
         (event) =>
-          event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+          event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
       ),
     ).toBe(false);
     await connection.close();
@@ -4697,6 +4761,49 @@ describe("OMP direct provider", () => {
     );
     state.resolve();
     stats.resolve();
+    await connection.close();
+  });
+
+  test("interrupt overrides a turn deferred on final usage", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    session.promptAgentInvoked = false;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "interrupt-final", "work"));
+    await events.waitFor((event) => event.type === "session.usage" && event.turnId === turnId);
+    await Promise.resolve();
+    const state = Promise.withResolvers<void>();
+    const stats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = state.promise;
+    session.statsGate = stats.promise;
+    session.stateObserved = observed.resolve;
+    const [completion] = scheduler.runPending(5_000);
+    if (!completion) throw new Error("Expected local completion timer");
+    await observed.promise;
+
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "interrupt-final",
+      sessionId: "session-1",
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "canceled",
+    );
+    await events.waitFor(
+      (event) => event.type === "request.completed" && event.requestId === "interrupt-final",
+    );
+    state.resolve();
+    stats.resolve();
+    await completion;
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual([expect.objectContaining({ state: "canceled" })]);
     await connection.close();
   });
 
