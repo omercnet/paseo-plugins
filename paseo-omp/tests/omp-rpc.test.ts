@@ -888,7 +888,9 @@ describe("OMP RPC transport", () => {
       expect(request.sensitiveValues).not.toContain("1");
       writeFileSync(
         join(agentDir, "mcp.json"),
-        JSON.stringify({ servers: { unsafe: { type: "stdio", command: "server", env: { token: "x" } } } }),
+        JSON.stringify({
+          servers: { unsafe: { type: "stdio", command: "server", env: { token: "x" } } },
+        }),
       );
       expect(() =>
         buildOmpSpawnRequest(

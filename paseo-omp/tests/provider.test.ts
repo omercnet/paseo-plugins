@@ -3802,7 +3802,6 @@ describe("OMP direct provider", () => {
     await expect(connection.close()).resolves.toBeUndefined();
   });
 
-
   test("close during open waits for the created runtime session cleanup", async () => {
     const runtime = new FakeOmpRuntime();
     const start = Promise.withResolvers<void>();

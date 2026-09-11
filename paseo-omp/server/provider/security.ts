@@ -142,7 +142,6 @@ export class OmpCleanupFailure extends Error {
   }
 }
 
-
 export class OmpPublicDataFilter {
   private readonly sensitiveValueSet = new Set<string>();
   private readonly sensitiveValues: string[] = [];

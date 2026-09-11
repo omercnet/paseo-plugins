@@ -212,7 +212,11 @@ export function createOmpConnection(
         }
         return;
       case "session.open": {
-        if (sessions.has(input.sessionId) || opening.has(input.sessionId) || failedCleanup.has(input.sessionId)) {
+        if (
+          sessions.has(input.sessionId) ||
+          opening.has(input.sessionId) ||
+          failedCleanup.has(input.sessionId)
+        ) {
           requestFailure(input.requestId, new OmpPublicError("OMP session already exists"));
           return;
         }
