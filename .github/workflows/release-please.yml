@@ -56,6 +56,18 @@ jobs:
         if: steps.release.outputs['paseo-gas-city--release_created'] == 'true'
         working-directory: paseo-gas-city
         run: bun install --frozen-lockfile
+      - name: Check paseo-gas-city
+        if: steps.release.outputs['paseo-gas-city--release_created'] == 'true'
+        working-directory: paseo-gas-city
+        run: bun run check
+      - name: Typecheck paseo-gas-city
+        if: steps.release.outputs['paseo-gas-city--release_created'] == 'true'
+        working-directory: paseo-gas-city
+        run: bun run typecheck
+      - name: Test paseo-gas-city with coverage
+        if: steps.release.outputs['paseo-gas-city--release_created'] == 'true'
+        working-directory: paseo-gas-city
+        run: bun run test:coverage
       - name: Verify paseo-gas-city package
         if: steps.release.outputs['paseo-gas-city--release_created'] == 'true'
         working-directory: paseo-gas-city
@@ -64,10 +76,16 @@ jobs:
         if: steps.release.outputs['paseo-gas-city--release_created'] == 'true'
         working-directory: paseo-gas-city
         run: bun run package:release
+      - name: Checksum paseo-gas-city release package
+        if: steps.release.outputs['paseo-gas-city--release_created'] == 'true'
+        working-directory: paseo-gas-city
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs['paseo-gas-city--tag_name'] }}
+        run: sha256sum "dist/$RELEASE_TAG.zip" > "dist/$RELEASE_TAG.zip.sha256"
       - name: Upload paseo-gas-city release asset
         if: steps.release.outputs['paseo-gas-city--release_created'] == 'true'
         working-directory: paseo-gas-city
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs['paseo-gas-city--tag_name'] }}
-        run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_TAG.zip" --clobber
+        run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_TAG.zip" "dist/$RELEASE_TAG.zip.sha256" --clobber

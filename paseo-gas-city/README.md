@@ -36,6 +36,21 @@ Wide captures omit Paseo's host navigation so the plugin surface remains the foc
 - When mutations are enabled, supports confirmed bead dispatch plus wake, message, submit, stop,
   suspend, close, and kill session actions.
 
+## Configure
+
+Gas City settings are host-scoped and shared by every Paseo client connected to that daemon:
+
+- **Supervisor endpoint** defaults to `http://127.0.0.1:8372`.
+- **Allow remote endpoint** opts into daemon-side requests to a non-loopback host.
+- **Enable mutations** unlocks confirmed dispatch and session controls; observation remains available
+  while it is off.
+- **Refresh interval** and **event limit** control dashboard polling and bounded event pages.
+- **Workspace mappings** override automatic longest-ancestor rig matching when a workspace is
+  ambiguous or lives outside its rig path.
+
+Settings are a safety and routing configuration, not a credential vault. Put authentication and
+network access controls in front of Gas City itself.
+
 ## Safety defaults
 
 The default endpoint is `http://127.0.0.1:8372`. Non-loopback endpoints are rejected unless **Allow
@@ -70,6 +85,12 @@ From GitHub:
 paseo plugin add omercnet/paseo-plugins:paseo-gas-city
 ```
 
+Update an existing Git installation with:
+
+```bash
+paseo plugin update gas-city
+```
+
 From a local checkout on the Paseo daemon host:
 
 ```bash
@@ -78,6 +99,16 @@ cd paseo-plugins/paseo-gas-city
 bun install --frozen-lockfile
 paseo plugin install "$PWD"
 ```
+
+Start or confirm the Gas City supervisor before opening the plugin:
+
+```bash
+gc start /path/to/city
+gc status /path/to/city --json
+paseo plugin ls
+```
+
+`paseo plugin ls` must report `gas-city` as `running` with no load error.
 
 Open **Gas City** from the sidebar or Command Center. Configure the supervisor endpoint and optional
 workspace mappings under **Gas City settings**. In a workspace, open the **Factory** panel for the
@@ -94,5 +125,16 @@ bun run test:coverage
 bun run verify:package
 ```
 
-The package is `@omercnet/paseo-gas-city` at version `0.0.1`. Release Please maintains versions,
-changelog entries, component tags, and GitHub releases from Conventional Commits in the monorepo.
+Build and verify the distributable archives with:
+
+```bash
+bun run verify:package
+bun run package:release
+```
+
+Release Please maintains the package version, changelog, component tag, and GitHub release. Tags use
+`paseo-gas-city-v<version>`. The release workflow re-runs checks, typechecking, coverage, and package
+verification before uploading the ZIP asset and its SHA-256 checksum.
+
+The package is `@omercnet/paseo-gas-city` at version `0.0.1`. The supported distribution paths are
+the Git source above and the versioned GitHub release ZIP.

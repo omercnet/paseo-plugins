@@ -84,6 +84,9 @@ function isForbiddenReleaseFile(path: string) {
   return (
     isInDirectory(path, "tests") ||
     isInDirectory(path, "test") ||
+    isInDirectory(path, "scripts") ||
+    isInDirectory(path, "coverage") ||
+    isInDirectory(path, "dist") ||
     isInDirectory(path, "node_modules") ||
     isPlaceholder(path) ||
     /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/.test(path)
