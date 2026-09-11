@@ -3,6 +3,27 @@
 A Paseo control plane for observing and operating Gas City supervisors. It adds a global Gas City
 surface and a workspace-scoped Factory panel.
 
+## Screenshots
+
+These screenshots use a temporary local Gas City v1.4.1 fixture. They contain no private project
+or session data.
+
+### Wide overview
+
+![Gas City supervisor, city status, sessions, convoys, and work](docs/images/paseo-gas-city-wide-overview.webp)
+
+### Work and event feed
+
+![Gas City sessions, work, and recent event feed](docs/images/paseo-gas-city-wide-events.webp)
+
+### Guarded dispatch
+
+![Observe-only Gas City dispatch confirmation](docs/images/paseo-gas-city-dispatch-confirmation.webp)
+
+### Compact layout
+
+![Gas City compact mobile layout](docs/images/paseo-gas-city-compact-overview.webp)
+
 ## What it does
 
 - Discovers the configured supervisor and shows its cities, health, version, and diagnostics.

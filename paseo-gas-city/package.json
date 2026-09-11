@@ -37,6 +37,7 @@
     "index.client.tsx",
     "index.server.ts",
     "client",
+    "docs",
     "server",
     "shared",
     "paseo-plugin.json"
