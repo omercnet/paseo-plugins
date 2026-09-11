@@ -647,6 +647,7 @@ export class OmpProviderSession {
       }
       const bufferedEvents = turn.bufferedEvents.splice(0);
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
+      this.projector.acceptLiveTurn(turn.turnId);
     } catch (error) {
       this.publishPendingUsers(turn);
       const failure = providerError(error, "OMP prompt failed");

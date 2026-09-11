@@ -20,7 +20,10 @@ import {
 } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
 import { OmpCleanupFailure, OmpPublicDataFilter } from "../server/provider/security";
-import type { OmpTimelineScheduler } from "../server/provider/timeline-projector";
+import {
+  OmpTimelineProjector,
+  type OmpTimelineScheduler,
+} from "../server/provider/timeline-projector";
 
 type HostLogger = object;
 type PinoFactory = (options: { enabled: boolean }) => HostLogger;
@@ -993,11 +996,12 @@ describe("OMP direct provider", () => {
         content: "message 1",
       },
     });
-    expect(
-      events
-        .slice(liveBaseline)
-        .some((event) => event.type === "timeline.item" && event.item.type === "assistant_message"),
-    ).toBe(false);
+    expect(events.slice(liveBaseline)).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({ type: "assistant_message", text: "message 1" }),
+      }),
+    );
     await finishTurn(events, sessionAt(runtime, 1), liveTurn);
     expect(runtime.starts[1]).toEqual(
       expect.objectContaining({
@@ -1031,7 +1035,7 @@ describe("OMP direct provider", () => {
     await finishTurn(events, sessionAt(runtime, 2), recoveryTurn);
     await connection.close();
   });
-  test("suppresses the first replayed assistant after more than 1,024 identities", async () => {
+  test("keeps replay-boundary counts beyond 1,024 occurrences", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
     runtime.nextHistoryMessages = Array.from({ length: 1_025 }, (_, index): OmpMessage[] => [
@@ -1066,80 +1070,58 @@ describe("OMP direct provider", () => {
 
     expect(replayedAssistants).toHaveLength(1_025);
     expect(new Set(replayedAssistants.map((item) => item.id)).size).toBe(1_025);
+    const session = sessionAt(runtime);
+    session.promptEvents = [
+      {
+        type: "message_start",
+        message: { role: "assistant", id: "shared-replay-id", content: [] },
+      },
+      {
+        type: "message_update",
+        message: { role: "assistant", id: "shared-replay-id", content: "same" },
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "same" },
+      },
+      {
+        type: "message_end",
+        message: { role: "assistant", id: "shared-replay-id", content: "same answer" },
+      },
+    ];
+    const boundaryBaseline = events.length;
     const liveTurn = turnIdFrom(
       await startPrompt(connection, events, "large-dedup-live", "continue", "large-dedup-session"),
     );
-    const baseline = events.length;
-    sessionAt(runtime).emit({
-      type: "message_start",
-      message: { role: "assistant", id: "shared-replay-id", content: [] },
-    });
-    sessionAt(runtime).emit({
-      type: "message_update",
-      message: { role: "assistant", id: "shared-replay-id", content: "same" },
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "same" },
-    });
-    expect(events.slice(baseline).some((event) => event.type === "timeline.item")).toBe(false);
-    sessionAt(runtime).emit({
+    expect(events.slice(boundaryBaseline).some((event) => event.type === "timeline.item")).toBe(
+      false,
+    );
+
+    const liveBaseline = events.length;
+    session.emit({
       type: "message_end",
       message: { role: "assistant", id: "shared-replay-id", content: "same answer" },
     });
-    expect(events.slice(baseline).some((event) => event.type === "timeline.item")).toBe(false);
-    await finishTurn(events, sessionAt(runtime), liveTurn);
-
-    const divergentTurn = turnIdFrom(
-      await startPrompt(
-        connection,
-        events,
-        "large-dedup-divergent",
-        "continue",
-        "large-dedup-session",
-      ),
-    );
-    const divergentBaseline = events.length;
-    sessionAt(runtime).emit({
-      type: "message_start",
-      message: { role: "assistant", id: "shared-replay-id", content: [] },
-    });
-    sessionAt(runtime).emit({
-      type: "message_update",
-      message: { role: "assistant", id: "shared-replay-id", content: "different" },
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "different" },
-    });
-    expect(events.slice(divergentBaseline).some((event) => event.type === "timeline.item")).toBe(
-      false,
-    );
-    sessionAt(runtime).emit({
-      type: "message_end",
-      message: { role: "assistant", id: "shared-replay-id", content: "different answer" },
-    });
-    expect(events.slice(divergentBaseline)).toContainEqual(
+    expect(events.slice(liveBaseline)).toContainEqual(
       expect.objectContaining({
         type: "timeline.item",
-        item: expect.objectContaining({ type: "assistant_message", text: "different answer" }),
+        item: expect.objectContaining({ type: "assistant_message", text: "same answer" }),
       }),
     );
-    await finishTurn(events, sessionAt(runtime), divergentTurn);
+    await finishTurn(events, session, liveTurn);
     await connection.close();
   });
-  test("distinguishes replay occurrences that share response identity and content", async () => {
+  test("scopes identical replay occurrences to the replay boundary", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const duplicate = {
+      role: "assistant" as const,
+      entryId: "shared-assistant-entry",
+      responseId: "shared-response",
+      content: "same answer",
+    };
     runtime.nextHistoryMessages = [
       { role: "user", entryId: "replay-user-1", content: "first" },
-      {
-        role: "assistant",
-        entryId: "replay-assistant-1",
-        responseId: "shared-response",
-        content: "same answer",
-      },
+      duplicate,
       { role: "user", entryId: "replay-user-2", content: "second" },
-      {
-        role: "assistant",
-        entryId: "replay-assistant-2",
-        responseId: "shared-response",
-        content: "same answer",
-      },
+      duplicate,
     ];
     const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
       "prompt.message",
@@ -1163,142 +1145,95 @@ describe("OMP direct provider", () => {
     await events.waitFor(
       (event) => event.type === "session.ready" && event.requestId === "occurrence-open",
     );
+    const replayedAssistants = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "assistant_message" ? [event.item] : [],
+    );
+    expect(replayedAssistants.map((item) => item.text)).toEqual(["same answer", "same answer"]);
+    expect(new Set(replayedAssistants.map((item) => item.id)).size).toBe(2);
+
+    const session = sessionAt(runtime);
+    session.promptEvents = [{ type: "message_end", message: duplicate }];
+    const boundaryBaseline = events.length;
     const turnId = turnIdFrom(
       await startPrompt(connection, events, "occurrence-live", "continue", "occurrence-session"),
     );
-    const baseline = events.length;
-    sessionAt(runtime).emit({
-      type: "message_end",
-      message: {
-        role: "assistant",
-        entryId: "new-assistant-entry",
-        responseId: "shared-response",
-        content: "same answer",
-      },
-    });
     expect(
       events
-        .slice(baseline)
+        .slice(boundaryBaseline)
         .filter(
           (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
         ),
-    ).toHaveLength(1);
-    const afterDistinct = events.length;
-    sessionAt(runtime).emit({
-      type: "message_end",
-      message: {
-        role: "assistant",
-        entryId: "replay-assistant-1",
-        responseId: "shared-response",
-        content: "same answer",
-      },
-    });
-    expect(events.slice(afterDistinct).some((event) => event.type === "timeline.item")).toBe(false);
-    await finishTurn(events, sessionAt(runtime), turnId);
+    ).toHaveLength(0);
+
+    const liveBaseline = events.length;
+    session.emit({ type: "message_end", message: duplicate });
+    expect(
+      events
+        .slice(liveBaseline)
+        .flatMap((event) =>
+          event.type === "timeline.item" && event.item.type === "assistant_message"
+            ? [event.item.text]
+            : [],
+        ),
+    ).toEqual(["same answer"]);
+    await finishTurn(events, session, turnId);
     await connection.close();
   });
 
-  test("suppresses a replay duplicate after buffering 512 stream events", async () => {
-    const runtime = new FakeOmpRuntime();
-    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
-    runtime.nextHistoryMessages = [
-      {
-        role: "assistant",
-        entryId: "event-limit-entry",
-        content: "same answer",
-      },
-    ];
-    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
-      "prompt.message",
-      "session.persistence",
-    ]);
-    await connection.send({
-      type: "session.open",
-      requestId: "event-limit-open",
-      sessionId: "event-limit-session",
-      config: {
-        cwd: "/repo",
-        env: {},
-        mcpServers: {},
-        mode: "full",
-        settings: {},
-        persist: true,
-      },
-      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
-      history: "replay",
-    });
-    await events.waitFor(
-      (event) => event.type === "session.ready" && event.requestId === "event-limit-open",
+  test("suppresses a replay duplicate after buffering 512 stream events", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector("event-limit-session", (event) =>
+      events.push(event),
     );
-    const turnId = turnIdFrom(
-      await startPrompt(connection, events, "event-limit-live", "continue", "event-limit-session"),
-    );
-    const session = sessionAt(runtime);
     const duplicate = {
       role: "assistant" as const,
       entryId: "event-limit-entry",
       content: "same answer",
     };
+    projector.projectReplayMessage(duplicate);
+    projector.finishReplay();
     const baseline = events.length;
-    session.emit({ type: "message_start", message: duplicate });
+    projector.project({ type: "message_start", message: duplicate }, "replay-boundary");
     for (let index = 0; index < 511; index += 1) {
-      session.emit({
-        type: "message_update",
-        message: duplicate,
-        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
-      });
+      projector.project(
+        {
+          type: "message_update",
+          message: duplicate,
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
+        },
+        "replay-boundary",
+      );
     }
-    session.emit({ type: "message_end", message: duplicate });
-    expect(events.slice(baseline).some((event) => event.type === "timeline.item")).toBe(false);
-    await finishTurn(events, session, turnId);
-    await connection.close();
+    projector.project({ type: "message_end", message: duplicate }, "replay-boundary");
+    expect(events.slice(baseline)).toHaveLength(0);
+    projector.close();
   });
 
-  test("suppresses a replay duplicate after buffering four MiB", async () => {
-    const runtime = new FakeOmpRuntime();
-    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+  test("suppresses a replay duplicate after buffering four MiB", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector("byte-limit-session", (event) => events.push(event));
     const content = "x".repeat(1024 * 1024);
-    runtime.nextHistoryMessages = [{ role: "assistant", entryId: "byte-limit-entry", content }];
-    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
-      "prompt.message",
-      "session.persistence",
-    ]);
-    await connection.send({
-      type: "session.open",
-      requestId: "byte-limit-open",
-      sessionId: "byte-limit-session",
-      config: {
-        cwd: "/repo",
-        env: {},
-        mcpServers: {},
-        mode: "full",
-        settings: {},
-        persist: true,
-      },
-      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
-      history: "replay",
-    });
-    await events.waitFor(
-      (event) => event.type === "session.ready" && event.requestId === "byte-limit-open",
-    );
-    const turnId = turnIdFrom(
-      await startPrompt(connection, events, "byte-limit-live", "continue", "byte-limit-session"),
-    );
-    const session = sessionAt(runtime);
     const duplicate = { role: "assistant" as const, entryId: "byte-limit-entry", content };
+    projector.projectReplayMessage(duplicate);
+    projector.finishReplay();
     const baseline = events.length;
-    session.emit({ type: "message_start", message: { ...duplicate, content: [] } });
+    projector.project(
+      { type: "message_start", message: { ...duplicate, content: [] } },
+      "replay-boundary",
+    );
     for (let index = 0; index < 4; index += 1) {
-      session.emit({
-        type: "message_update",
-        message: duplicate,
-        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
-      });
+      projector.project(
+        {
+          type: "message_update",
+          message: duplicate,
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
+        },
+        "replay-boundary",
+      );
     }
-    session.emit({ type: "message_end", message: duplicate });
-    expect(events.slice(baseline).some((event) => event.type === "timeline.item")).toBe(false);
-    await finishTurn(events, session, turnId);
-    await connection.close();
+    projector.project({ type: "message_end", message: duplicate }, "replay-boundary");
+    expect(events.slice(baseline)).toHaveLength(0);
+    projector.close();
   });
 
   test("ignores stale resume thinking and rejects unsupported restored thinking", async () => {
