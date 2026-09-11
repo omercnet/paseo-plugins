@@ -8440,8 +8440,12 @@ describe("OMP direct provider", () => {
     }
   });
 
-  test("derives pending cold async outcomes from child transcripts", async () => {
-    for (const outcome of ["canceled", "failed"] as const) {
+  test("derives pending cold async outcomes from terminal yield payloads", async () => {
+    for (const { outcome, yieldStatus } of [
+      { outcome: "canceled" as const, yieldStatus: "aborted" },
+      { outcome: "failed" as const, yieldStatus: "failed" },
+      { outcome: "completed" as const, yieldStatus: "success" },
+    ]) {
       const runtime = new FakeOmpRuntime();
       runtime.descriptors.push({
         id: NATIVE_SESSION_ID,
@@ -8487,8 +8491,14 @@ describe("OMP direct provider", () => {
             role: "assistant",
             responseId: `pending-${outcome}-response`,
             content: `${outcome} output`,
-            stopReason: outcome === "canceled" ? "aborted" : "error",
-            ...(outcome === "failed" ? { errorMessage: "child failed" } : {}),
+            stopReason: "stop",
+          },
+          {
+            role: "toolResult",
+            toolCallId: `pending-${outcome}-yield`,
+            toolName: "yield",
+            content: [{ type: "text", text: "Result submitted." }],
+            details: { status: yieldStatus },
           },
         ],
       });

@@ -98,6 +98,9 @@ const TaskResultDetailsSchema = z.object({
     .max(MAX_CHILDREN),
   progress: z.array(TaskProgressSchema).max(MAX_CHILDREN).optional(),
 });
+const YieldResultSchema = z.object({
+  status: z.enum(["success", "completed", "failed", "error", "aborted", "canceled", "cancelled"]),
+});
 const TaskResultEnvelopeSchema = z.object({ details: TaskResultDetailsSchema });
 
 function expectedTaskChildren(value: unknown): number {
@@ -239,6 +242,21 @@ function replayChildren(messages: readonly OmpMessage[]): ReplayChildRef[] {
 }
 
 function replayTerminalStatus(messages: readonly OmpMessage[]): ChildTerminalStatus {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "toolResult" || message.toolName !== "yield") continue;
+    const parsed = YieldResultSchema.safeParse(message.details);
+    if (!parsed.success) continue;
+    if (
+      parsed.data.status === "aborted" ||
+      parsed.data.status === "canceled" ||
+      parsed.data.status === "cancelled"
+    ) {
+      return "canceled";
+    }
+    if (parsed.data.status === "failed" || parsed.data.status === "error") return "failed";
+    return "completed";
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== "assistant") continue;
@@ -645,10 +663,10 @@ export class OmpSubsessionProjector {
         this.resolveParent(snapshot.parentToolCallId, snapshot.sessionFile),
       );
       present.add(child.nativeId);
-      child.seenInSnapshot = true;
       const terminal = terminalStatus(snapshot.status);
       if (terminal) this.requestTerminal(child, terminal);
       else this.restartChild(child);
+      child.seenInSnapshot = true;
     }
     for (const child of this.children.values()) {
       if (child.status === "running" && child.seenInSnapshot && !present.has(child.nativeId)) {
