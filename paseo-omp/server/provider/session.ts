@@ -104,6 +104,7 @@ type ActiveTurn = {
   localOnlyTimer?: unknown;
   usagePollTimer?: unknown;
   usagePoll?: Promise<void>;
+  usageSampleFloor: number;
   manualCompaction: boolean;
   manualCompactionPending: boolean;
   manualCompactionDeadlineTimer?: unknown;
@@ -281,11 +282,13 @@ export class OmpProviderSession {
   private recoveryUsesNativeConfig = false;
   private activeAbort: PendingAbort | null = null;
   private usageEpoch = 0;
+  private usageSequence = 0;
   private usageSample: {
     turn: ActiveTurn;
     generation: number;
     runtime: OmpRuntimeSession;
     epoch: number;
+    sequence: number;
     promise: Promise<OmpSessionState | undefined>;
   } | null = null;
   private activeCompaction: ActiveCompaction | null = null;
@@ -532,6 +535,7 @@ export class OmpProviderSession {
   private publishUsageSnapshot(
     turn: ActiveTurn,
     minimumEpoch = this.usageEpoch,
+    minimumSequence = turn.usageSampleFloor,
   ): Promise<OmpSessionState | undefined> {
     const generation = turn.generation;
     const runtime = this.runtime;
@@ -542,22 +546,26 @@ export class OmpProviderSession {
         current.turn === turn &&
         current.generation === generation &&
         current.runtime === runtime &&
-        current.epoch >= minimumEpoch
+        current.epoch >= minimumEpoch &&
+        current.sequence >= minimumSequence
       ) {
         return current.promise;
       }
       return current.promise.then(() => {
         if (!this.ownsUsageSample(turn, generation, runtime)) return undefined;
-        return this.publishUsageSnapshot(turn, minimumEpoch);
+        return this.publishUsageSnapshot(turn, minimumEpoch, minimumSequence);
       });
     }
     const epoch = this.usageEpoch;
+    const sequence = ++this.usageSequence;
     const promise = Promise.allSettled([runtime.getState(), runtime.getSessionStats()]).then(
       ([stateResult, statsResult]) => {
         if (
           !this.ownsUsageSample(turn, generation, runtime) ||
           epoch !== this.usageEpoch ||
-          epoch < minimumEpoch
+          epoch < minimumEpoch ||
+          sequence < turn.usageSampleFloor ||
+          sequence < minimumSequence
         ) {
           return undefined;
         }
@@ -571,7 +579,7 @@ export class OmpProviderSession {
         return state;
       },
     );
-    this.usageSample = { turn, generation, runtime, epoch, promise };
+    this.usageSample = { turn, generation, runtime, epoch, sequence, promise };
     void promise.finally(() => {
       if (this.usageSample?.promise === promise) this.usageSample = null;
     });
@@ -586,6 +594,24 @@ export class OmpProviderSession {
     const timer = this.scheduler.set(() => timeout.resolve(undefined), timeoutMs);
     try {
       return await Promise.race([this.publishUsageSnapshot(turn), timeout.promise]);
+    } finally {
+      this.scheduler.clear(timer);
+    }
+  }
+
+  private async boundedTerminalState(
+    turn: ActiveTurn,
+    timeoutMs: number,
+  ): Promise<OmpSessionState | undefined> {
+    const generation = turn.generation;
+    const runtime = this.runtime;
+    const timeout = Promise.withResolvers<undefined>();
+    const timer = this.scheduler.set(() => timeout.resolve(undefined), timeoutMs);
+    try {
+      const state = await Promise.race([runtime.getState(), timeout.promise]);
+      return this.ownsUsageSample(turn, generation, runtime) ? state : undefined;
+    } catch {
+      return undefined;
     } finally {
       this.scheduler.clear(timer);
     }
@@ -781,6 +807,7 @@ export class OmpProviderSession {
       nativeActivity: false,
       localOnlyDisabled: false,
       localOnlyEligible: false,
+      usageSampleFloor: 0,
       agentEndPending: false,
       terminalizing: false,
       manualCompactionPending: slashCommandName(text) === "compact",
@@ -1570,7 +1597,7 @@ export class OmpProviderSession {
         operation?.trigger !== "auto" ||
         operation.turnId !== turn.turnId ||
         operation.generation !== turn.generation ||
-        operation.action !== event.action
+        (event.action !== undefined && operation.action !== event.action)
       ) {
         return;
       }
@@ -1844,6 +1871,10 @@ export class OmpProviderSession {
       return;
     }
     turn.agentEndPending = true;
+    turn.usageSampleFloor = this.usageSequence + 1;
+    if (this.usageSample?.turn === turn && this.usageSample.sequence < turn.usageSampleFloor) {
+      this.usageSample = null;
+    }
     this.stopUsagePoll(turn);
     turn.agentEndDeadlineTimer = this.scheduler.set(() => {
       turn.agentEndDeadlineTimer = undefined;
@@ -1894,11 +1925,11 @@ export class OmpProviderSession {
       await this.completeAgentEnd(turn, event);
       return;
     }
-    const state = await this.boundedUsageSnapshot(turn, FINAL_USAGE_WAIT_MS);
+    const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
     if (state) {
       if (!state.isStreaming && !state.isCompacting) {
-        await this.completeAgentEnd(turn, event, true);
+        await this.completeAgentEnd(turn, event);
         return;
       }
       const message = "OMP agent_end arrived while the native runtime remained active";

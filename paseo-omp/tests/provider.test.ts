@@ -4154,18 +4154,18 @@ describe("OMP direct provider", () => {
 
     session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
     session.emit({ type: "auto_compaction_end", aborted: true, willRetry: false });
-    expect(
-      events.filter(
-        (event) =>
-          event.type === "timeline.item" &&
-          event.item.type === "compaction" &&
-          event.item.status === "completed",
-      ),
-    ).toHaveLength(0);
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
     session.emit({
       type: "auto_compaction_end",
-      action: "context-full",
-      aborted: true,
+      aborted: false,
+      willRetry: false,
+      skipped: true,
+    });
+    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+    session.emit({
+      type: "auto_compaction_end",
+      result: { tokensBefore: 1_000 },
+      aborted: false,
       willRetry: false,
     });
     session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
@@ -4176,30 +4176,20 @@ describe("OMP direct provider", () => {
       willRetry: false,
       errorMessage: "credential-secret failed",
     });
-    session.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
-    session.emit({
-      type: "auto_compaction_end",
-      action: "context-full",
-      aborted: false,
-      willRetry: false,
-      skipped: true,
-    });
 
     const items = events.flatMap((event) => (event.type === "timeline.item" ? [event.item] : []));
     const assistantIndex = items.findIndex((item) => item.type === "assistant_message");
     const loading = items.filter((item) => item.type === "compaction" && item.status === "loading");
-    expect(loading).toHaveLength(3);
+    expect(loading).toHaveLength(4);
     const firstLoading = loading[0];
     if (!firstLoading) throw new Error("Expected compaction loading update");
     expect(assistantIndex).toBeLessThan(items.indexOf(firstLoading));
     for (const operation of loading) {
-      expect(items.some((item) => item.type === "notification" && item.id === operation.id)).toBe(
-        true,
-      );
+      expect(items.filter((item) => item.id === operation.id)).toHaveLength(2);
     }
-    expect(items.some((item) => item.type === "compaction" && item.status === "completed")).toBe(
-      false,
-    );
+    expect(
+      items.filter((item) => item.type === "compaction" && item.status === "completed"),
+    ).toHaveLength(1);
     expect(JSON.stringify(items)).not.toContain("credential-secret");
     expect(
       items.some(
@@ -4291,6 +4281,7 @@ describe("OMP direct provider", () => {
     session.statsGate = stats.promise;
     session.stateObserved = observed.resolve;
     const firstTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-a", "first"));
+
     await observed.promise;
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await scheduler.flush(5_000);
@@ -4302,9 +4293,11 @@ describe("OMP direct provider", () => {
         event.state === "completed",
     );
 
+    const afterFirstStateLookups = session.stateLookups;
+    const afterFirstStatsLookups = session.statsLookups;
     const secondTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-b", "second"));
-    expect(session.stateLookups).toBe(3);
-    expect(session.statsLookups).toBe(2);
+    expect(session.stateLookups).toBe(afterFirstStateLookups + 1);
+    expect(session.statsLookups).toBe(afterFirstStatsLookups + 1);
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await scheduler.flush(5_000);
     await scheduler.flush(250);
@@ -4315,9 +4308,11 @@ describe("OMP direct provider", () => {
         event.state === "completed",
     );
 
+    const afterSecondStateLookups = session.stateLookups;
+    const afterSecondStatsLookups = session.statsLookups;
     const thirdTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-c", "third"));
-    expect(session.stateLookups).toBe(4);
-    expect(session.statsLookups).toBe(3);
+    expect(session.stateLookups).toBe(afterSecondStateLookups + 1);
+    expect(session.statsLookups).toBe(afterSecondStatsLookups + 1);
     session.contextTokens = 333;
     state.resolve();
     stats.resolve();
@@ -4327,8 +4322,8 @@ describe("OMP direct provider", () => {
         event.turnId === thirdTurnId &&
         event.usage.contextWindowUsedTokens === 333,
     );
-    expect(session.stateLookups).toBe(4);
-    expect(session.statsLookups).toBe(3);
+    expect(session.stateLookups).toBe(afterSecondStateLookups + 1);
+    expect(session.statsLookups).toBe(afterSecondStatsLookups + 1);
 
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await events.waitFor(
@@ -4337,6 +4332,54 @@ describe("OMP direct provider", () => {
         event.turnId === thirdTurnId &&
         event.state === "completed",
     );
+    await connection.close();
+  });
+  test("uses a post-agent-end state sample across split state and stats responses", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const state = Promise.withResolvers<void>();
+    const stats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.usageAvailable = true;
+    session.captureUsageOnRequest = true;
+    session.isStreaming = true;
+    session.stateGate = state.promise;
+    session.statsGate = stats.promise;
+    session.stateObserved = observed.resolve;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "post-agent-end", "work"));
+    await observed.promise;
+    session.isStreaming = false;
+    session.contextTokens = 444;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(session.stateLookups).toBe(3);
+    expect(session.statsLookups).toBe(1);
+
+    state.resolve();
+    await Promise.resolve();
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    expect(session.stateLookups).toBe(4);
+    expect(session.statsLookups).toBe(2);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toBe(false);
+    stats.resolve();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+      ),
+    ).toBe(false);
+    expect(session.closes).toBe(0);
     await connection.close();
   });
 
@@ -4904,7 +4947,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("keeps refresh and terminal sampling single-flight", async () => {
+  test("coalesces refreshes and starts one post-agent sample", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -4930,12 +4973,14 @@ describe("OMP direct provider", () => {
         willRetry: false,
       });
     }
+    expect(session.stateLookups).toBe(stateLookups);
+    expect(session.statsLookups).toBe(statsLookups);
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
     await scheduler.flush(100);
     await scheduler.flush(250);
-    expect(session.stateLookups).toBe(stateLookups);
+    expect(session.stateLookups).toBe(stateLookups + 1);
     expect(session.statsLookups).toBe(statsLookups);
-    expect(session.maxActiveStateLookups).toBe(1);
+    expect(session.maxActiveStateLookups).toBe(2);
     expect(session.maxActiveStatsLookups).toBe(1);
 
     session.emit({ type: "process_exit", error: "OMP exited" });
