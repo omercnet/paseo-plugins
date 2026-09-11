@@ -515,17 +515,20 @@ describe("OMP direct provider", () => {
     expect(sessionAt(runtime).closes).toBe(1);
     await connection.close();
   });
-  test("blocks repeated catalog discovery after unverified cleanup", async () => {
+  test("retries catalog discovery after asynchronous cleanup settles", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.nextCloseError = new Error("catalog cleanup failed");
     const { connection, events } = await createHarness(runtime);
-    for (const requestId of ["catalog-cleanup-failure", "catalog-cleanup-retry"]) {
-      await connection.send({ type: "catalog", requestId, cwd: "/repo" });
-      await events.waitFor(
-        (event) => event.type === "request.failed" && event.requestId === requestId,
-      );
-    }
-    expect(runtime.starts).toHaveLength(1);
+    await connection.send({ type: "catalog", requestId: "catalog-cleanup-failure", cwd: "/repo" });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "catalog-cleanup-failure",
+    );
+    await Promise.resolve();
+    await connection.send({ type: "catalog", requestId: "catalog-cleanup-retry", cwd: "/repo" });
+    await events.waitFor(
+      (event) => event.type === "catalog" && event.requestId === "catalog-cleanup-retry",
+    );
+    expect(runtime.starts).toHaveLength(2);
     await expect(connection.close()).resolves.toBeUndefined();
   });
 
@@ -3521,6 +3524,15 @@ describe("OMP direct provider", () => {
     expect(filter.streamText("Aut", true)).toEqual({ text: "Aut", pending: false });
   });
 
+  test("redacts POSIX paths after common delimiters", () => {
+    const filter = new OmpPublicDataFilter();
+    for (const delimiter of [",", "]", ">", "-"]) {
+      expect(filter.text(`prefix${delimiter}/home/private/file`)).toBe(
+        `prefix${delimiter}<absolute path>`,
+      );
+    }
+  });
+
   test("redacts provider-owned timeline payloads and native identifiers", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.redactionValues = ["license-secret", "custom-secret"];
@@ -4575,6 +4587,14 @@ describe("OMP direct provider", () => {
               success: true,
               data: { agentInvoked: true },
             });
+            if (type === "prompt") {
+              child.write({
+                type: "tool_execution_start",
+                toolCallId: "buffered-large-tool",
+                toolName: "read",
+                args: Array.from({ length: 513 }, (_, index) => `buffered-${index}`),
+              });
+            }
           } else if (type === "get_branch_messages") {
             child.write({
               type: "response",
@@ -4643,6 +4663,17 @@ describe("OMP direct provider", () => {
       expect(JSON.stringify(proxyNotice)).not.toContain(secret);
     }
     const turnId = turnIdFrom(await startPrompt(connection, events, "transport-prompt", "work"));
+    const bufferedLargeTool = await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "read" &&
+        event.item.status === "running",
+    );
+    expect(bufferedLargeTool).toEqual(
+      expect.objectContaining({ item: expect.objectContaining({ status: "running" }) }),
+    );
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
     await connection.send({
       type: "session.prompt",
       sessionId: "session-1",

@@ -45,6 +45,7 @@ const MAX_UNCLAIMED_BRANCH_ENTRIES = 1_024;
 const MAX_PENDING_USERS = 256;
 const MAX_USER_ECHOES = 512;
 const MAX_BUFFERED_TURN_EVENTS = 512;
+const MAX_BUFFERED_VALUE_ITEMS = 1_024;
 const MAX_BUFFERED_TURN_BYTES = 4 * 1024 * 1024;
 const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
@@ -53,7 +54,7 @@ const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
 function retainedBytes(values: readonly unknown[], maxBytes: number): number {
   let total = 0;
   for (const value of values) {
-    const bytes = boundedJsonBytes(value, maxBytes, 512);
+    const bytes = boundedJsonBytes(value, maxBytes, MAX_BUFFERED_VALUE_ITEMS);
     if (bytes === Number.POSITIVE_INFINITY) return bytes;
     total += bytes;
     if (total > maxBytes) return Number.POSITIVE_INFINITY;
@@ -866,7 +867,7 @@ export class OmpProviderSession {
       if (
         turn.bufferedEvents.length >= MAX_BUFFERED_TURN_EVENTS ||
         retainedBytes(turn.bufferedEvents, MAX_BUFFERED_TURN_BYTES) +
-          boundedJsonBytes(event, MAX_BUFFERED_TURN_BYTES, MAX_BUFFERED_TURN_EVENTS) >
+          boundedJsonBytes(event, MAX_BUFFERED_TURN_BYTES, MAX_BUFFERED_VALUE_ITEMS) >
           MAX_BUFFERED_TURN_BYTES
       ) {
         this.handleRuntimeFailure();

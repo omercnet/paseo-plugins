@@ -214,7 +214,16 @@ export function createOmpConnection(
             catalog: await discoverOmpCatalog(runtime, input.cwd, shutdown.signal, environment),
           });
         } catch (error) {
-          if (error instanceof OmpCleanupFailure) catalogCleanup = error.cleanup;
+          if (error instanceof OmpCleanupFailure) {
+            const cleanup = error.cleanup;
+            catalogCleanup = cleanup;
+            void cleanup.then(
+              () => {
+                if (catalogCleanup === cleanup) catalogCleanup = null;
+              },
+              () => undefined,
+            );
+          }
           if (!closing) requestFailure(input.requestId, error, "OMP catalog discovery failed");
         }
         return;

@@ -63,7 +63,7 @@ const STREAM_CREDENTIAL_MARKERS = [
   "xoxr",
   "xoxs",
 ] as const;
-const POSIX_ABSOLUTE_PATH = /(^|[\s("'=:[])(\/(?!\/)[^\s"'`<>\])},;]+)/gu;
+const POSIX_ABSOLUTE_PATH = /(^|[^A-Za-z0-9_./\\])(\/(?!\/)[^\s"'`<>\])},;]+)/gu;
 const WINDOWS_ABSOLUTE_PATH = /\b[A-Za-z]:\\[^\s"'`<>\])},;]+/gu;
 
 export function utf8Bytes(value: string): number {
