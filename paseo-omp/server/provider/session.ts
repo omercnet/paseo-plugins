@@ -709,11 +709,27 @@ export class OmpProviderSession {
     }
     await this.runtimeDisposal;
     if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
-    const recovered = await this.runtimeFactory.startSession({
-      ...this.recoveryOptions,
-      resumeSessionId: expectedSessionId,
-      signal: this.lifetime.signal,
-    });
+    let recovered: OmpRuntimeSession;
+    try {
+      recovered = await this.runtimeFactory.startSession({
+        ...this.recoveryOptions,
+        resumeSessionId: expectedSessionId,
+        signal: this.lifetime.signal,
+      });
+    } catch (error) {
+      if (error instanceof OmpCleanupFailure) {
+        this.runtimeDisposal = error.cleanup.then(
+          () => {
+            throw new Error("OMP recovery cleanup failed");
+          },
+          () => {
+            throw new Error("OMP recovery cleanup failed");
+          },
+        );
+        void this.runtimeDisposal.catch(() => undefined);
+      }
+      throw error;
+    }
     try {
       const state = await recovered.getState();
       if (state.sessionId !== expectedSessionId) {

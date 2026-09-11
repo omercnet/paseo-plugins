@@ -18,6 +18,7 @@ import {
   type OmpStartOptions,
 } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
+import { OmpCleanupFailure } from "../server/provider/security";
 import type { OmpTimelineScheduler } from "../server/provider/timeline-projector";
 
 type HostLogger = object;
@@ -357,6 +358,7 @@ class FakeOmpRuntime implements OmpRuntime {
   nextModel: OmpModel | null = null;
   nextThinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null = null;
   nextCloseError: Error | null = null;
+  nextStartError: Error | null = null;
   startGate: Promise<void> | null = null;
   startObserved: (() => void) | null = null;
   commandDiscoveryError: Error | null = null;
@@ -367,6 +369,11 @@ class FakeOmpRuntime implements OmpRuntime {
     this.starts.push(options);
     this.startObserved?.();
     if (this.startGate) await this.startGate;
+    if (this.nextStartError) {
+      const error = this.nextStartError;
+      this.nextStartError = null;
+      throw error;
+    }
     const session = new FakeOmpSession();
     session.availableCommandsError = this.commandDiscoveryError;
     session.availableCommands = this.availableCommands.map((command) => ({
@@ -3337,6 +3344,44 @@ describe("OMP direct provider", () => {
     await expect(connection.close()).resolves.toBeUndefined();
   });
 
+  test("retains failed recovery startup cleanup until explicit close", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    runtime.nextStartError = new OmpCleanupFailure(
+      "recovery startup cleanup failed",
+      Promise.resolve(),
+    );
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+
+    for (const clientMessageId of ["failed-recovery-start", "blocked-recovery-retry"]) {
+      const result = await startPrompt(connection, events, clientMessageId, "continue");
+      expect(result).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            type: "failed",
+            error: expect.objectContaining({ message: "OMP session recovery failed" }),
+          }),
+        }),
+      );
+    }
+    expect(runtime.starts).toHaveLength(2);
+
+    await connection.send({
+      type: "session.close",
+      requestId: "failed-recovery-close",
+      sessionId: "session-1",
+    });
+    const closeFailure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "failed-recovery-close",
+    );
+    expect(closeFailure).toEqual(
+      expect.objectContaining({ error: { message: "OMP session close failed" } }),
+    );
+    expect(runtime.starts).toHaveLength(2);
+    await expect(connection.close()).resolves.toBeUndefined();
+  });
+
   test("fails a degraded terminal frame with no outcome messages", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -3487,6 +3532,26 @@ describe("OMP direct provider", () => {
       args: { value: "safe" },
     });
     session.emit({
+      type: "tool_execution_update",
+      toolCallId: "credential-value-1234",
+      toolName: "write",
+      partialResult: { content: "credential-value-" },
+    });
+    expect(JSON.stringify(events)).not.toContain("credential-value-");
+    session.emit({
+      type: "tool_execution_update",
+      toolCallId: "credential-value-1234",
+      toolName: "write",
+      partialResult: { content: "1234" },
+    });
+    expect(JSON.stringify(events)).not.toContain("credential-value-");
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "credential-value-1234",
+      toolName: "write",
+      result: { content: "credential-value-1234" },
+    });
+    session.emit({
       type: "notice",
       level: "warning",
       message: "Authorization: Bearer token-not-from-env",
@@ -3499,17 +3564,24 @@ describe("OMP direct provider", () => {
     session.emit({ type: "notice", level: "warning", message: "license-secret" });
     session.emit({ type: "notice", level: "warning", message: "custom-secret" });
     session.emit({ type: "command_output", text: "credential-value-" });
+    expect(JSON.stringify(events)).not.toContain("credential-value-");
     session.emit({ type: "command_output", text: "1234" });
     for (const [type, contentIndex, first, second] of [
       ["text_delta", 1, "Bearer alpha", "beta"],
       ["thinking_delta", 2, "Bearer alpha", "beta"],
+      ["text_delta", 3, "credential-value-", "1234"],
+      ["thinking_delta", 4, "credential-value-", "1234"],
+      ["text_delta", 5, "ghp_abc", "defgh"],
+      ["thinking_delta", 6, "Authoriz", "ation: Basic header-secret"],
     ] as const) {
+      const splitBaseline = events.length;
       session.emit({
         type: "message_update",
         assistantMessageEvent: { type, contentIndex, delta: first },
         message: { role: "assistant", responseId: "split-stream", content: [] },
       });
       await scheduler.flush();
+      expect(JSON.stringify(events.slice(splitBaseline))).not.toContain(first);
       session.emit({
         type: "message_update",
         assistantMessageEvent: { type, contentIndex, delta: second },
@@ -3550,6 +3622,7 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("alpha");
     expect(visible).not.toContain("beta");
     expect(visible).not.toContain("alphabeta");
+    expect(visible).not.toContain("credential-value-");
     expect(visible).not.toContain("provider-internal-tool-id");
     expect(visible).not.toContain("provider-internal-response-id");
     expect(visible).not.toContain("token-not-from-env");
@@ -3594,6 +3667,73 @@ describe("OMP direct provider", () => {
         ? splitReasoning.item.text
         : null,
     ).toBe("Bearer <redacted>");
+    const literalSplitAssistant = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "assistant_message" &&
+        event.item.id.endsWith(":content:3:text"),
+    );
+    const literalSplitReasoning = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "reasoning" &&
+        event.item.id.endsWith(":content:4:reasoning"),
+    );
+    expect(
+      literalSplitAssistant?.type === "timeline.item" &&
+        literalSplitAssistant.item.type === "assistant_message"
+        ? literalSplitAssistant.item.text
+        : null,
+    ).toBe("<redacted>");
+    expect(
+      literalSplitReasoning?.type === "timeline.item" &&
+        literalSplitReasoning.item.type === "reasoning"
+        ? literalSplitReasoning.item.text
+        : null,
+    ).toBe("<redacted>");
+    const command = events.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "assistant_message" &&
+        event.item.id.startsWith("omp:command:"),
+    );
+    expect(
+      command?.type === "timeline.item" && command.item.type === "assistant_message"
+        ? command.item.text
+        : null,
+    ).toBe("<redacted>");
+    const streamedTool = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "tool_call" &&
+      event.item.name === "write" &&
+      event.item.detail.type === "unknown"
+        ? [event.item.detail.output]
+        : [],
+    );
+    expect(streamedTool).toEqual([null, "<redacted>"]);
+    const splitToken = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "assistant_message" &&
+        event.item.id.endsWith(":content:5:text"),
+    );
+    const splitAuthorization = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "reasoning" &&
+        event.item.id.endsWith(":content:6:reasoning"),
+    );
+    expect(
+      splitToken?.type === "timeline.item" && splitToken.item.type === "assistant_message"
+        ? splitToken.item.text
+        : null,
+    ).toBe("<redacted>");
+    expect(
+      splitAuthorization?.type === "timeline.item" &&
+        splitAuthorization.item.type === "reasoning"
+        ? splitAuthorization.item.text
+        : null,
+    ).toBe("Authorization: <redacted>");
     const toolIds = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "tool_call" ? [event.item.callId] : [],
     );

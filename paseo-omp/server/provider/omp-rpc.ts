@@ -315,13 +315,13 @@ export interface OmpRpcRuntimeOptions {
   spawnProcess?: (request: OmpSpawnRequest) => ChildProcessWithoutNullStreams;
   terminateProcessTree?: (pid: number) => Promise<boolean | "uncertain">;
   environment?: NodeJS.ProcessEnv;
+  requestTimeoutMs?: number;
 }
 
 type PendingRequest = {
   resolve(value: unknown): void;
   reject(error: Error): void;
   timer: NodeJS.Timeout;
-  bytes: number;
   command: string;
 };
 type StartedRequest = { id: string; promise: Promise<unknown> };
@@ -909,6 +909,7 @@ class OmpRpcProcess {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly listeners = new Set<(event: OmpRpcEvent) => void>();
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly queuedWrites = new Map<string, number>();
   private readonly exitPromise: Promise<void>;
   private readonly resolveExit: () => void;
   private readonly resolveReady: (frame: ReadyFrame) => void;
@@ -937,6 +938,7 @@ class OmpRpcProcess {
     options: OmpStartOptions,
     spawnProcess?: OmpRpcRuntimeOptions["spawnProcess"],
     terminateProcessTree?: OmpRpcRuntimeOptions["terminateProcessTree"],
+    private readonly requestTimeoutMs = REQUEST_TIMEOUT_MS,
   ) {
     const ready = Promise.withResolvers<ReadyFrame>();
     this.rejectReady = ready.reject;
@@ -976,7 +978,7 @@ class OmpRpcProcess {
       );
     }
     this.child.stdout.on("data", (chunk: Buffer | string) => this.receiveData(chunk));
-    this.child.stdout.once("end", () => this.settleOutput());
+    this.child.stdout.once("end", () => this.handleStdoutEnd());
     this.child.stderr.on("data", () => {
       // Stderr is intentionally drained and discarded. It may contain credentials or paths.
     });
@@ -1014,6 +1016,11 @@ class OmpRpcProcess {
     if (!this.closed && !this.fatalError) this.fail(error);
   }
 
+  private handleStdoutEnd(): void {
+    this.settleOutput();
+    if (!this.exited && !this.closed) this.fail(new Error("OMP RPC output channel closed"));
+  }
+
   private settleOutput(): void {
     if (this.outputSettled) return;
     this.outputSettled = true;
@@ -1036,7 +1043,7 @@ class OmpRpcProcess {
     }
   }
 
-  startRequest(command: Record<string, unknown>, timeoutMs = REQUEST_TIMEOUT_MS): StartedRequest {
+  startRequest(command: Record<string, unknown>, timeoutMs = this.requestTimeoutMs): StartedRequest {
     const id = randomUUID();
     if (this.fatalError) return { id, promise: Promise.reject(this.fatalError) };
     if (this.closed || this.exited || !this.child.stdin.writable) {
@@ -1062,8 +1069,6 @@ class OmpRpcProcess {
     }
     const result = Promise.withResolvers<unknown>();
     const timer = setTimeout(() => {
-      const pending = this.pending.get(id);
-      if (pending) this.pendingWriteBytes -= pending.bytes;
       this.pending.delete(id);
       result.reject(new Error("OMP RPC request timed out"));
     }, timeoutMs);
@@ -1071,26 +1076,23 @@ class OmpRpcProcess {
       resolve: result.resolve,
       reject: result.reject,
       timer,
-      bytes: payload.byteLength,
       command: typeof command.type === "string" ? command.type : "unknown",
     });
+    this.queuedWrites.set(id, payload.byteLength);
     this.pendingWriteBytes += payload.byteLength;
     try {
       this.child.stdin.write(payload, (cause) => {
-        const pending = this.pending.get(id);
-        if (pending?.bytes) {
-          this.pendingWriteBytes -= pending.bytes;
-          pending.bytes = 0;
-        }
+        this.releaseQueuedWrite(id);
         if (cause) this.fail(new Error("OMP RPC input channel failed"));
       });
     } catch {
+      this.releaseQueuedWrite(id);
       this.fail(new Error("OMP RPC input channel failed"));
     }
     return { id, promise: result.promise };
   }
 
-  request(command: Record<string, unknown>, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
+  request(command: Record<string, unknown>, timeoutMs = this.requestTimeoutMs): Promise<unknown> {
     return this.startRequest(command, timeoutMs).promise;
   }
 
@@ -1367,8 +1369,14 @@ class OmpRpcProcess {
     if (!pending) return undefined;
     clearTimeout(pending.timer);
     this.pending.delete(id);
-    this.pendingWriteBytes -= pending.bytes;
     return pending;
+  }
+
+  private releaseQueuedWrite(id: string): void {
+    const bytes = this.queuedWrites.get(id);
+    if (bytes === undefined) return;
+    this.queuedWrites.delete(id);
+    this.pendingWriteBytes -= bytes;
   }
 
   private receiveDegradedAgentEnd(value: unknown, onlyUnsafePayload: boolean): boolean {
@@ -1590,6 +1598,7 @@ class OmpRpcProcess {
       pending.reject(error);
     }
     this.pending.clear();
+    this.queuedWrites.clear();
     this.pendingWriteBytes = 0;
   }
 
@@ -1715,6 +1724,7 @@ export class OmpRpcRuntime implements OmpRuntime {
       effectiveOptions,
       this.options.spawnProcess,
       this.options.terminateProcessTree,
+      this.options.requestTimeoutMs,
     );
     const abort = () => void process.close().catch(() => undefined);
     options.signal?.addEventListener("abort", abort, { once: true });

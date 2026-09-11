@@ -208,6 +208,49 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("does not release queued-write capacity when requests time out", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => Promise.resolve(true),
+      environment: TEST_RUNTIME_ENV,
+      requestTimeoutMs: 0,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const writeCallbacks: Array<() => void> = [];
+    Object.defineProperty(child.stdin, "write", {
+      configurable: true,
+      value: (_chunk: unknown, callback?: () => void) => {
+        if (callback) writeCallbacks.push(callback);
+        return false;
+      },
+    });
+    const largePrompt = "x".repeat(900_000);
+
+    for (let index = 0; index < 9; index += 1) {
+      await expect(session.prompt(largePrompt)).rejects.toThrow("request timed out");
+    }
+    await expect(session.prompt(largePrompt)).rejects.toThrow("too many pending requests");
+    expect(writeCallbacks).toHaveLength(9);
+    for (const callback of writeCallbacks.splice(0)) callback();
+    await expect(session.prompt(largePrompt)).rejects.toThrow("request timed out");
+
+    child.close();
+    await session.close();
+  });
+
   test("accepts image stream events and blocked todos without breaking later frames", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
@@ -1210,6 +1253,51 @@ describe("OMP RPC transport", () => {
     cleanup.resolve(true);
     await closing;
     expect(cleanedPids).toEqual([child.pid]);
+  });
+
+  test("fails pending work and starts cleanup when stdout ends before process exit", async () => {
+    const child = new FakeRpcChild();
+    const cleanup = Promise.withResolvers<boolean>();
+    const cleanedPids: number[] = [];
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree(pid) {
+        cleanedPids.push(pid);
+        return cleanup.promise;
+      },
+      environment: TEST_RUNTIME_ENV,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const observed: OmpRpcEvent[] = [];
+    session.onEvent((event) => observed.push(event));
+    const pending = session.getState();
+    const failure = nextEvent((listener) => session.onEvent(listener));
+
+    child.stdout.end();
+
+    await expect(pending).rejects.toThrow("output channel closed");
+    await expect(failure).resolves.toEqual({
+      type: "process_exit",
+      error: "OMP RPC output channel closed",
+    });
+    expect(cleanedPids).toEqual([child.pid]);
+    child.close(1);
+    cleanup.resolve(true);
+    await session.close();
+    expect(cleanedPids).toEqual([child.pid]);
+    expect(observed.filter((event) => event.type === "process_exit")).toHaveLength(1);
   });
 
   test("surfaces unverified process-tree cleanup", async () => {

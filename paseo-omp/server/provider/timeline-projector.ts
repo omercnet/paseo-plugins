@@ -23,6 +23,7 @@ type StreamBlockKind = "assistant_message" | "reasoning";
 type StreamBlockSnapshot = {
   kind: StreamBlockKind;
   text: string;
+  publishedText?: string;
 };
 
 type StreamSnapshot = {
@@ -39,6 +40,7 @@ type ToolSnapshot = {
   input: JsonValue;
   output: JsonValue;
   retainedBytes: number;
+  unsafePartialOutput: boolean;
 };
 
 export interface OmpTimelineScheduler {
@@ -88,6 +90,7 @@ export class OmpTimelineProjector {
   private userSequence = 0;
   private activeToolBytes = 0;
   private commandText = "";
+  private commandPublishedText = "";
   private closed = false;
 
   constructor(
@@ -160,6 +163,7 @@ export class OmpTimelineProjector {
           input,
           output: null,
           retainedBytes,
+          unsafePartialOutput: previous?.unsafePartialOutput ?? false,
         };
         this.activeToolBytes += retainedBytes - (previous?.retainedBytes ?? 0);
         this.tools.set(event.toolCallId, snapshot);
@@ -169,6 +173,10 @@ export class OmpTimelineProjector {
       case "tool_execution_update": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
+        if (previous.unsafePartialOutput || this.dataFilter.hasUnsafeStreamSuffix(event.partialResult)) {
+          this.tools.set(event.toolCallId, { ...previous, unsafePartialOutput: true });
+          return;
+        }
         const output = this.dataFilter.json(
           event.partialResult,
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
@@ -188,11 +196,13 @@ export class OmpTimelineProjector {
       case "tool_execution_end": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
-        const output = this.dataFilter.json(
-          event.result,
-          MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
-          MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
-        );
+        const output = previous.unsafePartialOutput
+          ? "<redacted>"
+          : this.dataFilter.json(
+              event.result,
+              MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+              MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+            );
         const snapshot: ToolSnapshot = {
           ...previous,
           output,
@@ -212,12 +222,7 @@ export class OmpTimelineProjector {
         const next = `${this.commandText}${event.text}`;
         if (utf8Bytes(next) > MAX_STREAM_TEXT_LENGTH) return;
         this.commandText = next;
-        this.publish({
-          type: "assistant_message",
-          id: `omp:command:${turnId}`,
-          messageId: `omp:command:${turnId}`,
-          text: this.dataFilter.text(this.commandText),
-        });
+        this.publishCommand(turnId, false);
         return;
       }
     }
@@ -291,19 +296,22 @@ export class OmpTimelineProjector {
     for (const contentIndex of indexes) {
       const block = stream.blocks.get(contentIndex);
       if (!block?.text) continue;
-      const publicText = this.dataFilter.text(block.text);
+      const publicText = this.dataFilter.streamText(block.text, finalizeFallback);
+      if (publicText.pending) stream.dirtyBlocks.add(contentIndex);
+      if (!publicText.text || block.publishedText === publicText.text) continue;
       const suffix = block.kind === "reasoning" ? "reasoning" : "text";
       const id = `${stream.messageId}:content:${contentIndex}:${suffix}`;
       if (block.kind === "reasoning") {
-        this.publish({ type: "reasoning", id, text: publicText });
+        this.publish({ type: "reasoning", id, text: publicText.text });
       } else {
         this.publish({
           type: "assistant_message",
           id,
           messageId: stream.messageId,
-          text: publicText,
+          text: publicText.text,
         });
       }
+      block.publishedText = publicText.text;
       stream.published = true;
     }
   }
@@ -311,6 +319,7 @@ export class OmpTimelineProjector {
   finishTurn(turnId: string): void {
     if (this.currentTurnId !== turnId) return;
     this.flush(true);
+    this.publishCommand(turnId, true);
     this.stream = null;
     this.activeToolBytes = 0;
     this.tools.clear();
@@ -323,6 +332,7 @@ export class OmpTimelineProjector {
 
   close(): void {
     this.flush(true);
+    if (this.currentTurnId) this.publishCommand(this.currentTurnId, true);
     this.closed = true;
     this.clearFlushTimer();
     this.stream = null;
@@ -336,6 +346,7 @@ export class OmpTimelineProjector {
     this.currentTurnId = turnId;
     this.assistantSequence = 0;
     this.commandText = "";
+    this.commandPublishedText = "";
   }
 
   private beginStream(message: OmpMessage, turnId: string): StreamSnapshot | null {
@@ -457,7 +468,10 @@ export class OmpTimelineProjector {
     }
     const previous = stream.blocks.get(contentIndex);
     if (previous?.kind === snapshot.kind && previous.text === snapshot.text) return;
-    stream.blocks.set(contentIndex, snapshot);
+    stream.blocks.set(contentIndex, {
+      ...snapshot,
+      ...(previous?.kind === snapshot.kind ? { publishedText: previous.publishedText } : {}),
+    });
     stream.dirtyBlocks.add(contentIndex);
   }
 
@@ -467,6 +481,19 @@ export class OmpTimelineProjector {
       contentIndex >= 0 &&
       contentIndex < MAX_STREAM_CONTENT_BLOCKS
     );
+  }
+
+  private publishCommand(turnId: string, final: boolean): void {
+    if (!this.commandText) return;
+    const publicText = this.dataFilter.streamText(this.commandText, final).text;
+    if (!publicText || publicText === this.commandPublishedText) return;
+    this.commandPublishedText = publicText;
+    this.publish({
+      type: "assistant_message",
+      id: `omp:command:${turnId}`,
+      messageId: `omp:command:${turnId}`,
+      text: publicText,
+    });
   }
 
   private scheduleFlush(): void {
