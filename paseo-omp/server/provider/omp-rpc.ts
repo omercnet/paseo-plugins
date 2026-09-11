@@ -473,15 +473,11 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
   const agentDir = env.PI_CODING_AGENT_DIR ?? join(home, env.PI_CONFIG_DIR ?? ".omp", "agent");
   const paths = [join(agentDir, "mcp.json"), join(cwd, env.PI_CONFIG_DIR ?? ".omp", "mcp.json")];
   const secrets: string[] = [];
-  const credentialKey = /(?:authorization|cookie|credential|api.?key|token|secret|password)/iu;
   const collectStrings = (root: unknown) => {
     const stack: unknown[] = [root];
     while (stack.length > 0) {
       const value = stack.pop();
       if (typeof value === "string") {
-        if (value.length > 0 && utf8Bytes(value) < 4) {
-          throw new OmpPublicError("OMP MCP credentials cannot be safely redacted");
-        }
         if (value.length > 0) secrets.push(value);
       } else if (Array.isArray(value)) {
         if (value.length > MAX_ARRAY_ITEMS) {
@@ -490,10 +486,7 @@ function collectAmbientMcpSecrets(cwd: string, env: NodeJS.ProcessEnv): string[]
         for (let index = value.length - 1; index >= 0; index -= 1) stack.push(value[index]);
       } else if (value && typeof value === "object") {
         for (const key in value) {
-          if (!Object.hasOwn(value, key)) continue;
-          const child = (value as Record<string, unknown>)[key];
-          if (credentialKey.test(key)) collectStrings(child);
-          else if (child && typeof child === "object") stack.push(child);
+          if (Object.hasOwn(value, key)) stack.push((value as Record<string, unknown>)[key]);
         }
       }
     }

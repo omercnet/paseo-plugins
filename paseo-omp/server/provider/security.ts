@@ -138,6 +138,7 @@ export class OmpPublicDataFilter {
   private readonly sensitiveValueSet = new Set<string>();
   private readonly sensitiveValues: string[] = [];
   private sensitiveValueBytes = 0;
+  private suppressAll = false;
 
   constructor(values: Iterable<string> = []) {
     this.addSensitiveValues(values);
@@ -152,7 +153,7 @@ export class OmpPublicDataFilter {
       addedBytes += utf8Bytes(value);
     }
     if (
-      this.sensitiveValues.length + additions.length > MAX_SENSITIVE_VALUES ||
+      this.sensitiveValueSet.size + additions.length > MAX_SENSITIVE_VALUES ||
       this.sensitiveValueBytes + addedBytes > MAX_SENSITIVE_VALUE_BYTES
     ) {
       throw new Error("OMP sensitive-value redaction budget exceeded");
@@ -161,6 +162,10 @@ export class OmpPublicDataFilter {
     for (const value of additions) {
       this.sensitiveValueSet.add(value);
       this.sensitiveValueBytes += utf8Bytes(value);
+      if (utf8Bytes(value) < 4) {
+        this.suppressAll = true;
+        continue;
+      }
       const index = this.sensitiveValues.findIndex((existing) => existing.length < value.length);
       if (index < 0) this.sensitiveValues.push(value);
       else this.sensitiveValues.splice(index, 0, value);
@@ -168,6 +173,7 @@ export class OmpPublicDataFilter {
   }
 
   text(input: string, maxBytes = MAX_PUBLIC_STRING_BYTES): string {
+    if (this.suppressAll) return REDACTED;
     let output = input.replace(AUTHORIZATION_CREDENTIAL, `Authorization: ${REDACTED}`);
     output = output.replace(BEARER_CREDENTIAL, `Bearer ${REDACTED}`);
     for (const value of this.sensitiveValues) output = output.split(value).join(REDACTED);

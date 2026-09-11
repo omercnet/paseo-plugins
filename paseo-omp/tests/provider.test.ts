@@ -216,6 +216,7 @@ class ManualScheduler implements OmpTimelineScheduler {
 
 class FakeOmpSession implements OmpRuntimeSession {
   readonly listeners = new Set<(event: OmpRpcEvent) => void>();
+  redactionValues: readonly string[] = [];
   readonly prompts: string[] = [];
   readonly steers: string[] = [];
   promptGate: Promise<void> | null = null;
@@ -354,6 +355,7 @@ class FakeOmpRuntime implements OmpRuntime {
   commandDiscoveryError: Error | null = null;
   availableCommands: Array<{ name: string; aliases?: string[] }> = [{ name: "help" }];
   availableModels: OmpModel[] = [MODEL, ALTERNATE_MODEL];
+  redactionValues: readonly string[] = [];
   async startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
     this.starts.push(options);
     this.startObserved?.();
@@ -364,6 +366,7 @@ class FakeOmpRuntime implements OmpRuntime {
       ...command,
       ...(command.aliases ? { aliases: [...command.aliases] } : {}),
     }));
+    session.redactionValues = this.redactionValues;
     session.availableModels = this.availableModels.map((model) => ({ ...model }));
     session.nativeSessionId = this.sessionIds.shift() ?? session.nativeSessionId;
     if (this.nextModel) {
@@ -3264,7 +3267,9 @@ describe("OMP direct provider", () => {
   });
 
   test("redacts provider-owned timeline payloads and native identifiers", async () => {
-    const { connection, events, runtime, scheduler } = await createHarness();
+    const runtime = new FakeOmpRuntime();
+    runtime.redactionValues = ["license-secret", "custom-secret"];
+    const { connection, events, scheduler } = await createHarness(runtime);
     await openSession(connection, events, "redacted-open", "session-1", {
       MY_RUNTIME_SECRET: "credential-value-1234",
     });
@@ -3308,6 +3313,8 @@ describe("OMP direct provider", () => {
       level: "warning",
       message: "Authorization: Basic basic-token-not-from-env",
     });
+    session.emit({ type: "notice", level: "warning", message: "license-secret" });
+    session.emit({ type: "notice", level: "warning", message: "custom-secret" });
     session.emit({ type: "command_output", text: "credential-value-" });
     session.emit({ type: "command_output", text: "1234" });
     for (const [type, contentIndex, first, second] of [
@@ -3364,6 +3371,8 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("provider-internal-response-id");
     expect(visible).not.toContain("token-not-from-env");
     expect(visible).not.toContain("basic-token-not-from-env");
+    expect(visible).not.toContain("license-secret");
+    expect(visible).not.toContain("custom-secret");
     expect(visible).not.toContain("basic-equals-secret");
     expect(visible).not.toContain("token-scheme-secret");
     expect(visible).not.toContain("digest-nonce");

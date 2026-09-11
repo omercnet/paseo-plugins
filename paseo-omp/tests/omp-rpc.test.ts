@@ -843,12 +843,15 @@ describe("OMP RPC transport", () => {
           remote: {
             type: "http",
             url: "https://user%40name:pass%20word@example.test/mcp?token=url%2Dsecret",
-            headers: { Authorization: "Bearer header-secret" },
+            headers: {
+              Authorization: "Bearer header-secret",
+              "X-License": "license-secret",
+            },
           },
           local: {
             type: "stdio",
             command: "server",
-            env: { API_KEY: "env-secret", DEBUG: "1" },
+            env: { API_KEY: "env-secret", CUSTOM_VALUE: "custom-secret", DEBUG: "1" },
           },
         },
       }),
@@ -866,9 +869,11 @@ describe("OMP RPC transport", () => {
           "url-secret",
           "Bearer header-secret",
           "env-secret",
+          "license-secret",
+          "custom-secret",
         ]),
       );
-      expect(request.sensitiveValues).not.toContain("1");
+      expect(request.sensitiveValues).toContain("1");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
