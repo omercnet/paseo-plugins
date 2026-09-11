@@ -235,13 +235,10 @@ export class OmpNativeSessionReservations {
     if (this.openingOwner && this.openingOwner !== owner) {
       throw new OmpPublicError("OMP persistent session registration is in progress");
     }
-    if (this.unknownQuarantines.size > 0 || this.overflowQuarantines > 0) {
+    if (this.hasQuarantine()) {
       throw new OmpPublicError("OMP native session cleanup quarantine is active");
     }
     const existing = this.reservations.get(nativeSessionId);
-    if (existing?.quarantined) {
-      throw new OmpPublicError("OMP native session cleanup is unresolved");
-    }
     if (existing) {
       if (existing.owner !== owner) throw new OmpPublicError("OMP native session is already open");
       return;

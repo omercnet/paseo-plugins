@@ -1651,14 +1651,20 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "tombstone-contender-open",
     );
     expect(rejected).toEqual(
-      expect.objectContaining({ error: { message: "OMP native session cleanup is unresolved" } }),
+      expect.objectContaining({
+        error: { message: "OMP native session cleanup quarantine is active" },
+      }),
     );
     expect(runtime.starts).toHaveLength(1);
     await connection.close();
   });
-  test("releases provider-global cleanup quarantine after verified cleanup", async () => {
+  test("blocks a different resume until provider-global cleanup is verified", async () => {
+    const otherNativeSessionId = "01a08f6b-8da9-72cb-9080-fc50139bdfcb";
     const runtime = new FakeOmpRuntime();
-    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.descriptors.push(
+      { id: NATIVE_SESSION_ID, cwd: "/repo" },
+      { id: otherNativeSessionId, cwd: "/repo" },
+    );
     const cleanup = Promise.withResolvers<void>();
     runtime.nextHistoryError = new Error("history failed");
     runtime.nextCloseError = new OmpCleanupFailure("cleanup unresolved", cleanup.promise);
@@ -1674,7 +1680,12 @@ describe("OMP direct provider", () => {
     };
     const first = await connect();
     const second = await connect();
-    const openResume = (connection: ProviderConnection, requestId: string, sessionId: string) =>
+    const openResume = (
+      connection: ProviderConnection,
+      requestId: string,
+      sessionId: string,
+      nativeSessionId: string,
+    ) =>
       connection.send({
         type: "session.open",
         requestId,
@@ -1687,10 +1698,15 @@ describe("OMP direct provider", () => {
           settings: {},
           persist: true,
         },
-        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        persistence: { version: 1, data: { sessionId: nativeSessionId } },
         history: "replay",
       });
-    await openResume(first.connection, "failed-cleanup-first", "failed-cleanup-owner");
+    await openResume(
+      first.connection,
+      "failed-cleanup-first",
+      "failed-cleanup-owner",
+      NATIVE_SESSION_ID,
+    );
     await first.events.waitFor(
       (event) => event.type === "request.failed" && event.requestId === "failed-cleanup-first",
     );
@@ -1709,13 +1725,18 @@ describe("OMP direct provider", () => {
         error: { message: "OMP native session cleanup quarantine is active" },
       }),
     );
-    await openResume(second.connection, "failed-cleanup-second", "failed-cleanup-contender");
+    await openResume(
+      second.connection,
+      "different-resume-blocked",
+      "different-resume-contender",
+      otherNativeSessionId,
+    );
     const resumeFailure = await second.events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "failed-cleanup-second",
+      (event) => event.type === "request.failed" && event.requestId === "different-resume-blocked",
     );
     expect(resumeFailure).toEqual(
       expect.objectContaining({
-        error: { message: "OMP native session cleanup is unresolved" },
+        error: { message: "OMP native session cleanup quarantine is active" },
       }),
     );
     expect(runtime.starts).toHaveLength(1);
@@ -1731,9 +1752,14 @@ describe("OMP direct provider", () => {
     await second.events.waitFor(
       (event) => event.type === "sessions" && event.requestId === "released-list",
     );
-    await openResume(second.connection, "released-resume", "released-session");
+    await openResume(
+      second.connection,
+      "different-resume-released",
+      "different-resume-session",
+      otherNativeSessionId,
+    );
     await second.events.waitFor(
-      (event) => event.type === "session.ready" && event.requestId === "released-resume",
+      (event) => event.type === "session.ready" && event.requestId === "different-resume-released",
     );
     expect(runtime.starts).toHaveLength(2);
     await second.connection.close();
@@ -1741,15 +1767,19 @@ describe("OMP direct provider", () => {
 
   test("caps provider-global cleanup quarantine growth", () => {
     const reservations = new OmpNativeSessionReservations();
-    for (let index = 0; index < 256; index += 1) {
-      const owner = Symbol(`quarantine-${index}`);
-      const nativeSessionId = `quarantined-native-${index}`;
+    const entries = Array.from({ length: 256 }, (_, index) => ({
+      owner: Symbol(`quarantine-${index}`),
+      nativeSessionId: `quarantined-native-${index}`,
+    }));
+    for (const { nativeSessionId, owner } of entries) {
       reservations.reserve(nativeSessionId, owner);
-      reservations.quarantine(nativeSessionId, owner);
     }
     expect(() => reservations.reserve("quarantine-overflow", Symbol("overflow"))).toThrow(
       "OMP persistent session registry limit reached",
     );
+    for (const { nativeSessionId, owner } of entries) {
+      reservations.quarantine(nativeSessionId, owner);
+    }
     expect(() => reservations.assertListable()).toThrow(
       "OMP native session cleanup quarantine is active",
     );
