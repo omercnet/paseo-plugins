@@ -280,10 +280,12 @@ export class OmpProviderSession {
   private configRevision = 0;
   private recoveryUsesNativeConfig = false;
   private activeAbort: PendingAbort | null = null;
+  private usageEpoch = 0;
   private usageSample: {
     turn: ActiveTurn;
     generation: number;
     runtime: OmpRuntimeSession;
+    epoch: number;
     promise: Promise<OmpSessionState | undefined>;
   } | null = null;
   private activeCompaction: ActiveCompaction | null = null;
@@ -512,28 +514,50 @@ export class OmpProviderSession {
     return Object.keys(usage).length > 0 ? usage : undefined;
   }
 
-  private publishUsageSnapshot(turn: ActiveTurn): Promise<OmpSessionState | undefined> {
+  private ownsUsageSample(
+    turn: ActiveTurn,
+    generation: number,
+    runtime: OmpRuntimeSession,
+  ): boolean {
+    return (
+      !this.closed &&
+      !this.runtimeDead &&
+      !turn.terminal &&
+      generation === this.generation &&
+      runtime === this.runtime &&
+      this.activeTurn === turn
+    );
+  }
+
+  private publishUsageSnapshot(
+    turn: ActiveTurn,
+    minimumEpoch = this.usageEpoch,
+  ): Promise<OmpSessionState | undefined> {
     const generation = turn.generation;
     const runtime = this.runtime;
+    if (!this.ownsUsageSample(turn, generation, runtime)) return Promise.resolve(undefined);
     const current = this.usageSample;
     if (current) {
       if (
         current.turn === turn &&
         current.generation === generation &&
-        current.runtime === runtime
+        current.runtime === runtime &&
+        current.epoch >= minimumEpoch
       ) {
         return current.promise;
       }
-      return current.promise.then(() => this.publishUsageSnapshot(turn));
+      return current.promise.then(() => {
+        if (!this.ownsUsageSample(turn, generation, runtime)) return undefined;
+        return this.publishUsageSnapshot(turn, minimumEpoch);
+      });
     }
+    const epoch = this.usageEpoch;
     const promise = Promise.allSettled([runtime.getState(), runtime.getSessionStats()]).then(
       ([stateResult, statsResult]) => {
         if (
-          this.closed ||
-          this.runtimeDead ||
-          generation !== this.generation ||
-          runtime !== this.runtime ||
-          this.activeTurn !== turn
+          !this.ownsUsageSample(turn, generation, runtime) ||
+          epoch !== this.usageEpoch ||
+          epoch < minimumEpoch
         ) {
           return undefined;
         }
@@ -547,7 +571,7 @@ export class OmpProviderSession {
         return state;
       },
     );
-    this.usageSample = { turn, generation, runtime, promise };
+    this.usageSample = { turn, generation, runtime, epoch, promise };
     void promise.finally(() => {
       if (this.usageSample?.promise === promise) this.usageSample = null;
     });
@@ -636,6 +660,10 @@ export class OmpProviderSession {
     if (!operation) return;
     this.activeCompaction = null;
     this.projector.flush(true);
+    if (state === "completed") {
+      this.usageEpoch += 1;
+      this.lastUsage = null;
+    }
     if (state !== "completed") {
       const defaultMessage =
         state === "failed"

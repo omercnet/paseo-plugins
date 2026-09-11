@@ -288,6 +288,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   stateError: Error | null = null;
   usageAvailable = false;
   stateContextNull = false;
+  captureUsageOnRequest = false;
   stateLookups = 0;
   statsGate: Promise<void> | null = null;
   statsError: Error | null = null;
@@ -322,28 +323,49 @@ class FakeOmpSession implements OmpRuntimeSession {
     this.activeStateLookups += 1;
     this.maxActiveStateLookups = Math.max(this.maxActiveStateLookups, this.activeStateLookups);
     this.stateObserved?.();
-    const state = {
+    const requested = {
       model: this.stateModelOverride !== undefined ? this.stateModelOverride : this.currentModel,
       thinkingLevel: this.thinkingLevel,
       isStreaming: this.isStreaming,
       isCompacting: this.isCompacting,
-      sessionId: this.nativeSessionId,
-      ...(this.usageAvailable
-        ? {
-            contextUsage: this.stateContextNull
-              ? { tokens: null, contextWindow: null, percent: null }
-              : {
-                  tokens: this.contextTokens,
-                  contextWindow: this.contextWindow,
-                  percent: (this.contextTokens / this.contextWindow) * 100,
-                },
-          }
-        : {}),
+      contextTokens: this.contextTokens,
+      contextWindow: this.contextWindow,
+      usageAvailable: this.usageAvailable,
+      stateContextNull: this.stateContextNull,
     };
     try {
       if (this.stateGate) await this.stateGate;
       if (this.stateError) throw this.stateError;
-      return state;
+      const value = this.captureUsageOnRequest
+        ? requested
+        : {
+            model: this.stateModelOverride !== undefined ? this.stateModelOverride : this.currentModel,
+            thinkingLevel: this.thinkingLevel,
+            isStreaming: this.isStreaming,
+            isCompacting: this.isCompacting,
+            contextTokens: this.contextTokens,
+            contextWindow: this.contextWindow,
+            usageAvailable: this.usageAvailable,
+            stateContextNull: this.stateContextNull,
+          };
+      return {
+        model: value.model,
+        thinkingLevel: value.thinkingLevel,
+        isStreaming: value.isStreaming,
+        isCompacting: value.isCompacting,
+        sessionId: this.nativeSessionId,
+        ...(value.usageAvailable
+          ? {
+              contextUsage: value.stateContextNull
+                ? { tokens: null, contextWindow: null, percent: null }
+                : {
+                    tokens: value.contextTokens,
+                    contextWindow: value.contextWindow,
+                    percent: (value.contextTokens / value.contextWindow) * 100,
+                  },
+            }
+          : {}),
+      };
     } finally {
       this.activeStateLookups -= 1;
     }
@@ -353,18 +375,42 @@ class FakeOmpSession implements OmpRuntimeSession {
     this.statsLookups += 1;
     this.activeStatsLookups += 1;
     this.maxActiveStatsLookups = Math.max(this.maxActiveStatsLookups, this.activeStatsLookups);
+    const requested = {
+      usageAvailable: this.usageAvailable,
+      inputTokens: this.inputTokens,
+      outputTokens: this.outputTokens,
+      cachedInputTokens: this.cachedInputTokens,
+      totalCostUsd: this.totalCostUsd,
+      contextTokens: this.contextTokens,
+      contextWindow: this.contextWindow,
+    };
     try {
-      if (!this.usageAvailable) throw new Error("usage unavailable");
       if (this.statsGate) await this.statsGate;
+      const value = this.captureUsageOnRequest
+        ? requested
+        : {
+            usageAvailable: this.usageAvailable,
+            inputTokens: this.inputTokens,
+            outputTokens: this.outputTokens,
+            cachedInputTokens: this.cachedInputTokens,
+            totalCostUsd: this.totalCostUsd,
+            contextTokens: this.contextTokens,
+            contextWindow: this.contextWindow,
+          };
+      if (!value.usageAvailable) throw new Error("usage unavailable");
       if (this.statsError) throw this.statsError;
       return {
         tokens: {
-          input: this.inputTokens,
-          output: this.outputTokens,
-          cacheRead: this.cachedInputTokens,
+          input: value.inputTokens,
+          output: value.outputTokens,
+          cacheRead: value.cachedInputTokens,
         },
-        cost: this.totalCostUsd,
-        contextUsage: { tokens: this.contextTokens, contextWindow: this.contextWindow, percent: 0 },
+        cost: value.totalCostUsd,
+        contextUsage: {
+          tokens: value.contextTokens,
+          contextWindow: value.contextWindow,
+          percent: 0,
+        },
       };
     } finally {
       this.activeStatsLookups -= 1;
@@ -4148,6 +4194,124 @@ describe("OMP direct provider", () => {
     await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    await connection.close();
+  });
+  test("takes a fresh usage sample after split compaction responses", async () => {
+    const runtime = new FakeOmpRuntime();
+    const compact = Promise.withResolvers<void>();
+    const state = Promise.withResolvers<void>();
+    const stats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    const { connection, events } = await createHarness(runtime);
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.usageAvailable = true;
+    session.captureUsageOnRequest = true;
+    session.compactGate = compact.promise;
+    session.stateGate = state.promise;
+    session.statsGate = stats.promise;
+    session.stateObserved = observed.resolve;
+    session.contextTokens = 9_000;
+    session.inputTokens = 8_000;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "split-usage", "/compact"));
+    await observed.promise;
+
+    session.contextTokens = 900;
+    session.inputTokens = 850;
+    session.outputTokens = 75;
+    session.totalCostUsd = 0.75;
+    compact.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    state.resolve();
+    stats.resolve();
+
+    const freshUsage = await events.waitFor(
+      (event) =>
+        event.type === "session.usage" &&
+        event.turnId === turnId &&
+        event.usage.contextWindowUsedTokens === 900,
+    );
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    expect(events.indexOf(freshUsage)).toBeLessThan(events.indexOf(terminal));
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.usage" &&
+          event.turnId === turnId &&
+          event.usage.contextWindowUsedTokens === 9_000,
+      ),
+    ).toBe(false);
+    if (freshUsage.type !== "session.usage") throw new Error("Expected fresh usage event");
+    expect(freshUsage.usage).toEqual(
+      expect.objectContaining({
+        inputTokens: 850,
+        outputTokens: 75,
+        totalCostUsd: 0.75,
+        contextWindowUsedTokens: 900,
+      }),
+    );
+    expect(session.stateLookups).toBeGreaterThanOrEqual(3);
+    await connection.close();
+  });
+
+  test("drops obsolete deferred samples before a later turn", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const state = Promise.withResolvers<void>();
+    const stats = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.usageAvailable = true;
+    session.stateGate = state.promise;
+    session.statsGate = stats.promise;
+    session.stateObserved = observed.resolve;
+    const firstTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-a", "first"));
+    await observed.promise;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await scheduler.flush(5_000);
+    await scheduler.flush(250);
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === firstTurnId &&
+        event.state === "completed",
+    );
+
+    const secondTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-b", "second"));
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await scheduler.flush(5_000);
+    await scheduler.flush(250);
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === secondTurnId &&
+        event.state === "completed",
+    );
+
+    const thirdTurnId = turnIdFrom(await startPrompt(connection, events, "deferred-c", "third"));
+    session.contextTokens = 333;
+    state.resolve();
+    stats.resolve();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.usage" &&
+        event.turnId === thirdTurnId &&
+        event.usage.contextWindowUsedTokens === 333,
+    );
+    expect(session.stateLookups).toBe(3);
+    expect(session.statsLookups).toBe(2);
+
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === thirdTurnId &&
+        event.state === "completed",
     );
     await connection.close();
   });
