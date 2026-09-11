@@ -1,0 +1,4 @@
+{
+  "id": "gas-city",
+  "requirements": { "paseo": "^0.8.0" }
+}
