@@ -190,6 +190,7 @@ class ManualScheduler implements OmpTimelineScheduler {
   private nextId = 1;
   private readonly callbacks = new Map<number, () => void | Promise<void>>();
   readonly delays: number[] = [];
+  clearError: Error | null = null;
 
   set(callback: () => void | Promise<void>, delayMs: number): number {
     const id = this.nextId;
@@ -201,6 +202,11 @@ class ManualScheduler implements OmpTimelineScheduler {
 
   clear(handle: unknown): void {
     if (typeof handle === "number") this.callbacks.delete(handle);
+    if (this.clearError) {
+      const error = this.clearError;
+      this.clearError = null;
+      throw error;
+    }
   }
 
   runPending(): Promise<void>[] {
@@ -325,7 +331,14 @@ class FakeOmpSession implements OmpRuntimeSession {
     this.modelChangeObserved?.();
     if (this.modelChangeGate) await this.modelChangeGate;
     if (this.modelChangeError) throw this.modelChangeError;
-    if (this.applyModelChanges) this.currentModel = model;
+    if (this.applyModelChanges) {
+      this.currentModel = model;
+      const efforts = model.thinking?.efforts ?? [];
+      if (!this.thinkingLevel || !efforts.includes(this.thinkingLevel)) {
+        const defaultLevel = model.thinking?.defaultLevel ?? "";
+        this.thinkingLevel = isThinkingLevel(defaultLevel) ? defaultLevel : undefined;
+      }
+    }
     return model;
   }
 
@@ -645,6 +658,7 @@ describe("OMP direct provider", () => {
     const publicModelId = catalog.catalog.models[0]?.id;
     if (!publicModelId) throw new Error("Expected projected model");
     runtime.nextModel = maliciousModel;
+    runtime.omitNextThinkingLevel = true;
     await openSession(
       connection,
       events,
@@ -1092,6 +1106,35 @@ describe("OMP direct provider", () => {
     );
     await connection.close();
   });
+  test("clears a detached refresh after scheduler cleanup throws", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineLookups = session.stateLookups;
+    scheduler.clearError = new Error("timer cleanup failed");
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+
+    const fallback = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    session.emit({ type: "model_changed" });
+    await fallback;
+    expect(session.stateLookups).toBe(baselineLookups + 2);
+
+    session.currentModel = MODEL;
+    session.thinkingLevel = "low";
+    const reverted = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "low",
+    );
+    session.emit({ type: "model_changed" });
+    await reverted;
+    await connection.close();
+  });
   test("preserves a deferred native refresh across rejected configure validation", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -1122,6 +1165,8 @@ describe("OMP direct provider", () => {
     session.stateGate = null;
     gate.resolve();
     await refreshed;
+    await Promise.resolve();
+    await Promise.resolve();
 
     session.emit({ type: "process_exit", error: "restart after native change" });
     runtime.nextModel = ALTERNATE_MODEL;
@@ -1136,7 +1181,68 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("skips failed and timed-out config refreshes without killing an active turn", async () => {
+  test("recovers from native state after fallback immediately precedes process exit", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.stateGate = gate.promise;
+    session.stateObserved = observed.resolve;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+
+    session.emit({
+      type: "retry_fallback_succeeded",
+      model: "openai/gpt-5.4:high",
+      role: "default",
+    });
+    await observed.promise;
+    session.emit({ type: "process_exit", error: "fallback runtime exited" });
+    session.stateGate = null;
+    gate.resolve();
+    runtime.nextModel = ALTERNATE_MODEL;
+    runtime.nextThinkingLevel = "high";
+
+    const turnId = turnIdFrom(await startPrompt(connection, events, "fallback-exit", "continue"));
+    expect(runtime.starts[1]).toEqual(
+      expect.objectContaining({
+        model: undefined,
+        thinkingOption: undefined,
+        resumeSessionId: "native-session",
+      }),
+    );
+    expect(events.findLast((event) => event.type === "session.config")).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: ALTERNATE_MODEL_PUBLIC_ID,
+          thinkingOption: "high",
+        }),
+      }),
+    );
+    await finishTurn(events, sessionAt(runtime, 1), turnId);
+    await connection.close();
+  });
+
+  test("invalidates runtime state with a thinking level outside the model catalog", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const baselineConfigs = events.filter((event) => event.type === "session.config").length;
+    const closed = Promise.withResolvers<void>();
+    session.closeObserved = closed.resolve;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "medium";
+
+    session.emit({ type: "model_changed" });
+    await closed.promise;
+
+    expect(session.closes).toBe(1);
+    expect(events.filter((event) => event.type === "session.config")).toHaveLength(baselineConfigs);
+    await connection.close();
+  });
+
+  test("retries failed and timed-out config refreshes without killing an active turn", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -1149,13 +1255,31 @@ describe("OMP direct provider", () => {
     expect(session.closes).toBe(0);
 
     session.stateError = null;
+    session.currentModel = ALTERNATE_MODEL;
+    session.thinkingLevel = "high";
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.delays.at(-1)).toBe(250);
+    const afterRejection = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
+    await scheduler.flush();
+    await afterRejection;
+
     const gate = Promise.withResolvers<void>();
     const observed = Promise.withResolvers<void>();
     session.stateGate = gate.promise;
     session.stateObserved = observed.resolve;
+    session.currentModel = MODEL;
+    session.thinkingLevel = "low";
     session.emit({ type: "model_changed" });
     await observed.promise;
     await scheduler.flush();
+    const timedOutLookups = session.stateLookups;
+    for (let index = 0; index < 100; index += 1) {
+      session.emit({ type: "model_changed" });
+    }
+    expect(session.stateLookups).toBe(timedOutLookups);
 
     expect(session.closes).toBe(0);
     expect(
@@ -1165,20 +1289,19 @@ describe("OMP direct provider", () => {
       ),
     ).toBe(false);
 
+    const afterTimeout = events.waitFor(
+      (event) =>
+        event.type === "session.config" &&
+        event.config.model === MODEL_PUBLIC_ID &&
+        event.config.thinkingOption === "low",
+    );
     session.stateGate = null;
     gate.resolve();
-    session.currentModel = ALTERNATE_MODEL;
-    session.thinkingLevel = "high";
-    const refreshed = events.waitFor(
-      (event) =>
-        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
-    );
-    session.emit({
-      type: "retry_fallback_succeeded",
-      model: "openai/gpt-5.4:high",
-      role: "default",
-    });
-    await refreshed;
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    expect(scheduler.delays.at(-1)).toBe(250);
+    await scheduler.flush();
+    await afterTimeout;
+
     await finishTurn(events, session, turnId);
     await connection.close();
   });
@@ -1249,10 +1372,12 @@ describe("OMP direct provider", () => {
       changes: { model: ALTERNATE_MODEL_PUBLIC_ID },
     });
     await stateObserved.promise;
+    await Promise.resolve();
     const failure = events.waitFor(
       (event) =>
         event.type === "request.failed" && event.requestId === "configure-reconcile-timeout",
     );
+    expect(scheduler.delays.at(-1)).toBe(2_000);
     await scheduler.flush();
 
     await failure;

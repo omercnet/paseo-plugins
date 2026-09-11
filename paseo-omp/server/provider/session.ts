@@ -38,6 +38,7 @@ type SessionCloseInput = Extract<ProviderInput, { type: "session.close" }>;
 type Emit = (event: ProviderEvent) => void;
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
+const CONFIG_REFRESH_RETRY_MS = 250;
 const MAX_PROMPT_PARTS = 64;
 const MAX_PROMPT_TEXT_LENGTH = 1024 * 1024;
 const MAX_TRACKED_ENTRY_IDS = 1_024;
@@ -230,6 +231,7 @@ export class OmpProviderSession {
   private configRefreshDirty = false;
   private configMutationInFlight = false;
   private configRevision = 0;
+  private recoveryUsesNativeConfig = false;
   private activeAbort: PendingAbort | null = null;
 
   private constructor(
@@ -345,6 +347,12 @@ export class OmpProviderSession {
         !thinkingOptions.some((option) => option.id === input.config.thinkingOption)
       ) {
         throw new OmpPublicError("OMP thinking level is unavailable for the selected model");
+      }
+      if (
+        state.thinkingLevel &&
+        !thinkingOptions.some((option) => option.id === state.thinkingLevel)
+      ) {
+        throw new OmpPublicError("OMP runtime selected an unsupported thinking level");
       }
       const configState: ProviderConfigState = {
         ...(state.model ? { model: ompModelId(state.model) } : {}),
@@ -714,13 +722,22 @@ export class OmpProviderSession {
     const generation = this.generation;
     const refresh = this.refreshCommittedConfig(runtime, generation);
     this.configRefreshInFlight = refresh;
-    void refresh.then(() => {
+    const settleRefresh = (failed: boolean) => {
       if (this.configRefreshInFlight !== refresh) return;
+      if (failed) this.configRefreshDirty = true;
       this.configRefreshInFlight = null;
       if (this.configRefreshDirty && !this.closed && this.runtimeDead === null) {
-        this.scheduleCommittedConfigRefresh();
+        try {
+          this.scheduleCommittedConfigRefresh();
+        } catch {
+          this.configRefreshDirty = true;
+        }
       }
-    });
+    };
+    void refresh.then(
+      () => settleRefresh(false),
+      () => settleRefresh(true),
+    );
   }
 
   private async refreshCommittedConfig(
@@ -730,30 +747,51 @@ export class OmpProviderSession {
     do {
       this.configRefreshDirty = false;
       const revision = this.configRevision;
-      const state = await this.readRuntimeStateWithTimeout(runtime);
+      const state = await this.readRuntimeStateWithTimeout(runtime, true);
       if (!this.isCurrentRuntime(runtime, generation)) return;
       if (revision !== this.configRevision) {
         this.configRefreshDirty = true;
         return;
       }
+      let refreshFailed = state === undefined;
       if (state) {
         try {
           this.publishCommittedConfig(state, runtime, generation);
         } catch (error) {
-          if (error instanceof OmpCatalogEscape) this.handleRuntimeFailure(error.message);
-          return;
+          if (error instanceof OmpCatalogEscape) {
+            this.handleRuntimeFailure(error.message);
+            return;
+          }
+          refreshFailed = true;
         }
+      }
+      if (refreshFailed) {
+        this.configRefreshDirty = true;
+        const retry = Promise.withResolvers<void>();
+        const timer = this.scheduler.set(retry.resolve, CONFIG_REFRESH_RETRY_MS);
+        await retry.promise;
+        try {
+          this.scheduler.clear(timer);
+        } catch {
+          // The one-shot callback already fired; a cleanup failure must not wedge refreshes.
+        }
+        if (!this.isCurrentRuntime(runtime, generation)) return;
       }
     } while (this.configRefreshDirty && this.isCurrentRuntime(runtime, generation));
   }
 
   private async readRuntimeStateWithTimeout(
     runtime: OmpRuntimeSession,
+    awaitLateSettlement = false,
   ): Promise<OmpSessionState | undefined> {
-    const timeout = Promise.withResolvers<undefined>();
-    const timer = this.scheduler.set(() => timeout.resolve(undefined), AGENT_END_STATE_TIMEOUT_MS);
+    const stateRequest = runtime.getState();
+    const timeout = Promise.withResolvers<null>();
+    const timer = this.scheduler.set(() => timeout.resolve(null), AGENT_END_STATE_TIMEOUT_MS);
     try {
-      return await Promise.race([runtime.getState(), timeout.promise]);
+      const state = await Promise.race([stateRequest, timeout.promise]);
+      if (state) return state;
+      if (awaitLateSettlement) await stateRequest.catch(() => undefined);
+      return undefined;
     } catch {
       return undefined;
     } finally {
@@ -776,6 +814,12 @@ export class OmpProviderSession {
       throw new OmpCatalogEscape("OMP runtime selected an unadvertised model");
     }
     const thinkingOptions = thinkingForModel(advertisedModel);
+    if (
+      state.thinkingLevel &&
+      !thinkingOptions.some((option) => option.id === state.thinkingLevel)
+    ) {
+      throw new OmpCatalogEscape("OMP runtime selected an unsupported thinking level");
+    }
     const nextConfig: ProviderConfigState = {
       ...this.configState,
       ...(publicModelId ? { model: publicModelId } : { model: undefined }),
@@ -885,12 +929,14 @@ export class OmpProviderSession {
     if (!expectedSessionId) {
       throw new Error("OMP cannot recover because the original native session handle is missing");
     }
+    const recoverFromNativeConfig = this.recoveryUsesNativeConfig;
     await this.runtimeDisposal;
     if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
     let recovered: OmpRuntimeSession;
     try {
       recovered = await this.runtimeFactory.startSession({
         ...this.recoveryOptions,
+        ...(recoverFromNativeConfig ? { model: undefined, thinkingOption: undefined } : {}),
         resumeSessionId: expectedSessionId,
         signal: this.lifetime.signal,
       });
@@ -916,11 +962,20 @@ export class OmpProviderSession {
         );
       }
       const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
-      if (recoveredModel !== this.recoveryOptions.model) {
+      if (!recoverFromNativeConfig && recoveredModel !== this.recoveryOptions.model) {
         throw new Error("OMP recovered with a different model");
       }
-      if (state.model && !this.nativeModelsByPublicId.has(ompModelId(state.model))) {
+      const advertisedModel = state.model
+        ? this.nativeModelsByPublicId.get(ompModelId(state.model))
+        : undefined;
+      if (state.model && !advertisedModel) {
         throw new Error("OMP recovered with an unadvertised model");
+      }
+      if (
+        state.thinkingLevel &&
+        !thinkingForModel(advertisedModel).some((option) => option.id === state.thinkingLevel)
+      ) {
+        throw new Error("OMP recovered with an unsupported thinking level");
       }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
@@ -932,6 +987,7 @@ export class OmpProviderSession {
       if (!this.publishCommittedConfig(state, recovered, this.generation, true)) {
         throw new Error("OMP session changed while recovery configuration was pending");
       }
+      this.recoveryUsesNativeConfig = false;
     } catch (error) {
       this.runtimeDisposal = recovered.close();
       void this.runtimeDisposal.catch(() => undefined);
@@ -1496,6 +1552,8 @@ export class OmpProviderSession {
 
   private invalidateRuntime(message: string): void {
     if (this.closed || this.runtimeDead) return;
+    this.recoveryUsesNativeConfig ||=
+      this.configRefreshInFlight !== null || this.configRefreshDirty;
     this.generation += 1;
     this.runtimeDead = message;
     this.unsubscribe();
