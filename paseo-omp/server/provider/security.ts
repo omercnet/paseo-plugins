@@ -98,14 +98,19 @@ function replaceControlCharacters(value: string): string {
   return segmentStart === 0 ? value : output + value.slice(segmentStart);
 }
 
-/** Returns Infinity as soon as a depth, item, node, string, or cumulative byte limit is crossed. */
-export function boundedJsonBytes(
+export interface BoundedJsonMetrics {
+  bytes: number;
+  nodes: number;
+}
+
+/** Returns undefined as soon as a depth, item, node, string, or cumulative limit is crossed. */
+export function boundedJsonMetrics(
   value: unknown,
   maxBytes: number,
   maxItems = MAX_PUBLIC_COLLECTION_ITEMS,
   maxStringBytes = maxBytes,
   maxNodes = MAX_PUBLIC_NODES,
-): number {
+): BoundedJsonMetrics | undefined {
   const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
   let nodes = 0;
   let bytes = 0;
@@ -113,21 +118,19 @@ export function boundedJsonBytes(
     const current = stack.pop();
     if (!current) break;
     nodes += 1;
-    if (nodes > maxNodes || current.depth > MAX_PUBLIC_DEPTH) {
-      return Number.POSITIVE_INFINITY;
-    }
+    if (nodes > maxNodes || current.depth > MAX_PUBLIC_DEPTH) return;
     const item = current.value;
     if (item === null || typeof item === "boolean" || typeof item === "number") continue;
     if (typeof item === "string") {
       const itemBytes = utf8Bytes(item);
-      if (itemBytes > maxStringBytes) return Number.POSITIVE_INFINITY;
+      if (itemBytes > maxStringBytes) return;
       bytes += itemBytes;
-      if (bytes > maxBytes) return Number.POSITIVE_INFINITY;
+      if (bytes > maxBytes) return;
       continue;
     }
-    if (typeof item !== "object") return Number.POSITIVE_INFINITY;
+    if (typeof item !== "object") return;
     if (Array.isArray(item)) {
-      if (item.length > maxItems) return Number.POSITIVE_INFINITY;
+      if (item.length > maxItems) return;
       for (let index = item.length - 1; index >= 0; index -= 1) {
         stack.push({ value: item[index], depth: current.depth + 1 });
       }
@@ -139,13 +142,27 @@ export function boundedJsonBytes(
       const child = (item as Record<string, unknown>)[key];
       if (child === undefined) continue;
       itemCount += 1;
-      if (itemCount > maxItems) return Number.POSITIVE_INFINITY;
+      if (itemCount > maxItems) return;
       bytes += utf8Bytes(key);
-      if (bytes > maxBytes) return Number.POSITIVE_INFINITY;
+      if (bytes > maxBytes) return;
       stack.push({ value: child, depth: current.depth + 1 });
     }
   }
-  return bytes;
+  return { bytes, nodes };
+}
+
+/** Returns Infinity as soon as a depth, item, node, string, or cumulative byte limit is crossed. */
+export function boundedJsonBytes(
+  value: unknown,
+  maxBytes: number,
+  maxItems = MAX_PUBLIC_COLLECTION_ITEMS,
+  maxStringBytes = maxBytes,
+  maxNodes = MAX_PUBLIC_NODES,
+): number {
+  return (
+    boundedJsonMetrics(value, maxBytes, maxItems, maxStringBytes, maxNodes)?.bytes ??
+    Number.POSITIVE_INFINITY
+  );
 }
 
 function prefixTable(value: string): Uint32Array {
@@ -196,14 +213,37 @@ export class BoundedStringSet {
   }
 }
 
-export class OmpPublicError extends Error {}
+export class OmpPublicError extends Error {
+  override readonly name = "OmpPublicError";
+}
+
+export function isOmpPublicError(error: unknown): error is OmpPublicError {
+  return (
+    error instanceof OmpPublicError || (error instanceof Error && error.name === "OmpPublicError")
+  );
+}
+
 export class OmpCleanupFailure extends Error {
+  override readonly name = "OmpCleanupFailure";
+
   constructor(
     message: string,
     readonly cleanup: Promise<void>,
+    readonly nativeSessionId?: string,
   ) {
+    void cleanup.catch(() => undefined);
     super(message);
   }
+}
+
+export function isOmpCleanupFailure(error: unknown): error is OmpCleanupFailure {
+  return (
+    error instanceof OmpCleanupFailure ||
+    (error instanceof Error &&
+      error.name === "OmpCleanupFailure" &&
+      "cleanup" in error &&
+      error.cleanup instanceof Promise)
+  );
 }
 
 export class OmpPublicDataFilter {

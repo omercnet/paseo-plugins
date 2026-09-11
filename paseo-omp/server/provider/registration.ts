@@ -1,11 +1,23 @@
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
-import { createOmpConnection } from "./connection";
+import { createOmpConnection, OmpNativeSessionReservations } from "./connection";
+import type { OmpMcpConnector } from "./host-tools";
 import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
 import { boundedJsonBytes } from "./security";
 import type { OmpTimelineScheduler } from "./timeline-projector";
 
-const CAPABILITIES = ["prompt.message", "prompt.steer", "session.configure"] as const;
+const CAPABILITIES = [
+  "prompt.message",
+  "prompt.command",
+  "prompt.image",
+  "prompt.steer",
+  "session.configure",
+  "session.list",
+  "session.persistence",
+  "session.subsession",
+  "session.revert.conversation",
+  "permission",
+] as const;
 const ConnectRequestSchema = z.object({
   versions: z.array(z.number().int().positive().max(16)).min(1).max(8),
   capabilities: z.array(z.string().min(1).max(64)).max(32),
@@ -14,10 +26,15 @@ const ConnectRequestSchema = z.object({
 export interface OmpProviderOptions {
   runtime?: OmpRuntime;
   timelineScheduler?: OmpTimelineScheduler;
+  replayTimeoutMs?: number;
   environment?: NodeJS.ProcessEnv;
+  mcpInitializationTimeoutMs?: number;
+  mcpConnector?: OmpMcpConnector;
 }
 
 export function createOmpProvider(options: OmpProviderOptions = {}): ProviderRegistration {
+  const runtime = options.runtime ?? new OmpRpcRuntime({ environment: options.environment });
+  const nativeReservations = new OmpNativeSessionReservations();
   return {
     id: "omp-plugin",
     label: "OMP (Plugin Preview)",
@@ -36,10 +53,14 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         requestedCapabilities.has(capability),
       );
       return createOmpConnection(
-        options.runtime ?? new OmpRpcRuntime({ environment: options.environment }),
+        runtime,
         capabilities,
         options.timelineScheduler,
         options.environment,
+        nativeReservations,
+        options.mcpConnector,
+        options.mcpInitializationTimeoutMs,
+        options.replayTimeoutMs,
       );
     },
   };

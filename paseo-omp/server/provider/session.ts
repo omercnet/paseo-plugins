@@ -1,14 +1,25 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   ProviderConfigState,
   ProviderEvent,
   ProviderInput,
+  ProviderPermissionResponse,
   ProviderSessionConfig,
   ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
+import {
+  normalizeOmpSessionConfig,
+  type OmpRecoveryOptions,
+  withCommittedOmpSelection,
+} from "./config-normalization";
+import { OmpHostToolsBridge, type OmpMcpConnector, validateOmpHostToolConfig } from "./host-tools";
+import { isValidImagePayload } from "./image";
 import type {
+  OmpAvailableCommand,
   OmpCompactionResult,
+  OmpExtensionUiResponse,
+  OmpImage,
   OmpMessage,
   OmpModel,
   OmpRpcEvent,
@@ -22,11 +33,16 @@ import { buildOmpSpawnRequest } from "./omp-rpc";
 import {
   BoundedStringSet,
   boundedJsonBytes,
+  isOmpCleanupFailure,
+  isOmpPublicError,
   OmpCleanupFailure,
   OmpPublicDataFilter,
   OmpPublicError,
   utf8Bytes,
 } from "./security";
+import type { OmpSessionDescriptor } from "./session-descriptors";
+import { validateNativeSessionId } from "./session-descriptors";
+import { OmpSubsessionProjector } from "./subsessions";
 import {
   defaultOmpTimelineScheduler,
   OmpTimelineProjector,
@@ -37,7 +53,16 @@ type SessionOpenInput = Extract<ProviderInput, { type: "session.open" }>;
 type SessionPromptInput = Extract<ProviderInput, { type: "session.prompt" }>;
 type SessionInterruptInput = Extract<ProviderInput, { type: "session.interrupt" }>;
 type SessionConfigureInput = Extract<ProviderInput, { type: "session.configure" }>;
+type SessionRevertInput = Extract<ProviderInput, { type: "session.revert" }>;
 type SessionCloseInput = Extract<ProviderInput, { type: "session.close" }>;
+type NativeSessionTransition = (previousSessionId: string, nextSessionId: string) => void;
+type RewindCleanupQuarantine = (cleanup: Promise<void>) => void;
+type RewindSessionRetirement = () => void;
+type SessionPermissionInput = Extract<ProviderInput, { type: "session.permission" }>;
+type OmpQuestionRequest = Extract<
+  Extract<OmpRpcEvent, { type: "extension_ui_request" }>,
+  { method: "select" | "confirm" | "input" | "editor" }
+>;
 type Emit = (event: ProviderEvent) => void;
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
@@ -53,6 +78,8 @@ const MAX_PROMPT_TEXT_LENGTH = 1024 * 1024;
 const MAX_TRACKED_ENTRY_IDS = 1_024;
 const MAX_UNCLAIMED_BRANCH_ENTRIES = 1_024;
 const MAX_PENDING_USERS = 256;
+const MAX_PENDING_PERMISSIONS = 32;
+const MAX_PENDING_PERMISSION_BYTES = 2 * 1024 * 1024;
 const MAX_USER_ECHOES = 512;
 const MAX_BUFFERED_TURN_EVENTS = 512;
 const MAX_BUFFERED_VALUE_ITEMS = 1_024;
@@ -62,6 +89,46 @@ const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
 const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
 class OmpCatalogEscape extends OmpPublicError {}
+const MAX_REPLAY_MESSAGES = 100_000;
+const REPLAY_TIMEOUT_MS = 20_000;
+
+export function ompPersistenceSessionId(input: SessionOpenInput): string | undefined {
+  if (!input.persistence) return;
+  if (input.persistence.version !== 1) {
+    throw new OmpPublicError("Unsupported OMP persistence version");
+  }
+  const data = input.persistence.data;
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    !Object.hasOwn(data, "sessionId") ||
+    Object.keys(data).length !== 1
+  ) {
+    throw new OmpPublicError("Invalid OMP session persistence");
+  }
+  try {
+    return validateNativeSessionId((data as Record<string, unknown>).sessionId);
+  } catch {
+    throw new OmpPublicError("Invalid OMP session identifier");
+  }
+}
+
+async function authorizeNativeSession(
+  runtime: OmpRuntime,
+  sessionId: string,
+  cwd: string,
+): Promise<OmpSessionDescriptor> {
+  const matches = await runtime.listSessions({ sessionId, cwd, limit: 2 });
+  const descriptor = matches[0];
+  if (matches.length !== 1 || descriptor?.id !== sessionId) {
+    throw new OmpPublicError("OMP session could not be resolved in this workspace");
+  }
+  if (descriptor.cwd !== cwd) {
+    throw new OmpPublicError("OMP session belongs to a different working directory");
+  }
+  return descriptor;
+}
 
 function retainedBytes(values: readonly unknown[], maxBytes: number): number {
   let total = 0;
@@ -78,6 +145,18 @@ function retainedBytes(values: readonly unknown[], maxBytes: number): number {
     if (total > maxBytes) return Number.POSITIVE_INFINITY;
   }
   return total;
+}
+
+async function waitForReplay<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  const aborted = Promise.withResolvers<never>();
+  const onAbort = () => aborted.reject(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([operation, aborted.promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 type PendingUser = {
@@ -98,9 +177,18 @@ type ActiveTurn = {
   interrupted: boolean;
   starting: boolean;
   nativeActivity: boolean;
+  userEchoObserved: boolean;
   localOnlyDisabled: boolean;
   localOnlyEligible: boolean;
+  awaitingPermissionEvidence: boolean;
+  activitySequence: number;
+  acknowledged: boolean;
+  terminalOwnershipEvidence: boolean;
+  terminalOwnershipRequired: boolean;
+  replayingBufferedEvents: boolean;
+  agentInvoked?: boolean;
   nativeRequestId?: string;
+  promptAcceptedEventIndex?: number;
   localOnlyTimer?: unknown;
   usagePollTimer?: unknown;
   usagePoll?: Promise<void>;
@@ -112,6 +200,7 @@ type ActiveTurn = {
   agentEndRetryTimer?: unknown;
   agentEndDeadlineTimer?: unknown;
   agentEndCheck?: Promise<void>;
+  terminalOwnershipTimer?: unknown;
   terminalizing: boolean;
   terminalization?: Promise<void>;
   terminalOutcome?: TurnOutcome;
@@ -131,6 +220,25 @@ type PendingAbort = {
   runtime: OmpRuntimeSession;
   promise: Promise<void>;
 };
+type PendingPermission = {
+  nativeId: string;
+  header: string;
+  fingerprint: string;
+  optionValues: ReadonlyMap<string, string>;
+  actionBehaviors: ReadonlyMap<string, "allow" | "deny">;
+  retainedBytes: number;
+  displayValues: ReadonlyMap<string, string>;
+  generation: number;
+  runtime: OmpRuntimeSession;
+  expiresAt?: number;
+  timer?: unknown;
+  turnId?: string;
+  request: OmpQuestionRequest;
+};
+
+function permissionFingerprint(request: OmpQuestionRequest): string {
+  return createHash("sha256").update(JSON.stringify(request)).digest("base64url");
+}
 
 type VoidDeferred = {
   promise: Promise<void>;
@@ -149,52 +257,87 @@ type ActiveCompaction = {
   trigger: "auto" | "manual";
   turnId: string;
   generation: number;
+  retrying: boolean;
   action?: string;
   preTokens?: number;
 };
 
 function providerError(error: unknown, fallback: string): { message: string } {
-  return { message: error instanceof OmpPublicError ? error.message : fallback };
+  return { message: isOmpPublicError(error) ? error.message : fallback };
+}
+async function settleSessionCleanup(promises: readonly Promise<void>[]): Promise<void> {
+  const pending = [...promises];
+  const seen = new Set<Promise<void>>();
+  const failures: unknown[] = [];
+  while (pending.length > 0) {
+    const batch = pending.splice(0).filter((promise) => !seen.has(promise));
+    for (const promise of batch) seen.add(promise);
+    const results = await Promise.allSettled(batch);
+    for (const result of results) {
+      if (result.status !== "rejected") continue;
+      if (isOmpCleanupFailure(result.reason)) {
+        if (!seen.has(result.reason.cleanup)) pending.push(result.reason.cleanup);
+        continue;
+      }
+      failures.push(result.reason);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "OMP session initialization cleanup failed");
+  }
+}
+function isSafeCommandName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)*$/u.test(name);
 }
 
-function textPrompt(input: SessionPromptInput): string {
+type OmpPromptPayload = { text: string; images: OmpImage[]; commandName?: string };
+
+function promptPayload(input: SessionPromptInput): OmpPromptPayload {
   if (input.prompt.outputSchema !== undefined || input.prompt.clearPendingPermissions) {
     throw new OmpPublicError("OMP does not support structured output or permission controls");
   }
-  if (input.prompt.input.type !== "message") {
-    throw new OmpPublicError("OMP supports text messages only");
+  if (input.prompt.input.type === "command") {
+    const name = input.prompt.input.name.trim();
+    if (!isSafeCommandName(name)) throw new OmpPublicError("Invalid OMP command name");
+    const argumentsText = input.prompt.input.arguments.trim();
+    const text = `/${name}${argumentsText ? ` ${argumentsText}` : ""}`;
+    if (utf8Bytes(text) > MAX_PROMPT_TEXT_LENGTH)
+      throw new OmpPublicError("OMP command is too large");
+    return { text, images: [], commandName: name };
   }
   if (input.prompt.input.content.length > MAX_PROMPT_PARTS) {
     throw new OmpPublicError("OMP prompt has too many content parts");
   }
   const parts: string[] = [];
+  const images: OmpImage[] = [];
   let length = 0;
   for (const part of input.prompt.input.content) {
-    if (part.type !== "text" || typeof part.text !== "string") {
-      throw new OmpPublicError("OMP supports text messages only");
+    if (part.type === "text") {
+      length += utf8Bytes(part.text) + (parts.length > 0 ? 2 : 0);
+      if (length > MAX_PROMPT_TEXT_LENGTH) throw new OmpPublicError("OMP prompt is too large");
+      parts.push(part.text);
+      continue;
     }
-    length += utf8Bytes(part.text) + (parts.length > 0 ? 2 : 0);
-    if (length > MAX_PROMPT_TEXT_LENGTH) throw new OmpPublicError("OMP prompt is too large");
-    parts.push(part.text);
+    if (part.type === "image") {
+      if (!isValidImagePayload(part.data, part.mimeType, 8 * 1024 * 1024)) {
+        throw new OmpPublicError("OMP prompt image is invalid");
+      }
+      images.push({ type: "image", data: part.data, mimeType: part.mimeType });
+      continue;
+    }
+    throw new OmpPublicError("OMP supports text messages only");
   }
   const text = parts.join("\n\n").trim();
-  if (!text) throw new OmpPublicError("OMP prompt text cannot be empty");
-  return text;
+  if (!text && images.length === 0) throw new OmpPublicError("OMP prompt cannot be empty");
+  return { text, images };
 }
 
 function slashCommandName(text: string): string | undefined {
   if (!text.startsWith("/")) return undefined;
   const body = text.slice(1);
   if (!body) return undefined;
-  const firstWhitespace = body.search(/\s/);
-  const firstColon = body.indexOf(":");
-  const separator =
-    firstWhitespace === -1
-      ? firstColon
-      : firstColon === -1
-        ? firstWhitespace
-        : Math.min(firstWhitespace, firstColon);
-  const name = separator === -1 ? body : body.slice(0, separator);
+  const firstWhitespace = body.search(/\s/u);
+  const name = firstWhitespace === -1 ? body : body.slice(0, firstWhitespace);
   return name || undefined;
 }
 
@@ -239,10 +382,20 @@ function isNativeTurnActivity(event: OmpRpcEvent): boolean {
   }
   return event.type.startsWith("tool_execution_");
 }
+function isRuntimeConfigEvent(event: OmpRpcEvent): boolean {
+  return (
+    event.type === "model_changed" ||
+    event.type === "thinking_level_changed" ||
+    event.type === "retry_fallback_applied" ||
+    event.type === "retry_fallback_succeeded"
+  );
+}
+
 function isPassiveUiMethod(method: string): boolean {
   return (
     method === "cancel" ||
     method === "notify" ||
+    method === "open_url" ||
     method === "setStatus" ||
     method === "setWidget" ||
     method === "setTitle" ||
@@ -255,11 +408,13 @@ export class OmpProviderSession {
   readonly cwd: string;
 
   private readonly projector: OmpTimelineProjector;
+  private readonly subsessions: OmpSubsessionProjector | null;
   private unsubscribe: () => void = () => {};
   private activeTurn: ActiveTurn | null = null;
   private closed = false;
   private disposalPromise: Promise<void> | null = null;
   private sessionClosedPublished = false;
+  private readyPublished = false;
   private readonly emittedEntryIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
   private readonly seenEntryIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
   private branchWatermarkValid = true;
@@ -271,6 +426,7 @@ export class OmpProviderSession {
   private generation = 0;
   private runtimeDead: string | null = null;
   private runtimeDisposal: Promise<void> | null = null;
+  private hostToolsDisposal: Promise<void> | null = null;
   private recoveryPromise: Promise<void> | null = null;
   private configRefreshInFlight: Promise<void> | null = null;
   private configRefreshDirty = false;
@@ -292,21 +448,38 @@ export class OmpProviderSession {
     promise: Promise<OmpSessionState | undefined>;
   } | null = null;
   private activeCompaction: ActiveCompaction | null = null;
+  private discardedCompactionEnds = 0;
   private lastUsage: ProviderUsage | null = null;
+  private revertInFlight = false;
+  private runtimeTurnCompleted = false;
+  private commandCatalog: OmpAvailableCommand[];
+  private permissionSequence = 0;
+  private readonly permissionNamespace = randomUUID();
+  private readonly pendingPermissions = new Map<string, PendingPermission>();
+  private readonly inFlightPermissions = new Map<string, PendingPermission>();
 
   private constructor(
     id: string,
     private runtime: OmpRuntimeSession,
     private readonly runtimeFactory: OmpRuntime,
-    private recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal">,
+    private recoveryOptions: OmpRecoveryOptions,
+    private readonly hostTools: OmpHostToolsBridge,
     private nativeSessionId: string,
+    nativeSessionFile: string | undefined,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
     nativeModelsByPublicId: ReadonlyMap<string, OmpModel>,
     private readonly capabilities: readonly string[],
     private readonly slashCommands: Set<string>,
+    commandCatalog: OmpAvailableCommand[],
     private commandDiscoveryAvailable: boolean,
     private readonly emit: Emit,
+    private readonly replayHistoryOnOpen: boolean,
+    private readonly persistSession: boolean,
+    private readonly replayTimeoutMs: number,
+    private readonly transitionNativeSession: NativeSessionTransition,
+    private readonly quarantineRewindCleanup: RewindCleanupQuarantine,
+    private readonly retireRewindSession: RewindSessionRetirement,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -318,8 +491,31 @@ export class OmpProviderSession {
     ];
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
-    this.projector = new OmpTimelineProjector(id, emit, scheduler, sensitiveValues);
+    this.commandCatalog = commandCatalog;
+    this.hostTools.onFatal(() => this.handleRuntimeFailure());
+    this.projector = new OmpTimelineProjector(
+      id,
+      emit,
+      scheduler,
+      sensitiveValues,
+      capabilities.includes("session.revert.conversation"),
+    );
+    this.subsessions = capabilities.includes("session.subsession")
+      ? new OmpSubsessionProjector(
+          id,
+          persistSession ? `persisted:${nativeSessionId}` : `ephemeral:${id}`,
+          nativeSessionFile,
+          config.cwd,
+          emit,
+          scheduler,
+          sensitiveValues,
+          () => this.resumeDeferredAgentEnd(),
+        )
+      : null;
     this.bindRuntime(runtime);
+  }
+  get persistenceSessionId(): string | undefined {
+    return this.persistSession ? this.nativeSessionId : undefined;
   }
 
   static async open(
@@ -327,47 +523,64 @@ export class OmpProviderSession {
     runtime: OmpRuntime,
     capabilities: readonly string[],
     emit: Emit,
+    transitionNativeSession: NativeSessionTransition,
+    quarantineRewindCleanup: RewindCleanupQuarantine,
+    retireRewindSession: RewindSessionRetirement,
     scheduler?: OmpTimelineScheduler,
+    replayTimeoutMs = REPLAY_TIMEOUT_MS,
     signal?: AbortSignal,
     environment?: NodeJS.ProcessEnv,
+    mcpConnector?: OmpMcpConnector,
+    mcpInitializationTimeoutMs?: number,
   ): Promise<OmpProviderSession> {
-    if (input.persistence) {
-      throw new OmpPublicError("OMP Plugin Preview does not support session persistence");
+    const resumeSessionId = ompPersistenceSessionId(input);
+    if (resumeSessionId && !input.config.persist) {
+      throw new OmpPublicError("OMP persisted sessions require persist: true");
     }
-    if (input.history !== "skip") {
-      throw new OmpPublicError("OMP Plugin Preview does not support history replay");
+    if (input.history === "replay" && !resumeSessionId) {
+      throw new OmpPublicError("OMP history replay requires persisted session identity");
     }
-    if (input.config.mode && input.config.mode !== "full") {
-      throw new OmpPublicError("OMP Plugin Preview supports Full Access mode only");
+    if (input.history === "skip" && resumeSessionId) {
+      throw new OmpPublicError("OMP persisted sessions require history replay");
     }
-    if (Object.keys(input.config.mcpServers ?? {}).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host MCP servers");
-    }
-    if (input.config.toolPolicy) {
-      throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
-    }
-    if (input.config.providerOptions && Object.keys(input.config.providerOptions).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support provider options");
-    }
-    if (Object.keys(input.config.settings ?? {}).length > 0) {
-      throw new OmpPublicError("OMP Plugin Preview does not support provider settings");
-    }
+    const persistedDescriptor = resumeSessionId
+      ? await authorizeNativeSession(runtime, resumeSessionId, input.config.cwd)
+      : undefined;
+    const effectiveConfig: ProviderSessionConfig = { ...input.config };
+    const normalizedConfig = normalizeOmpSessionConfig(effectiveConfig);
+    validateOmpHostToolConfig(effectiveConfig);
     if (input.config.title && utf8Bytes(input.config.title) > 256) {
       throw new OmpPublicError("OMP session title is too large");
     }
     const startOptions: OmpStartOptions = {
-      cwd: input.config.cwd,
-      env: input.config.env,
+      ...normalizedConfig,
       // Model selection is authorized only after this runtime reports its exact catalog.
-      mode: "full",
-      thinkingOption: input.config.thinkingOption,
-      systemPrompt: input.config.systemPrompt,
+      ...(resumeSessionId
+        ? { thinkingOption: undefined, systemPrompt: undefined, resumeSessionId }
+        : {}),
       signal,
       environment,
     };
     buildOmpSpawnRequest(startOptions);
-    const native = await runtime.startSession(startOptions);
+    const hostTools = await OmpHostToolsBridge.open(effectiveConfig, {
+      connectMcp: mcpConnector,
+      signal,
+      initializationTimeoutMs: mcpInitializationTimeoutMs,
+    });
+    let native: OmpRuntimeSession | undefined;
+    let cleanupNativeSessionId: string | undefined;
+    let unsubscribeBootstrap = () => {};
+    let bootstrapConfigRevision = 0;
     try {
+      native = await runtime.startSession(startOptions);
+      unsubscribeBootstrap = native.onEvent((event) => {
+        if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+          hostTools.handle(event);
+          return;
+        }
+        if (isRuntimeConfigEvent(event)) bootstrapConfigRevision += 1;
+      });
+      await hostTools.bind(native);
       const [initialState, nativeModels, commandDiscovery] = await Promise.all([
         native.getState(),
         native.getAvailableModels(),
@@ -376,23 +589,39 @@ export class OmpProviderSession {
           () => ({ available: false, commands: [] }),
         ),
       ]);
+      if (effectiveConfig.persist && !native.canReplayHistory) {
+        throw new OmpPublicError("OMP session persistence requires negotiated RPC protocol v2");
+      }
+      if (capabilities.includes("session.revert.conversation") && !native.canReplayHistory) {
+        throw new OmpPublicError("OMP conversation rewind requires negotiated RPC protocol v2");
+      }
       let state = initialState;
+      if (effectiveConfig.persist || resumeSessionId) {
+        cleanupNativeSessionId = validateNativeSessionId(initialState.sessionId);
+      }
+      if (resumeSessionId && initialState.sessionId !== resumeSessionId) {
+        throw new OmpPublicError("OMP resumed a different native session");
+      }
       const filter = new OmpPublicDataFilter([
-        ...Object.values(input.config.env ?? {}),
+        ...Object.values(startOptions.env ?? {}),
         ...(native.redactionValues ?? []),
       ]);
       const models = mapOmpModels(nativeModels, filter);
       const nativeModelsByPublicId = new Map(
         nativeModels.map((model) => [ompModelId(model), model] as const),
       );
-      if (input.config.model) {
+      if (!resumeSessionId && input.config.model) {
         const selected = nativeModelsByPublicId.get(input.config.model);
-        if (!selected) throw new OmpPublicError("OMP model selection is unavailable");
+        if (!selected) {
+          throw new OmpPublicError("OMP model is not advertised by the configured session runtime");
+        }
         if (state.model?.provider !== selected.provider || state.model.id !== selected.id) {
           await native.setModel(selected.provider, selected.id);
           state = await native.getState();
         }
       }
+      const reconciledConfigRevision = bootstrapConfigRevision;
+      state = await native.getState();
       const currentModel = state.model
         ? nativeModels.find(
             (model) => model.provider === state.model?.provider && model.id === state.model.id,
@@ -403,6 +632,7 @@ export class OmpProviderSession {
       }
       const thinkingOptions = thinkingForModel(currentModel);
       if (
+        !resumeSessionId &&
         input.config.thinkingOption !== undefined &&
         !thinkingOptions.some((option) => option.id === input.config.thinkingOption)
       ) {
@@ -416,68 +646,126 @@ export class OmpProviderSession {
       }
       const configState: ProviderConfigState = {
         ...(state.model ? { model: ompModelId(state.model) } : {}),
-        mode: "full",
+        mode: normalizedConfig.mode,
         ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
         models,
         modes: OMP_MODES,
         thinkingOptions,
         settings: [],
       };
-      const recoveryOptions: Omit<OmpStartOptions, "resumeSessionId" | "signal"> = {
-        cwd: input.config.cwd,
-        env: input.config.env,
-        mode: "full",
-        systemPrompt: input.config.systemPrompt,
-        ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
-        environment,
-        ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
-      };
-      return new OmpProviderSession(
+      const { signal: _signal, ...recoveryTemplate } = startOptions;
+      const recoveryOptions = withCommittedOmpSelection(recoveryTemplate, {
+        model: state.model ? nativeOmpModelId(state.model) : undefined,
+        thinkingOption: state.thinkingLevel,
+      });
+      if (!hostTools.isBoundTo(native)) {
+        throw new Error("OMP host tool bridge detached during session initialization");
+      }
+      unsubscribeBootstrap();
+      unsubscribeBootstrap = () => {};
+      let sessionCapabilities = capabilities;
+      if (capabilities.includes("session.subsession")) {
+        try {
+          await native.setSubagentSubscription("events");
+        } catch {
+          sessionCapabilities = capabilities.filter(
+            (capability) => capability !== "session.subsession",
+          );
+        }
+      }
+      const session = new OmpProviderSession(
         input.sessionId,
         native,
         runtime,
         recoveryOptions,
+        hostTools,
         state.sessionId,
-        input.config,
+        persistedDescriptor?.transcriptFile ?? state.sessionFile,
+        effectiveConfig,
         configState,
         nativeModelsByPublicId,
-        capabilities,
+        sessionCapabilities,
         new Set(
           commandDiscovery.commands.flatMap((command) => [
             command.name,
             ...(command.aliases ?? []),
           ]),
         ),
+        commandDiscovery.commands,
         commandDiscovery.available,
         emit,
+        input.history === "replay",
+        effectiveConfig.persist,
+        replayTimeoutMs,
+        transitionNativeSession,
+        quarantineRewindCleanup,
+        retireRewindSession,
         scheduler,
       );
+
+      if (bootstrapConfigRevision !== reconciledConfigRevision) {
+        session.configRefreshDirty = true;
+      }
+      return session;
     } catch (error) {
-      const cleanup = native.close();
-      try {
-        await cleanup;
-      } catch {
+      unsubscribeBootstrap();
+      const directCleanup = [
+        Promise.resolve().then(() => hostTools.close()),
+        ...(native ? [native] : []).map((session) => Promise.resolve().then(() => session.close())),
+      ];
+      if (isOmpCleanupFailure(error)) {
         throw new OmpCleanupFailure(
-          "OMP session initialization cleanup failed",
-          cleanup.catch(() => undefined),
+          "OMP session initialization cleanup pending",
+          settleSessionCleanup([error.cleanup, ...directCleanup]),
+          cleanupNativeSessionId ?? error.nativeSessionId,
+        );
+      }
+      const directResults = await Promise.allSettled(directCleanup);
+      const nestedCleanup: Promise<void>[] = [];
+      const cleanupFailures: unknown[] = [];
+      for (const result of directResults) {
+        if (result.status !== "rejected") continue;
+        if (isOmpCleanupFailure(result.reason)) nestedCleanup.push(result.reason.cleanup);
+        else cleanupFailures.push(result.reason);
+      }
+      if (nestedCleanup.length > 0 || cleanupFailures.length > 0) {
+        const failed =
+          cleanupFailures.length > 0
+            ? [
+                Promise.reject(
+                  new AggregateError(cleanupFailures, "OMP session initialization cleanup failed"),
+                ),
+              ]
+            : [];
+        throw new OmpCleanupFailure(
+          "OMP session initialization cleanup pending",
+          settleSessionCleanup([...nestedCleanup, ...failed]),
+          cleanupNativeSessionId,
         );
       }
       throw error;
     }
   }
 
-  publishOpened(requestId: string): void {
+  async publishOpened(requestId: string): Promise<void> {
     this.emit({
       type: "session.opened",
       requestId,
       sessionId: this.id,
       capabilities: this.capabilities,
       restoration: "core",
-      cwd: "<workspace>",
+      cwd: this.cwd,
+      ...(this.persistSession
+        ? { persistence: { version: 1, data: { sessionId: this.nativeSessionId } } }
+        : {}),
       ...(this.config.title ? { title: this.dataFilter.text(this.config.title, 256) } : {}),
     });
     this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
+    if (this.replayHistoryOnOpen) await this.replayHistory();
+    this.publishCommands(this.commandCatalog);
     this.emit({ type: "session.ready", requestId, sessionId: this.id });
+    this.readyPublished = true;
+    if (this.configRefreshDirty) this.scheduleCommittedConfigRefresh();
   }
 
   private usageFrom(
@@ -654,13 +942,27 @@ export class OmpProviderSession {
   }
 
   private startCompaction(turn: ActiveTurn, trigger: "auto" | "manual", action?: string): void {
-    if (this.activeCompaction) return;
+    if (this.discardedCompactionEnds > 0) {
+      this.discardedCompactionEnds += 1;
+      return;
+    }
+    const active = this.activeCompaction;
+    if (active && active.trigger === trigger && active.action === action) {
+      active.retrying = false;
+      return;
+    }
+    if (active) {
+      this.retireCompaction("OMP emitted overlapping compactions");
+      this.discardedCompactionEnds = 2;
+      return;
+    }
     const operation: ActiveCompaction = {
       id: randomUUID(),
       trigger,
       turnId: turn.turnId,
       generation: turn.generation,
       action,
+      retrying: false,
       preTokens: this.lastUsage?.contextWindowUsedTokens,
     };
     this.activeCompaction = operation;
@@ -728,10 +1030,229 @@ export class OmpProviderSession {
     });
   }
 
-  async prompt(input: SessionPromptInput): Promise<void> {
-    let text: string;
+  private retireCompaction(message: string): void {
+    const operation = this.activeCompaction;
+    if (!operation) return;
+    this.activeCompaction = null;
+    this.emit({
+      type: "timeline.item",
+      sessionId: this.id,
+      item: {
+        id: operation.id,
+        type: "compaction",
+        status: "completed",
+        trigger: operation.trigger,
+      },
+    });
+    this.emit({
+      type: "timeline.item",
+      sessionId: this.id,
+      item: { id: `${operation.id}:error`, type: "error", message },
+    });
+  }
+
+  private async replayHistory(): Promise<void> {
+    if (!this.runtime.canReplayHistory) {
+      throw new OmpPublicError("OMP session history cannot be replayed safely");
+    }
+    this.lifetime.signal.throwIfAborted();
+    const replay = new AbortController();
+    const onAbort = () =>
+      replay.abort(new OmpPublicError("OMP session history replay was canceled"));
+    this.lifetime.signal.addEventListener("abort", onAbort, { once: true });
+    const timeoutHandle = setTimeout(
+      () => replay.abort(new OmpPublicError("OMP session history replay timed out")),
+      this.replayTimeoutMs,
+    );
     try {
-      text = textPrompt(input);
+      const messages = await waitForReplay(this.runtime.getMessages(), replay.signal);
+      replay.signal.throwIfAborted();
+      if (messages.length > MAX_REPLAY_MESSAGES) {
+        throw new OmpPublicError("OMP session history exceeds replay limits");
+      }
+      for (const message of messages) {
+        replay.signal.throwIfAborted();
+        this.projector.projectReplayMessage(message);
+      }
+      this.projector.finishReplay();
+      await this.subsessions?.replay(messages, this.runtime, this.runtimeFactory, replay.signal);
+      replay.signal.throwIfAborted();
+    } catch (error) {
+      if (replay.signal.aborted) throw replay.signal.reason;
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      this.lifetime.signal.removeEventListener("abort", onAbort);
+    }
+  }
+  async revert(input: SessionRevertInput): Promise<void> {
+    if (input.scope !== "conversation") {
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: { message: "OMP supports conversation rewind only" },
+      });
+      return;
+    }
+    if (this.activeTurn) {
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: { message: "Cannot rewind the OMP conversation while a turn is active" },
+      });
+      return;
+    }
+    if (this.revertInFlight || this.configMutationInFlight || this.activeAbort) {
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: { message: "OMP session is busy" },
+      });
+      return;
+    }
+
+    this.revertInFlight = true;
+    let branchMutationPossible = false;
+    let runtime = this.runtime;
+    let generation = this.generation;
+    try {
+      await this.recoverRuntime();
+      if (this.closed) throw new OmpPublicError("OMP session is closed");
+      if (this.activeTurn) {
+        throw new OmpPublicError("Cannot rewind the OMP conversation while a turn is active");
+      }
+      runtime = this.runtime;
+      generation = this.generation;
+      if (!runtime.canReplayHistory) {
+        throw new OmpPublicError("OMP conversation rewind requires negotiated RPC protocol v2");
+      }
+      const entryId = this.projector.resolveRevertToken(input.token);
+      const [branchMessages, beforeState] = await Promise.all([
+        runtime.getBranchMessages(),
+        runtime.getState(),
+      ]);
+      this.requireCurrentRuntime(runtime, generation);
+      if (this.activeTurn || beforeState.isStreaming || beforeState.isCompacting) {
+        throw new OmpPublicError("Cannot rewind the OMP conversation while a turn is active");
+      }
+      if (!branchMessages.some((message) => message.entryId === entryId)) {
+        throw new OmpPublicError("OMP conversation rewind token is stale");
+      }
+      branchMutationPossible = true;
+      const result = await runtime.branch(entryId);
+      this.requireCurrentRuntime(runtime, generation);
+      if (result.cancelled) {
+        branchMutationPossible = false;
+        throw new OmpPublicError("OMP conversation rewind was cancelled");
+      }
+
+      let state = await runtime.getState();
+      this.requireCurrentRuntime(runtime, generation);
+      const nextNativeSessionId = validateNativeSessionId(state.sessionId);
+      if (nextNativeSessionId !== this.nativeSessionId) {
+        this.transitionNativeSession(this.nativeSessionId, nextNativeSessionId);
+        this.nativeSessionId = nextNativeSessionId;
+        if (this.persistSession) {
+          this.emit({
+            type: "session.persistence",
+            sessionId: this.id,
+            persistence: { version: 1, data: { sessionId: nextNativeSessionId } },
+          });
+        }
+      }
+
+      const modelChanged =
+        beforeState.model?.provider !== state.model?.provider ||
+        beforeState.model?.id !== state.model?.id;
+      const thinkingChanged = beforeState.thinkingLevel !== state.thinkingLevel;
+      if (modelChanged) {
+        if (!beforeState.model) {
+          throw new OmpPublicError("OMP changed model while rewinding the conversation");
+        }
+        await runtime.setModel(beforeState.model.provider, beforeState.model.id);
+      }
+      if (thinkingChanged) {
+        if (!beforeState.thinkingLevel) {
+          throw new OmpPublicError("OMP changed thinking level while rewinding the conversation");
+        }
+        await runtime.setThinkingLevel(beforeState.thinkingLevel);
+      }
+      if (modelChanged || thinkingChanged) {
+        state = await runtime.getState();
+        this.requireCurrentRuntime(runtime, generation);
+      }
+      if (
+        state.sessionId !== this.nativeSessionId ||
+        state.model?.provider !== beforeState.model?.provider ||
+        state.model?.id !== beforeState.model?.id ||
+        state.thinkingLevel !== beforeState.thinkingLevel
+      ) {
+        throw new OmpPublicError("OMP did not preserve session configuration while rewinding");
+      }
+
+      this.projector.resetForRewindReplay();
+      this.quarantineBranchEntries();
+      await this.replayHistory();
+      this.requireCurrentRuntime(runtime, generation);
+      this.publishCommittedConfig(state, runtime, generation);
+      this.emit({ type: "request.completed", requestId: input.requestId });
+    } catch (error) {
+      const failure = branchMutationPossible
+        ? { message: "OMP conversation rewind left native state indeterminate" }
+        : providerError(error, "OMP conversation rewind failed");
+      if (branchMutationPossible) {
+        await this.closeAfterCommittedRewindFailure(runtime, failure.message);
+      }
+      this.emit({ type: "request.failed", requestId: input.requestId, error: failure });
+      if (branchMutationPossible) {
+        this.publishSessionClosed(failure);
+        this.retireRewindSession();
+      }
+    } finally {
+      this.revertInFlight = false;
+      if (this.configRefreshDirty && !this.configMutationInFlight && !this.closed) {
+        this.scheduleCommittedConfigRefresh();
+      }
+    }
+  }
+  private async closeAfterCommittedRewindFailure(
+    runtime: OmpRuntimeSession,
+    message: string,
+  ): Promise<void> {
+    this.closed = true;
+    this.generation += 1;
+    this.runtimeDead = message;
+    this.configRefreshAttempts = 0;
+    this.configRefreshDirty = false;
+    const configRefresh = this.configRefreshInFlight;
+    this.cancelConfigRefreshRetry();
+    this.lifetime.abort(new Error(message));
+    this.resolveAllPermissions(true);
+    this.subsessions?.close();
+    this.projector.close();
+    this.unsubscribe();
+    this.unsubscribe = () => {};
+    this.hostTools.detach();
+    this.runtimeDisposal ??= runtime.close();
+    this.hostToolsDisposal ??= this.hostTools.close();
+    const cleanup = settleSessionCleanup(
+      [
+        this.runtimeDisposal,
+        this.hostToolsDisposal,
+        this.recoveryPromise,
+        configRefresh,
+        this.configRefreshInFlight,
+      ].filter((pending): pending is Promise<void> => pending !== null),
+    );
+    this.disposalPromise = cleanup;
+    this.quarantineRewindCleanup(cleanup);
+    await Promise.allSettled([cleanup]);
+  }
+
+  async prompt(input: SessionPromptInput): Promise<void> {
+    let payload: OmpPromptPayload;
+    try {
+      payload = promptPayload(input);
     } catch (error) {
       this.emit({
         type: "session.prompt_result",
@@ -741,9 +1262,18 @@ export class OmpProviderSession {
       });
       return;
     }
+    if (this.revertInFlight) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId: input.prompt.clientMessageId,
+        result: { type: "failed", error: { message: "OMP conversation rewind is in progress" } },
+      });
+      return;
+    }
 
     if (input.prompt.delivery === "steer") {
-      await this.steer(input.prompt.clientMessageId, text);
+      await this.steer(input.prompt.clientMessageId, payload.text, payload.images);
       return;
     }
     if (this.activeTurn) {
@@ -778,6 +1308,15 @@ export class OmpProviderSession {
       });
       return;
     }
+    if (this.revertInFlight) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId: input.prompt.clientMessageId,
+        result: { type: "failed", error: { message: "OMP conversation rewind is in progress" } },
+      });
+      return;
+    }
     if (this.activeTurn) {
       this.emit({
         type: "session.prompt_result",
@@ -800,23 +1339,40 @@ export class OmpProviderSession {
       return;
     }
 
+    if (payload.commandName && !this.slashCommands.has(payload.commandName)) {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.id,
+        clientMessageId: input.prompt.clientMessageId,
+        result: { type: "failed", error: { message: "OMP command is unavailable" } },
+      });
+      return;
+    }
     const turn: ActiveTurn = {
       turnId: randomUUID(),
       clientMessageId: input.prompt.clientMessageId,
+      agentInvoked: undefined,
       generation: this.generation,
       promptResultEmitted: false,
       started: false,
       terminal: false,
+      awaitingPermissionEvidence: false,
       interrupted: false,
       starting: true,
       nativeActivity: false,
+      userEchoObserved: false,
       localOnlyDisabled: false,
       localOnlyEligible: false,
       usageSampleFloor: 0,
       agentEndPending: false,
       terminalizing: false,
-      manualCompactionPending: slashCommandName(text) === "compact",
-      manualCompaction: slashCommandName(text) === "compact",
+      manualCompactionPending: slashCommandName(payload.text) === "compact",
+      manualCompaction: slashCommandName(payload.text) === "compact",
+      activitySequence: 0,
+      acknowledged: false,
+      terminalOwnershipEvidence: false,
+      replayingBufferedEvents: false,
+      terminalOwnershipRequired: this.runtimeTurnCompleted,
       steersInFlight: 0,
       userCorrelationActive: false,
       userLookups: new Set(),
@@ -825,7 +1381,7 @@ export class OmpProviderSession {
       pendingUsers: [
         {
           clientMessageId: input.prompt.clientMessageId,
-          text,
+          text: payload.text,
           accepted: true,
           fallbackOnFinish: true,
           bufferedEchoes: [],
@@ -833,17 +1389,21 @@ export class OmpProviderSession {
       ],
     };
     this.activeTurn = turn;
+    const runtime = this.runtime;
     try {
       if (turn.manualCompaction) {
-        const instructions = text.slice("/compact".length).trim() || undefined;
-        const compaction = this.runtime.compact(instructions);
+        const instructions = payload.text.slice("/compact".length).trim() || undefined;
+        const compaction = runtime.compact(instructions);
         this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
         turn.starting = false;
+        turn.acknowledged = true;
         this.startTurn(turn, false);
         this.startCompaction(turn, "manual");
         this.pollUsage(turn);
         const bufferedEvents = turn.bufferedEvents.splice(0);
+        turn.replayingBufferedEvents = true;
         for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
+        turn.replayingBufferedEvents = false;
         void this.settleManualCompaction(turn, compaction);
         turn.manualCompactionDeadlineTimer = this.scheduler.set(() => {
           turn.manualCompactionDeadlineTimer = undefined;
@@ -852,9 +1412,8 @@ export class OmpProviderSession {
             this.activeTurn !== turn ||
             turn.generation !== this.generation ||
             !turn.manualCompactionPending
-          ) {
+          )
             return;
-          }
           const message = "OMP compaction was canceled after it stopped responding";
           turn.manualCompactionPending = false;
           this.invalidateRuntime(message, "canceled");
@@ -862,26 +1421,52 @@ export class OmpProviderSession {
         }, COMPACTION_MAX_WAIT_MS);
         return;
       }
-      const acknowledgement = await this.runtime.prompt(text);
+      const acknowledgement = await runtime.prompt(payload.text, payload.images, () => {
+        turn.promptAcceptedEventIndex ??= turn.bufferedEvents.length;
+      });
       if (this.closed || turn.terminal) return;
       turn.nativeRequestId = acknowledgement.requestId;
       this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
       this.startTurn(turn);
       turn.starting = false;
-      if (acknowledgement.agentInvoked !== true) {
+      turn.acknowledged = true;
+      if (acknowledgement.agentInvoked === true) this.markAgentEvidence(turn);
+      if (acknowledgement.agentInvoked === false && turn.agentInvoked !== true) {
+        turn.agentInvoked = false;
         turn.localOnlyEligible = true;
-        this.scheduleLocalOnlyCompletion(turn);
       }
       const bufferedEvents = turn.bufferedEvents.splice(0);
+      turn.replayingBufferedEvents = true;
+      const preAcceptanceEvents = bufferedEvents.splice(
+        0,
+        turn.promptAcceptedEventIndex ?? bufferedEvents.length,
+      );
+      for (const event of preAcceptanceEvents) this.handleTurnEvent(turn, event);
+      this.projector.acceptLiveTurn(turn.turnId);
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
+      turn.replayingBufferedEvents = false;
+      if (
+        acknowledgement.agentInvoked === false &&
+        turn.agentInvoked !== true &&
+        !turn.nativeActivity &&
+        !turn.awaitingPermissionEvidence
+      ) {
+        this.scheduleLocalOnlyCompletion(turn);
+      }
     } catch (error) {
-      this.publishPendingUsers(turn);
       const failure = providerError(error, "OMP prompt failed");
+      if (this.isCurrentRuntime(runtime, turn.generation)) {
+        this.handleRuntimeFailure(failure.message);
+        return;
+      }
+      this.publishPendingUsers(turn);
       this.publishPromptResult(turn, { type: "failed", error: failure });
+      this.subsessions?.terminalize("failed");
       if (turn.started) await this.finishTurn(turn, "failed", failure);
       else {
         turn.terminal = true;
         this.finishCompaction("failed", { message: "OMP prompt failed" });
+        this.resolveTurnPermissions(turn.turnId);
         this.projector.finishTurn(turn.turnId);
         if (this.activeTurn === turn) this.activeTurn = null;
       }
@@ -923,6 +1508,7 @@ export class OmpProviderSession {
       this.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
+    turn.awaitingPermissionEvidence = false;
     const pending = this.activeAbort;
     if (turn.interrupted) {
       if (pending?.turn === turn) await this.settleInterrupt(input.requestId, pending);
@@ -971,7 +1557,22 @@ export class OmpProviderSession {
     }
   }
 
+  beginConnectionShutdown(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.lifetime.abort(new Error("OMP provider connection closed"));
+    this.unsubscribe();
+    this.unsubscribe = () => {};
+  }
   async configure(input: SessionConfigureInput): Promise<void> {
+    if (this.revertInFlight) {
+      this.emit({
+        type: "request.failed",
+        requestId: input.requestId,
+        error: { message: "OMP conversation rewind is in progress" },
+      });
+      return;
+    }
     if (this.configMutationInFlight) {
       this.emit({
         type: "request.failed",
@@ -1090,10 +1691,12 @@ export class OmpProviderSession {
 
   private scheduleCommittedConfigRefresh(): void {
     this.configRefreshDirty = true;
+    if (!this.readyPublished) return;
     if (
       this.configRefreshInFlight ||
       this.configRefreshRetryResolve ||
-      this.configMutationInFlight
+      this.configMutationInFlight ||
+      this.revertInFlight
     ) {
       return;
     }
@@ -1258,21 +1861,63 @@ export class OmpProviderSession {
           option.isDefault !== this.configState.thinkingOptions[index]?.isDefault,
       );
     this.configState = nextConfig;
-    this.recoveryOptions = {
-      cwd: this.recoveryOptions.cwd,
-      env: this.recoveryOptions.env,
-      mode: "full",
-      systemPrompt: this.recoveryOptions.systemPrompt,
-      environment: this.recoveryOptions.environment,
-      ...(state.model ? { model: nativeOmpModelId(state.model) } : {}),
-      ...(this.configState.thinkingOption
-        ? { thinkingOption: this.configState.thinkingOption }
-        : {}),
-    };
+    this.recoveryOptions = withCommittedOmpSelection(this.recoveryOptions, {
+      model: state.model ? nativeOmpModelId(state.model) : undefined,
+      thinkingOption: this.configState.thinkingOption,
+    });
     if (changed) {
       this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
     }
     return true;
+  }
+
+  abortOpen(): Promise<void> {
+    this.disposalPromise ??= this.disposeSession();
+    return this.disposalPromise;
+  }
+
+  async permission(input: SessionPermissionInput): Promise<void> {
+    const pending = this.pendingPermissions.get(input.permissionId);
+    if (!pending) throw new OmpPublicError("Unknown OMP permission request");
+    if (!this.permissionOwnerIsCurrent(pending)) {
+      this.pendingPermissions.delete(input.permissionId);
+      if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+      this.emit({
+        type: "session.permission_resolved",
+        sessionId: this.id,
+        permissionId: input.permissionId,
+      });
+      throw new OmpPublicError("OMP permission request is no longer active");
+    }
+    const { generation, runtime } = pending;
+    this.pendingPermissions.delete(input.permissionId);
+    this.inFlightPermissions.set(input.permissionId, pending);
+    if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+    try {
+      const response = this.extensionUiResponse(pending, input.response);
+      await runtime.respondToExtensionUi(response);
+    } catch (error) {
+      if (this.inFlightPermissions.get(input.permissionId) !== pending) return;
+      this.inFlightPermissions.delete(input.permissionId);
+      if (
+        this.permissionOwnerIsCurrent(pending) &&
+        generation === this.generation &&
+        runtime === this.runtime
+      ) {
+        this.pendingPermissions.set(input.permissionId, pending);
+        this.armPermissionTimeout(input.permissionId, pending);
+        throw error;
+      }
+      return;
+    }
+    if (this.inFlightPermissions.get(input.permissionId) !== pending) return;
+    this.inFlightPermissions.delete(input.permissionId);
+    this.emit({
+      type: "session.permission_resolved",
+      sessionId: this.id,
+      permissionId: input.permissionId,
+    });
+    this.reevaluateDeferredPermissionTerminal();
   }
 
   close(input?: SessionCloseInput): Promise<void> {
@@ -1313,21 +1958,57 @@ export class OmpProviderSession {
       }
     }
     this.finishCompaction("canceled");
+    this.resolveAllPermissions(true);
     this.closed = true;
     this.configRefreshAttempts = 0;
     this.configRefreshDirty = false;
     const configRefresh = this.configRefreshInFlight;
     this.cancelConfigRefreshRetry();
     this.lifetime.abort(new Error("OMP provider session closed"));
+    this.subsessions?.close();
     this.projector.close();
     this.unsubscribe();
+    this.hostTools.detach();
     this.runtimeDisposal ??= this.runtime.close();
-    await Promise.allSettled([
-      this.runtimeDisposal,
-      this.recoveryPromise,
-      ...(configRefresh ? [configRefresh] : []),
-    ]);
-    await this.runtimeDisposal;
+    this.hostToolsDisposal ??= this.hostTools.close();
+    const cleanupErrors: unknown[] = [];
+    const deferredCleanup: Promise<void>[] = [];
+    const seenCleanup = new Set<Promise<void>>();
+    const seenCoordination = new Set<Promise<void>>();
+    while (true) {
+      const cleanup = [this.runtimeDisposal, this.hostToolsDisposal].filter(
+        (promise): promise is Promise<void> => promise !== null && !seenCleanup.has(promise),
+      );
+      const coordination = [this.recoveryPromise, configRefresh, this.configRefreshInFlight].filter(
+        (promise): promise is Promise<void> => promise !== null && !seenCoordination.has(promise),
+      );
+      if (cleanup.length === 0 && coordination.length === 0) break;
+      for (const promise of cleanup) seenCleanup.add(promise);
+      for (const promise of coordination) seenCoordination.add(promise);
+      const results = await Promise.allSettled([...cleanup, ...coordination]);
+      for (const result of results.slice(0, cleanup.length)) {
+        if (result.status !== "rejected") continue;
+        if (isOmpCleanupFailure(result.reason)) {
+          if (!seenCleanup.has(result.reason.cleanup)) deferredCleanup.push(result.reason.cleanup);
+          continue;
+        }
+        cleanupErrors.push(result.reason);
+      }
+    }
+    if (deferredCleanup.length > 0) {
+      const failed =
+        cleanupErrors.length > 0
+          ? [Promise.reject(new AggregateError(cleanupErrors, "OMP session cleanup failed"))]
+          : [];
+      throw new OmpCleanupFailure(
+        "OMP session cleanup pending",
+        settleSessionCleanup([...deferredCleanup, ...failed]),
+        this.persistenceSessionId,
+      );
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "OMP session cleanup failed");
+    }
   }
 
   private publishSessionClosed(error?: { message: string }): void {
@@ -1340,9 +2021,14 @@ export class OmpProviderSession {
     this.unsubscribe();
     this.runtime = runtime;
     this.configRefreshAttempts = 0;
+    this.runtimeTurnCompleted = false;
     const generation = this.generation;
     this.unsubscribe = runtime.onEvent((event) => {
       if (generation !== this.generation) return;
+      if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+        this.hostTools.handle(event);
+        return;
+      }
       this.handleRuntimeEvent(event);
     });
   }
@@ -1358,8 +2044,13 @@ export class OmpProviderSession {
   }
 
   private async startRecovery(): Promise<void> {
-    const expectedSessionId = this.nativeSessionId;
-    if (!expectedSessionId) {
+    if (!this.persistSession) {
+      throw new OmpPublicError(
+        "OMP cannot recover a non-persisted session; create a new session instead",
+      );
+    }
+    const expectedSessionId = this.persistSession ? this.nativeSessionId : undefined;
+    if (this.persistSession && !expectedSessionId) {
       throw new Error("OMP cannot recover because the original native session handle is missing");
     }
     const recoverFromNativeConfig = this.recoveryUsesNativeConfig;
@@ -1370,32 +2061,42 @@ export class OmpProviderSession {
       recovered = await this.runtimeFactory.startSession({
         ...this.recoveryOptions,
         ...(recoverFromNativeConfig ? { model: undefined, thinkingOption: undefined } : {}),
-        resumeSessionId: expectedSessionId,
+        ...(expectedSessionId ? { resumeSessionId: expectedSessionId } : {}),
         signal: this.lifetime.signal,
       });
     } catch (error) {
-      if (error instanceof OmpCleanupFailure) {
-        this.runtimeDisposal = error.cleanup.then(
-          () => {
-            throw new Error("OMP recovery cleanup failed");
-          },
-          () => {
-            throw new Error("OMP recovery cleanup failed");
-          },
-        );
+      if (isOmpCleanupFailure(error)) {
+        this.runtimeDisposal = Promise.reject(error);
         void this.runtimeDisposal.catch(() => undefined);
       }
       throw error;
     }
+    let unsubscribeBootstrap = () => {};
+    let bootstrapConfigRevision = 0;
     try {
-      const state = await recovered.getState();
-      if (state.sessionId !== expectedSessionId) {
+      unsubscribeBootstrap = recovered.onEvent((event) => {
+        if (event.type === "host_tool_call" || event.type === "host_tool_cancel") {
+          this.hostTools.handle(event);
+          return;
+        }
+        if (isRuntimeConfigEvent(event)) bootstrapConfigRevision += 1;
+      });
+      await this.hostTools.bind(recovered);
+      let state = await recovered.getState();
+      const reconciledConfigRevision = bootstrapConfigRevision;
+      state = await recovered.getState();
+      if (expectedSessionId && state.sessionId !== expectedSessionId) {
         throw new Error(
           `OMP resumed native session '${state.sessionId}' instead of '${expectedSessionId}'`,
         );
       }
+      if (!expectedSessionId) this.nativeSessionId = state.sessionId;
       const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
-      if (!recoverFromNativeConfig && recoveredModel !== this.recoveryOptions.model) {
+      if (
+        !recoverFromNativeConfig &&
+        bootstrapConfigRevision === 0 &&
+        recoveredModel !== this.recoveryOptions.model
+      ) {
         throw new Error("OMP recovered with a different model");
       }
       const advertisedModel = state.model
@@ -1411,24 +2112,41 @@ export class OmpProviderSession {
         throw new Error("OMP recovered with an unsupported thinking level");
       }
       if (this.closed) throw new Error("OMP session closed while runtime recovery was pending");
+      if (!this.hostTools.isBoundTo(recovered)) {
+        throw new Error("OMP host tool bridge detached during recovery");
+      }
+      if (this.subsessions) await recovered.setSubagentSubscription("events");
       this.dataFilter.addSensitiveValues(recovered.redactionValues ?? []);
       this.projector.addSensitiveValues(recovered.redactionValues ?? []);
+      this.subsessions?.addSensitiveValues(recovered.redactionValues ?? []);
       this.generation += 1;
       this.lastUsage = null;
       this.runtimeDead = null;
       this.runtimeDisposal = null;
+      unsubscribeBootstrap();
+      unsubscribeBootstrap = () => {};
       this.bindRuntime(recovered);
       if (!this.publishCommittedConfig(state, recovered, this.generation, true)) {
         throw new Error("OMP session changed while recovery configuration was pending");
       }
       this.recoveryUsesNativeConfig = false;
+
+      if (bootstrapConfigRevision !== reconciledConfigRevision) {
+        this.scheduleCommittedConfigRefresh();
+      }
     } catch (error) {
+      unsubscribeBootstrap();
+      this.hostTools.detach();
       this.runtimeDisposal = recovered.close();
       void this.runtimeDisposal.catch(() => undefined);
       throw error;
     }
   }
-  private async steer(clientMessageId: string, text: string): Promise<void> {
+  private async steer(
+    clientMessageId: string,
+    text: string,
+    images: readonly OmpImage[],
+  ): Promise<void> {
     const turn = this.activeTurn;
     if (!this.isSteerableTurn(turn)) {
       this.publishSteerFailure(clientMessageId, "There is no active OMP turn to steer");
@@ -1470,7 +2188,7 @@ export class OmpProviderSession {
     turn.steersInFlight += 1;
     this.cancelLocalOnlyCompletion(turn);
     try {
-      await this.runtime.steer(text);
+      await this.runtime.steer(text, images);
       turn.steersInFlight -= 1;
       if (turn.terminal || turn.terminalizing || this.activeTurn !== turn) {
         this.removePendingUser(turn, pending);
@@ -1510,11 +2228,42 @@ export class OmpProviderSession {
 
   private handleRuntimeEvent(event: OmpRpcEvent): void {
     if (this.closed) return;
+    if (
+      event.type === "subagent_lifecycle" ||
+      event.type === "subagent_progress" ||
+      event.type === "subagent_event"
+    ) {
+      try {
+        this.subsessions?.handle(event);
+      } catch {
+        this.handleRuntimeFailure("OMP subagent event processing failed");
+      }
+      return;
+    }
     if (event.type === "available_commands_update") {
       this.replaceSlashCommands(event.commands);
+      this.commandCatalog = event.commands;
+      this.publishCommands(event.commands);
       return;
     }
     if (event.type === "extension_ui_request") {
+      if (event.method === "cancel") {
+        this.resolvePermissionByNativeId(event.targetId ?? "");
+        return;
+      }
+      if (
+        event.method === "select" ||
+        event.method === "confirm" ||
+        event.method === "input" ||
+        event.method === "editor"
+      ) {
+        if (!this.capabilities.includes("permission")) {
+          this.handleRuntimeFailure();
+          return;
+        }
+        this.publishPermission(event);
+        return;
+      }
       if (isPassiveUiMethod(event.method)) {
         this.projector.projectPassive(event);
         return;
@@ -1522,7 +2271,17 @@ export class OmpProviderSession {
       this.handleRuntimeFailure();
       return;
     }
-    if (event.type === "notice" || event.type === "todo_reminder") {
+    if (
+      event.type === "notice" ||
+      event.type === "todo_reminder" ||
+      event.type === "todo_auto_clear" ||
+      event.type === "goal_updated" ||
+      event.type === "auto_retry_start" ||
+      event.type === "auto_retry_end" ||
+      event.type === "compaction_start" ||
+      event.type === "compaction_end" ||
+      event.type === "advisor_yielded"
+    ) {
       this.projector.projectPassive(event);
       return;
     }
@@ -1530,17 +2289,22 @@ export class OmpProviderSession {
       this.handleRuntimeFailure();
       return;
     }
-    if (
-      event.type === "model_changed" ||
-      event.type === "thinking_level_changed" ||
-      event.type === "retry_fallback_applied" ||
-      event.type === "retry_fallback_succeeded"
-    ) {
+    if (event.type === "retry_fallback_applied" || event.type === "retry_fallback_succeeded") {
+      this.projector.projectPassive(event);
+      this.scheduleCommittedConfigRefresh();
+      return;
+    }
+    if (event.type === "model_changed" || event.type === "thinking_level_changed") {
       this.scheduleCommittedConfigRefresh();
       return;
     }
     const turn = this.activeTurn;
-    if (!turn) return;
+    if (!turn) {
+      if (event.type === "auto_compaction_start" || event.type === "auto_compaction_end") {
+        this.projector.projectPassive(event);
+      }
+      return;
+    }
     if (turn.starting) {
       if (
         turn.bufferedEvents.length >= MAX_BUFFERED_TURN_EVENTS ||
@@ -1567,24 +2331,28 @@ export class OmpProviderSession {
     if (
       turn.generation !== this.generation ||
       turn.terminal ||
-      turn.terminalizing ||
+      (turn.terminalizing && turn.terminalization !== undefined) ||
       this.activeTurn !== turn
     ) {
       return;
     }
+    if (event.type === "prompt_error") {
+      if (event.id !== turn.nativeRequestId) return;
+      const error = { message: event.error };
+      this.publishPendingUsers(turn);
+      void this.finishTurn(turn, "failed", error);
+      return;
+    }
     if (event.type === "prompt_result") {
-      if (
-        !event.id ||
-        event.id !== turn.nativeRequestId ||
-        turn.localOnlyDisabled ||
-        turn.steersInFlight > 0
-      ) {
+      if (!event.id || event.id !== turn.nativeRequestId) return;
+      if (event.agentInvoked) {
+        this.markAgentEvidence(turn);
+        if (!turn.replayingBufferedEvents) this.markTerminalOwnershipEvidence(turn);
         return;
       }
-      if (event.agentInvoked) {
-        turn.localOnlyEligible = false;
-        this.cancelLocalOnlyCompletion(turn);
-      } else if (!turn.nativeActivity) {
+      if (turn.localOnlyDisabled || turn.steersInFlight > 0) return;
+      if (!turn.nativeActivity && !turn.awaitingPermissionEvidence) {
+        turn.agentInvoked = false;
         turn.localOnlyEligible = true;
         this.scheduleLocalOnlyCompletion(turn);
       }
@@ -1597,13 +2365,25 @@ export class OmpProviderSession {
       return;
     }
     if (event.type === "auto_compaction_end") {
+      if (this.discardedCompactionEnds > 0) {
+        this.discardedCompactionEnds -= 1;
+        return;
+      }
       const operation = this.activeCompaction;
       if (
         operation?.trigger !== "auto" ||
         operation.turnId !== turn.turnId ||
-        operation.generation !== turn.generation ||
-        (event.action !== undefined && operation.action !== event.action)
+        operation.generation !== turn.generation
       ) {
+        return;
+      }
+      if (event.action !== undefined && operation.action !== event.action) {
+        this.retireCompaction("OMP emitted overlapping compactions");
+        this.discardedCompactionEnds = 1;
+        return;
+      }
+      if (event.willRetry) {
+        operation.retrying = true;
         return;
       }
       const state = event.aborted
@@ -1614,23 +2394,51 @@ export class OmpProviderSession {
             ? "skipped"
             : "completed";
       this.finishCompaction(state, {
-        tokensBefore: event.result?.tokensBefore,
+        tokensBefore: event.result?.tokensBefore ?? event.result?.preTokens,
         message: event.errorMessage,
       });
       this.scheduleUsagePoll(turn, USAGE_REFRESH_MS);
       return;
     }
     if (event.type === "agent_end" && turn.manualCompactionPending) return;
+    if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+      try {
+        this.subsessions?.observeSessionEvent(this.id, event);
+      } catch {
+        this.handleRuntimeFailure("OMP subagent dispatch tracking failed");
+        return;
+      }
+    }
     if (isNativeTurnActivity(event)) {
       turn.nativeActivity = true;
       this.cancelLocalOnlyCompletion(turn);
     }
     if (event.type === "message_end" && event.message.role === "user") {
+      this.markAgentEvidence(turn);
       this.projectUserEcho(turn, event.message);
       return;
     }
+    if (
+      (event.type === "message_start" ||
+        event.type === "message_update" ||
+        event.type === "message_end") &&
+      event.message.role === "assistant"
+    ) {
+      turn.awaitingPermissionEvidence = false;
+    }
     if (event.type === "agent_end") {
-      if (event.isTerminal === false || turn.terminalizing) return;
+      const hasAssistantEvidence =
+        event.messages?.some((message) => message.role === "assistant") ?? false;
+      if (turn.awaitingPermissionEvidence && !hasAssistantEvidence) {
+        turn.deferredAgentEnd = event;
+        return;
+      }
+      if (hasAssistantEvidence) turn.awaitingPermissionEvidence = false;
+      if (event.isTerminal === false) return;
+      if (turn.terminalizing) {
+        turn.deferredAgentEnd = event;
+        return;
+      }
       if (turn.steersInFlight > 0) {
         turn.deferredAgentEnd = event;
         return;
@@ -1638,10 +2446,17 @@ export class OmpProviderSession {
       this.beginTerminalization(turn, event);
       return;
     }
+    if (isNativeTurnActivity(event)) this.markAgentEvidence(turn);
+    if (event.type === "message_end" && event.message.role === "user") {
+      this.markAgentEvidence(turn);
+      this.projectUserEcho(turn, event.message);
+      return;
+    }
     this.projector.project(event, turn.turnId);
   }
 
   private projectUserEcho(turn: ActiveTurn, message: OmpMessage): void {
+    turn.userEchoObserved = true;
     const entryId = nativeEntryId(message);
     if (
       entryId &&
@@ -1766,7 +2581,7 @@ export class OmpProviderSession {
       turn.userEchoes.shift();
       if (!resolvedId) return;
       turn.pendingUsers.shift();
-      this.publishCorrelatedUser(pending, resolvedId);
+      this.publishCorrelatedUser(turn, pending, resolvedId);
     }
   }
 
@@ -1803,15 +2618,408 @@ export class OmpProviderSession {
     });
   }
 
-  private replaceSlashCommands(commands: Array<{ name: string; aliases?: string[] }>): void {
+  private replaceSlashCommands(commands: OmpAvailableCommand[]): void {
     this.slashCommands.clear();
     for (const command of commands) {
-      this.slashCommands.add(command.name);
-      for (const alias of command.aliases ?? []) this.slashCommands.add(alias);
+      if (isSafeCommandName(command.name)) this.slashCommands.add(command.name);
+      for (const alias of command.aliases ?? []) {
+        if (isSafeCommandName(alias)) this.slashCommands.add(alias);
+      }
     }
     this.commandDiscoveryAvailable = true;
   }
 
+  private publishCommands(commands: OmpAvailableCommand[]): void {
+    this.emit({
+      type: "session.commands",
+      sessionId: this.id,
+      commands: commands
+        .filter((command) => isSafeCommandName(command.name))
+        .map((command) => {
+          const name = this.dataFilter.text(command.name, 256);
+          return {
+            name,
+            description: this.dataFilter.text(command.description ?? `Run /${name}`, 4_096),
+            ...(command.input?.hint
+              ? { argumentHint: this.dataFilter.text(command.input.hint, 1_024) }
+              : {}),
+          };
+        }),
+    });
+  }
+  private publishPermission(request: OmpQuestionRequest): void {
+    if (request.method === "select" && !request.options?.length) {
+      this.handleRuntimeFailure();
+      return;
+    }
+    const fingerprint = permissionFingerprint(request);
+    let existingId: string | undefined;
+    let existingPending: PendingPermission | undefined;
+    for (const [permissionId, pending] of this.pendingPermissions) {
+      if (pending.nativeId !== request.id) continue;
+      if (pending.fingerprint === fingerprint) {
+        existingId = permissionId;
+        existingPending = pending;
+      } else {
+        this.pendingPermissions.delete(permissionId);
+        if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+      }
+      break;
+    }
+    if (!existingId) {
+      for (const pending of this.inFlightPermissions.values()) {
+        if (pending.nativeId !== request.id) continue;
+        if (pending.fingerprint !== fingerprint) this.handleRuntimeFailure();
+        return;
+      }
+    }
+    if (
+      !existingId &&
+      this.pendingPermissions.size + this.inFlightPermissions.size >= MAX_PENDING_PERMISSIONS
+    ) {
+      this.rejectPermissionRequest(request, "Too many OMP questions are already pending");
+      return;
+    }
+    if (existingPending?.timer !== undefined) this.scheduler.clear(existingPending.timer);
+    if (!existingId) this.permissionSequence += 1;
+    const id =
+      existingId ?? `omp:permission:${this.permissionNamespace}:${this.permissionSequence}`;
+    const header = this.dataFilter.text(request.title ?? "OMP question", 4_096);
+    const optionValues = new Map<string, string>();
+    const displayValues = new Map<string, string>();
+    const usedOptionLabels = new Set<string>();
+    const optionDetails = request.method === "select" ? request.optionDetails : undefined;
+    const options =
+      request.method === "select"
+        ? request.options.map((nativeValue, index) => {
+            const baseLabel = this.dataFilter.text(nativeValue, 4_096);
+            let label = baseLabel;
+            let suffix = 2;
+            while (usedOptionLabels.has(label)) {
+              label = `${baseLabel} (${suffix})`;
+              suffix += 1;
+            }
+            usedOptionLabels.add(label);
+            const value = `${id}:option:${index}`;
+            optionValues.set(value, nativeValue);
+            displayValues.set(label, nativeValue);
+            return {
+              label,
+              value,
+              ...(optionDetails?.[index]?.description
+                ? {
+                    description: this.dataFilter.text(
+                      optionDetails[index]?.description ?? "",
+                      16_384,
+                    ),
+                  }
+                : {}),
+            };
+          })
+        : undefined;
+    const questionOptions =
+      request.method === "confirm" ? [{ label: "Yes" }, { label: "No" }] : (options ?? []);
+    const actions =
+      request.method === "select"
+        ? [
+            ...(options ?? []).map((option) => ({
+              id: option.value,
+              label: option.label,
+              behavior: "allow" as const,
+              variant: "secondary" as const,
+            })),
+            {
+              id: "cancel",
+              label: "Cancel",
+              behavior: "deny" as const,
+              variant: "secondary" as const,
+            },
+          ]
+        : [
+            {
+              id: "submit",
+              label: request.method === "confirm" ? "Confirm" : "Submit",
+              behavior: "allow" as const,
+              variant: "primary" as const,
+            },
+            {
+              id: "cancel",
+              label: "Cancel",
+              behavior: "deny" as const,
+              variant: "secondary" as const,
+            },
+          ];
+    // OMP passes rpc-ui dialog timeouts directly to setTimeout, so the wire unit is milliseconds.
+    const pending: PendingPermission = {
+      nativeId: request.id,
+      header,
+      fingerprint,
+      optionValues,
+      actionBehaviors: new Map(actions.map((action) => [action.id, action.behavior])),
+      displayValues,
+      generation: this.generation,
+      runtime: this.runtime,
+      request,
+      retainedBytes: boundedJsonBytes(
+        { request, header, options: questionOptions, actions },
+        MAX_PENDING_PERMISSION_BYTES,
+        512,
+        MAX_PENDING_PERMISSION_BYTES,
+        4_096,
+      ),
+      ...(this.activeTurn ? { turnId: this.activeTurn.turnId } : {}),
+      ...(request.timeout !== undefined ? { expiresAt: Date.now() + request.timeout } : {}),
+    };
+    let retainedPermissionBytes = pending.retainedBytes;
+    for (const [permissionId, retained] of this.pendingPermissions) {
+      if (permissionId !== existingId) retainedPermissionBytes += retained.retainedBytes;
+    }
+    for (const retained of this.inFlightPermissions.values()) {
+      retainedPermissionBytes += retained.retainedBytes;
+    }
+    if (
+      pending.retainedBytes === Number.POSITIVE_INFINITY ||
+      retainedPermissionBytes > MAX_PENDING_PERMISSION_BYTES
+    ) {
+      if (existingId) {
+        this.pendingPermissions.delete(existingId);
+        this.emit({
+          type: "session.permission_resolved",
+          sessionId: this.id,
+          permissionId: existingId,
+        });
+      }
+      this.rejectPermissionRequest(request, "OMP question data exceeded the pending input budget");
+      return;
+    }
+    this.pendingPermissions.set(id, pending);
+    this.armPermissionTimeout(id, pending);
+    this.projector.markAskPermissionRendered();
+    if (this.activeTurn) {
+      this.activeTurn.awaitingPermissionEvidence = true;
+      this.markAgentEvidence(this.activeTurn);
+    }
+    this.emit({
+      type: "session.permission",
+      sessionId: this.id,
+      request: {
+        id,
+        name: `omp.${request.method}`,
+        kind: "question",
+        title: header,
+        ...(request.method === "confirm"
+          ? { description: this.dataFilter.text(request.message, 64 * 1024) }
+          : {}),
+        input: {
+          questions: [
+            {
+              header,
+              question: this.dataFilter.text(
+                request.method === "confirm" ? request.message : request.title,
+                64 * 1024,
+              ),
+              options: questionOptions,
+              multiSelect: false,
+              ...(request.method === "input" && request.placeholder
+                ? { placeholder: this.dataFilter.text(request.placeholder, 4_096) }
+                : {}),
+              ...((request.method === "input" || request.method === "editor") && request.prefill
+                ? { prefill: this.dataFilter.text(request.prefill) }
+                : {}),
+            },
+          ],
+        },
+        actions,
+      },
+    });
+  }
+
+  private rejectPermissionRequest(request: OmpQuestionRequest, description: string): void {
+    this.emit({
+      type: "session.notice",
+      sessionId: this.id,
+      notice: {
+        id: `omp:permission-rejected:${this.permissionSequence + 1}`,
+        severity: "warning",
+        title: "OMP question canceled",
+        description,
+      },
+    });
+    void this.runtime
+      .respondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true })
+      .catch(() => this.handleRuntimeFailure());
+  }
+
+  private extensionUiResponse(
+    pending: PendingPermission,
+    response: ProviderPermissionResponse,
+  ): OmpExtensionUiResponse {
+    if (response.selectedActionId !== undefined) {
+      const expectedBehavior = pending.actionBehaviors.get(response.selectedActionId);
+      if (expectedBehavior === undefined || expectedBehavior !== response.behavior) {
+        throw new OmpPublicError("OMP permission action is invalid");
+      }
+    }
+    const { nativeId, request, header } = pending;
+    if (request.method === "confirm") {
+      if (response.behavior === "deny") {
+        return { type: "extension_ui_response", id: nativeId, confirmed: false };
+      }
+      const answers = response.updatedInput?.answers;
+      const answer =
+        answers && typeof answers === "object" && !Array.isArray(answers)
+          ? answers[header]
+          : undefined;
+      return {
+        type: "extension_ui_response",
+        id: nativeId,
+        confirmed: typeof answer === "string" ? /^yes$/iu.test(answer.trim()) : true,
+      };
+    }
+    this.reevaluateDeferredPermissionTerminal();
+    if (response.behavior === "deny") {
+      return { type: "extension_ui_response", id: nativeId, cancelled: true };
+    }
+    const selectedValue = response.selectedActionId
+      ? pending.optionValues.get(response.selectedActionId)
+      : undefined;
+    if (selectedValue !== undefined) {
+      return { type: "extension_ui_response", id: nativeId, value: selectedValue };
+    }
+    const answers = response.updatedInput?.answers;
+    if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+      throw new OmpPublicError("OMP question response requires answers");
+    }
+    const answer = answers[header];
+    const publicValue = Array.isArray(answer) ? answer[0] : answer;
+    if (typeof publicValue !== "string") {
+      throw new OmpPublicError("OMP question response is invalid");
+    }
+    if (request.method === "select") {
+      const mapped =
+        pending.optionValues.get(publicValue) ?? pending.displayValues.get(publicValue);
+      if (mapped === undefined) {
+        throw new OmpPublicError("OMP selection response is invalid");
+      }
+      return { type: "extension_ui_response", id: nativeId, value: mapped };
+    }
+    return { type: "extension_ui_response", id: nativeId, value: publicValue };
+  }
+
+  private resolvePermissionByNativeId(nativeId: string): void {
+    for (const permissions of [this.pendingPermissions, this.inFlightPermissions]) {
+      for (const [permissionId, pending] of permissions) {
+        if (pending.nativeId !== nativeId) continue;
+        permissions.delete(permissionId);
+        if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+        this.reevaluateDeferredPermissionTerminal();
+        return;
+      }
+    }
+  }
+
+  private resolveTurnPermissions(turnId: string): void {
+    this.resolvePermissions((pending) => pending.turnId === turnId, true);
+  }
+  private resolveAllPermissions(cancelNative = false): void {
+    this.resolvePermissions(() => true, cancelNative);
+  }
+
+  private resolvePermissions(
+    matches: (pending: PendingPermission) => boolean,
+    cancelNative: boolean,
+  ): void {
+    const permissionIds = new Set<string>();
+    for (const permissions of [this.pendingPermissions, this.inFlightPermissions]) {
+      for (const [permissionId, pending] of permissions) {
+        if (!matches(pending)) continue;
+        permissions.delete(permissionId);
+        if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+        permissionIds.add(permissionId);
+        if (cancelNative && permissions === this.pendingPermissions) {
+          void pending.runtime
+            .respondToExtensionUi({
+              type: "extension_ui_response",
+              id: pending.nativeId,
+              cancelled: true,
+            })
+            .catch(() => {
+              if (!this.closed && !this.runtimeDead) {
+                this.invalidateRuntime("OMP permission cancellation failed");
+              }
+            });
+        }
+      }
+    }
+    for (const permissionId of permissionIds) {
+      this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+    }
+    this.reevaluateDeferredPermissionTerminal();
+  }
+
+  private armPermissionTimeout(permissionId: string, pending: PendingPermission): void {
+    if (pending.expiresAt === undefined) return;
+    const remainingMs = Math.max(0, pending.expiresAt - Date.now());
+    pending.timer = this.scheduler.set(() => {
+      if (this.pendingPermissions.get(permissionId) !== pending) return;
+      this.pendingPermissions.delete(permissionId);
+      if (!this.permissionOwnerIsCurrent(pending)) {
+        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+        this.reevaluateDeferredPermissionTerminal();
+        return;
+      }
+      this.inFlightPermissions.set(permissionId, pending);
+      void pending.runtime
+        .respondToExtensionUi({
+          type: "extension_ui_response",
+          id: pending.nativeId,
+          cancelled: true,
+          timedOut: true,
+        })
+        .then(
+          () => {
+            if (this.inFlightPermissions.get(permissionId) !== pending) return;
+            this.inFlightPermissions.delete(permissionId);
+            this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+            this.reevaluateDeferredPermissionTerminal();
+          },
+          () => this.handleRuntimeFailure(),
+        );
+    }, remainingMs);
+  }
+
+  private permissionOwnerIsCurrent(pending: PendingPermission): boolean {
+    if (
+      this.closed ||
+      this.runtimeDead ||
+      pending.generation !== this.generation ||
+      pending.runtime !== this.runtime
+    ) {
+      return false;
+    }
+    if (pending.turnId === undefined) return true;
+    return this.activeTurn?.turnId === pending.turnId && !this.activeTurn.terminal;
+  }
+
+  private reevaluateDeferredPermissionTerminal(): void {
+    const turn = this.activeTurn;
+    if (!turn?.deferredAgentEnd || turn.terminal || turn.terminalizing) return;
+    const ownsTurn = (pending: PendingPermission) => pending.turnId === turn.turnId;
+    if (
+      [...this.pendingPermissions.values()].some(ownsTurn) ||
+      [...this.inFlightPermissions.values()].some(ownsTurn)
+    ) {
+      return;
+    }
+    const hasAssistantEvidence =
+      turn.deferredAgentEnd.messages?.some((message) => message.role === "assistant") ?? false;
+    if (!hasAssistantEvidence || turn.awaitingPermissionEvidence) return;
+    const deferred = turn.deferredAgentEnd;
+    turn.deferredAgentEnd = undefined;
+    this.beginTerminalization(turn, deferred);
+  }
   private async slashSteerUnavailable(commandName: string): Promise<boolean> {
     if (!this.commandDiscoveryAvailable || !this.slashCommands.has(commandName)) {
       try {
@@ -1824,11 +3032,12 @@ export class OmpProviderSession {
     return this.slashCommands.has(commandName);
   }
 
-  private publishCorrelatedUser(pending: PendingUser, entryId?: string): void {
+  private publishCorrelatedUser(turn: ActiveTurn, pending: PendingUser, entryId?: string): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
       this.seenEntryIds.add(entryId);
       this.emittedEntryIds.add(entryId);
+      this.markTerminalOwnershipEvidence(turn);
       const unclaimedIndex = this.unclaimedBranchEntries.findIndex(
         (entry) => entry.entryId === entryId,
       );
@@ -1837,8 +3046,30 @@ export class OmpProviderSession {
     this.projector.publishUser(pending.text, pending.clientMessageId, entryId);
   }
 
+  private markAgentEvidence(turn: ActiveTurn): void {
+    turn.agentInvoked = true;
+    turn.nativeActivity = true;
+    turn.activitySequence += 1;
+    turn.localOnlyEligible = false;
+    this.cancelLocalOnlyCompletion(turn);
+    if (!turn.awaitingPermissionEvidence) turn.deferredAgentEnd = undefined;
+  }
+
+  private markTerminalOwnershipEvidence(turn: ActiveTurn): void {
+    turn.terminalOwnershipEvidence = true;
+    this.cancelTerminalOwnershipTimeout(turn);
+  }
+
   private scheduleLocalOnlyCompletion(turn: ActiveTurn): void {
-    if (turn.localOnlyDisabled || turn.steersInFlight > 0) return;
+    if (
+      turn.agentInvoked !== false ||
+      !turn.localOnlyEligible ||
+      turn.awaitingPermissionEvidence ||
+      turn.localOnlyDisabled ||
+      turn.steersInFlight > 0
+    ) {
+      return;
+    }
     this.cancelLocalOnlyCompletion(turn);
     turn.localOnlyTimer = this.scheduler.set(() => {
       turn.localOnlyTimer = undefined;
@@ -1852,11 +3083,42 @@ export class OmpProviderSession {
     turn.localOnlyTimer = undefined;
   }
 
+  private scheduleTerminalOwnershipTimeout(turn: ActiveTurn): void {
+    if (
+      turn.terminalOwnershipTimer !== undefined ||
+      turn.terminalOwnershipEvidence ||
+      (turn.agentInvoked === false && turn.localOnlyEligible)
+    ) {
+      return;
+    }
+    turn.terminalOwnershipTimer = this.scheduler.set(() => {
+      turn.terminalOwnershipTimer = undefined;
+      if (
+        this.closed ||
+        turn.terminal ||
+        this.activeTurn !== turn ||
+        turn.terminalOwnershipEvidence
+      ) {
+        return;
+      }
+      this.handleRuntimeFailure("OMP terminal ownership could not be confirmed");
+    }, AGENT_END_STATE_TIMEOUT_MS);
+  }
+
+  private cancelTerminalOwnershipTimeout(turn: ActiveTurn): void {
+    if (turn.terminalOwnershipTimer === undefined) return;
+    this.scheduler.clear(turn.terminalOwnershipTimer);
+    turn.terminalOwnershipTimer = undefined;
+  }
+
   private async completeLocalOnlyTurn(turn: ActiveTurn): Promise<void> {
     await Promise.allSettled(turn.userLookups);
     if (this.closed || turn.terminal || this.activeTurn !== turn) return;
     if (
       turn.terminal ||
+      turn.agentInvoked !== false ||
+      !turn.localOnlyEligible ||
+      turn.awaitingPermissionEvidence ||
       turn.nativeActivity ||
       turn.localOnlyDisabled ||
       turn.steersInFlight > 0 ||
@@ -1864,8 +3126,12 @@ export class OmpProviderSession {
     ) {
       return;
     }
+    turn.usageSampleFloor = this.usageSequence + 1;
+    if (this.usageSample?.turn === turn && this.usageSample.sequence < turn.usageSampleFloor) {
+      this.usageSample = null;
+    }
     this.publishPendingUsers(turn);
-    await this.finishTurn(turn, "completed");
+    await this.finishTurn(turn, "completed", undefined, false, false, true);
   }
 
   private beginTerminalization(
@@ -1875,6 +3141,7 @@ export class OmpProviderSession {
     if (turn.terminal || turn.terminalizing || turn.agentEndPending || this.activeTurn !== turn) {
       return;
     }
+    if (!turn.interrupted && this.deferAgentEndForSubsessions(turn, event)) return;
     turn.agentEndPending = true;
     turn.usageSampleFloor = this.usageSequence + 1;
     if (this.usageSample?.turn === turn && this.usageSample.sequence < turn.usageSampleFloor) {
@@ -1884,7 +3151,11 @@ export class OmpProviderSession {
     turn.agentEndDeadlineTimer = this.scheduler.set(() => {
       turn.agentEndDeadlineTimer = undefined;
       if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
-      void this.completeAgentEnd(turn, event);
+      if (turn.userEchoObserved) {
+        this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
+      } else {
+        void this.completeAgentEnd(turn, event);
+      }
     }, AGENT_END_SETTLE_MS);
     this.finishFromAgentEnd(turn, event);
   }
@@ -1901,16 +3172,56 @@ export class OmpProviderSession {
       this.scheduleLocalOnlyCompletion(turn);
     }
   }
+  private deferAgentEndForSubsessions(
+    turn: ActiveTurn,
+    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  ): boolean {
+    if (!this.subsessions?.hasActiveChildren()) return false;
+    turn.terminalizing = false;
+    turn.deferredAgentEnd = event;
+    void this.subsessions.reconcile(this.runtime).catch(() => {
+      if (!turn.terminal && this.activeTurn === turn) {
+        this.handleRuntimeFailure("OMP subagent reconciliation failed");
+      }
+    });
+    return true;
+  }
+
+  private resumeDeferredAgentEnd(): void {
+    const turn = this.activeTurn;
+    if (
+      !turn ||
+      turn.terminal ||
+      turn.terminalizing ||
+      turn.steersInFlight > 0 ||
+      this.subsessions?.hasActiveChildren()
+    ) {
+      return;
+    }
+    const event = turn.deferredAgentEnd;
+    if (!event) return;
+    turn.deferredAgentEnd = undefined;
+    this.beginTerminalization(turn, event);
+  }
 
   private finishFromAgentEnd(
     turn: ActiveTurn,
     event: Extract<OmpRpcEvent, { type: "agent_end" }>,
   ): void {
-    if (turn.agentEndCheck || !turn.agentEndPending || turn.terminal) return;
+    if (!turn.agentEndPending || turn.terminal) return;
+    if (turn.agentEndCheck) {
+      turn.deferredAgentEnd = event;
+      return;
+    }
     const check = this.checkAgentEndState(turn, event);
     turn.agentEndCheck = check;
     void check.finally(() => {
-      if (turn.agentEndCheck === check) turn.agentEndCheck = undefined;
+      if (turn.agentEndCheck !== check) return;
+      turn.agentEndCheck = undefined;
+      const deferred = turn.deferredAgentEnd;
+      if (!deferred || !turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
+      turn.deferredAgentEnd = undefined;
+      this.finishFromAgentEnd(turn, deferred);
     });
   }
 
@@ -1932,14 +3243,35 @@ export class OmpProviderSession {
     }
     const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
+    if (!turn.interrupted && this.subsessions?.hasActiveChildren()) {
+      turn.agentEndPending = false;
+      if (this.deferAgentEndForSubsessions(turn, event)) return;
+    }
     if (state) {
-      if (!state.isStreaming && !state.isCompacting) {
-        await this.completeAgentEnd(turn, event);
+      if (state.isStreaming || state.isCompacting) {
+        if (!turn.terminalOwnershipEvidence && !turn.terminalOwnershipRequired) {
+          const message = "OMP agent_end arrived while the native runtime remained active";
+          this.invalidateRuntime(message);
+          await this.finishTurn(turn, "failed", { message }, true, true);
+          return;
+        }
+        turn.agentEndPending = false;
+        turn.terminalizing = false;
+        turn.deferredAgentEnd = undefined;
         return;
       }
-      const message = "OMP agent_end arrived while the native runtime remained active";
-      this.invalidateRuntime(message);
-      await this.finishTurn(turn, "failed", { message }, true, true);
+      if (!turn.terminalOwnershipEvidence && turn.terminalOwnershipRequired) {
+        turn.agentEndPending = false;
+        turn.terminalizing = false;
+        turn.deferredAgentEnd = undefined;
+        this.scheduleTerminalOwnershipTimeout(turn);
+        return;
+      }
+      await this.completeAgentEnd(turn, event);
+      return;
+    }
+    if (turn.userEchoObserved) {
+      this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
       return;
     }
     if (turn.agentEndRetryTimer === undefined) {
@@ -1957,6 +3289,8 @@ export class OmpProviderSession {
   ): Promise<void> {
     if (turn.terminal || this.activeTurn !== turn) return;
     const error = terminalError(event);
+    if (turn.interrupted) this.subsessions?.terminalize("canceled");
+    else if (error) this.subsessions?.terminalize("failed");
     if (turn.interrupted) await this.finishTurn(turn, "canceled", undefined, usageSampled);
     else if (error) await this.finishTurn(turn, "failed", { message: error }, usageSampled);
     else await this.finishTurn(turn, "completed", undefined, usageSampled);
@@ -2019,13 +3353,13 @@ export class OmpProviderSession {
     this.emit({ type: "session.turn", sessionId: this.id, turnId: turn.turnId, state: "started" });
     if (pollUsage) this.pollUsage(turn);
   }
-
   private finishTurn(
     turn: ActiveTurn,
     state: "completed" | "failed" | "canceled",
     error?: { message: string },
     usageSampled = false,
     override = false,
+    preserveCompactions = false,
   ): Promise<void> {
     if (turn.terminal) return Promise.resolve();
     const current = turn.terminalOutcome;
@@ -2045,6 +3379,7 @@ export class OmpProviderSession {
     turn.manualCompactionPending = false;
     turn.agentEndPending = false;
     this.cancelLocalOnlyCompletion(turn);
+    this.cancelTerminalOwnershipTimeout(turn);
     this.stopUsagePoll(turn);
     if (turn.manualCompactionDeadlineTimer !== undefined) {
       this.scheduler.clear(turn.manualCompactionDeadlineTimer);
@@ -2085,7 +3420,7 @@ export class OmpProviderSession {
       }
       turn.terminal = true;
       if (this.usageSample?.turn === turn) this.usageSample = null;
-      if (this.activeCompaction) {
+      if (!preserveCompactions && this.activeCompaction) {
         if (outcome.state === "canceled") this.finishCompaction("canceled");
         else {
           this.finishCompaction("failed", {
@@ -2094,7 +3429,8 @@ export class OmpProviderSession {
         }
       }
       this.publishPendingUsers(turn);
-      this.projector.finishTurn(turn.turnId);
+      this.resolveTurnPermissions(turn.turnId);
+      this.projector.finishTurn(turn.turnId, preserveCompactions);
       this.unclaimedBranchEntries.length = 0;
       this.emit({
         type: "session.turn",
@@ -2103,6 +3439,7 @@ export class OmpProviderSession {
         state: outcome.state,
         ...(outcome.error ? { error: outcome.error } : {}),
       });
+      this.runtimeTurnCompleted = true;
       if (this.activeTurn === turn) this.activeTurn = null;
     })();
     turn.terminalization = terminalization;
@@ -2114,6 +3451,8 @@ export class OmpProviderSession {
     compactionState: "failed" | "canceled" = "failed",
   ): void {
     if (this.closed || this.runtimeDead) return;
+    this.discardedCompactionEnds = 0;
+    this.resolveAllPermissions();
     this.recoveryUsesNativeConfig ||=
       this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
     const turn = this.activeTurn;
@@ -2122,12 +3461,14 @@ export class OmpProviderSession {
     this.finishCompaction(compactionState, { message });
     this.lastUsage = null;
     this.generation += 1;
+    this.projector.resetRuntimeGeneration("OMP runtime ended during compaction");
     this.runtimeDead = message;
     this.configRefreshAttempts = 0;
     this.configRefreshDirty = false;
     const configRefresh = this.configRefreshInFlight;
     this.cancelConfigRefreshRetry();
     this.unsubscribe();
+    this.hostTools.detach();
     this.unsubscribe = () => {};
     const runtimeDisposal = this.runtimeDisposal ?? this.runtime.close();
     this.runtimeDisposal = configRefresh
@@ -2139,6 +3480,7 @@ export class OmpProviderSession {
   private handleRuntimeFailure(message = "OMP runtime failed"): void {
     if (this.closed || this.runtimeDead) return;
     this.invalidateRuntime(message);
+    this.subsessions?.terminalize("failed");
     const turn = this.activeTurn;
     if (!turn) return;
     this.publishPendingUsers(turn);

@@ -102,7 +102,11 @@ function observeCommands(
   });
 }
 
-function runtimeFor(child: FakeRpcChild, launches: OmpSpawnRequest[] = []): OmpRpcRuntime {
+function runtimeFor(
+  child: FakeRpcChild,
+  launches: OmpSpawnRequest[] = [],
+  requestTimeoutMs?: number,
+): OmpRpcRuntime {
   return new OmpRpcRuntime({
     spawnProcess(request) {
       launches.push(request);
@@ -110,6 +114,7 @@ function runtimeFor(child: FakeRpcChild, launches: OmpSpawnRequest[] = []): OmpR
     },
     environment: TEST_RUNTIME_ENV,
     terminateProcessTree: () => Promise.resolve(true),
+    requestTimeoutMs,
   });
 }
 
@@ -126,7 +131,7 @@ function nextEvent(
 }
 
 describe("OMP RPC transport", () => {
-  test("accepts the real ready frame and a dataless steer response", async () => {
+  test("sends steer one-way without waiting for a response", async () => {
     const child = new FakeRpcChild();
     const launches: OmpSpawnRequest[] = [];
     const commands: Record<string, unknown>[] = [];
@@ -139,13 +144,6 @@ describe("OMP RPC transport", () => {
           command: "negotiate_protocol",
           success: true,
           data: { protocolVersion: 2 },
-        });
-      } else if (command.type === "steer") {
-        child.write({
-          type: "response",
-          id: command.id,
-          command: "steer",
-          success: true,
         });
       }
     });
@@ -174,12 +172,95 @@ describe("OMP RPC transport", () => {
     expect(commands).toContainEqual({
       type: "steer",
       message: "focus",
-      id: expect.any(String),
     });
     await session.close();
   });
 
-  test("accepts model, thinking, and fallback session events", async () => {
+  test("emits a late same-id prompt scheduling failure after success acknowledgement", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+      if (command.type === "prompt") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "prompt",
+          success: true,
+          data: { agentInvoked: true },
+        });
+        queueMicrotask(() => {
+          child.write({
+            type: "response",
+            id: command.id,
+            command: "prompt",
+            success: false,
+            error: "secret scheduling failure",
+          });
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const failure = nextEvent((listener) => session.onEvent(listener));
+    const acknowledgement = await session.prompt("work");
+    await expect(failure).resolves.toEqual({
+      type: "prompt_error",
+      id: acknowledgement.requestId,
+      error: "OMP prompt scheduling failed",
+    });
+    await session.close();
+  });
+
+  test("retains active tool correlation across agent_end", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const received: OmpRpcEvent[] = [];
+    session.onEvent((event) => received.push(event));
+    child.write({
+      type: "tool_execution_start",
+      toolCallId: "ask-1",
+      toolName: "ask_user",
+      args: { questions: [] },
+    });
+    child.write({ type: "agent_end", messages: [], isTerminal: true });
+    child.write({
+      type: "tool_execution_end",
+      toolCallId: "ask-1",
+      toolName: "ask_user",
+      result: { content: [{ type: "text", text: "done" }] },
+    });
+    await Promise.resolve();
+    expect(received.map((event) => event.type)).toEqual([
+      "tool_execution_start",
+      "agent_end",
+      "tool_execution_end",
+    ]);
+    await session.close();
+  });
+
+  test("accepts current goal retry compaction and subagent events", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
@@ -210,8 +291,353 @@ describe("OMP RPC transport", () => {
         model: futureSelector,
         role: futureSelector,
       },
+      {
+        type: "goal_updated",
+        goal: {
+          id: "goal-1",
+          objective: "Ship the provider",
+          status: "active",
+          tokenBudget: 10_000,
+          tokensUsed: 2_000,
+          timeUsedSeconds: 42,
+          createdAt: "2026-09-11T00:00:00Z",
+          updatedAt: "2026-09-11T00:01:00Z",
+        },
+        state: { enabled: true, mode: "focused", reason: "user requested", goal: undefined },
+      },
+      {
+        type: "auto_retry_start",
+        attempt: 2,
+        maxAttempts: 4,
+        delayMs: 1_500,
+        errorMessage: "rate limited",
+        errorId: 429,
+      },
+      {
+        type: "auto_retry_end",
+        success: false,
+        attempt: 2,
+        finalError: "still rate limited",
+        recoveredErrors: [{ id: 429 }],
+      },
+      { type: "auto_compaction_start", reason: "future", action: "future-action" },
+      { type: "auto_compaction_end", aborted: false, willRetry: false },
+      {
+        type: "subagent_lifecycle",
+        payload: {
+          id: "child-1",
+          agent: "scout",
+          agentSource: "builtin",
+          description: "Inspect protocol",
+          status: "started",
+          sessionFile: "/tmp/child.jsonl",
+          parentToolCallId: "tool-1",
+          index: 0,
+          detached: false,
+        },
+      },
+      {
+        type: "subagent_progress",
+        payload: {
+          index: 0,
+          agent: "scout",
+          task: "Inspect protocol",
+          progress: {
+            id: "child-1",
+            status: "running",
+            description: "Reading schemas",
+            currentTool: { name: "read" },
+            recentTools: [{ name: "grep" }],
+            recentOutput: [{ text: "found" }],
+            resolvedModel: "openai/gpt-5.4",
+          },
+        },
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "bashExecution",
+          command: "pwd",
+          output: "/repo",
+          exitCode: 0,
+          timestamp: 1,
+          images: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+        },
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "custom",
+          customType: "advisor",
+          content: "",
+          details: {
+            notes: [{ note: "Fix the race", severity: "blocker", advisor: "reviewer" }],
+          },
+        },
+      },
+      { type: "subagent_event", payload: { id: "child-1", event: { type: "agent_start" } } },
     ];
 
+    for (const frame of frames) {
+      const received = nextEvent((listener) => session.onEvent(listener));
+      child.write(frame);
+      await expect(received).resolves.toEqual(frame);
+    }
+    const afterMalformed = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "goal_updated",
+      goal: { id: "goal-oversized", status: "x".repeat(257) },
+    });
+    child.write({ type: "notice", level: "info", message: "after malformed current event" });
+    await expect(afterMalformed).resolves.toEqual({
+      type: "notice",
+      level: "info",
+      message: "after malformed current event",
+    });
+    await session.close();
+  });
+
+  test("rejects cross-kind extension UI fields", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const received: OmpRpcEvent[] = [];
+    session.onEvent((event) => received.push(event));
+
+    for (const frame of [
+      {
+        type: "extension_ui_request",
+        id: "bad-select",
+        method: "select",
+        title: "Select",
+        options: ["one"],
+        url: "https://example.com/?token=secret",
+      },
+      {
+        type: "extension_ui_request",
+        id: "bad-confirm",
+        method: "confirm",
+        title: "Confirm",
+        message: "Proceed?",
+        launchUrl: "javascript:alert(1)",
+      },
+      {
+        type: "extension_ui_request",
+        id: "bad-input",
+        method: "input",
+        title: "Input",
+        url: "file:///private/token",
+      },
+      {
+        type: "extension_ui_request",
+        id: "bad-editor",
+        method: "editor",
+        title: "Editor",
+        launchUrl: "https://example.com/?code=secret",
+      },
+    ]) {
+      child.write(frame);
+    }
+    child.write({ type: "notice", level: "info", message: "after invalid UI frames" });
+    await Promise.resolve();
+    expect(received).toEqual([
+      { type: "notice", level: "info", message: "after invalid UI frames" },
+    ]);
+    await session.close();
+  });
+
+  test("registers essential host tools and returns host call frames", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => {
+      commands.push(command);
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "set_host_tools") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "set_host_tools",
+          success: true,
+          data: { toolNames: ["mcp__paseo_read"] },
+        });
+      }
+    });
+    const sessionOpening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await sessionOpening;
+
+    await expect(
+      session.setHostTools([
+        {
+          name: "mcp__paseo_read",
+          label: "Read",
+          description: "Read a caller-scoped workspace file",
+          loadMode: "essential",
+          parameters: { type: "object", properties: { path: { type: "string" } } },
+        },
+      ]),
+    ).resolves.toEqual(["mcp__paseo_read"]);
+    session.sendHostToolUpdate({
+      type: "host_tool_update",
+      id: "host-call-1",
+      partialResult: { content: [], details: { progress: 1 } },
+    });
+    session.sendHostToolResult({
+      type: "host_tool_result",
+      id: "host-call-1",
+      result: { content: [{ type: "text", text: "done" }] },
+    });
+    await Promise.resolve();
+
+    expect(commands).toContainEqual({
+      type: "set_host_tools",
+      tools: [expect.objectContaining({ name: "mcp__paseo_read", loadMode: "essential" })],
+      id: expect.any(String),
+    });
+    expect(commands).toContainEqual({
+      type: "host_tool_update",
+      id: "host-call-1",
+      partialResult: { content: [], details: { progress: 1 } },
+    });
+    expect(commands).toContainEqual({
+      type: "host_tool_result",
+      id: "host-call-1",
+      result: { content: [{ type: "text", text: "done" }] },
+    });
+    await session.close();
+  });
+
+  test("subscribes to bounded subagent lifecycle, timelines, snapshots, and replay", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "set_subagent_subscription") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "set_subagent_subscription",
+          success: true,
+          data: { level: "events" },
+        });
+      } else if (command.type === "get_subagents") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "get_subagents",
+          success: true,
+          data: {
+            subagents: [
+              {
+                id: "native-child",
+                index: 0,
+                agent: "scout",
+                status: "running",
+                sessionFile: "/sessions/root/native-child.jsonl",
+                lastUpdate: 1,
+                parentToolCallId: "task-call",
+              },
+            ],
+          },
+        });
+      } else if (command.type === "get_subagent_messages") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "get_subagent_messages",
+          success: true,
+          data: {
+            sessionFile: "/sessions/root/native-child.jsonl",
+            fromByte: 0,
+            nextByte: 10,
+            reset: false,
+            entries: [],
+            messages: [
+              {
+                role: "toolResult",
+                toolCallId: "nested-task",
+                toolName: "task",
+                content: [],
+                details: { results: [{ id: "native-grandchild" }] },
+              },
+            ],
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    await session.setSubagentSubscription("events");
+    await expect(session.getSubagents()).resolves.toEqual([
+      expect.objectContaining({ id: "native-child", status: "running" }),
+    ]);
+    await expect(session.getSubagentMessages({ subagentId: "native-child" })).resolves.toEqual(
+      expect.objectContaining({
+        sessionFile: "/sessions/root/native-child.jsonl",
+        messages: [
+          expect.objectContaining({ details: { results: [{ id: "native-grandchild" }] } }),
+        ],
+      }),
+    );
+    const frames: OmpRpcEvent[] = [
+      {
+        type: "subagent_lifecycle",
+        payload: {
+          id: "native-child",
+          agent: "scout",
+          status: "started",
+          index: 0,
+          sessionFile: "/sessions/root/native-child.jsonl",
+          parentToolCallId: "task-call",
+        },
+      },
+      {
+        type: "subagent_progress",
+        payload: {
+          index: 0,
+          agent: "scout",
+          task: "inspect",
+          progress: { id: "native-child", status: "running", recentOutput: ["working"] },
+          sessionFile: "/sessions/root/native-child.jsonl",
+          parentToolCallId: "task-call",
+        },
+      },
+      {
+        type: "subagent_event",
+        payload: {
+          id: "native-child",
+          event: {
+            type: "message_end",
+            message: { role: "assistant", responseId: "child-answer", content: "done" },
+          },
+        },
+      },
+    ];
     for (const frame of frames) {
       const received = nextEvent((listener) => session.onEvent(listener));
       child.write(frame);
@@ -315,12 +741,12 @@ describe("OMP RPC transport", () => {
       assistantMessageEvent: {
         type: "image_end",
         contentIndex: 0,
-        content: { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        content: { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
       },
       message: {
         role: "assistant",
         responseId: "response-image",
-        content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+        content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
       },
     });
     await expect(imageEvent).resolves.toEqual({
@@ -328,12 +754,12 @@ describe("OMP RPC transport", () => {
       assistantMessageEvent: {
         type: "image_end",
         contentIndex: 0,
-        content: { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        content: { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
       },
       message: {
         role: "assistant",
         responseId: "response-image",
-        content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+        content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
       },
     });
 
@@ -345,7 +771,7 @@ describe("OMP RPC transport", () => {
         role: "assistant",
         responseId: "response-image",
         content: [
-          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
           { type: "text", text: "after image" },
         ],
       },
@@ -357,7 +783,7 @@ describe("OMP RPC transport", () => {
         role: "assistant",
         responseId: "response-image",
         content: [
-          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
           { type: "text", text: "after image" },
         ],
       },
@@ -393,6 +819,18 @@ describe("OMP RPC transport", () => {
     await expect(opening).rejects.toThrow("incomplete protocol metadata");
   });
 
+  test("rejects a frame limit too small for a maximum-ID terminal host result", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => commands.push(command));
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ ...READY_FRAME, maxFrameBytes: 400 });
+
+    await expect(opening).rejects.toThrow("cannot carry terminal host tool results");
+    expect(commands).toEqual([]);
+    expect(child.stdin.writableEnded).toBe(true);
+  });
+
   test("rejects an invalid v2 negotiation result", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
@@ -412,67 +850,16 @@ describe("OMP RPC transport", () => {
     await expect(opening).rejects.toThrow();
   });
 
-  test("accepts a metadata-free legacy ready frame as v1", async () => {
+  test("rejects a metadata-free legacy ready frame before opening a session", async () => {
     const child = new FakeRpcChild();
     const commands: Record<string, unknown>[] = [];
-    observeCommands(child, (command) => {
-      commands.push(command);
-      if (command.type === "get_state") {
-        child.write({
-          type: "response",
-          id: command.id,
-          command: "get_state",
-          success: true,
-          data: {
-            model: null,
-            isStreaming: false,
-            isCompacting: false,
-            sessionId: "legacy",
-            contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
-          },
-        });
-      }
-      if (command.type === "get_session_stats") {
-        child.write({
-          type: "response",
-          id: command.id,
-          command: "get_session_stats",
-          success: true,
-          data: {
-            tokens: { input: 120, output: 30, cacheRead: 40 },
-            cost: 0.12,
-            contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
-          },
-        });
-      }
-      if (command.type === "compact") {
-        child.write({
-          type: "response",
-          id: command.id,
-          command: "compact",
-          success: true,
-          data: { tokensBefore: 1_500, summary: "not exposed" },
-        });
-      }
-    });
+    observeCommands(child, (command) => commands.push(command));
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
     child.write({ type: "ready" });
-    const session = await opening;
 
-    expect(await session.getState()).toEqual(
-      expect.objectContaining({ sessionId: "legacy", isStreaming: false }),
-    );
-    expect(await session.getSessionStats()).toEqual({
-      tokens: { input: 120, output: 30, cacheRead: 40 },
-      cost: 0.12,
-      contextUsage: { tokens: 1_500, contextWindow: 200_000, percent: 0.75 },
-    });
-    expect(await session.compact("focus")).toEqual({ tokensBefore: 1_500 });
-    expect(commands).toContainEqual(
-      expect.objectContaining({ type: "compact", customInstructions: "focus" }),
-    );
-    expect(commands.some((command) => command.type === "negotiate_protocol")).toBe(false);
-    await session.close();
+    await expect(opening).rejects.toThrow("requires OMP RPC protocol v2");
+    expect(commands).toEqual([]);
+    expect(child.stdin.writableEnded).toBe(true);
   });
 
   test("accepts nullable usage and sparse compaction payloads", async () => {
@@ -484,6 +871,10 @@ describe("OMP RPC transport", () => {
         command: command.type,
         success: true,
       };
+      if (command.type === "negotiate_protocol") {
+        child.write({ ...response, data: { protocolVersion: 2 } });
+        return;
+      }
       if (command.type === "get_state") {
         child.write({
           ...response,
@@ -509,7 +900,7 @@ describe("OMP RPC transport", () => {
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
-    child.write({ type: "ready" });
+    child.write(READY_FRAME);
     const session = await opening;
     const compactionEvent = nextEvent((listener) => session.onEvent(listener));
 
@@ -540,6 +931,10 @@ describe("OMP RPC transport", () => {
         command: command.type,
         success: true,
       };
+      if (command.type === "negotiate_protocol") {
+        child.write({ ...response, data: { protocolVersion: 2 } });
+        return;
+      }
       if (command.type === "get_state") {
         child.write({
           ...response,
@@ -562,7 +957,7 @@ describe("OMP RPC transport", () => {
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
-    child.write({ type: "ready" });
+    child.write(READY_FRAME);
     const session = await opening;
 
     await expect(session.getState()).rejects.toThrow();
@@ -617,6 +1012,81 @@ describe("OMP RPC transport", () => {
 
     expect(await session.getState()).toEqual(expect.objectContaining({ sessionId: "chunked" }));
     await session.close();
+  });
+  test("reads byte-heavy history through negotiated v2 chunking", async () => {
+    const child = new FakeRpcChild();
+    const text = "é".repeat(350_000);
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type === "get_messages") {
+        writeChunked(
+          child,
+          {
+            type: "response",
+            id: command.id,
+            success: true,
+            data: {
+              messages: [
+                { role: "user", id: "history-user", content: text },
+                {
+                  role: "toolResult",
+                  toolCallId: "call-1",
+                  toolName: "read",
+                  content: { content: [{ type: "text", text: "result" }], details: { count: 1 } },
+                },
+                { role: "bashExecution", command: "pwd", exitCode: 0, cancelled: false },
+                { role: "assistant", id: "history-assistant", content: text },
+                { role: "user", id: "history-user-2", content: text },
+              ],
+            },
+          },
+          "history-chunks",
+        );
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    expect(session.canReplayHistory).toBe(true);
+    const messages = await session.getMessages();
+    expect(messages.map((message) => message.role)).toEqual([
+      "user",
+      "toolResult",
+      "bashExecution",
+      "assistant",
+      "user",
+    ]);
+    expect(messages[1]).toEqual(
+      expect.objectContaining({ role: "toolResult", toolCallId: "call-1", toolName: "read" }),
+    );
+    expect(messages[2]).toEqual(expect.objectContaining({ role: "bashExecution", command: "pwd" }));
+    expect(messages[2]).not.toHaveProperty("content");
+    const assistant = messages[3];
+    expect(assistant && "content" in assistant ? assistant.content : undefined).toHaveLength(
+      350_000,
+    );
+    await session.close();
+  });
+
+  test("rejects an explicit v1-only ready frame before negotiation", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => commands.push(command));
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write({ ...READY_FRAME, supportedProtocolVersions: [1] });
+
+    await expect(opening).rejects.toThrow("requires OMP RPC protocol v2");
+    expect(commands).toEqual([]);
+    expect(child.stdin.writableEnded).toBe(true);
   });
 
   test("rejects invalid branch responses immediately and accepts the next valid response", async () => {
@@ -685,6 +1155,52 @@ describe("OMP RPC transport", () => {
     expect(messages.at(-1)).toEqual({ entryId: "entry-1023", text: "x" });
     await session.close();
   });
+  test("sends bounded native branch identifiers and validates branch results", async () => {
+    const child = new FakeRpcChild();
+    let branchCount = 0;
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type !== "branch") return;
+      branchCount += 1;
+      if (branchCount === 1) {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { text: "selected prompt", cancelled: false },
+        });
+      } else {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { text: 42, cancelled: false },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await expect(session.branch("entry-1")).resolves.toEqual({
+      text: "selected prompt",
+      cancelled: false,
+    });
+    await expect(session.branch("entry-2")).rejects.toThrow("OMP RPC response is invalid");
+    await expect(session.branch("x".repeat(257))).rejects.toThrow(
+      "Invalid OMP branch entry identifier",
+    );
+    expect(branchCount).toBe(2);
+    await session.close();
+  });
 
   test("enforces chunked UTF-8 assistant and image boundaries without stale corruption", async () => {
     const child = new FakeRpcChild();
@@ -725,7 +1241,10 @@ describe("OMP RPC transport", () => {
       },
       "oversized-text",
     );
-    const imageData = "A".repeat(8 * 1024 * 1024);
+    const imageData = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      Buffer.alloc(6 * 1024 * 1024 - 8),
+    ]).toString("base64");
     writeChunked(
       child,
       {
@@ -762,9 +1281,11 @@ describe("OMP RPC transport", () => {
 
     expect(events).toHaveLength(3);
     const receivedText = events[0];
-    expect(receivedText?.type === "message_update" ? receivedText.message.content : null).toBe(
-      nearText,
-    );
+    expect(
+      receivedText?.type === "message_update" && receivedText.message.role === "assistant"
+        ? receivedText.message.content
+        : null,
+    ).toBe(nearText);
     const receivedImage = events[1];
     expect(
       receivedImage?.type === "message_update" &&
@@ -1532,7 +2053,7 @@ describe("OMP RPC transport", () => {
         process.stdout.write(JSON.stringify({
           type: "ready",
           protocolVersion: 1,
-          supportedProtocolVersions: [1],
+          supportedProtocolVersions: [1, 2],
           maxFrameBytes: 1048576,
           maxReassembledFrameBytes: 67108864,
         }) + "\\n");
@@ -1546,6 +2067,16 @@ describe("OMP RPC transport", () => {
             input = input.slice(newline + 1);
             if (!line) continue;
             const command = JSON.parse(line);
+            if (command.type === "negotiate_protocol") {
+              process.stdout.write(JSON.stringify({
+                type: "response",
+                id: command.id,
+                command: "negotiate_protocol",
+                success: true,
+                data: { protocolVersion: 2 },
+              }) + "\\n");
+              continue;
+            }
             if (command.type === "prompt") process.exit(7);
             if (command.type !== "get_state") continue;
             process.stdout.write(JSON.stringify({ type: "notice", level: "info", message: String(descendant.pid) }) + "\\n");
@@ -1626,7 +2157,7 @@ describe("OMP RPC transport", () => {
         const recovered = await runtime.startSession({
           cwd: process.cwd(),
           mode: "full",
-          resumeSessionId: "tree",
+          resumeSessionId: "tree-session",
         });
         const recoveredPidEvent = nextEvent((listener) => recovered.onEvent(listener));
         await recovered.getState();
@@ -1669,5 +2200,185 @@ describe("OMP RPC transport", () => {
     expect(event.type).toBe("process_exit");
     await expect(session.steer("after-close")).rejects.toThrow();
     await session.close();
+  });
+
+  test("writes extension UI responses without waiting for an RPC response", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => {
+      commands.push(command);
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+      if (command.type === "get_available_commands") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "get_available_commands",
+          success: true,
+          data: {
+            commands: [{ name: "help", description: "Help", input: null, source: "builtin" }],
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const received: OmpRpcEvent[] = [];
+    session.onEvent((event) => received.push(event));
+    child.write({
+      type: "extension_ui_request",
+      id: "ui-select",
+      method: "select",
+      title: "Target",
+      options: ["Preview", "Production"],
+      optionDetails: [{ description: "Safe" }, { description: "Live" }],
+    });
+    child.write({
+      type: "auto_compaction_start",
+      reason: "threshold",
+      action: "context-full",
+    });
+    await Promise.resolve();
+    expect(received).toEqual([
+      {
+        type: "extension_ui_request",
+        id: "ui-select",
+        method: "select",
+        title: "Target",
+        options: ["Preview", "Production"],
+        optionDetails: [{ description: "Safe" }, { description: "Live" }],
+      },
+      {
+        type: "auto_compaction_start",
+        reason: "threshold",
+        action: "context-full",
+      },
+    ]);
+    child.write({ type: "compaction_start" });
+    child.write({
+      type: "compaction_end",
+      aborted: false,
+      willRetry: false,
+      skipped: true,
+    });
+    child.write({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        responseId: "bad-image",
+        content: [{ type: "image", data: "not-base64", mimeType: "image/png" }],
+      },
+      assistantMessageEvent: {
+        type: "metadata",
+        contentIndex: 0,
+        content: { type: "image", data: "not-base64", mimeType: "image/png" },
+      },
+    });
+    const encodedSecret = Buffer.from("arbitrary secret bytes").toString("base64");
+    child.write({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        responseId: "secret-image",
+        content: [{ type: "image", data: encodedSecret, mimeType: "image/png" }],
+      },
+      assistantMessageEvent: {
+        type: "image_end",
+        contentIndex: 0,
+        content: { type: "image", data: encodedSecret, mimeType: "image/png" },
+      },
+    });
+    await Promise.resolve();
+    expect(received).toContainEqual({ type: "compaction_start" });
+    expect(received).toContainEqual({
+      type: "compaction_end",
+      aborted: false,
+      willRetry: false,
+      skipped: true,
+    });
+    expect(received.some((event) => event.type === "message_update")).toBe(false);
+    await expect(session.getAvailableCommands()).resolves.toEqual([
+      { name: "help", description: "Help", input: null, source: "builtin" },
+    ]);
+
+    await session.respondToExtensionUi({
+      type: "extension_ui_response",
+      id: "ui-select",
+      value: "Production",
+    });
+    expect(commands).toContainEqual({
+      type: "extension_ui_response",
+      id: "ui-select",
+      value: "Production",
+    });
+    await session.close();
+  });
+
+  test("bounds stalled one-way writes and rejects them on close", async () => {
+    const start = async (timeoutMs: number) => {
+      const child = new FakeRpcChild();
+      observeCommands(child, (command) => {
+        if (command.type === "negotiate_protocol") {
+          child.write({
+            type: "response",
+            id: command.id,
+            command: "negotiate_protocol",
+            success: true,
+            data: { protocolVersion: 2 },
+          });
+        }
+      });
+      const opening = runtimeFor(child, [], timeoutMs).startSession({ cwd: "/repo", mode: "full" });
+      child.write(READY_FRAME);
+      const session = await opening;
+      Object.defineProperty(child.stdin, "write", { value: () => true });
+      return { child, session };
+    };
+
+    const timed = await start(10);
+    await expect(
+      timed.session.respondToExtensionUi({
+        type: "extension_ui_response",
+        id: "timed",
+        value: "answer",
+      }),
+    ).rejects.toThrow("OMP RPC write timed out");
+    await timed.session.close();
+
+    const closing = await start(10_000);
+    const pending = closing.session.respondToExtensionUi({
+      type: "extension_ui_response",
+      id: "closing",
+      value: "answer",
+    });
+    await closing.session.close();
+    await expect(pending).rejects.toThrow("OMP RPC process was closed");
+
+    const saturated = await start(10_000);
+    const pendingWrites = Array.from({ length: 256 }, (_, index) =>
+      saturated.session.respondToExtensionUi({
+        type: "extension_ui_response",
+        id: `pending-${index}`,
+        value: "answer",
+      }),
+    );
+    const settledWrites = Promise.allSettled(pendingWrites);
+    await expect(
+      saturated.session.respondToExtensionUi({
+        type: "extension_ui_response",
+        id: "overflow",
+        value: "answer",
+      }),
+    ).rejects.toThrow("OMP RPC has too many pending writes");
+    await saturated.session.close();
+    expect((await settledWrites).every((result) => result.status === "rejected")).toBe(true);
   });
 });

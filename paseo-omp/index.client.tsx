@@ -7,6 +7,7 @@ import { OmpMemoryPanel } from "./client/memory-panel";
 import { MemoryPopover } from "./client/memory-popover";
 import { OmpConfigSurface } from "./client/omp-config-surface";
 import { quotaProviderIcon } from "./client/provider-icon";
+import { OmpImageTimeline } from "./client/provider-image";
 import { QuotaPopover } from "./client/quota-popover";
 import {
   type QuotaSeverity,
@@ -16,6 +17,7 @@ import {
 } from "./client/quota-state";
 import { SessionsPopover } from "./client/sessions-popover";
 import { listHubProcesses } from "./shared/hub";
+import { ompImageTimelineSchema, transformOmpImageToolItem } from "./shared/provider-image";
 import { listOmpQuotas } from "./shared/quota";
 
 const PAGE_LIMIT = 200;
@@ -86,6 +88,19 @@ export default function contribute(client: PluginClientContext) {
     context: "global",
     onSelect({ openSurface }) {
       openSurface("config");
+    },
+  });
+  const removeImageRenderer = client.addTimelineRenderer({
+    kind: "omp-images",
+    version: 1,
+    schema: ompImageTimelineSchema,
+    Component: OmpImageTimeline,
+  });
+  const removeImageTransformer = client.addTimelineTransformer({
+    id: "omp-images",
+    query: { itemType: "tool_call" },
+    transform({ item }) {
+      return transformOmpImageToolItem(item);
     },
   });
   const pills = new Map<string, PillEntry>();
@@ -246,6 +261,8 @@ export default function contribute(client: PluginClientContext) {
       pill.quota.remove();
     }
     pills.clear();
+    removeImageRenderer();
+    removeImageTransformer();
     removeOpenConfig();
     removeConfigSidebarItem();
     removeConfigSurface();
