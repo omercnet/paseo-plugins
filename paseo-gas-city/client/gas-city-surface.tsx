@@ -150,6 +150,7 @@ function ReadyGasCitySurface({
       {data.cities.length > 0 ? (
         <ScrollView
           horizontal
+          style={styles.cityRailScroller}
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.cityRail}
         >
@@ -284,6 +285,7 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       borderBottomColor: theme.colors.border,
     },
     discoveryDiagnosticText: { flex: 1, color: theme.colors.statusWarning, fontSize: 10 },
+    cityRailScroller: { flexGrow: 0 },
     cityRail: {
       gap: 6,
       paddingHorizontal: compact ? 12 : 18,
