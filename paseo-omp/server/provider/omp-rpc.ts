@@ -410,6 +410,57 @@ const BLOCKED_SESSION_ENV =
 const SESSION_CREDENTIAL_ENV =
   /(?:^|_)(?:API_KEY|ACCESS_KEY|AUTH|AUTHORIZATION|COOKIE|CREDENTIALS|PASSWORD|PRIVATE_KEY|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
+function collectUrlComponents(
+  value: string,
+  credentialKey: RegExp,
+  collect: (component: string, required: boolean) => void,
+  invalidMessage: string,
+): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return;
+  }
+  const collectRawAndDecoded = (raw: string, required: boolean, queryEncoded = false) => {
+    if (!raw) return;
+    collect(raw, required);
+    const decoded = decodeURIComponent(queryEncoded ? raw.replace(/\+/gu, " ") : raw);
+    if (decoded !== raw) collect(decoded, required);
+  };
+  try {
+    collectRawAndDecoded(url.username, true);
+    collectRawAndDecoded(url.password, true);
+    for (const segment of url.pathname.split("/")) {
+      collectRawAndDecoded(segment, false);
+    }
+    for (const field of url.search.slice(1).split("&")) {
+      if (!field) continue;
+      const separator = field.indexOf("=");
+      const rawName = separator < 0 ? field : field.slice(0, separator);
+      const rawValue = separator < 0 ? "" : field.slice(separator + 1);
+      const name = decodeURIComponent(rawName.replace(/\+/gu, " "));
+      collectRawAndDecoded(rawValue, credentialKey.test(name), true);
+    }
+    const fragment = url.hash.slice(1);
+    collectRawAndDecoded(fragment, false);
+    for (const field of fragment.split(/[&/]/u)) {
+      if (!field) continue;
+      const separator = field.indexOf("=");
+      if (separator < 0) {
+        collectRawAndDecoded(field, false);
+        continue;
+      }
+      const rawName = field.slice(0, separator);
+      const rawValue = field.slice(separator + 1);
+      const name = decodeURIComponent(rawName);
+      collectRawAndDecoded(rawValue, credentialKey.test(name));
+    }
+  } catch (error) {
+    if (error instanceof OmpPublicError) throw error;
+    throw new OmpPublicError(invalidMessage);
+  }
+}
 
 function validateBoundedText(value: unknown, field: string, maxBytes: number): string {
   if (
@@ -438,12 +489,7 @@ function buildOmpEnvironment(
   let totalBytes = 0;
   const collectProxyCredentials = (value: string) => {
     if (utf8Bytes(value) >= 4) sensitiveValues.push(value);
-    let proxy: URL;
-    try {
-      proxy = new URL(value);
-    } catch {
-      return;
-    }
+    const proxyCredentialKey = SESSION_CREDENTIAL_ENV;
     const collectComponent = (component: string, required: boolean) => {
       if (!component) return;
       if (utf8Bytes(component) < 4) {
@@ -454,22 +500,12 @@ function buildOmpEnvironment(
       }
       sensitiveValues.push(component);
     };
-    try {
-      collectComponent(proxy.username ? decodeURIComponent(proxy.username) : "", true);
-      collectComponent(proxy.password ? decodeURIComponent(proxy.password) : "", true);
-      for (const segment of proxy.pathname.split("/")) {
-        if (segment) collectComponent(decodeURIComponent(segment), false);
-      }
-    } catch (error) {
-      if (error instanceof OmpPublicError) throw error;
-      throw new OmpPublicError("OMP proxy URL components cannot be decoded safely");
-    }
-    for (const [name, parameter] of proxy.searchParams) {
-      collectComponent(
-        parameter,
-        parameter.length > 0 && SESSION_CREDENTIAL_ENV.test(name.toUpperCase()),
-      );
-    }
+    collectUrlComponents(
+      value,
+      proxyCredentialKey,
+      collectComponent,
+      "OMP proxy URL components cannot be decoded safely",
+    );
   };
   for (const [name, value] of Object.entries(sourceEnv)) {
     if (value === undefined || name.toUpperCase() === "OMP_COMMAND") continue;
@@ -616,29 +652,14 @@ export function collectAmbientMcpSecrets(
   };
   const collectUrlSecrets = (value: string) => {
     collectCredential(value);
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      return;
-    }
-    try {
-      if (url.username) collectCredential(decodeURIComponent(url.username));
-      if (url.password) collectCredential(decodeURIComponent(url.password));
-      for (const segment of url.pathname.split("/")) {
-        if (!segment) continue;
-        const decoded = decodeURIComponent(segment);
-        if (utf8Bytes(decoded) >= 4) collectCredential(decoded);
-      }
-    } catch (error) {
-      if (error instanceof OmpPublicError) throw error;
-      throw new OmpPublicError("OMP MCP URL components cannot be decoded safely");
-    }
-    for (const [name, parameter] of url.searchParams) {
-      if (utf8Bytes(parameter) >= 4 || (parameter.length > 0 && credentialKey.test(name))) {
-        collectCredential(parameter);
-      }
-    }
+    collectUrlComponents(
+      value,
+      credentialKey,
+      (component, required) => {
+        if (utf8Bytes(component) >= 4 || required) collectCredential(component);
+      },
+      "OMP MCP URL components cannot be decoded safely",
+    );
   };
   for (const path of paths) {
     let descriptor: number;
@@ -892,6 +913,7 @@ class OmpRpcProcess {
   private readonly listeners = new Set<(event: OmpRpcEvent) => void>();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly exitPromise: Promise<void>;
+  private readonly resolveExit: () => void;
   private readonly resolveReady: (frame: ReadyFrame) => void;
   private readonly rejectReady: (error: Error) => void;
   private readonly terminateProcessTree: (pid: number) => Promise<ProcessTreeCleanup>;
@@ -912,6 +934,7 @@ class OmpRpcProcess {
   private closePromise: Promise<void> | null = null;
   private treeCleanupPromise: Promise<ProcessTreeCleanup> | null = null;
   private readyReceived = false;
+  private outputSettled = false;
 
   constructor(
     options: OmpStartOptions,
@@ -956,12 +979,7 @@ class OmpRpcProcess {
       );
     }
     this.child.stdout.on("data", (chunk: Buffer | string) => this.receiveData(chunk));
-    this.child.stdout.once("end", () => {
-      if (this.lineBytes > 0 || this.discardingLine) this.recordProtocolViolation();
-      this.lineParts = [];
-      this.lineBytes = 0;
-      this.discardingLine = false;
-    });
+    this.child.stdout.once("end", () => this.settleOutput());
     this.child.stderr.on("data", () => {
       // Stderr is intentionally drained and discarded. It may contain credentials or paths.
     });
@@ -970,16 +988,9 @@ class OmpRpcProcess {
     });
     const exited = Promise.withResolvers<void>();
     this.exitPromise = exited.promise;
-    this.child.once("close", (code, signal) => {
-      this.exited = true;
-      void this.startTreeCleanup();
-      const detail = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
-      const error = new Error(`OMP RPC process exited (${detail})`);
-      this.rejectReady(error);
-      this.failPending(error);
-      exited.resolve();
-      if (!this.closed && !this.fatalError) this.fail(error);
-    });
+    this.resolveExit = exited.resolve;
+    this.child.once("exit", (code, signal) => this.handleProcessExit(code, signal));
+    this.child.once("close", () => this.settleOutput());
     this.child.once("error", (cause) => {
       const code = (cause as NodeJS.ErrnoException)?.code;
       this.fail(
@@ -992,6 +1003,28 @@ class OmpRpcProcess {
         ),
       );
     });
+  }
+
+  private handleProcessExit(code: number | null, signal: NodeJS.Signals | null): void {
+    if (this.exited) return;
+    this.exited = true;
+    void this.startTreeCleanup();
+    const detail = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
+    const error = new Error(`OMP RPC process exited (${detail})`);
+    this.rejectReady(error);
+    this.failPending(error);
+    this.resolveExit();
+    if (!this.closed && !this.fatalError) this.fail(error);
+  }
+
+  private settleOutput(): void {
+    if (this.outputSettled) return;
+    this.outputSettled = true;
+    if (this.lineBytes > 0 || this.discardingLine) this.recordProtocolViolation();
+    this.lineParts = [];
+    this.lineBytes = 0;
+    this.discardingLine = false;
+    this.discardedLineBytes = 0;
   }
 
   onEvent(listener: (event: OmpRpcEvent) => void): () => void {

@@ -50,6 +50,7 @@ class FakeRpcChild extends EventEmitter {
   close(code: number | null = 0, signal: NodeJS.Signals | null = null): void {
     if (this.didClose) return;
     this.didClose = true;
+    this.emit("exit", code, signal);
     this.stdout.end();
     this.stderr.end();
     this.emit("close", code, signal);
@@ -676,6 +677,8 @@ describe("OMP RPC transport", () => {
     });
     child.write(READY_FRAME);
     const session = await opening;
+    const observed: OmpRpcEvent[] = [];
+    const unsubscribe = session.onEvent((event) => observed.push(event));
     const notice = nextEvent((listener) => session.onEvent(listener));
     child.write({
       type: "notice",
@@ -692,6 +695,8 @@ describe("OMP RPC transport", () => {
     child.stderr.write("OPENAI_API_KEY=credential-value-1234 /home/private/config raw stderr");
     child.close(7);
     expect(await exit).toEqual({ type: "process_exit", error: "OMP RPC process exited (code 7)" });
+    expect(observed.filter((event) => event.type === "process_exit")).toHaveLength(1);
+    unsubscribe();
     await session.close();
   });
 
@@ -959,8 +964,7 @@ describe("OMP RPC transport", () => {
       JSON.stringify({
         servers: {
           remote: {
-            type: "http",
-            url: "https://user%40name:pass%20word@example.test/long%2Dsecret%2Dpath?token=url%2Dsecret&code=long%2Dprivate%2Dvalue",
+            url: "https://user%40name:p%40ss@example.test/long%2Dsecret%2Dpath?token=token%2Dvalue&code=long%2Dprivate%2Dvalue#secret%2Dfragment",
             headers: {
               Authorization: "Bearer header-secret",
               "X-License": "license-secret",
@@ -992,12 +996,19 @@ describe("OMP RPC transport", () => {
       );
       expect(request.sensitiveValues).toEqual(
         expect.arrayContaining([
-          "https://user%40name:pass%20word@example.test/long%2Dsecret%2Dpath?token=url%2Dsecret&code=long%2Dprivate%2Dvalue",
+          "https://user%40name:p%40ss@example.test/long%2Dsecret%2Dpath?token=token%2Dvalue&code=long%2Dprivate%2Dvalue#secret%2Dfragment",
+          "user%40name",
           "user@name",
-          "pass word",
-          "url-secret",
+          "p%40ss",
+          "p@ss",
+          "long%2Dsecret%2Dpath",
           "long-secret-path",
+          "token%2Dvalue",
+          "token-value",
+          "long%2Dprivate%2Dvalue",
           "long-private-value",
+          "secret%2Dfragment",
+          "secret-fragment",
           "Bearer header-secret",
           "env-secret",
           "license-secret",
@@ -1181,12 +1192,12 @@ describe("OMP RPC transport", () => {
   });
 
   if (process.platform !== "win32") {
-    test("session close terminates descendants left by an exited POSIX leader", async () => {
+    test("leader exit fails a prompt and permits recovery while a descendant holds stdio", async () => {
       const script = `
         const { spawn } = require("node:child_process");
         const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
           detached: false,
-          stdio: "ignore",
+          stdio: ["ignore", "inherit", "inherit"],
         });
         descendant.unref();
         process.stdout.write(JSON.stringify({
@@ -1199,16 +1210,23 @@ describe("OMP RPC transport", () => {
         let input = "";
         process.stdin.on("data", chunk => {
           input += String(chunk);
-          const newline = input.indexOf("\\n");
-          if (newline < 0) return;
-          const command = JSON.parse(input.slice(0, newline));
-          process.stdout.write(JSON.stringify({ type: "notice", level: "info", message: String(descendant.pid) }) + "\\n");
-          process.stdout.write(JSON.stringify({
-            type: "response",
-            id: command.id,
-            success: true,
-            data: { model: null, isStreaming: false, isCompacting: false, sessionId: "tree" },
-          }) + "\\n");
+          while (true) {
+            const newline = input.indexOf("\\n");
+            if (newline < 0) return;
+            const line = input.slice(0, newline);
+            input = input.slice(newline + 1);
+            if (!line) continue;
+            const command = JSON.parse(line);
+            if (command.type === "prompt") process.exit(7);
+            if (command.type !== "get_state") continue;
+            process.stdout.write(JSON.stringify({ type: "notice", level: "info", message: String(descendant.pid) }) + "\\n");
+            process.stdout.write(JSON.stringify({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: { model: null, isStreaming: false, isCompacting: false, sessionId: "tree" },
+            }) + "\\n");
+          }
         });
         process.stdin.on("end", () => process.exit(0));
       `;
@@ -1225,12 +1243,6 @@ describe("OMP RPC transport", () => {
         },
         environment: TEST_RUNTIME_ENV,
       });
-      const session = await runtime.startSession({ cwd: process.cwd(), mode: "full" });
-      const descendantPid = nextEvent((listener) => session.onEvent(listener));
-      await session.getState();
-      const notice = await descendantPid;
-      if (notice.type !== "notice") throw new Error("Expected descendant PID notice");
-      const pid = Number(notice.message);
       const procfsAvailable = (() => {
         try {
           readFileSync("/proc/self/stat", "utf8");
@@ -1239,7 +1251,7 @@ describe("OMP RPC transport", () => {
           return false;
         }
       })();
-      const descendantIsExecuting = () => {
+      const descendantIsExecuting = (pid: number) => {
         try {
           if (procfsAvailable) {
             const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -1254,19 +1266,52 @@ describe("OMP RPC transport", () => {
           throw error;
         }
       };
-      try {
-        if (!leader) throw new Error("Expected OMP leader process");
-        const leaderExit = once(leader, "close");
-        leader.kill("SIGTERM");
-        await leaderExit;
-        await session.close();
+      const waitUntilStopped = async (pid: number) => {
         const deadline = Date.now() + 2_000;
-        while (descendantIsExecuting() && Date.now() < deadline) await Bun.sleep(10);
-        expect(descendantIsExecuting()).toBe(false);
+        while (descendantIsExecuting(pid) && Date.now() < deadline) await Bun.sleep(10);
+        return !descendantIsExecuting(pid);
+      };
+      const descendantPids: number[] = [];
+      try {
+        const session = await runtime.startSession({ cwd: process.cwd(), mode: "full" });
+        const descendantPidEvent = nextEvent((listener) => session.onEvent(listener));
+        await session.getState();
+        const notice = await descendantPidEvent;
+        if (notice.type !== "notice") throw new Error("Expected descendant PID notice");
+        descendantPids.push(Number(notice.message));
+        if (!leader) throw new Error("Expected OMP leader process");
+        const leaderExit = once(leader, "exit");
+        const promptOutcome = session.prompt("work").then(
+          () => "resolved",
+          (error) => (error instanceof Error ? error.message : String(error)),
+        );
+        expect(
+          await Promise.race([leaderExit.then(() => true), Bun.sleep(2_000).then(() => false)]),
+        ).toBe(true);
+        expect(
+          await Promise.race([promptOutcome, Bun.sleep(2_000).then(() => "timed out")]),
+        ).toContain("exited");
+        await session.close();
+        expect(await waitUntilStopped(descendantPids[0] as number)).toBe(true);
+
+        const recovered = await runtime.startSession({
+          cwd: process.cwd(),
+          mode: "full",
+          resumeSessionId: "tree",
+        });
+        const recoveredPidEvent = nextEvent((listener) => recovered.onEvent(listener));
+        await recovered.getState();
+        const recoveredNotice = await recoveredPidEvent;
+        if (recoveredNotice.type !== "notice") throw new Error("Expected recovered descendant PID");
+        descendantPids.push(Number(recoveredNotice.message));
+        await recovered.close();
+        expect(await waitUntilStopped(descendantPids[1] as number)).toBe(true);
       } finally {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {}
+        for (const pid of descendantPids) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {}
+        }
       }
     });
   }

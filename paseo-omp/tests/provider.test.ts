@@ -169,6 +169,7 @@ class ProviderRpcChild extends EventEmitter {
   close(): void {
     if (this.didClose) return;
     this.didClose = true;
+    this.emit("exit", 0, null);
     this.stdout.end();
     this.stderr.end();
     this.emit("close", 0, null);
@@ -4280,7 +4281,7 @@ describe("OMP direct provider", () => {
     const nativeSessionId = "native-session-secret";
     const proxyUrl = "https://proxy%2Duser:proxy%2Dpass@example.test?access_token=proxy%2Dtoken";
     const sessionProxyUrl =
-      "https://session%2Duser:session%2Dpass@example.test/session%2Dpath?code=session%2Dquery";
+      "https://session%2Duser:p%40ss@example.test/session%2Dpath?code=token%2Dvalue#secret%2Dfragment";
     const children: ProviderRpcChild[] = [];
     const launchArgs: string[][] = [];
     const runtime = new OmpRpcRuntime({
@@ -4373,7 +4374,7 @@ describe("OMP direct provider", () => {
     children[0]?.write({
       type: "notice",
       level: "warning",
-      message: `${proxyUrl} proxy-user proxy-pass proxy-token session-user session-pass session-query session-path`,
+      message: `${proxyUrl} proxy-user proxy-pass proxy-token session%2Duser session-user p%40ss p@ss session%2Dpath session-path token%2Dvalue token-value secret%2Dfragment secret-fragment`,
     });
     const proxyNotice = events.findLast(
       (event) => event.type === "timeline.item" && event.item.type === "notification",
@@ -4383,13 +4384,23 @@ describe("OMP direct provider", () => {
         item: expect.objectContaining({ message: expect.stringContaining("<redacted>") }),
       }),
     );
-    expect(JSON.stringify(proxyNotice)).not.toContain("proxy-user");
-    expect(JSON.stringify(proxyNotice)).not.toContain("proxy-pass");
-    expect(JSON.stringify(proxyNotice)).not.toContain("proxy-token");
-    expect(JSON.stringify(proxyNotice)).not.toContain("session-user");
-    expect(JSON.stringify(proxyNotice)).not.toContain("session-pass");
-    expect(JSON.stringify(proxyNotice)).not.toContain("session-query");
-    expect(JSON.stringify(proxyNotice)).not.toContain("session-path");
+    for (const secret of [
+      "proxy-user",
+      "proxy-pass",
+      "proxy-token",
+      "session%2Duser",
+      "session-user",
+      "p%40ss",
+      "p@ss",
+      "session%2Dpath",
+      "session-path",
+      "token%2Dvalue",
+      "token-value",
+      "secret%2Dfragment",
+      "secret-fragment",
+    ]) {
+      expect(JSON.stringify(proxyNotice)).not.toContain(secret);
+    }
     const turnId = turnIdFrom(await startPrompt(connection, events, "transport-prompt", "work"));
     await connection.send({
       type: "session.prompt",
