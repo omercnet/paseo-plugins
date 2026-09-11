@@ -12,6 +12,7 @@ const MAX_PUBLIC_DEPTH = 16;
 const MAX_PUBLIC_NODES = 2_048;
 const MAX_SENSITIVE_VALUES = 256;
 const MAX_SENSITIVE_VALUE_BYTES = 256 * 1024;
+const MAX_PUBLIC_JSON_BYTES = 256 * 1024;
 const REDACTED = "<redacted>";
 const OMITTED = "<omitted>";
 
@@ -49,7 +50,7 @@ function replaceControlCharacters(value: string): string {
   let segmentStart = 0;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code > 0x1f && code !== 0x7f) continue;
+    if (code === 0x09 || code === 0x0a || code === 0x0d || (code >= 0x20 && code !== 0x7f)) continue;
     output += `${value.slice(segmentStart, index)}<control>`;
     segmentStart = index + 1;
   }
@@ -181,31 +182,65 @@ export class OmpPublicDataFilter {
     return truncateUtf8(output, maxBytes);
   }
 
-  json(input: unknown, maxStringBytes = MAX_PUBLIC_STRING_BYTES): JsonValue {
+  json(
+    input: unknown,
+    maxStringBytes = MAX_PUBLIC_STRING_BYTES,
+    maxOutputBytes = MAX_PUBLIC_JSON_BYTES,
+  ): JsonValue {
     const seen = new WeakSet<object>();
     let nodes = 0;
+    let remaining = maxOutputBytes;
+    const consume = (bytes: number) => {
+      if (bytes > remaining) return false;
+      remaining -= bytes;
+      return true;
+    };
+    const boundedString = (value: string): string => {
+      const sanitized = this.text(value, Math.min(maxStringBytes, remaining));
+      const encodedBytes = utf8Bytes(JSON.stringify(sanitized));
+      if (consume(encodedBytes)) return sanitized;
+      const fallback = this.text(sanitized, Math.max(0, Math.floor((remaining - 2) / 2)));
+      consume(utf8Bytes(JSON.stringify(fallback)));
+      return fallback;
+    };
     const visit = (value: unknown, key: string | undefined, depth: number): JsonValue => {
       nodes += 1;
-      if (nodes > MAX_PUBLIC_NODES || depth > MAX_PUBLIC_DEPTH) return OMITTED;
-      if (key && SENSITIVE_KEY.test(key)) return REDACTED;
-      if (value === null || typeof value === "boolean") return value;
-      if (typeof value === "number") return Number.isFinite(value) ? value : null;
-      if (typeof value === "string") return this.text(value, maxStringBytes);
-      if (typeof value !== "object") return OMITTED;
-      if (seen.has(value)) return OMITTED;
+      if (nodes > MAX_PUBLIC_NODES || depth > MAX_PUBLIC_DEPTH || remaining < 16) return OMITTED;
+      if (key && SENSITIVE_KEY.test(key)) {
+        consume(utf8Bytes(JSON.stringify(REDACTED)));
+        return REDACTED;
+      }
+      if (value === null) {
+        consume(4);
+        return null;
+      }
+      if (typeof value === "boolean") {
+        consume(value ? 4 : 5);
+        return value;
+      }
+      if (typeof value === "number") {
+        const safe = Number.isFinite(value) ? value : null;
+        consume(utf8Bytes(JSON.stringify(safe)));
+        return safe;
+      }
+      if (typeof value === "string") return boundedString(value);
+      if (typeof value !== "object" || seen.has(value)) return OMITTED;
       seen.add(value);
       if (Array.isArray(value)) {
+        if (!consume(2)) return OMITTED;
         const output: JsonValue[] = [];
         const length = Math.min(value.length, MAX_PUBLIC_COLLECTION_ITEMS);
-        for (let index = 0; index < length; index += 1) {
+        for (let index = 0; index < length && remaining >= 16; index += 1) {
+          if (index > 0) consume(1);
           output.push(visit(value[index], undefined, depth + 1));
         }
         return output;
       }
+      if (!consume(2)) return OMITTED;
       const output = Object.create(null) as { [key: string]: JsonValue };
       let itemCount = 0;
       for (const childKey in value) {
-        if (!Object.hasOwn(value, childKey)) continue;
+        if (!Object.hasOwn(value, childKey) || remaining < 32) continue;
         itemCount += 1;
         if (itemCount > MAX_PUBLIC_COLLECTION_ITEMS) break;
         const safeKey = this.text(childKey, 256);
@@ -217,7 +252,13 @@ export class OmpPublicDataFilter {
         ) {
           continue;
         }
-        output[safeKey] = visit((value as Record<string, unknown>)[childKey], childKey, depth + 1);
+        const keyBytes = utf8Bytes(JSON.stringify(safeKey)) + 1 + (itemCount > 1 ? 1 : 0);
+        if (!consume(keyBytes)) break;
+        output[safeKey] = visit(
+          (value as Record<string, unknown>)[childKey],
+          childKey,
+          depth + 1,
+        );
       }
       return output;
     };

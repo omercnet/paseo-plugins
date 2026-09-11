@@ -5,7 +5,7 @@ import type {
   ProviderToolCallDetail,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpMessage, OmpRpcEvent } from "./omp-rpc";
-import { type JsonValue, OmpPublicDataFilter, utf8Bytes } from "./security";
+import { boundedJsonBytes, type JsonValue, OmpPublicDataFilter, utf8Bytes } from "./security";
 
 const STREAM_FRAME_MS = 32;
 const MAX_STREAM_CONTENT_BLOCKS = 64;
@@ -13,6 +13,8 @@ const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
 const MAX_TODOS = 256;
 const MAX_TURN_NATIVE_IDENTITIES = 1_024;
+const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
+const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
 
 type Emit = (event: ProviderEvent) => void;
 
@@ -36,6 +38,7 @@ type ToolSnapshot = {
   name: string;
   input: JsonValue;
   output: JsonValue;
+  retainedBytes: number;
 };
 
 export interface OmpTimelineScheduler {
@@ -83,6 +86,7 @@ export class OmpTimelineProjector {
   private noticeSequence = 0;
   private toolSequence = 0;
   private userSequence = 0;
+  private activeToolBytes = 0;
   private commandText = "";
   private closed = false;
 
@@ -135,14 +139,26 @@ export class OmpTimelineProjector {
         return;
       case "tool_execution_start": {
         this.flush(true);
-        if (!this.tools.has(event.toolCallId) && this.tools.size >= MAX_ACTIVE_TOOLS) return;
-        this.toolSequence += 1;
+        const previous = this.tools.get(event.toolCallId);
+        if (!previous && this.tools.size >= MAX_ACTIVE_TOOLS) return;
+        const input = this.dataFilter.json(
+          event.args,
+          MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+          MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+        );
+        const retainedBytes = boundedJsonBytes(input, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
+        if (this.activeToolBytes - (previous?.retainedBytes ?? 0) + retainedBytes > MAX_ACTIVE_TOOL_BYTES) {
+          return;
+        }
+        if (!previous) this.toolSequence += 1;
         const snapshot: ToolSnapshot = {
-          publicId: `omp:tool:${this.toolSequence}`,
+          publicId: previous?.publicId ?? `omp:tool:${this.toolSequence}`,
           name: this.dataFilter.text(event.toolName, 256),
-          input: this.dataFilter.json(event.args),
+          input,
           output: null,
+          retainedBytes,
         };
+        this.activeToolBytes += retainedBytes - (previous?.retainedBytes ?? 0);
         this.tools.set(event.toolCallId, snapshot);
         this.publishTool(snapshot, "running");
         return;
@@ -150,12 +166,17 @@ export class OmpTimelineProjector {
       case "tool_execution_update": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
-        const snapshot: ToolSnapshot = {
-          publicId: previous.publicId,
-          name: previous.name,
-          input: previous.input,
-          output: this.dataFilter.json(event.partialResult),
-        };
+        const output = this.dataFilter.json(
+          event.partialResult,
+          MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+          MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+        );
+        const outputBytes = boundedJsonBytes(output, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
+        const inputBytes = boundedJsonBytes(previous.input, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
+        const retainedBytes = inputBytes + outputBytes;
+        if (this.activeToolBytes - previous.retainedBytes + retainedBytes > MAX_ACTIVE_TOOL_BYTES) return;
+        const snapshot: ToolSnapshot = { ...previous, output, retainedBytes };
+        this.activeToolBytes += retainedBytes - previous.retainedBytes;
         this.tools.set(event.toolCallId, snapshot);
         this.publishTool(snapshot, "running");
         return;
@@ -163,13 +184,14 @@ export class OmpTimelineProjector {
       case "tool_execution_end": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
-        const snapshot: ToolSnapshot = {
-          publicId: previous.publicId,
-          name: previous.name,
-          input: previous.input,
-          output: this.dataFilter.json(event.result),
-        };
+        const output = this.dataFilter.json(
+          event.result,
+          MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+          MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+        );
+        const snapshot: ToolSnapshot = { ...previous, output, retainedBytes: previous.retainedBytes };
         this.tools.delete(event.toolCallId);
+        this.activeToolBytes -= previous.retainedBytes;
         if (event.isError) {
           this.publishTool(snapshot, "failed", snapshot.output);
         } else {
@@ -282,6 +304,7 @@ export class OmpTimelineProjector {
     if (this.currentTurnId !== turnId) return;
     this.flush(true);
     this.stream = null;
+    this.activeToolBytes = 0;
     this.tools.clear();
     this.commandText = "";
     this.currentTurnId = null;
@@ -296,6 +319,7 @@ export class OmpTimelineProjector {
     this.clearFlushTimer();
     this.stream = null;
     this.tools.clear();
+    this.activeToolBytes = 0;
   }
 
   private ensureTurn(turnId: string): void {

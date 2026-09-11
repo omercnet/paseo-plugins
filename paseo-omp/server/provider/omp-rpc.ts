@@ -1019,7 +1019,7 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    if (this.receiveOversizedAgentEnd(decoded)) return;
+    if (this.receiveDegradedAgentEnd(decoded, true)) return;
     if (
       boundedJsonBytes(decoded, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
       Number.POSITIVE_INFINITY
@@ -1093,7 +1093,7 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    if (this.receiveOversizedAgentEnd(decodedFrame)) return;
+    if (this.receiveDegradedAgentEnd(decodedFrame, true)) return;
     if (
       boundedJsonBytes(
         decodedFrame,
@@ -1114,19 +1114,31 @@ class OmpRpcProcess {
     this.receiveFrame(frameObject.data);
   }
 
-  private receiveOversizedAgentEnd(value: unknown): boolean {
+  private receiveDegradedAgentEnd(value: unknown, onlyUnsafePayload: boolean): boolean {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const frame = value as Record<string, unknown>;
-    if (frame.type !== "agent_end" || !Array.isArray(frame.messages)) return false;
-    if (frame.messages.length <= MAX_ARRAY_ITEMS) return false;
+    if (frame.type !== "agent_end") return false;
+    const messagesAreSafe =
+      frame.messages === undefined ||
+      (Array.isArray(frame.messages) &&
+        frame.messages.length <= MAX_ARRAY_ITEMS &&
+        boundedJsonBytes(
+          frame.messages,
+          MAX_SEMANTIC_FRAME_BYTES,
+          MAX_ARRAY_ITEMS,
+          MAX_TEXT_LENGTH,
+          4_096,
+        ) !== Number.POSITIVE_INFINITY);
+    if (onlyUnsafePayload && messagesAreSafe) return false;
     const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
     if (!envelope.success || envelope.data.isTerminal === false) {
       this.recordProtocolViolation();
       return true;
     }
+    const observedCount = Array.isArray(frame.messages) ? frame.messages.length : 0;
     this.emit({
       ...envelope.data,
-      messageCount: Math.max(envelope.data.messageCount ?? 0, frame.messages.length),
+      messageCount: Math.max(envelope.data.messageCount ?? 0, observedCount),
     });
     this.streamedBlocks.clear();
     this.commandTextLength = 0;
@@ -1140,25 +1152,7 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    if (
-      type === "agent_end" &&
-      Array.isArray(frame.messages) &&
-      frame.messages.length > MAX_ARRAY_ITEMS
-    ) {
-      const envelope = OmpAgentEndEnvelopeSchema.safeParse(frame);
-      if (!envelope.success || envelope.data.isTerminal === false) {
-        this.recordProtocolViolation();
-        return;
-      }
-      this.emit({
-        ...envelope.data,
-        messageCount: Math.max(envelope.data.messageCount ?? 0, frame.messages.length),
-      });
-      this.streamedBlocks.clear();
-      this.commandTextLength = 0;
-      this.activeToolCallIds.clear();
-      return;
-    }
+    if (this.receiveDegradedAgentEnd(frame, true)) return;
     if (
       boundedJsonBytes(frame, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
       Number.POSITIVE_INFINITY
@@ -1230,6 +1224,7 @@ class OmpRpcProcess {
     }
     const event = OmpRuntimeEventSchema.safeParse(frame);
     if (!event.success) {
+      if (type === "agent_end" && this.receiveDegradedAgentEnd(frame, false)) return;
       this.recordProtocolViolation();
       return;
     }

@@ -144,6 +144,22 @@ class ProviderRpcChild extends EventEmitter {
   write(frame: Record<string, unknown>): void {
     this.stdout.write(`${JSON.stringify(frame)}\n`);
   }
+  writeChunked(frame: Record<string, unknown>, chunkId: string): void {
+    const payload = Buffer.from(JSON.stringify(frame));
+    const count = Math.ceil(payload.byteLength / (256 * 1024));
+    for (let index = 0; index < count; index += 1) {
+      const part = payload.subarray(index * 256 * 1024, (index + 1) * 256 * 1024);
+      this.write({
+        type: "rpc_chunk",
+        chunkId,
+        index,
+        count,
+        byteLength: payload.byteLength,
+        data: part.toString("base64"),
+      });
+    }
+  }
+
 
   close(): void {
     if (this.didClose) return;
@@ -3216,8 +3232,6 @@ describe("OMP direct provider", () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events, "redacted-open", "session-1", {
       MY_RUNTIME_SECRET: "credential-value-1234",
-      ASSISTANT_SECRET: "split-assistant-secret",
-      REASONING_SECRET: "split-reasoning-secret",
     });
     const turnId = turnIdFrom(await startPrompt(connection, events, "redacted-prompt", "work"));
     const session = sessionAt(runtime);
@@ -3261,8 +3275,8 @@ describe("OMP direct provider", () => {
     session.emit({ type: "command_output", text: "credential-value-" });
     session.emit({ type: "command_output", text: "1234" });
     for (const [type, contentIndex, first, second] of [
-      ["text_delta", 1, "split-assistant-", "secret"],
-      ["thinking_delta", 2, "split-reasoning-", "secret"],
+      ["text_delta", 1, "Bearer alpha", "beta"],
+      ["thinking_delta", 2, "Bearer alpha", "beta"],
     ] as const) {
       session.emit({
         type: "message_update",
@@ -3277,6 +3291,16 @@ describe("OMP direct provider", () => {
       });
       await scheduler.flush();
     }
+    const formattedText = "```ts\n\tconst value = 1;\r\n```";
+    session.emit({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        responseId: "whitespace-stream",
+        content: [{ type: "text", text: formattedText }],
+      },
+    });
+    await scheduler.flush();
     session.emit({
       type: "message_update",
       assistantMessageEvent: {
@@ -3297,6 +3321,9 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("another-secret");
     expect(visible).not.toContain("/home/private");
     expect(visible).not.toContain("provider-internal-notice-id");
+    expect(visible).not.toContain("alpha");
+    expect(visible).not.toContain("beta");
+    expect(visible).not.toContain("alphabeta");
     expect(visible).not.toContain("provider-internal-tool-id");
     expect(visible).not.toContain("provider-internal-response-id");
     expect(visible).not.toContain("token-not-from-env");
@@ -3305,24 +3332,32 @@ describe("OMP direct provider", () => {
     expect(visible).not.toContain("token-scheme-secret");
     expect(visible).not.toContain("digest-alpha");
     expect(visible).not.toContain("digest-beta");
-    expect(visible).not.toContain("split-assistant-secret");
-    expect(visible).not.toContain("split-reasoning-secret");
     expect(
       events.some(
         (event) =>
           event.type === "timeline.item" &&
           event.item.type === "assistant_message" &&
-          event.item.text === "<redacted>",
+          event.item.text === formattedText,
       ),
     ).toBe(true);
-    expect(
-      events.some(
-        (event) =>
-          event.type === "timeline.item" &&
-          event.item.type === "reasoning" &&
-          event.item.text === "<redacted>",
-      ),
-    ).toBe(true);
+    const splitAssistant = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "assistant_message" &&
+        event.item.id.endsWith(":content:1:text"),
+    );
+    const splitReasoning = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "reasoning" &&
+        event.item.id.endsWith(":content:2:reasoning"),
+    );
+    expect(splitAssistant?.type === "timeline.item" ? splitAssistant.item.text : null).toBe(
+      "Bearer <redacted>",
+    );
+    expect(splitReasoning?.type === "timeline.item" ? splitReasoning.item.text : null).toBe(
+      "Bearer <redacted>",
+    );
     const toolIds = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "tool_call" ? [event.item.callId] : [],
     );
@@ -3349,6 +3384,28 @@ describe("OMP direct provider", () => {
     await finishTurn(events, session, turnId);
     await connection.close();
   });
+  test("bounds aggregate retained bytes across many active tools", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "tool-budget", "work"));
+    const session = sessionAt(runtime);
+    for (let index = 0; index < 64; index += 1) {
+      session.emit({
+        type: "tool_execution_start",
+        toolCallId: `large-tool-${index}`,
+        toolName: "read",
+        args: { content: "x".repeat(100 * 1024) },
+      });
+    }
+    const publicTools = events.filter(
+      (event) => event.type === "timeline.item" && event.item.type === "tool_call",
+    );
+    expect(publicTools.length).toBeGreaterThan(0);
+    expect(publicTools.length).toBeLessThan(64);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
   test("preserves a one-MiB UTF-8 snapshot and marks an over-limit display", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
@@ -4047,6 +4104,50 @@ describe("OMP direct provider", () => {
     expect(recovered).toEqual(
       expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
     );
+    const recoveredTurnId = turnIdFrom(recovered);
+    children[1]?.writeChunked(
+      {
+        type: "agent_end",
+        messages: [{ role: "assistant", content: "é".repeat((1024 * 1024) / 2 + 1) }],
+        isTerminal: true,
+      },
+      "oversized-terminal-text",
+    );
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === recoveredTurnId &&
+        event.state === "failed",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === recoveredTurnId &&
+          event.state !== "started",
+      ),
+    ).toHaveLength(1);
+    const nestedTurn = turnIdFrom(await startPrompt(connection, events, "nested-terminal", "continue"));
+    children[1]?.write({
+      type: "agent_end",
+      messages: Array.from({ length: 400 }, () => ({
+        role: "assistant",
+        content: Array.from({ length: 10 }, () => ({ type: "text", text: "x" })),
+      })),
+      isTerminal: true,
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === nestedTurn && event.state === "failed",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === nestedTurn && event.state !== "started",
+      ),
+    ).toHaveLength(1);
+    const later = await startPrompt(connection, events, "after-degraded-terminal", "continue");
+    expect(later).toEqual(expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }));
     expect(launchArgs[1]).toEqual(expect.arrayContaining(["--resume", nativeSessionId]));
     expect(JSON.stringify(events)).not.toContain(nativeSessionId);
     expect(children).toHaveLength(2);

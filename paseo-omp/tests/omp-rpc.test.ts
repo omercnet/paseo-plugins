@@ -456,9 +456,14 @@ describe("OMP RPC transport", () => {
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    const terminal = Promise.withResolvers<void>();
+    session.onEvent((event) => {
+      events.push(event);
+      if (event.type === "agent_end") terminal.resolve();
+    });
 
     const nearText = "é".repeat((1024 * 1024) / 2);
-    const textEvent = nextEvent((listener) => session.onEvent(listener));
     writeChunked(
       child,
       {
@@ -467,21 +472,15 @@ describe("OMP RPC transport", () => {
       },
       "near-text",
     );
-    const receivedText = await textEvent;
-    expect(receivedText.type === "message_update" ? receivedText.message.content : null).toBe(
-      nearText,
-    );
-
     writeChunked(
       child,
       {
         type: "message_update",
-        message: { role: "assistant", responseId: "text", content: `${nearText}é` },
+        message: { role: "assistant", responseId: "oversized-text", content: `${nearText}é` },
       },
       "oversized-text",
     );
     const imageData = "A".repeat(8 * 1024 * 1024);
-    const imageEvent = nextEvent((listener) => session.onEvent(listener));
     writeChunked(
       child,
       {
@@ -495,21 +494,11 @@ describe("OMP RPC transport", () => {
       },
       "near-image",
     );
-    const receivedImage = await imageEvent;
-    expect(
-      receivedImage.type === "message_update" &&
-        receivedImage.assistantMessageEvent?.content &&
-        typeof receivedImage.assistantMessageEvent.content === "object" &&
-        "data" in receivedImage.assistantMessageEvent.content
-        ? receivedImage.assistantMessageEvent.content.data
-        : null,
-    ).toBe(imageData);
-
     writeChunked(
       child,
       {
         type: "message_update",
-        message: { role: "assistant", responseId: "image", content: [] },
+        message: { role: "assistant", responseId: "oversized-image", content: [] },
         assistantMessageEvent: {
           type: "image_end",
           contentIndex: 0,
@@ -518,18 +507,41 @@ describe("OMP RPC transport", () => {
       },
       "oversized-image",
     );
-    const recovered = nextEvent((listener) => session.onEvent(listener));
     child.write({
       type: "agent_end",
       messages: Array.from({ length: 513 }, () => ({ role: "assistant", content: "ok" })),
       messageCount: 513,
       isTerminal: true,
     });
-    await expect(recovered).resolves.toEqual({
+    await terminal.promise;
+
+    expect(events).toHaveLength(3);
+    const receivedText = events[0];
+    expect(receivedText?.type === "message_update" ? receivedText.message.content : null).toBe(
+      nearText,
+    );
+    const receivedImage = events[1];
+    expect(
+      receivedImage?.type === "message_update" &&
+        receivedImage.assistantMessageEvent?.content &&
+        typeof receivedImage.assistantMessageEvent.content === "object" &&
+        "data" in receivedImage.assistantMessageEvent.content
+        ? receivedImage.assistantMessageEvent.content.data
+        : null,
+    ).toBe(imageData);
+    expect(events[2]).toEqual({
       type: "agent_end",
       messageCount: 513,
       isTerminal: true,
     });
+    expect(
+      events.some(
+        (event) =>
+          event.type === "message_update" &&
+          (event.message.responseId === "oversized-text" ||
+            event.message.responseId === "oversized-image"),
+      ),
+    ).toBe(false);
     await session.close();
   });
 
@@ -550,7 +562,7 @@ describe("OMP RPC transport", () => {
     const session = await opening;
     const recovered = nextEvent((listener) => session.onEvent(listener));
 
-    child.write({ type: "agent_end", messages: "not-an-array" });
+    child.write({ type: "agent_end", messages: "not-an-array", isTerminal: false });
     child.writeRaw(`${"x".repeat(1_048_577)}\n`);
     child.write({
       type: "rpc_chunk",
