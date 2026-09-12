@@ -4,21 +4,41 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: release-please
   cancel-in-progress: false
 
 jobs:
-  release:
+  metadata:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      paseo-omp-created: ${{ steps.release.outputs['paseo-omp--release_created'] }}
+      paseo-omp-tag: ${{ steps.release.outputs['paseo-omp--tag_name'] }}
+      paseo-omp-sha: ${{ steps.release.outputs['paseo-omp--sha'] }}
     steps:
       - name: Create or update releases
+        id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  publish-paseo-omp:
+    needs: metadata
+    if: ${{ needs.metadata.outputs.paseo-omp-created == 'true' }}
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: ./.github/workflows/publish-paseo-omp.yml
+    with:
+      tag: ${{ needs.metadata.outputs.paseo-omp-tag }}
+      sha: ${{ needs.metadata.outputs.paseo-omp-sha }}

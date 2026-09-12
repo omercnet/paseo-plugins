@@ -4,6 +4,15 @@
   "type": "module",
   "description": "Paseo integration for OMP, including its direct provider and workspace tooling.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "paseo-omp"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/paseo-omp#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -20,14 +29,19 @@
     "coding-agents"
   ],
   "files": [
-    "index.client.tsx",
+    "bun.lock",
+    "CHANGELOG.md",
+    "LICENSE",
     "README.md",
+    "SUPPORT.md",
+    "TESTING.md",
+    "index.client.tsx",
     "index.server.ts",
     "client",
     "server",
     "shared",
     "paseo-plugin.json",
-    "LICENSE"
+    "tsconfig.json"
   ],
   "scripts": {
     "check": "biome check .",
@@ -37,6 +51,7 @@
     "test:integration:docker": "bun scripts/test-docker-host-tools.ts",
     "test:integration:core": "bun scripts/test-core-cutover.ts",
     "test:integration:wsl": "bun scripts/test-wsl-host-tools.ts",
+    "test:integration:install": "bun scripts/test-package-install.ts",
     "package:release": "bun scripts/package-release.ts",
     "typecheck": "tsc --noEmit"
   },

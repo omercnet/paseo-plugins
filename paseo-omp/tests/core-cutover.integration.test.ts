@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { unzipSync } from "fflate";
+import { extractArchiveFiles } from "../scripts/release-archive";
 
 const pluginRoot = resolve(import.meta.dirname, "..");
 const legacyCoreRoot = process.env.PASEO_LEGACY_CORE_ROOT?.trim();
@@ -99,21 +100,7 @@ async function packagePlugin(destination: string): Promise<string> {
   expect(exitCode, stderr).toBe(0);
   const packageDirectory = join(destination, "package", "paseo-omp");
   const files = unzipSync(await Bun.file(archivePath).bytes());
-  for (const [path, contents] of Object.entries(files)) {
-    const outputPath = join(destination, "package", path);
-    await mkdir(dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, contents);
-  }
-  const install = Bun.spawn([process.execPath, "install", "--frozen-lockfile"], {
-    cwd: packageDirectory,
-    stdout: "ignore",
-    stderr: "pipe",
-  });
-  const [installExitCode, installStderr] = await Promise.all([
-    install.exited,
-    new Response(install.stderr).text(),
-  ]);
-  expect(installExitCode, installStderr).toBe(0);
+  await extractArchiveFiles(files, join(destination, "package"));
   return packageDirectory;
 }
 
