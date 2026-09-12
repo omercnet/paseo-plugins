@@ -79,6 +79,14 @@ const opaqueTokenSchema = z
   .max(128)
   .regex(/^[A-Za-z0-9_-]+$/, "Invalid token");
 const generationSchema = z.number().int().nonnegative();
+const epochSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const runtimeIdSchema = opaqueTokenSchema;
+
+export const browserRecoveryStateSchema = z.enum([
+  "available",
+  "runtime-unavailable",
+  "browser-restarted",
+]);
 
 export const viewportSchema = z.object({
   width: z.number().int().min(MIN_VIEWPORT.width).max(MAX_VIEWPORT.width),
@@ -103,6 +111,10 @@ export const browserStateSchema = z.object({
   controllerExpiresAt: z.string().datetime().nullable(),
   viewerCount: z.number().int().nonnegative(),
   error: z.string().max(2_048).nullable(),
+  runtimeId: runtimeIdSchema.optional(),
+  runtimeCreatedAt: epochSchema.optional(),
+  bridgeEpoch: epochSchema.optional(),
+  recoveryState: browserRecoveryStateSchema.optional(),
 });
 
 export const browserFrameSchema = z.object({
@@ -116,6 +128,8 @@ export const browserFrameSchema = z.object({
   height: z.number().int().positive().max(MAX_VIEWPORT.height),
   navigationGeneration: generationSchema,
   viewportGeneration: generationSchema,
+  runtimeId: runtimeIdSchema.optional(),
+  captureEpoch: epochSchema.optional(),
   capturedAt: z.string().datetime(),
 });
 
@@ -181,6 +195,8 @@ const expectedStateSchema = z.object({
   sessionId: opaqueTokenSchema,
   navigationGeneration: generationSchema,
   viewportGeneration: generationSchema,
+  runtimeId: runtimeIdSchema.optional(),
+  bridgeEpoch: epochSchema.optional(),
 });
 
 export const navigateBrowserRpc = defineRpc({
@@ -297,6 +313,37 @@ export type BrowserState = z.output<typeof browserStateSchema>;
 export type BrowserFrame = z.output<typeof browserFrameSchema>;
 export type BrowserInputEvent = z.output<typeof browserInputEventSchema>;
 export type Viewport = z.output<typeof viewportSchema>;
+export type BrowserRecoveryState = z.output<typeof browserRecoveryStateSchema>;
+
+export function isBrowserStateCurrent(previous: BrowserState, next: BrowserState): boolean {
+  if (
+    previous.runtimeCreatedAt !== undefined &&
+    next.runtimeCreatedAt !== undefined &&
+    next.runtimeCreatedAt < previous.runtimeCreatedAt
+  ) {
+    return false;
+  }
+  if (previous.sessionId !== next.sessionId) return true;
+  if (didBrowserRuntimeRestart(previous, next)) return true;
+  if (
+    previous.runtimeId &&
+    next.runtimeId &&
+    previous.runtimeId === next.runtimeId &&
+    previous.bridgeEpoch !== undefined &&
+    next.bridgeEpoch !== undefined &&
+    next.bridgeEpoch < previous.bridgeEpoch
+  ) {
+    return false;
+  }
+  return (
+    next.navigationGeneration >= previous.navigationGeneration &&
+    next.viewportGeneration >= previous.viewportGeneration
+  );
+}
+
+export function didBrowserRuntimeRestart(previous: BrowserState, next: BrowserState): boolean {
+  return Boolean(previous.runtimeId && next.runtimeId && previous.runtimeId !== next.runtimeId);
+}
 
 export interface MappedPoint {
   x: number;

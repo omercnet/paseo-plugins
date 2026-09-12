@@ -4,8 +4,7 @@
     "paseo": "^0.8.0"
   },
   "build": [
-    ["bun", "install", "--frozen-lockfile"],
-    ["bun", "run", "prepare:runtime"],
-    ["bunx", "playwright", "install", "chromium"]
+    ["npm", "ci", "--include=dev"],
+    ["npm", "run", "prepare:runtime"]
   ]
 }
