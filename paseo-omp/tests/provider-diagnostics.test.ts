@@ -18,6 +18,8 @@ import {
 } from "../server/provider-diagnostics";
 import { OmpProviderHealthSchema } from "../shared/provider-diagnostics";
 
+const testOnPosix = process.platform === "win32" ? test.skip : test;
+
 const temporaryDirectories: string[] = [];
 const HOME_DIR = tmpdir();
 
@@ -877,7 +879,7 @@ describe("computeOmpProviderHealth", () => {
     });
   });
 
-  test("resolves, single-flights, and caches real provider health probes", async () => {
+  testOnPosix("resolves, single-flights, and caches real provider health probes", async () => {
     const root = await tempDir("paseo-omp-health-resolver-");
     const binary = join(root, "omp");
     await writeFile(

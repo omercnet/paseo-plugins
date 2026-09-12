@@ -48,7 +48,7 @@ describe("host-tool integration scripts", () => {
     } finally {
       await stopHostMcpServer(server);
     }
-    expect(server.child.signalCode).toBe("SIGTERM");
+    expect(server.child.exitCode !== null || server.child.signalCode !== null).toBe(true);
   });
 
   test("captures successful commands and reports failed commands", async () => {

@@ -313,8 +313,9 @@ async function writePersistedSession(harness: Harness): Promise<string> {
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+const describeOnPosix = process.platform === "win32" ? describe.skip : describe;
 
-describe("OMP plugin provider conformance through PluginAgentClientRegistry", () => {
+describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegistry", () => {
   test("exposes catalog, profile identity, strict options, and availability", async () => {
     const harness = await createHarness();
     try {

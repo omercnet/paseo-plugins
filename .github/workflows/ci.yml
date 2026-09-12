@@ -25,9 +25,6 @@ jobs:
             check: true
           - plugin: fresh-worktrees
             check: false
-          - plugin: paseo-omp
-            check: true
-            coverage: true
           - plugin: paseo-dracula
             check: true
           - plugin: paseo-beads
@@ -69,11 +66,46 @@ jobs:
       - name: Verify package publication contents
         if: ${{ matrix.verify-package }}
         run: npm run verify:package
+
+  omp-platform:
+    name: paseo-omp (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: paseo-omp
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: paseo-omp/package-lock.json
+      - name: Install dependencies
+        run: npm ci --include=dev
+      - name: Check formatting and lint
+        run: npm run check
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        if: ${{ matrix.os != 'ubuntu-latest' }}
+        run: npm test
+      - name: Test with coverage
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: npm run test:coverage
       - name: Archive and Git package installation smoke
-        if: ${{ matrix.plugin == 'paseo-omp' }}
+        if: ${{ matrix.os == 'ubuntu-latest' }}
         run: npm run test:integration:install
       - name: Docker host-tool ownership integration
-        if: ${{ matrix.plugin == 'paseo-omp' }}
+        if: ${{ matrix.os == 'ubuntu-latest' }}
         run: npm run test:integration:docker
 
   omp-real-e2e:
