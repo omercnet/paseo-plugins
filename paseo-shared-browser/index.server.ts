@@ -77,7 +77,13 @@ export default function contribute(server: PluginServerContext) {
   server.handle(applyDevicePresetRpc, handleApplyDevicePreset);
   server.handle(sendBrowserInputRpc, handleSendBrowserInput);
   server.before("agent.create", async ({ request }) => {
-    if (request.config.internal || request.config.provider === "omp") return request;
+    if (
+      request.config.internal ||
+      request.config.provider === "omp" ||
+      request.config.provider === "pi"
+    ) {
+      return request;
+    }
     const ticket = randomBytes(32).toString("base64url");
     if (!(await issueTicketWithinDeadline(ticket))) return request;
     return {

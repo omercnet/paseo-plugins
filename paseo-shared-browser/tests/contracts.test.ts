@@ -206,16 +206,19 @@ describe("browser epoch fencing", () => {
 });
 
 describe("agent MCP injection", () => {
-  it("leaves OMP agent creation untouched because OMP rejects external MCP servers", async () => {
-    const hook = captureAgentCreateHook();
-    const request: AgentCreateRequest = {
-      config: { provider: "omp", cwd: "/workspace" },
-      env: { EXISTING: "value" },
-    };
+  it.each(["omp", "pi"])(
+    "leaves %s agent creation untouched when external MCP support is unavailable",
+    async (provider) => {
+      const hook = captureAgentCreateHook();
+      const request: AgentCreateRequest = {
+        config: { provider, cwd: "/workspace" },
+        env: { EXISTING: "value" },
+      };
 
-    await expect(hook({ request })).resolves.toBe(request);
-    expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
-  });
+      await expect(hook({ request })).resolves.toBe(request);
+      expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
+    },
+  );
 
   it("injects the adapter for providers that accept external MCP servers", async () => {
     const hook = captureAgentCreateHook();

@@ -8,7 +8,7 @@
 
 ### Bug Fixes
 
-* leave OMP agent creation unchanged because the provider rejects external MCP servers
+* leave OMP and Pi agent creation unchanged when external MCP support is unavailable
 
 ### Features
 

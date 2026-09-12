@@ -93,8 +93,9 @@ Browser** composer pill while a workspace session is open.
 
 The plugin automatically injects its stdio MCP adapter only when a new, non-internal agent is
 created with a provider that accepts external MCP servers. Agents that already exist, resumed
-sessions, imported sessions, and Paseo's internal agents are not modified. Paseo's OMP provider
-uses native host-tool injection and rejects external MCP servers, so OMP agents are left unchanged.
+sessions, imported sessions, and Paseo's internal agents are not modified. OMP rejects external
+MCP servers, while Pi support depends on an optional adapter the plugin cannot detect during agent
+creation, so both providers are left unchanged.
 
 The injected MCP server exposes exactly these tools: `shared_browser_status`,
 `shared_browser_capture`, `shared_browser_acquire_control`, `shared_browser_release_control`,
