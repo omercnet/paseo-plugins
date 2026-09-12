@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { describe, expect, test } from "vitest";
 import contribute from "../index.client";
 
 type ThemeDefinition = Parameters<PluginClientContext["addTheme"]>[0];

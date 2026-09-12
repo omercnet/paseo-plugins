@@ -70,20 +70,20 @@ dependencies. For an air-gapped host, clone or download the monorepo and install
 
 ```bash
 cd paseo-plugins/agent-monitor
-bun install --frozen-lockfile
+npm ci
 paseo plugin install "$PWD"
 ```
 
 ## Develop
 
 ```bash
-bun install
-bun run check
-bun test
-bun run test:coverage
-bun run typecheck
-bunx paseo plugin install "$PWD"
-bunx paseo plugin reload agent-monitor
+npm ci
+npm run check
+npm test
+npm run test:coverage
+npm run typecheck
+npx paseo plugin install "$PWD"
+npx paseo plugin reload agent-monitor
 ```
 
 Release Please maintains the version, changelog, component tag, and GitHub release from

@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { build } from "esbuild";
+import { describe, expect, test } from "vitest";
 
 // The daemon compiles plugin server code with esbuild `format: "cjs"` and runs the
 // result through an indirect `eval`, so the bundle executes in global scope with no
@@ -25,7 +25,7 @@ function runtimeRequire(name: string): unknown {
 async function compileServerBundle(entryPath: string) {
   const result = await build({
     stdin: {
-      contents: await Bun.file(entryPath).text(),
+      contents: await readFile(entryPath, "utf8"),
       loader: "tsx",
       resolveDir: dirname(entryPath),
       sourcefile: entryPath,

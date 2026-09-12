@@ -41,13 +41,13 @@ The daemon must have plugins enabled and `gh` authenticated for GitHub viewer-aw
 ## Develop
 
 ```bash
-bun install
-bun run check
-bun test
-bun run test:coverage
-bun run typecheck
-bunx paseo plugin install "$PWD"
-bunx paseo plugin reload pr-radar
+npm ci
+npm run check
+npm test
+npm run test:coverage
+npm run typecheck
+npx paseo plugin install "$PWD"
+npx paseo plugin reload pr-radar
 ```
 
 Release Please maintains the version, changelog, component tag, and GitHub release from

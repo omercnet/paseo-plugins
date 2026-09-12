@@ -104,7 +104,7 @@ From a local checkout on the Paseo daemon host:
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
 cd paseo-plugins/agent-crew
-bun install --frozen-lockfile
+npm ci
 paseo plugin install "$PWD"
 ```
 
@@ -114,11 +114,11 @@ Command Center action opens it directly.
 ## Develop
 
 ```bash
-bun install
-bun run check
-bun test
-bun run test:coverage
-bun run typecheck
+npm ci
+npm run check
+npm test
+npm run test:coverage
+npm run typecheck
 paseo plugin install /absolute/path/to/paseo-agent-crew
 paseo plugin reload agent-crew
 ```

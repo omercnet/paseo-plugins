@@ -1,10 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.2.2...shared-browser-v0.3.0) (2026-09-12)
+
+
+### Features
+
+* **shared-browser:** adopt agent-browser runtime ([#18](https://github.com/omercnet/paseo-plugins/issues/18)) ([09623f3](https://github.com/omercnet/paseo-plugins/commit/09623f34f2b93943c19f809a865813fa37f467bd))
+
+
+### Bug Fixes
+
+* **shared-browser:** skip MCP injection for OMP ([#21](https://github.com/omercnet/paseo-plugins/issues/21)) ([ee2db08](https://github.com/omercnet/paseo-plugins/commit/ee2db08243640600c5592debe72f680446fa26d0))
+
 ## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.2.2...shared-browser-v1.0.0) (2026-09-12)
 
 ### ⚠ BREAKING CHANGES
 
 * replace the browser runtime in place with plugin-owned `agent-browser` 0.37.1 and a detached daemon-host supervisor; deployments must provide the packaged runtime and a compatible Chromium executable, with Linux ARM64 deployments supplying native Chromium through `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE`
+
+### Bug Fixes
+
+* leave OMP agent creation unchanged because the provider rejects external MCP servers
 
 ### Features
 

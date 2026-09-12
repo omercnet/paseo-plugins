@@ -92,9 +92,10 @@ Browser** composer pill while a workspace session is open.
 ## Agent MCP access
 
 The plugin automatically injects its stdio MCP adapter only when a new, non-internal agent is
-created. Agents that already exist, resumed sessions, imported sessions, and Paseo's internal
-agents are not modified. The selected agent provider must support stdio MCP server configuration;
-providers without that support do not receive these browser tools.
+created with a provider that accepts external MCP servers. Agents that already exist, resumed
+sessions, imported sessions, and Paseo's internal agents are not modified. Paseo's OMP provider
+uses native host-tool injection and rejects external MCP servers, so OMP agents are left unchanged.
+Pi agents continue to receive the adapter, but they require Pi's optional MCP support to launch it.
 
 The injected MCP server exposes exactly these tools: `shared_browser_status`,
 `shared_browser_capture`, `shared_browser_acquire_control`, `shared_browser_release_control`,
@@ -162,7 +163,7 @@ paseo plugin install "$PWD"
 paseo plugin reload shared-browser
 ```
 
-`bun run test:smoke` launches the configured real Chromium runtime and exercises two viewers,
+`npm run test:smoke` launches the configured real Chromium runtime and exercises two viewers,
 control handoff, reconnect, stale-frame rejection, viewport changes, device emulation, profile
 persistence, and archive teardown.
 

@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import { describe, expect, test } from "vitest";
 import { GasCityClient, GasCityClientError } from "../server/gas-city-client";
 import { createGasCityHandlers } from "../server/handlers";
 import { mapWorkspaceToRig } from "../server/workspace-mapping";
@@ -215,7 +215,7 @@ describe("GasCityClient security boundary", () => {
       },
     });
     await expect(client.health()).rejects.toMatchObject({ code: "endpoint-not-allowed" });
-    expect(called).toBeFalse();
+    expect(called).toBe(false);
   });
 
   test("rejects credentials, fragments, and non-http schemes", () => {

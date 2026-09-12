@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { handleGetWorkspaceBead, handleGetWorkspaceBeads } from "../server/beads";
 import { BeadsSnapshotSchema, getWorkspaceBead } from "../shared/beads";
 
@@ -178,7 +178,7 @@ describe("workspace Beads snapshot", () => {
       schema_version: 4,
       issues: [issue],
     }));
-    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       await expect(
         handleGetWorkspaceBeads(
@@ -231,7 +231,7 @@ describe("workspace Beads snapshot", () => {
       ["parent", [rawIssue("issue-1", { parent: "p".repeat(257) })]],
       ["timestamp", [rawIssue("issue-1", { updated_at: overlongTimestamp })]],
     ];
-    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
       for (const [, payload] of cases) {
@@ -283,7 +283,7 @@ describe("workspace Beads snapshot", () => {
     const { runner } = recordingRunner(() => {
       throw commandError("command failed", { stderr: diagnostic });
     });
-    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
       await expect(
@@ -506,7 +506,7 @@ describe("workspace Bead detail", () => {
         }),
       ],
     ];
-    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
       for (const [, detail] of cases) {
@@ -533,7 +533,7 @@ describe("workspace Bead detail", () => {
         stderr: `Failed to connect to ${fakeDaemonPath}: private stderr`,
       });
     });
-    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
       let failure: unknown;

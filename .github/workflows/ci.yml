@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  plugins:
+  npm-plugins:
     name: ${{ matrix.plugin }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -27,6 +27,7 @@ jobs:
             check: false
           - plugin: paseo-omp
             check: true
+            coverage: true
           - plugin: paseo-dracula
             check: true
           - plugin: paseo-beads
@@ -47,44 +48,33 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Bun
-        if: ${{ matrix.plugin != 'paseo-omp' }}
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.0
       - name: Set up Node
-        if: ${{ matrix.plugin == 'paseo-omp' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
-          cache-dependency-path: paseo-omp/package-lock.json
+          cache-dependency-path: ${{ matrix.plugin }}/package-lock.json
       - name: Install dependencies
-        run: ${{ matrix.plugin == 'paseo-omp' && 'npm ci' || 'bun install --frozen-lockfile' }}
+        run: npm ci --include=dev
       - name: Check formatting and lint
         if: ${{ matrix.check }}
-        run: ${{ matrix.plugin == 'paseo-omp' && 'npm run check' || 'bun run check' }}
+        run: npm run check
       - name: Typecheck
-        run: ${{ matrix.plugin == 'paseo-omp' && 'npm run typecheck' || 'bun run typecheck' }}
+        run: npm run typecheck
       - name: Test
-        if: ${{ matrix.plugin != 'paseo-omp' }}
-        run: bun test
-      - name: Test with coverage
-        if: ${{ matrix.plugin == 'paseo-omp' }}
-        run: npm run test:coverage
+        run: npm test
       - name: Test coverage
         if: ${{ matrix.coverage }}
-        run: bun run test:coverage
+        run: npm run test:coverage
       - name: Verify package publication contents
         if: ${{ matrix.verify-package }}
-        run: bun run verify:package
+        run: npm run verify:package
       - name: Archive and Git package installation smoke
         if: ${{ matrix.plugin == 'paseo-omp' }}
         run: npm run test:integration:install
       - name: Docker host-tool ownership integration
         if: ${{ matrix.plugin == 'paseo-omp' }}
         run: npm run test:integration:docker
-
 
   omp-real-e2e:
     name: paseo-omp real OMP 18.1.15

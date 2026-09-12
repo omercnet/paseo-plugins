@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import {
   type AgentEntry,
   agentActionFor,
@@ -581,6 +581,41 @@ describe("radar snapshot", () => {
       { workspaceId: "broken", workspaceName: "Workspace broken", message: "gh timed out" },
     ]);
   });
+  test("sorts snapshots by bucket, activity, and title", () => {
+    const template = workspace("template").githubRuntime?.pullRequest;
+    if (!template) throw new Error("expected pull request fixture");
+    const candidate = (
+      id: string,
+      number: number,
+      title: string,
+      activityAt: string,
+      checksStatus: "pending" | "success" = "pending",
+    ): PaseoWorkspace => ({
+      ...workspace(id, {
+        pullRequest: {
+          ...template,
+          number,
+          url: `https://github.com/getpaseo/paseo/pull/${number}`,
+          title,
+          checksStatus,
+          reviewDecision: checksStatus === "success" ? "approved" : null,
+        },
+      }),
+      activityAt,
+    });
+
+    const snapshot = buildRadarSnapshot(
+      [
+        candidate("later", 1, "Later", "2026-08-30T11:00:00.000Z"),
+        candidate("zulu", 2, "Zulu", "2026-08-30T10:00:00.000Z"),
+        candidate("alpha", 3, "Alpha", "2026-08-30T10:00:00.000Z"),
+        candidate("ready", 4, "Ready", "2026-08-30T09:00:00.000Z", "success"),
+      ],
+      [],
+    );
+
+    expect(snapshot.rows.map((item) => item.title)).toEqual(["Ready", "Alpha", "Zulu", "Later"]);
+  });
 });
 
 describe("display helpers", () => {
@@ -605,9 +640,24 @@ describe("display helpers", () => {
     ).toBe("1 of 2 checks passed");
   });
 
-  test("formats activity age", () => {
-    expect(formatAge("2026-08-30T09:00:00.000Z", Date.parse("2026-08-30T10:30:00.000Z"))).toBe(
-      "1h",
+  test("summarizes empty, failing, and completed checks", () => {
+    expect(checkSummary(row({ checks: [], checksStatus: "none" }))).toBe("No checks");
+    expect(checkSummary(row({ checks: [], checksStatus: "success" }))).toBe("Checks passed");
+    expect(checkSummary(row({ checks: [], checksStatus: "failure" }))).toBe("Checks failing");
+    expect(checkSummary(row({ checks: [], checksStatus: "pending" }))).toBe("Checks running");
+    expect(checkSummary(row({ checks: [{ name: "test", status: "failure", url: null }] }))).toBe(
+      "1 of 1 checks failing",
     );
+    expect(checkSummary(row())).toBe("1 check passed");
+  });
+
+  test("formats every activity age boundary", () => {
+    const now = Date.parse("2026-08-30T10:30:00.000Z");
+    expect(formatAge(null, now)).toBe("");
+    expect(formatAge("invalid", now)).toBe("");
+    expect(formatAge(new Date(now - 30_000).toISOString(), now)).toBe("now");
+    expect(formatAge(new Date(now - 30 * 60_000).toISOString(), now)).toBe("30m");
+    expect(formatAge(new Date(now - 90 * 60_000).toISOString(), now)).toBe("1h");
+    expect(formatAge(new Date(now - 48 * 60 * 60_000).toISOString(), now)).toBe("2d");
   });
 });

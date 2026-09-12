@@ -17,9 +17,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "packageManager": "bun@1.4.0",
+  "packageManager": "npm@11.19.1",
   "engines": {
-    "bun": ">=1.4.0"
+    "node": ">=24"
   },
   "keywords": [
     "paseo",
@@ -30,7 +30,6 @@
     "coding-agents"
   ],
   "files": [
-    "bun.lock",
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
@@ -45,11 +44,11 @@
   "scripts": {
     "check": "biome check .",
     "check:write": "biome check --write .",
-    "test": "bun test",
-    "test:coverage": "bun test --coverage",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=text --coverage.reporter=lcov --coverage.thresholds.lines=90 --coverage.thresholds.functions=85",
     "typecheck": "tsc --noEmit",
-    "package:release": "bun scripts/package-release.ts",
-    "verify:package": "bun scripts/verify-package.ts"
+    "package:release": "node scripts/package-release.ts",
+    "verify:package": "node scripts/verify-package.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",
@@ -58,12 +57,14 @@
     "@getpaseo/plugin": "0.8.0",
     "@getpaseo/protocol": "0.8.0",
     "@tanstack/react-query": "^5.102.3",
-    "@types/bun": "^1.4.0",
+    "@types/node": "^24.5.2",
     "@types/react": "~19.2.0",
     "fflate": "^0.8.3",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "typescript": "^5.9.3",
+    "@vitest/coverage-v8": "^4.1.6",
+    "vitest": "^4.1.6",
     "zod": "^4.4.3"
   }
 }
