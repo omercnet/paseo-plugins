@@ -2179,7 +2179,7 @@ describe("OMP RPC transport", () => {
       join("/home/runner", ".omp", "agent", "mcp.json"),
       join("/repo", ".omp", "mcp.json"),
     ]);
-    if (constants.O_NONBLOCK !== 0) {
+    if (process.platform !== "win32" && constants.O_NONBLOCK !== 0) {
       expect(opens.every(({ flags }) => (flags & constants.O_NONBLOCK) !== 0)).toBe(true);
     }
     const noFollow = constants.O_NOFOLLOW;
