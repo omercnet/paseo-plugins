@@ -4857,7 +4857,7 @@ describe("OMP direct provider", () => {
     );
     const closingPath = closingSession.steers
       .at(-1)
-      ?.match(/^\[Image available at: (?<path>.*\/[0-9a-f]{64}\.png)\]$/u)?.groups?.path;
+      ?.match(/^\[Image available at: (?<path>.*[\\/][0-9a-f]{64}\.png)\]$/u)?.groups?.path;
     if (!closingPath) throw new Error("Expected closing prompt image path");
     expect(existsSync(closingPath)).toBe(true);
     await closing.connection.close();

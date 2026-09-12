@@ -245,7 +245,7 @@ describe("OMP session descriptor discovery", () => {
     );
     await symlink(outside, join(childDirectory, "Linked.jsonl"));
     await expect(readOmpPersistedSubagentTranscript(parentFile, "Linked", "/repo")).rejects.toThrow(
-      "could not be opened",
+      /could not be opened|failed ownership validation/u,
     );
   });
 

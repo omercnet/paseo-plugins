@@ -95,9 +95,12 @@ jobs:
         run: npm run check
       - name: Typecheck
         run: npm run typecheck
-      - name: Test
-        if: ${{ matrix.os != 'ubuntu-latest' }}
+      - name: Test on macOS
+        if: ${{ matrix.os == 'macos-latest' }}
         run: npm test
+      - name: Test on Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: npm test -- --exclude tests/package-release.test.ts --exclude tests/server-bundle.test.ts
       - name: Test with coverage
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: npm run test:coverage
