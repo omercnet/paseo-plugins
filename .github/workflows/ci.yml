@@ -139,7 +139,7 @@ jobs:
       - name: Check formatting
         run: npm run format:check
       - name: Unit tests
-        run: bun run test:unit
+        run: npm run test:unit
 
   wsl-host-tools:
     name: paseo-omp WSL host ownership
