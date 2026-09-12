@@ -101,6 +101,9 @@ jobs:
       - name: Test on Windows
         if: ${{ matrix.os == 'windows-latest' }}
         run: npm test -- --exclude tests/package-release.test.ts --exclude tests/server-bundle.test.ts
+      - name: Test subprocess conformance
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: npm test -- tests/provider-conformance.test.ts
       - name: Test with coverage
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: npm run test:coverage

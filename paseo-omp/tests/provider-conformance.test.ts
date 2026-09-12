@@ -314,7 +314,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 const describeOnPosix = process.platform === "win32" ? describe.skip : describe;
-const testOnLinux = process.platform === "linux" ? test : test.skip;
+const testOutsideCoverage = process.env.PASEO_OMP_COVERAGE === "1" ? test.skip : test;
 const RECOVERY_TEST =
   "recovers after subprocess death and lets registry replacement retire active sessions";
 
@@ -950,7 +950,7 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
     }
   });
 
-  testOnLinux(RECOVERY_TEST, async () => {
+  testOutsideCoverage(RECOVERY_TEST, async () => {
     const harness = await createHarness();
     let session: AgentSession | undefined;
     let replacement: AgentSession | undefined;
