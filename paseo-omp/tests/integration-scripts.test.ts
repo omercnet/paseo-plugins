@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { buildWslClientCommand } from "../scripts/host-tools-integration";
+import {
+  buildWslClientCommand,
+  parseEvidence,
+  runCaptured,
+  startHostMcpServer,
+  stopHostMcpServer,
+} from "../scripts/host-tools-integration";
 
 describe("host-tool integration scripts", () => {
   test("builds an executable WSL cd and env command", () => {
@@ -19,5 +25,71 @@ describe("host-tool integration scripts", () => {
     expect(command).toContain("PASEO_WORKSPACE_ID='wsl-workspace'");
     expect(command).not.toContain("EXPECTED_WORKSPACE_ID");
     expect(command).toEndWith("~/.bun/bin/bun tests/fixtures/mcp-container-client.ts");
+  });
+
+  test("starts and stops the host MCP process with observable ownership", async () => {
+    const server = await startHostMcpServer("coverage-host");
+    try {
+      expect(server.pid).toBeGreaterThan(0);
+      expect(server.port).toBeGreaterThan(0);
+      const response = await fetch(
+        `http://127.0.0.1:${server.port}/mcp/agents?callerAgentId=docker-agent`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }),
+        },
+      );
+      const payload = (await response.json()) as { result: { content: Array<{ text: string }> } };
+      expect(JSON.parse(payload.result.content[0]?.text ?? "{}")).toEqual(
+        expect.objectContaining({ ownerMarker: "coverage-host", ownerPid: server.pid }),
+      );
+    } finally {
+      await stopHostMcpServer(server);
+    }
+    expect(await server.child.exited).toBe(143);
+  });
+
+  test("captures successful commands and reports failed commands", async () => {
+    await expect(
+      runCaptured([process.execPath, "-e", "console.log('captured-output')"]),
+    ).resolves.toBe("captured-output");
+    await expect(
+      runCaptured([process.execPath, "-e", "console.error('captured-error'); process.exit(7)"]),
+    ).rejects.toThrow(/failed \(7\).*captured-error/su);
+  });
+
+  test("parses the final ownership evidence and rejects malformed output", () => {
+    expect(
+      parseEvidence(
+        `noise\n${JSON.stringify({
+          callerAgentId: "agent-1",
+          workspaceId: "workspace-1",
+          ownerMarker: "host",
+          ownerPid: 42,
+          ownerCwd: "/workspace",
+        })}`,
+      ),
+    ).toEqual({
+      callerAgentId: "agent-1",
+      workspaceId: "workspace-1",
+      ownerMarker: "host",
+      ownerPid: 42,
+      ownerCwd: "/workspace",
+    });
+    expect(() => parseEvidence("no json here")).toThrow("Ownership evidence was not emitted");
+    expect(() => parseEvidence('{"callerAgentId":1}')).toThrow("Ownership evidence is malformed");
+    expect(() =>
+      buildWslClientCommand({
+        wslPluginRoot: "/repo",
+        hostUrl: "http://host/mcp",
+        expectedHostCwd: "/repo",
+        expectedHostPid: 1,
+        callerAgentId: "agent",
+        workspaceId: "workspace",
+        expectedOwnerMarker: "host",
+        wslBun: "bun;rm",
+      }),
+    ).toThrow("WSL Bun path contains unsupported shell characters");
   });
 });

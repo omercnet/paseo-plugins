@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   quotaProviderFromSession,
   quotaProviderGroups,
@@ -8,7 +12,14 @@ import {
   quotaSummaryForProvider,
   quotasForProvider,
 } from "../client/quota-state";
+import { listOmpQuotasFrom, resolveListOmpQuotas } from "../server/quota";
 import type { OmpQuota } from "../shared/quota";
+
+const quotaRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(quotaRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 
 const quotas: OmpQuota[] = [
   {
@@ -77,5 +88,58 @@ describe("quota reset countdown", () => {
     expect(quotaResetLabel(resetsInTwoHours, now)).toBe("resets 2h 30m");
     expect(quotaResetLabel(now - 1_000, now)).toBe("resets 0m");
     expect(quotaResetLabel(null, now)).toBe("");
+  });
+});
+
+describe("OMP quota reader", () => {
+  test("keeps the newest valid quota row per provider account and limit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-quotas-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
+      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+    )`);
+    database
+      .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(1, "anthropic", "account", "five-hour", "Five hour", "5h", 0.1, "ok", null, 1);
+    database
+      .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(2, "anthropic", "account", "five-hour", "Five hour", "5h", 0.9, "warning", 2, 2);
+    database
+      .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(3, "openai", "account", "daily", "Daily", null, 0.2, "ok", null, 3);
+    database.close();
+
+    expect(listOmpQuotasFrom(path)).toEqual([
+      expect.objectContaining({ provider: "anthropic", usedFraction: 0.9, recordedAt: 2 }),
+      expect.objectContaining({ provider: "openai", usedFraction: 0.2, recordedAt: 3 }),
+    ]);
+    expect(listOmpQuotasFrom(join(root, "missing.db"))).toEqual([]);
+  });
+
+  test("resolves quotas from the configured OMP agent directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-quota-resolver-"));
+    quotaRoots.push(root);
+    const database = new DatabaseSync(join(root, "agent.db"));
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
+      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+    )`);
+    database
+      .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(1, "anthropic", "account", "daily", "Daily", null, 0.5, "ok", null, 10);
+    database.close();
+    const previous = process.env.PASEO_OMP_AGENT_DIR;
+    process.env.PASEO_OMP_AGENT_DIR = root;
+    try {
+      expect(resolveListOmpQuotas({})).toEqual({
+        quotas: [expect.objectContaining({ provider: "anthropic", usedFraction: 0.5 })],
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PASEO_OMP_AGENT_DIR;
+      else process.env.PASEO_OMP_AGENT_DIR = previous;
+    }
   });
 });

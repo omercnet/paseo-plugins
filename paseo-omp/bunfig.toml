@@ -1,5 +1,6 @@
 [test]
 coverageSkipTestFiles = true
+coveragePathIgnorePatterns = ["dist/**", "**/dist/**"]
 coverageThreshold = { lines = 0.90, functions = 0.85 }
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"

@@ -249,4 +249,68 @@ describe("OMP session descriptor discovery", () => {
       listOmpSessionDescriptors({ cwd: "" }, { OMP_SESSION_DIR: "/tmp/unused" }),
     ).rejects.toThrow("requires an absolute working directory");
   });
+
+  test("filters invalid descriptors and extracts array prompt content", async () => {
+    const root = await temporaryRoot();
+    const sessionRoot = join(root, "mixed-sessions");
+    const validDir = join(sessionRoot, "valid");
+    await mkdir(validDir, { recursive: true });
+    await writeFile(
+      join(validDir, `2026-09-12T00-00-00-000Z_${SESSION_ID}.jsonl`),
+      `${[
+        { type: "session", version: 3, id: SESSION_ID, cwd: "/repo" },
+        {
+          type: "message",
+          message: {
+            role: "user",
+            content: [
+              { type: "text", text: "array prompt" },
+              { type: "image", data: "ignored" },
+            ],
+          },
+        },
+        "not-json",
+      ]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n")}\n`,
+    );
+    await writeSession(sessionRoot, "relative", OTHER_ID, "relative/path");
+
+    await expect(
+      listOmpSessionDescriptors(
+        { cwd: "/repo", query: "array prompt", limit: 10 },
+        { OMP_SESSION_DIR: sessionRoot },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: SESSION_ID,
+        firstPromptPreview: "array prompt",
+        lastPromptPreview: "array prompt",
+      }),
+    ]);
+    await expect(
+      listOmpSessionDescriptors(
+        { cwd: "/repo", query: "does-not-match", limit: 10 },
+        { OMP_SESSION_DIR: sessionRoot },
+      ),
+    ).resolves.toEqual([]);
+    await expect(
+      listOmpSessionDescriptors(
+        { cwd: "/repo", limit: 10 },
+        { OMP_SESSION_DIR: join(root, "missing") },
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  test("rejects missing child transcript ownership directories", async () => {
+    const root = await temporaryRoot();
+    const parent = join(root, `2026-09-12T00-00-00-000Z_${SESSION_ID}.jsonl`);
+    await writeFile(
+      parent,
+      `${JSON.stringify({ type: "session", version: 3, id: SESSION_ID, cwd: "/repo" })}\n`,
+    );
+    await expect(
+      readOmpPersistedSubagentTranscript(parent, "MissingChild", "/repo"),
+    ).rejects.toThrow("not canonically owned");
+  });
 });

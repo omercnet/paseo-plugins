@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listHubProcessesFrom, tailHubLogFrom } from "../server/hub";
+import {
+  listHubProcessesFrom,
+  resolveListHubProcesses,
+  resolveTailHubLog,
+  tailHubLogFrom,
+} from "../server/hub";
 
 const temporaryDirectories: string[] = [];
 
@@ -95,5 +100,29 @@ describe("omp hub state reader", () => {
 
     expect(result.truncated).toBe(true);
     expect(result.content).toBe("z".repeat(64 * 1024));
+  });
+
+  test("resolves process lists and logs through the configured run root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-hub-resolver-"));
+    temporaryDirectories.push(root);
+    await createProcess(root, "project", "/workspace", "worker", meta("running", 7), "ready");
+    const previous = process.env.PASEO_OMP_RUN_DIR;
+    process.env.PASEO_OMP_RUN_DIR = root;
+    try {
+      await expect(resolveListHubProcesses({ cwd: "/workspace" })).resolves.toEqual({
+        processes: [expect.objectContaining({ name: "worker", state: "running" })],
+      });
+      await expect(resolveTailHubLog({ cwd: "/workspace", name: "worker" })).resolves.toEqual({
+        content: "ready",
+        truncated: false,
+      });
+      await expect(resolveTailHubLog({ cwd: "/workspace", name: "missing" })).resolves.toEqual({
+        content: "",
+        truncated: false,
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PASEO_OMP_RUN_DIR;
+      else process.env.PASEO_OMP_RUN_DIR = previous;
+    }
   });
 });

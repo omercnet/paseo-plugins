@@ -49,10 +49,49 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
       - name: Test
+        if: ${{ matrix.plugin != 'paseo-omp' }}
         run: bun test
+      - name: Test with coverage
+        if: ${{ matrix.plugin == 'paseo-omp' }}
+        run: bun run test:coverage
       - name: Docker host-tool ownership integration
         if: ${{ matrix.plugin == 'paseo-omp' }}
         run: bun run test:integration:docker
+
+  omp-real-e2e:
+    name: paseo-omp real OMP 18.1.15
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: paseo-omp
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install pinned OMP
+        env:
+          OMP_SHA256: 747518a41fbb32ac47491b4677a7a921d0d9e5977ae006c358d6836813149adc
+          OMP_URL: https://github.com/can1357/oh-my-pi/releases/download/v18.1.15/omp-linux-x64
+        run: |
+          install -d "$RUNNER_TEMP/omp-bin"
+          curl --fail --location --retry 3 --max-time 300 "$OMP_URL" --output "$RUNNER_TEMP/omp-bin/omp"
+          echo "$OMP_SHA256  $RUNNER_TEMP/omp-bin/omp" | sha256sum --check --strict
+          chmod 0755 "$RUNNER_TEMP/omp-bin/omp"
+          echo "$RUNNER_TEMP/omp-bin" >> "$GITHUB_PATH"
+          test "$("$RUNNER_TEMP/omp-bin/omp" --version)" = "omp/18.1.15"
+      - name: Run real OMP provider scenarios
+        env:
+          PASEO_OMP_REAL_E2E: "1"
+        run: bun test tests/provider.real.e2e.test.ts
+
 
   shared-browser:
     name: paseo-shared-browser
