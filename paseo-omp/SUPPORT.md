@@ -4,7 +4,7 @@
 
 `@omercnet` maintains the `paseo-omp` package, its release artifacts, and the translation between Paseo's provider protocol and OMP's `rpc-ui` protocol. Support is best effort; no response-time or compatibility SLA is promised.
 
-Report plugin packaging, provider behavior, migration, and cutover failures in the [paseo-plugins issue tracker](https://github.com/omercnet/paseo-plugins/issues). Use the [OMP RPC compatibility template](https://github.com/omercnet/paseo-plugins/issues/new?template=omp-rpc-compatibility.yml) for native protocol changes.
+Report plugin packaging, installation, provider behavior, and compatibility failures in the [paseo-plugins issue tracker](https://github.com/omercnet/paseo-plugins/issues). Use the [OMP RPC compatibility template](https://github.com/omercnet/paseo-plugins/issues/new?template=omp-rpc-compatibility.yml) for native protocol changes.
 
 After the failure is isolated:
 
@@ -16,8 +16,25 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 
 ## Supported versions
 
-- Paseo: `^0.8.1` on both the daemon and every app loading the client entry.
+- Paseo: `^0.8.0` on both the daemon and every app loading the client entry.
 - OMP: `18.1.15` is the oldest release in the required real-binary regression job. The hard runtime contract is `rpc-ui` protocol v2, not the version string alone.
+- Plugin release channel: alpha. Backward compatibility is best effort until stable `0.1.0`; every known migration requirement must be stated in the release notes.
 - Typed approvals: optional. When both peers negotiate `typedToolApprovals: 1`, the plugin uses typed tool permissions. Otherwise it retains the bounded generic extension-question flow.
+
+## Known limitations
+
+- `omp` and `omp-plugin` are independent provider identities. Agents, provider settings, and persisted handles do not migrate automatically between them.
+- Do not open the same underlying OMP session concurrently through both providers. Reservation tracking is provider-local and cannot coordinate ownership with Paseo's bundled adapter.
+- OMP 18.1.15 does not advertise typed tool approvals. The plugin uses its bounded generic permission fallback until both peers negotiate `typedToolApprovals: 1`.
+- Configured MCP servers are supported and bridged into OMP. Paseo's own orchestration tools appear when the daemon's **Enable Paseo tools** / `daemon.mcp.injectIntoAgents` setting is enabled. Exact Paseo `toolPolicy` preapproval cannot be represented by OMP `set_host_tools` and therefore fails session startup closed. `disallowedTools` applies only to recognized native OMP built-ins; unknown names are rejected and MCP tools are not silently filtered through it.
+- `qwen2.5:0.5b` is provided only for free exploratory inference. It may ignore exact-output instructions and is not a deterministic protocol or tool-use oracle; use `canary-mock/Deterministic Canary` for assertions.
+- The deterministic mock does not implement OMP's compaction-summary contract, so `/compact` reports `OMP compaction failed` in the canary; compaction remains covered by protocol fixtures.
+- `/handoff` reports `OMP command failed` in the controlled canary even with deterministic role models configured; treat handoff as unavailable there until its native prerequisite is isolated.
+- On official Paseo 0.8.0, requesting a live approval-mode change that the plugin rejects can trigger the daemon's unhandled-rejection restart path. Create a new `full`, `write`, or `ask` session instead of changing mode in place.
+- Native Fast mode and a first-class plan mode are not exposed. `/handoff` is implemented but is not reproducible in the controlled canary without its native OMP workflow prerequisites.
+- Terminal-started OMP sessions are discoverable and importable but are not registered automatically through a terminal hook.
+- OMP tool output reaching RPC stdout is strictly parsed and bounded, but channel purity ultimately depends on OMP keeping non-protocol output off stdout.
+
+The deduplicated comparison with every known OMP report in `getpaseo/paseo` is maintained in [docs/core-provider-issue-audit.md](docs/core-provider-issue-audit.md).
 
 See [TESTING.md](TESTING.md#omp-rpc-compatibility-intake) for the schema-drift intake and regression process.
