@@ -2,6 +2,39 @@
 
 Community OMP integration for Paseo. The direct provider owns the production `omp` identity and registers no compatibility alias.
 
+## Install and update
+
+Paseo plugins are trusted, unsandboxed code. Review this plugin and its production dependencies before installing it on the daemon host.
+
+The daemon and every Paseo app that loads the client entry must satisfy Paseo `^0.8.1`. OMP `18.1.15` is the oldest release exercised by the real-binary regression job; compatible builds must negotiate `rpc-ui` protocol v2.
+
+Install the default branch from the public monorepo, then confirm the runtime is healthy:
+
+```bash
+paseo plugin add omercnet/paseo-plugins:paseo-omp
+paseo plugin ls paseo-omp
+```
+
+Git installations run the manifest's frozen production dependency install. They track the default branch unless `--ref paseo-omp-v<version>` pins a release tag. Update a tracked installation with:
+
+```bash
+paseo plugin update paseo-omp
+paseo plugin ls paseo-omp
+```
+
+A failed build or incompatible update leaves the previously installed revision active.
+
+For a reviewed local checkout:
+
+```bash
+git clone https://github.com/omercnet/paseo-plugins.git
+cd paseo-plugins/paseo-omp
+bun install --frozen-lockfile --production
+paseo plugin install "$PWD"
+```
+
+Release assets contain the same installable directory. Verify the adjacent SHA-256 file, extract the archive, install its frozen production dependencies, and pass the extracted `paseo-omp` directory to `paseo plugin install`.
+
 ## Provider profile migration
 
 Paseo 0.8 passes plugin-specific configuration through each agent's `providerOptions`. Move the executable, environment, and OMP parameters from the former `agents.providers.omp` entry without changing their field names:
@@ -41,7 +74,7 @@ Provider options are strict and normalized once by Paseo before availability, ca
 
 Non-persisted Paseo sessions use OMP's `--no-session`. An ephemeral native session has no resumable handle, so a later runtime failure fails visibly and requires a new Paseo session. Persistent recovery retains the complete launch template while replacing only the model and thinking level confirmed by OMP.
 
-`full`, `write`, and `ask` modes are advertised only when Paseo negotiates provider permission support. OMP's trusted typed approval frames become `kind: "tool"` permissions when both sides opt in to `typedToolApprovals: 1`; older OMP builds retain the bounded generic extension-question flow. Approval mode changes still require a new session.
+`full`, `write`, and `ask` modes are advertised only when Paseo negotiates provider permission support. OMP's trusted typed approval frames become `kind: "tool"` permissions when both sides opt in to `typedToolApprovals: 1`; builds without that capability retain the bounded generic extension-question flow. Approval mode changes still require a new session.
 
 For text-only models, image inputs are materialized into a private, size-bounded temporary directory and removed when the turn, session, or provider connection ends. This relies on the direct provider process and its OMP child sharing the daemon host filesystem; remote execution belongs behind a transport that owns file transfer.
 
@@ -49,9 +82,9 @@ The plugin uses only public contracts. Development dependencies remain pinned to
 
 ## Compatibility
 
-This release requires Paseo `^0.8.1`. That core release removes the bundled OMP registration, adapts legacy OMP persistence handles for plugin providers, and includes direct nested-subagent ancestry support.
+This release requires Paseo `^0.8.1` on the daemon and every app that loads its client entry. That core release removes the bundled OMP registration, adapts legacy OMP persistence handles for plugin providers, and includes direct nested-subagent ancestry support.
 
-The direct provider requires an OMP build that negotiates `rpc-ui` protocol v2. Metadata-free legacy ready frames and v1-only runtimes are rejected before a provider session opens because they cannot support the advertised persistence and conversation-rewind capabilities.
+OMP `18.1.15` is the oldest version tested end to end. The direct provider's hard compatibility gate is `rpc-ui` protocol v2: metadata-free legacy ready frames and v1-only runtimes are rejected before a provider session opens because they cannot support the advertised persistence and conversation-rewind capabilities. Typed tool approvals remain capability-gated and fall back as described above.
 
 ## Coordinated release and rollback
 
@@ -75,3 +108,7 @@ PASEO_LEGACY_CORE_ROOT=/path/to/paseo-legacy \
 PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover \
   bun run test:integration:core
 ```
+
+## Support
+
+See [SUPPORT.md](SUPPORT.md) for ownership, escalation boundaries, supported versions, security reporting, and the repeatable OMP RPC compatibility intake process.

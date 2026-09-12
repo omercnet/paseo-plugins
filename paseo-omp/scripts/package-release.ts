@@ -1,68 +1,37 @@
-import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { dirname, join, posix, sep } from "node:path";
 import { zipSync } from "fflate";
 import packageJson from "../package.json";
 
-const releaseFiles = [
-  "bun.lock",
-  "LICENSE",
-  "README.md",
-  "index.client.tsx",
-  "index.server.ts",
-  "client/hub-popover.tsx",
-  "client/hub-icon.tsx",
-  "client/hub-status.ts",
-  "client/memory-panel.tsx",
-  "client/memory-popover.tsx",
-  "client/omp-config-surface.tsx",
-  "client/sessions-popover.tsx",
-  "client/quota-popover.tsx",
-  "client/provider-icon.tsx",
-  "client/provider-image.tsx",
-  "client/provider-diagnostics-state.ts",
-  "client/quota-state.ts",
-  "server/hub.ts",
-  "server/memory.ts",
-  "server/omp-config.ts",
-  "server/quota.ts",
-  "server/sessions.ts",
-  "server/paths.ts",
-  "server/provider-diagnostics.ts",
-  "server/provider/catalog.ts",
-  "server/provider/config-normalization.ts",
-  "server/provider/connection.ts",
-  "server/provider/host-tools.ts",
-  "server/provider/mcp-transport.ts",
-  "server/provider/omp-rpc.ts",
-  "server/provider/image.ts",
-  "server/provider/omp.svg",
-  "server/provider/provider-options.ts",
-  "server/provider/registration.ts",
-  "server/provider/security.ts",
-  "server/provider/session.ts",
-  "server/provider/security.ts",
-  "server/provider/session-descriptors.ts",
-  "server/provider/settings.ts",
-  "server/provider/subsessions.ts",
-  "server/provider/timeline-projector.ts",
-  "shared/hub.ts",
-  "shared/memory.ts",
-  "shared/omp-config.ts",
-  "shared/quota.ts",
-  "shared/sessions.ts",
-  "shared/provider-diagnostics.ts",
-  "shared/provider-image.ts",
-  "package.json",
-  "paseo-plugin.json",
-  "tsconfig.json",
-] as const;
-
 const output = Bun.argv[2] ?? `dist/paseo-omp-v${packageJson.version}.zip`;
-const root = "paseo-omp";
-const files: Record<string, Uint8Array> = {};
-for (const path of releaseFiles) files[join(root, path)] = await Bun.file(path).bytes();
+const archiveRoot = "paseo-omp";
+const releaseRoots = ["package.json", ...packageJson.files] as const;
 
-await mkdir("dist", { recursive: true });
+async function collectReleaseFiles(path: string, files: string[]): Promise<void> {
+  const metadata = await lstat(path);
+  if (metadata.isSymbolicLink()) throw new Error(`Release input must not be a symlink: ${path}`);
+  if (metadata.isFile()) {
+    files.push(path);
+    return;
+  }
+  if (!metadata.isDirectory()) throw new Error(`Unsupported release input: ${path}`);
+
+  const entries = await readdir(path, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) await collectReleaseFiles(join(path, entry.name), files);
+}
+
+const releaseFiles: string[] = [];
+for (const path of releaseRoots) await collectReleaseFiles(path, releaseFiles);
+releaseFiles.sort();
+
+const files: Record<string, Uint8Array> = {};
+for (const path of releaseFiles) {
+  const archivePath = posix.join(archiveRoot, path.split(sep).join(posix.sep));
+  files[archivePath] = await Bun.file(path).bytes();
+}
+
+await mkdir(dirname(output), { recursive: true });
 await rm(output, { force: true });
 await Bun.write(output, zipSync(files, { level: 9 }));
 console.log(output);

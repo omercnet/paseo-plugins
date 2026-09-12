@@ -54,6 +54,9 @@ jobs:
       - name: Test with coverage
         if: ${{ matrix.plugin == 'paseo-omp' }}
         run: bun run test:coverage
+      - name: Archive and Git package installation smoke
+        if: ${{ matrix.plugin == 'paseo-omp' }}
+        run: bun run test:integration:install
       - name: Docker host-tool ownership integration
         if: ${{ matrix.plugin == 'paseo-omp' }}
         run: bun run test:integration:docker

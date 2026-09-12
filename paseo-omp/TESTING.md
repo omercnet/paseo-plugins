@@ -103,17 +103,32 @@ The WSL script skips when `wsl.exe` or WSL Bun is unavailable. Set `PASEO_OMP_RE
 
 The Linux `paseo-omp real OMP 18.1.15` CI job downloads the pinned `omp-linux-x64` release asset, verifies SHA-256 `747518a41fbb32ac47491b4677a7a921d0d9e5977ae006c358d6836813149adc`, and runs `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts`. The test uses the real OMP binary and a local deterministic OpenAI-compatible model endpoint, so catalog and text-plus-Bash execution are mandatory without repository secrets.
 
+## OMP RPC compatibility intake
+
+Treat every upstream `rpc-ui` change as explicit compatibility work. Do not widen a Zod schema with `passthrough`, `unknown`, or an optional field merely to accept a new frame.
+
+1. Open an issue with the [OMP RPC compatibility template](../.github/ISSUE_TEMPLATE/omp-rpc-compatibility.yml). Record exact OMP, plugin, Paseo daemon, and Paseo app versions; the negotiated protocol and capabilities; the smallest reproduction; and sanitized frame shapes. Never attach credentials, private paths, prompts, or transcripts.
+2. Reproduce against both the reported OMP revision and the pinned minimum-tested `omp/18.1.15` binary. Classify the change as additive optional, additive required, removed or renamed, type or semantic change, or negotiation change.
+3. Compare the affected ready, request, response, or event shape with the strict schemas in `server/provider/omp-rpc.ts`. Decide whether the plugin can support both contracts without ambiguity. A breaking contract requires an explicit compatibility decision and changelog entry, not silent coercion.
+4. Add the changed frame to `tests/fixtures/fake-omp.ts`, then add a focused regression for acceptance, rejection, negotiation, cancellation, and bounds as applicable. Capability changes must cover both reciprocal negotiation and the absent-capability fallback. Typed approval drift must retain the generic extension-question path when `typedToolApprovals: 1` is not negotiated.
+5. Run `bun test tests/omp-rpc.test.ts tests/provider.test.ts`, `bun run test:coverage`, and `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts` with the candidate OMP binary. If host protocol behavior changes, also run the pinned core cutover integration.
+6. Update the minimum-tested version only after the real-binary job is pinned to that release and its SHA-256, the compatibility issue links the evidence, and the README, support matrix, CI job name, fixture version, and changelog agree.
+
+The plugin maintainer owns triage and adaptation. Escalate an isolated OMP implementation defect upstream and an isolated Paseo SDK or provider-protocol defect to Paseo, while keeping the cross-project regression in this repository.
+
 ## Audit verification
 
-- `bun run check`: clean across 78 files.
+- `bun run check`: clean across 79 files.
 - `bun run typecheck`: clean.
-- `bun test`: 442 passed, 4 env-gated scenarios skipped, with 2,143 assertions.
+- `bun test`: 442 passed, 4 env-gated scenarios skipped, with 2,144 assertions.
 - `bun test tests/provider-conformance.test.ts`: 16 host-boundary conformance tests passed, 1 local-core cutover case skipped without `PASEO_CUTOVER_CORE_ROOT`, with 399 assertions. Coverage includes `prompt.command`, `session.configure`, typed and fallback permission allow/deny/cancel paths, registry-driven reload/removal, verified stubborn-descendant cleanup, and 64 sequential turns plus 10 interrupt races with post-turn barriers.
 - `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts`: both installed `omp/18.1.15` catalog and hermetic real-binary text/Bash scenarios passed with 13 assertions.
-- `bun run test:coverage`: 442 passed and 4 env-gated scenarios skipped; aggregate source coverage is 95.66% functions and 97.81% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
-- `bun run package:release /tmp/paseo-omp-provider-cutover.zip`: release archive built; the full suite also extracted and compiled the packaged server entry.
+- `bun run test:coverage`: 442 passed and 4 env-gated scenarios skipped with 2,144 assertions; aggregate source coverage is 95.66% functions and 97.81% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
+- `bun run package:release`: `dist/paseo-omp-v0.0.0.zip` built; the full suite also compared every declared package file, extracted the archive, and compiled both packaged entries.
+- `bun run test:integration:install`: frozen production dependencies installed from both the release archive and a fresh Git-style monorepo checkout.
 - `PASEO_LEGACY_CORE_ROOT=/path/to/paseo-legacy PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover bun run test:integration:core`: both cores built; packaged install/rollback and plugin conformance passed, 18 tests with 413 assertions.
 - Matching core adapter suites (`provider.test.ts`, `plugin-provider.test.ts`, `provider-registry.test.ts`, `provider-snapshot-manager.test.ts`, and `plugins/index.posix.test.ts`): 172 passed.
 - `bun run test:integration:docker`: host/container ownership boundary verified.
 - `bun run test:integration:wsl`: locally skipped because `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
-- `mise x actionlint@1.7.12 -- actionlint .github/workflows/ci.yml`: passed.
+- `mise x actionlint@1.7.12 -- actionlint .github/workflows/ci.yml .github/workflows/release-please.yml`: passed.
+- Release Please 17.1.2 `config.json` and `manifest.json` schema validation: passed for `release-please-config.json` and `.release-please-manifest.json`.

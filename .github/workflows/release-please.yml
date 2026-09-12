@@ -18,7 +18,39 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Create or update releases
+        id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - name: Check out released commit
+        if: ${{ steps.release.outputs['paseo-omp--release_created'] == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs['paseo-omp--tag_name'] }}
+          persist-credentials: false
+      - name: Set up Bun
+        if: ${{ steps.release.outputs['paseo-omp--release_created'] == 'true' }}
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: Install package tooling
+        if: ${{ steps.release.outputs['paseo-omp--release_created'] == 'true' }}
+        working-directory: paseo-omp
+        run: bun install --frozen-lockfile
+      - name: Verify archive and Git installation
+        if: ${{ steps.release.outputs['paseo-omp--release_created'] == 'true' }}
+        working-directory: paseo-omp
+        run: bun run test:integration:install
+      - name: Build and attach release archive
+        if: ${{ steps.release.outputs['paseo-omp--release_created'] == 'true' }}
+        working-directory: paseo-omp
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs['paseo-omp--tag_name'] }}
+          VERSION: ${{ steps.release.outputs['paseo-omp--version'] }}
+        run: |
+          archive="paseo-omp-v${VERSION}.zip"
+          bun run package:release "dist/${archive}"
+          (cd dist && sha256sum "${archive}" > "${archive}.sha256")
+          gh release upload "${TAG}" "dist/${archive}" "dist/${archive}.sha256"

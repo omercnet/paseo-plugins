@@ -20,6 +20,8 @@
     "paseo-omp": {
       "release-type": "node",
       "package-name": "paseo-omp",
+      "component": "paseo-omp",
+      "initial-version": "0.1.0",
       "include-component-in-tag": true
     },
     "paseo-dracula": {

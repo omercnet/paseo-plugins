@@ -1,11 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { build } from "esbuild";
 import { unzipSync } from "fflate";
+import packageJson from "../package.json";
 
 const pluginRoot = join(import.meta.dirname, "..");
+
+async function collectFiles(path: string, files: string[]): Promise<void> {
+  const metadata = await lstat(path);
+  if (metadata.isFile()) {
+    files.push(relative(pluginRoot, path).replaceAll("\\", "/"));
+    return;
+  }
+  for (const entry of await readdir(path)) await collectFiles(join(path, entry), files);
+}
 
 describe("release package", () => {
   test("contains the host-tools bridge and a complete server module graph", async () => {
@@ -24,6 +34,13 @@ describe("release package", () => {
       expect(exitCode, stderr).toBe(0);
 
       const archive = unzipSync(new Uint8Array(await Bun.file(archivePath).arrayBuffer()));
+
+      const expectedFiles: string[] = ["package.json"];
+      for (const path of packageJson.files)
+        await collectFiles(join(pluginRoot, path), expectedFiles);
+      expect(Object.keys(archive).sort()).toEqual(
+        expectedFiles.map((path) => `paseo-omp/${path}`).sort(),
+      );
       expect(archive["paseo-omp/server/provider/host-tools.ts"]).toBeDefined();
       expect(archive["paseo-omp/server/provider/mcp-transport.ts"]).toBeDefined();
       expect(archive["paseo-omp/server/provider/security.ts"]).toBeDefined();
