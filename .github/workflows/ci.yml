@@ -58,6 +58,59 @@ jobs:
         if: ${{ matrix.plugin == 'paseo-omp' }}
         run: bun run test:integration:docker
 
+  omp-core-cutover:
+    name: paseo-omp pinned core cutover
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+    steps:
+      - name: Check out plugin repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out legacy Paseo core
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: getpaseo/paseo
+          ref: f4b209be4d81d25a6143d12d374d797d485e8faa
+          path: .ci/paseo-legacy
+          persist-credentials: false
+      - name: Check out cutover Paseo core
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: omercnet/paseo
+          ref: bd8985540937cc8123fdb619fa4731987950da7d
+          path: .ci/paseo-cutover
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            .ci/paseo-legacy/package-lock.json
+            .ci/paseo-cutover/package-lock.json
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: Install plugin dependencies
+        working-directory: paseo-omp
+        run: bun install --frozen-lockfile
+      - name: Install legacy core dependencies
+        working-directory: .ci/paseo-legacy
+        run: npm ci
+      - name: Install cutover core dependencies
+        working-directory: .ci/paseo-cutover
+        run: npm ci
+      - name: Run package and core cutover integration
+        working-directory: paseo-omp
+        env:
+          PASEO_LEGACY_CORE_ROOT: ${{ github.workspace }}/.ci/paseo-legacy
+          PASEO_CUTOVER_CORE_ROOT: ${{ github.workspace }}/.ci/paseo-cutover
+        run: bun run test:integration:core
+
   omp-real-e2e:
     name: paseo-omp real OMP 18.1.15
     runs-on: ubuntu-latest

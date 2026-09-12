@@ -1,9 +1,15 @@
 import { resolve } from "node:path";
 
 const pluginRoot = resolve(import.meta.dirname, "..");
-const coreRoot = process.env.PASEO_CORE_ROOT?.trim();
-if (!coreRoot) {
-  throw new Error("PASEO_CORE_ROOT must point to the matching Paseo core cutover checkout");
+const legacyCoreRoot = process.env.PASEO_LEGACY_CORE_ROOT?.trim();
+const cutoverCoreRoot = process.env.PASEO_CUTOVER_CORE_ROOT?.trim();
+if (!legacyCoreRoot || !cutoverCoreRoot) {
+  throw new Error(
+    "PASEO_LEGACY_CORE_ROOT and PASEO_CUTOVER_CORE_ROOT must point to distinct Paseo checkouts",
+  );
+}
+if (resolve(legacyCoreRoot) === resolve(cutoverCoreRoot)) {
+  throw new Error("Legacy and cutover core roots must be distinct checkouts");
 }
 
 async function run(command: string[], cwd: string): Promise<void> {
@@ -18,7 +24,8 @@ async function run(command: string[], cwd: string): Promise<void> {
   if (exitCode !== 0) throw new Error(`${command.join(" ")} failed (${exitCode})`);
 }
 
-await run(["npm", "run", "build:server"], coreRoot);
+await run(["npm", "run", "build:server"], legacyCoreRoot);
+await run(["npm", "run", "build:server"], cutoverCoreRoot);
 await run(
   [
     process.execPath,

@@ -7,8 +7,9 @@ import { pathToFileURL } from "node:url";
 import { unzipSync } from "fflate";
 
 const pluginRoot = resolve(import.meta.dirname, "..");
-const coreRoot = process.env.PASEO_CORE_ROOT?.trim();
-const coreTest = coreRoot ? test : test.skip;
+const legacyCoreRoot = process.env.PASEO_LEGACY_CORE_ROOT?.trim();
+const cutoverCoreRoot = process.env.PASEO_CUTOVER_CORE_ROOT?.trim();
+const coreTest = legacyCoreRoot && cutoverCoreRoot ? test : test.skip;
 
 interface PluginRegistration {
   id: string;
@@ -51,6 +52,41 @@ type DaemonConfigStoreConstructor = new (
     plugins: Record<string, never>;
   },
 ) => unknown;
+
+interface LoadedCore {
+  PluginService: PluginServiceConstructor;
+  DaemonConfigStore: DaemonConfigStoreConstructor;
+  buildProviderRegistry(logger: unknown): Record<string, unknown>;
+  pino(options: { level: string }): unknown;
+  version: string;
+}
+
+async function loadCore(coreRoot: string): Promise<LoadedCore> {
+  const coreServer = join(coreRoot, "packages/server/dist/server/server");
+  const [{ PluginService }, { DaemonConfigStore }, { buildProviderRegistry }] = (await Promise.all([
+    import(pathToFileURL(join(coreServer, "plugins/index.js")).href),
+    import(pathToFileURL(join(coreServer, "daemon-config-store.js")).href),
+    import(pathToFileURL(join(coreServer, "agent/provider-registry.js")).href),
+  ])) as [
+    { PluginService: PluginServiceConstructor },
+    { DaemonConfigStore: DaemonConfigStoreConstructor },
+    { buildProviderRegistry: LoadedCore["buildProviderRegistry"] },
+  ];
+  const packageJson = (await Bun.file(join(coreRoot, "package.json")).json()) as {
+    version?: unknown;
+  };
+  if (typeof packageJson.version !== "string") {
+    throw new Error(`Paseo core at ${coreRoot} has no package version`);
+  }
+  const require = createRequire(join(coreRoot, "package.json"));
+  return {
+    PluginService,
+    DaemonConfigStore,
+    buildProviderRegistry,
+    pino: require("pino") as LoadedCore["pino"],
+    version: packageJson.version,
+  };
+}
 
 async function packagePlugin(destination: string): Promise<string> {
   const archivePath = join(destination, "paseo-omp.zip");
@@ -111,68 +147,80 @@ function bindSessionHost(service: PluginServiceLike, version: string): void {
 }
 
 coreTest(
-  "rejects old core, installs once on cutover core, and unregisters for rollback",
+  "uses actual legacy and cutover cores for rejection, install, and rollback",
   async () => {
-    if (!coreRoot) throw new Error("PASEO_CORE_ROOT is required");
-    const root = await mkdtemp(join(tmpdir(), "paseo-omp-core-cutover-"));
-    const coreServer = join(coreRoot, "packages/server/dist/server/server");
-    const [{ PluginService }, { DaemonConfigStore }] = (await Promise.all([
-      import(pathToFileURL(join(coreServer, "plugins/index.js")).href),
-      import(pathToFileURL(join(coreServer, "daemon-config-store.js")).href),
-    ])) as [
-      { PluginService: PluginServiceConstructor },
-      { DaemonConfigStore: DaemonConfigStoreConstructor },
-    ];
-    const require = createRequire(join(coreRoot, "package.json"));
-    const pino = require("pino") as (options: { level: string }) => unknown;
-    const pluginDirectory = await packagePlugin(root);
-    const oldConfigStore = new DaemonConfigStore(join(root, "old-home"), {
-      mcp: { injectIntoAgents: true },
-      browserTools: { enabled: false },
-      providers: {},
-      metadataGeneration: { providers: [] },
-      autoArchiveAfterMerge: false,
-      enableTerminalAgentHooks: false,
-      appendSystemPrompt: "",
-      pluginsEnabled: true,
-      plugins: {},
-    });
-    const oldService = new PluginService(pino({ level: "silent" }), oldConfigStore, "0.8.0");
-    bindSessionHost(oldService, "0.8.0");
-    try {
-      await oldService.start();
-      await expect(oldService.installDirectory({ path: pluginDirectory })).rejects.toThrow(
-        "requires Paseo ^0.8.1",
-      );
-      expect(oldService.getProviderRegistrations()).toEqual([]);
-    } finally {
-      await oldService.stopAllPlugins();
+    if (!legacyCoreRoot || !cutoverCoreRoot) {
+      throw new Error("PASEO_LEGACY_CORE_ROOT and PASEO_CUTOVER_CORE_ROOT are required");
     }
-
-    const configStore = new DaemonConfigStore(join(root, "home"), {
-      mcp: { injectIntoAgents: true },
-      browserTools: { enabled: false },
-      providers: {},
-      metadataGeneration: { providers: [] },
-      autoArchiveAfterMerge: false,
-      enableTerminalAgentHooks: false,
-      appendSystemPrompt: "",
-      pluginsEnabled: true,
-      plugins: {},
-    });
-    const service = new PluginService(pino({ level: "silent" }), configStore, "0.8.1");
-    bindSessionHost(service, "0.8.1");
-
+    if (resolve(legacyCoreRoot) === resolve(cutoverCoreRoot)) {
+      throw new Error("Legacy and cutover core roots must be distinct checkouts");
+    }
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-core-cutover-"));
+    let legacyService: PluginServiceLike | undefined;
+    let cutoverService: PluginServiceLike | undefined;
     try {
-      await service.start();
-      await service.installDirectory({ path: pluginDirectory });
-      expect(service.getProviderRegistrations()).toEqual([
+      const [legacy, cutover, pluginDirectory] = await Promise.all([
+        loadCore(legacyCoreRoot),
+        loadCore(cutoverCoreRoot),
+        packagePlugin(root),
+      ]);
+
+      const legacyBuiltins = legacy.buildProviderRegistry(legacy.pino({ level: "silent" }));
+      expect(legacyBuiltins).toHaveProperty("omp");
+      const legacyConfigStore = new legacy.DaemonConfigStore(join(root, "legacy-home"), {
+        mcp: { injectIntoAgents: true },
+        browserTools: { enabled: false },
+        providers: {},
+        metadataGeneration: { providers: [] },
+        autoArchiveAfterMerge: false,
+        enableTerminalAgentHooks: false,
+        appendSystemPrompt: "",
+        pluginsEnabled: true,
+        plugins: {},
+      });
+      legacyService = new legacy.PluginService(
+        legacy.pino({ level: "silent" }),
+        legacyConfigStore,
+        legacy.version,
+      );
+      bindSessionHost(legacyService, legacy.version);
+      await legacyService.start();
+      await expect(legacyService.installDirectory({ path: pluginDirectory })).rejects.toThrow(
+        /requirements|requires Paseo \^0\.8\.1/u,
+      );
+      expect(legacyService.getProviderRegistrations()).toEqual([]);
+
+      const cutoverBuiltins = cutover.buildProviderRegistry(cutover.pino({ level: "silent" }));
+      expect(cutoverBuiltins).not.toHaveProperty("omp");
+      const cutoverConfigStore = new cutover.DaemonConfigStore(join(root, "cutover-home"), {
+        mcp: { injectIntoAgents: true },
+        browserTools: { enabled: false },
+        providers: {},
+        metadataGeneration: { providers: [] },
+        autoArchiveAfterMerge: false,
+        enableTerminalAgentHooks: false,
+        appendSystemPrompt: "",
+        pluginsEnabled: true,
+        plugins: {},
+      });
+      cutoverService = new cutover.PluginService(
+        cutover.pino({ level: "silent" }),
+        cutoverConfigStore,
+        "0.8.1",
+      );
+      bindSessionHost(cutoverService, "0.8.1");
+      await cutoverService.start();
+      await cutoverService.installDirectory({ path: pluginDirectory });
+      expect(cutoverService.getProviderRegistrations()).toEqual([
         expect.objectContaining({ id: "omp", label: "OMP" }),
       ]);
-      await service.disablePlugin("paseo-omp");
-      expect(service.getProviderRegistrations()).toEqual([]);
+
+      await cutoverService.disablePlugin("paseo-omp");
+      expect(cutoverService.getProviderRegistrations()).toEqual([]);
+      expect(legacy.buildProviderRegistry(legacy.pino({ level: "silent" }))).toHaveProperty("omp");
     } finally {
-      await service.stopAllPlugins();
+      await cutoverService?.stopAllPlugins();
+      await legacyService?.stopAllPlugins();
       await rm(root, { recursive: true, force: true });
     }
   },

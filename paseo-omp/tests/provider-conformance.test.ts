@@ -18,7 +18,7 @@ import { ompModelId } from "../server/provider/catalog";
 import type { OmpModel } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
 
-const coreRoot = process.env.PASEO_CORE_ROOT?.trim();
+const coreRoot = process.env.PASEO_CUTOVER_CORE_ROOT?.trim();
 const pluginProviderModulePath = coreRoot
   ? pathToFileURL(join(coreRoot, "packages/server/dist/server/server/agent/plugin-provider.js"))
       .href
@@ -914,9 +914,12 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
         imported = result.session;
         expect(result.persistence).toEqual({
           provider: "omp",
-          sessionId: sessionFile,
+          sessionId: PRIMARY_SESSION_ID,
           nativeHandle: sessionFile,
-          metadata: { cwd: harness.cwd },
+          metadata: {
+            cwd: harness.cwd,
+            pluginProviderPersistence: { version: 1, data: { sessionId: PRIMARY_SESSION_ID } },
+          },
         });
         expect(result.timeline).toEqual(
           expect.arrayContaining([
@@ -925,10 +928,20 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
             }),
           ]),
         );
+        const importedHandle = result.persistence;
+        await imported.close();
+        imported = undefined;
+        resumed = await harness.client.resumeSession(
+          importedHandle,
+          harness.config(),
+          harness.launchEnv(),
+        );
+        expect(resumed.describePersistence()).toEqual(importedHandle);
         const starts = (await readLog(harness.logPath)).filter(
           (entry): entry is Extract<FakeLogEntry, { kind: "start" }> => entry.kind === "start",
         );
-        expect(starts.slice(-2).map((entry) => entry.argv)).toEqual([
+        expect(starts.slice(-3).map((entry) => entry.argv)).toEqual([
+          expect.arrayContaining(["--resume", PRIMARY_SESSION_ID]),
           expect.arrayContaining(["--resume", PRIMARY_SESSION_ID]),
           expect.arrayContaining(["--resume", PRIMARY_SESSION_ID]),
         ]);

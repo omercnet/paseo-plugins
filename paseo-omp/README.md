@@ -66,10 +66,12 @@ Release in this order:
 3. Upgrade the daemon and install or update this plugin in the same maintenance window.
 4. Verify the provider snapshot contains exactly one `omp` entry, then resume an existing OMP agent and import one native OMP session.
 
-Paseo 0.8.0 rejects this plugin from its manifest requirement before registration. A mis-versioned core that still reserves the bundled `omp` ID rejects installation with `cannot register builtin provider ID "omp"`; the plugin never falls back to a second identity or overrides the bundled adapter.
+Pre-0.8.1 cores reject this plugin before registration because they do not satisfy or recognize its manifest requirement. A mis-versioned core that still reserves the bundled `omp` ID rejects installation with `cannot register builtin provider ID "omp"`; the plugin never falls back to a second identity or overrides the bundled adapter.
 
 To roll back before the cutover is accepted, disable or remove this plugin first, then restore the pre-0.8.1 core so its bundled `omp` registration is the sole owner. Do not leave the production plugin enabled while downgrading. Existing agents keep provider `omp`; the 0.8.1 adapter preserves their legacy native handle while the plugin converts that handle to its versioned OMP session ID for resume. Before either direction of the release, run the package/core integration test from a source checkout:
 
 ```sh
-PASEO_CORE_ROOT=/path/to/paseo bun run test:integration:core
+PASEO_LEGACY_CORE_ROOT=/path/to/paseo-legacy \
+PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover \
+  bun run test:integration:core
 ```
