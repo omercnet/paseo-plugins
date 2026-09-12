@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against Paseo core cutover commit `817df810f94ee1d6b730bf84c38587307ba41c6d`, rollback baseline `f4b209be4d81d25a6143d12d374d797d485e8faa`, and OMP native contract commit `11694d5d3b`.
+Validated against Paseo core release candidate `761b0b4729bc748a122f784602c15bd81293100b`, rollback baseline `f4b209be4d81d25a6143d12d374d797d485e8faa`, and OMP native contract commit `11694d5d3b`.
 
 Classifications:
 
@@ -83,7 +83,7 @@ PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover \
 
 The runner builds both checkouts, packages and extracts this plugin, and loads each checkout's own `PluginService` and provider registry. It proves the legacy core still owns bundled `omp` and rejects the package, the cutover core no longer owns `omp` and accepts the plugin registration, and disabling the plugin before rollback leaves the legacy core able to restore bundled `omp`. The provider conformance suite runs against the cutover checkout's compiled adapter, including legacy native-handle resume, import to a canonical native session ID, close, and subsequent resume while preserving the original JSONL handle for rollback.
 
-Run this test before release and rollback. Linux CI checks out `f4b209be4d81d25a6143d12d374d797d485e8faa` and `817df810f94ee1d6b730bf84c38587307ba41c6d` directly; mutable branches and tags are not accepted.
+Run this test before release and rollback. Linux CI checks out `f4b209be4d81d25a6143d12d374d797d485e8faa` and `761b0b4729bc748a122f784602c15bd81293100b` directly; mutable branches and tags are not accepted.
 
 Run the real Docker host/container ownership boundary test with:
 
