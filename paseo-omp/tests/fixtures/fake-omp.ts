@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -46,8 +47,18 @@ let currentModel =
 const thinkingIndex = args.indexOf("--thinking");
 let thinkingLevel = thinkingIndex >= 0 ? (args[thinkingIndex + 1] ?? "medium") : "medium";
 let autoCompactionEnabled = true;
-let activeScenario: "hold" | "typed-permission" | "fallback-permission" | null = null;
+let activeScenario:
+  | "hold"
+  | "typed-permission"
+  | "fallback-permission"
+  | "typed-cancel"
+  | "fallback-cancel"
+  | null = null;
 let promptSequence = 0;
+let activeApprovalId: string | null = null;
+let activeApprovalToolCallId: string | null = null;
+let activeFallbackId: string | null = null;
+let lateTerminalMessage: Record<string, unknown> | null = null;
 let history = [
   { role: "user", content: "replayed question", entryId: "user-root" },
   { role: "assistant", content: "replayed answer", entryId: "assistant-root" },
@@ -59,6 +70,17 @@ const secret = process.env.PASEO_OMP_FAKE_SECRET ?? "fake-secret-not-configured"
 function record(value: unknown): void {
   if (!logPath) return;
   appendFileSync(logPath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+}
+
+let descendantPid: number | undefined;
+if (process.env.PASEO_OMP_FAKE_STUBBORN_DESCENDANT === "1") {
+  const descendant = spawn(
+    process.execPath,
+    ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],
+    { detached: false, stdio: "ignore" },
+  );
+  descendantPid = descendant.pid;
+  descendant.unref();
 }
 
 function send(value: unknown): void {
@@ -93,12 +115,13 @@ function assistant(
   return { role: "assistant", responseId, content: text };
 }
 
-function finish(text: string): void {
+function finish(text: string, queueLateDuplicate = false): void {
   const message = assistant(text);
   send({ type: "message_end", message });
   send({ type: "turn_end" });
   send({ type: "agent_end", messages: [message], isTerminal: true });
   activeScenario = null;
+  if (queueLateDuplicate) lateTerminalMessage = message;
 }
 
 function emitBasicPrompt(message: string): void {
@@ -109,7 +132,7 @@ function emitBasicPrompt(message: string): void {
     type: "message_end",
     message: { role: "user", content: message, entryId },
   });
-  finish("FAKE_OK");
+  finish("FAKE_OK", message.startsWith("SOAK_"));
 }
 
 function emitFullContract(message: string): void {
@@ -326,17 +349,22 @@ function handlePrompt(command: Record<string, unknown>): void {
       if (message.includes("CONTRACT_FULL")) {
         emitFullContract(message);
       } else if (message.includes("CONTRACT_TYPED_PERMISSION")) {
-        activeScenario = "typed-permission";
+        const cancel = message.includes("_CANCEL");
+        activeScenario = cancel ? "typed-cancel" : "typed-permission";
         send({ type: "turn_start" });
         send({ type: "agent_start" });
         send({
           type: "message_end",
-          message: { role: "user", content: message, entryId: "user-permission" },
+          message: { role: "user", content: message, entryId: `user-permission-${promptSequence}` },
         });
+        const id = `approval-${promptSequence}`;
+        const toolCallId = `approval-tool-${promptSequence}`;
+        activeApprovalId = id;
+        activeApprovalToolCallId = toolCallId;
         send({
           type: "tool_approval_request",
-          id: "approval-1",
-          toolCallId: "approval-tool-1",
+          id,
+          toolCallId,
           toolKind: "shell",
           toolName: "bash",
           tier: "exec",
@@ -350,21 +378,41 @@ function handlePrompt(command: Record<string, unknown>): void {
             redactedFields: ["input.token"],
           },
         });
+        if (cancel) {
+          setTimeout(() => {
+            send({ type: "tool_approval_cancel", id: `cancel-${id}`, targetId: id, toolCallId });
+            finish("TYPED_CANCELED");
+          }, 25);
+        }
       } else if (message.includes("CONTRACT_FALLBACK_PERMISSION")) {
-        activeScenario = "fallback-permission";
+        const cancel = message.includes("_CANCEL");
+        activeScenario = cancel ? "fallback-cancel" : "fallback-permission";
         send({ type: "turn_start" });
         send({ type: "agent_start" });
         send({
           type: "message_end",
-          message: { role: "user", content: message, entryId: "user-fallback" },
+          message: { role: "user", content: message, entryId: `user-fallback-${promptSequence}` },
         });
+        const id = `fallback-${promptSequence}`;
+        activeFallbackId = id;
         send({
           type: "extension_ui_request",
-          id: "fallback-1",
+          id,
           method: "confirm",
           title: "Run command",
           message: "Approve fallback operation?",
         });
+        if (cancel) {
+          setTimeout(() => {
+            send({
+              type: "extension_ui_request",
+              id: `cancel-${id}`,
+              method: "cancel",
+              targetId: id,
+            });
+            finish("FALLBACK_CANCELED");
+          }, 25);
+        }
       } else if (message.includes("CONTRACT_HOLD")) {
         activeScenario = "hold";
         send({ type: "turn_start" });
@@ -389,6 +437,11 @@ function handlePrompt(command: Record<string, unknown>): void {
 }
 
 record({ kind: "start", pid: process.pid, argv: args });
+if (descendantPid !== undefined) record({ kind: "descendant", pid: descendantPid });
+process.on("SIGTERM", () => {
+  record({ kind: "exit", pid: process.pid, signal: "SIGTERM" });
+  process.exit(0);
+});
 send({
   type: "ready",
   protocolVersion: 1,
@@ -485,12 +538,22 @@ reader.on("line", (line) => {
       const selected = MODELS.find(
         (model) => model.provider === command.provider && model.id === command.modelId,
       );
-      if (selected) currentModel = selected;
+      if (selected) {
+        currentModel = selected;
+        if (!(selected.thinking.efforts as readonly string[]).includes(thinkingLevel)) {
+          thinkingLevel = selected.thinking.defaultLevel;
+        }
+      }
       respond(command, currentModel);
       break;
     }
     case "set_thinking_level":
       thinkingLevel = String(command.level);
+      if (lateTerminalMessage) {
+        send({ type: "message_end", message: lateTerminalMessage });
+        send({ type: "agent_end", messages: [lateTerminalMessage], isTerminal: true });
+        lateTerminalMessage = null;
+      }
       respond(command);
       break;
     case "set_auto_compaction":
@@ -517,22 +580,26 @@ reader.on("line", (line) => {
       break;
     case "abort":
       respond(command);
-      setTimeout(() => finish("INTERRUPTED"), 0);
+      setTimeout(() => finish("INTERRUPTED", true), 0);
       break;
     case "tool_approval_response":
-      if (activeScenario === "typed-permission") {
+      if (
+        activeScenario === "typed-permission" &&
+        command.id === activeApprovalId &&
+        command.toolCallId === activeApprovalToolCallId
+      ) {
         send({
           type: "tool_execution_end",
-          toolCallId: "approval-tool-1",
+          toolCallId: activeApprovalToolCallId,
           toolName: "bash",
-          result: { output: "approved", exitCode: 0 },
+          result: { output: command.approved === true ? "approved" : "denied", exitCode: 0 },
           isError: command.approved !== true,
         });
         finish(command.approved === true ? "APPROVED" : "DENIED");
       }
       break;
     case "extension_ui_response":
-      if (activeScenario === "fallback-permission") {
+      if (activeScenario === "fallback-permission" && command.id === activeFallbackId) {
         finish(command.confirmed === true ? "FALLBACK_APPROVED" : "FALLBACK_DENIED");
       }
       break;
@@ -541,4 +608,6 @@ reader.on("line", (line) => {
   }
 });
 
-reader.on("close", () => process.exit(0));
+reader.on("close", () => {
+  record({ kind: "eof-ignored", pid: process.pid });
+});

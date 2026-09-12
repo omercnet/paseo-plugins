@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, watch, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -31,6 +32,16 @@ const MODEL: OmpModel = {
   contextWindow: 200_000,
   input: ["text", "image"],
 };
+const ALTERNATE_MODEL: OmpModel = {
+  provider: "openai",
+  id: "gpt-5.4",
+  name: "GPT 5.4",
+  reasoning: true,
+  thinking: { efforts: ["low", "high"], defaultLevel: "high" },
+  contextWindow: 128_000,
+  input: ["text"],
+};
+const ALTERNATE_MODEL_ID = ompModelId(ALTERNATE_MODEL);
 const MODEL_ID = ompModelId(MODEL);
 const SECRET = "contract-secret-9a7f";
 const roots: string[] = [];
@@ -64,7 +75,10 @@ type HostRegistry = {
 type HostRegistryConstructor = new (logger: object) => HostRegistry;
 type FakeLogEntry =
   | { kind: "start"; pid: number; argv: string[] }
-  | { kind: "command"; command: Record<string, unknown> };
+  | { kind: "command"; command: Record<string, unknown> }
+  | { kind: "descendant"; pid: number }
+  | { kind: "exit"; pid: number; signal: string }
+  | { kind: "eof-ignored"; pid: number };
 
 type Harness = {
   root: string;
@@ -164,6 +178,33 @@ async function commandOfType(harness: Harness, type: string): Promise<Record<str
   return command;
 }
 
+async function waitForLoggedExit(path: string, pid: number): Promise<void> {
+  const controller = new AbortController();
+  const watcher = watch(path, { signal: controller.signal });
+  try {
+    if ((await readLog(path)).some((entry) => entry.kind === "exit" && entry.pid === pid)) return;
+    for await (const _event of watcher) {
+      if ((await readLog(path)).some((entry) => entry.kind === "exit" && entry.pid === pid)) return;
+    }
+    throw new Error(`Fake OMP log closed before process ${pid} exited`);
+  } finally {
+    controller.abort();
+  }
+}
+
+function processIsExecuting(pid: number): boolean {
+  if (process.platform === "linux") {
+    try {
+      const status = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return status[status.lastIndexOf(")") + 2] !== "Z";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  return processIsAlive(pid);
+}
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -174,7 +215,7 @@ function processIsAlive(pid: number): boolean {
 }
 
 async function createHarness(
-  options: { typedApprovals?: boolean; chunkHistory?: boolean } = {},
+  options: { typedApprovals?: boolean; chunkHistory?: boolean; stubbornDescendant?: boolean } = {},
 ): Promise<Harness> {
   const root = await mkdtemp(join(tmpdir(), "paseo-omp-conformance-"));
   roots.push(root);
@@ -240,6 +281,7 @@ async function createHarness(
           PASEO_OMP_FAKE_LOG: logPath,
           PASEO_OMP_FAKE_SECRET: SECRET,
           PASEO_OMP_FAKE_TYPED_APPROVALS: options.typedApprovals === false ? "0" : "1",
+          ...(options.stubbornDescendant ? { PASEO_OMP_FAKE_STUBBORN_DESCENDANT: "1" } : {}),
           ...(options.chunkHistory ? { PASEO_OMP_FAKE_CHUNK_HISTORY: "1" } : {}),
           ...extra,
         },
@@ -386,6 +428,100 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
     }
   });
 
+  test("routes advertised commands and manual compaction through host APIs", async () => {
+    const harness = await createHarness();
+    let session: AgentSession | undefined;
+    try {
+      session = await harness.client.createSession(harness.config(), harness.launchEnv(), {
+        persistSession: false,
+      });
+      await expect(session.listCommands?.()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "compact", kind: "command" }),
+          expect.objectContaining({ name: "review", kind: "command" }),
+        ]),
+      );
+
+      const compact = await runTurn(session, "/compact retain the contract", "command-compact");
+      expect(compact.events.filter(isTerminal)).toEqual([
+        expect.objectContaining({ type: "turn_completed", turnId: compact.turnId }),
+      ]);
+      const review = await runTurn(session, "/review staged changes", "command-review");
+      expect(
+        review.events
+          .flatMap((event) =>
+            event.type === "timeline" && event.item.type === "assistant_message"
+              ? [event.item.text]
+              : [],
+          )
+          .join(""),
+      ).toBe("FAKE_OK");
+
+      const commands = await loggedCommands(harness);
+      expect(commands).toContainEqual(
+        expect.objectContaining({ type: "compact", customInstructions: "retain the contract" }),
+      );
+      expect(commands).toContainEqual(
+        expect.objectContaining({ type: "prompt", message: "/review staged changes" }),
+      );
+    } finally {
+      await session?.close();
+      await harness.close();
+    }
+  });
+
+  test("commits model and thinking changes and rejects unsupported host configuration", async () => {
+    const harness = await createHarness();
+    let session: AgentSession | undefined;
+    try {
+      session = await harness.client.createSession(harness.config(), harness.launchEnv(), {
+        persistSession: false,
+      });
+      const events = new EventLog();
+      const unsubscribe = session.subscribe((event) => events.push(event));
+      try {
+        expect(await session.getCurrentMode()).toBe("full");
+        await expect(session.setMode("full")).resolves.toBeUndefined();
+        if (!session.setModel || !session.setThinkingOption) {
+          throw new Error("host configuration APIs are unavailable");
+        }
+        await session.setModel(ALTERNATE_MODEL_ID);
+        await session.setThinkingOption("low");
+        await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+          model: ALTERNATE_MODEL_ID,
+          modeId: "full",
+          thinkingOptionId: "low",
+        });
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "model_changed",
+              runtimeInfo: expect.objectContaining({ model: ALTERNATE_MODEL_ID }),
+            }),
+            expect.objectContaining({ type: "thinking_option_changed", thinkingOptionId: "low" }),
+          ]),
+        );
+        await expect(session.setMode("write")).rejects.toThrow(
+          "OMP approval mode cannot change live",
+        );
+        await expect(session.setModel("missing-model")).rejects.toThrow(
+          "OMP model selection is unavailable",
+        );
+        await expect(session.setThinkingOption("medium")).rejects.toThrow(
+          "OMP thinking level is unavailable",
+        );
+        const commands = await loggedCommands(harness);
+        expect(commands.filter((command) => command.type === "set_model")).toHaveLength(1);
+        expect(commands.filter((command) => command.type === "set_thinking_level")).toHaveLength(1);
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      await session?.close();
+      await harness.close();
+    }
+  });
+
   test("forwards text, images, and structured attachments without changing their contract", async () => {
     const harness = await createHarness();
     let session: AgentSession | undefined;
@@ -483,7 +619,7 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
     }
   });
 
-  test("round-trips typed native tool permissions exactly once", async () => {
+  test("round-trips typed allow, deny, cancellation, and late responses exactly once", async () => {
     const harness = await createHarness();
     let session: AgentSession | undefined;
     try {
@@ -492,48 +628,72 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
         harness.launchEnv(),
         { persistSession: false },
       );
-      const events = new EventLog();
-      const unsubscribe = session.subscribe((event) => events.push(event));
-      try {
-        const { turnId } = await session.startTurn("CONTRACT_TYPED_PERMISSION", {
-          clientMessageId: "typed-permission",
-        });
-        const requested = await events.waitFor((event) => event.type === "permission_requested");
-        if (requested.type !== "permission_requested") throw new Error("missing permission");
-        expect(requested.request).toMatchObject({
-          kind: "tool",
-          name: "omp.bash",
-          detail: { type: "shell", command: "printf approved" },
-          metadata: expect.objectContaining({ redacted: true }),
-        });
-        expect(JSON.stringify(requested)).not.toContain(SECRET);
-        await session.respondToPermission(requested.request.id, { behavior: "allow" });
-        await events.waitFor((event) => isTerminal(event) && hasTurnId(event, turnId));
-        expect(events.filter((event) => event.type === "permission_requested")).toHaveLength(1);
-        expect(events.filter((event) => event.type === "permission_resolved")).toHaveLength(1);
-        expect(
-          events.filter((event) => isTerminal(event) && hasTurnId(event, turnId)),
-        ).toHaveLength(1);
-        const responses = (await loggedCommands(harness)).filter(
-          (command) => command.type === "tool_approval_response",
-        );
-        expect(responses).toEqual([
-          expect.objectContaining({
-            id: "approval-1",
-            toolCallId: "approval-tool-1",
-            approved: true,
-          }),
-        ]);
-      } finally {
-        unsubscribe();
+      for (const behavior of ["allow", "deny"] as const) {
+        const events = new EventLog();
+        const unsubscribe = session.subscribe((event) => events.push(event));
+        try {
+          const { turnId } = await session.startTurn(
+            `CONTRACT_TYPED_PERMISSION_${behavior.toUpperCase()}`,
+            { clientMessageId: `typed-${behavior}` },
+          );
+          const requested = await events.waitFor((event) => event.type === "permission_requested");
+          if (requested.type !== "permission_requested") throw new Error("missing permission");
+          expect(requested.request).toMatchObject({
+            kind: "tool",
+            name: "omp.bash",
+            detail: { type: "shell", command: "printf approved" },
+            metadata: expect.objectContaining({ redacted: true }),
+          });
+          expect(JSON.stringify(requested)).not.toContain(SECRET);
+          await session.respondToPermission(requested.request.id, { behavior });
+          await events.waitFor((event) => isTerminal(event) && hasTurnId(event, turnId));
+          expect(events.filter((event) => event.type === "permission_requested")).toHaveLength(1);
+          expect(events.filter((event) => event.type === "permission_resolved")).toHaveLength(1);
+          expect(
+            events.filter((event) => isTerminal(event) && hasTurnId(event, turnId)),
+          ).toHaveLength(1);
+        } finally {
+          unsubscribe();
+        }
       }
+
+      const canceled = new EventLog();
+      const unsubscribeCanceled = session.subscribe((event) => canceled.push(event));
+      try {
+        const { turnId } = await session.startTurn("CONTRACT_TYPED_PERMISSION_CANCEL", {
+          clientMessageId: "typed-cancel",
+        });
+        const requested = await canceled.waitFor((event) => event.type === "permission_requested");
+        if (requested.type !== "permission_requested") throw new Error("missing permission");
+        await canceled.waitFor((event) => event.type === "permission_resolved");
+        await canceled.waitFor((event) => isTerminal(event) && hasTurnId(event, turnId));
+        await expect(
+          session.respondToPermission(requested.request.id, { behavior: "allow" }),
+        ).rejects.toThrow("Unknown OMP permission request");
+        expect(canceled.filter((event) => event.type === "permission_requested")).toHaveLength(1);
+        expect(canceled.filter((event) => event.type === "permission_resolved")).toHaveLength(1);
+        expect(
+          canceled.filter((event) => isTerminal(event) && hasTurnId(event, turnId)),
+        ).toHaveLength(1);
+      } finally {
+        unsubscribeCanceled();
+      }
+
+      expect(
+        (await loggedCommands(harness)).filter(
+          (command) => command.type === "tool_approval_response",
+        ),
+      ).toEqual([
+        expect.objectContaining({ id: "approval-1", approved: true }),
+        expect.objectContaining({ id: "approval-2", approved: false }),
+      ]);
     } finally {
       await session?.close();
       await harness.close();
     }
   });
 
-  test("falls back to generic extension permissions when native approvals are absent", async () => {
+  test("round-trips fallback confirm allow, deny, cancellation, and late responses", async () => {
     const harness = await createHarness({ typedApprovals: false });
     let session: AgentSession | undefined;
     try {
@@ -542,33 +702,69 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
         harness.launchEnv(),
         { persistSession: false },
       );
-      const events = new EventLog();
-      const unsubscribe = session.subscribe((event) => events.push(event));
-      try {
-        const { turnId } = await session.startTurn("CONTRACT_FALLBACK_PERMISSION", {
-          clientMessageId: "fallback-permission",
-        });
-        const requested = await events.waitFor((event) => event.type === "permission_requested");
-        if (requested.type !== "permission_requested") throw new Error("missing permission");
-        expect(requested.request).toMatchObject({
-          kind: "question",
-          name: "omp.confirm",
-          title: "Run command",
-        });
-        await session.respondToPermission(requested.request.id, {
-          behavior: "allow",
-          selectedActionId: "submit",
-        });
-        await events.waitFor((event) => isTerminal(event) && hasTurnId(event, turnId));
-        expect(
-          (await loggedCommands(harness)).filter(
-            (command) => command.type === "extension_ui_response",
-          ),
-        ).toEqual([expect.objectContaining({ id: "fallback-1", confirmed: true })]);
-        expect(events.filter(isTerminal)).toHaveLength(1);
-      } finally {
-        unsubscribe();
+      for (const behavior of ["allow", "deny"] as const) {
+        const events = new EventLog();
+        const unsubscribe = session.subscribe((event) => events.push(event));
+        try {
+          const { turnId } = await session.startTurn(
+            `CONTRACT_FALLBACK_PERMISSION_${behavior.toUpperCase()}`,
+            { clientMessageId: `fallback-${behavior}` },
+          );
+          const requested = await events.waitFor((event) => event.type === "permission_requested");
+          if (requested.type !== "permission_requested") throw new Error("missing permission");
+          expect(requested.request).toMatchObject({
+            kind: "question",
+            name: "omp.confirm",
+            title: "Run command",
+          });
+          await session.respondToPermission(requested.request.id, {
+            behavior,
+            selectedActionId: behavior === "allow" ? "submit" : "cancel",
+          });
+          await events.waitFor((event) => isTerminal(event) && hasTurnId(event, turnId));
+          expect(events.filter((event) => event.type === "permission_requested")).toHaveLength(1);
+          expect(events.filter((event) => event.type === "permission_resolved")).toHaveLength(1);
+          expect(
+            events.filter((event) => isTerminal(event) && hasTurnId(event, turnId)),
+          ).toHaveLength(1);
+        } finally {
+          unsubscribe();
+        }
       }
+
+      const canceled = new EventLog();
+      const unsubscribeCanceled = session.subscribe((event) => canceled.push(event));
+      try {
+        const { turnId } = await session.startTurn("CONTRACT_FALLBACK_PERMISSION_CANCEL", {
+          clientMessageId: "fallback-cancel",
+        });
+        const requested = await canceled.waitFor((event) => event.type === "permission_requested");
+        if (requested.type !== "permission_requested") throw new Error("missing permission");
+        await canceled.waitFor((event) => event.type === "permission_resolved");
+        await canceled.waitFor((event) => isTerminal(event) && hasTurnId(event, turnId));
+        await expect(
+          session.respondToPermission(requested.request.id, {
+            behavior: "allow",
+            selectedActionId: "submit",
+          }),
+        ).rejects.toThrow("Unknown OMP permission request");
+        expect(canceled.filter((event) => event.type === "permission_requested")).toHaveLength(1);
+        expect(canceled.filter((event) => event.type === "permission_resolved")).toHaveLength(1);
+        expect(
+          canceled.filter((event) => isTerminal(event) && hasTurnId(event, turnId)),
+        ).toHaveLength(1);
+      } finally {
+        unsubscribeCanceled();
+      }
+
+      expect(
+        (await loggedCommands(harness)).filter(
+          (command) => command.type === "extension_ui_response",
+        ),
+      ).toEqual([
+        expect.objectContaining({ id: "fallback-1", confirmed: true }),
+        expect.objectContaining({ id: "fallback-2", confirmed: false }),
+      ]);
     } finally {
       await session?.close();
       await harness.close();
@@ -751,7 +947,7 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
     }
   });
 
-  test("recovers after subprocess death and retires stale sessions on plugin reload and removal", async () => {
+  test("recovers after subprocess death and lets registry replacement retire active sessions", async () => {
     const harness = await createHarness();
     let session: AgentSession | undefined;
     let replacement: AgentSession | undefined;
@@ -776,6 +972,17 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
       );
 
       const oldSession = session;
+      const reloadEvents = new EventLog();
+      const unsubscribeOld = oldSession.subscribe((event) => reloadEvents.push(event));
+      const active = await oldSession.startTurn("CONTRACT_HOLD", {
+        clientMessageId: "reload-active",
+      });
+      await reloadEvents.waitFor(
+        (event) => event.type === "turn_started" && hasTurnId(event, active.turnId),
+      );
+      const oldPid = startsBeforeReload.at(-1)?.pid;
+      if (!oldPid) throw new Error("missing old provider process");
+      const oldExited = waitForLoggedExit(harness.logPath, oldPid);
       const replacementRegistration = createOmpProvider({
         environment: {
           HOME: harness.root,
@@ -785,30 +992,83 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
         },
       });
       harness.registry.replace([replacementRegistration]);
-      await oldSession.close();
+      await oldExited;
+      await reloadEvents.waitFor((event) => isTerminal(event) && hasTurnId(event, active.turnId));
+      expect(
+        reloadEvents.filter((event) => isTerminal(event) && hasTurnId(event, active.turnId)),
+      ).toHaveLength(1);
+      expect(processIsExecuting(oldPid)).toBe(false);
       await expect(oldSession.startTurn("stale", { clientMessageId: "stale" })).rejects.toThrow(
         /closed|stale/i,
       );
+      unsubscribeOld();
+      session = undefined;
+
       const nextClient = harness.registry.clients()[replacementRegistration.id];
       if (!nextClient) throw new Error("replacement OMP client is missing");
       replacement = await nextClient.createSession(harness.config(), harness.launchEnv(), {
         persistSession: false,
       });
-      await expect(runTurn(replacement, "after reload", "after-reload")).resolves.toMatchObject({
-        events: expect.arrayContaining([expect.objectContaining({ type: "turn_completed" })]),
+      const removalEvents = new EventLog();
+      const unsubscribeReplacement = replacement.subscribe((event) => removalEvents.push(event));
+      const removalTurn = await replacement.startTurn("CONTRACT_HOLD", {
+        clientMessageId: "removal-active",
       });
+      await removalEvents.waitFor(
+        (event) => event.type === "turn_started" && hasTurnId(event, removalTurn.turnId),
+      );
+      const replacementPid = (await readLog(harness.logPath)).findLast(
+        (entry) => entry.kind === "start",
+      )?.pid;
+      if (!replacementPid) throw new Error("missing replacement provider process");
+      const replacementExited = waitForLoggedExit(harness.logPath, replacementPid);
       harness.registry.replace([]);
+      await replacementExited;
+      await removalEvents.waitFor(
+        (event) => isTerminal(event) && hasTurnId(event, removalTurn.turnId),
+      );
+      expect(
+        removalEvents.filter((event) => isTerminal(event) && hasTurnId(event, removalTurn.turnId)),
+      ).toHaveLength(1);
+      expect(processIsExecuting(replacementPid)).toBe(false);
       await expect(
         replacement.startTurn("removed", { clientMessageId: "removed" }),
       ).rejects.toThrow(/closed|stale/i);
+      unsubscribeReplacement();
       replacement = undefined;
-      session = undefined;
     } finally {
       await replacement?.close();
       await session?.close();
       await harness.close();
     }
   });
+
+  if (process.platform !== "win32") {
+    test("kills a stubborn descendant instead of trusting stdin EOF", async () => {
+      const harness = await createHarness({ stubbornDescendant: true });
+      let session: AgentSession | undefined;
+      try {
+        session = await harness.client.createSession(harness.config(), harness.launchEnv(), {
+          persistSession: false,
+        });
+        const entries = await readLog(harness.logPath);
+        const leaderPid = entries.find((entry) => entry.kind === "start")?.pid;
+        const descendantPid = entries.find((entry) => entry.kind === "descendant")?.pid;
+        if (!leaderPid || !descendantPid) throw new Error("missing process-tree identities");
+        expect(processIsExecuting(leaderPid)).toBe(true);
+        expect(processIsExecuting(descendantPid)).toBe(true);
+
+        await expect(session.close()).resolves.toBeUndefined();
+        session = undefined;
+
+        expect(processIsExecuting(leaderPid)).toBe(false);
+        expect(processIsExecuting(descendantPid)).toBe(false);
+      } finally {
+        await session?.close();
+        await harness.close();
+      }
+    }, 10_000);
+  }
 
   test("accepts chunked large frames and rejects oversized prompts before IPC", async () => {
     const harness = await createHarness();
@@ -850,49 +1110,79 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
       session = await harness.client.createSession(harness.config(), harness.launchEnv(), {
         persistSession: false,
       });
+      if (!session.setThinkingOption) throw new Error("host thinking API is unavailable");
+      const events = new EventLog();
+      const unsubscribe = session.subscribe((event) => events.push(event));
       const completedTurnIds = new Set<string>();
       const assistantMessageIds = new Set<string>();
       for (let index = 0; index < 64; index += 1) {
-        let turn: TurnRun;
+        const cycleStart = events.length;
+        let turnId: string;
         try {
-          turn = await runTurn(session, `SOAK_${index}`, `soak-${index}`);
+          ({ turnId } = await session.startTurn(`SOAK_${index}`, {
+            clientMessageId: `soak-${index}`,
+          }));
+          await events.waitFor((event) => isTerminal(event) && hasTurnId(event, turnId));
+          await session.setThinkingOption("medium");
         } catch (error) {
           throw new Error(`Sequential soak iteration ${index} failed`, { cause: error });
         }
-        const { events, turnId } = turn;
-        expect(completedTurnIds.has(turnId)).toBe(false);
-        completedTurnIds.add(turnId);
-        const messages = events.flatMap((event) =>
-          event.type === "timeline" &&
-          event.item.type === "assistant_message" &&
-          event.item.messageId
-            ? [event.item.messageId]
+        const cycle = events.slice(cycleStart);
+        const terminalEvents = cycle.filter(
+          (event) => isTerminal(event) && hasTurnId(event, turnId),
+        );
+        const assistantMessages = cycle.flatMap((event) =>
+          event.type === "timeline" && event.item.type === "assistant_message"
+            ? [{ id: event.item.messageId, text: event.item.text }]
             : [],
         );
-        for (const messageId of messages) {
-          expect(assistantMessageIds.has(messageId)).toBe(false);
-          assistantMessageIds.add(messageId);
+        expect(terminalEvents).toEqual([
+          expect.objectContaining({ type: "turn_completed", turnId }),
+        ]);
+        expect(assistantMessages.map((message) => message.text).join("")).toBe("FAKE_OK");
+        expect(completedTurnIds.has(turnId)).toBe(false);
+        completedTurnIds.add(turnId);
+        for (const message of assistantMessages) {
+          if (!message.id) throw new Error("missing assistant message identity");
+          expect(assistantMessageIds.has(message.id)).toBe(false);
+          assistantMessageIds.add(message.id);
         }
       }
       expect(completedTurnIds.size).toBe(64);
       expect(assistantMessageIds.size).toBe(64);
+
       const interruptedTurnIds = new Set<string>();
       for (let index = 0; index < 10; index += 1) {
-        const events = new EventLog();
-        const unsubscribe = session.subscribe((event) => events.push(event));
+        const cycleStart = events.length;
         const { turnId } = await session.startTurn("CONTRACT_HOLD", {
           clientMessageId: `race-${index}`,
         });
         await session.interrupt();
         await events.waitFor((event) => isTerminal(event) && hasTurnId(event, turnId));
+        await session.setThinkingOption("medium");
+        const cycle = events.slice(cycleStart);
         expect(interruptedTurnIds.has(turnId)).toBe(false);
         interruptedTurnIds.add(turnId);
-        unsubscribe();
+        expect(cycle.filter((event) => isTerminal(event) && hasTurnId(event, turnId))).toEqual([
+          expect.objectContaining({ type: "turn_canceled", turnId }),
+        ]);
         expect(
-          events.filter((event) => isTerminal(event) && hasTurnId(event, turnId)),
-        ).toHaveLength(1);
+          cycle
+            .flatMap((event) =>
+              event.type === "timeline" && event.item.type === "assistant_message"
+                ? [event.item.text]
+                : [],
+            )
+            .join(""),
+        ).toBe("INTERRUPTED");
       }
       expect(interruptedTurnIds.size).toBe(10);
+      const subscribedEventCount = events.length;
+      unsubscribe();
+      await runTurn(session, "SOAK_POST_UNSUBSCRIBE", "post-unsubscribe");
+      await session.setThinkingOption("medium");
+      expect(events).toHaveLength(subscribedEventCount);
+
       const starts = (await readLog(harness.logPath)).filter(
         (entry): entry is Extract<FakeLogEntry, { kind: "start" }> => entry.kind === "start",
       );

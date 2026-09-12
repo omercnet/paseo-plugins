@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,14 +27,112 @@ type HostRegistry = {
 };
 type HostRegistryConstructor = new (logger: object) => HostRegistry;
 
-async function createHarness(): Promise<{
+interface RealHarness {
   cwd: string;
   registry: HostRegistry;
   client: AgentClient;
-}> {
-  const cwd = await mkdtemp(join(tmpdir(), "paseo-omp-real-e2e-"));
-  roots.push(cwd);
-  const registration = createOmpProvider();
+  requests: Array<Record<string, unknown>>;
+  modelServer: { stop(closeActiveConnections?: boolean): void };
+}
+
+function streamingResponse(frames: unknown[]): Response {
+  const body = `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`;
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+  });
+}
+
+async function createHarness(): Promise<RealHarness> {
+  const root = await mkdtemp(join(tmpdir(), "paseo-omp-real-e2e-"));
+  roots.push(root);
+  const cwd = join(root, "workspace");
+  const agentDir = join(root, "agent");
+  await Promise.all([mkdir(cwd), mkdir(agentDir)]);
+  const requests: Array<Record<string, unknown>> = [];
+  const modelServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      if (request.method === "GET") {
+        return Response.json({
+          object: "list",
+          data: [{ id: "conformance-model", object: "model" }],
+        });
+      }
+      const payload = (await request.json()) as Record<string, unknown>;
+      requests.push(payload);
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      const hasToolResult = messages.some(
+        (message) =>
+          message !== null &&
+          typeof message === "object" &&
+          "role" in message &&
+          message.role === "tool",
+      );
+      const base = {
+        id: `chatcmpl-${requests.length}`,
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "conformance-model",
+      };
+      if (!hasToolResult) {
+        return streamingResponse([
+          {
+            ...base,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  role: "assistant",
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_contract_bash",
+                      type: "function",
+                      function: {
+                        name: "bash",
+                        arguments: '{"command":"printf REAL_OMP_TOOL_OK"}',
+                      },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          },
+          { ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+        ]);
+      }
+      return streamingResponse([
+        {
+          ...base,
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "REAL_OMP_DONE" },
+              finish_reason: null,
+            },
+          ],
+        },
+        {
+          ...base,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        },
+      ]);
+    },
+  });
+  await writeFile(
+    join(agentDir, "models.yml"),
+    `providers:\n  paseo-ci:\n    baseUrl: http://127.0.0.1:${modelServer.port}/v1\n    auth: none\n    api: openai-completions\n    models:\n      - id: conformance-model\n        name: Conformance Model\n        reasoning: false\n        input: [text]\n        contextWindow: 32000\n        maxTokens: 4096\n`,
+  );
+  const registration = createOmpProvider({
+    environment: {
+      HOME: root,
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      PI_CODING_AGENT_DIR: agentDir,
+    },
+  });
   // Static importing the host fails on its incompatible Node/Zod declaration graph.
   const adapter = (await import(pluginProviderModulePath)) as unknown as {
     PluginAgentClientRegistry: HostRegistryConstructor;
@@ -43,7 +141,7 @@ async function createHarness(): Promise<{
   registry.replace([registration]);
   const client = registry.clients()[registration.id];
   if (!client) throw new Error("registered OMP client is missing");
-  return { cwd, registry, client };
+  return { cwd, registry, client, requests, modelServer };
 }
 
 afterEach(async () => {
@@ -65,21 +163,26 @@ describe("OMP 18.1.15 real provider", () => {
           cwd: harness.cwd,
           force: true,
         });
-        expect(catalog.models.length).toBeGreaterThan(0);
-        expect(catalog.models.some((model) => model.isDefault)).toBe(true);
+        expect(catalog.models).toContainEqual(
+          expect.objectContaining({
+            provider: "omp-plugin",
+            label: "paseo-ci/Conformance Model",
+          }),
+        );
         expect(catalog.defaultModeId).toBe("full");
         expect(catalog.modes.map((mode) => mode.id)).toEqual(
           expect.arrayContaining(["full", "write", "ask"]),
         );
       } finally {
         await harness.registry.shutdown();
+        harness.modelServer.stop(true);
       }
     },
     60_000,
   );
 
   testReal(
-    "runs a text and tool turn without duplicate or hanging completion",
+    "runs a text and Bash tool turn without duplicate or hanging completion",
     async () => {
       const harness = await createHarness();
       let session: AgentSession | undefined;
@@ -89,8 +192,10 @@ describe("OMP 18.1.15 real provider", () => {
           cwd: harness.cwd,
           force: true,
         });
-        const model = catalog.models.find((candidate) => candidate.isDefault) ?? catalog.models[0];
-        if (!model) throw new Error("OMP returned no usable model");
+        const model = catalog.models.find(
+          (candidate) => candidate.label === "paseo-ci/Conformance Model",
+        );
+        if (!model) throw new Error("OMP did not load the hermetic CI model");
         session = await harness.client.createSession(
           {
             provider: "omp-plugin",
@@ -110,7 +215,7 @@ describe("OMP 18.1.15 real provider", () => {
             "Use the bash tool exactly once to run `printf REAL_OMP_TOOL_OK`, then reply with exactly REAL_OMP_DONE.",
             { clientMessageId: "real-omp-tool" },
           );
-          expect(result.finalText).toContain("REAL_OMP_DONE");
+          expect(result.finalText).toBe("REAL_OMP_DONE");
           expect(events.filter((event) => event.type === "turn_started")).toHaveLength(1);
           expect(events.filter((event) => event.type === "turn_completed")).toHaveLength(1);
           expect(events.filter((event) => event.type === "turn_failed")).toHaveLength(0);
@@ -123,12 +228,15 @@ describe("OMP 18.1.15 real provider", () => {
                 item.name.toLowerCase() === "bash",
             ),
           ).toBe(true);
+          expect(harness.requests).toHaveLength(2);
+          expect(JSON.stringify(harness.requests[1])).toContain("REAL_OMP_TOOL_OK");
         } finally {
           unsubscribe();
         }
       } finally {
         await session?.close();
         await harness.registry.shutdown();
+        harness.modelServer.stop(true);
       }
     },
     180_000,

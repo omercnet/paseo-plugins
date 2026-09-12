@@ -2330,6 +2330,35 @@ describe("OMP RPC transport", () => {
     await expect(session.close()).rejects.toThrow("cleanup failed");
   });
 
+  test("never reports cleanup success without invoking process-tree termination", async () => {
+    const child = new FakeRpcChild();
+    child.stdin.removeAllListeners("finish");
+    let cleanupCalls = 0;
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => {
+        cleanupCalls += 1;
+        return Promise.resolve(true);
+      },
+      environment: TEST_RUNTIME_ENV,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await expect(session.close()).rejects.toThrow("did not close after tree cleanup");
+    expect(cleanupCalls).toBe(1);
+  });
+
   if (process.platform !== "win32") {
     test("leader exit fails a prompt and permits recovery while a descendant holds stdio", async () => {
       const script = `
