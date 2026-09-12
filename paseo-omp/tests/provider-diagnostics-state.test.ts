@@ -160,29 +160,16 @@ describe("storage summaries", () => {
 });
 
 describe("selectKnownOmpProviders", () => {
-  test("keeps only explicit bundled and canary ids, including prototype-like ids safely", () => {
+  test("keeps only the production OMP id, including prototype-like ids safely", () => {
     const entries: PaseoProviderSnapshotResult["entries"] = [
-      { provider: "omp", status: "unavailable", enabled: false, label: "OMP" },
-      {
-        provider: "omp-plugin",
-        status: "ready",
-        enabled: true,
-        label: "OMP (Plugin Preview)",
-      },
+      { provider: "omp", status: "ready", enabled: true, label: "OMP" },
       { provider: "constructor", status: "ready", enabled: true },
       { provider: "toString", status: "ready", enabled: true },
       { provider: "claude", status: "ready", enabled: true, label: "Claude" },
     ];
 
     expect(selectKnownOmpProviders(entries)).toEqual([
-      { id: "omp", label: "OMP", kind: "bundled", status: "unavailable", enabled: false },
-      {
-        id: "omp-plugin",
-        label: "OMP (Plugin Preview)",
-        kind: "canary",
-        status: "ready",
-        enabled: true,
-      },
+      { id: "omp", label: "OMP", status: "ready", enabled: true },
     ]);
   });
 });

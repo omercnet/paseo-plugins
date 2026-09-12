@@ -83,9 +83,9 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
   const runtime = options.runtime ?? new OmpRpcRuntime({ environment: options.environment });
   const nativeReservations = new OmpNativeSessionReservations();
   return {
-    id: "omp-plugin",
-    label: "OMP (Plugin Preview)",
-    description: "Canary direct provider for OMP's rpc-ui protocol",
+    id: "omp",
+    label: "OMP",
+    description: "Direct provider for OMP's rpc-ui protocol",
     icon: "server/provider/omp.svg",
     providerOptionsSchema: OmpProviderOptionsSchema,
     async getCatalogCacheKey(catalogOptions) {
@@ -126,11 +126,11 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
     },
     async connect(request) {
       if (boundedJsonBytes(request, 8 * 1024, 32, 256, 64) === Number.POSITIVE_INFINITY) {
-        throw new Error("OMP Plugin Preview received an oversized connection request");
+        throw new Error("OMP provider received an oversized connection request");
       }
       const parsed = ConnectRequestSchema.safeParse(request);
       if (!parsed.success || !parsed.data.versions.includes(1)) {
-        throw new Error("OMP Plugin Preview requires a valid provider protocol version 1 request");
+        throw new Error("OMP provider requires a valid provider protocol version 1 request");
       }
       const requestedCapabilities = new Set(parsed.data.capabilities);
       const capabilities = CAPABILITIES.filter((capability) =>

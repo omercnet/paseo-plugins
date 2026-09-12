@@ -817,7 +817,7 @@ describe("OMP host tool bridge", () => {
       withOmpWorkspaceIdentity({
         agentId: "agent-1",
         workspaceId: "workspace-1",
-        provider: "omp-plugin",
+        provider: "omp",
         cwd: "/workspace",
         reason: "create" as const,
         purpose: "interactive" as const,

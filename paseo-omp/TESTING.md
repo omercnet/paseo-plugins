@@ -4,8 +4,8 @@ Validated against Paseo core public API commit `95b3a5746` and OMP native contra
 
 Classifications:
 
-- **Equivalent**: same consumer-observable behavior is implemented by `omp-plugin`.
-- **Unsupported**: the bundled adapter also has no meaningful native OMP operation.
+- **Equivalent**: same consumer-observable behavior is implemented by the production `omp` plugin provider.
+- **Unsupported**: OMP has no meaningful native operation for this behavior.
 - **Protocol**: Paseo core owns the behavior for every public provider.
 - **Blocked**: parity needs the linked narrow public API or core change; the plugin fails visibly or provides the documented partial behavior.
 
@@ -18,14 +18,14 @@ Classifications:
 | Catalog cache identity | **Equivalent** | `getCatalogCacheKey` hashes normalized `providerOptions`, profile `settings`, scope, working directory, and the effective default command. Core applies configured `models` and `additionalModels` per profile. |
 | Default mode | **Equivalent** | Catalog reports `defaultMode: full`; `full` is always available, while bundled `write`/`ask` modes are advertised only after `permission` negotiation. Covered by `tests/provider.test.ts` and `tests/provider-options.test.ts`. |
 | Create session | **Equivalent** | `OmpProviderSession.open`; ordered `session.opened`, committed `session.config`, and `session.ready` regression. |
-| Resume session | **Equivalent** | Opaque native ID validation, cwd authorization, configured `providerOptions.params.sessionDir`, exact resume, replay-before-ready, and recovery tests in `tests/provider.test.ts`. |
+| Resume session | **Equivalent** | Versioned plugin persistence plus Paseo 0.8.1's bounded core migration envelope preserve existing `provider: "omp"` agents and their legacy `nativeHandle`; the plugin validates the native ID, authorizes cwd against the configured `providerOptions.params.sessionDir`, resumes exactly, and replays before ready. Covered by `tests/persistence-cutover.test.ts`, `tests/provider.test.ts`, and the local-core case in `tests/provider-conformance.test.ts`. |
 | List sessions | **Equivalent** | `session.list` consumes profile-scoped `providerOptions` and `settings`, scans the configured session root, and returns separate bounded first- and last-user-prompt previews. |
-| Import session | **Protocol** | `session.list` plus persistence replay feeds the generic plugin-provider import path; host `plugin-provider.ts::importSession` owns import storage and timeline adoption. |
+| Import session | **Protocol** and **Equivalent** | `session.list` plus persistence replay feeds the generic plugin-provider import path. Paseo 0.8.1 wraps a pre-cutover native file handle in the core migration envelope; the plugin extracts only its native ID and reauthorizes that ID and cwd under the configured session root before launch. |
 | Archive/unarchive | **Unsupported** | OMP has no native archive operation. Neither adapter mutates OMP transcripts; Paseo still archives its own agent record. |
 | Working directory | **Equivalent** | Absolute cwd validation, launch forwarding, resume ownership checks, session-list scoping, and host-tool cwd tests. |
 | Environment propagation | **Equivalent** | `config-normalization.ts` overlays session env on profile env; `omp-rpc.ts::buildOmpEnvironment` allowlists inherited runtime/provider variables and rejects loader/path injection. |
 | System prompts | **Protocol** and **Equivalent** | Core combines agent and daemon prompts before `session.open`; plugin forwards one bounded `--append-system-prompt`. Profile/recovery tests preserve it. |
-| Persisted sessions | **Equivalent** | Versioned opaque persistence, transcript reservation, replay, process recovery, and cleanup quarantine regressions in `tests/provider.test.ts`. |
+| Persisted sessions | **Equivalent** | Versioned opaque persistence, legacy native-handle migration, transcript reservation, replay, process recovery, and cleanup quarantine regressions are covered in `tests/persistence-cutover.test.ts`, `tests/provider.test.ts`, and the package/core integration run. |
 | Ephemeral sessions | **Equivalent** | `persist: false` maps to `--no-session`; runtime loss fails visibly instead of inventing a resume handle. |
 | Internal sessions | **Protocol** and **Equivalent** | Metadata generation requests `persistSession: false`; the generic plugin host maps that to `config.persist: false`, then OMP receives `--no-session`. |
 | Text prompts | **Equivalent** | Bounded multipart text joins and native prompt lifecycle coverage in `tests/provider.test.ts`. |
@@ -73,6 +73,16 @@ Classifications:
 
 ## Integration boundary tests
 
+The coordinated package/core cutover test requires a built checkout of the Paseo 0.8.1 cutover branch:
+
+```sh
+PASEO_CORE_ROOT=/path/to/paseo bun run test:integration:core
+```
+
+The runner builds that checkout, packages and extracts this plugin, verifies Paseo 0.8.0 rejects the package with the `^0.8.1` requirement, installs it through the 0.8.1 `PluginService` with `omp` as the sole provider registration, and runs this plugin's full provider conformance suite against the checkout's compiled plugin adapter. The core-gated persistence case resumes a legacy bundled OMP handle and the ordinary import case reopens the same native transcript through versioned plugin persistence.
+
+Run this test before release and before rollback. A passing forward run proves the core no longer reserves `omp`; the 0.8.0 rejection proves the production plugin cannot coexist with a core that still owns the bundled ID.
+
 Run the real Docker host/container ownership boundary test with:
 
 ```sh
@@ -93,13 +103,15 @@ The Linux `paseo-omp real OMP 18.1.15` CI job downloads the pinned `omp-linux-x6
 
 ## Audit verification
 
-- `bun run check`: clean across 75 files.
+- `bun run check`: clean across 78 files.
 - `bun run typecheck`: clean.
-- `bun test`: 439 passed, 2 env-gated real scenarios skipped, with 2,140 assertions.
-- `bun test tests/provider-conformance.test.ts`: 16 host-boundary conformance tests passed with 396 assertions, including `prompt.command`, `session.configure`, typed and fallback permission allow/deny/cancel paths, registry-driven reload/removal, verified stubborn-descendant cleanup, and 64 sequential turns plus 10 interrupt races with post-turn barriers.
+- `bun test`: 442 passed, 4 env-gated scenarios skipped, with 2,143 assertions.
+- `bun test tests/provider-conformance.test.ts`: 16 host-boundary conformance tests passed, 1 local-core cutover case skipped without `PASEO_CORE_ROOT`, with 399 assertions. Coverage includes `prompt.command`, `session.configure`, typed and fallback permission allow/deny/cancel paths, registry-driven reload/removal, verified stubborn-descendant cleanup, and 64 sequential turns plus 10 interrupt races with post-turn barriers.
 - `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts`: both installed `omp/18.1.15` catalog and hermetic real-binary text/Bash scenarios passed with 13 assertions.
-- `bun run test:coverage`: 439 passed and 2 env-gated tests skipped; aggregate source coverage is 95.66% functions and 97.82% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
-- `bun run package:release /tmp/paseo-omp-conformance-review.zip`: release archive built and passed `python3 -m zipfile -t`.
+- `bun run test:coverage`: 442 passed and 4 env-gated scenarios skipped; aggregate source coverage is 95.66% functions and 97.81% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
+- `bun run package:release /tmp/paseo-omp-provider-cutover.zip`: release archive built; the full suite also extracted and compiled the packaged server entry.
+- `PASEO_CORE_ROOT=/path/to/paseo bun run test:integration:core`: matching core built; packaged install/rollback and plugin conformance passed, 18 tests with 409 assertions.
+- Matching core adapter suites (`provider.test.ts`, `plugin-provider.test.ts`, `provider-registry.test.ts`, `provider-snapshot-manager.test.ts`, and `plugins/index.posix.test.ts`): 171 passed.
 - `bun run test:integration:docker`: host/container ownership boundary verified.
 - `bun run test:integration:wsl`: locally skipped because `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
 - `mise x actionlint@1.7.12 -- actionlint .github/workflows/ci.yml`: passed.

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import type {
   ProviderConfigState,
   ProviderContent,
@@ -92,6 +93,13 @@ const MAX_BUFFERED_TURN_BYTES = 4 * 1024 * 1024;
 const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
 const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
+const CORE_RESUME_PERSISTENCE_KEYS: Readonly<Record<string, true>> = {
+  source: true,
+  kind: true,
+  sessionId: true,
+  nativeHandle: true,
+  metadata: true,
+};
 class OmpCatalogEscape extends OmpPublicError {}
 const MAX_REPLAY_MESSAGES = 100_000;
 const REPLAY_TIMEOUT_MS = 20_000;
@@ -132,21 +140,52 @@ const OMP_BUILTIN_COMMANDS: readonly OmpAvailableCommand[] = [
 
 export function ompPersistenceSessionId(input: SessionOpenInput): string | undefined {
   if (!input.persistence) return;
-  if (input.persistence.version !== 1) {
-    throw new OmpPublicError("Unsupported OMP persistence version");
-  }
   const data = input.persistence.data;
-  if (
-    !data ||
-    typeof data !== "object" ||
-    Array.isArray(data) ||
-    !Object.hasOwn(data, "sessionId") ||
-    Object.keys(data).length !== 1
-  ) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new OmpPublicError("Invalid OMP session persistence");
   }
+  const record = data as Record<string, unknown>;
+  let sessionId: unknown;
+  if (input.persistence.version === 1) {
+    if (!Object.hasOwn(record, "sessionId") || Object.keys(record).length !== 1) {
+      throw new OmpPublicError("Invalid OMP session persistence");
+    }
+    sessionId = record.sessionId;
+  } else if (input.persistence.version === 0 && record.source === "paseo-core") {
+    if (record.kind === "resume") {
+      if (
+        Object.keys(record).some((key) => !Object.hasOwn(CORE_RESUME_PERSISTENCE_KEYS, key)) ||
+        (record.nativeHandle !== undefined && typeof record.nativeHandle !== "string") ||
+        (record.metadata !== undefined &&
+          (!record.metadata ||
+            typeof record.metadata !== "object" ||
+            Array.isArray(record.metadata)))
+      ) {
+        throw new OmpPublicError("Invalid OMP core resume persistence");
+      }
+      sessionId = record.sessionId;
+    } else if (record.kind === "import") {
+      if (
+        Object.keys(record).length !== 3 ||
+        typeof record.providerHandleId !== "string" ||
+        record.providerHandleId.includes("\0")
+      ) {
+        throw new OmpPublicError("Invalid OMP core import persistence");
+      }
+      const fileName = basename(record.providerHandleId);
+      if (!fileName.endsWith(".jsonl")) {
+        throw new OmpPublicError("Invalid OMP core import handle");
+      }
+      const stem = fileName.slice(0, -".jsonl".length);
+      sessionId = stem.slice(stem.lastIndexOf("_") + 1);
+    } else {
+      throw new OmpPublicError("Invalid OMP core persistence kind");
+    }
+  } else {
+    throw new OmpPublicError("Unsupported OMP persistence version");
+  }
   try {
-    return validateNativeSessionId((data as Record<string, unknown>).sessionId);
+    return validateNativeSessionId(sessionId);
   } catch {
     throw new OmpPublicError("Invalid OMP session identifier");
   }
@@ -1919,7 +1958,7 @@ export class OmpProviderSession {
         );
       }
       if (input.changes.settings && Object.keys(input.changes.settings).length > 0) {
-        throw new OmpPublicError("OMP Plugin Preview does not expose live provider settings");
+        throw new OmpPublicError("OMP does not expose live provider settings");
       }
       if (input.changes.model === null || input.changes.thinkingOption === null) {
         throw new OmpPublicError("OMP model and thinking selections cannot be cleared");

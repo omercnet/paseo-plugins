@@ -1736,7 +1736,7 @@ export class OmpTimelineProjector {
       callId: `${id}:images`,
       name: `${label} images`,
       detail: { type: "plain_text", label },
-      metadata: { ompImageOwner: "omp-plugin", ompImage: { label, ...image } },
+      metadata: { ompImageOwner: "omp", ompImage: { label, ...image } },
       status: "completed",
       error: null,
     });

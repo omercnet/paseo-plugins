@@ -103,7 +103,7 @@ export function normalizeOmpSessionConfig(
   permissionSupported = false,
 ): NormalizedOmpStartOptions {
   if (Object.keys(config.settings).length > 0) {
-    throw new OmpPublicError("OMP Plugin Preview does not expose live provider settings");
+    throw new OmpPublicError("OMP does not expose live provider settings");
   }
   const parsedMode = OmpModeSchema.safeParse(config.mode ?? "full");
   if (!parsedMode.success) {
