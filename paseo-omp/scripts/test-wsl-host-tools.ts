@@ -34,14 +34,14 @@ try {
   console.log(`SKIP WSL host-tool integration: Node is unavailable in WSL (${String(error)})`);
   process.exit(0);
 }
-const clientEntry = "dist/mcp-wsl-client.mjs";
+const clientEntry = "dist/mcp-wsl-client.cjs";
 const clientBundle = join(pluginRoot, clientEntry);
 await mkdir(join(pluginRoot, "dist"), { recursive: true });
 await build({
   entryPoints: [join(pluginRoot, "tests/fixtures/mcp-container-client.ts")],
   bundle: true,
   platform: "node",
-  format: "esm",
+  format: "cjs",
   outfile: clientBundle,
   logLevel: "silent",
 });
