@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import {
   type ProviderConnection,
@@ -7,6 +8,7 @@ import {
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import { discoverOmpCatalog } from "./catalog";
+import { normalizeOmpCatalogOptions } from "./config-normalization";
 import type { OmpMcpConnector } from "./host-tools";
 import type { OmpRuntime } from "./omp-rpc";
 import {
@@ -18,6 +20,12 @@ import {
   utf8Bytes,
 } from "./security";
 import { OmpProviderSession, ompPersistenceSessionId } from "./session";
+
+type ProviderConfigurationCompat = {
+  providerOptions?: Readonly<Record<string, unknown>>;
+  settings?: Readonly<Record<string, unknown>>;
+};
+
 import type { OmpTimelineScheduler } from "./timeline-projector";
 
 const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
@@ -79,11 +87,32 @@ function preflightProviderInput(input: unknown): void {
         throw new OmpPublicError("Session configuration is too large");
       }
     }
+    if (config?.deniedTools !== undefined) {
+      if (
+        !Array.isArray(config.deniedTools) ||
+        config.deniedTools.length > 512 ||
+        config.deniedTools.some(
+          (tool) => typeof tool !== "string" || tool.trim().length === 0 || utf8Bytes(tool) > 256,
+        )
+      ) {
+        throw new OmpPublicError("Invalid denied tool list");
+      }
+    }
     if (config?.toolPolicy !== undefined) {
       throw new OmpPublicError("OMP Plugin Preview does not support host tool policies");
     }
     if (hasOwnEntries(config?.settings)) {
       throw new OmpPublicError("OMP Plugin Preview does not expose live provider settings");
+    }
+  }
+  if (record.type === "catalog" || record.type === "sessions") {
+    for (const value of [record.providerOptions, record.settings]) {
+      if (
+        value !== undefined &&
+        boundedJsonBytes(value, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
+      ) {
+        throw new OmpPublicError("Provider configuration is too large");
+      }
     }
   }
   if (record.type === "session.prompt") {
@@ -107,6 +136,34 @@ function preflightProviderInput(input: unknown): void {
       throw new OmpPublicError("Permission response is too large");
     }
   }
+}
+function parseProviderInputCompat(input: unknown): ProviderInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new OmpPublicError("Invalid provider request");
+  }
+  const record = input as Record<string, unknown>;
+  if (record.type === "catalog" || record.type === "sessions") {
+    const { providerOptions, settings, scope: _scope, force: _force, ...legacyInput } = record;
+    const parsed = ProviderInputSchema.safeParse(legacyInput);
+    if (!parsed.success) throw new OmpPublicError("Invalid provider request");
+    return { ...parsed.data, providerOptions, settings } as unknown as ProviderInput;
+  }
+  if (record.type === "session.open" && record.config && typeof record.config === "object") {
+    const config = record.config as Record<string, unknown>;
+    const { deniedTools, ...legacyConfig } = config;
+    const parsed = ProviderInputSchema.safeParse({ ...record, config: legacyConfig });
+    if (!parsed.success) throw new OmpPublicError("Invalid provider request");
+    return {
+      ...parsed.data,
+      config: {
+        ...(parsed.data as Extract<ProviderInput, { type: "session.open" }>).config,
+        deniedTools,
+      },
+    } as unknown as ProviderInput;
+  }
+  const parsed = ProviderInputSchema.safeParse(input);
+  if (!parsed.success) throw new OmpPublicError("Invalid provider request");
+  return parsed.data;
 }
 
 function isBoundedIdentifier(value: unknown): value is string {
@@ -424,9 +481,19 @@ export function createOmpConnection(
           return;
         }
         try {
+          const configuredInput = input as typeof input & ProviderConfigurationCompat;
+          const catalogOptions = normalizeOmpCatalogOptions(
+            {
+              scope: input.cwd ? "workspace" : "global",
+              ...(input.cwd ? { cwd: input.cwd } : {}),
+              providerOptions: configuredInput.providerOptions,
+              settings: configuredInput.settings,
+            },
+            input.cwd ?? homedir(),
+          );
           const catalog = await discoverOmpCatalog(
             runtime,
-            input.cwd,
+            catalogOptions,
             shutdown.signal,
             environment,
           );
@@ -451,14 +518,37 @@ export function createOmpConnection(
           if (!input.cwd)
             throw new OmpPublicError("OMP session listing requires a working directory");
           nativeReservations.assertListable();
+          const configuredInput = input as typeof input & ProviderConfigurationCompat;
+          const listingConfig = normalizeOmpCatalogOptions(
+            {
+              scope: "workspace",
+              cwd: input.cwd,
+              providerOptions: configuredInput.providerOptions,
+              settings: configuredInput.settings,
+            },
+            input.cwd,
+          );
           emit({
             type: "sessions",
             requestId: input.requestId,
-            sessions: (await runtime.listSessions({ ...input, cwd: input.cwd })).map((session) => ({
+            sessions: (
+              await runtime.listSessions({
+                cwd: input.cwd,
+                query: input.query,
+                limit: input.limit,
+                sessionDir: listingConfig.sessionDir,
+              })
+            ).map((session) => ({
               persistence: { version: 1, data: { sessionId: session.id } },
               cwd: session.cwd,
               ...(session.title ? { title: session.title } : {}),
               ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
+              ...(session.firstPromptPreview
+                ? { firstPromptPreview: session.firstPromptPreview }
+                : {}),
+              ...(session.lastPromptPreview
+                ? { lastPromptPreview: session.lastPromptPreview }
+                : {}),
             })),
           });
         } catch (error) {
@@ -758,9 +848,7 @@ export function createOmpConnection(
       }
       try {
         preflightProviderInput(input);
-        const parsed = ProviderInputSchema.safeParse(input);
-        if (!parsed.success) throw new OmpPublicError("Invalid provider request");
-        input = parsed.data;
+        input = parseProviderInputCompat(input);
         validateInputEnvelope(input);
         requireProviderCapabilities(safeCapabilities, input);
       } catch (error) {

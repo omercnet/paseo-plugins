@@ -9,6 +9,7 @@ import {
   type ProbeChildProcess,
   type ProbeReadable,
   type ProviderDiagnosticsDeps,
+  probeOmpAvailability,
   resolveExecutablePath,
   runBounded,
   type SpawnFn,
@@ -381,6 +382,35 @@ describe("killWindowsProcessTree", () => {
     expect(await resultPromise).toBe(false);
     expect(child.stdout.destroyed).toBe(true);
     expect(child.stderr.destroyed).toBe(true);
+  });
+});
+
+describe("probeOmpAvailability", () => {
+  test("classifies available, missing, and incompatible OMP runtimes", async () => {
+    const binaryDir = await tempDir("paseo-omp-availability-");
+    const binary = await createFakeBinary(binaryDir);
+    const base = {
+      command: [binary] as const,
+      cwd: binaryDir,
+      environment: { PATH: binaryDir, HOME: binaryDir },
+      platform: process.platform,
+      timeoutMs: 1_000,
+    };
+    await expect(probeOmpAvailability({ ...base, spawnFn: respondingSpawn() })).resolves.toEqual({
+      status: "available",
+    });
+    await expect(
+      probeOmpAvailability({
+        ...base,
+        spawnFn: respondingSpawn({ helpStdout: "--mode=<value> Output mode: text\n" }),
+      }),
+    ).resolves.toEqual({
+      status: "incompatible",
+      diagnostic: "OMP does not advertise rpc-ui support",
+    });
+    await expect(
+      probeOmpAvailability({ ...base, command: [join(binaryDir, "missing")] }),
+    ).resolves.toEqual({ status: "missing", diagnostic: "OMP executable was not found" });
   });
 });
 

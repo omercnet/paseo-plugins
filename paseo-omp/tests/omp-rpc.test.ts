@@ -22,6 +22,10 @@ const READY_FRAME = {
   maxFrameBytes: 1_048_576,
   maxReassembledFrameBytes: 67_108_864,
 } as const;
+const READY_WITH_TYPED_APPROVALS = {
+  ...READY_FRAME,
+  features: { typedToolApprovals: 1 },
+} as const;
 const TEST_RUNTIME_ENV: NodeJS.ProcessEnv = {
   HOME: "/__paseo_omp_test_no_home__",
   PATH: "/usr/bin",
@@ -191,6 +195,95 @@ describe("OMP RPC transport", () => {
     );
     expect(commands).toContainEqual(
       expect.objectContaining({ type: "handoff", customInstructions: "implement now" }),
+    );
+    await session.close();
+  });
+
+  test("negotiates and correlates bounded typed tool approvals only when advertised", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => {
+      commands.push(command);
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2, clientCapabilities: { typedToolApprovals: 1 } },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "ask" });
+    child.write(READY_WITH_TYPED_APPROVALS);
+    const session = await opening;
+    expect(session.supportsTypedToolApprovals).toBe(true);
+    expect(commands).toContainEqual(
+      expect.objectContaining({
+        type: "negotiate_protocol",
+        clientCapabilities: { typedToolApprovals: 1 },
+      }),
+    );
+
+    const request = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "tool_approval_request",
+      id: "approval-1",
+      toolCallId: "tool-call-1",
+      toolKind: "shell",
+      toolName: "bash",
+      tier: "exec",
+      identity: { kind: "shell", command: "git status" },
+      input: { command: "git status", token: "[redacted]" },
+      detail: {
+        lines: ["Command: git status"],
+        truncated: false,
+        truncatedFields: [],
+        redacted: true,
+        redactedFields: ["input.token"],
+      },
+    });
+    await expect(request).resolves.toMatchObject({
+      type: "tool_approval_request",
+      id: "approval-1",
+      identity: { kind: "shell", command: "git status" },
+    });
+    await session.respondToToolApproval({
+      type: "tool_approval_response",
+      id: "approval-1",
+      toolCallId: "tool-call-1",
+      approved: true,
+    });
+    expect(commands).toContainEqual({
+      type: "tool_approval_response",
+      id: "approval-1",
+      toolCallId: "tool-call-1",
+      approved: true,
+    });
+    await session.close();
+  });
+
+  test("keeps typed approvals disabled for older OMP ready frames", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => {
+      commands.push(command);
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "negotiate_protocol",
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "ask" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    expect(session.supportsTypedToolApprovals).toBe(false);
+    expect(commands.find((command) => command.type === "negotiate_protocol")).not.toHaveProperty(
+      "clientCapabilities",
     );
     await session.close();
   });

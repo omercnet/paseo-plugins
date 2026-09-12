@@ -531,6 +531,78 @@ function computeLspDiagnostics(result: BoundedRun): OmpLspDiagnostics {
   if (!helpResultUsable(result)) return { status: "unknown" };
   return { status: LSP_TOOL_PATTERN.test(result.stdout) ? "supported" : "not-advertised" };
 }
+export interface OmpAvailabilityProbeOptions {
+  command: readonly [string, ...string[]];
+  cwd: string;
+  environment?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  platform?: NodeJS.Platform;
+  spawnFn?: SpawnFn;
+}
+
+export async function probeOmpAvailability(options: OmpAvailabilityProbeOptions): Promise<{
+  status: "missing" | "unrunnable" | "incompatible" | "available";
+  diagnostic?: string;
+}> {
+  const environment = options.environment ?? process.env;
+  const [command, ...prefixArgs] = options.command;
+  const resolvedPath = await resolveExecutablePath(
+    command,
+    (environment.PATH ?? "").split(delimiter),
+    {
+      cwd: options.cwd,
+      platform: options.platform ?? process.platform,
+      pathExt: environment.PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
+    },
+  );
+  if (!resolvedPath) return { status: "missing", diagnostic: "OMP executable was not found" };
+
+  const operationTimeout = Math.max(1, Math.min(options.timeoutMs ?? VERSION_TIMEOUT_MS, 60_000));
+  const killGraceMs = Math.min(KILL_GRACE_MS, Math.max(1, Math.floor(operationTimeout / 4)));
+  const probeTimeoutMs = Math.max(1, operationTimeout - killGraceMs * 2);
+  const probeEnv = buildProbeEnv(environment);
+  const [versionRun, helpRun] = await Promise.all([
+    runBounded(
+      options.spawnFn ?? defaultSpawn,
+      resolvedPath,
+      [...prefixArgs, "--version"],
+      probeEnv,
+      probeTimeoutMs,
+      killGraceMs,
+      MAX_VERSION_BYTES,
+    ),
+    runBounded(
+      options.spawnFn ?? defaultSpawn,
+      resolvedPath,
+      [...prefixArgs, "--help"],
+      probeEnv,
+      probeTimeoutMs,
+      killGraceMs,
+      MAX_HELP_BYTES,
+    ),
+  ]);
+  const version = toVersionOutcome(versionRun);
+  if (versionRun.cleanupFailed || helpRun.cleanupFailed) {
+    return { status: "unrunnable", diagnostic: "OMP availability probe cleanup failed" };
+  }
+  if (version.status === "not-found") {
+    return { status: "missing", diagnostic: "OMP executable was not found" };
+  }
+  if (version.status === "malformed") {
+    return { status: "incompatible", diagnostic: "OMP returned an unrecognized version" };
+  }
+  if (version.status !== "ok") {
+    return { status: "unrunnable", diagnostic: `OMP version probe ${version.status}` };
+  }
+  const rpcUiSupported = detectRpcUiSupport(helpRun);
+  if (rpcUiSupported === false) {
+    return { status: "incompatible", diagnostic: "OMP does not advertise rpc-ui support" };
+  }
+  if (rpcUiSupported === null) {
+    return { status: "unrunnable", diagnostic: "OMP rpc-ui compatibility probe failed" };
+  }
+  return { status: "available" };
+}
 
 function isEnoent(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException)?.code;

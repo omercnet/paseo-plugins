@@ -46,12 +46,7 @@ export const OmpProviderParamsSchema = z
   })
   .strict();
 
-/**
- * Session-scoped migration target for the legacy `agents.providers.omp` override.
- *
- * `models`, `additionalModels`, and `disallowedTools` are recognized only so the provider can
- * reject those public-API gaps with a precise error instead of silently stripping them.
- */
+/** Session-scoped migration target for the legacy `agents.providers.omp` override. */
 export const OmpProviderOptionsSchema = z
   .object({
     command: z
@@ -65,9 +60,6 @@ export const OmpProviderOptionsSchema = z
       .describe("Profile environment applied before session launch environment")
       .optional(),
     params: OmpProviderParamsSchema.optional(),
-    models: z.array(z.unknown()).max(512).optional(),
-    additionalModels: z.array(z.unknown()).max(512).optional(),
-    disallowedTools: z.array(boundedString(256)).max(512).optional(),
   })
   .strict();
 

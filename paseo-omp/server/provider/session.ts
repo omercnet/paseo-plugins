@@ -6,6 +6,7 @@ import type {
   ProviderInput,
   ProviderPermissionResponse,
   ProviderSessionConfig,
+  ProviderToolCallDetail,
   ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { mapOmpModels, nativeOmpModelId, OMP_MODES, ompModelId, thinkingForModel } from "./catalog";
@@ -29,6 +30,8 @@ import type {
   OmpSessionState,
   OmpSessionStats,
   OmpStartOptions,
+  OmpToolApprovalCancel,
+  OmpToolApprovalRequest,
 } from "./omp-rpc";
 import { buildOmpSpawnRequest } from "./omp-rpc";
 import {
@@ -271,6 +274,17 @@ type PendingPermission = {
   turnId?: string;
   request: OmpQuestionRequest;
   freeformSentinel?: string;
+};
+type PendingToolPermission = {
+  nativeId: string;
+  toolCallId: string;
+  fingerprint: string;
+  retainedBytes: number;
+  generation: number;
+  runtime: OmpRuntimeSession;
+  expiresAt?: number;
+  timer?: unknown;
+  turnId?: string;
 };
 
 type PendingFreeformSelection = {
@@ -629,6 +643,9 @@ export class OmpProviderSession {
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly inFlightPermissions = new Map<string, PendingPermission>();
   private pendingFreeformSelection: PendingFreeformSelection | null = null;
+  private readonly pendingToolPermissions = new Map<string, PendingToolPermission>();
+  private readonly inFlightToolPermissions = new Map<string, PendingToolPermission>();
+  private readonly resolvedToolApprovalIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
 
   private constructor(
     id: string,
@@ -2184,6 +2201,11 @@ export class OmpProviderSession {
   }
 
   async permission(input: SessionPermissionInput): Promise<void> {
+    const typed = this.pendingToolPermissions.get(input.permissionId);
+    if (typed) {
+      await this.respondToToolPermission(input, typed);
+      return;
+    }
     const pending = this.pendingPermissions.get(input.permissionId);
     if (!pending) throw new OmpPublicError("Unknown OMP permission request");
     if (!this.permissionOwnerIsCurrent(pending)) {
@@ -2232,6 +2254,59 @@ export class OmpProviderSession {
     }
     if (this.inFlightPermissions.get(input.permissionId) !== pending) return;
     this.inFlightPermissions.delete(input.permissionId);
+    this.emit({
+      type: "session.permission_resolved",
+      sessionId: this.id,
+      permissionId: input.permissionId,
+    });
+    this.reevaluateDeferredPermissionTerminal();
+  }
+  private async respondToToolPermission(
+    input: SessionPermissionInput,
+    pending: PendingToolPermission,
+  ): Promise<void> {
+    if (!this.permissionOwnerIsCurrent(pending)) {
+      this.pendingToolPermissions.delete(input.permissionId);
+      if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+      this.resolvedToolApprovalIds.add(pending.nativeId);
+      this.emit({
+        type: "session.permission_resolved",
+        sessionId: this.id,
+        permissionId: input.permissionId,
+      });
+      throw new OmpPublicError("OMP permission request is no longer active");
+    }
+    if (
+      input.response.selectedActionId !== undefined &&
+      input.response.selectedActionId !== input.response.behavior
+    ) {
+      throw new OmpPublicError("OMP permission action is invalid");
+    }
+    this.pendingToolPermissions.delete(input.permissionId);
+    this.inFlightToolPermissions.set(input.permissionId, pending);
+    if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+    try {
+      await pending.runtime.respondToToolApproval({
+        type: "tool_approval_response",
+        id: pending.nativeId,
+        toolCallId: pending.toolCallId,
+        approved: input.response.behavior === "allow",
+      });
+    } catch (error) {
+      if (this.inFlightToolPermissions.get(input.permissionId) !== pending) return;
+      this.inFlightToolPermissions.delete(input.permissionId);
+      this.resolvedToolApprovalIds.add(pending.nativeId);
+      this.emit({
+        type: "session.permission_resolved",
+        sessionId: this.id,
+        permissionId: input.permissionId,
+      });
+      this.reevaluateDeferredPermissionTerminal();
+      throw error;
+    }
+    if (this.inFlightToolPermissions.get(input.permissionId) !== pending) return;
+    this.inFlightToolPermissions.delete(input.permissionId);
+    this.resolvedToolApprovalIds.add(pending.nativeId);
     this.emit({
       type: "session.permission_resolved",
       sessionId: this.id,
@@ -2574,6 +2649,22 @@ export class OmpProviderSession {
       this.replaceSlashCommands(event.commands);
       this.commandCatalog = event.commands;
       this.publishCommands(event.commands);
+      return;
+    }
+    if (event.type === "tool_approval_request") {
+      if (!this.capabilities.includes("permission") || !this.runtime.supportsTypedToolApprovals) {
+        this.handleRuntimeFailure("OMP emitted an unnegotiated tool approval request");
+        return;
+      }
+      this.publishToolPermission(event);
+      return;
+    }
+    if (event.type === "tool_approval_cancel") {
+      if (!this.runtime.supportsTypedToolApprovals) {
+        this.handleRuntimeFailure("OMP emitted an unnegotiated tool approval cancellation");
+        return;
+      }
+      this.cancelToolPermission(event);
       return;
     }
     if (event.type === "extension_ui_request") {
@@ -3005,6 +3096,173 @@ export class OmpProviderSession {
         }),
     });
   }
+  private toolPermissionDetail(
+    request: OmpToolApprovalRequest,
+  ): ProviderToolCallDetail | undefined {
+    switch (request.identity.kind) {
+      case "shell":
+        return {
+          type: "shell",
+          command: this.dataFilter.text(request.identity.command, 24 * 1024),
+        };
+      case "edit":
+        return {
+          type: "edit",
+          filePath: this.dataFilter.text(request.identity.paths[0] ?? "", 4_096),
+          newString: this.dataFilter.text(request.identity.content, 20 * 1024),
+        };
+      case "write":
+        return {
+          type: "write",
+          filePath: this.dataFilter.text(request.identity.path, 4_096),
+          content: this.dataFilter.text(request.identity.content, 20 * 1024),
+        };
+      case "other":
+        return;
+    }
+  }
+
+  private publishToolPermission(request: OmpToolApprovalRequest): void {
+    const fingerprint = createHash("sha256").update(JSON.stringify(request)).digest("base64url");
+    if (this.resolvedToolApprovalIds.has(request.id)) {
+      this.handleRuntimeFailure("OMP reused a resolved tool approval identifier");
+      return;
+    }
+    for (const pending of [
+      ...this.pendingToolPermissions.values(),
+      ...this.inFlightToolPermissions.values(),
+    ]) {
+      if (pending.nativeId !== request.id) continue;
+      if (pending.fingerprint !== fingerprint || pending.toolCallId !== request.toolCallId) {
+        this.handleRuntimeFailure("OMP changed a pending tool approval request");
+      }
+      return;
+    }
+    const pendingCount =
+      this.pendingPermissions.size +
+      this.inFlightPermissions.size +
+      this.pendingToolPermissions.size +
+      this.inFlightToolPermissions.size;
+    if (pendingCount >= MAX_PENDING_PERMISSIONS) {
+      this.resolvedToolApprovalIds.add(request.id);
+      void this.runtime
+        .respondToToolApproval({
+          type: "tool_approval_response",
+          id: request.id,
+          toolCallId: request.toolCallId,
+          cancelled: true,
+        })
+        .catch(() => this.handleRuntimeFailure());
+      return;
+    }
+
+    this.permissionSequence += 1;
+    const permissionId = `omp:permission:${this.permissionNamespace}:${this.permissionSequence}`;
+    const detail = this.toolPermissionDetail(request);
+    const filteredInput = this.dataFilter.json(request.input, 8 * 1024, 32 * 1024);
+    const input =
+      filteredInput && typeof filteredInput === "object" && !Array.isArray(filteredInput)
+        ? filteredInput
+        : {};
+    const descriptionParts = [
+      request.detail.reason,
+      ...request.detail.lines,
+      ...(request.detail.providerSafetyChecks ?? []),
+    ].filter((part): part is string => Boolean(part));
+    const publicRequest = {
+      id: permissionId,
+      name: `omp.${this.dataFilter.text(request.toolName, 256)}`,
+      kind: "tool" as const,
+      title: `Allow ${this.dataFilter.text(request.toolName, 256)}?`,
+      ...(descriptionParts.length > 0
+        ? { description: this.dataFilter.text(descriptionParts.join("\n"), 16 * 1024) }
+        : {}),
+      input: {
+        ...input,
+        identity: this.dataFilter.json(request.identity, 20 * 1024, 32 * 1024),
+        tier: request.tier,
+        toolCallId: request.toolCallId,
+      },
+      ...(detail ? { detail } : {}),
+      actions: [
+        { id: "allow", label: "Allow", behavior: "allow" as const, variant: "primary" as const },
+        { id: "deny", label: "Deny", behavior: "deny" as const, variant: "danger" as const },
+      ],
+      metadata: {
+        tier: request.tier,
+        redacted: request.detail.redacted,
+        truncated: request.detail.truncated,
+        redactedFields: request.detail.redactedFields,
+        truncatedFields: request.detail.truncatedFields,
+      },
+    };
+    const pending: PendingToolPermission = {
+      nativeId: request.id,
+      toolCallId: request.toolCallId,
+      fingerprint,
+      retainedBytes: boundedJsonBytes(
+        publicRequest,
+        MAX_PENDING_PERMISSION_BYTES,
+        512,
+        MAX_PENDING_PERMISSION_BYTES,
+        4_096,
+      ),
+      generation: this.generation,
+      runtime: this.runtime,
+      ...(this.activeTurn ? { turnId: this.activeTurn.turnId } : {}),
+      ...(request.timeout !== undefined ? { expiresAt: Date.now() + request.timeout } : {}),
+    };
+    let retainedBytes = pending.retainedBytes;
+    for (const item of this.pendingPermissions.values()) retainedBytes += item.retainedBytes;
+    for (const item of this.inFlightPermissions.values()) retainedBytes += item.retainedBytes;
+    for (const item of this.pendingToolPermissions.values()) retainedBytes += item.retainedBytes;
+    for (const item of this.inFlightToolPermissions.values()) retainedBytes += item.retainedBytes;
+    if (
+      pending.retainedBytes === Number.POSITIVE_INFINITY ||
+      retainedBytes > MAX_PENDING_PERMISSION_BYTES
+    ) {
+      void this.runtime
+        .respondToToolApproval({
+          type: "tool_approval_response",
+          id: request.id,
+          toolCallId: request.toolCallId,
+          cancelled: true,
+        })
+        .catch(() => this.handleRuntimeFailure());
+      this.resolvedToolApprovalIds.add(request.id);
+      return;
+    }
+    this.pendingToolPermissions.set(permissionId, pending);
+    this.armToolPermissionTimeout(permissionId, pending);
+    this.projector.markAskPermissionRendered();
+    if (this.activeTurn) {
+      this.activeTurn.awaitingPermissionEvidence = true;
+      this.markAgentEvidence(this.activeTurn);
+    }
+    this.emit({ type: "session.permission", sessionId: this.id, request: publicRequest });
+  }
+
+  private cancelToolPermission(request: OmpToolApprovalCancel): void {
+    for (const permissions of [this.pendingToolPermissions, this.inFlightToolPermissions]) {
+      for (const [permissionId, pending] of permissions) {
+        if (pending.nativeId !== request.targetId) continue;
+        if (pending.toolCallId !== request.toolCallId) {
+          this.handleRuntimeFailure("OMP tool approval cancellation did not match its tool call");
+          return;
+        }
+        permissions.delete(permissionId);
+        if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+        this.resolvedToolApprovalIds.add(pending.nativeId);
+        this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+        this.reevaluateDeferredPermissionTerminal();
+        return;
+      }
+    }
+    if (!this.resolvedToolApprovalIds.has(request.targetId)) {
+      this.handleRuntimeFailure("OMP canceled an unknown tool approval request");
+    }
+  }
+
   private publishPermission(request: OmpQuestionRequest): void {
     if (request.method === "select" && !request.options?.length) {
       this.handleRuntimeFailure();
@@ -3034,7 +3292,11 @@ export class OmpProviderSession {
     }
     if (
       !existingId &&
-      this.pendingPermissions.size + this.inFlightPermissions.size >= MAX_PENDING_PERMISSIONS
+      this.pendingPermissions.size +
+        this.inFlightPermissions.size +
+        this.pendingToolPermissions.size +
+        this.inFlightToolPermissions.size >=
+        MAX_PENDING_PERMISSIONS
     ) {
       this.rejectPermissionRequest(request, "Too many OMP questions are already pending");
       return;
@@ -3144,6 +3406,12 @@ export class OmpProviderSession {
       if (permissionId !== existingId) retainedPermissionBytes += retained.retainedBytes;
     }
     for (const retained of this.inFlightPermissions.values()) {
+      retainedPermissionBytes += retained.retainedBytes;
+    }
+    for (const retained of this.pendingToolPermissions.values()) {
+      retainedPermissionBytes += retained.retainedBytes;
+    }
+    for (const retained of this.inFlightToolPermissions.values()) {
       retainedPermissionBytes += retained.retainedBytes;
     }
     if (
@@ -3355,10 +3623,12 @@ export class OmpProviderSession {
   private resolveTurnPermissions(turnId: string): void {
     if (this.pendingFreeformSelection?.turnId === turnId) this.pendingFreeformSelection = null;
     this.resolvePermissions((pending) => pending.turnId === turnId, true);
+    this.resolveToolPermissions((pending) => pending.turnId === turnId, true);
   }
   private resolveAllPermissions(cancelNative = false): void {
     this.pendingFreeformSelection = null;
     this.resolvePermissions(() => true, cancelNative);
+    this.resolveToolPermissions(() => true, cancelNative);
   }
 
   private resolvePermissions(
@@ -3392,6 +3662,67 @@ export class OmpProviderSession {
     }
     this.reevaluateDeferredPermissionTerminal();
   }
+  private resolveToolPermissions(
+    matches: (pending: PendingToolPermission) => boolean,
+    cancelNative: boolean,
+  ): void {
+    const permissionIds = new Set<string>();
+    for (const permissions of [this.pendingToolPermissions, this.inFlightToolPermissions]) {
+      for (const [permissionId, pending] of permissions) {
+        if (!matches(pending)) continue;
+        permissions.delete(permissionId);
+        if (pending.timer !== undefined) this.scheduler.clear(pending.timer);
+        this.resolvedToolApprovalIds.add(pending.nativeId);
+        permissionIds.add(permissionId);
+        if (cancelNative && permissions === this.pendingToolPermissions) {
+          void pending.runtime
+            .respondToToolApproval({
+              type: "tool_approval_response",
+              id: pending.nativeId,
+              toolCallId: pending.toolCallId,
+              cancelled: true,
+            })
+            .catch(() => {
+              if (!this.closed && !this.runtimeDead) {
+                this.invalidateRuntime("OMP tool permission cancellation failed");
+              }
+            });
+        }
+      }
+    }
+    for (const permissionId of permissionIds) {
+      this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+    }
+    this.reevaluateDeferredPermissionTerminal();
+  }
+
+  private armToolPermissionTimeout(permissionId: string, pending: PendingToolPermission): void {
+    if (pending.expiresAt === undefined) return;
+    const remainingMs = Math.max(0, pending.expiresAt - Date.now());
+    pending.timer = this.scheduler.set(() => {
+      if (this.pendingToolPermissions.get(permissionId) !== pending) return;
+      this.pendingToolPermissions.delete(permissionId);
+      this.inFlightToolPermissions.set(permissionId, pending);
+      void pending.runtime
+        .respondToToolApproval({
+          type: "tool_approval_response",
+          id: pending.nativeId,
+          toolCallId: pending.toolCallId,
+          cancelled: true,
+          timedOut: true,
+        })
+        .then(
+          () => {
+            if (this.inFlightToolPermissions.get(permissionId) !== pending) return;
+            this.inFlightToolPermissions.delete(permissionId);
+            this.resolvedToolApprovalIds.add(pending.nativeId);
+            this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId });
+            this.reevaluateDeferredPermissionTerminal();
+          },
+          () => this.handleRuntimeFailure(),
+        );
+    }, remainingMs);
+  }
 
   private armPermissionTimeout(permissionId: string, pending: PendingPermission): void {
     if (pending.expiresAt === undefined) return;
@@ -3424,7 +3755,7 @@ export class OmpProviderSession {
     }, remainingMs);
   }
 
-  private permissionOwnerIsCurrent(pending: PendingPermission): boolean {
+  private permissionOwnerIsCurrent(pending: PendingPermission | PendingToolPermission): boolean {
     if (
       this.closed ||
       this.runtimeDead ||
@@ -3440,10 +3771,13 @@ export class OmpProviderSession {
   private reevaluateDeferredPermissionTerminal(): void {
     const turn = this.activeTurn;
     if (!turn?.deferredAgentEnd || turn.terminal || turn.terminalizing) return;
-    const ownsTurn = (pending: PendingPermission) => pending.turnId === turn.turnId;
+    const ownsTurn = (pending: PendingPermission | PendingToolPermission) =>
+      pending.turnId === turn.turnId;
     if (
       [...this.pendingPermissions.values()].some(ownsTurn) ||
-      [...this.inFlightPermissions.values()].some(ownsTurn)
+      [...this.inFlightPermissions.values()].some(ownsTurn) ||
+      [...this.pendingToolPermissions.values()].some(ownsTurn) ||
+      [...this.inFlightToolPermissions.values()].some(ownsTurn)
     ) {
       return;
     }

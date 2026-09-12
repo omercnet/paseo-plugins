@@ -107,15 +107,30 @@ describe("OMP provider option migration", () => {
     }
   });
 
-  test("fails visibly for plugin-provider API gaps even when legacy arrays are empty", () => {
-    for (const field of ["models", "additionalModels"] as const) {
-      expect(() => parseOmpProviderOptions({ [field]: [] })).toThrow(
-        "Paseo does not merge configured models into plugin providers",
-      );
+  test("enforces the generic denied tool list in OMP launch arguments", () => {
+    const normalized = normalizeOmpSessionConfig({
+      ...sessionConfig({ mode: "full" }),
+      deniedTools: ["bash", "write", "bash"],
+    } as ProviderSessionConfig & { deniedTools: readonly string[] });
+    const request = buildOmpSpawnRequest({ ...normalized, environment: TEST_ENV });
+    const toolsIndex = request.args.indexOf("--tools");
+    expect(toolsIndex).toBeGreaterThan(-1);
+    const enabledTools = request.args[toolsIndex + 1]?.split(",") ?? [];
+    expect(enabledTools).toContain("read");
+    expect(enabledTools).not.toContain("bash");
+    expect(enabledTools).not.toContain("write");
+    expect(() =>
+      normalizeOmpSessionConfig({
+        ...sessionConfig(),
+        deniedTools: ["unknown-extension-tool"],
+      } as ProviderSessionConfig & { deniedTools: readonly string[] }),
+    ).toThrow("cannot enforce unknown denied tools");
+  });
+
+  test("keeps host model overrides outside strict provider options", () => {
+    for (const field of ["models", "additionalModels", "disallowedTools"] as const) {
+      expect(() => parseOmpProviderOptions({ [field]: [] })).toThrow("Unrecognized key");
     }
-    expect(() => parseOmpProviderOptions({ disallowedTools: [] })).toThrow(
-      "toolPolicy supports MCP preapproval but has no generic tool deny-list semantics",
-    );
   });
 
   test("rejects unknown or malformed options instead of stripping them", () => {
