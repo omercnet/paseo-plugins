@@ -86,7 +86,7 @@ From a local checkout on the Paseo daemon host:
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
 cd paseo-plugins/paseo-beads
-bun install --frozen-lockfile
+npm ci
 paseo plugin install "$PWD"
 ```
 
@@ -96,11 +96,11 @@ Beads** from the Command Center while viewing a workspace or one of its agents.
 ## Develop
 
 ```bash
-bun install
-bun run check
-bun test
-bun run test:coverage
-bun run typecheck
+npm ci
+npm run check
+npm test
+npm run test:coverage
+npm run typecheck
 paseo plugin install "$PWD"
 paseo plugin reload paseo-beads
 ```

@@ -1,6 +1,0 @@
-[test]
-coverageSkipTestFiles = true
-coverageThreshold = { lines = 0.90, functions = 0.85 }
-coveragePathIgnorePatterns = ["index.client.tsx", "index.server.ts"]
-coverageReporter = ["text", "lcov"]
-coverageDir = "coverage"

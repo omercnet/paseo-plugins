@@ -163,7 +163,7 @@ paseo plugin install "$PWD"
 paseo plugin reload shared-browser
 ```
 
-`bun run test:smoke` launches the configured real Chromium runtime and exercises two viewers,
+`npm run test:smoke` launches the configured real Chromium runtime and exercises two viewers,
 control handoff, reconnect, stale-frame rejection, viewport changes, device emulation, profile
 persistence, and archive teardown.
 

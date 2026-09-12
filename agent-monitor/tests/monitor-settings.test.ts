@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { type MonitorSettingsState, settingsAreReady } from "../client/settings-state";
 import {
   DEFAULT_BUCKET_OPTIONS,

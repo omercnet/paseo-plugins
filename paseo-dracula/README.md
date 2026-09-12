@@ -59,12 +59,12 @@ official specification's 4.5:1 minimum.
 ## Develop
 
 ```bash
-bun install
-bun run check
-bun run typecheck
-bun run test
-bun run test:coverage
-bun run package:release
+npm ci
+npm run check
+npm run typecheck
+npm test
+npm run test:coverage
+npm run package:release
 paseo plugin install /absolute/path/to/paseo-dracula
 ```
 

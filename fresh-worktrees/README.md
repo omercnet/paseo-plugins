@@ -38,8 +38,8 @@ The plugin requires Paseo `>=0.8.0`.
 ## Develop
 
 ```bash
-bun install --frozen-lockfile
-bun run typecheck
-bun test
+npm ci
+npm run typecheck
+npm test
 paseo plugin install "$PWD"
 ```

@@ -5,18 +5,22 @@
   "private": true,
   "version": "1.1.0",
   "type": "module",
+  "packageManager": "npm@11.19.1",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "test": "bun test",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@getpaseo/client": "0.8.0",
     "@getpaseo/plugin": "0.8.0",
-    "@types/bun": "^1.2.23",
     "@types/node": "^24.5.2",
     "@types/react": "~19.2.0",
     "react": "19.1.0",
     "typescript": "^5.9.3",
+    "vitest": "^4.1.6",
     "zod": "^4.4.3"
   }
 }

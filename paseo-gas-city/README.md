@@ -96,7 +96,7 @@ From a local checkout on the Paseo daemon host:
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
 cd paseo-plugins/paseo-gas-city
-bun install --frozen-lockfile
+npm ci
 paseo plugin install "$PWD"
 ```
 
@@ -117,19 +117,19 @@ mapped rig.
 ## Develop
 
 ```bash
-bun install
-bun run check
-bun run typecheck
-bun test
-bun run test:coverage
-bun run verify:package
+npm ci
+npm run check
+npm run typecheck
+npm test
+npm run test:coverage
+npm run verify:package
 ```
 
 Build and verify the distributable archives with:
 
 ```bash
-bun run verify:package
-bun run package:release
+npm run verify:package
+npm run package:release
 ```
 
 Release Please maintains the package version, changelog, component tag, and GitHub release. Tags use
