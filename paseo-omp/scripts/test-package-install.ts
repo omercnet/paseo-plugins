@@ -1,7 +1,8 @@
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { unzipSync } from "fflate";
+import { extractArchiveFiles } from "./release-archive";
 
 const pluginRoot = join(import.meta.dirname, "..");
 const ignoredCheckoutEntries: Record<string, true> = {
@@ -11,8 +12,12 @@ const ignoredCheckoutEntries: Record<string, true> = {
   node_modules: true,
 };
 
-async function run(command: string[], cwd: string): Promise<string> {
-  const child = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
+async function run(
+  command: string[],
+  cwd: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const child = Bun.spawn(command, { cwd, env: environment, stdout: "pipe", stderr: "pipe" });
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -43,12 +48,14 @@ async function buildCommands(root: string): Promise<string[][]> {
   return manifest.build as string[][];
 }
 
-async function verifyInstalledPackage(root: string): Promise<void> {
-  for (const command of await buildCommands(root)) await run(command, root);
+async function verifyRuntimeDependencies(
+  root: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
   const probe = join(root, ".package-install-smoke.ts");
   await writeFile(probe, 'import "@modelcontextprotocol/sdk/server/index.js";\nimport "yaml";\n');
   try {
-    await run([process.execPath, probe], root);
+    await run([process.execPath, probe], root, environment);
   } finally {
     await rm(probe, { force: true });
   }
@@ -59,12 +66,41 @@ async function verifyArchiveInstall(temporaryDirectory: string): Promise<void> {
   await run([process.execPath, "scripts/package-release.ts", archivePath], pluginRoot);
   const extractionRoot = join(temporaryDirectory, "archive");
   const archive = unzipSync(await Bun.file(archivePath).bytes());
-  for (const [path, contents] of Object.entries(archive)) {
-    const destination = join(extractionRoot, path);
-    await mkdir(dirname(destination), { recursive: true });
-    await writeFile(destination, contents);
+  await extractArchiveFiles(archive, extractionRoot);
+
+  const extractedPlugin = join(extractionRoot, "paseo-omp");
+  const emptyCache = join(temporaryDirectory, "empty-bun-cache");
+  await mkdir(emptyCache);
+  const offlineEnvironment = {
+    ...process.env,
+    BUN_CONFIG_REGISTRY: "http://127.0.0.1:9",
+    BUN_INSTALL_CACHE_DIR: emptyCache,
+    HTTP_PROXY: "http://127.0.0.1:9",
+    HTTPS_PROXY: "http://127.0.0.1:9",
+    NO_PROXY: "",
+  };
+  await verifyRuntimeDependencies(extractedPlugin, offlineEnvironment);
+  const offlineBundle = join(extractedPlugin, ".offline-server.cjs");
+  try {
+    await run(
+      [
+        process.execPath,
+        "build",
+        "index.server.ts",
+        "--target=bun",
+        "--format=cjs",
+        `--outfile=${offlineBundle}`,
+        "--external=@getpaseo/plugin",
+        "--external=@getpaseo/plugin/server",
+        "--external=@getpaseo/plugin/server/provider",
+        "--external=zod",
+      ],
+      extractedPlugin,
+      offlineEnvironment,
+    );
+  } finally {
+    await rm(offlineBundle, { force: true });
   }
-  await verifyInstalledPackage(join(extractionRoot, "paseo-omp"));
 }
 
 async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<void> {
@@ -97,14 +133,17 @@ async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<voi
     ["git", "clone", "--quiet", "--no-hardlinks", sourceRoot, checkoutRoot],
     temporaryDirectory,
   );
-  await verifyInstalledPackage(join(checkoutRoot, "paseo-omp"));
+  const checkoutPlugin = join(checkoutRoot, "paseo-omp");
+  for (const command of await buildCommands(checkoutPlugin)) await run(command, checkoutPlugin);
+  await verifyRuntimeDependencies(checkoutPlugin);
+  await run([process.execPath, "run", "typecheck"], checkoutPlugin);
 }
 
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-install-"));
 try {
   await verifyArchiveInstall(temporaryDirectory);
   await verifyGitCheckoutInstall(temporaryDirectory);
-  console.log("archive and Git checkout package installs passed");
+  console.log("offline archive and Git checkout package installs passed");
 } finally {
   await rm(temporaryDirectory, { recursive: true, force: true });
 }

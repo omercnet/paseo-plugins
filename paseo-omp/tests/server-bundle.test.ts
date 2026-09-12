@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,6 +11,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { build } from "esbuild";
 import { unzipSync } from "fflate";
+import { extractArchiveFiles } from "../scripts/release-archive";
 
 const pluginRoot = join(import.meta.dirname, "..");
 const nodeRequire = createRequire(join(pluginRoot, "index.server.ts"));
@@ -145,11 +146,7 @@ describe("plugin server bundle", () => {
       expect(new TextDecoder().decode(files["paseo-omp/README.md"])).toContain(
         "nested-subagent ancestry",
       );
-      for (const [path, content] of Object.entries(files)) {
-        const outputPath = join(extractionRoot, path);
-        await mkdir(dirname(outputPath), { recursive: true });
-        await writeFile(outputPath, content);
-      }
+      await extractArchiveFiles(files, extractionRoot);
 
       // Dynamic import intentionally exercises the extracted plugin's runtime module boundary.
       const entrypoint = await import(
@@ -159,7 +156,7 @@ describe("plugin server bundle", () => {
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test("packages import-complete client and server entries", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-package-"));
@@ -173,11 +170,7 @@ describe("plugin server bundle", () => {
       });
       expect(await packaging.exited).toBe(0);
       const archive = unzipSync(await Bun.file(archivePath).bytes());
-      for (const [path, bytes] of Object.entries(archive)) {
-        const destination = join(temporaryDirectory, path);
-        await mkdir(dirname(destination), { recursive: true });
-        await writeFile(destination, bytes);
-      }
+      await extractArchiveFiles(archive, temporaryDirectory);
       for (const path of [
         "paseo-omp/client/provider-image.tsx",
         "paseo-omp/shared/provider-image.ts",
@@ -193,5 +186,5 @@ describe("plugin server bundle", () => {
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

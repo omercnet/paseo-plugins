@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against Paseo core cutover commit `817df810f94ee1d6b730bf84c38587307ba41c6d`, rollback baseline `f4b209be4d81d25a6143d12d374d797d485e8faa`, and OMP native contract commit `11694d5d3b`.
+Validated against Paseo 0.8.1 release-candidate cutover commit `761b0b4729bc748a122f784602c15bd81293100b`, rollback baseline `f4b209be4d81d25a6143d12d374d797d485e8faa`, and OMP native contract commit `11694d5d3b`.
 
 Classifications:
 
@@ -83,7 +83,7 @@ PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover \
 
 The runner builds both checkouts, packages and extracts this plugin, and loads each checkout's own `PluginService` and provider registry. It proves the legacy core still owns bundled `omp` and rejects the package, the cutover core no longer owns `omp` and accepts the plugin registration, and disabling the plugin before rollback leaves the legacy core able to restore bundled `omp`. The provider conformance suite runs against the cutover checkout's compiled adapter, including legacy native-handle resume, import to a canonical native session ID, close, and subsequent resume while preserving the original JSONL handle for rollback.
 
-Run this test before release and rollback. Linux CI checks out `f4b209be4d81d25a6143d12d374d797d485e8faa` and `817df810f94ee1d6b730bf84c38587307ba41c6d` directly; mutable branches and tags are not accepted.
+Run this test before release and rollback. Linux CI checks out `f4b209be4d81d25a6143d12d374d797d485e8faa` and `761b0b4729bc748a122f784602c15bd81293100b` directly; mutable branches and tags are not accepted. The integration reads each checkout's package version and passes that exact value to its plugin service and session host.
 
 Run the real Docker host/container ownership boundary test with:
 
@@ -110,25 +110,36 @@ Treat every upstream `rpc-ui` change as explicit compatibility work. Do not wide
 1. Open an issue with the [OMP RPC compatibility template](https://github.com/omercnet/paseo-plugins/issues/new?template=omp-rpc-compatibility.yml). Record exact OMP, plugin, Paseo daemon, and Paseo app versions; the negotiated protocol and capabilities; the smallest reproduction; and sanitized frame shapes. Never attach credentials, private paths, prompts, or transcripts.
 2. Reproduce against both the reported OMP revision and the pinned minimum-tested `omp/18.1.15` binary. Classify the change as additive optional, additive required, removed or renamed, type or semantic change, or negotiation change.
 3. Compare the affected ready, request, response, or event shape with the strict schemas in `server/provider/omp-rpc.ts`. Decide whether the plugin can support both contracts without ambiguity. A breaking contract requires an explicit compatibility decision and changelog entry, not silent coercion.
+
+Required drift is release-blocking. If OMP adds a mandatory frame, removes or renames a required method or field, or changes an existing field's meaning, keep the strict parser and make session startup or the active request fail visibly. Do not silently discard the frame, make the requirement optional, or route around negotiation. Resume release work only after both sides have an explicit compatible contract, fixtures, focused regressions, and a real-binary result.
 4. Add the changed frame to `tests/fixtures/fake-omp.ts`, then add a focused regression for acceptance, rejection, negotiation, cancellation, and bounds as applicable. Capability changes must cover both reciprocal negotiation and the absent-capability fallback. Typed approval drift must retain the generic extension-question path when `typedToolApprovals: 1` is not negotiated.
 5. Run `bun test tests/omp-rpc.test.ts tests/provider.test.ts`, `bun run test:coverage`, and `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts` with the candidate OMP binary. If host protocol behavior changes, also run the pinned core cutover integration.
 6. Update the minimum-tested version only after the real-binary job is pinned to that release and its SHA-256, the compatibility issue links the evidence, and the README, support matrix, CI job name, fixture version, and changelog agree.
 
 The plugin maintainer owns triage and adaptation. Escalate an isolated OMP implementation defect upstream and an isolated Paseo SDK or provider-protocol defect to Paseo, while keeping the cross-project regression in this repository.
 
+## Release publication
+
+`release-please.yml` only creates release metadata and forwards the created `paseo-omp` tag and commit SHA to `publish-paseo-omp.yml`. The metadata job never checks out or executes repository code. The publisher has no pull-request permission, resolves the tag independently, and waits for a successful `CI` push run whose `head_sha` is exactly the tagged commit before checkout or execution.
+
+The publisher builds the self-contained ZIP, writes its corruption-detection checksum, creates a signed GitHub build-provenance attestation for both files, rechecks that the tag still resolves to the gated SHA, and uploads with `--clobber`. To recover an interrupted upload, dispatch **Publish Paseo OMP** with the existing `paseo-omp-v<version>` tag; the same identity and CI gates apply, so reruns are idempotent.
+
+The SHA-256 file is not a signature. Consumers authenticate the archive with `gh attestation verify` and may use the checksum only to detect accidental transfer or storage corruption.
+
 ## Audit verification
 
-- `bun run check`: clean across 79 files.
+- `bun run check`: clean across 80 files.
 - `bun run typecheck`: clean.
-- `bun test`: 442 passed, 4 env-gated scenarios skipped, with 2,144 assertions.
+- `bun test`: 443 passed, 4 env-gated scenarios skipped, with 2,153 assertions.
 - `bun test tests/provider-conformance.test.ts`: 16 host-boundary conformance tests passed, 1 local-core cutover case skipped without `PASEO_CUTOVER_CORE_ROOT`, with 399 assertions. Coverage includes `prompt.command`, `session.configure`, typed and fallback permission allow/deny/cancel paths, registry-driven reload/removal, verified stubborn-descendant cleanup, and 64 sequential turns plus 10 interrupt races with post-turn barriers.
 - `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts`: both installed `omp/18.1.15` catalog and hermetic real-binary text/Bash scenarios passed with 13 assertions.
-- `bun run test:coverage`: 442 passed and 4 env-gated scenarios skipped with 2,144 assertions; aggregate source coverage is 95.66% functions and 97.81% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
-- `bun run package:release`: `dist/paseo-omp-v0.0.0.zip` built; the full suite also compared every declared package file, extracted the archive, and compiled both packaged entries.
-- `bun run test:integration:install`: frozen production dependencies installed from both the release archive and a fresh Git-style monorepo checkout.
-- `PASEO_LEGACY_CORE_ROOT=/path/to/paseo-legacy PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover bun run test:integration:core`: both cores built; packaged install/rollback and plugin conformance passed, 18 tests with 413 assertions.
+- `bun run test:coverage`: 443 passed and 4 env-gated scenarios skipped with 2,153 assertions; aggregate source coverage is 95.80% functions and 97.88% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
+- `bun run package:release`: `dist/paseo-omp-v0.0.0.zip` built from tracked allowlisted source plus its closed production/compiler dependency set; the full suite checked archive contents, contained extraction, and both packaged entries.
+- `bun run test:integration:install`: the self-contained archive imported dependencies and compiled with an empty cache and unreachable registry/proxy, while a fresh Git-style checkout ran its declared dependency build.
+- `PASEO_LEGACY_CORE_ROOT=/path/to/paseo-legacy PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover bun run test:integration:core`: the `0.7.2` rollback core and actual `0.8.1` cutover commit `761b0b4729bc748a122f784602c15bd81293100b` built; packaged install/rollback and plugin conformance passed, 18 tests with 412 assertions.
 - Matching core adapter suites (`provider.test.ts`, `plugin-provider.test.ts`, `provider-registry.test.ts`, `provider-snapshot-manager.test.ts`, and `plugins/index.posix.test.ts`): 172 passed.
 - `bun run test:integration:docker`: host/container ownership boundary verified.
 - `bun run test:integration:wsl`: locally skipped because `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
-- `mise x actionlint@1.7.12 -- actionlint .github/workflows/ci.yml .github/workflows/release-please.yml`: passed.
+- `mise x actionlint@1.7.12 -- actionlint .github/workflows/*.yml`: passed.
+- `zizmor .github/workflows`: no findings (offline audit; six repository-wide suppressions remain).
 - Release Please 17.1.2 `config.json` and `manifest.json` schema validation: passed for `release-please-config.json` and `.release-please-manifest.json`.
