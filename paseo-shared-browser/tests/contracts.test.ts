@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_VIEWPORT,
   MIN_VIEWPORT,
@@ -12,6 +12,53 @@ import {
   viewportSchema,
   type BrowserState,
 } from "../shared/browser";
+import contribute from "../index.server";
+
+const browserMocks = vi.hoisted(() => ({
+  bindAgentTicket: vi.fn(),
+  cleanupBrowserServer: vi.fn(),
+  handleAcquireControl: vi.fn(),
+  handleApplyDevicePreset: vi.fn(),
+  handleAttachBrowser: vi.fn(),
+  handleCaptureBrowser: vi.fn(),
+  handleDetachBrowser: vi.fn(),
+  handleListOpenBrowserWorkspaces: vi.fn(),
+  handleNavigateBrowser: vi.fn(),
+  handleReleaseControl: vi.fn(),
+  handleResizeBrowser: vi.fn(),
+  handleSendBrowserInput: vi.fn(),
+  handleWorkspaceArchived: vi.fn(),
+  issueAgentTicket: vi.fn().mockResolvedValue(undefined),
+  revokeAgentBrowserAccess: vi.fn(),
+}));
+
+vi.mock("../server/browser", () => browserMocks);
+
+type AgentCreateRequest = {
+  config: {
+    provider: string;
+    cwd: string;
+    internal?: boolean;
+    mcpServers?: Record<string, unknown>;
+  };
+  env?: Record<string, string>;
+};
+
+type AgentCreateHook = (input: { request: AgentCreateRequest }) => Promise<AgentCreateRequest>;
+
+function captureAgentCreateHook(): AgentCreateHook {
+  let hook: AgentCreateHook | undefined;
+  contribute({
+    handle: vi.fn(),
+    before: vi.fn((name: string, handler: unknown) => {
+      if (name === "agent.create") hook = handler as AgentCreateHook;
+      return () => {};
+    }),
+    on: vi.fn(),
+  } as never);
+  if (!hook) throw new Error("agent.create hook was not registered");
+  return hook;
+}
 
 const BASE_STATE: BrowserState = {
   sessionId: "s".repeat(32),
@@ -155,6 +202,35 @@ describe("browser epoch fencing", () => {
     };
     expect(isBrowserStateCurrent(current, restarted)).toBe(true);
     expect(didBrowserRuntimeRestart(current, restarted)).toBe(true);
+  });
+});
+
+describe("agent MCP injection", () => {
+  it("leaves OMP agent creation untouched because OMP rejects external MCP servers", async () => {
+    const hook = captureAgentCreateHook();
+    const request: AgentCreateRequest = {
+      config: { provider: "omp", cwd: "/workspace" },
+      env: { EXISTING: "value" },
+    };
+
+    await expect(hook({ request })).resolves.toBe(request);
+    expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
+  });
+
+  it("injects the adapter for providers that accept external MCP servers", async () => {
+    const hook = captureAgentCreateHook();
+    const request: AgentCreateRequest = {
+      config: { provider: "codex", cwd: "/workspace" },
+      env: { EXISTING: "value" },
+    };
+
+    const transformed = await hook({ request });
+    const ticket = transformed.env?.PASEO_SHARED_BROWSER_TICKET;
+    expect(ticket).toEqual(expect.any(String));
+    expect(browserMocks.issueAgentTicket).toHaveBeenCalledWith(ticket);
+    expect(transformed.config.mcpServers).toMatchObject({
+      "shared-browser": { type: "stdio" },
+    });
   });
 });
 
