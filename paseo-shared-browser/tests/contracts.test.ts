@@ -2,10 +2,35 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_VIEWPORT,
   MIN_VIEWPORT,
+  browserFrameSchema,
   browserInputEventSchema,
+  browserStateSchema,
+  didBrowserRuntimeRestart,
+  isBrowserStateCurrent,
   mapDisplayedPoint,
   viewportSchema,
+  type BrowserState,
 } from "../shared/browser";
+
+const BASE_STATE: BrowserState = {
+  sessionId: "s".repeat(32),
+  workspaceId: "workspace",
+  status: "ready",
+  url: "https://example.com/",
+  title: "Example",
+  canGoBack: false,
+  canGoForward: false,
+  viewport: { width: 1280, height: 800 },
+  navigationGeneration: 4,
+  viewportGeneration: 2,
+  devicePresetId: null,
+  userAgent: "Chromium",
+  controller: "none",
+  controllerLabel: null,
+  controllerExpiresAt: null,
+  viewerCount: 1,
+  error: null,
+};
 
 describe("mapDisplayedPoint", () => {
   it("maps a contained image point into canonical CSS pixels", () => {
@@ -47,5 +72,87 @@ describe("shared RPC validation", () => {
         deltaY: 4_001,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("recovery schema validation", () => {
+  it("bounds optional supervisor epochs and typed recovery state", () => {
+    expect(
+      browserStateSchema.safeParse({
+        ...BASE_STATE,
+        runtimeId: "r".repeat(32),
+        runtimeCreatedAt: Date.now(),
+        bridgeEpoch: Number.MAX_SAFE_INTEGER,
+        recoveryState: "runtime-unavailable",
+      }).success,
+    ).toBe(true);
+    expect(
+      browserStateSchema.safeParse({
+        ...BASE_STATE,
+        bridgeEpoch: Number.MAX_SAFE_INTEGER + 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      browserFrameSchema.safeParse({
+        sessionId: BASE_STATE.sessionId,
+        frameId: "f".repeat(32),
+        mimeType: "image/jpeg",
+        transport: "screenshot",
+        dataBase64: "eA==",
+        byteLength: 1,
+        width: 1280,
+        height: 800,
+        navigationGeneration: 4,
+        viewportGeneration: 2,
+        runtimeId: "r".repeat(32),
+        captureEpoch: Number.MAX_SAFE_INTEGER + 1,
+        capturedAt: new Date().toISOString(),
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("browser epoch fencing", () => {
+  it("rejects a stale bridge response from the same runtime", () => {
+    const current = { ...BASE_STATE, runtimeId: "r".repeat(32), bridgeEpoch: 8 };
+    const stale = { ...current, bridgeEpoch: 7 };
+    expect(isBrowserStateCurrent(current, stale)).toBe(false);
+  });
+
+  it("rejects an older runtime after a restart was observed", () => {
+    const current = {
+      ...BASE_STATE,
+      runtimeId: "b".repeat(32),
+      runtimeCreatedAt: 20,
+      bridgeEpoch: 9,
+    };
+    const stale = {
+      ...current,
+      runtimeId: "a".repeat(32),
+      runtimeCreatedAt: 10,
+      bridgeEpoch: 8,
+    };
+    expect(isBrowserStateCurrent(current, stale)).toBe(false);
+  });
+
+  it("accepts viewer reconnects without reporting a runtime restart", () => {
+    const current = { ...BASE_STATE, runtimeId: "r".repeat(32), bridgeEpoch: 8 };
+    const reconnected = { ...current, bridgeEpoch: 9, viewerCount: 2 };
+    expect(isBrowserStateCurrent(current, reconnected)).toBe(true);
+    expect(didBrowserRuntimeRestart(current, reconnected)).toBe(false);
+  });
+
+  it("accepts reset generations and reports a changed runtime", () => {
+    const current = { ...BASE_STATE, runtimeId: "a".repeat(32), bridgeEpoch: 8 };
+    const restarted = {
+      ...current,
+      runtimeId: "b".repeat(32),
+      bridgeEpoch: 9,
+      navigationGeneration: 0,
+      viewportGeneration: 0,
+      recoveryState: "browser-restarted" as const,
+    };
+    expect(isBrowserStateCurrent(current, restarted)).toBe(true);
+    expect(didBrowserRuntimeRestart(current, restarted)).toBe(true);
   });
 });

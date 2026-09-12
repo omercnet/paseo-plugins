@@ -1,206 +1,175 @@
-import { createHash } from "node:crypto";
-import { EventEmitter } from "node:events";
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { BrowserContext, Page } from "playwright";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { SessionManager } from "../server/browser";
-class FakePage extends EventEmitter {
-  navigateOnMouseDown = false;
-  mouseUpCalls = 0;
-  screenshotCalls = 0;
-  readonly mouse = {
-    click: async () => undefined,
-    move: async () => undefined,
-    down: async () => {
-      if (this.navigateOnMouseDown) {
-        this.currentUrl = "https://navigated.example/";
-        this.emit("framenavigated", this.frame);
+import type { JsonValue } from "../server/runtime-protocol";
+import type { SupervisorClient } from "../server/supervisor-client";
+
+interface FakeWorkspace {
+  url: string;
+  title: string;
+  viewport: { width: number; height: number };
+  userAgent: string;
+  stopped: boolean;
+  mouseUpCalls: number;
+  navigateOnMouseDown: boolean;
+}
+
+class FakeSupervisorClient {
+  connected = false;
+  disconnected = false;
+  readonly workspaces = new Map<string, FakeWorkspace>();
+  readonly operations: Array<{ workspaceId: string; operation: string; input: JsonValue }> = [];
+  archiveCalls: string[] = [];
+  failOperation: string | null = null;
+  ensureGate: Promise<void> | null = null;
+  ensureStarted: (() => void) | null = null;
+
+  async connect() {
+    this.connected = true;
+    return { bridgeId: "fake", epoch: 1, expiresAt: 60_000, heartbeatIntervalMs: 10_000 };
+  }
+
+  async ensureWorkspace(workspaceId: string) {
+    let workspace = this.workspaces.get(workspaceId);
+    if (!workspace || workspace.stopped) {
+      workspace = {
+        url: "https://paseo.sh/",
+        title: "Shared test page",
+        viewport: { width: 1280, height: 800 },
+        userAgent: "Fake Chromium",
+        stopped: false,
+        mouseUpCalls: 0,
+        navigateOnMouseDown: false,
+      };
+      this.workspaces.set(workspaceId, workspace);
+    }
+    this.ensureStarted?.();
+    if (this.ensureGate) await this.ensureGate;
+    return { workspaceId, runtimeId: `runtime-${workspaceId}`, createdAt: 1 };
+  }
+
+  async requestWorkspace(
+    workspaceId: string,
+    operation: string,
+    input: JsonValue,
+  ): Promise<JsonValue> {
+    if (operation === this.failOperation) throw new Error(`Failed ${operation}`);
+    const workspace = this.workspaces.get(workspaceId);
+    if (!workspace || workspace.stopped)
+      throw new Error(`Workspace runtime not found: ${workspaceId}`);
+    this.operations.push({ workspaceId, operation, input });
+    const data = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    switch (operation) {
+      case "identity":
+        return { userAgent: workspace.userAgent };
+      case "state":
+        return {
+          url: workspace.url,
+          title: workspace.title,
+          canGoBack: false,
+          canGoForward: false,
+        };
+      case "navigate":
+        workspace.url = String(data.url);
+        return null;
+      case "reload":
+      case "screencast.start":
+      case "screencast.stop":
+      case "mouse.move":
+      case "mouse.wheel":
+      case "text.insert":
+      case "key.down":
+      case "key.up":
+        return null;
+      case "emulate":
+        workspace.viewport = { width: Number(data.width), height: Number(data.height) };
+        workspace.userAgent = String(data.userAgent);
+        return null;
+      case "frame": {
+        const bytes = Buffer.from("fake-jpeg-frame");
+        return {
+          transport: "cdp-screencast",
+          dataBase64: bytes.toString("base64"),
+          byteLength: bytes.byteLength,
+          width: workspace.viewport.width,
+          height: workspace.viewport.height,
+          capturedAt: "2026-01-01T00:00:00.000Z",
+        };
       }
-    },
-    up: async () => {
-      this.mouseUpCalls += 1;
-    },
-    wheel: async () => undefined,
-  };
-  readonly keyboard = {
-    insertText: async () => undefined,
-    press: async () => undefined,
-  };
-  private readonly frame = { url: () => this.currentUrl };
-  private currentUrl = "about:blank";
-  private closed = false;
-
-  url() {
-    return this.currentUrl;
+      case "mouse.down":
+        if (workspace.navigateOnMouseDown) workspace.url = "https://navigated.example/";
+        return null;
+      case "mouse.up":
+        workspace.mouseUpCalls += 1;
+        return null;
+      default:
+        throw new Error(`Unexpected fake runtime operation: ${operation}`);
+    }
   }
 
-  async title() {
-    return "Shared test page";
+  async archiveWorkspace(workspaceId: string) {
+    this.archiveCalls.push(workspaceId);
+    const workspace = this.workspaces.get(workspaceId);
+    if (workspace) workspace.stopped = true;
   }
 
-  mainFrame() {
-    return this.frame;
-  }
-
-  setDefaultTimeout() {}
-
-  setDefaultNavigationTimeout() {}
-
-  async goto(url: string) {
-    this.currentUrl = url;
-    this.emit("framenavigated", this.frame);
-    return null;
-  }
-
-  async goBack() {
-    return null;
-  }
-
-  async goForward() {
-    return null;
-  }
-
-  async reload() {
-    this.emit("framenavigated", this.frame);
-    return null;
-  }
-
-  async setViewportSize() {}
-
-  async screenshot() {
-    this.screenshotCalls += 1;
-    return Buffer.from("bounded-jpeg-frame");
-  }
-
-  isClosed() {
-    return this.closed;
-  }
-
-  markClosed() {
-    this.closed = true;
-    this.emit("close");
+  disconnect() {
+    this.disconnected = true;
   }
 }
 
-class FakeCDPSession extends EventEmitter {
-  started = false;
-  acknowledgements = 0;
-  failStart = false;
-  private frameSessionId = 0;
-  readonly methods: string[] = [];
-  lastUserAgent: string | null = null;
-
-  emitFrame(content = "streamed-jpeg-frame") {
-    if (!this.started) return;
-    this.frameSessionId += 1;
-    this.emit("Page.screencastFrame", {
-      data: Buffer.from(content).toString("base64"),
-      metadata: { deviceWidth: 1280, deviceHeight: 800 },
-      sessionId: this.frameSessionId,
-    });
-  }
-  async send(method: string, params?: Record<string, unknown>) {
-    this.methods.push(method);
-    if (method === "Browser.getVersion") return { userAgent: "Fake Chromium" };
-    if (method === "Emulation.setUserAgentOverride") {
-      this.lastUserAgent = typeof params?.userAgent === "string" ? params.userAgent : null;
-      return {};
-    }
-    if (method.startsWith("Emulation.")) return {};
-    if (method === "Page.getNavigationHistory") return { currentIndex: 0, entries: [{}] };
-    if (method === "Page.startScreencast") {
-      if (this.failStart) throw new Error("Screencast unavailable");
-      this.started = true;
-      queueMicrotask(() => this.emitFrame());
-      return {};
-    }
-    if (method === "Page.stopScreencast") {
-      this.started = false;
-      return {};
-    }
-    if (method === "Page.screencastFrameAck") {
-      this.acknowledgements += 1;
-      return {};
-    }
-    return {};
-  }
-}
-class FakeContext extends EventEmitter {
-  readonly page = new FakePage();
-  readonly cdp = new FakeCDPSession();
-  closed = false;
-
-  pages() {
-    return [this.page as unknown as Page];
-  }
-
-  async newPage() {
-    return this.page as unknown as Page;
-  }
-
-  async newCDPSession() {
-    return this.cdp;
-  }
-
-  isClosed() {
-    return this.closed;
-  }
-
-  async close() {
-    this.closed = true;
-    this.page.markClosed();
-    this.emit("close");
-  }
-}
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+const managers: SessionManager[] = [];
+afterEach(() => {
+  for (const manager of managers.splice(0)) manager.disconnect();
 });
 
-async function createManager(
-  options: {
-    now?: () => number;
-    frameCacheMs?: number;
-    maxSessions?: number;
-    screencast?: boolean;
-  } = {},
+function createManager(
+  options: { now?: () => number; frameCacheMs?: number; maxSessions?: number } = {},
 ) {
-  const root = await mkdtemp(join(tmpdir(), "shared-browser-unit-"));
-  roots.push(root);
   let token = 0;
-  const contexts: FakeContext[] = [];
+  const client = new FakeSupervisorClient();
   const manager = new SessionManager({
-    stateRoot: root,
+    client: client as unknown as SupervisorClient,
     validateWorkspace: async (workspaceId) => workspaceId.startsWith("workspace-"),
-    launchPersistentContext: async () => {
-      const context = new FakeContext();
-      context.cdp.failStart = options.screencast === false;
-      contexts.push(context);
-      return context as unknown as BrowserContext;
-    },
     issueToken: () => `token_${String(++token).padStart(40, "0")}`,
-    ...(options.now ? { now: options.now } : {}),
-    ...(options.frameCacheMs === undefined ? {} : { frameCacheMs: options.frameCacheMs }),
-    ...(options.maxSessions === undefined ? {} : { maxSessions: options.maxSessions }),
     controlLeaseMs: 1_000,
     viewerTtlMs: 10_000,
+    ...options,
   });
-  return { manager, contexts };
+  managers.push(manager);
+  return { manager, client };
 }
+
+function expected(state: {
+  sessionId: string;
+  navigationGeneration: number;
+  viewportGeneration: number;
+}) {
+  return {
+    sessionId: state.sessionId,
+    navigationGeneration: state.navigationGeneration,
+    viewportGeneration: state.viewportGeneration,
+  };
+}
+
 describe("SessionManager control leases", () => {
-  it("shares one session, excludes a second controller, and supports explicit takeover", async () => {
-    const { manager, contexts } = await createManager();
+  it("shares one runtime, excludes a second controller, and supports takeover", async () => {
+    const { manager, client } = createManager();
+    await manager.connect();
     const first = await manager.attach("workspace-one", "First client");
     const second = await manager.attach("workspace-one", "Second client");
 
     expect(first.state.sessionId).toBe(second.state.sessionId);
     expect(second.state.viewerCount).toBe(2);
-    expect(contexts).toHaveLength(1);
-    expect(first.state.url).toBe("https://paseo.sh/");
+    expect(first.state).toMatchObject({
+      runtimeId: "runtime-workspace-one",
+      runtimeCreatedAt: 1,
+      bridgeEpoch: 1,
+    });
+    expect((await manager.capture(first.viewerToken, "medium", null)).frame).toMatchObject({
+      runtimeId: "runtime-workspace-one",
+      captureEpoch: 1,
+    });
+    expect(client.workspaces.size).toBe(1);
 
     const firstControl = await manager.acquireControl(first.viewerToken, false);
     await expect(manager.acquireControl(second.viewerToken, false)).rejects.toThrow(
@@ -208,112 +177,51 @@ describe("SessionManager control leases", () => {
     );
     const secondControl = await manager.acquireControl(second.viewerToken, true);
     expect(secondControl.state.controller).toBe("self");
-
     await expect(
       manager.navigate({
         viewerToken: first.viewerToken,
         controlToken: firstControl.controlToken,
-        expected: {
-          sessionId: first.state.sessionId,
-          navigationGeneration: firstControl.state.navigationGeneration,
-          viewportGeneration: firstControl.state.viewportGeneration,
-        },
+        expected: expected(firstControl.state),
         action: { kind: "reload" },
       }),
     ).rejects.toThrow("lease is invalid or expired");
 
-    await manager.close();
-    expect(contexts[0]?.closed).toBe(true);
+    manager.disconnect();
+    expect(client.disconnected).toBe(true);
+    expect(client.workspaces.get("workspace-one")?.stopped).toBe(false);
     await expect(manager.capture(first.viewerToken, "medium", null)).rejects.toThrow(
       "invalid or expired",
     );
   });
 
-  it("closes an in-flight archive target without deleting its profile", async () => {
-    const root = await mkdtemp(join(tmpdir(), "shared-browser-unit-"));
-    roots.push(root);
-    const workspaceId = "workspace-archive-race";
-    const profilePath = join(root, createHash("sha256").update(workspaceId).digest("hex"));
-    let releaseLaunch!: () => void;
-    const launchGate = new Promise<void>((resolve) => {
-      releaseLaunch = resolve;
-    });
-    const contexts: FakeContext[] = [];
-    const manager = new SessionManager({
-      stateRoot: root,
-      validateWorkspace: async (id) => id === workspaceId,
-      launchPersistentContext: async () => {
-        const context = new FakeContext();
-        contexts.push(context);
-        await launchGate;
-        return context as unknown as BrowserContext;
-      },
-    });
-
-    const attaching = manager.attach(workspaceId, "First client");
-    await vi.waitFor(() => expect(contexts).toHaveLength(1));
-
-    const archiving = manager.archiveWorkspace(workspaceId);
-    releaseLaunch();
-
-    await expect(attaching).rejects.toThrow("archived");
-    await expect(archiving).resolves.toBeUndefined();
-    expect(contexts).toHaveLength(1);
-    expect(contexts[0]!.closed).toBe(true);
-    expect((await stat(profilePath)).isDirectory()).toBe(true);
-
-    const reopened = await manager.attach(workspaceId, "Second client");
-    expect(reopened.state.workspaceId).toBe(workspaceId);
-    expect(contexts).toHaveLength(2);
-
-    await manager.archiveWorkspace(workspaceId);
-    await manager.archiveWorkspace(workspaceId);
-    expect(contexts[1]!.closed).toBe(true);
-    expect((await stat(profilePath)).isDirectory()).toBe(true);
-
-    await manager.close();
-  });
-
-  it("expires an abandoned controller without replaying its authority", async () => {
+  it("expires abandoned control and viewer leases deterministically", async () => {
     let now = 1_000;
-    const { manager } = await createManager({ now: () => now });
+    const { manager } = createManager({ now: () => now });
     const viewer = await manager.attach("workspace-one", "Client");
     await manager.acquireControl(viewer.viewerToken, false);
     now += 1_001;
-
-    const capture = await manager.capture(viewer.viewerToken, "medium", null);
-    expect(capture.state.controller).toBe("none");
-    await manager.close();
+    expect((await manager.capture(viewer.viewerToken, "medium", null)).state.controller).toBe(
+      "none",
+    );
+    now += 10_001;
+    await expect(manager.capture(viewer.viewerToken, "medium", null)).rejects.toThrow(
+      "invalid or expired",
+    );
   });
 
-  it("accepts a recent frame from another viewer but rejects it after viewport invalidation", async () => {
-    let now = 1_000;
-    const { manager, contexts } = await createManager({ now: () => now, frameCacheMs: 0 });
+  it("accepts a shared recent frame and rejects it after viewport invalidation", async () => {
+    const { manager } = createManager({ frameCacheMs: 0 });
     const first = await manager.attach("workspace-one", "First client");
     const second = await manager.attach("workspace-one", "Second client");
     const control = await manager.acquireControl(first.viewerToken, false);
-    const firstFrame = (await manager.capture(first.viewerToken, "medium", null)).frame;
-    expect(firstFrame).not.toBeNull();
-
-    now += 1;
-    contexts[0]!.cdp.emitFrame("second-streamed-frame");
-    const secondFrame = (await manager.capture(second.viewerToken, "medium", null)).frame;
-    expect(secondFrame?.frameId).not.toBe(firstFrame?.frameId);
+    const frame = (await manager.capture(second.viewerToken, "medium", null)).frame!;
 
     await expect(
       manager.sendInput({
         viewerToken: first.viewerToken,
         controlToken: control.controlToken,
-        expected: {
-          sessionId: control.state.sessionId,
-          navigationGeneration: control.state.navigationGeneration,
-          viewportGeneration: control.state.viewportGeneration,
-        },
-        target: {
-          frameId: firstFrame!.frameId,
-          navigationGeneration: firstFrame!.navigationGeneration,
-          viewportGeneration: firstFrame!.viewportGeneration,
-        },
+        expected: expected(control.state),
+        target: frame,
         event: {
           kind: "click",
           point: { x: 50, y: 25, width: 100, height: 50 },
@@ -327,29 +235,15 @@ describe("SessionManager control leases", () => {
     const resized = await manager.resize({
       viewerToken: first.viewerToken,
       controlToken: control.controlToken,
-      expected: {
-        sessionId: current.state.sessionId,
-        navigationGeneration: current.state.navigationGeneration,
-        viewportGeneration: current.state.viewportGeneration,
-      },
+      expected: expected(current.state),
       viewport: { width: 1024, height: 768 },
     });
-    expect(resized.state.viewport).toEqual({ width: 1024, height: 768 });
-
     await expect(
       manager.sendInput({
         viewerToken: first.viewerToken,
         controlToken: control.controlToken,
-        expected: {
-          sessionId: resized.state.sessionId,
-          navigationGeneration: resized.state.navigationGeneration,
-          viewportGeneration: resized.state.viewportGeneration,
-        },
-        target: {
-          frameId: firstFrame!.frameId,
-          navigationGeneration: firstFrame!.navigationGeneration,
-          viewportGeneration: firstFrame!.viewportGeneration,
-        },
+        expected: expected(resized.state),
+        target: frame,
         event: {
           kind: "click",
           point: { x: 50, y: 25, width: 100, height: 50 },
@@ -358,32 +252,54 @@ describe("SessionManager control leases", () => {
         },
       }),
     ).rejects.toThrow("frame is stale");
-
-    await manager.close();
   });
 
-  it("stops a compound gesture and releases input when navigation intervenes", async () => {
-    const { manager, contexts } = await createManager();
+  it("rejects stale navigation, viewport, runtime, and bridge generations", async () => {
+    const { manager } = createManager();
+    const viewer = await manager.attach("workspace-one", "Client");
+    const control = await manager.acquireControl(viewer.viewerToken, false);
+    const current = {
+      sessionId: control.state.sessionId,
+      navigationGeneration: control.state.navigationGeneration,
+      viewportGeneration: control.state.viewportGeneration,
+      runtimeId: control.state.runtimeId,
+      bridgeEpoch: control.state.bridgeEpoch,
+    };
+    const navigate = (expectedState: typeof current) =>
+      manager.navigate({
+        viewerToken: viewer.viewerToken,
+        controlToken: control.controlToken,
+        expected: expectedState,
+        action: { kind: "reload" },
+      });
+
+    await expect(
+      navigate({ ...current, navigationGeneration: current.navigationGeneration + 1 }),
+    ).rejects.toThrow("navigation state is stale");
+    await expect(
+      navigate({ ...current, viewportGeneration: current.viewportGeneration + 1 }),
+    ).rejects.toThrow("viewport state is stale");
+    await expect(navigate({ ...current, runtimeId: "different-runtime" })).rejects.toThrow(
+      "runtime is stale",
+    );
+    await expect(navigate({ ...current, bridgeEpoch: current.bridgeEpoch! + 1 })).rejects.toThrow(
+      "bridge state is stale",
+    );
+  });
+
+  it("releases a compound gesture when navigation makes its frame stale", async () => {
+    const { manager, client } = createManager();
     const viewer = await manager.attach("workspace-one", "Client");
     const control = await manager.acquireControl(viewer.viewerToken, false);
     const capture = await manager.capture(viewer.viewerToken, "medium", null);
-    expect(capture.frame).not.toBeNull();
-    contexts[0]!.page.navigateOnMouseDown = true;
+    client.workspaces.get("workspace-one")!.navigateOnMouseDown = true;
 
     await expect(
       manager.sendInput({
         viewerToken: viewer.viewerToken,
         controlToken: control.controlToken,
-        expected: {
-          sessionId: capture.state.sessionId,
-          navigationGeneration: capture.state.navigationGeneration,
-          viewportGeneration: capture.state.viewportGeneration,
-        },
-        target: {
-          frameId: capture.frame!.frameId,
-          navigationGeneration: capture.frame!.navigationGeneration,
-          viewportGeneration: capture.frame!.viewportGeneration,
-        },
+        expected: expected(capture.state),
+        target: capture.frame!,
         event: {
           kind: "drag",
           start: { x: 10, y: 10, width: 640, height: 400 },
@@ -392,116 +308,99 @@ describe("SessionManager control leases", () => {
         },
       }),
     ).rejects.toThrow("frame is stale");
-    expect(contexts[0]!.page.mouseUpCalls).toBe(1);
-    await manager.close();
+    expect(client.workspaces.get("workspace-one")?.mouseUpCalls).toBe(1);
   });
 
-  it("cannot create a browser after cleanup begins", async () => {
-    const root = await mkdtemp(join(tmpdir(), "shared-browser-unit-"));
-    roots.push(root);
-    let resolveValidation!: (valid: boolean) => void;
-    let markValidationStarted: (() => void) | null = null;
-    const validationStarted = new Promise<void>((resolve) => {
-      markValidationStarted = resolve;
-    });
-    const contexts: FakeContext[] = [];
-    const manager = new SessionManager({
-      stateRoot: root,
-      validateWorkspace: async () => {
-        markValidationStarted?.();
-        return new Promise<boolean>((resolve) => {
-          resolveValidation = resolve;
-        });
-      },
-      launchPersistentContext: async () => {
-        const context = new FakeContext();
-        contexts.push(context);
-        return context as unknown as BrowserContext;
-      },
-    });
-
-    const attaching = manager.attach("workspace-one", "Late client");
-    await validationStarted;
-    await manager.close();
-    resolveValidation(true);
-
-    await expect(attaching).rejects.toThrow("manager is closed");
-    expect(contexts).toHaveLength(0);
-  });
-
-  it("uses acknowledged CDP frames and stops streaming without viewers", async () => {
-    const { manager, contexts } = await createManager();
-    const viewer = await manager.attach("workspace-one", "Client");
-    const capture = await manager.capture(viewer.viewerToken, "medium", null);
-
-    expect(capture.frame?.dataBase64).toBe(Buffer.from("streamed-jpeg-frame").toString("base64"));
-    expect(contexts[0]!.page.screenshotCalls).toBe(0);
-    expect(contexts[0]!.cdp.acknowledgements).toBe(1);
-    await manager.detach(viewer.viewerToken);
-    expect(contexts[0]!.cdp.started).toBe(false);
-    await manager.close();
-  });
-
-  it("applies display, touch, and user-agent device settings together", async () => {
-    const { manager, contexts } = await createManager();
+  it("applies device state through the supervisor runtime", async () => {
+    const { manager, client } = createManager();
     const viewer = await manager.attach("workspace-one", "Client");
     const control = await manager.acquireControl(viewer.viewerToken, false);
     const result = await manager.applyDevicePreset({
       viewerToken: viewer.viewerToken,
       controlToken: control.controlToken,
-      expected: {
-        sessionId: control.state.sessionId,
-        navigationGeneration: control.state.navigationGeneration,
-        viewportGeneration: control.state.viewportGeneration,
-      },
+      expected: expected(control.state),
       presetId: "pixel-7",
     });
 
     expect(result.state.viewport).toEqual({ width: 412, height: 839 });
     expect(result.state.devicePresetId).toBe("pixel-7");
     expect(result.state.userAgent).toContain("Pixel 7");
-    expect(contexts[0]!.cdp.lastUserAgent).toContain("Pixel 7");
-    expect(contexts[0]!.cdp.methods).toContain("Emulation.setDeviceMetricsOverride");
-    expect(contexts[0]!.cdp.methods).toContain("Emulation.setTouchEmulationEnabled");
-    await manager.close();
+    const emulate = client.operations.filter(({ operation }) => operation === "emulate").at(-1);
+    expect(emulate?.input).toMatchObject({ mobile: true, touch: true, width: 412, height: 839 });
   });
-  it("falls back to a bounded screenshot when screencast is unavailable", async () => {
-    const { manager, contexts } = await createManager({ screencast: false });
-    const viewer = await manager.attach("workspace-one", "Client");
-    const capture = await manager.capture(viewer.viewerToken, "medium", null);
 
-    expect(capture.frame?.dataBase64).toBe(Buffer.from("bounded-jpeg-frame").toString("base64"));
-    expect(contexts[0]!.page.screenshotCalls).toBe(1);
-    await manager.close();
+  it("archives and tears down the workspace runtime", async () => {
+    const { manager, client } = createManager();
+    const viewer = await manager.attach("workspace-archive", "Client");
+    await manager.archiveWorkspace("workspace-archive");
+
+    expect(client.workspaces.get("workspace-archive")?.stopped).toBe(true);
+    await expect(manager.capture(viewer.viewerToken, "medium", null)).rejects.toThrow(
+      "invalid or expired",
+    );
+    await expect(manager.attach("workspace-archive", "Late client")).rejects.toThrow("archived");
   });
-  it("reports only workspaces with attached viewers", async () => {
-    const { manager, contexts } = await createManager();
+
+  it("cannot create a runtime after disconnect begins", async () => {
+    let resolveValidation!: (valid: boolean) => void;
+    let validationStarted!: () => void;
+    const started = new Promise<void>((resolve) => (validationStarted = resolve));
+    const client = new FakeSupervisorClient();
+    const manager = new SessionManager({
+      client: client as unknown as SupervisorClient,
+      validateWorkspace: async () => {
+        validationStarted();
+        return await new Promise<boolean>((resolve) => (resolveValidation = resolve));
+      },
+    });
+    managers.push(manager);
+
+    const attaching = manager.attach("workspace-one", "Late client");
+    await started;
+    manager.disconnect();
+    resolveValidation(true);
+
+    await expect(attaching).rejects.toThrow("manager is closed");
+    expect(client.workspaces.size).toBe(0);
+  });
+
+  it("reports only workspaces with attached viewers and bounds live sessions", async () => {
+    const { manager } = createManager({ maxSessions: 1 });
     expect(await manager.listOpenWorkspaceIds()).toEqual([]);
     const viewer = await manager.attach("workspace-one", "Client");
     expect(await manager.listOpenWorkspaceIds()).toEqual(["workspace-one"]);
-
     await manager.detach(viewer.viewerToken);
     expect(await manager.listOpenWorkspaceIds()).toEqual([]);
-    expect(contexts).toHaveLength(1);
-    await manager.close();
-  });
-  it("bounds concurrently live workspace browsers", async () => {
-    const { manager, contexts } = await createManager({ maxSessions: 1 });
-    await manager.attach("workspace-one", "First client");
-
     await expect(manager.attach("workspace-two", "Second client")).rejects.toThrow(
       "session limit (1) reached",
     );
-    expect(contexts).toHaveLength(1);
-    await manager.close();
   });
-  it("ignores archive events when the production manager is absent", async () => {
-    vi.resetModules();
-    // Fresh module state isolates the production singleton from the unit-test manager instances.
-    const { cleanupBrowserServer, handleWorkspaceArchived } = await import("../server/browser");
 
-    await cleanupBrowserServer();
+  it("lets archive win while workspace startup is in flight", async () => {
+    let releaseEnsure!: () => void;
+    let markEnsureStarted!: () => void;
+    const ensureStarted = new Promise<void>((resolve) => (markEnsureStarted = resolve));
+    const { manager, client } = createManager();
+    client.ensureStarted = markEnsureStarted;
+    client.ensureGate = new Promise<void>((resolve) => (releaseEnsure = resolve));
 
-    await expect(handleWorkspaceArchived("workspace-never-opened")).resolves.toBeUndefined();
+    const attaching = manager.attach("workspace-racing", "Client");
+    await ensureStarted;
+    const archiving = manager.archiveWorkspace("workspace-racing");
+    releaseEnsure();
+
+    await expect(archiving).resolves.toBeUndefined();
+    await expect(attaching).rejects.toThrow("archived");
+    expect(client.workspaces.get("workspace-racing")?.stopped).toBe(true);
+    await expect(manager.attach("workspace-racing", "Late client")).rejects.toThrow("archived");
+  });
+
+  it("archives an ensured runtime when session initialization fails", async () => {
+    const { manager, client } = createManager();
+    client.failOperation = "identity";
+
+    await expect(manager.attach("workspace-failed", "Client")).rejects.toThrow("Failed identity");
+    expect(client.archiveCalls).toEqual(["workspace-failed"]);
+    expect(client.workspaces.get("workspace-failed")?.stopped).toBe(true);
   });
 });
