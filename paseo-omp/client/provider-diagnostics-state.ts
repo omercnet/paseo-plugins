@@ -10,7 +10,8 @@ import type {
 } from "../shared/provider-diagnostics";
 
 export type ProviderHealthTone = "ok" | "warning" | "danger" | "muted";
-export const OMP_PROVIDER_IDS = ["omp"] as const;
+export const OMP_PROVIDER_IDS = ["omp", "omp-plugin"] as const;
+const OMP_PROVIDER_ID_SET: ReadonlySet<string> = new Set(OMP_PROVIDER_IDS);
 
 export function isUnsupportedHostError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -230,12 +231,12 @@ export function summarizeProviderStatus(
   }
 }
 
-/** Narrows a full provider snapshot to the production OMP identity. */
+/** Narrows a full provider snapshot to the native and plugin OMP identities. */
 export function selectKnownOmpProviders(
   entries: readonly PaseoProviderSnapshotResult["entries"][number][],
 ): KnownOmpProviderSummary[] {
   return entries.flatMap((entry) =>
-    entry.provider === "omp"
+    OMP_PROVIDER_ID_SET.has(entry.provider)
       ? [
           {
             id: entry.provider,

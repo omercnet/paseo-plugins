@@ -160,9 +160,10 @@ describe("storage summaries", () => {
 });
 
 describe("selectKnownOmpProviders", () => {
-  test("keeps only the production OMP id, including prototype-like ids safely", () => {
+  test("keeps native and plugin OMP ids, including prototype-like ids safely", () => {
     const entries: PaseoProviderSnapshotResult["entries"] = [
       { provider: "omp", status: "ready", enabled: true, label: "OMP" },
+      { provider: "omp-plugin", status: "ready", enabled: true, label: "OMP Plugin" },
       { provider: "constructor", status: "ready", enabled: true },
       { provider: "toString", status: "ready", enabled: true },
       { provider: "claude", status: "ready", enabled: true, label: "Claude" },
@@ -170,6 +171,7 @@ describe("selectKnownOmpProviders", () => {
 
     expect(selectKnownOmpProviders(entries)).toEqual([
       { id: "omp", label: "OMP", status: "ready", enabled: true },
+      { id: "omp-plugin", label: "OMP Plugin", status: "ready", enabled: true },
     ]);
   });
 });

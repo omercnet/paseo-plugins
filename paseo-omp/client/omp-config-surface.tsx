@@ -337,6 +337,24 @@ function OtherSection({ styles, config }: { styles: OmpConfigStyles; config: Omp
   );
 }
 
+function ProviderSetupSection({ styles }: { styles: OmpConfigStyles }) {
+  return (
+    <SectionCard styles={styles} title="Provider setup">
+      <Text style={styles.muted}>No plugin-specific settings are required for normal use.</Text>
+      <KeyValueRow
+        styles={styles}
+        label="Per agent"
+        value="Model, mode, thinking, MCP servers, and persistence"
+      />
+      <KeyValueRow
+        styles={styles}
+        label="Advanced profile options"
+        value="Command, environment, session directory, RPC timeout, role models, and denied tools"
+      />
+    </SectionCard>
+  );
+}
+
 function isEmptyConfig(config: OmpConfig): boolean {
   return Object.keys(config).length === 0;
 }
@@ -594,6 +612,7 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
   return (
     <ScrollView contentContainerStyle={styles.root}>
       <Text style={styles.pageTitle}>OMP</Text>
+      <ProviderSetupSection styles={styles} />
       <ProviderHealthSection theme={theme} styles={styles} />
 
       <View style={styles.sectionHeader}>
