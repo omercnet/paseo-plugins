@@ -126,6 +126,7 @@ export function buildWslClientCommand(input: {
   workspaceId: string;
   expectedOwnerMarker: string;
   wslNode: string;
+  wslClientEntry: string;
 }): string {
   if (!/^[A-Za-z0-9_./~$-]+$/u.test(input.wslNode)) {
     throw new Error("WSL Node path contains unsupported shell characters");
@@ -138,5 +139,5 @@ export function buildWslClientCommand(input: {
     `PASEO_WORKSPACE_ID=${shellQuote(input.workspaceId)}`,
     `EXPECTED_OWNER_MARKER=${shellQuote(input.expectedOwnerMarker)}`,
   ].join(" ");
-  return `cd ${shellQuote(input.wslPluginRoot)} && env ${environment} ${input.wslNode} --import tsx tests/fixtures/mcp-container-client.ts`;
+  return `cd ${shellQuote(input.wslPluginRoot)} && env ${environment} ${input.wslNode} ${shellQuote(input.wslClientEntry)}`;
 }

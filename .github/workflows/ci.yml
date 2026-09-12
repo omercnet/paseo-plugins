@@ -189,14 +189,6 @@ jobs:
         shell: pwsh
         working-directory: .
         run: wsl.exe --exec sh -lc 'curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs'
-      - name: Install WSL dependencies
-        shell: pwsh
-        working-directory: .
-        run: |
-          $wslRoot = (wsl.exe --exec wslpath -a "$env:GITHUB_WORKSPACE").Trim()
-          if (-not $wslRoot) { throw "Could not map the checkout into WSL" }
-          $command = "cd '$wslRoot/paseo-omp' && npm ci"
-          wsl.exe --exec sh -lc $command
       - name: WSL host-tool ownership integration
         env:
           PASEO_OMP_REQUIRE_WSL: "1"

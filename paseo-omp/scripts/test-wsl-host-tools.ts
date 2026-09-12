@@ -1,3 +1,6 @@
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { build } from "esbuild";
 import {
   buildWslClientCommand,
   parseEvidence,
@@ -31,6 +34,17 @@ try {
   console.log(`SKIP WSL host-tool integration: Node is unavailable in WSL (${String(error)})`);
   process.exit(0);
 }
+const clientEntry = "dist/mcp-wsl-client.mjs";
+const clientBundle = join(pluginRoot, clientEntry);
+await mkdir(join(pluginRoot, "dist"), { recursive: true });
+await build({
+  entryPoints: [join(pluginRoot, "tests/fixtures/mcp-container-client.ts")],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  outfile: clientBundle,
+  logLevel: "silent",
+});
 
 const wslPluginRoot = await runCaptured([
   "wsl.exe",
@@ -64,6 +78,7 @@ try {
       workspaceId,
       expectedOwnerMarker: ownerMarker,
       wslNode,
+      wslClientEntry: clientEntry,
     });
     try {
       const output = await runCaptured(["wsl.exe", "--exec", "sh", "-lc", command]);
@@ -87,4 +102,5 @@ try {
   if (!verified) throw new AggregateError(failures, "WSL could not reach the Windows MCP host");
 } finally {
   await stopHostMcpServer(server);
+  await rm(clientBundle, { force: true });
 }
