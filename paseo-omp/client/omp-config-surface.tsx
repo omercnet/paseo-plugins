@@ -557,6 +557,10 @@ function ProviderHealthSection({
           </Pressable>
         </View>
       </View>
+      <Text style={styles.muted}>
+        These checks use the daemon&apos;s global OMP command and default storage, not per-agent
+        profile overrides.
+      </Text>
 
       {health.isLoading ? <Text style={styles.muted}>Checking the omp installation…</Text> : null}
       {health.error ? (
