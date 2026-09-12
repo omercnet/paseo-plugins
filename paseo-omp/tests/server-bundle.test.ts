@@ -73,7 +73,7 @@ describe("plugin server bundle", () => {
     );
   });
 
-  test("loads and registers the canary provider in the daemon CJS sandbox", async () => {
+  test("loads and registers the production provider in the daemon CJS sandbox", async () => {
     const { code, warnings } = await compileServerBundle(join(pluginRoot, "index.server.ts"));
     expect(warnings.map((warning) => warning.text)).toEqual([]);
     // biome-ignore lint/security/noGlobalEval: mirrors the daemon's plugin loader
@@ -99,9 +99,7 @@ describe("plugin server bundle", () => {
       });
       expect(handlers).toHaveLength(7);
       expect(beforeHooks).toHaveLength(1);
-      expect(providers).toEqual([
-        expect.objectContaining({ id: "omp-plugin", label: "OMP (Plugin Preview)" }),
-      ]);
+      expect(providers).toEqual([expect.objectContaining({ id: "omp", label: "OMP" })]);
       const provider = providers[0];
       if (!provider) throw new Error("Registered provider is missing");
       const connection = await provider.connect({

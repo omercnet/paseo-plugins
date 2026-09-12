@@ -117,7 +117,7 @@ export const ompImageTimelineSchema = z
   });
 
 export const ompImageToolMetadataSchema = z.object({
-  ompImageOwner: z.literal("omp-plugin"),
+  ompImageOwner: z.literal("omp"),
   ompImage: ompImageTimelineSchema,
 });
 

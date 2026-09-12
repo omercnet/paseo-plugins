@@ -569,7 +569,7 @@ function ProviderHealthSection({
               <KeyValueRow
                 key={provider.id}
                 styles={styles}
-                label={`${provider.label} (${provider.kind})`}
+                label={provider.label}
                 value={status.label}
                 valueColor={toneColor(theme, status.tone)}
               />

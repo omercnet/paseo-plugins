@@ -1,6 +1,6 @@
 # Paseo OMP plugin
 
-Community OMP integration for Paseo. The direct provider is currently registered as `omp-plugin` while Paseo still bundles the `omp` provider.
+Community OMP integration for Paseo. The direct provider owns the production `omp` identity and registers no compatibility alias.
 
 ## Provider profile migration
 
@@ -8,7 +8,7 @@ Paseo 0.8 passes plugin-specific configuration through each agent's `providerOpt
 
 ```json
 {
-  "provider": "omp-plugin",
+  "provider": "omp",
   "providerOptions": {
     "command": ["/opt/omp/bin/omp"],
     "env": {
@@ -25,7 +25,7 @@ Paseo 0.8 passes plugin-specific configuration through each agent's `providerOpt
 }
 ```
 
-| Legacy `agents.providers.omp` field | `omp-plugin` migration |
+| Legacy `agents.providers.omp` field | Production `omp` plugin migration |
 | --- | --- |
 | `command` | `providerOptions.command` |
 | `env` | `providerOptions.env` |
@@ -45,10 +45,33 @@ Non-persisted Paseo sessions use OMP's `--no-session`. An ephemeral native sessi
 
 For text-only models, image inputs are materialized into a private, size-bounded temporary directory and removed when the turn, session, or provider connection ends. This relies on the direct provider process and its OMP child sharing the daemon host filesystem; remote execution belongs behind a transport that owns file transfer.
 
-The plugin uses only public contracts. Development dependencies remain pinned to Paseo 0.8.0 until the accepted core APIs are released; compatibility typing does not add file dependencies or unpublished package versions.
+The plugin uses only public contracts. Development dependencies remain pinned to the last published Paseo 0.8.0 packages until 0.8.1 is released; the manifest is the runtime compatibility authority.
 
 ## Compatibility
 
-This release requires Paseo `^0.8.1`. Provider-owned OMP child sessions rely on direct nested-subagent ancestry support introduced after Paseo 0.8.0.
+This release requires Paseo `^0.8.1`. That core release removes the bundled OMP registration, adapts legacy OMP persistence handles for plugin providers, and includes direct nested-subagent ancestry support.
 
 The direct provider requires an OMP build that negotiates `rpc-ui` protocol v2. Metadata-free legacy ready frames and v1-only runtimes are rejected before a provider session opens because they cannot support the advertised persistence and conversation-rewind capabilities.
+
+## Coordinated release and rollback
+
+This cutover is atomic across repositories: Paseo 0.8.1 removes the bundled `omp` registration and accepts legacy bundled OMP persistence handles, while this plugin registers `omp` and requires Paseo `^0.8.1`.
+
+Agents created under the former preview identity are intentionally not aliased. Import their native OMP transcript after the cutover to create an `omp` agent.
+
+Release in this order:
+
+1. Publish the plugin artifact, but do not activate it on an older daemon.
+2. Release Paseo 0.8.1 with the bundled registration removed.
+3. Upgrade the daemon and install or update this plugin in the same maintenance window.
+4. Verify the provider snapshot contains exactly one `omp` entry, then resume an existing OMP agent and import one native OMP session.
+
+Pre-0.8.1 cores reject this plugin before registration because they do not satisfy or recognize its manifest requirement. A mis-versioned core that still reserves the bundled `omp` ID rejects installation with `cannot register builtin provider ID "omp"`; the plugin never falls back to a second identity or overrides the bundled adapter.
+
+To roll back before the cutover is accepted, disable or remove this plugin first, then restore the pre-0.8.1 core so its bundled `omp` registration is the sole owner. Do not leave the production plugin enabled while downgrading. Existing agents keep provider `omp`; the 0.8.1 adapter preserves their legacy native handle while the plugin converts that handle to its versioned OMP session ID for resume. Before either direction of the release, run the package/core integration test from a source checkout:
+
+```sh
+PASEO_LEGACY_CORE_ROOT=/path/to/paseo-legacy \
+PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover \
+  bun run test:integration:core
+```

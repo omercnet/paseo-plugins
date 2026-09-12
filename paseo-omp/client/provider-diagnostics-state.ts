@@ -10,7 +10,7 @@ import type {
 } from "../shared/provider-diagnostics";
 
 export type ProviderHealthTone = "ok" | "warning" | "danger" | "muted";
-export const OMP_PROVIDER_IDS = ["omp", "omp-plugin"] as const;
+export const OMP_PROVIDER_IDS = ["omp"] as const;
 
 export function isUnsupportedHostError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -200,25 +200,9 @@ export function summarizeMemoryBackend(health: OmpProviderHealth): string {
   return health.memoryBackend ?? "Not configured";
 }
 
-export type KnownOmpProviderKind = "bundled" | "canary";
-
-/** Explicit switch, not an object-keyed lookup: a provider id can never be coerced into an
- * inherited `Object.prototype` member (e.g. "constructor", "toString"). */
-function knownOmpProviderKind(provider: string): KnownOmpProviderKind | null {
-  switch (provider) {
-    case "omp":
-      return "bundled";
-    case "omp-plugin":
-      return "canary";
-    default:
-      return null;
-  }
-}
-
 export interface KnownOmpProviderSummary {
   id: string;
   label: string;
-  kind: KnownOmpProviderKind;
   status: string;
   enabled: boolean;
 }
@@ -246,25 +230,20 @@ export function summarizeProviderStatus(
   }
 }
 
-/**
- * Narrows a full provider snapshot down to the two OMP identities this plugin ships (the
- * first-class bundled adapter and this plugin's canary), so an unrelated provider's status or
- * label never reaches the diagnostics section.
- */
+/** Narrows a full provider snapshot to the production OMP identity. */
 export function selectKnownOmpProviders(
   entries: readonly PaseoProviderSnapshotResult["entries"][number][],
 ): KnownOmpProviderSummary[] {
-  return entries.flatMap((entry) => {
-    const kind = knownOmpProviderKind(entry.provider);
-    if (!kind) return [];
-    return [
-      {
-        id: entry.provider,
-        label: entry.label ?? entry.provider,
-        kind,
-        status: entry.status,
-        enabled: entry.enabled ?? true,
-      },
-    ];
-  });
+  return entries.flatMap((entry) =>
+    entry.provider === "omp"
+      ? [
+          {
+            id: entry.provider,
+            label: entry.label ?? entry.provider,
+            status: entry.status,
+            enabled: entry.enabled ?? true,
+          },
+        ]
+      : [],
+  );
 }

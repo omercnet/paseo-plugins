@@ -7,7 +7,7 @@ const PNG = "iVBORw0KGgo=";
 
 function imageMetadata(data = PNG) {
   return {
-    ompImageOwner: "omp-plugin",
+    ompImageOwner: "omp",
     ompImage: {
       label: "Screenshot",
       images: [{ id: "abcdefghijklmnop", data, mimeType: "image/png" as const }],
@@ -46,7 +46,7 @@ describe("OMP image timeline transformer", () => {
       transformOmpImageToolItem({
         callId: "omp:assistant:1:abcdefghijkl:content:0:image:images",
         metadata: {
-          ompImageOwner: "omp-plugin",
+          ompImageOwner: "omp",
           ompImage: {
             label: "Gallery",
             images: [

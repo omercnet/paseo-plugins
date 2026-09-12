@@ -37,7 +37,7 @@ export function quotaProviderFromSession(
   model: string | null = null,
 ): string | null {
   const [runtime, modelProvider] = provider.split("/");
-  if (runtime !== "omp" && runtime !== "omp-plugin") return null;
+  if (runtime !== "omp") return null;
   if (modelProvider) return modelProvider;
   return model?.split("/")[0] ?? null;
 }

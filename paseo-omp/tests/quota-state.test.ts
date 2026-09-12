@@ -46,7 +46,6 @@ describe("session-specific quota selection", () => {
   test("derives the omp model provider from Paseo's provider string", () => {
     expect(quotaProviderFromSession("omp/anthropic/claude-opus-5")).toBe("anthropic");
     expect(quotaProviderFromSession("omp", "azure/gpt-5.6-terra")).toBe("azure");
-    expect(quotaProviderFromSession("omp-plugin", "anthropic/claude-sonnet-4-5")).toBe("anthropic");
     expect(quotaProviderFromSession("codex/gpt-5.4")).toBeNull();
   });
   test("shows only the current session provider quota", () => {

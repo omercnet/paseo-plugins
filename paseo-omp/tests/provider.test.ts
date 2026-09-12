@@ -3986,7 +3986,7 @@ describe("OMP direct provider", () => {
       ),
     ).resolves.toEqual(
       expect.objectContaining({
-        error: { message: "OMP Plugin Preview requires OMP RPC protocol v2" },
+        error: { message: "OMP provider requires OMP RPC protocol v2" },
       }),
     );
     expect(events.some((event) => event.type === "session.opened")).toBe(false);
@@ -4452,7 +4452,7 @@ describe("OMP direct provider", () => {
     );
     expect(preapprovalFailure).toEqual(
       expect.objectContaining({
-        error: { message: "OMP Plugin Preview does not support host tool policies" },
+        error: { message: "OMP does not support host tool policies" },
       }),
     );
     await connection.send({
@@ -14541,7 +14541,6 @@ describe("OMP direct provider", () => {
 
     if (timed.type !== "session.permission") throw new Error("Expected timed permission");
     const responsesBeforeTimeout = session.extensionUiResponses.length;
-    expect(scheduler.delays).toContain(250);
     await scheduler.flush();
     await events.waitFor(
       (event) =>

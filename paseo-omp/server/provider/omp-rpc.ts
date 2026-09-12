@@ -2567,7 +2567,7 @@ function validateReadyMetadata(frame: ReadyFrame): void {
     frame.maxReassembledFrameBytes,
   ];
   if (metadata.every((value) => value === undefined)) {
-    throw new OmpPublicError("OMP Plugin Preview requires OMP RPC protocol v2");
+    throw new OmpPublicError("OMP provider requires OMP RPC protocol v2");
   }
   if (metadata.some((value) => value === undefined)) {
     throw new Error("OMP ready frame contains incomplete protocol metadata");
@@ -2587,7 +2587,7 @@ function validateReadyMetadata(frame: ReadyFrame): void {
     throw new Error("OMP ready frame cannot carry terminal host tool results");
   }
   if (!frame.supportedProtocolVersions.includes(2)) {
-    throw new OmpPublicError("OMP Plugin Preview requires OMP RPC protocol v2");
+    throw new OmpPublicError("OMP provider requires OMP RPC protocol v2");
   }
 }
 

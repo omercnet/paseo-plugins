@@ -2,7 +2,7 @@
   "name": "@omercnet/paseo-omp",
   "version": "0.0.0",
   "type": "module",
-  "description": "Paseo integration for OMP, including a canary direct provider and workspace tooling.",
+  "description": "Paseo integration for OMP, including its direct provider and workspace tooling.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -35,6 +35,7 @@
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "test:integration:docker": "bun scripts/test-docker-host-tools.ts",
+    "test:integration:core": "bun scripts/test-core-cutover.ts",
     "test:integration:wsl": "bun scripts/test-wsl-host-tools.ts",
     "package:release": "bun scripts/package-release.ts",
     "typecheck": "tsc --noEmit"
