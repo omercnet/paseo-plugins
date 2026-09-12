@@ -33,7 +33,7 @@
     "check:write": "biome check --write .",
     "test": "vitest run",
     "package:release": "node scripts/package-release.ts",
-    "test:coverage": "vitest run --coverage --coverage.reporter=text --coverage.reporter=lcov --coverage.thresholds.lines=90 --coverage.thresholds.functions=82",
+    "test:coverage": "vitest run --coverage --coverage.reporter=text --coverage.reporter=lcov --coverage.thresholds.lines=90 --coverage.thresholds.functions=85",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

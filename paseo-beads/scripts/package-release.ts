@@ -7,6 +7,7 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 const releaseFiles = [
+  "package-lock.json",
   "CHANGELOG.md",
   "LICENSE",
   "README.md",

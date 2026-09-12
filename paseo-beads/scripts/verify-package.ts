@@ -21,14 +21,19 @@ const requiredFiles = [
   "package.json",
   "paseo-plugin.json",
 ] as const;
+const requiredReleaseFiles = [...requiredFiles, "package-lock.json"] as const;
 
 function normalized(path: string, root = "") {
   const portablePath = path.replaceAll("\\", "/");
   return root && portablePath.startsWith(root) ? portablePath.slice(root.length) : portablePath;
 }
 
-function assertRequired(label: string, files: ReadonlySet<string>) {
-  const missing = requiredFiles.filter((path) => !files.has(path));
+function assertRequired(
+  label: string,
+  files: ReadonlySet<string>,
+  expected: readonly string[] = requiredFiles,
+) {
+  const missing = expected.filter((path) => !files.has(path));
   if (missing.length > 0) {
     throw new Error(`${label} is missing required files:\n- ${missing.join("\n- ")}`);
   }
@@ -144,7 +149,7 @@ try {
     throw new Error(`release zip could not be inspected: ${String(error)}`);
   }
 
-  assertRequired("release zip", releaseFiles);
+  assertRequired("release zip", releaseFiles, requiredReleaseFiles);
   assertAbsent("release zip", releaseFiles, isForbiddenReleaseFile);
   console.log("Verified npm tarball and release zip contents.");
 } finally {

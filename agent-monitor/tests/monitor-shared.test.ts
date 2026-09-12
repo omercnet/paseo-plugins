@@ -273,6 +273,24 @@ describe("project grouping", () => {
     expect(projects.map((project) => project.name)).toEqual(["Alpha", "Zebra"]);
   });
 
+  test("agentSort updated orders projects by their newest agent activity", () => {
+    const older = entry(
+      { id: "older", workspaceId: "ws-old", updatedAt: "2026-08-25T10:00:00.000Z" },
+      { projectKey: "project-old", projectName: "Alpha", workspaceName: "Old" },
+    );
+    const newer = entry(
+      { id: "newer", workspaceId: "ws-new", updatedAt: "2026-08-25T12:00:00.000Z" },
+      { projectKey: "project-new", projectName: "Beta", workspaceName: "New" },
+    );
+
+    const projects = groupByProject([older, newer], directory(), {
+      floatPinned: false,
+      agentSort: "updated",
+    });
+
+    expect(projects.map((project) => project.id)).toEqual(["project-new", "project-old"]);
+  });
+
   test("shouldCollapseWorkspace respects enabled false", () => {
     const item = entry(
       { id: "solo", workspaceId: "workspace-solo" },
