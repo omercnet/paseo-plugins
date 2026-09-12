@@ -89,6 +89,30 @@ describe("OMP image timeline transformer", () => {
     });
   });
 
+  test("accepts PNG, JPEG, and GIF headers with multibyte labels", () => {
+    for (const [mimeType, data] of [
+      ["image/png", Buffer.from("89504e470d0a1a0a", "hex").toString("base64")],
+      ["image/jpeg", Buffer.from("ffd8ff", "hex").toString("base64")],
+      ["image/gif", Buffer.from("GIF89a").toString("base64")],
+    ] as const) {
+      expect(
+        ompImageTimelineSchema.safeParse({
+          label: "é🙂\ud800",
+          images: [{ id: "abcdefghijklmnop", data, mimeType }],
+        }).success,
+      ).toBe(true);
+    }
+  });
+
+  test("rejects oversized structured image details", () => {
+    expect(
+      ompImageTimelineSchema.safeParse({
+        ...imageMetadata().ompImage,
+        details: { text: "x".repeat(256 * 1024 + 1) },
+      }).success,
+    ).toBe(false);
+  });
+
   test("unlinks materialized images when their session scope ends", () => {
     const materializer = new OmpImageMaterializer();
     const path = materializer.materialize(PNG, "image/png");

@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   closeMcpOwnership,
+  connectMcpServer,
   connectMcpTransport,
   createBoundedMcpFetch,
   SupervisedStdioClientTransport,
@@ -165,5 +166,204 @@ describe("MCP transport boundaries", () => {
     child.emit("spawn");
     await starting;
     await expect(transport.close()).rejects.toThrow("process tree cleanup failed");
+  });
+
+  test("sends requests, decodes fragmented responses, and closes exactly once", async () => {
+    const child = new FakeMcpChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (chunk) => writes.push(String(chunk)));
+    const transport = new SupervisedStdioClientTransport(
+      { command: "mcp-server", args: ["--stdio"], env: { TEST_FLAG: "1" }, cwd: "/workspace" },
+      {
+        platform: "linux",
+        spawnProcess: () => child.asChildProcess(),
+        terminateProcessTree: async () => {
+          queueMicrotask(() => child.emit("exit", 0, null));
+          return true;
+        },
+      },
+    );
+    const messages: unknown[] = [];
+    let closes = 0;
+    transport.onmessage = (message) => messages.push(message);
+    transport.onclose = () => {
+      closes += 1;
+    };
+    await expect(transport.send({ jsonrpc: "2.0", id: 1, method: "ping" })).rejects.toThrow(
+      "transport is closed",
+    );
+    const starting = transport.start();
+    child.emit("spawn");
+    await starting;
+    await transport.send({ jsonrpc: "2.0", id: 1, method: "ping" });
+    expect(writes.join("")).toContain('"method":"ping"');
+    child.stdout.write('{"jsonrpc":"2.0","id":1,');
+    child.stdout.write('"result":{"ok":true}}\n');
+    await flushMicrotasks();
+    expect(messages).toEqual([{ jsonrpc: "2.0", id: 1, result: { ok: true } }]);
+    await transport.close();
+    await transport.close();
+    expect(closes).toBe(1);
+  });
+
+  test("passes bounded ordinary responses and completes successful MCP connection", async () => {
+    const boundedFetch = createBoundedMcpFetch(async () =>
+      Response.json({ ok: true }, { headers: { "content-length": "11" } }),
+    );
+    await expect((await boundedFetch("http://127.0.0.1/mcp")).json()).resolves.toEqual({
+      ok: true,
+    });
+    let connectedSignal: AbortSignal | undefined;
+    let closes = 0;
+    const transport: Transport = {
+      start: async () => {},
+      send: async () => {},
+      close: async () => {
+        closes += 1;
+      },
+    };
+    const controller = new AbortController();
+    await connectMcpTransport(
+      {
+        async connect(_transport, options) {
+          connectedSignal = options?.signal;
+        },
+      },
+      transport,
+      controller.signal,
+    );
+    expect(connectedSignal).toBe(controller.signal);
+    await closeMcpOwnership({ close: async () => {} }, transport);
+    expect(closes).toBe(1);
+  });
+
+  test("uses the real stdio boundary for one request and response", async () => {
+    const transport = new SupervisedStdioClientTransport({
+      command: process.execPath,
+      args: [
+        "-e",
+        `process.stdin.once("data",()=>process.stdout.write('{"jsonrpc":"2.0","id":7,"result":{"ok":true}}\\n'))`,
+      ],
+      cwd: process.cwd(),
+    });
+    const message = Promise.withResolvers<unknown>();
+    transport.onmessage = message.resolve;
+    await transport.start();
+    await transport.send({ jsonrpc: "2.0", id: 7, method: "ping" });
+    await expect(message.promise).resolves.toEqual({
+      jsonrpc: "2.0",
+      id: 7,
+      result: { ok: true },
+    });
+    await transport.close();
+  });
+
+  test("reports a partial stdio frame before completing cleanup", async () => {
+    const child = new FakeMcpChild();
+    const transport = new SupervisedStdioClientTransport(
+      { command: "mcp-server", cwd: "/workspace" },
+      {
+        spawnProcess: () => child.asChildProcess(),
+        terminateProcessTree: async () => {
+          queueMicrotask(() => child.emit("exit", 0, null));
+          return true;
+        },
+      },
+    );
+    const error = Promise.withResolvers<Error>();
+    transport.onerror = error.resolve;
+    const starting = transport.start();
+    child.emit("spawn");
+    await starting;
+    child.stdout.write('{"jsonrpc":');
+    child.stdout.end();
+    await expect(error.promise).resolves.toHaveProperty(
+      "message",
+      "MCP stdio response ended mid-frame",
+    );
+    await transport.close();
+  });
+
+  test("closes the stdio owner when its input channel fails", async () => {
+    const child = new FakeMcpChild();
+    const transport = new SupervisedStdioClientTransport(
+      { command: "mcp-server", cwd: "/workspace" },
+      {
+        spawnProcess: () => child.asChildProcess(),
+        terminateProcessTree: async () => {
+          queueMicrotask(() => child.emit("exit", 1, null));
+          return true;
+        },
+      },
+    );
+    const observed = Promise.withResolvers<Error>();
+    transport.onerror = observed.resolve;
+    const starting = transport.start();
+    child.emit("spawn");
+    await starting;
+    child.stdin.emit("error", new Error("input failed"));
+    await expect(observed.promise).resolves.toHaveProperty("message", "input failed");
+    await transport.close();
+  });
+
+  test("lists and calls tools through the bounded HTTP transport", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        if (request.method === "GET") return new Response(null, { status: 405 });
+        const payload = (await request.json()) as {
+          id?: string | number;
+          method: string;
+          params?: Record<string, unknown>;
+        };
+        if (payload.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
+        const result =
+          payload.method === "initialize"
+            ? {
+                protocolVersion: "2025-11-25",
+                capabilities: { tools: {} },
+                serverInfo: { name: "bounded-http-test", version: "1" },
+              }
+            : payload.method === "tools/list"
+              ? {
+                  tools: [
+                    {
+                      name: "echo",
+                      description: "Echo input",
+                      inputSchema: { type: "object" },
+                    },
+                  ],
+                }
+              : {
+                  content: [{ type: "text", text: JSON.stringify(payload.params) }],
+                };
+        return Response.json({ jsonrpc: "2.0", id: payload.id, result });
+      },
+    });
+    const controller = new AbortController();
+    try {
+      const client = await connectMcpServer(
+        "remote",
+        { type: "http", url: `http://127.0.0.1:${server.port}` },
+        process.cwd(),
+        controller.signal,
+      );
+      await expect(client.listTools({ signal: controller.signal })).resolves.toEqual({
+        tools: [expect.objectContaining({ name: "echo" })],
+      });
+      await expect(
+        client.callTool(
+          "echo",
+          { value: "ok" },
+          { signal: controller.signal, onProgress() {}, maxTotalTimeoutMs: 5_000 },
+        ),
+      ).resolves.toMatchObject({ content: [expect.objectContaining({ type: "text" })] });
+      await client.close();
+    } finally {
+      server.stop(true);
+    }
   });
 });

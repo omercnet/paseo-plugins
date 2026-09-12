@@ -91,9 +91,13 @@ The WSL script skips when `wsl.exe` or WSL Bun is unavailable. Set `PASEO_OMP_RE
 
 ## Audit verification
 
-- `bun run check`: clean across 72 files.
+- `bun run check`: clean across 75 files.
 - `bun run typecheck`: clean.
-- `bun test`: 404 tests passed with 1,698 assertions.
-- `bun run package:release /tmp/paseo-omp-protocol-bounds.zip`: release archive built and passed `python3 -m zipfile -t`.
+- `bun test`: 435 passed, 2 env-gated real scenarios skipped, with 1,958 assertions.
+- `bun test tests/provider-conformance.test.ts`: 13 host-boundary conformance tests passed with 219 assertions, including 64 sequential turns and 10 interrupt races without duplicate or lost turn IDs, duplicate assistant message IDs, leaked subprocesses, or unbounded fake-RPC log growth.
+- `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts`: both installed `omp/18.1.15` catalog and real text/tool-turn scenarios passed.
+- `bun run test:coverage`: 435 passed and 2 env-gated tests skipped; aggregate source coverage is 95.59% functions and 97.79% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
+- `bun run package:release /tmp/paseo-omp-conformance.zip`: release archive built and passed `python3 -m zipfile -t`.
 - `bun run test:integration:docker`: host/container ownership boundary verified.
-- Real `omp/18.1.15` fallback smoke: protocol v2 opened, typed approvals remained unnegotiated (`false`), and catalog discovery returned 11 models.
+- `bun run test:integration:wsl`: locally skipped because `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
+- `mise x actionlint@1.7.12 -- actionlint .github/workflows/ci.yml`: passed.

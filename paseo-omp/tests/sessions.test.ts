@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { listOmpSessionsFrom } from "../server/sessions";
+import { listOmpSessionsFrom, resolveListOmpSessions } from "../server/sessions";
 
 const temporaryDirectories: string[] = [];
 
@@ -102,5 +102,27 @@ describe("omp sessions reader", () => {
 
   test("returns an empty list when the database is missing", () => {
     expect(listOmpSessionsFrom("/nonexistent/history.db", "/work/a")).toEqual([]);
+  });
+
+  test("resolves history from the configured OMP agent directory", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paseo-omp-session-resolver-"));
+    temporaryDirectories.push(directory);
+    const database = createHistoryDatabase(join(directory, "history.db"));
+    database
+      .prepare(
+        "INSERT INTO history (id, prompt, created_at, cwd, session_id) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run(1, "resolver prompt", 1_000, "/work/resolver", "session-resolver");
+    database.close();
+    const previous = process.env.PASEO_OMP_AGENT_DIR;
+    process.env.PASEO_OMP_AGENT_DIR = directory;
+    try {
+      expect(resolveListOmpSessions({ cwd: "/work/resolver" })).toEqual({
+        sessions: [expect.objectContaining({ prompt: "resolver prompt" })],
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PASEO_OMP_AGENT_DIR;
+      else process.env.PASEO_OMP_AGENT_DIR = previous;
+    }
   });
 });

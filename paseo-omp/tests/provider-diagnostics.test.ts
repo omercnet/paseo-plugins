@@ -11,6 +11,7 @@ import {
   type ProviderDiagnosticsDeps,
   probeOmpAvailability,
   resolveExecutablePath,
+  resolveGetOmpProviderHealth,
   runBounded,
   type SpawnFn,
   terminatePosixProcessTree,
@@ -874,5 +875,43 @@ describe("computeOmpProviderHealth", () => {
       expect(health.binary.resolvedPath).not.toBe(binaryPath);
       expect(health.binary.resolvedPath).toBe("<custom path>");
     });
+  });
+
+  test("resolves, single-flights, and caches real provider health probes", async () => {
+    const root = await tempDir("paseo-omp-health-resolver-");
+    const binary = join(root, "omp");
+    await writeFile(
+      binary,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "omp/18.1.15\\n"; else printf "%s\\n" "--mode=<value>  Output mode: text (default), json, rpc, or rpc-ui" "lsp  - Language server protocol (code intelligence)"; fi\n',
+    );
+    await chmod(binary, 0o755);
+    const previous = {
+      agentDir: process.env.PASEO_OMP_AGENT_DIR,
+      command: process.env.OMP_COMMAND,
+      runDir: process.env.PASEO_OMP_RUN_DIR,
+    };
+    process.env.PASEO_OMP_AGENT_DIR = root;
+    process.env.PASEO_OMP_RUN_DIR = join(root, "run");
+    process.env.OMP_COMMAND = binary;
+    try {
+      const [first, concurrent] = await Promise.all([
+        resolveGetOmpProviderHealth({ force: true }),
+        resolveGetOmpProviderHealth({ force: true }),
+      ]);
+      expect(first).toEqual(concurrent);
+      expect(first.binary).toMatchObject({
+        installed: true,
+        version: { major: 18, minor: 1, patch: 15, prerelease: null },
+      });
+      expect(first.rpcUi.supported).toBe(true);
+      await expect(resolveGetOmpProviderHealth({ force: false })).resolves.toEqual(first);
+    } finally {
+      if (previous.agentDir === undefined) delete process.env.PASEO_OMP_AGENT_DIR;
+      else process.env.PASEO_OMP_AGENT_DIR = previous.agentDir;
+      if (previous.command === undefined) delete process.env.OMP_COMMAND;
+      else process.env.OMP_COMMAND = previous.command;
+      if (previous.runDir === undefined) delete process.env.PASEO_OMP_RUN_DIR;
+      else process.env.PASEO_OMP_RUN_DIR = previous.runDir;
+    }
   });
 });
