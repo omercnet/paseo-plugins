@@ -179,7 +179,18 @@ jobs:
         shell: pwsh
         working-directory: .
         run: wsl.exe --exec sh -lc 'curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs'
+      - name: Allow WSL to reach the Windows Node fixture
+        shell: pwsh
+        working-directory: .
+        run: |
+          $node = (Get-Command node).Source
+          New-NetFirewallRule -DisplayName "Paseo OMP WSL CI" -Direction Inbound -Action Allow -Program $node
       - name: WSL host-tool ownership integration
         env:
           PASEO_OMP_REQUIRE_WSL: "1"
         run: npm run test:integration:wsl
+      - name: Remove WSL fixture firewall rule
+        if: ${{ always() }}
+        shell: pwsh
+        working-directory: .
+        run: Remove-NetFirewallRule -DisplayName "Paseo OMP WSL CI" -ErrorAction SilentlyContinue
