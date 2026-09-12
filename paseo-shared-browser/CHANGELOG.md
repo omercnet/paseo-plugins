@@ -1,10 +1,15 @@
 # Changelog
 
-## Unreleased
+## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.2.2...shared-browser-v1.0.0) (2026-09-12)
 
-### Changes
+### ⚠ BREAKING CHANGES
 
-* migrate Shared Browser to Paseo 0.8 runtime entries and client/server modules
+* replace the browser runtime in place with plugin-owned `agent-browser` 0.37.1 and a detached daemon-host supervisor; deployments must provide the packaged runtime and a compatible Chromium executable, with Linux ARM64 deployments supplying native Chromium through `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE`
+
+### Features
+
+* preserve workspace browser processes across client disconnects and plugin reloads during a 120-second orphan grace, while retaining per-workspace profiles and tearing down active runtimes when workspace archive events are received
+* add daemon-local runtime overrides through `PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY` and `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE`
 
 ## [0.2.2](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.2.1...shared-browser-v0.2.2) (2026-09-10)
 

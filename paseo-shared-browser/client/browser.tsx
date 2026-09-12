@@ -35,6 +35,8 @@ import {
   releaseControlRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
+  didBrowserRuntimeRestart,
+  isBrowserStateCurrent,
   type BrowserFrame,
   type BrowserInputEvent,
   type BrowserState,
@@ -131,10 +133,29 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message;
   return "The shared browser request failed.";
 }
+function hasUnknownMutationOutcome(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const record = error as Record<string, unknown>;
+  const code = typeof record.code === "string" ? record.code.toLowerCase() : "";
+  const name = typeof record.name === "string" ? record.name : "";
+  if (code === "unknown_outcome") return true;
+  if (
+    code === "transport_closed_after_dispatch" ||
+    code === "transport_lost_after_dispatch" ||
+    code === "rpc_timeout" ||
+    name === "RpcTimeoutError" ||
+    name === "TransportLostAfterDispatchError"
+  ) {
+    return true;
+  }
+  const dispatched = record.dispatched === true || record.requestDispatched === true;
+  return dispatched && /(transport|connection|timeout)/.test(code || name.toLowerCase());
+}
 
 function isFrameCurrent(frame: BrowserFrame, state: BrowserState): boolean {
   return (
     frame.sessionId === state.sessionId &&
+    (!frame.runtimeId || !state.runtimeId || frame.runtimeId === state.runtimeId) &&
     frame.navigationGeneration === state.navigationGeneration &&
     frame.viewportGeneration === state.viewportGeneration
   );
@@ -915,6 +936,7 @@ export function SharedBrowserPanel({
   const [operationError, setOperationError] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
+  const [runtimeNotice, setRuntimeNotice] = useState<string | null>(null);
   const [addressDraft, setAddressDraft] = useState("");
   const [addressFocused, setAddressFocused] = useState(false);
   const [viewportWidth, setViewportWidth] = useState("");
@@ -936,15 +958,12 @@ export function SharedBrowserPanel({
 
   const acceptState = useCallback((next: BrowserState) => {
     const previous = stateRef.current;
-    if (
-      previous?.sessionId === next.sessionId &&
-      (next.navigationGeneration < previous.navigationGeneration ||
-        next.viewportGeneration < previous.viewportGeneration)
-    ) {
-      return false;
-    }
+    if (previous && !isBrowserStateCurrent(previous, next)) return false;
     const currentFrame = frameRef.current;
-    if (previous && previous.sessionId !== next.sessionId) {
+    if (previous && didBrowserRuntimeRestart(previous, next)) {
+      setRuntimeNotice(
+        "Browser restarted. The preserved viewer connection now targets the new runtime.",
+      );
       setControlToken(null);
     }
     if (currentFrame && !isFrameCurrent(currentFrame, next)) {
@@ -995,6 +1014,7 @@ export function SharedBrowserPanel({
     setFrame(null);
     setControlToken(null);
     setOperationError(null);
+    setRuntimeNotice(null);
   }, [workspaceId]);
 
   const captureQuery = useQuery({
@@ -1071,7 +1091,12 @@ export function SharedBrowserPanel({
 
   const mutationFailed = useCallback(
     (error: unknown) => {
-      setOperationError(`${errorMessage(error)} State refreshed; the action was not replayed.`);
+      const message = errorMessage(error);
+      setOperationError(
+        hasUnknownMutationOutcome(error)
+          ? `${message} Mutation outcome is unknown; state refreshed and the action was not replayed.`
+          : message,
+      );
       refreshCapture();
     },
     [refreshCapture],
@@ -1392,18 +1417,21 @@ export function SharedBrowserPanel({
     setReconnecting(true);
     setControlToken(null);
     setOperationError(null);
-    frameRef.current = null;
-    stateRef.current = null;
-    setFrame(null);
-    setState(null);
     void attachQuery.refetch({ cancelRefetch: false }).then((result) => {
       if (!result.error) setReconnecting(false);
     });
   }, [attachQuery.isFetching, attachQuery.refetch]);
 
   const connectionError = attachQuery.error ?? captureQuery.error;
+  const recoveryError =
+    state?.recoveryState === "runtime-unavailable"
+      ? (state.error ?? "Browser runtime unavailable.")
+      : null;
   const visibleError =
-    operationError ?? state?.error ?? (connectionError ? errorMessage(connectionError) : null);
+    operationError ??
+    recoveryError ??
+    state?.error ??
+    (connectionError ? errorMessage(connectionError) : null);
   const statusColor =
     state?.status === "ready"
       ? theme.colors.statusSuccess
@@ -1569,11 +1597,11 @@ export function SharedBrowserPanel({
         <View style={styles.actionRow}>{controlAction}</View>
       </View>
 
-      {visibleError ? (
+      {runtimeNotice || visibleError ? (
         <ErrorNotice
           styles={styles}
           theme={theme}
-          message={visibleError}
+          message={runtimeNotice ?? visibleError ?? ""}
           action={connectionError || reconnecting ? "Reconnect" : undefined}
           onAction={connectionError || reconnecting ? reconnect : undefined}
           actionDisabled={attachQuery.isFetching}
@@ -1619,12 +1647,12 @@ export function SharedBrowserPanel({
               title="Connection failed"
               detail="Reconnect to attach a fresh viewer and resume frame capture."
             />
-          ) : state?.status === "error" ? (
+          ) : state?.recoveryState === "runtime-unavailable" || state?.status === "error" ? (
             <CanvasPlaceholder
               styles={styles}
               theme={theme}
               title="Browser unavailable"
-              detail={state.error ?? "The browser session reported an error."}
+              detail={state.error ?? "The browser runtime is temporarily unavailable."}
             />
           ) : (
             <CanvasPlaceholder
