@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { handleTellCommand } from "../client/tell-command";
 
 type TellContext = Parameters<typeof handleTellCommand>[0];
@@ -26,7 +26,7 @@ describe("tell command keyboard flow", () => {
     await handleTellCommand(context);
 
     expect(opened).toEqual(["tell-agent"]);
-    expect(listed).toBeFalse();
+    expect(listed).toBe(false);
   });
 
   test("prompts the source session instead of sending verbatim to the target", async () => {

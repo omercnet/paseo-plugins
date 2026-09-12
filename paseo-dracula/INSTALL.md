@@ -35,6 +35,6 @@ paseo plugin remove paseo-dracula
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
 cd paseo-plugins/paseo-dracula
-bun install --frozen-lockfile
+npm ci
 paseo plugin install "$PWD"
 ```

@@ -7,9 +7,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "packageManager": "bun@1.4.0",
+  "packageManager": "npm@11.19.1",
   "engines": {
-    "bun": ">=1.4.0"
+    "node": ">=24"
   },
   "author": "Omer Cohen",
   "keywords": [
@@ -20,7 +20,6 @@
     "color-scheme"
   ],
   "files": [
-    "bun.lock",
     "CHANGELOG.md",
     "INSTALL.md",
     "index.client.ts",
@@ -33,9 +32,9 @@
   "scripts": {
     "check": "biome check .",
     "check:write": "biome check --write .",
-    "test": "bun test",
-    "package:release": "bun scripts/package-release.ts",
-    "test:coverage": "bun test --coverage",
+    "test": "vitest run",
+    "package:release": "node scripts/package-release.ts",
+    "test:coverage": "vitest run --coverage --coverage.reporter=text --coverage.reporter=lcov --coverage.thresholds.lines=90 --coverage.thresholds.functions=85",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
@@ -43,8 +42,10 @@
     "@getpaseo/client": "0.8.0",
     "@getpaseo/plugin": "0.8.0",
     "@getpaseo/protocol": "0.8.0",
-    "@types/bun": "^1.4.0",
+    "@types/node": "^24.5.2",
+    "@vitest/coverage-v8": "^4.1.6",
     "fflate": "^0.8.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
   }
 }

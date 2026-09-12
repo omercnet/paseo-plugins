@@ -1,10 +1,12 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { zipSync } from "fflate";
-import packageJson from "../package.json";
+
+const packageJson = JSON.parse(
+  await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"),
+) as { version: string };
 
 const releaseFiles = [
-  "bun.lock",
   "LICENSE",
   "README.md",
   "index.client.tsx",
@@ -20,15 +22,15 @@ const releaseFiles = [
   "tsconfig.json",
 ] as const;
 
-const output = Bun.argv[2] ?? `dist/pr-radar-v${packageJson.version}.zip`;
+const output = process.argv[2] ?? `dist/pr-radar-v${packageJson.version}.zip`;
 const root = "pr-radar";
 const files: Record<string, Uint8Array> = {};
 
 for (const path of releaseFiles) {
-  files[join(root, path)] = await Bun.file(path).bytes();
+  files[join(root, path)] = await readFile(path);
 }
 
 await mkdir("dist", { recursive: true });
 await rm(output, { force: true });
-await Bun.write(output, zipSync(files, { level: 9 }));
+await writeFile(output, zipSync(files, { level: 9 }));
 console.log(output);

@@ -1,11 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unzipSync } from "fflate";
 
-const packageRoot = join(import.meta.dir, "..");
+const packageRoot = join(import.meta.dirname, "..");
 const requiredFiles = [
-  "bun.lock",
   "CHANGELOG.md",
   "icon.svg",
   "LICENSE",
@@ -75,7 +75,7 @@ function isForbiddenNpmFile(path: string) {
     isInDirectory(path, "dist") ||
     isInDirectory(path, "node_modules") ||
     isPlaceholder(path) ||
-    /^(?:tsconfig(?:\.[^/]+)?\.json|biome(?:\.[^/]+)?\.json|bunfig\.toml)$/.test(path) ||
+    /^(?:tsconfig(?:\.[^/]+)?\.json|biome(?:\.[^/]+)?\.json)$/.test(path) ||
     /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/.test(path)
   );
 }
@@ -94,31 +94,28 @@ function isForbiddenReleaseFile(path: string) {
 }
 
 async function run(command: string[], label: string) {
-  const subprocess = (() => {
-    try {
-      return Bun.spawn({
-        cmd: command,
-        cwd: packageRoot,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-    } catch (error) {
-      throw new Error(`${label} could not start: ${String(error)}`);
-    }
-  })();
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    subprocess.exited,
-    new Response(subprocess.stdout).text(),
-    new Response(subprocess.stderr).text(),
-  ]);
-
-  if (exitCode !== 0) {
-    const detail = stderr.trim() || stdout.trim() || "no command output";
-    throw new Error(`${label} failed with exit code ${exitCode}:\n${detail}`);
+  const executable = command[0];
+  if (!executable) {
+    throw new Error(`${label} has no executable`);
   }
 
-  return stdout;
+  return await new Promise<string>((resolve, reject) => {
+    execFile(
+      executable,
+      command.slice(1),
+      { cwd: packageRoot, encoding: "utf8" },
+      (error, stdout, stderr) => {
+        if (error) {
+          const detail = stderr.trim() || stdout.trim() || error.message;
+          reject(
+            new Error(`${label} failed with exit code ${error.code ?? "unknown"}:\n${detail}`),
+          );
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
 }
 
 function npmPackFiles(stdout: string) {
@@ -163,7 +160,7 @@ try {
 
   let releaseFiles: ReadonlySet<string>;
   try {
-    const archive = unzipSync(await Bun.file(releasePath).bytes());
+    const archive = unzipSync(await readFile(releasePath));
     releaseFiles = new Set(Object.keys(archive).map((path) => normalized(path, "paseo-gas-city/")));
   } catch (error) {
     throw new Error(`release zip could not be inspected: ${String(error)}`);
