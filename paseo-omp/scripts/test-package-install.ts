@@ -134,9 +134,14 @@ async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<voi
     temporaryDirectory,
   );
   const checkoutPlugin = join(checkoutRoot, "paseo-omp");
-  for (const command of await buildCommands(checkoutPlugin)) await run(command, checkoutPlugin);
+  const commands = await buildCommands(checkoutPlugin);
+  if (!commands.some((command) => command.includes("--ignore-scripts"))) {
+    throw new Error("Git dependency installation must disable lifecycle scripts");
+  }
+  for (const command of commands) await run(command, checkoutPlugin);
   await verifyRuntimeDependencies(checkoutPlugin);
   await run([process.execPath, "run", "typecheck"], checkoutPlugin);
+  await run([process.execPath, "test", "tests/server-bundle.test.ts"], checkoutPlugin);
 }
 
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-install-"));

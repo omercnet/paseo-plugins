@@ -1,5 +1,5 @@
 {
   "id": "paseo-omp",
   "requirements": { "paseo": "^0.8.1" },
-  "build": [["bun", "install", "--frozen-lockfile"]]
+  "build": [["bun", "install", "--frozen-lockfile", "--ignore-scripts"]]
 }

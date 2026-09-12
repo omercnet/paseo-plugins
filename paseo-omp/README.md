@@ -35,6 +35,8 @@ paseo plugin update paseo-omp
 
 A failed Git build or incompatible update leaves the previously installed revision active. After a bad branch update, remove the plugin and re-add it with `--ref <recorded-commit>`.
 
+Git preparation installs the locked dependency graph with lifecycle scripts disabled. The plugin does not require dependency install scripts to bundle or load either runtime entry.
+
 Release ZIPs are self-contained and include their production dependency tree. They install offline without a package-manager install or registry access. Authenticate the ZIP's GitHub build-provenance attestation, optionally check for download corruption, extract it, and install the extracted directory:
 
 ```bash
@@ -51,7 +53,7 @@ For a reviewed local checkout, install dependencies before the directory install
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
 cd paseo-plugins/paseo-omp
-bun install --frozen-lockfile
+bun install --frozen-lockfile --ignore-scripts
 paseo plugin install "$PWD"
 ```
 
