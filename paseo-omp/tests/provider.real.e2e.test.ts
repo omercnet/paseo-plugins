@@ -1,4 +1,3 @@
-import { afterEach, describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -6,11 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
+import { afterEach, describe, expect, test } from "vitest";
 import type {
   AgentClient,
   AgentSession,
 } from "../node_modules/@getpaseo/server/dist/server/server/agent/agent-sdk-types.js";
 import { createOmpProvider } from "../server/provider/registration";
+import { startFetchServer } from "./helpers/http-server";
 
 const executeFile = promisify(execFile);
 const pluginProviderModulePath =
@@ -49,78 +50,74 @@ async function createHarness(): Promise<RealHarness> {
   const agentDir = join(root, "agent");
   await Promise.all([mkdir(cwd), mkdir(agentDir)]);
   const requests: Array<Record<string, unknown>> = [];
-  const modelServer = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request) {
-      if (request.method === "GET") {
-        return Response.json({
-          object: "list",
-          data: [{ id: "conformance-model", object: "model" }],
-        });
-      }
-      const payload = (await request.json()) as Record<string, unknown>;
-      requests.push(payload);
-      const messages = Array.isArray(payload.messages) ? payload.messages : [];
-      const hasToolResult = messages.some(
-        (message) =>
-          message !== null &&
-          typeof message === "object" &&
-          "role" in message &&
-          message.role === "tool",
-      );
-      const base = {
-        id: `chatcmpl-${requests.length}`,
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "conformance-model",
-      };
-      if (!hasToolResult) {
-        return streamingResponse([
-          {
-            ...base,
-            choices: [
-              {
-                index: 0,
-                delta: {
-                  role: "assistant",
-                  tool_calls: [
-                    {
-                      index: 0,
-                      id: "call_contract_bash",
-                      type: "function",
-                      function: {
-                        name: "bash",
-                        arguments: '{"command":"printf REAL_OMP_TOOL_OK"}',
-                      },
-                    },
-                  ],
-                },
-                finish_reason: null,
-              },
-            ],
-          },
-          { ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
-        ]);
-      }
+  const modelServer = await startFetchServer(async (request) => {
+    if (request.method === "GET") {
+      return Response.json({
+        object: "list",
+        data: [{ id: "conformance-model", object: "model" }],
+      });
+    }
+    const payload = (await request.json()) as Record<string, unknown>;
+    requests.push(payload);
+    const messages = Array.isArray(payload.messages) ? payload.messages : [];
+    const hasToolResult = messages.some(
+      (message) =>
+        message !== null &&
+        typeof message === "object" &&
+        "role" in message &&
+        message.role === "tool",
+    );
+    const base = {
+      id: `chatcmpl-${requests.length}`,
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "conformance-model",
+    };
+    if (!hasToolResult) {
       return streamingResponse([
         {
           ...base,
           choices: [
             {
               index: 0,
-              delta: { role: "assistant", content: "REAL_OMP_DONE" },
+              delta: {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_contract_bash",
+                    type: "function",
+                    function: {
+                      name: "bash",
+                      arguments: '{"command":"printf REAL_OMP_TOOL_OK"}',
+                    },
+                  },
+                ],
+              },
               finish_reason: null,
             },
           ],
         },
-        {
-          ...base,
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
-        },
+        { ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       ]);
-    },
+    }
+    return streamingResponse([
+      {
+        ...base,
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant", content: "REAL_OMP_DONE" },
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        ...base,
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+      },
+    ]);
   });
   await writeFile(
     join(agentDir, "models.yml"),

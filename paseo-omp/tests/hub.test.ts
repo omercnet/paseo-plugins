@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   listHubProcessesFrom,
   resolveListHubProcesses,
@@ -40,8 +40,8 @@ function meta(state: string, startedAt: number, exitCode?: number) {
       ...(exitCode === undefined ? {} : { exitedAt: startedAt + 2, exitCode }),
     },
     spec: {
-      application: "bun",
-      args: ["run", "dev"],
+      application: "node",
+      args: ["server.js"],
       cwd: "/workspace",
     },
   };
@@ -67,8 +67,8 @@ describe("omp hub state reader", () => {
 
     expect(processes.map((process) => process.name)).toEqual(["newer", "older"]);
     expect(processes[0]).toMatchObject({
-      application: "bun",
-      args: ["run", "dev"],
+      application: "node",
+      args: ["server.js"],
       state: "running",
       owner: "omp-session-1",
       restartCount: 2,

@@ -1,13 +1,27 @@
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import {
+  access,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
+import { promisify } from "node:util";
 import { zipSync } from "fflate";
 import packageJson from "../package.json";
 import { validateArchivePath } from "./release-archive";
 
-const output = Bun.argv[2] ?? `dist/paseo-omp-v${packageJson.version}.zip`;
+const executeFile = promisify(execFile);
+const output = process.argv[2] ?? `dist/paseo-omp-v${packageJson.version}.zip`;
 const archiveRoot = "paseo-omp";
 const releaseRoots = ["package.json", ...packageJson.files] as const;
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 const archiveCompileDependencies = [
   "@getpaseo/client",
@@ -18,6 +32,7 @@ const archiveCompileDependencies = [
   "react-native",
   "zod",
 ] as const;
+
 function normalizeReleaseRoot(path: string): string {
   if (
     !path ||
@@ -33,16 +48,21 @@ function normalizeReleaseRoot(path: string): string {
 }
 
 async function run(command: string[], cwd: string): Promise<string> {
-  const child = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`${command.join(" ")} failed (${exitCode})\n${stderr || stdout}`);
+  const [file, ...args] = command;
+  if (!file) throw new Error("Command must not be empty");
+  try {
+    const { stdout } = await executeFile(file, args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout;
+  } catch (error) {
+    const failure = error as Error & { stdout?: string; stderr?: string; code?: number | string };
+    throw new Error(
+      `${command.join(" ")} failed (${String(failure.code ?? "unknown")})\n${failure.stderr || failure.stdout || failure.message}`,
+    );
   }
-  return stdout;
 }
 
 async function trackedReleaseFiles(): Promise<string[]> {
@@ -77,8 +97,9 @@ async function collectDependencyFiles(root: string, path: string, files: string[
   if (relativePath.split("/").includes(".bin")) return;
 
   const metadata = await lstat(path);
-  if (metadata.isSymbolicLink())
+  if (metadata.isSymbolicLink()) {
     throw new Error(`Production dependency must not be a symlink: ${relativePath}`);
+  }
   if (metadata.isFile()) {
     files.push(relativePath);
     return;
@@ -95,9 +116,9 @@ async function collectDependencyFiles(root: string, path: string, files: string[
 async function productionDependencies(): Promise<{ root: string; files: string[] }> {
   const root = await mkdtemp(join(tmpdir(), "paseo-omp-production-"));
   await cp("package.json", join(root, "package.json"));
-  await cp("bun.lock", join(root, "bun.lock"));
+  await cp("package-lock.json", join(root, "package-lock.json"));
   try {
-    await run([process.execPath, "install", "--frozen-lockfile", "--ignore-scripts"], root);
+    await run([npmCommand, "ci", "--ignore-scripts"], root);
 
     const required = [...Object.keys(packageJson.dependencies), ...archiveCompileDependencies];
     const pending = [...required];
@@ -108,7 +129,9 @@ async function productionDependencies(): Promise<{ root: string; files: string[]
       if (!dependency || included.has(dependency)) continue;
       const packageRoot = join(root, "node_modules", ...dependency.split("/"));
       const metadataPath = join(packageRoot, "package.json");
-      if (!(await Bun.file(metadataPath).exists())) {
+      try {
+        await access(metadataPath);
+      } catch {
         if (required.includes(dependency)) {
           throw new Error(`Required archive dependency was not installed: ${dependency}`);
         }
@@ -136,14 +159,14 @@ async function productionDependencies(): Promise<{ root: string; files: string[]
 const files: Record<string, Uint8Array> = {};
 for (const path of await trackedReleaseFiles()) {
   const archivePath = validateArchivePath(posix.join(archiveRoot, path));
-  files[archivePath] = await Bun.file(path).bytes();
+  files[archivePath] = await readFile(path);
 }
 
 const dependencies = await productionDependencies();
 try {
   for (const path of dependencies.files) {
     const archivePath = validateArchivePath(posix.join(archiveRoot, path));
-    files[archivePath] = await Bun.file(join(dependencies.root, path)).bytes();
+    files[archivePath] = await readFile(join(dependencies.root, path));
   }
 } finally {
   await rm(dependencies.root, { recursive: true, force: true });
@@ -151,5 +174,5 @@ try {
 
 await mkdir(dirname(output), { recursive: true });
 await rm(output, { force: true });
-await Bun.write(output, zipSync(files, { level: 9, mtime: new Date(1980, 0, 1) }));
+await writeFile(output, zipSync(files, { level: 9, mtime: new Date(1980, 0, 1) }));
 console.log(output);

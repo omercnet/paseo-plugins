@@ -1,9 +1,14 @@
+import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 
+const executeFile = promisify(execFile);
 export const pluginRoot = join(import.meta.dirname, "..");
 
 export interface HostMcpServer {
-  child: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  child: ChildProcessWithoutNullStreams;
   pid: number;
   port: number;
 }
@@ -17,81 +22,76 @@ export interface OwnershipEvidence {
 }
 
 async function readReady(
-  stream: ReadableStream<Uint8Array>,
+  stream: NodeJS.ReadableStream,
   timeoutMs: number,
 ): Promise<{ pid: number; port: number }> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
   let buffered = "";
-  const deadline = Date.now() + timeoutMs;
-  try {
-    while (Date.now() < deadline) {
-      const remaining = deadline - Date.now();
-      const result = await Promise.race([
-        reader.read(),
-        Bun.sleep(remaining).then(() => ({ done: true as const, value: undefined })),
-      ]);
-      if (result.done) break;
-      buffered += decoder.decode(result.value, { stream: true });
+  const reading = (async () => {
+    for await (const chunk of stream) {
+      buffered += Buffer.from(chunk).toString("utf8");
       const match = /MCP_HOST_READY\s+(\d+)\s+(\d+)/u.exec(buffered);
       if (match) return { port: Number(match[1]), pid: Number(match[2]) };
     }
-  } finally {
-    reader.releaseLock();
-  }
-  throw new Error(`Host MCP server did not become ready: ${buffered}`);
+    throw new Error(`Host MCP server exited before readiness: ${buffered}`);
+  })();
+  return Promise.race([
+    reading,
+    sleep(timeoutMs).then(() => {
+      throw new Error(`Host MCP server did not become ready: ${buffered}`);
+    }),
+  ]);
 }
 
 export async function startHostMcpServer(ownerMarker: string): Promise<HostMcpServer> {
-  const child = Bun.spawn(["bun", "tests/fixtures/mcp-host-server.ts"], {
+  const child = spawn(process.execPath, ["--import", "tsx", "tests/fixtures/mcp-host-server.ts"], {
     cwd: pluginRoot,
     env: { ...process.env, MCP_HOST_PORT: "0", OWNER_MARKER: ownerMarker },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+    stdio: ["pipe", "pipe", "pipe"],
   });
   try {
     const ready = await readReady(child.stdout, 10_000);
     return { child, ...ready };
   } catch (error) {
     child.kill("SIGKILL");
-    const stderr = await new Response(child.stderr).text();
+    let stderr = "";
+    for await (const chunk of child.stderr) stderr += Buffer.from(chunk).toString("utf8");
     throw new Error(`${error instanceof Error ? error.message : String(error)}\n${stderr}`);
   }
 }
 
 export async function stopHostMcpServer(server: HostMcpServer): Promise<void> {
+  if (server.child.exitCode !== null) return;
   server.child.kill("SIGTERM");
   const exited = await Promise.race([
-    server.child.exited.then(() => true),
-    Bun.sleep(5_000).then(() => false),
+    once(server.child, "exit").then(() => true),
+    sleep(5_000, false),
   ]);
   if (!exited) {
     server.child.kill("SIGKILL");
-    await server.child.exited;
+    await once(server.child, "exit");
   }
 }
 
 export async function runCaptured(
   command: string[],
-  options: { cwd?: string; env?: Record<string, string | undefined> } = {},
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
-  const child = Bun.spawn(command, {
-    cwd: options.cwd ?? pluginRoot,
-    env: options.env ?? process.env,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`${command.join(" ")} failed (${exitCode})\n${stdout}\n${stderr}`);
+  const [file, ...args] = command;
+  if (!file) throw new Error("Command must not be empty");
+  try {
+    const { stdout } = await executeFile(file, args, {
+      cwd: options.cwd ?? pluginRoot,
+      env: options.env ?? process.env,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout.trim();
+  } catch (error) {
+    const failure = error as Error & { stdout?: string; stderr?: string; code?: number | string };
+    throw new Error(
+      `${command.join(" ")} failed (${String(failure.code ?? "unknown")})\n${failure.stdout ?? ""}\n${failure.stderr ?? failure.message}`,
+    );
   }
-  return stdout.trim();
 }
 
 export function parseEvidence(output: string): OwnershipEvidence {
@@ -125,10 +125,10 @@ export function buildWslClientCommand(input: {
   callerAgentId: string;
   workspaceId: string;
   expectedOwnerMarker: string;
-  wslBun: string;
+  wslNode: string;
 }): string {
-  if (!/^[A-Za-z0-9_./~$-]+$/u.test(input.wslBun)) {
-    throw new Error("WSL Bun path contains unsupported shell characters");
+  if (!/^[A-Za-z0-9_./~$-]+$/u.test(input.wslNode)) {
+    throw new Error("WSL Node path contains unsupported shell characters");
   }
   const environment = [
     `MCP_HOST_URL=${shellQuote(input.hostUrl)}`,
@@ -138,5 +138,5 @@ export function buildWslClientCommand(input: {
     `PASEO_WORKSPACE_ID=${shellQuote(input.workspaceId)}`,
     `EXPECTED_OWNER_MARKER=${shellQuote(input.expectedOwnerMarker)}`,
   ].join(" ");
-  return `cd ${shellQuote(input.wslPluginRoot)} && env ${environment} ${input.wslBun} tests/fixtures/mcp-container-client.ts`;
+  return `cd ${shellQuote(input.wslPluginRoot)} && env ${environment} ${input.wslNode} --import tsx tests/fixtures/mcp-container-client.ts`;
 }

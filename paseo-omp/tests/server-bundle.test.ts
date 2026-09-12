@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import {
   negotiateProviderCapabilities,
   type ProviderRegistration,
@@ -11,10 +12,12 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { build } from "esbuild";
 import { unzipSync } from "fflate";
+import { describe, expect, test } from "vitest";
 import { extractArchiveFiles } from "../scripts/release-archive";
 
 const pluginRoot = join(import.meta.dirname, "..");
 const nodeRequire = createRequire(join(pluginRoot, "index.server.ts"));
+const executeFile = promisify(execFile);
 const sdkStub = {
   defineRpc: (definition: unknown) => definition,
   negotiateProviderCapabilities,
@@ -28,7 +31,7 @@ function runtimeRequire(name: string): unknown {
 async function compileServerBundle(entryPath: string) {
   const result = await build({
     stdin: {
-      contents: await Bun.file(entryPath).text(),
+      contents: await readFile(entryPath, "utf8"),
       loader: "tsx",
       resolveDir: dirname(entryPath),
       sourcefile: entryPath,
@@ -67,9 +70,9 @@ async function compileClientBundle(entryPath: string) {
 
 describe("plugin server bundle", () => {
   test("requires the published Paseo 0.8 provider contract", async () => {
-    const manifest = await Bun.file(join(pluginRoot, "paseo-plugin.json")).json();
+    const manifest = JSON.parse(await readFile(join(pluginRoot, "paseo-plugin.json"), "utf8"));
     expect(manifest).toEqual(expect.objectContaining({ requirements: { paseo: "^0.8.0" } }));
-    expect(await Bun.file(join(pluginRoot, "README.md")).text()).toContain("Paseo `^0.8.0`");
+    expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain("Paseo `^0.8.0`");
   });
 
   test("loads and registers the plugin provider in the daemon CJS sandbox", async () => {
@@ -168,19 +171,15 @@ describe("plugin server bundle", () => {
     const archivePath = join(temporaryDirectory, "paseo-omp.zip");
     const extractionRoot = join(temporaryDirectory, "extracted");
     try {
-      const packaging = Bun.spawn([process.execPath, "scripts/package-release.ts", archivePath], {
-        cwd: pluginRoot,
-        stdout: "ignore",
-        stderr: "pipe",
-      });
-      const [exitCode, stderr] = await Promise.all([
-        packaging.exited,
-        new Response(packaging.stderr).text(),
-      ]);
-      expect(stderr).toBe("");
-      expect(exitCode).toBe(0);
+      await executeFile(
+        process.execPath,
+        ["--import", "tsx", "scripts/package-release.ts", archivePath],
+        {
+          cwd: pluginRoot,
+        },
+      );
 
-      const files = unzipSync(await Bun.file(archivePath).bytes());
+      const files = unzipSync(await readFile(archivePath));
       expect(files["paseo-omp/server/provider/security.ts"]).toBeDefined();
       expect(new TextDecoder().decode(files["paseo-omp/paseo-plugin.json"])).toContain(
         '"paseo": "^0.8.0"',
@@ -204,14 +203,14 @@ describe("plugin server bundle", () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-package-"));
     const archivePath = join(temporaryDirectory, "paseo-omp.zip");
     try {
-      const packaging = Bun.spawn({
-        cmd: ["bun", "scripts/package-release.ts", archivePath],
-        cwd: pluginRoot,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      expect(await packaging.exited).toBe(0);
-      const archive = unzipSync(await Bun.file(archivePath).bytes());
+      await executeFile(
+        process.execPath,
+        ["--import", "tsx", "scripts/package-release.ts", archivePath],
+        {
+          cwd: pluginRoot,
+        },
+      );
+      const archive = unzipSync(await readFile(archivePath));
       await extractArchiveFiles(archive, temporaryDirectory);
       for (const path of [
         "paseo-omp/client/provider-image.tsx",

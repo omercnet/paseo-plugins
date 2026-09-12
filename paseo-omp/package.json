@@ -16,9 +16,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "packageManager": "bun@1.4.0",
+  "packageManager": "npm@10.9.4",
   "engines": {
-    "bun": ">=1.4.0"
+    "node": ">=22.18.0"
   },
   "author": "Omer Cohen",
   "keywords": [
@@ -29,7 +29,7 @@
     "coding-agents"
   ],
   "files": [
-    "bun.lock",
+    "package-lock.json",
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
@@ -47,12 +47,12 @@
   "scripts": {
     "check": "biome check .",
     "check:write": "biome check --write .",
-    "test": "bun test",
-    "test:coverage": "bun test --coverage",
-    "test:integration:docker": "bun scripts/test-docker-host-tools.ts",
-    "test:integration:wsl": "bun scripts/test-wsl-host-tools.ts",
-    "test:integration:install": "bun scripts/test-package-install.ts",
-    "package:release": "bun scripts/package-release.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:integration:docker": "tsx scripts/test-docker-host-tools.ts",
+    "test:integration:wsl": "tsx scripts/test-wsl-host-tools.ts",
+    "test:integration:install": "tsx scripts/test-package-install.ts",
+    "package:release": "tsx scripts/package-release.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -66,13 +66,19 @@
     "@getpaseo/plugin": "0.8.0",
     "@getpaseo/protocol": "0.8.0",
     "@tanstack/react-query": "^5.102.3",
-    "@types/bun": "^1.4.0",
+    "@types/node": "^24.10.1",
     "@types/react": "^19.2.18",
     "esbuild": "^0.25.12",
+    "@vitest/coverage-v8": "^4.1.6",
     "fflate": "^0.8.3",
     "react": "19.1.0",
     "react-native": "0.81.5",
+    "tsx": "^4.20.6",
     "typescript": "^7.0.2",
+    "vitest": "^4.1.6",
     "zod": "^4.4.3"
+  },
+  "overrides": {
+    "qs": "6.16.0"
   }
 }

@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, watch, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
+import { afterEach, describe, expect, test } from "vitest";
 import type {
   AgentClient,
   AgentPromptInput,
@@ -21,8 +23,9 @@ const pluginProviderModulePath = new URL(
   import.meta.url,
 ).href;
 const hostRequire = createRequire(pluginProviderModulePath);
+const tsxPath = createRequire(import.meta.url).resolve("tsx");
 const pino = hostRequire("pino") as (options: { enabled: boolean }) => object;
-const fixturePath = resolve(import.meta.dir, "fixtures/fake-omp.ts");
+const fixturePath = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/fake-omp.ts");
 const PRIMARY_SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";
 const BRANCHED_SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfcc";
 const MODEL: OmpModel = {
@@ -97,7 +100,7 @@ type Harness = {
 };
 
 class EventLog extends Array<AgentStreamEvent> {
-  private readonly waiters: Array<{
+  readonly #waiters: Array<{
     predicate: (event: AgentStreamEvent) => boolean;
     resolve: (event: AgentStreamEvent) => void;
   }> = [];
@@ -105,10 +108,10 @@ class EventLog extends Array<AgentStreamEvent> {
   override push(...events: AgentStreamEvent[]): number {
     const length = super.push(...events);
     for (const event of events) {
-      for (let index = this.waiters.length - 1; index >= 0; index -= 1) {
-        const waiter = this.waiters[index];
+      for (let index = this.#waiters.length - 1; index >= 0; index -= 1) {
+        const waiter = this.#waiters[index];
         if (!waiter?.predicate(event)) continue;
-        this.waiters.splice(index, 1);
+        this.#waiters.splice(index, 1);
         waiter.resolve(event);
       }
     }
@@ -119,7 +122,7 @@ class EventLog extends Array<AgentStreamEvent> {
     const existing = this.find(predicate);
     if (existing) return Promise.resolve(existing);
     const pending = Promise.withResolvers<AgentStreamEvent>();
-    this.waiters.push({ predicate, resolve: pending.resolve });
+    this.#waiters.push({ predicate, resolve: pending.resolve });
     return pending.promise;
   }
 }
@@ -180,18 +183,10 @@ async function commandOfType(harness: Harness, type: string): Promise<Record<str
   return command;
 }
 
-async function waitForLoggedExit(path: string, pid: number): Promise<void> {
-  const controller = new AbortController();
-  const watcher = watch(path, { signal: controller.signal });
-  try {
-    if ((await readLog(path)).some((entry) => entry.kind === "exit" && entry.pid === pid)) return;
-    for await (const _event of watcher) {
-      if ((await readLog(path)).some((entry) => entry.kind === "exit" && entry.pid === pid)) return;
-    }
-    throw new Error(`Fake OMP log closed before process ${pid} exited`);
-  } finally {
-    controller.abort();
-  }
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (processIsExecuting(pid) && Date.now() < deadline) await sleep(10);
+  if (processIsExecuting(pid)) throw new Error(`Fake OMP process ${pid} did not exit`);
 }
 
 function processIsExecuting(pid: number): boolean {
@@ -227,9 +222,11 @@ async function createHarness(
   const wrapperPath = join(root, "omp");
   await mkdir(cwd, { recursive: true });
   await mkdir(sessionDir, { recursive: true });
-  await writeFile(wrapperPath, `#!/bin/sh\nexec '${process.execPath}' '${fixturePath}' "$@"\n`, {
-    mode: 0o755,
-  });
+  await writeFile(
+    wrapperPath,
+    `#!/bin/sh\nexec '${process.execPath}' --import '${tsxPath}' '${fixturePath}' "$@"\n`,
+    { mode: 0o755 },
+  );
   await chmod(wrapperPath, 0o755);
   const registration = createOmpProvider({
     environment: {
@@ -984,7 +981,7 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
       );
       const oldPid = startsBeforeReload.at(-1)?.pid;
       if (!oldPid) throw new Error("missing old provider process");
-      const oldExited = waitForLoggedExit(harness.logPath, oldPid);
+      const oldExited = waitForProcessExit(oldPid);
       const replacementRegistration = createOmpProvider({
         environment: {
           HOME: harness.root,
@@ -1023,7 +1020,7 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
         (entry) => entry.kind === "start",
       )?.pid;
       if (!replacementPid) throw new Error("missing replacement provider process");
-      const replacementExited = waitForLoggedExit(harness.logPath, replacementPid);
+      const replacementExited = waitForProcessExit(replacementPid);
       harness.registry.replace([]);
       await replacementExited;
       await removalEvents.waitFor(

@@ -9,18 +9,26 @@ import {
 } from "./host-tools-integration";
 
 const required = process.env.PASEO_OMP_REQUIRE_WSL === "1";
-if (!Bun.which("wsl.exe")) {
-  if (required) throw new Error("wsl.exe is required for the WSL host-tool integration");
+if (process.platform !== "win32") {
+  if (required) throw new Error("Windows is required for the WSL host-tool integration");
+  console.log("SKIP WSL host-tool integration: Windows is unavailable");
+  process.exit(0);
+}
+
+try {
+  await runCaptured(["where.exe", "wsl.exe"]);
+} catch (error) {
+  if (required) throw error;
   console.log("SKIP WSL host-tool integration: wsl.exe is unavailable");
   process.exit(0);
 }
 
-const wslBun = process.env.PASEO_OMP_WSL_BUN ?? "~/.bun/bin/bun";
+const wslNode = process.env.PASEO_OMP_WSL_NODE ?? "node";
 try {
-  await runCaptured(["wsl.exe", "--exec", "sh", "-lc", `test -x ${wslBun}`]);
+  await runCaptured(["wsl.exe", "--exec", "sh", "-lc", `command -v ${shellQuote(wslNode)}`]);
 } catch (error) {
   if (required) throw error;
-  console.log(`SKIP WSL host-tool integration: Bun is unavailable in WSL (${String(error)})`);
+  console.log(`SKIP WSL host-tool integration: Node is unavailable in WSL (${String(error)})`);
   process.exit(0);
 }
 
@@ -55,7 +63,7 @@ try {
       callerAgentId,
       workspaceId,
       expectedOwnerMarker: ownerMarker,
-      wslBun,
+      wslNode,
     });
     try {
       const output = await runCaptured(["wsl.exe", "--exec", "sh", "-lc", command]);

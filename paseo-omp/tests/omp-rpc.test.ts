@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { constants, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
+import { describe, expect, test } from "vitest";
 import {
   buildOmpSpawnRequest,
   collectAmbientMcpSecrets,
@@ -2446,7 +2447,7 @@ describe("OMP RPC transport", () => {
       };
       const waitUntilStopped = async (pid: number) => {
         const deadline = Date.now() + 2_000;
-        while (descendantIsExecuting(pid) && Date.now() < deadline) await Bun.sleep(10);
+        while (descendantIsExecuting(pid) && Date.now() < deadline) await sleep(10);
         return !descendantIsExecuting(pid);
       };
       const descendantPids: number[] = [];
@@ -2464,11 +2465,11 @@ describe("OMP RPC transport", () => {
           (error) => (error instanceof Error ? error.message : String(error)),
         );
         expect(
-          await Promise.race([leaderExit.then(() => true), Bun.sleep(2_000).then(() => false)]),
+          await Promise.race([leaderExit.then(() => true), sleep(2_000).then(() => false)]),
         ).toBe(true);
-        expect(
-          await Promise.race([promptOutcome, Bun.sleep(2_000).then(() => "timed out")]),
-        ).toContain("exited");
+        expect(await Promise.race([promptOutcome, sleep(2_000).then(() => "timed out")])).toContain(
+          "exited",
+        );
         await session.close();
         expect(await waitUntilStopped(descendantPids[0] as number)).toBe(true);
 

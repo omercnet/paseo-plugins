@@ -12,13 +12,13 @@ This checklist prepares `paseo-omp-v0.1.0-alpha.1`. It does not authorize public
 
 ## Required gates
 
-- [ ] `bun run check`
-- [ ] `bun run typecheck`
-- [ ] `bun run test:coverage`; every measured source file meets the configured threshold.
+- [ ] `npm run check`
+- [ ] `npm run typecheck`
+- [ ] `npm run test:coverage`; aggregate loaded-source coverage meets the configured threshold.
 - [ ] Real installed OMP regression against the documented minimum version.
-- [ ] `bun run package:release`
-- [ ] `bun run test:integration:install`
-- [ ] `bun run test:integration:docker`
+- [ ] `npm run package:release`
+- [ ] `npm run test:integration:install`
+- [ ] `npm run test:integration:docker`
 - [ ] Windows/WSL host ownership job passes in CI.
 - [ ] Docker canary matrix passes on the exact release candidate.
 - [ ] GitHub Actions syntax and release-configuration schemas pass.

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import {
   buildWslClientCommand,
   parseEvidence,
@@ -17,14 +17,14 @@ describe("host-tool integration scripts", () => {
       callerAgentId: "wsl-agent",
       workspaceId: "wsl-workspace",
       expectedOwnerMarker: "windows-host",
-      wslBun: "~/.bun/bin/bun",
+      wslNode: "node",
     });
 
-    expect(command).toStartWith("cd '/mnt/c/repo path/paseo-omp' && env ");
+    expect(command.startsWith("cd '/mnt/c/repo path/paseo-omp' && env ")).toBe(true);
     expect(command).toContain("PASEO_AGENT_ID='wsl-agent'");
     expect(command).toContain("PASEO_WORKSPACE_ID='wsl-workspace'");
     expect(command).not.toContain("EXPECTED_WORKSPACE_ID");
-    expect(command).toEndWith("~/.bun/bin/bun tests/fixtures/mcp-container-client.ts");
+    expect(command.endsWith("node --import tsx tests/fixtures/mcp-container-client.ts")).toBe(true);
   });
 
   test("starts and stops the host MCP process with observable ownership", async () => {
@@ -47,7 +47,7 @@ describe("host-tool integration scripts", () => {
     } finally {
       await stopHostMcpServer(server);
     }
-    expect(await server.child.exited).toBe(143);
+    expect(server.child.signalCode).toBe("SIGTERM");
   });
 
   test("captures successful commands and reports failed commands", async () => {
@@ -88,8 +88,8 @@ describe("host-tool integration scripts", () => {
         callerAgentId: "agent",
         workspaceId: "workspace",
         expectedOwnerMarker: "host",
-        wslBun: "bun;rm",
+        wslNode: "node;rm",
       }),
-    ).toThrow("WSL Bun path contains unsupported shell characters");
+    ).toThrow("WSL Node path contains unsupported shell characters");
   });
 });

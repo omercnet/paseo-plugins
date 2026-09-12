@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { PaseoProviderSnapshotResult } from "@getpaseo/client";
+import { describe, expect, test } from "vitest";
 import {
   formatOmpVersion,
   loadReadyProviderSnapshot,

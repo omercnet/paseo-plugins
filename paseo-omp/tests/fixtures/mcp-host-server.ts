@@ -1,3 +1,5 @@
+import { startFetchServer } from "../helpers/http-server";
+
 const port = Number(process.env.MCP_HOST_PORT);
 if (!Number.isInteger(port) || port < 0) throw new Error("MCP_HOST_PORT is required");
 
@@ -13,10 +15,8 @@ function resolveCallerSession(request: Request): { callerAgentId: string; worksp
   return { callerAgentId, workspaceId: session.workspaceId };
 }
 
-const server = Bun.serve({
-  hostname: "0.0.0.0",
-  port,
-  async fetch(request) {
+const server = await startFetchServer(
+  async (request) => {
     if (request.method === "GET") return new Response(null, { status: 405 });
     const payload = (await request.json()) as {
       id?: string | number;
@@ -67,6 +67,7 @@ const server = Bun.serve({
     }
     return Response.json({ jsonrpc: "2.0", id: payload.id, result });
   },
-});
+  { hostname: "0.0.0.0", port },
+);
 
 console.log(`MCP_HOST_READY ${server.port} ${process.pid}`);

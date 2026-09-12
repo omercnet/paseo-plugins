@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, test } from "vitest";
 import { listOmpMemoryFrom } from "../server/memory";
 import { listOmpQuotasFrom } from "../server/quota";
 

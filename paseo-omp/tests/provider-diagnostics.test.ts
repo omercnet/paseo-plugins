@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   computeOmpProviderHealth,
   computeProcessDiagnostics,

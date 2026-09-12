@@ -1,26 +1,22 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
+import { promisify } from "node:util";
 import { build } from "esbuild";
 import { unzipSync } from "fflate";
+import { describe, expect, test } from "vitest";
 import packageJson from "../package.json";
 import { extractArchiveFiles } from "../scripts/release-archive";
 
 const pluginRoot = join(import.meta.dirname, "..");
+const executeFile = promisify(execFile);
 
 async function trackedPackageFiles(): Promise<string[]> {
-  const child = Bun.spawn(["git", "ls-files", "--cached", "-z", "--", "."], {
+  const { stdout } = await executeFile("git", ["ls-files", "--cached", "-z", "--", "."], {
     cwd: pluginRoot,
-    stdout: "pipe",
-    stderr: "pipe",
+    encoding: "utf8",
   });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  if (exitCode !== 0) throw new Error(`git ls-files failed (${exitCode}): ${stderr}`);
   const roots = ["package.json", ...packageJson.files];
   return stdout
     .split("\0")
@@ -54,18 +50,15 @@ describe("release package", () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-release-"));
     const archivePath = join(temporaryDirectory, "paseo-omp.zip");
     try {
-      const child = Bun.spawn(["bun", "scripts/package-release.ts", archivePath], {
-        cwd: pluginRoot,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [exitCode, stderr] = await Promise.all([
-        child.exited,
-        new Response(child.stderr).text(),
-      ]);
-      expect(exitCode, stderr).toBe(0);
+      await executeFile(
+        process.execPath,
+        ["--import", "tsx", "scripts/package-release.ts", archivePath],
+        {
+          cwd: pluginRoot,
+        },
+      );
 
-      const archive = unzipSync(new Uint8Array(await Bun.file(archivePath).arrayBuffer()));
+      const archive = unzipSync(await readFile(archivePath));
 
       const expectedFiles = (await trackedPackageFiles()).map((path) => `paseo-omp/${path}`);
       const localArchiveFiles = Object.keys(archive)

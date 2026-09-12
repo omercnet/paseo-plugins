@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
+import { describe, expect, test } from "vitest";
 import {
   normalizeOmpSessionConfig,
   withCommittedOmpSelection,

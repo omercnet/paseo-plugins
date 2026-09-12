@@ -6,7 +6,7 @@ import {
   stopHostMcpServer,
 } from "./host-tools-integration";
 
-const image = process.env.PASEO_OMP_DOCKER_IMAGE ?? "oven/bun:1.4.0";
+const image = process.env.PASEO_OMP_DOCKER_IMAGE ?? "node:22.22.1-bookworm-slim";
 const callerAgentId = "docker-agent";
 const workspaceId = "docker-workspace";
 const ownerMarker = "host-daemon";
@@ -35,7 +35,9 @@ try {
     "-e",
     `EXPECTED_OWNER_MARKER=${ownerMarker}`,
     image,
-    "bun",
+    "node",
+    "--import",
+    "tsx",
     "tests/fixtures/mcp-container-client.ts",
   ]);
   const evidence = parseEvidence(output);

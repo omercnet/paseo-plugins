@@ -84,23 +84,25 @@ jobs:
           test "$(git rev-parse HEAD)" = "${SHA}"
           test "$(node -p "require('./paseo-omp/package.json').version")" = "${VERSION}"
           test "${TAG}" = "paseo-omp-v${VERSION}"
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          bun-version: 1.4.0
+          node-version: 22
+          cache: npm
+          cache-dependency-path: paseo-omp/package-lock.json
       - name: Install package tooling
         working-directory: paseo-omp
-        run: bun install --frozen-lockfile
+        run: npm ci
       - name: Verify archive and Git installation
         working-directory: paseo-omp
-        run: bun run test:integration:install
+        run: npm run test:integration:install
       - name: Build release archive and checksum
         working-directory: paseo-omp
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           archive="paseo-omp-v${VERSION}.zip"
-          bun run package:release "dist/${archive}"
+          npm run package:release -- "dist/${archive}"
           (cd dist && sha256sum "${archive}" > "${archive}.sha256")
       - name: Reverify immutable release target
         env:

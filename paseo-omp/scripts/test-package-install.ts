@@ -1,10 +1,15 @@
+import { execFile } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { promisify } from "node:util";
+import { build } from "esbuild";
 import { unzipSync } from "fflate";
 import { extractArchiveFiles } from "./release-archive";
 
+const executeFile = promisify(execFile);
 const pluginRoot = join(import.meta.dirname, "..");
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const ignoredCheckoutEntries: Record<string, true> = {
   ".git": true,
   coverage: true,
@@ -17,16 +22,22 @@ async function run(
   cwd: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
-  const child = Bun.spawn(command, { cwd, env: environment, stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`${command.join(" ")} failed (${exitCode})\n${stderr || stdout}`);
+  const [file, ...args] = command;
+  if (!file) throw new Error("Command must not be empty");
+  try {
+    const { stdout } = await executeFile(file, args, {
+      cwd,
+      env: environment,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout.trim();
+  } catch (error) {
+    const failure = error as Error & { stdout?: string; stderr?: string; code?: number | string };
+    throw new Error(
+      `${command.join(" ")} failed (${String(failure.code ?? "unknown")})\n${failure.stderr || failure.stdout || failure.message}`,
+    );
   }
-  return stdout.trim();
 }
 
 async function buildCommands(root: string): Promise<string[][]> {
@@ -52,7 +63,7 @@ async function verifyRuntimeDependencies(
   root: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  const probe = join(root, ".package-install-smoke.ts");
+  const probe = join(root, ".package-install-smoke.mjs");
   await writeFile(probe, 'import "@modelcontextprotocol/sdk/server/index.js";\nimport "yaml";\n');
   try {
     await run([process.execPath, probe], root, environment);
@@ -63,18 +74,17 @@ async function verifyRuntimeDependencies(
 
 async function verifyArchiveInstall(temporaryDirectory: string): Promise<void> {
   const archivePath = join(temporaryDirectory, "paseo-omp.zip");
-  await run([process.execPath, "scripts/package-release.ts", archivePath], pluginRoot);
+  await run(
+    [process.execPath, "--import", "tsx", "scripts/package-release.ts", archivePath],
+    pluginRoot,
+  );
   const extractionRoot = join(temporaryDirectory, "archive");
-  const archive = unzipSync(await Bun.file(archivePath).bytes());
+  const archive = unzipSync(await readFile(archivePath));
   await extractArchiveFiles(archive, extractionRoot);
 
   const extractedPlugin = join(extractionRoot, "paseo-omp");
-  const emptyCache = join(temporaryDirectory, "empty-bun-cache");
-  await mkdir(emptyCache);
   const offlineEnvironment = {
     ...process.env,
-    BUN_CONFIG_REGISTRY: "http://127.0.0.1:9",
-    BUN_INSTALL_CACHE_DIR: emptyCache,
     HTTP_PROXY: "http://127.0.0.1:9",
     HTTPS_PROXY: "http://127.0.0.1:9",
     NO_PROXY: "",
@@ -82,22 +92,21 @@ async function verifyArchiveInstall(temporaryDirectory: string): Promise<void> {
   await verifyRuntimeDependencies(extractedPlugin, offlineEnvironment);
   const offlineBundle = join(extractedPlugin, ".offline-server.cjs");
   try {
-    await run(
-      [
-        process.execPath,
-        "build",
-        "index.server.ts",
-        "--target=bun",
-        "--format=cjs",
-        `--outfile=${offlineBundle}`,
-        "--external=@getpaseo/plugin",
-        "--external=@getpaseo/plugin/server",
-        "--external=@getpaseo/plugin/server/provider",
-        "--external=zod",
+    await build({
+      absWorkingDir: extractedPlugin,
+      entryPoints: ["index.server.ts"],
+      bundle: true,
+      platform: "node",
+      format: "cjs",
+      outfile: offlineBundle,
+      external: [
+        "@getpaseo/plugin",
+        "@getpaseo/plugin/server",
+        "@getpaseo/plugin/server/provider",
+        "zod",
       ],
-      extractedPlugin,
-      offlineEnvironment,
-    );
+      logLevel: "silent",
+    });
   } finally {
     await rm(offlineBundle, { force: true });
   }
@@ -140,8 +149,8 @@ async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<voi
   }
   for (const command of commands) await run(command, checkoutPlugin);
   await verifyRuntimeDependencies(checkoutPlugin);
-  await run([process.execPath, "run", "typecheck"], checkoutPlugin);
-  await run([process.execPath, "test", "tests/server-bundle.test.ts"], checkoutPlugin);
+  await run([npmCommand, "run", "typecheck"], checkoutPlugin);
+  await run([npmCommand, "test", "--", "tests/server-bundle.test.ts"], checkoutPlugin);
 }
 
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-install-"));

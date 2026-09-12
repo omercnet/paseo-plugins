@@ -47,15 +47,15 @@ The checksum detects accidental corruption; the GitHub attestation authenticates
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
 cd paseo-plugins/paseo-omp
-bun install --frozen-lockfile --ignore-scripts
+npm ci --ignore-scripts
 paseo plugin install "$PWD"
 ```
 
 After editing a directory installation:
 
 ```bash
-bun run check
-bun run typecheck
+npm run check
+npm run typecheck
 paseo plugin reload paseo-omp
 paseo plugin ls paseo-omp
 ```

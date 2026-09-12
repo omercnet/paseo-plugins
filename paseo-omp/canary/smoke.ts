@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 
-const url = Bun.env.PASEO_CANARY_URL ?? "ws://127.0.0.1:6768/ws";
-const password = Bun.env.PASEO_CANARY_PASSWORD;
-const cwd = Bun.env.PASEO_CANARY_CWD ?? "/workspace/paseo-plugins";
+const url = process.env.PASEO_CANARY_URL ?? "ws://127.0.0.1:6768/ws";
+const password = process.env.PASEO_CANARY_PASSWORD;
+const cwd = process.env.PASEO_CANARY_CWD ?? "/workspace/paseo-plugins";
 const provider = "omp-plugin";
 
 if (!password) throw new Error("PASEO_CANARY_PASSWORD is required");
@@ -153,7 +154,7 @@ try {
     mcpServers: {
       canary: {
         type: "stdio",
-        command: "bun",
+        command: "node",
         args: ["/opt/paseo-omp/canary/mcp-server.ts"],
       },
     },
@@ -362,7 +363,7 @@ try {
     initialPrompt: "CANARY_DELAY",
   });
   createdAgentIds.push(steered.id);
-  await Bun.sleep(500);
+  await sleep(500);
   await client.sendAgentMessage(steered.id, "STEERED", { activeTurnBehavior: "steer" });
   assertFinished(await client.waitForFinish(steered.id, 120_000), "CANARY_MOCK_OK");
   summary.steer = true;
@@ -375,7 +376,7 @@ try {
     initialPrompt: "CANARY_DELAY",
   });
   createdAgentIds.push(interrupted.id);
-  await Bun.sleep(500);
+  await sleep(500);
   await client.cancelAgent(interrupted.id);
   const interruptedResult = await client.waitForFinish(interrupted.id, 30_000);
   assert(interruptedResult.status === "idle", "Interrupted agent did not return to idle");

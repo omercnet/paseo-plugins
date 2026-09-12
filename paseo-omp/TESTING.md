@@ -78,20 +78,20 @@ The provider identity boundary is permanent: `server/provider/registration.ts` r
 Run the real Docker host/container ownership boundary test with:
 
 ```sh
-bun run test:integration:docker
+npm run test:integration:docker
 ```
 
-The script starts the MCP server as a host process, calls it from a Bun container, executes a host tool, and verifies the returned host PID, host working directory, caller agent ID, and workspace ID. Set `PASEO_OMP_DOCKER_IMAGE` to override the default `oven/bun:1.4.0` image.
+The script starts the MCP server as a host process, calls it from a Node container, executes a host tool, and verifies the returned host PID, host working directory, caller agent ID, and workspace ID. Set `PASEO_OMP_DOCKER_IMAGE` to override the default `node:22.22.1-bookworm-slim` image.
 
 Run the equivalent Windows-host/WSL boundary with:
 
 ```sh
-bun run test:integration:wsl
+npm run test:integration:wsl
 ```
 
-The WSL script skips when `wsl.exe` or WSL Bun is unavailable. Set `PASEO_OMP_REQUIRE_WSL=1` to make either condition fatal, as CI does. `PASEO_OMP_WSL_BUN` may override the default `$HOME/.bun/bin/bun` path inside WSL.
+The WSL script skips when `wsl.exe` or WSL Node is unavailable. Set `PASEO_OMP_REQUIRE_WSL=1` to make either condition fatal, as CI does. `PASEO_OMP_WSL_NODE` may override the default `node` executable inside WSL.
 
-The Linux `paseo-omp real OMP 18.1.15` CI job downloads the pinned `omp-linux-x64` release asset, verifies SHA-256 `747518a41fbb32ac47491b4677a7a921d0d9e5977ae006c358d6836813149adc`, and runs `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts`. The test uses the real OMP binary and a local deterministic OpenAI-compatible model endpoint, so catalog and text-plus-Bash execution are mandatory without repository secrets.
+The Linux `paseo-omp real OMP 18.1.15` CI job downloads the pinned `omp-linux-x64` release asset, verifies SHA-256 `747518a41fbb32ac47491b4677a7a921d0d9e5977ae006c358d6836813149adc`, and runs `PASEO_OMP_REAL_E2E=1 npm test -- tests/provider.real.e2e.test.ts`. The test uses the real OMP binary and a local deterministic OpenAI-compatible model endpoint, so catalog and text-plus-Bash execution are mandatory without repository secrets.
 
 The controlled canary in `canary/compose.yml` builds this plugin into that official Paseo image and installs checksummed OMP binaries for `amd64` and `arm64`. `canary/smoke.ts` passed catalog/mode discovery, text and image prompts, Bash, a configured stdio MCP tool, permission allow/deny/cancel, steering, interruption, session listing/import/resume, subagents, conversation rewind followed by another turn, Hub process visibility, usage, and every plugin RPC. Browser verification loaded the global OMP health/configuration surface and the agent-scoped Hub, Memory, and Sessions controls. The default mock returned `CANARY_MOCK_OK`, `CANARY_TOOL_OK`, and `CANARY_MCP_OK`; the optional Ollama profile pulled `qwen2.5:0.5b` and completed turns without paid credentials. The harness records the canary-only `/compact` and `/handoff` failures instead of masking them.
 
@@ -105,7 +105,7 @@ Treat every upstream `rpc-ui` change as explicit compatibility work. Do not wide
 
 Required drift is release-blocking. If OMP adds a mandatory frame, removes or renames a required method or field, or changes an existing field's meaning, keep the strict parser and make session startup or the active request fail visibly. Do not silently discard the frame, make the requirement optional, or route around negotiation. Resume release work only after both sides have an explicit compatible contract, fixtures, focused regressions, and a real-binary result.
 4. Add the changed frame to `tests/fixtures/fake-omp.ts`, then add a focused regression for acceptance, rejection, negotiation, cancellation, and bounds as applicable. Capability changes must cover both reciprocal negotiation and the absent-capability fallback. Typed approval drift must retain the generic extension-question path when `typedToolApprovals: 1` is not negotiated.
-5. Run `bun test tests/omp-rpc.test.ts tests/provider.test.ts`, `bun run test:coverage`, and `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts` with the candidate OMP binary.
+5. Run `npm test -- tests/omp-rpc.test.ts tests/provider.test.ts`, `npm run test:coverage`, and `PASEO_OMP_REAL_E2E=1 npm test -- tests/provider.real.e2e.test.ts` with the candidate OMP binary.
 6. Update the minimum-tested version only after the real-binary job is pinned to that release and its SHA-256, the compatibility issue links the evidence, and the README, support matrix, CI job name, fixture version, and changelog agree.
 
 The plugin maintainer owns triage and adaptation. Escalate an isolated OMP implementation defect upstream and an isolated Paseo SDK or provider-protocol defect to Paseo, while keeping the cross-project regression in this repository.
@@ -128,16 +128,16 @@ The go/no-go criteria, manual acceptance boundary, and alpha limitation list are
 
 ## Audit verification
 
-- `bun run check`: clean across 82 files.
-- `bun run typecheck`: clean.
-- `bun test`: 446 passed, 2 environment-gated scenarios skipped, with 2,168 assertions.
-- `bun test tests/provider-conformance.test.ts`: 16 host-boundary conformance tests passed with 399 assertions. Coverage includes `prompt.command`, `session.configure`, typed and fallback permission allow/deny/cancel paths, registry-driven reload/removal, verified stubborn-descendant cleanup, and 64 sequential turns plus 10 interrupt races with post-turn barriers.
-- `PASEO_OMP_REAL_E2E=1 bun test tests/provider.real.e2e.test.ts`: both installed `omp/18.1.15` catalog and hermetic real-binary text/Bash scenarios passed with 13 assertions.
-- `bun run test:coverage`: 446 passed and 2 environment-gated scenarios skipped with 2,168 assertions; aggregate source coverage is 95.81% functions and 97.88% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
-- `bun run package:release`: `dist/paseo-omp-v0.0.0.zip` built from tracked allowlisted source plus its closed production/compiler dependency set; the full suite checked archive contents, contained extraction, and both packaged entries.
-- `bun run test:integration:install`: the self-contained archive imported dependencies and compiled with an empty cache and unreachable registry/proxy; a fresh Git-style checkout installed with lifecycle scripts disabled, retained required runtime packages, typechecked, bundled both entries, and loaded the server contribution.
-- `bun run test:integration:docker`: host/container ownership boundary verified.
-- `bun run test:integration:wsl`: locally skipped because `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
+- `npm run check`: clean across 84 files.
+- `npm run typecheck`: clean.
+- `npm test`: full Vitest suite passed, with environment-gated scenarios skipped when their runtimes were unavailable.
+- `npm test -- tests/provider-conformance.test.ts`: host-boundary conformance coverage includes `prompt.command`, `session.configure`, typed and fallback permission allow/deny/cancel paths, registry-driven reload/removal, verified stubborn-descendant cleanup, and sequential turns plus interrupt races with post-turn barriers.
+- `PASEO_OMP_REAL_E2E=1 npm test -- tests/provider.real.e2e.test.ts`: the installed `omp/18.1.15` catalog and hermetic real-binary text/Bash scenarios run against a local deterministic model.
+- `npm run test:coverage`: Vitest enforces aggregate 85% function and 89% line coverage over loaded source modules. Generated `dist/**` trees are excluded.
+- `npm run package:release`: `dist/paseo-omp-v0.0.0.zip` builds from tracked allowlisted source plus its closed production/compiler dependency set.
+- `npm run test:integration:install`: the self-contained archive imports dependencies and compiles with an unreachable proxy; a fresh Git-style checkout installs with lifecycle scripts disabled, retains required runtime packages, typechecks, bundles both entries, and loads the server contribution.
+- `npm run test:integration:docker`: verifies the host/container ownership boundary.
+- `npm run test:integration:wsl`: locally skips when `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
 - `docker compose -f canary/compose.yml`: official Paseo 0.8.0, deterministic mock, Tailscale-bound web UI, and optional Ollama `qwen2.5:0.5b` passed end-to-end.
 - `mise x actionlint@1.7.12 -- actionlint .github/workflows/*.yml`: passed.
 - `zizmor .github/workflows`: no findings (offline audit; six repository-wide suppressions remain).

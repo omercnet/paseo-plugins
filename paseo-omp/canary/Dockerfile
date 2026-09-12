@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
-FROM oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6 AS plugin-build
+FROM node:22.22.1-bookworm-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d AS plugin-build
 WORKDIR /src/paseo-omp
-COPY paseo-omp/package.json paseo-omp/bun.lock paseo-omp/bunfig.toml ./
-RUN bun install --frozen-lockfile --ignore-scripts
+COPY paseo-omp/package.json paseo-omp/package-lock.json ./
+RUN npm ci --ignore-scripts
 COPY paseo-omp/ ./
 
 FROM ghcr.io/getpaseo/paseo:0.8.0@sha256:5518da7cdd35f132e8a944c35e509c677a90a8f3ec8a78df98f7fb5fd5e2c6c3
@@ -15,7 +15,6 @@ USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
-COPY --from=plugin-build /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=plugin-build --chown=1000:1000 /src/paseo-omp /opt/paseo-omp
 COPY --chown=1000:1000 paseo-omp/canary/paseo.config.json /home/paseo/.paseo/config.json
 COPY --chown=1000:1000 paseo-omp/canary/models.yml /home/paseo/.omp/agent/models.yml

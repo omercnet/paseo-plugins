@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { describe, expect, test } from "vitest";
 import {
   closeMcpOwnership,
   connectMcpServer,
@@ -10,6 +10,7 @@ import {
   createBoundedMcpFetch,
   SupervisedStdioClientTransport,
 } from "../server/provider/mcp-transport";
+import { startFetchServer } from "./helpers/http-server";
 
 class FakeMcpChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -307,41 +308,37 @@ describe("MCP transport boundaries", () => {
   });
 
   test("lists and calls tools through the bounded HTTP transport", async () => {
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      async fetch(request) {
-        if (request.method === "GET") return new Response(null, { status: 405 });
-        const payload = (await request.json()) as {
-          id?: string | number;
-          method: string;
-          params?: Record<string, unknown>;
-        };
-        if (payload.method === "notifications/initialized") {
-          return new Response(null, { status: 202 });
-        }
-        const result =
-          payload.method === "initialize"
+    const server = await startFetchServer(async (request) => {
+      if (request.method === "GET") return new Response(null, { status: 405 });
+      const payload = (await request.json()) as {
+        id?: string | number;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      if (payload.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      const result =
+        payload.method === "initialize"
+          ? {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "bounded-http-test", version: "1" },
+            }
+          : payload.method === "tools/list"
             ? {
-                protocolVersion: "2025-11-25",
-                capabilities: { tools: {} },
-                serverInfo: { name: "bounded-http-test", version: "1" },
+                tools: [
+                  {
+                    name: "echo",
+                    description: "Echo input",
+                    inputSchema: { type: "object" },
+                  },
+                ],
               }
-            : payload.method === "tools/list"
-              ? {
-                  tools: [
-                    {
-                      name: "echo",
-                      description: "Echo input",
-                      inputSchema: { type: "object" },
-                    },
-                  ],
-                }
-              : {
-                  content: [{ type: "text", text: JSON.stringify(payload.params) }],
-                };
-        return Response.json({ jsonrpc: "2.0", id: payload.id, result });
-      },
+            : {
+                content: [{ type: "text", text: JSON.stringify(payload.params) }],
+              };
+      return Response.json({ jsonrpc: "2.0", id: payload.id, result });
     });
     const controller = new AbortController();
     try {

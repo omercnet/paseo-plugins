@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { OmpHostToolsBridge } from "../../server/provider/host-tools";
 import type {
   OmpHostToolDefinition,
@@ -58,7 +59,7 @@ try {
   });
   const deadline = Date.now() + 5_000;
   while (results.length === 0 && Date.now() < deadline) {
-    await Bun.sleep(10);
+    await sleep(10);
   }
   const text = results[0]?.result.content[0]?.text;
   if (!text) throw new Error("Docker host tool did not return a result");

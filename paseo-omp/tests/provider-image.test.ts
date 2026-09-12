@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import { existsSync, statSync } from "node:fs";
+import { describe, expect, test } from "vitest";
 import { OmpImageMaterializer } from "../server/provider/image";
 import { ompImageTimelineSchema, transformOmpImageToolItem } from "../shared/provider-image";
 

@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { ProviderInput } from "@getpaseo/plugin/server/provider";
+import { describe, expect, test } from "vitest";
 import { ompPersistenceSessionId } from "../server/provider/session";
 
 const SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";

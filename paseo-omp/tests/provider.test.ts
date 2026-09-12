@@ -1,4 +1,3 @@
-import { describe, expect, test } from "bun:test";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
@@ -12,6 +11,7 @@ import type {
   ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
 import { AgentPermissionRequestPayloadSchema } from "@getpaseo/protocol/messages";
+import { describe, expect, test } from "vitest";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
 import { OmpNativeSessionReservations } from "../server/provider/connection";
 import { withOmpWorkspaceIdentity } from "../server/provider/host-tools";
@@ -41,6 +41,7 @@ import {
   type OmpTimelineScheduler,
 } from "../server/provider/timeline-projector";
 import { ompImageTimelineSchema, transformOmpImageToolItem } from "../shared/provider-image";
+import { startFetchServer } from "./helpers/http-server";
 
 type HostLogger = object;
 type PinoFactory = (options: { enabled: boolean }) => HostLogger;
@@ -148,7 +149,7 @@ const THINKING_LEVELS: Readonly<Record<string, true>> = {
 };
 
 class EventLog extends Array<ProviderEvent> {
-  private readonly waiters: Array<{
+  readonly #waiters: Array<{
     predicate: (event: ProviderEvent) => boolean;
     resolve: (event: ProviderEvent) => void;
   }> = [];
@@ -156,10 +157,10 @@ class EventLog extends Array<ProviderEvent> {
   override push(...items: ProviderEvent[]): number {
     const length = super.push(...items);
     for (const event of items) {
-      for (let index = this.waiters.length - 1; index >= 0; index -= 1) {
-        const waiter = this.waiters[index];
+      for (let index = this.#waiters.length - 1; index >= 0; index -= 1) {
+        const waiter = this.#waiters[index];
         if (!waiter?.predicate(event)) continue;
-        this.waiters.splice(index, 1);
+        this.#waiters.splice(index, 1);
         waiter.resolve(event);
       }
     }
@@ -170,7 +171,7 @@ class EventLog extends Array<ProviderEvent> {
     const existing = this.find(predicate);
     if (existing) return Promise.resolve(existing);
     const { promise, resolve } = Promise.withResolvers<ProviderEvent>();
-    this.waiters.push({ predicate, resolve });
+    this.#waiters.push({ predicate, resolve });
     return promise;
   }
 }
@@ -9421,62 +9422,58 @@ describe("OMP direct provider", () => {
       ownerPid: number;
       ownerCwd: string;
     }>();
-    const mcpServer = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      async fetch(request) {
-        if (request.method === "GET") return new Response(null, { status: 405 });
-        const payload = (await request.json()) as {
-          id?: string | number;
-          method: string;
-          params?: Record<string, unknown>;
+    const mcpServer = await startFetchServer(async (request) => {
+      if (request.method === "GET") return new Response(null, { status: 405 });
+      const payload = (await request.json()) as {
+        id?: string | number;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      if (payload.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      let result: Record<string, unknown>;
+      if (payload.method === "initialize") {
+        const params = payload.params as { protocolVersion?: string } | undefined;
+        result = {
+          protocolVersion: params?.protocolVersion ?? "2025-11-25",
+          capabilities: { tools: {} },
+          serverInfo: { name: "paseo-host-test", version: "1.0.0" },
         };
-        if (payload.method === "notifications/initialized") {
-          return new Response(null, { status: 202 });
-        }
-        let result: Record<string, unknown>;
-        if (payload.method === "initialize") {
-          const params = payload.params as { protocolVersion?: string } | undefined;
-          result = {
-            protocolVersion: params?.protocolVersion ?? "2025-11-25",
-            capabilities: { tools: {} },
-            serverInfo: { name: "paseo-host-test", version: "1.0.0" },
-          };
-        } else if (payload.method === "tools/list") {
-          result = {
-            tools: [
-              {
-                name: "workspace_probe",
-                description: "Return caller workspace identity",
-                inputSchema: { type: "object" },
-              },
-            ],
-          };
-        } else if (payload.method === "tools/call") {
-          const url = new URL(request.url);
-          toolExecuted.resolve({
-            callerAgentId: url.searchParams.get("callerAgentId"),
-            authorization: request.headers.get("authorization"),
-            input: payload.params,
-            ownerPid: process.pid,
-            ownerCwd: process.cwd(),
-          });
-          result = {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ ownerPid: process.pid, ownerCwd: process.cwd() }),
-              },
-            ],
-          };
-        } else {
-          return Response.json(
-            { jsonrpc: "2.0", id: payload.id, error: { code: -32601, message: "Not found" } },
-            { status: 404 },
-          );
-        }
-        return Response.json({ jsonrpc: "2.0", id: payload.id, result });
-      },
+      } else if (payload.method === "tools/list") {
+        result = {
+          tools: [
+            {
+              name: "workspace_probe",
+              description: "Return caller workspace identity",
+              inputSchema: { type: "object" },
+            },
+          ],
+        };
+      } else if (payload.method === "tools/call") {
+        const url = new URL(request.url);
+        toolExecuted.resolve({
+          callerAgentId: url.searchParams.get("callerAgentId"),
+          authorization: request.headers.get("authorization"),
+          input: payload.params,
+          ownerPid: process.pid,
+          ownerCwd: process.cwd(),
+        });
+        result = {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ ownerPid: process.pid, ownerCwd: process.cwd() }),
+            },
+          ],
+        };
+      } else {
+        return Response.json(
+          { jsonrpc: "2.0", id: payload.id, error: { code: -32601, message: "Not found" } },
+          { status: 404 },
+        );
+      }
+      return Response.json({ jsonrpc: "2.0", id: payload.id, result });
     });
     const registration = createOmpProvider({
       runtime,

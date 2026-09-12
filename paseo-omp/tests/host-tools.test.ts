@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
+import { describe, expect, test } from "vitest";
 import {
   type OmpHostToolScheduler,
   OmpHostToolsBridge,
@@ -259,8 +259,10 @@ describe("OMP host tool bridge", () => {
     const result = runtime.results[0]?.result;
     expect(result?.details).toEqual(details);
     expect(result?.content).toHaveLength(1);
-    expect(result?.content[0]?.text).toStartWith('{"summary":"model-visible","payload":"');
-    expect(result?.content[0]?.text).toEndWith("<truncated>");
+    expect(
+      (result?.content[0]?.text ?? "").startsWith('{"summary":"model-visible","payload":"'),
+    ).toBe(true);
+    expect((result?.content[0]?.text ?? "").endsWith("<truncated>")).toBe(true);
     expect(Buffer.byteLength(result?.content[0]?.text ?? "")).toBeLessThanOrEqual(1024 * 1024);
     await bridge.close();
   });

@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { hubProcessTone, summarizeHubProcesses } from "../client/hub-status";
 import { type HubProcess, tailHubLog } from "../shared/hub";
 
 function process(state: string, exitCode: number | null = null): HubProcess {
   return {
     name: "server",
-    application: "bun",
+    application: "node",
     args: [],
     cwd: "/workspace",
     state,

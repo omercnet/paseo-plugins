@@ -1,6 +1,7 @@
-export {};
+import { createServer } from "node:http";
+import { setTimeout as sleep } from "node:timers/promises";
 
-const port = Number(Bun.env.PORT ?? "8080");
+const port = Number(process.env.PORT ?? "8080");
 const model = "deterministic";
 let lastPayload: Record<string, unknown> | null = null;
 
@@ -97,7 +98,7 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
     latestUser && typeof latestUser === "object" && "content" in latestUser
       ? textFromContent(latestUser.content)
       : "";
-  if (prompt.includes("CANARY_DELAY")) await Bun.sleep(30_000);
+  if (prompt.includes("CANARY_DELAY")) await sleep(30_000);
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
   const base = {
     id: `chatcmpl-canary-${Date.now()}`,
@@ -167,16 +168,21 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
   ]);
 }
 
-Bun.serve({
-  hostname: "0.0.0.0",
-  port,
-  async fetch(request) {
+const server = createServer(async (incoming, outgoing) => {
+  try {
+    const chunks: Buffer[] = [];
+    for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+    const request = new Request(`http://${incoming.headers.host}${incoming.url}`, {
+      method: incoming.method,
+      headers: incoming.headers as HeadersInit,
+      body: chunks.length > 0 ? Buffer.concat(chunks) : undefined,
+    });
     const url = new URL(request.url);
-    if (url.pathname === "/health") return new Response("ok");
-    if (request.method === "GET" && url.pathname === "/last-request") {
-      return Response.json(lastPayload ?? {});
-    }
-    if (request.method === "GET" && url.pathname === "/tools") {
+    let response: Response;
+    if (url.pathname === "/health") response = new Response("ok");
+    else if (request.method === "GET" && url.pathname === "/last-request") {
+      response = Response.json(lastPayload ?? {});
+    } else if (request.method === "GET" && url.pathname === "/tools") {
       const tools =
         lastPayload && Array.isArray(lastPayload.tools)
           ? lastPayload.tools.flatMap((tool) => {
@@ -184,17 +190,21 @@ Bun.serve({
               return name ? [name] : [];
             })
           : [];
-      return Response.json({ tools });
-    }
-    if (request.method === "GET" && url.pathname === "/v1/models") {
-      return Response.json({ object: "list", data: [{ id: model, object: "model" }] });
-    }
-    if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
+      response = Response.json({ tools });
+    } else if (request.method === "GET" && url.pathname === "/v1/models") {
+      response = Response.json({ object: "list", data: [{ id: model, object: "model" }] });
+    } else if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
       lastPayload = (await request.json()) as Record<string, unknown>;
-      return await chatResponse(lastPayload);
-    }
-    return Response.json({ error: "not found" }, { status: 404 });
-  },
+      response = await chatResponse(lastPayload);
+    } else response = Response.json({ error: "not found" }, { status: 404 });
+    outgoing.statusCode = response.status;
+    for (const [name, value] of response.headers) outgoing.setHeader(name, value);
+    outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
+  } catch (error) {
+    outgoing.statusCode = 500;
+    outgoing.end(error instanceof Error ? error.message : String(error));
+  }
 });
+server.listen(port, "0.0.0.0");
 
 process.stdout.write(`mock LLM listening on 0.0.0.0:${port}\n`);
