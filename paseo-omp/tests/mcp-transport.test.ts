@@ -12,6 +12,8 @@ import {
 } from "../server/provider/mcp-transport";
 import { startFetchServer } from "./helpers/http-server";
 
+const testOnPosix = process.platform === "win32" ? test.skip : test;
+
 class FakeMcpChild extends EventEmitter {
   readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
@@ -238,7 +240,7 @@ describe("MCP transport boundaries", () => {
     expect(closes).toBe(1);
   });
 
-  test("uses the real stdio boundary for one request and response", async () => {
+  testOnPosix("uses the real stdio boundary for one request and response", async () => {
     const transport = new SupervisedStdioClientTransport({
       command: process.execPath,
       args: [

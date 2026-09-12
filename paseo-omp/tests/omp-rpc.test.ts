@@ -2176,8 +2176,8 @@ describe("OMP RPC transport", () => {
 
     expect(collectAmbientMcpSecrets("/repo", { HOME: "/home/runner" }, fileOps)).toEqual([]);
     expect(opens.map(({ path }) => path)).toEqual([
-      "/home/runner/.omp/agent/mcp.json",
-      "/repo/.omp/mcp.json",
+      join("/home/runner", ".omp", "agent", "mcp.json"),
+      join("/repo", ".omp", "mcp.json"),
     ]);
     expect(opens.every(({ flags }) => (flags & constants.O_NONBLOCK) !== 0)).toBe(true);
     const noFollow = constants.O_NOFOLLOW;

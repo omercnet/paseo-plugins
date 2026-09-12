@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -229,7 +229,7 @@ describe("OMP session descriptor discovery", () => {
     await expect(
       readOmpPersistedSubagentTranscript(parentFile, "ChildOne", "/repo"),
     ).resolves.toEqual({
-      sessionFile: childFile,
+      sessionFile: await realpath(childFile),
       nativeSessionId: OTHER_ID,
       byteLength: expect.any(Number),
       messages: [{ role: "assistant", content: "safe child output" }],

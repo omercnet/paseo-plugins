@@ -4782,7 +4782,7 @@ describe("OMP direct provider", () => {
     expect(session.promptImages.at(-1)).toEqual([]);
     const materialized = session.prompts
       .at(-1)
-      ?.match(/^\[Image available at: (?<path>.*\/[0-9a-f]{64}\.png)\]$/u)?.groups?.path;
+      ?.match(/^\[Image available at: (?<path>.*[\\/][0-9a-f]{64}\.png)\]$/u)?.groups?.path;
     if (!materialized) throw new Error("Expected materialized image path");
     expect(existsSync(materialized)).toBe(true);
     await finishTurn(events, session, turnIdFrom(result));
@@ -4819,7 +4819,7 @@ describe("OMP direct provider", () => {
     );
     const failedPath = failedSession.prompts
       .at(-1)
-      ?.match(/^\[Image available at: (?<path>.*\/[0-9a-f]{64}\.png)\]$/u)?.groups?.path;
+      ?.match(/^\[Image available at: (?<path>.*[\\/][0-9a-f]{64}\.png)\]$/u)?.groups?.path;
     if (!failedPath) throw new Error("Expected failed prompt image path");
     expect(existsSync(failedPath)).toBe(false);
     await failed.connection.close();

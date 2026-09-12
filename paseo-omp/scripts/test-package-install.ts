@@ -30,6 +30,7 @@ async function run(
       env: environment,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
+      shell: process.platform === "win32" && /\.(?:cmd|bat)$/iu.test(file),
     });
     return stdout.trim();
   } catch (error) {

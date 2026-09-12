@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -21,20 +21,23 @@ import { OmpProviderHealthSchema } from "../shared/provider-diagnostics";
 const testOnPosix = process.platform === "win32" ? test.skip : test;
 
 const temporaryDirectories: string[] = [];
-const HOME_DIR = tmpdir();
+const HOME_DIR = await realpath(tmpdir());
 
 function homeRelative(path: string): string {
   const prefix = HOME_DIR.endsWith(sep) ? HOME_DIR : `${HOME_DIR}${sep}`;
-  return path.startsWith(prefix) ? `~${sep}${path.slice(prefix.length)}` : path;
+  return path.startsWith(prefix) ? `~/${path.slice(prefix.length).split(sep).join("/")}` : path;
 }
 
 async function tempDir(prefix: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), prefix));
+  const dir = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   temporaryDirectories.push(dir);
   return dir;
 }
 
-async function createFakeBinary(dir?: string, name = "omp"): Promise<string> {
+async function createFakeBinary(
+  dir?: string,
+  name = process.platform === "win32" ? "omp.EXE" : "omp",
+): Promise<string> {
   const targetDirectory = dir ?? (await tempDir("paseo-omp-bin-"));
   const path = join(targetDirectory, name);
   await writeFile(path, "#!/bin/sh\nexit 0\n");
@@ -154,7 +157,7 @@ function baseDeps(
     command: "omp",
     pathDirs: [binaryDir],
     cwd: agentDir,
-    platform: "linux",
+    platform: process.platform,
     pathExt: ".EXE;.CMD",
     env: { PATH: binaryDir, HOME: agentDir },
     spawnFn: respondingSpawn(),
@@ -179,7 +182,7 @@ afterEach(async () => {
 });
 
 describe("resolveExecutablePath", () => {
-  test("finds the first executable and returns its realpath", async () => {
+  testOnPosix("finds the first executable and returns its realpath", async () => {
     const dir = await tempDir("paseo-omp-bin-");
     const target = await createFakeBinary(dir, "omp-real");
     const link = join(dir, "omp");
@@ -191,14 +194,14 @@ describe("resolveExecutablePath", () => {
         platform: "linux",
         pathExt: ".EXE",
       }),
-    ).toBe(target);
+    ).toBe(await realpath(target));
   });
 
   test("skips empty PATH entries and resolves relative entries against explicit cwd", async () => {
     const cwd = await tempDir("paseo-omp-cwd-");
     const binDir = join(cwd, "bin");
     await mkdir(binDir);
-    const target = await createFakeBinary(binDir);
+    const target = await createFakeBinary(binDir, "omp");
 
     expect(
       await resolveExecutablePath("omp", ["", "bin"], {
@@ -206,7 +209,7 @@ describe("resolveExecutablePath", () => {
         platform: "linux",
         pathExt: ".EXE",
       }),
-    ).toBe(target);
+    ).toBe(await realpath(target));
   });
 
   test("uses PATHEXT when resolving a Windows command", async () => {
@@ -219,22 +222,22 @@ describe("resolveExecutablePath", () => {
         platform: "win32",
         pathExt: ".EXE;.CMD",
       }),
-    ).toBe(target);
+    ).toBe(await realpath(target));
   });
 
   test("checks a literal relative path against explicit cwd", async () => {
     const cwd = await tempDir("paseo-omp-cwd-");
     const binDir = join(cwd, "bin");
     await mkdir(binDir);
-    const target = await createFakeBinary(binDir);
+    const target = await createFakeBinary(binDir, "omp");
 
     expect(
-      await resolveExecutablePath(relative(cwd, target), ["/ignored"], {
+      await resolveExecutablePath(relative(cwd, target).split(sep).join("/"), ["/ignored"], {
         cwd,
         platform: "linux",
         pathExt: ".EXE",
       }),
-    ).toBe(target);
+    ).toBe(await realpath(target));
   });
 });
 
@@ -393,7 +396,10 @@ describe("killWindowsProcessTree", () => {
 describe("probeOmpAvailability", () => {
   test("classifies available, missing, and incompatible OMP runtimes", async () => {
     const binaryDir = await tempDir("paseo-omp-availability-");
-    const binary = await createFakeBinary(binaryDir);
+    const binary = await createFakeBinary(
+      binaryDir,
+      process.platform === "win32" ? "omp.EXE" : "omp",
+    );
     const base = {
       command: [binary] as const,
       cwd: binaryDir,
@@ -419,11 +425,14 @@ describe("probeOmpAvailability", () => {
   });
   test("spawns relative wrapper commands from the requested workspace", async () => {
     const workspace = await tempDir("paseo-omp-workspace-");
-    const wrapper = await createFakeBinary(workspace, "omp-wrapper");
+    await createFakeBinary(
+      workspace,
+      process.platform === "win32" ? "omp-wrapper.EXE" : "omp-wrapper",
+    );
     const capturedCwds: Array<string | undefined> = [];
     await expect(
       probeOmpAvailability({
-        command: ["./omp-wrapper", "--profile", "work"],
+        command: [process.platform === "win32" ? ".\\omp-wrapper.EXE" : "./omp-wrapper"],
         cwd: workspace,
         environment: { PATH: "/missing", HOME: workspace },
         platform: process.platform,
@@ -432,14 +441,13 @@ describe("probeOmpAvailability", () => {
       }),
     ).resolves.toEqual({ status: "available" });
     expect(capturedCwds).toEqual([workspace, workspace]);
-    expect(wrapper).toBe(join(workspace, "omp-wrapper"));
   });
 });
 
 describe("computeOmpProviderHealth", () => {
   test("reports safe provider, storage, process, and compatibility facts", async () => {
     const binaryDir = await tempDir("paseo-omp-bin-");
-    await createFakeBinary(binaryDir);
+    const binary = await createFakeBinary(binaryDir);
     const agentDir = await tempDir("paseo-omp-agent-");
     const hubRunRoot = join(agentDir, "hub-run");
     await mkdir(join(agentDir, "sessions"));
@@ -470,7 +478,7 @@ describe("computeOmpProviderHealth", () => {
 
     expect(health.binary).toEqual({
       installed: true,
-      resolvedPath: homeRelative(join(binaryDir, "omp")),
+      resolvedPath: homeRelative(binary),
       version: { major: 18, minor: 1, patch: 15, prerelease: null },
       versionStatus: "ok",
       processCleanupFailed: false,
