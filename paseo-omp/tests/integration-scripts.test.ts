@@ -18,14 +18,14 @@ describe("host-tool integration scripts", () => {
       workspaceId: "wsl-workspace",
       expectedOwnerMarker: "windows-host",
       wslNode: "node",
-      wslClientEntry: "dist/mcp-wsl-client.cjs",
+      wslClientEntry: "dist/mcp-wsl-client.mjs",
     });
 
     expect(command.startsWith("cd '/mnt/c/repo path/paseo-omp' && env ")).toBe(true);
     expect(command).toContain("PASEO_AGENT_ID='wsl-agent'");
     expect(command).toContain("PASEO_WORKSPACE_ID='wsl-workspace'");
     expect(command).not.toContain("EXPECTED_WORKSPACE_ID");
-    expect(command.endsWith("node 'dist/mcp-wsl-client.cjs'")).toBe(true);
+    expect(command.endsWith("node 'dist/mcp-wsl-client.mjs'")).toBe(true);
   });
 
   test("starts and stops the host MCP process with observable ownership", async () => {
@@ -90,7 +90,7 @@ describe("host-tool integration scripts", () => {
         workspaceId: "workspace",
         expectedOwnerMarker: "host",
         wslNode: "node;rm",
-        wslClientEntry: "dist/mcp-wsl-client.cjs",
+        wslClientEntry: "dist/mcp-wsl-client.mjs",
       }),
     ).toThrow("WSL Node path contains unsupported shell characters");
   });
