@@ -93,7 +93,7 @@ The WSL script skips when `wsl.exe` or WSL Bun is unavailable. Set `PASEO_OMP_RE
 
 - `bun run check`: clean across 72 files.
 - `bun run typecheck`: clean.
-- `bun test`: 400 tests passed with 1,688 assertions.
-- `bun run package:release /tmp/paseo-omp-provider-parity.zip`: release archive built and passed `python3 -m zipfile -t`.
+- `bun test`: 404 tests passed with 1,698 assertions.
+- `bun run package:release /tmp/paseo-omp-protocol-bounds.zip`: release archive built and passed `python3 -m zipfile -t`.
 - `bun run test:integration:docker`: host/container ownership boundary verified.
-- Real `omp/18.1.15` fallback smoke: protocol v2 opened, typed approvals remained unnegotiated (`false`), catalog discovery returned 11 models, and the ephemeral session closed cleanly.
+- Real `omp/18.1.15` fallback smoke: protocol v2 opened, typed approvals remained unnegotiated (`false`), and catalog discovery returned 11 models.

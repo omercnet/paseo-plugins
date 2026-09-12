@@ -151,6 +151,32 @@ describe("OMP session descriptor discovery", () => {
       }),
     ]);
   });
+
+  test("retains bounded multibyte first and last user prompt previews", async () => {
+    const root = await temporaryRoot();
+    const sessionRoot = join(root, "oversized-preview-sessions");
+    await mkdir(sessionRoot, { recursive: true });
+    const first = "🙂".repeat(3_000);
+    const last = "🫠".repeat(3_000);
+    await writeFile(
+      join(sessionRoot, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`),
+      `${[
+        JSON.stringify({ type: "session", version: 3, id: SESSION_ID, cwd: "/repo" }),
+        JSON.stringify({ type: "message", message: { role: "user", content: first } }),
+        JSON.stringify({ type: "message", message: { role: "assistant", content: "between" } }),
+        JSON.stringify({ type: "message", message: { role: "user", content: last } }),
+      ].join("\n")}\n`,
+    );
+
+    await expect(
+      listOmpSessionDescriptors({ cwd: "/repo", limit: 1 }, { OMP_SESSION_DIR: sessionRoot }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        firstPromptPreview: `${"🙂".repeat(159)}…`,
+        lastPromptPreview: `${"🫠".repeat(159)}…`,
+      }),
+    ]);
+  });
   test("yields while bounding large junk-root retention", async () => {
     const root = await temporaryRoot();
     const sessionRoot = join(root, "large-root");

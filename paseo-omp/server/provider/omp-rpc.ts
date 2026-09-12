@@ -44,7 +44,6 @@ const MAX_ACTIVE_TOOLS = 64;
 const MAX_HOST_TOOLS = 256;
 const MAX_TOOL_APPROVAL_FRAME_BYTES = 64 * 1024;
 const MAX_TOOL_APPROVAL_STRING_BYTES = 8 * 1024;
-const MAX_TOOL_APPROVAL_INPUT_BYTES = 20 * 1024;
 const MAX_TOOL_APPROVAL_COLLECTION_ITEMS = 32;
 const MAX_TOOL_APPROVAL_INPUT_NODES = 256;
 const MAX_TOOL_APPROVAL_DEPTH = 4;
@@ -52,11 +51,10 @@ const MAX_TOOL_APPROVAL_ID_BYTES = 512;
 const MAX_TOOL_APPROVAL_NAME_BYTES = 256;
 const MAX_TOOL_APPROVAL_DETAIL_LINES = 16;
 const MAX_TOOL_APPROVAL_DETAIL_BYTES = 2 * 1024;
-const MAX_TOOL_APPROVAL_METADATA_FIELDS = 32;
+const MAX_TOOL_APPROVAL_METADATA_FIELDS = 33;
 const MAX_TOOL_APPROVAL_METADATA_FIELD_BYTES = 64;
 const MAX_TOOL_APPROVAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MAX_TOOL_APPROVAL_PATH_BYTES = 4 * 1024;
-const MAX_TOOL_APPROVAL_PATHS_BYTES = 8 * 1024;
 const MAX_TOOL_APPROVAL_CONTENT_BYTES = 20 * 1024;
 type TimerHandle = ReturnType<typeof setTimeout>;
 const MAX_PENDING_REQUESTS = 256;
@@ -75,6 +73,15 @@ const WINDOWS_DEFAULT_SYSTEM_ROOT = "C:\\Windows";
 const MAX_TOKEN_COUNT = Number.MAX_SAFE_INTEGER;
 const MAX_COST_USD = 1_000_000_000;
 const MAX_CONTEXT_PERCENT = 1_000_000;
+function boundedJsonString(maxBytes: number, minBytes = 0) {
+  return z.string().refine((value) => {
+    const bytes = Buffer.byteLength(JSON.stringify(value), "utf8") - 2;
+    return bytes >= minBytes && bytes <= maxBytes;
+  });
+}
+function isBoundedToolApprovalId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= 512;
+}
 
 export const OMP_HOST_TOOL_FRAME_LIMIT_ERROR =
   "MCP host tool result exceeds the OMP RPC frame limit";
@@ -440,28 +447,19 @@ const OmpHostToolUpdateSchema = z.object({
   partialResult: OmpHostToolAgentResultSchema,
 });
 const OmpToolApprovalIdentitySchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("shell"), command: boundedString(24 * 1024, 1) }).strict(),
+  z.object({ kind: z.literal("shell"), command: boundedJsonString(24 * 1024, 1) }).strict(),
   z
     .object({
       kind: z.literal("edit"),
-      paths: z.array(boundedString(MAX_TOOL_APPROVAL_PATH_BYTES, 1)).min(1).max(16),
-      content: boundedString(MAX_TOOL_APPROVAL_CONTENT_BYTES),
+      paths: z.array(boundedJsonString(MAX_TOOL_APPROVAL_PATH_BYTES, 1)).min(1).max(16),
+      content: boundedJsonString(MAX_TOOL_APPROVAL_CONTENT_BYTES),
     })
-    .strict()
-    .refine(
-      (identity) =>
-        boundedJsonBytes(
-          identity.paths,
-          MAX_TOOL_APPROVAL_PATHS_BYTES,
-          16,
-          MAX_TOOL_APPROVAL_PATH_BYTES,
-        ) !== Number.POSITIVE_INFINITY,
-    ),
+    .strict(),
   z
     .object({
       kind: z.literal("write"),
-      path: boundedString(MAX_TOOL_APPROVAL_PATH_BYTES, 1),
-      content: boundedString(MAX_TOOL_APPROVAL_CONTENT_BYTES),
+      path: boundedJsonString(MAX_TOOL_APPROVAL_PATH_BYTES, 1),
+      content: boundedJsonString(MAX_TOOL_APPROVAL_CONTENT_BYTES),
     })
     .strict(),
   z.object({ kind: z.literal("other") }).strict(),
@@ -490,24 +488,16 @@ function approvalInputWithinBounds(value: unknown): boolean {
     const current = pending.pop();
     if (!current) break;
     nodes += 1;
-    if (nodes > MAX_TOOL_APPROVAL_INPUT_NODES || current.depth > MAX_TOOL_APPROVAL_DEPTH)
-      return false;
+    if (nodes > MAX_TOOL_APPROVAL_INPUT_NODES) return false;
     if (current.value === null || typeof current.value !== "object") continue;
+    if (current.depth >= MAX_TOOL_APPROVAL_DEPTH) return false;
     for (const child of Array.isArray(current.value)
       ? current.value
       : Object.values(current.value as Record<string, unknown>)) {
       pending.push({ value: child, depth: current.depth + 1 });
     }
   }
-  return (
-    boundedJsonBytes(
-      value,
-      MAX_TOOL_APPROVAL_INPUT_BYTES,
-      MAX_TOOL_APPROVAL_COLLECTION_ITEMS,
-      MAX_TOOL_APPROVAL_STRING_BYTES,
-      MAX_TOOL_APPROVAL_INPUT_NODES,
-    ) !== Number.POSITIVE_INFINITY
-  );
+  return true;
 }
 const OmpToolApprovalRequestSchema = z
   .object({
@@ -548,15 +538,7 @@ const OmpToolApprovalRequestSchema = z
     if (request.toolKind !== request.identity.kind) {
       context.addIssue({ code: "custom", message: "tool approval identity kind mismatch" });
     }
-    if (
-      boundedJsonBytes(
-        request,
-        MAX_TOOL_APPROVAL_FRAME_BYTES,
-        MAX_TOOL_APPROVAL_COLLECTION_ITEMS,
-        MAX_TOOL_APPROVAL_STRING_BYTES,
-        MAX_TOOL_APPROVAL_INPUT_NODES,
-      ) === Number.POSITIVE_INFINITY
-    ) {
+    if (Buffer.byteLength(JSON.stringify(request), "utf8") + 1 > MAX_TOOL_APPROVAL_FRAME_BYTES) {
       context.addIssue({ code: "custom", message: "tool approval request exceeds bounds" });
     }
   });
@@ -2423,6 +2405,7 @@ class OmpRpcProcess {
     }
     const event = OmpRuntimeEventSchema.safeParse(frame);
     if (!event.success) {
+      this.rejectMatchingToolApproval(frame);
       if (type === "agent_end" && this.receiveDegradedAgentEnd(frame, false)) return;
       this.recordProtocolViolation();
       return;
@@ -2446,6 +2429,18 @@ class OmpRpcProcess {
       this.commandTextLength = 0;
       this.activeToolCallIds.clear();
     }
+  }
+
+  private rejectMatchingToolApproval(frame: Record<string, unknown>): void {
+    if (frame.type !== "tool_approval_request") return;
+    const { id, toolCallId } = frame;
+    if (!isBoundedToolApprovalId(id) || !isBoundedToolApprovalId(toolCallId)) return;
+    void this.sendFrame({
+      type: "tool_approval_response",
+      id,
+      toolCallId,
+      cancelled: true,
+    }).catch(() => this.fail(new Error("OMP rejected tool approval could not be canceled")));
   }
 
   private acceptEventState(event: z.infer<typeof OmpRuntimeEventSchema>): boolean {

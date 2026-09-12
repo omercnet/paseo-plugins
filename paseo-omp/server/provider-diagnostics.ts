@@ -86,6 +86,7 @@ export type SpawnFn = (
   command: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
+  cwd?: string,
 ) => ProbeChildProcess;
 
 export type SignalProcess = (pid: number, signal: NodeJS.Signals | 0) => void;
@@ -193,8 +194,10 @@ function defaultSpawn(
   command: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
+  cwd?: string,
 ): ProbeChildProcess {
   const child = spawn(command, args, {
+    cwd,
     stdio: ["ignore", "pipe", "pipe"],
     env,
     detached: process.platform !== "win32",
@@ -332,11 +335,12 @@ export function runBounded(
   timeoutMs: number,
   killGraceMs: number,
   maxBytes: number,
+  cwd?: string,
 ): Promise<BoundedRun> {
   const { promise, resolve } = Promise.withResolvers<BoundedRun>();
   let child: ProbeChildProcess;
   try {
-    child = spawnFn(command, args, env);
+    child = spawnFn(command, args, env, cwd);
   } catch (error) {
     resolve({
       outcome: "spawn-error",
@@ -570,6 +574,7 @@ export async function probeOmpAvailability(options: OmpAvailabilityProbeOptions)
       probeTimeoutMs,
       killGraceMs,
       MAX_VERSION_BYTES,
+      options.cwd,
     ),
     runBounded(
       options.spawnFn ?? defaultSpawn,
@@ -579,6 +584,7 @@ export async function probeOmpAvailability(options: OmpAvailabilityProbeOptions)
       probeTimeoutMs,
       killGraceMs,
       MAX_HELP_BYTES,
+      options.cwd,
     ),
   ]);
   const version = toVersionOutcome(versionRun);

@@ -114,14 +114,16 @@ interface RespondingSpawnOptions {
   versionSignal?: NodeJS.Signals;
   helpExitCode?: number;
   captureEnv?: NodeJS.ProcessEnv[];
+  captureCwds?: Array<string | undefined>;
 }
 
 function respondingSpawn(options: RespondingSpawnOptions = {}): SpawnFn {
-  return (_command, args, env) => {
+  return (_command, args, env, cwd) => {
     options.captureEnv?.push({ ...env });
+    options.captureCwds?.push(cwd);
     const child = new FakeChild();
+    const isVersion = args.includes("--version");
     queueMicrotask(() => {
-      const isVersion = args[0] === "--version";
       child.stdout.emit(
         isVersion
           ? (options.versionStdout ?? "omp/18.1.15\n")
@@ -411,6 +413,23 @@ describe("probeOmpAvailability", () => {
     await expect(
       probeOmpAvailability({ ...base, command: [join(binaryDir, "missing")] }),
     ).resolves.toEqual({ status: "missing", diagnostic: "OMP executable was not found" });
+  });
+  test("spawns relative wrapper commands from the requested workspace", async () => {
+    const workspace = await tempDir("paseo-omp-workspace-");
+    const wrapper = await createFakeBinary(workspace, "omp-wrapper");
+    const capturedCwds: Array<string | undefined> = [];
+    await expect(
+      probeOmpAvailability({
+        command: ["./omp-wrapper", "--profile", "work"],
+        cwd: workspace,
+        environment: { PATH: "/missing", HOME: workspace },
+        platform: process.platform,
+        timeoutMs: 1_000,
+        spawnFn: respondingSpawn({ captureCwds: capturedCwds }),
+      }),
+    ).resolves.toEqual({ status: "available" });
+    expect(capturedCwds).toEqual([workspace, workspace]);
+    expect(wrapper).toBe(join(workspace, "omp-wrapper"));
   });
 });
 

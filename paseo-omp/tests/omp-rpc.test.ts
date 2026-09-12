@@ -26,6 +26,7 @@ const READY_WITH_TYPED_APPROVALS = {
   ...READY_FRAME,
   features: { typedToolApprovals: 1 },
 } as const;
+const NATIVE_TOOL_APPROVAL_FRAME_BYTES = 64 * 1024;
 const TEST_RUNTIME_ENV: NodeJS.ProcessEnv = {
   HOME: "/__paseo_omp_test_no_home__",
   PATH: "/usr/bin",
@@ -260,6 +261,182 @@ describe("OMP RPC transport", () => {
       toolCallId: "tool-call-1",
       approved: true,
     });
+    await session.close();
+  });
+
+  test("accepts native maximum approval identity and aggregate envelope bounds", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        command: "negotiate_protocol",
+        success: true,
+        data: { protocolVersion: 2, clientCapabilities: { typedToolApprovals: 1 } },
+      });
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "ask" });
+    child.write(READY_WITH_TYPED_APPROVALS);
+    const session = await opening;
+    const metadata = [...Array.from({ length: 32 }, (_, index) => `field-${index}`), "additional"];
+    const shell = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "tool_approval_request",
+      id: "max-shell",
+      toolCallId: "max-shell-call",
+      toolKind: "shell",
+      toolName: "bash",
+      tier: "exec",
+      identity: { kind: "shell", command: "x".repeat(24 * 1024) },
+      input: {},
+      detail: {
+        lines: [],
+        truncated: true,
+        truncatedFields: metadata,
+        redacted: true,
+        redactedFields: metadata,
+      },
+    });
+    await expect(shell).resolves.toMatchObject({ type: "tool_approval_request", id: "max-shell" });
+
+    const write = nextEvent((listener) => session.onEvent(listener));
+    const aggregate = {
+      type: "tool_approval_request" as const,
+      id: "max-write",
+      toolCallId: "max-write-call",
+      toolKind: "write" as const,
+      toolName: "write",
+      tier: "write" as const,
+      identity: { kind: "write" as const, path: "out.txt", content: "w".repeat(20 * 1024) },
+      input: Object.fromEntries(
+        Array.from({ length: 5 }, (_, index) => [`value-${index}`, "x".repeat(8 * 1024)]),
+      ),
+      detail: {
+        lines: [],
+        truncated: false,
+        truncatedFields: [],
+        redacted: false,
+        redactedFields: [],
+      },
+    };
+    aggregate.input.tail = "";
+    aggregate.input.tail = "x".repeat(
+      NATIVE_TOOL_APPROVAL_FRAME_BYTES - Buffer.byteLength(JSON.stringify(aggregate), "utf8") - 1,
+    );
+    expect(Buffer.byteLength(aggregate.input.tail, "utf8")).toBeLessThanOrEqual(8 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(aggregate), "utf8") + 1).toBe(
+      NATIVE_TOOL_APPROVAL_FRAME_BYTES,
+    );
+    child.write(aggregate);
+    await expect(write).resolves.toMatchObject({ type: "tool_approval_request", id: "max-write" });
+    const edit = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "tool_approval_request",
+      id: "max-edit",
+      toolCallId: "max-edit-call",
+      toolKind: "edit",
+      toolName: "edit",
+      tier: "write",
+      identity: { kind: "edit", paths: ["src/a.ts"], content: "e".repeat(20 * 1024) },
+      input: {},
+      detail: {
+        lines: [],
+        truncated: false,
+        truncatedFields: [],
+        redacted: false,
+        redactedFields: [],
+      },
+    });
+    await expect(edit).resolves.toMatchObject({ type: "tool_approval_request", id: "max-edit" });
+    await session.close();
+  });
+
+  test("rejects above-native approval fields and cancels matching native requests", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    const canceled = Promise.withResolvers<void>();
+    observeCommands(child, (command) => {
+      commands.push(command);
+      if (
+        command.type === "tool_approval_response" &&
+        commands.filter((candidate) => candidate.type === "tool_approval_response").length === 3
+      ) {
+        canceled.resolve();
+      }
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        command: "negotiate_protocol",
+        success: true,
+        data: { protocolVersion: 2, clientCapabilities: { typedToolApprovals: 1 } },
+      });
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "ask" });
+    child.write(READY_WITH_TYPED_APPROVALS);
+    const session = await opening;
+    for (const [id, toolCallId, toolKind, identity] of [
+      [
+        "over-shell",
+        "over-shell-call",
+        "shell",
+        { kind: "shell", command: "x".repeat(24 * 1024 + 1) },
+      ],
+      [
+        "over-edit",
+        "over-edit-call",
+        "edit",
+        { kind: "edit", paths: ["a.ts"], content: "x".repeat(20 * 1024 + 1) },
+      ],
+      [
+        "over-write",
+        "over-write-call",
+        "write",
+        { kind: "write", path: "a.ts", content: "x".repeat(20 * 1024 + 1) },
+      ],
+    ] as const) {
+      child.write({
+        type: "tool_approval_request",
+        id,
+        toolCallId,
+        toolKind,
+        toolName: toolKind,
+        tier: "write",
+        identity,
+        input: {},
+        detail: {
+          lines: [],
+          truncated: false,
+          truncatedFields: [],
+          redacted: false,
+          redactedFields: [],
+        },
+      });
+    }
+    await canceled.promise;
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        {
+          type: "tool_approval_response",
+          id: "over-shell",
+          toolCallId: "over-shell-call",
+          cancelled: true,
+        },
+        {
+          type: "tool_approval_response",
+          id: "over-edit",
+          toolCallId: "over-edit-call",
+          cancelled: true,
+        },
+        {
+          type: "tool_approval_response",
+          id: "over-write",
+          toolCallId: "over-write-call",
+          cancelled: true,
+        },
+      ]),
+    );
     await session.close();
   });
 

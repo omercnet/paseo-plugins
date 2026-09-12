@@ -120,11 +120,11 @@ function promptPreview(content: unknown): string | undefined {
             )
             .join("\n")
         : "";
-  const sanitized = safeText(text, 4_096)?.replace(/\s+/gu, " ").trim();
+  const sanitized = safeText(text, MAX_DESCRIPTOR_PREFIX_BYTES)?.replace(/\s+/gu, " ").trim();
   if (!sanitized) return;
-  if (sanitized.length <= MAX_PROMPT_PREVIEW_CHARS) return sanitized;
-  const preview = sanitized.slice(0, MAX_PROMPT_PREVIEW_CHARS);
-  return /[\uD800-\uDBFF]$/u.test(preview) ? preview.slice(0, -1) : preview;
+  const characters = Array.from(sanitized);
+  if (characters.length <= MAX_PROMPT_PREVIEW_CHARS) return sanitized;
+  return `${characters.slice(0, MAX_PROMPT_PREVIEW_CHARS - 1).join("")}…`;
 }
 
 function budgetExceeded(budget: ScanBudget): boolean {
