@@ -80,7 +80,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: omercnet/paseo
-          ref: bd8985540937cc8123fdb619fa4731987950da7d
+          ref: 817df810f94ee1d6b730bf84c38587307ba41c6d
           path: .ci/paseo-cutover
           persist-credentials: false
       - name: Set up Node

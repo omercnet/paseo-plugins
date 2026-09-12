@@ -898,7 +898,18 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
           harness.config(),
           harness.launchEnv(),
         );
-        expect(resumed.describePersistence()).toEqual(legacyHandle);
+        expect(resumed.describePersistence()).toEqual({
+          provider: "omp",
+          sessionId: PRIMARY_SESSION_ID,
+          nativeHandle: sessionFile,
+          metadata: {
+            cwd: harness.cwd,
+            model: MODEL_ID,
+            modeId: "full",
+            thinkingOptionId: "medium",
+            pluginProviderPersistence: { version: 1, data: { sessionId: PRIMARY_SESSION_ID } },
+          },
+        });
         await resumed.close();
         resumed = undefined;
 

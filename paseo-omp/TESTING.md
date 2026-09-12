@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against Paseo core cutover commit `bd8985540937cc8123fdb619fa4731987950da7d`, rollback baseline `f4b209be4d81d25a6143d12d374d797d485e8faa`, and OMP native contract commit `11694d5d3b`.
+Validated against Paseo core cutover commit `817df810f94ee1d6b730bf84c38587307ba41c6d`, rollback baseline `f4b209be4d81d25a6143d12d374d797d485e8faa`, and OMP native contract commit `11694d5d3b`.
 
 Classifications:
 
@@ -83,7 +83,7 @@ PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover \
 
 The runner builds both checkouts, packages and extracts this plugin, and loads each checkout's own `PluginService` and provider registry. It proves the legacy core still owns bundled `omp` and rejects the package, the cutover core no longer owns `omp` and accepts the plugin registration, and disabling the plugin before rollback leaves the legacy core able to restore bundled `omp`. The provider conformance suite runs against the cutover checkout's compiled adapter, including legacy native-handle resume, import to a canonical native session ID, close, and subsequent resume while preserving the original JSONL handle for rollback.
 
-Run this test before release and rollback. Linux CI checks out `f4b209be4d81d25a6143d12d374d797d485e8faa` and `bd8985540937cc8123fdb619fa4731987950da7d` directly; mutable branches and tags are not accepted.
+Run this test before release and rollback. Linux CI checks out `f4b209be4d81d25a6143d12d374d797d485e8faa` and `817df810f94ee1d6b730bf84c38587307ba41c6d` directly; mutable branches and tags are not accepted.
 
 Run the real Docker host/container ownership boundary test with:
 
@@ -113,7 +113,7 @@ The Linux `paseo-omp real OMP 18.1.15` CI job downloads the pinned `omp-linux-x6
 - `bun run test:coverage`: 442 passed and 4 env-gated scenarios skipped; aggregate source coverage is 95.66% functions and 97.81% lines. Every measured source file clears the unchanged 85% function and 90% line thresholds. Generated `dist/**` trees are excluded.
 - `bun run package:release /tmp/paseo-omp-provider-cutover.zip`: release archive built; the full suite also extracted and compiled the packaged server entry.
 - `PASEO_LEGACY_CORE_ROOT=/path/to/paseo-legacy PASEO_CUTOVER_CORE_ROOT=/path/to/paseo-cutover bun run test:integration:core`: both cores built; packaged install/rollback and plugin conformance passed, 18 tests with 413 assertions.
-- Matching core adapter suites (`provider.test.ts`, `plugin-provider.test.ts`, `provider-registry.test.ts`, `provider-snapshot-manager.test.ts`, and `plugins/index.posix.test.ts`): 171 passed.
+- Matching core adapter suites (`provider.test.ts`, `plugin-provider.test.ts`, `provider-registry.test.ts`, `provider-snapshot-manager.test.ts`, and `plugins/index.posix.test.ts`): 172 passed.
 - `bun run test:integration:docker`: host/container ownership boundary verified.
 - `bun run test:integration:wsl`: locally skipped because `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
 - `mise x actionlint@1.7.12 -- actionlint .github/workflows/ci.yml`: passed.
