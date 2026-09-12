@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Audit baseline: plugin `d00d34eb7f90c6e29624d6c18bc32d19da883e07`; Paseo core `f4b209be4d81d25a6143d12d374d797d485e8faa`.
+Validated against Paseo core public API commit `95b3a5746` and OMP native contract commit `11694d5d3b`.
 
 Classifications:
 
@@ -13,13 +13,13 @@ Classifications:
 
 | Inventory behavior | Classification | Evidence |
 | --- | --- | --- |
-| Binary availability and version diagnostics | **Blocked** (`omp-provider.20.1`) | `server/provider-diagnostics.ts` safely resolves and probes `omp --version`/`--help`; `tests/provider-diagnostics.test.ts` covers missing, unrunnable, timeout, malformed, compatibility, and cleanup outcomes. The generic provider status still equates a successful plugin connection with availability. |
-| Catalog discovery | **Equivalent** | `server/provider/catalog.ts::discoverOmpCatalog`; `tests/provider.test.ts` “discovers real models and all approval modes”. |
-| Catalog cache identity | **Blocked** (`omp-provider.20.2`) | Public `catalog` input has only `cwd`; provider options and registered settings cannot participate in `getCatalogCacheKey`. |
+| Binary availability and version diagnostics | **Equivalent** | Provider refresh calls the bounded `checkAvailability` hook with normalized profile options and the host deadline. `server/provider-diagnostics.ts` distinguishes missing, unrunnable, incompatible, and available runtimes without exposing probe output. |
+| Catalog discovery | **Equivalent** | `server/provider/catalog.ts::discoverOmpCatalog` launches with the normalized profile command, environment, parameters, workspace, and timeout settings. |
+| Catalog cache identity | **Equivalent** | `getCatalogCacheKey` hashes normalized `providerOptions`, profile `settings`, scope, working directory, and the effective default command. Core applies configured `models` and `additionalModels` per profile. |
 | Default mode | **Equivalent** | Catalog reports `defaultMode: full`; `full` is always available, while bundled `write`/`ask` modes are advertised only after `permission` negotiation. Covered by `tests/provider.test.ts` and `tests/provider-options.test.ts`. |
 | Create session | **Equivalent** | `OmpProviderSession.open`; ordered `session.opened`, committed `session.config`, and `session.ready` regression. |
 | Resume session | **Equivalent** | Opaque native ID validation, cwd authorization, configured `providerOptions.params.sessionDir`, exact resume, replay-before-ready, and recovery tests in `tests/provider.test.ts`. |
-| List sessions | **Equivalent** for OMP/env-configured roots; profile-scoped discovery **Blocked** (`omp-provider.20.2`); preview detail **Blocked** (`omp-provider.20.4`) | `session.list` recursively discovers bounded cwd-scoped descriptors, and `tests/session-descriptors.test.ts` covers explicit roots. Public list requests cannot carry per-profile provider options or distinct first/last prompt previews. |
+| List sessions | **Equivalent** | `session.list` consumes profile-scoped `providerOptions` and `settings`, scans the configured session root, and returns separate bounded first- and last-user-prompt previews. |
 | Import session | **Protocol** | `session.list` plus persistence replay feeds the generic plugin-provider import path; host `plugin-provider.ts::importSession` owns import storage and timeline adoption. |
 | Archive/unarchive | **Unsupported** | OMP has no native archive operation. Neither adapter mutates OMP transcripts; Paseo still archives its own agent record. |
 | Working directory | **Equivalent** | Absolute cwd validation, launch forwarding, resume ownership checks, session-list scoping, and host-tool cwd tests. |
@@ -42,7 +42,7 @@ Classifications:
 | Advisor messages | **Equivalent** | Advisor notes preserve severity/attribution in stable tool-call blocks; `advisor_yielded` emits completion notice. |
 | System notices | **Equivalent** | Native notices and safe passive UI notifications map to bounded notification items; hidden custom notices remain hidden. |
 | Ask interactions | **Equivalent** | Select/confirm/input/editor questions, option descriptions, fixed-only rejection, bounded freeform input, native sentinel/follow-up submission, cancellation, timeout, and turn ownership are covered by permission regressions. |
-| Typed tool permission presentation | **Blocked** (`omp-provider.20.5`) | Free-text `Allow tool:` titles remain bounded/redacted generic questions because OMP supplies no authenticated typed frame or provenance. Functional approval remains available without trusting spoofable display text. |
+| Typed tool permission presentation | **Equivalent** | OMP `typedToolApprovals: 1` is negotiated reciprocally; strict native request/cancel/response frames are correlated exactly once and mapped from trusted shell/edit/write identity to bounded, redacted `kind: "tool"` permissions. Older OMP builds retain generic extension questions. |
 | Slash command catalog | **Equivalent** | Native commands and aliases refresh authoritatively; the bundled `compact`, `autocompact`, `handoff`, `steer`, and `follow-up` commands are always published. |
 | Manual `/compact` | **Equivalent** | Uses native `compact`, exposes one loading/completed operation, keeps long requests alive, refreshes usage, and supports interruption. |
 | `/autocompact` | **Equivalent** | `on`, `off`, and state-backed `toggle` use native `set_auto_compaction`; invalid or unavailable state fails visibly. |
@@ -64,10 +64,10 @@ Classifications:
 | Custom executable command | **Equivalent** | Strict `providerOptions.command` replaces the executable prefix and survives recovery. |
 | Custom environment | **Equivalent** | Strict `providerOptions.env` is merged below launch env, survives recovery, and is filtered from public output. |
 | Provider parameters | **Equivalent** | `sessionDir`, `rpcTimeoutMs`, and `smol`/`slow`/`plan` model roles map to native arguments and survive recovery; cold resume authorization scans the normalized configured `sessionDir`. |
-| Configured model replacement/additions | **Blocked** (`omp-provider.20.2`) | Public plugin catalogs cannot receive profile options or host-applied `models`/`additionalModels`; these fields fail visibly at open. |
-| Generic denied tools | **Blocked** (`omp-provider.20.3`) | Public `toolPolicy` has exact MCP preapproval only and cannot represent bundled `disallowedTools`; the field fails visibly. |
-| Strict provider option validation before launch | **Blocked** (`omp-provider.20.2`) | The plugin validates strictly at `session.open`; core currently accepts an arbitrary JSON record before then. |
-| Registered plugin settings in provider discovery | **Blocked** (`omp-provider.20.2`) | Public server settings have no read/change subscription available to provider registration or catalog discovery. |
+| Configured model replacement/additions | **Protocol** and **Equivalent** | Paseo applies profile `models` replacement and `additionalModels` overlays to the profile-specific plugin catalog. |
+| Generic denied tools | **Equivalent** | Core forwards a bounded, deduplicated `deniedTools` list; the plugin turns recognized OMP built-ins into an explicit launch allow-list before the process starts and rejects unknown names rather than silently under-enforcing. |
+| Strict provider option validation before launch | **Equivalent** | The provider registers `OmpProviderOptionsSchema`; core normalizes once and forwards the same value through availability, cache identity, discovery, listing, and launch. |
+| Profile settings in provider discovery | **Equivalent** | Core forwards profile settings to catalog, cache-key, and session-list operations; the provider includes them in cache identity without claiming unsupported live OMP settings. |
 | Terminal-started OMP session hooks | **Unsupported** | The bundled terminal hook registry contains Claude, Codex, and OpenCode only; OMP exposes no registered terminal activity hook to preserve. |
 | Metadata-generation flows | **Protocol** and **Equivalent** | Generic structured generation selects plugin models from catalog metadata and creates non-persisted sessions; provider responses use the existing parse/validation retry loop. |
 
@@ -93,6 +93,7 @@ The WSL script skips when `wsl.exe` or WSL Bun is unavailable. Set `PASEO_OMP_RE
 
 - `bun run check`: clean across 72 files.
 - `bun run typecheck`: clean.
-- `bun test`: 393 tests passed with 1,658 assertions.
-- `bun run package:release /tmp/paseo-omp-audit.zip`: release archive built successfully.
-- Real `omp/18.1.15` smoke: protocol v2 catalog returned 11 models; an ephemeral `ask` session opened and closed; a connection without `permission` exposed only `full`, while a permission-capable connection exposed `full`, `write`, and `ask`; all five bundled out-of-band commands were published.
+- `bun test`: 404 tests passed with 1,698 assertions.
+- `bun run package:release /tmp/paseo-omp-protocol-bounds.zip`: release archive built and passed `python3 -m zipfile -t`.
+- `bun run test:integration:docker`: host/container ownership boundary verified.
+- Real `omp/18.1.15` fallback smoke: protocol v2 opened, typed approvals remained unnegotiated (`false`), and catalog discovery returned 11 models.

@@ -9,6 +9,7 @@ import {
   type ProbeChildProcess,
   type ProbeReadable,
   type ProviderDiagnosticsDeps,
+  probeOmpAvailability,
   resolveExecutablePath,
   runBounded,
   type SpawnFn,
@@ -113,14 +114,16 @@ interface RespondingSpawnOptions {
   versionSignal?: NodeJS.Signals;
   helpExitCode?: number;
   captureEnv?: NodeJS.ProcessEnv[];
+  captureCwds?: Array<string | undefined>;
 }
 
 function respondingSpawn(options: RespondingSpawnOptions = {}): SpawnFn {
-  return (_command, args, env) => {
+  return (_command, args, env, cwd) => {
     options.captureEnv?.push({ ...env });
+    options.captureCwds?.push(cwd);
     const child = new FakeChild();
+    const isVersion = args.includes("--version");
     queueMicrotask(() => {
-      const isVersion = args[0] === "--version";
       child.stdout.emit(
         isVersion
           ? (options.versionStdout ?? "omp/18.1.15\n")
@@ -381,6 +384,52 @@ describe("killWindowsProcessTree", () => {
     expect(await resultPromise).toBe(false);
     expect(child.stdout.destroyed).toBe(true);
     expect(child.stderr.destroyed).toBe(true);
+  });
+});
+
+describe("probeOmpAvailability", () => {
+  test("classifies available, missing, and incompatible OMP runtimes", async () => {
+    const binaryDir = await tempDir("paseo-omp-availability-");
+    const binary = await createFakeBinary(binaryDir);
+    const base = {
+      command: [binary] as const,
+      cwd: binaryDir,
+      environment: { PATH: binaryDir, HOME: binaryDir },
+      platform: process.platform,
+      timeoutMs: 1_000,
+    };
+    await expect(probeOmpAvailability({ ...base, spawnFn: respondingSpawn() })).resolves.toEqual({
+      status: "available",
+    });
+    await expect(
+      probeOmpAvailability({
+        ...base,
+        spawnFn: respondingSpawn({ helpStdout: "--mode=<value> Output mode: text\n" }),
+      }),
+    ).resolves.toEqual({
+      status: "incompatible",
+      diagnostic: "OMP does not advertise rpc-ui support",
+    });
+    await expect(
+      probeOmpAvailability({ ...base, command: [join(binaryDir, "missing")] }),
+    ).resolves.toEqual({ status: "missing", diagnostic: "OMP executable was not found" });
+  });
+  test("spawns relative wrapper commands from the requested workspace", async () => {
+    const workspace = await tempDir("paseo-omp-workspace-");
+    const wrapper = await createFakeBinary(workspace, "omp-wrapper");
+    const capturedCwds: Array<string | undefined> = [];
+    await expect(
+      probeOmpAvailability({
+        command: ["./omp-wrapper", "--profile", "work"],
+        cwd: workspace,
+        environment: { PATH: "/missing", HOME: workspace },
+        platform: process.platform,
+        timeoutMs: 1_000,
+        spawnFn: respondingSpawn({ captureCwds: capturedCwds }),
+      }),
+    ).resolves.toEqual({ status: "available" });
+    expect(capturedCwds).toEqual([workspace, workspace]);
+    expect(wrapper).toBe(join(workspace, "omp-wrapper"));
   });
 });
 

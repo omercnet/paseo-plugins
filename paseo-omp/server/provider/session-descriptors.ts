@@ -5,6 +5,8 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path
 import { ompSessionDir } from "../paths";
 
 const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
+const MAX_DESCRIPTOR_SUFFIX_BYTES = 64 * 1024;
+const MAX_PROMPT_PREVIEW_CHARS = 160;
 const MAX_DIRECTORY_DEPTH = 8;
 const MAX_SCAN_DIRECTORIES = 1_024;
 const MAX_SCAN_FILES = 10_000;
@@ -23,6 +25,8 @@ export interface OmpSessionDescriptor {
   title?: string;
   updatedAt?: string;
   transcriptFile?: string;
+  firstPromptPreview?: string;
+  lastPromptPreview?: string;
 }
 
 export interface OmpPersistedSubagentTranscript {
@@ -98,6 +102,30 @@ function completePrefixLines(buffer: Buffer): Buffer[] {
   }
   return lines;
 }
+function completeSuffixLines(buffer: Buffer): Buffer[] {
+  const firstNewline = buffer.indexOf(10);
+  if (firstNewline < 0) return [];
+  return completePrefixLines(buffer.subarray(firstNewline + 1));
+}
+
+function promptPreview(content: unknown): string | undefined {
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .slice(0, 64)
+            .flatMap((part) =>
+              part && typeof part === "object" && typeof part.text === "string" ? [part.text] : [],
+            )
+            .join("\n")
+        : "";
+  const sanitized = safeText(text, MAX_DESCRIPTOR_PREFIX_BYTES)?.replace(/\s+/gu, " ").trim();
+  if (!sanitized) return;
+  const characters = Array.from(sanitized);
+  if (characters.length <= MAX_PROMPT_PREVIEW_CHARS) return sanitized;
+  return `${characters.slice(0, MAX_PROMPT_PREVIEW_CHARS - 1).join("")}…`;
+}
 
 function budgetExceeded(budget: ScanBudget): boolean {
   return (
@@ -132,15 +160,28 @@ async function parseDescriptor(
     const stat = await handle.stat();
     if (!stat.isFile()) return;
     const prefixBytes = Math.min(MAX_DESCRIPTOR_PREFIX_BYTES, stat.size);
-    if (budget.bytes + prefixBytes > MAX_SCAN_BYTES) {
+    const suffixBytes = Math.min(MAX_DESCRIPTOR_SUFFIX_BYTES, Math.max(0, stat.size - prefixBytes));
+    if (budget.bytes + prefixBytes + suffixBytes > MAX_SCAN_BYTES) {
       budget.exhausted = true;
       return;
     }
-    budget.bytes += prefixBytes;
-    const buffer = Buffer.allocUnsafe(prefixBytes);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    budget.bytes += prefixBytes + suffixBytes;
+    const prefix = Buffer.allocUnsafe(prefixBytes);
+    const { bytesRead: prefixRead } = await handle.read(prefix, 0, prefix.length, 0);
+    const suffix = Buffer.allocUnsafe(suffixBytes);
+    const { bytesRead: suffixRead } = suffixBytes
+      ? await handle.read(suffix, 0, suffix.length, stat.size - suffixBytes)
+      : { bytesRead: 0 };
     let title: string | undefined;
-    for (const bytes of completePrefixLines(buffer.subarray(0, bytesRead))) {
+    let id: string | undefined;
+    let cwd: string | undefined;
+    let firstPromptPreview: string | undefined;
+    let lastPromptPreview: string | undefined;
+    const lines = [
+      ...completePrefixLines(prefix.subarray(0, prefixRead)),
+      ...completeSuffixLines(suffix.subarray(0, suffixRead)),
+    ];
+    for (const bytes of lines) {
       if (bytes.length === 0) continue;
       let value: unknown;
       try {
@@ -158,19 +199,33 @@ async function parseDescriptor(
         title ??= safeText(record.title ?? record.sessionName ?? record.name, 512);
         continue;
       }
-      if (record.type !== "session") continue;
-      const id = validateNativeSessionId(record.id);
-      const cwd = validatedCwd(record.cwd);
-      if (!cwd) return;
-      const headerTitle = safeText(record.title, 512);
-      return {
-        id,
-        cwd,
-        transcriptFile: file,
-        ...((title ?? headerTitle) ? { title: title ?? headerTitle } : {}),
-        updatedAt: stat.mtime.toISOString(),
-      };
+      if (record.type === "session") {
+        id = validateNativeSessionId(record.id);
+        cwd = validatedCwd(record.cwd);
+        if (!cwd) return;
+        title ??= safeText(record.title, 512);
+        continue;
+      }
+      if (record.type !== "message") continue;
+      const message = record.message;
+      if (!message || typeof message !== "object" || Array.isArray(message)) continue;
+      const messageRecord = message as Record<string, unknown>;
+      if (messageRecord.role !== "user") continue;
+      const preview = promptPreview(messageRecord.content);
+      if (!preview) continue;
+      firstPromptPreview ??= preview;
+      lastPromptPreview = preview;
     }
+    if (!id || !cwd) return;
+    return {
+      id,
+      cwd,
+      transcriptFile: file,
+      ...(title ? { title } : {}),
+      updatedAt: stat.mtime.toISOString(),
+      ...(firstPromptPreview ? { firstPromptPreview } : {}),
+      ...(lastPromptPreview ? { lastPromptPreview } : {}),
+    };
   } catch {
     return;
   } finally {
@@ -262,7 +317,9 @@ export async function listOmpSessionDescriptors(
     if (
       query &&
       !descriptor.id.toLowerCase().includes(query) &&
-      !descriptor.title?.toLowerCase().includes(query)
+      !descriptor.title?.toLowerCase().includes(query) &&
+      !descriptor.firstPromptPreview?.toLowerCase().includes(query) &&
+      !descriptor.lastPromptPreview?.toLowerCase().includes(query)
     ) {
       return !budgetExceeded(budget);
     }

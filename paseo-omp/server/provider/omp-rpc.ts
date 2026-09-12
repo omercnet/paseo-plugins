@@ -42,6 +42,20 @@ const MAX_IMAGE_DATA_LENGTH = 8 * 1024 * 1024;
 const MAX_TOOL_PAYLOAD_LENGTH = 256 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
 const MAX_HOST_TOOLS = 256;
+const MAX_TOOL_APPROVAL_FRAME_BYTES = 64 * 1024;
+const MAX_TOOL_APPROVAL_STRING_BYTES = 8 * 1024;
+const MAX_TOOL_APPROVAL_COLLECTION_ITEMS = 32;
+const MAX_TOOL_APPROVAL_INPUT_NODES = 256;
+const MAX_TOOL_APPROVAL_DEPTH = 4;
+const MAX_TOOL_APPROVAL_ID_BYTES = 512;
+const MAX_TOOL_APPROVAL_NAME_BYTES = 256;
+const MAX_TOOL_APPROVAL_DETAIL_LINES = 16;
+const MAX_TOOL_APPROVAL_DETAIL_BYTES = 2 * 1024;
+const MAX_TOOL_APPROVAL_METADATA_FIELDS = 33;
+const MAX_TOOL_APPROVAL_METADATA_FIELD_BYTES = 64;
+const MAX_TOOL_APPROVAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const MAX_TOOL_APPROVAL_PATH_BYTES = 4 * 1024;
+const MAX_TOOL_APPROVAL_CONTENT_BYTES = 20 * 1024;
 type TimerHandle = ReturnType<typeof setTimeout>;
 const MAX_PENDING_REQUESTS = 256;
 const MAX_PENDING_ONE_WAY_WRITES = 256;
@@ -59,6 +73,15 @@ const WINDOWS_DEFAULT_SYSTEM_ROOT = "C:\\Windows";
 const MAX_TOKEN_COUNT = Number.MAX_SAFE_INTEGER;
 const MAX_COST_USD = 1_000_000_000;
 const MAX_CONTEXT_PERCENT = 1_000_000;
+function boundedJsonString(maxBytes: number, minBytes = 0) {
+  return z.string().refine((value) => {
+    const bytes = Buffer.byteLength(JSON.stringify(value), "utf8") - 2;
+    return bytes >= minBytes && bytes <= maxBytes;
+  });
+}
+function isBoundedToolApprovalId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= 512;
+}
 
 export const OMP_HOST_TOOL_FRAME_LIMIT_ERROR =
   "MCP host tool result exceeds the OMP RPC frame limit";
@@ -366,6 +389,7 @@ const OmpReadyFrameSchema = z.object({
   supportedProtocolVersions: z.array(z.number().int().positive().max(16)).max(8).optional(),
   maxFrameBytes: z.number().int().positive().optional(),
   maxReassembledFrameBytes: z.number().int().positive().optional(),
+  features: z.record(z.string(), z.unknown()).optional(),
 });
 const OmpResponseFrameSchema = z.object({
   type: z.literal("response"),
@@ -422,6 +446,129 @@ const OmpHostToolUpdateSchema = z.object({
   id: IDENTIFIER,
   partialResult: OmpHostToolAgentResultSchema,
 });
+const OmpToolApprovalIdentitySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("shell"), command: boundedJsonString(24 * 1024, 1) }).strict(),
+  z
+    .object({
+      kind: z.literal("edit"),
+      paths: z.array(boundedJsonString(MAX_TOOL_APPROVAL_PATH_BYTES, 1)).min(1).max(16),
+      content: boundedJsonString(MAX_TOOL_APPROVAL_CONTENT_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("write"),
+      path: boundedJsonString(MAX_TOOL_APPROVAL_PATH_BYTES, 1),
+      content: boundedJsonString(MAX_TOOL_APPROVAL_CONTENT_BYTES),
+    })
+    .strict(),
+  z.object({ kind: z.literal("other") }).strict(),
+]);
+type OmpToolApprovalValue =
+  | string
+  | number
+  | boolean
+  | null
+  | OmpToolApprovalValue[]
+  | { [key: string]: OmpToolApprovalValue };
+const OmpToolApprovalValueSchema: z.ZodType<OmpToolApprovalValue> = z.lazy(() =>
+  z.union([
+    boundedString(MAX_TOOL_APPROVAL_STRING_BYTES),
+    z.number().finite(),
+    z.boolean(),
+    z.null(),
+    z.array(OmpToolApprovalValueSchema).max(MAX_TOOL_APPROVAL_COLLECTION_ITEMS),
+    z.record(boundedString(128, 1), OmpToolApprovalValueSchema),
+  ]),
+);
+function approvalInputWithinBounds(value: unknown): boolean {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) break;
+    nodes += 1;
+    if (nodes > MAX_TOOL_APPROVAL_INPUT_NODES) return false;
+    if (current.value === null || typeof current.value !== "object") continue;
+    if (current.depth >= MAX_TOOL_APPROVAL_DEPTH) return false;
+    for (const child of Array.isArray(current.value)
+      ? current.value
+      : Object.values(current.value as Record<string, unknown>)) {
+      pending.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+  return true;
+}
+const OmpToolApprovalRequestSchema = z
+  .object({
+    type: z.literal("tool_approval_request"),
+    id: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+    toolCallId: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+    toolKind: z.enum(["shell", "edit", "write", "other"]),
+    toolName: boundedString(MAX_TOOL_APPROVAL_NAME_BYTES, 1),
+    tier: z.enum(["read", "write", "exec"]),
+    identity: OmpToolApprovalIdentitySchema,
+    input: z
+      .record(boundedString(128, 1), OmpToolApprovalValueSchema)
+      .refine(approvalInputWithinBounds),
+    detail: z
+      .object({
+        lines: z
+          .array(boundedString(MAX_TOOL_APPROVAL_DETAIL_BYTES))
+          .max(MAX_TOOL_APPROVAL_DETAIL_LINES),
+        truncated: z.boolean(),
+        truncatedFields: z
+          .array(boundedString(MAX_TOOL_APPROVAL_METADATA_FIELD_BYTES))
+          .max(MAX_TOOL_APPROVAL_METADATA_FIELDS),
+        redacted: z.boolean(),
+        redactedFields: z
+          .array(boundedString(MAX_TOOL_APPROVAL_METADATA_FIELD_BYTES))
+          .max(MAX_TOOL_APPROVAL_METADATA_FIELDS),
+        reason: boundedString(MAX_TOOL_APPROVAL_DETAIL_BYTES).optional(),
+        providerSafetyChecks: z
+          .array(boundedString(MAX_TOOL_APPROVAL_DETAIL_BYTES))
+          .max(MAX_TOOL_APPROVAL_DETAIL_LINES)
+          .optional(),
+      })
+      .strict(),
+    timeout: z.number().finite().nonnegative().max(MAX_TOOL_APPROVAL_TIMEOUT_MS).optional(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.toolKind !== request.identity.kind) {
+      context.addIssue({ code: "custom", message: "tool approval identity kind mismatch" });
+    }
+    if (Buffer.byteLength(JSON.stringify(request), "utf8") + 1 > MAX_TOOL_APPROVAL_FRAME_BYTES) {
+      context.addIssue({ code: "custom", message: "tool approval request exceeds bounds" });
+    }
+  });
+const OmpToolApprovalCancelSchema = z
+  .object({
+    type: z.literal("tool_approval_cancel"),
+    id: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+    targetId: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+    toolCallId: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+  })
+  .strict();
+const OmpToolApprovalResponseSchema = z.union([
+  z
+    .object({
+      type: z.literal("tool_approval_response"),
+      id: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+      toolCallId: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+      approved: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("tool_approval_response"),
+      id: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+      toolCallId: boundedString(MAX_TOOL_APPROVAL_ID_BYTES, 1),
+      cancelled: z.literal(true),
+      timedOut: z.boolean().optional(),
+    })
+    .strict(),
+]);
 const OmpAgentEndEnvelopeSchema = z.object({
   type: z.literal("agent_end"),
   messageCount: z.number().int().nonnegative().optional(),
@@ -721,6 +868,8 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
   }),
   OmpHostToolCallSchema,
   OmpHostToolCancelSchema,
+  OmpToolApprovalRequestSchema,
+  OmpToolApprovalCancelSchema,
   z.object({ type: z.literal("advisor_yielded") }),
 ]);
 const OmpModelsResultSchema = z.object({
@@ -763,7 +912,10 @@ const OmpSubagentMessagesResultSchema = z.object({
   reset: z.boolean(),
   messages: z.array(OmpMessageSchema).max(100_000),
 });
-const ProtocolNegotiationResultSchema = z.object({ protocolVersion: z.literal(2) });
+const ProtocolNegotiationResultSchema = z.object({
+  protocolVersion: z.literal(2),
+  clientCapabilities: z.object({ typedToolApprovals: z.literal(1).optional() }).optional(),
+});
 
 export type OmpModel = z.infer<typeof OmpModelSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
@@ -773,6 +925,9 @@ export type OmpHostToolDefinition = z.infer<typeof OmpHostToolDefinitionSchema>;
 export type OmpHostToolCall = z.infer<typeof OmpHostToolCallSchema>;
 export type OmpHostToolResult = z.infer<typeof OmpHostToolResultSchema>;
 export type OmpHostToolUpdate = z.infer<typeof OmpHostToolUpdateSchema>;
+export type OmpToolApprovalRequest = z.infer<typeof OmpToolApprovalRequestSchema>;
+export type OmpToolApprovalCancel = z.infer<typeof OmpToolApprovalCancelSchema>;
+export type OmpToolApprovalResponse = z.infer<typeof OmpToolApprovalResponseSchema>;
 export function parseOmpHostToolAgentResult(value: unknown): OmpHostToolResult["result"] {
   return OmpHostToolAgentResultSchema.parse(value);
 }
@@ -811,6 +966,7 @@ export interface OmpStartOptions {
   thinkingOption?: string;
   systemPrompt?: string;
   roleModels?: Readonly<{ smol?: string; slow?: string; plan?: string }>;
+  tools?: readonly string[];
   sessionDir?: string;
   readyTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -830,6 +986,7 @@ export type OmpExtensionUiResponse =
 export interface OmpRuntimeSession {
   readonly redactionValues?: readonly string[];
   readonly maxHostToolFrameBytes?: number;
+  readonly supportsTypedToolApprovals: boolean;
   onEvent(listener: (event: OmpRpcEvent) => void): () => void;
   getState(): Promise<OmpSessionState>;
   getSessionStats(): Promise<OmpSessionStats>;
@@ -854,6 +1011,7 @@ export interface OmpRuntimeSession {
   followUp(message: string, images?: readonly OmpImage[]): Promise<void>;
   handoff(customInstructions?: string): Promise<void>;
   respondToExtensionUi(response: OmpExtensionUiResponse): Promise<void>;
+  respondToToolApproval(response: OmpToolApprovalResponse): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
   branch(entryId: string): Promise<{ text: string; cancelled: boolean }>;
   readonly canReplayHistory: boolean;
@@ -1332,6 +1490,10 @@ export function buildOmpSpawnRequest(
     args.push("--mode", "rpc-ui");
   }
   args.push("--approval-mode", approvalMode);
+  if (options.tools) {
+    if (options.tools.length === 0) args.push("--no-tools");
+    else args.push("--tools", options.tools.join(","));
+  }
   if (options.model !== undefined) {
     args.push("--model", validateBoundedText(options.model, "model", MAX_MODEL_SELECTOR_BYTES));
   }
@@ -2243,6 +2405,7 @@ class OmpRpcProcess {
     }
     const event = OmpRuntimeEventSchema.safeParse(frame);
     if (!event.success) {
+      this.rejectMatchingToolApproval(frame);
       if (type === "agent_end" && this.receiveDegradedAgentEnd(frame, false)) return;
       this.recordProtocolViolation();
       return;
@@ -2266,6 +2429,18 @@ class OmpRpcProcess {
       this.commandTextLength = 0;
       this.activeToolCallIds.clear();
     }
+  }
+
+  private rejectMatchingToolApproval(frame: Record<string, unknown>): void {
+    if (frame.type !== "tool_approval_request") return;
+    const { id, toolCallId } = frame;
+    if (!isBoundedToolApprovalId(id) || !isBoundedToolApprovalId(toolCallId)) return;
+    void this.sendFrame({
+      type: "tool_approval_response",
+      id,
+      toolCallId,
+      cancelled: true,
+    }).catch(() => this.fail(new Error("OMP rejected tool approval could not be canceled")));
   }
 
   private acceptEventState(event: z.infer<typeof OmpRuntimeEventSchema>): boolean {
@@ -2427,6 +2602,7 @@ class OmpRpcSession implements OmpRuntimeSession {
     private readonly process: OmpRpcProcess,
     private readonly removeAbortListener: () => void,
     readonly canReplayHistory: boolean,
+    readonly supportsTypedToolApprovals: boolean,
   ) {
     this.redactionValues = process.redactionValues;
   }
@@ -2615,6 +2791,9 @@ class OmpRpcSession implements OmpRuntimeSession {
   respondToExtensionUi(response: OmpExtensionUiResponse): Promise<void> {
     return this.process.sendFrame(response);
   }
+  respondToToolApproval(response: OmpToolApprovalResponse): Promise<void> {
+    return this.process.sendFrame(OmpToolApprovalResponseSchema.parse(response));
+  }
 
   async abort(): Promise<void> {
     await this.process.request({ type: "abort", clearQueue: true, reason: "Interrupted in Paseo" });
@@ -2678,11 +2857,23 @@ export class OmpRpcRuntime implements OmpRuntime {
       validateReadyMetadata(ready);
       process.applyReadyLimits(ready);
       options.signal?.throwIfAborted();
-      ProtocolNegotiationResultSchema.parse(
-        await process.request({ type: "negotiate_protocol", protocolVersion: 2 }),
+      const advertiseTypedToolApprovals = ready.features?.typedToolApprovals === 1;
+      const negotiation = ProtocolNegotiationResultSchema.parse(
+        await process.request({
+          type: "negotiate_protocol",
+          protocolVersion: 2,
+          ...(advertiseTypedToolApprovals
+            ? { clientCapabilities: { typedToolApprovals: 1 as const } }
+            : {}),
+        }),
       );
       options.signal?.throwIfAborted();
-      return new OmpRpcSession(process, removeAbortListener, true);
+      return new OmpRpcSession(
+        process,
+        removeAbortListener,
+        true,
+        advertiseTypedToolApprovals && negotiation.clientCapabilities?.typedToolApprovals === 1,
+      );
     } catch (error) {
       removeAbortListener();
       const cleanup = process.close();

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import type {
   ProviderCatalog,
   ProviderMode,
   ProviderModel,
   ProviderThinkingOption,
 } from "@getpaseo/plugin/server/provider";
+import type { NormalizedOmpStartOptions } from "./config-normalization";
 import type { OmpModel, OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
 import { OmpCleanupFailure, OmpPublicDataFilter, OmpPublicError } from "./security";
 
@@ -116,14 +116,12 @@ async function closeCatalogSession(session: OmpRuntimeSession): Promise<void> {
 
 export async function discoverOmpCatalog(
   runtime: OmpRuntime,
-  cwd?: string,
+  options: NormalizedOmpStartOptions,
   signal?: AbortSignal,
   environment?: NodeJS.ProcessEnv,
 ): Promise<ProviderCatalog> {
   const session = await runtime.startSession({
-    cwd: cwd ?? homedir(),
-    mode: "full",
-    noSession: true,
+    ...options,
     signal,
     environment,
   });

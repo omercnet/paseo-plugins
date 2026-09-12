@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import type {
   ProviderConnection,
   ProviderEvent,
+  ProviderInput,
   ProviderRegistration,
   ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
@@ -31,6 +32,7 @@ import {
   type OmpStartOptions,
   type OmpSubagentMessagesResult,
   type OmpSubagentSnapshot,
+  type OmpToolApprovalResponse,
 } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
 import { OmpCleanupFailure, OmpPublicDataFilter } from "../server/provider/security";
@@ -287,6 +289,7 @@ class ManualScheduler implements OmpTimelineScheduler {
 
 class FakeOmpSession implements OmpRuntimeSession {
   canReplayHistory = true;
+  supportsTypedToolApprovals = true;
   readonly listeners = new Set<(event: OmpRpcEvent) => void>();
   redactionValues: readonly string[] = [];
   readonly prompts: string[] = [];
@@ -294,6 +297,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly steers: string[] = [];
   readonly steerImages: OmpImage[][] = [];
   readonly extensionUiResponses: OmpExtensionUiResponse[] = [];
+  readonly toolApprovalResponses: OmpToolApprovalResponse[] = [];
   extensionUiResponseGate: Promise<void> | null = null;
   extensionUiResponseObserved: (() => void) | null = null;
   extensionUiResponseError: Error | null = null;
@@ -634,6 +638,9 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (this.extensionUiResponseGate) await this.extensionUiResponseGate;
     if (this.extensionUiResponseError) throw this.extensionUiResponseError;
     this.extensionUiResponses.push(response);
+  }
+  async respondToToolApproval(response: OmpToolApprovalResponse) {
+    this.toolApprovalResponses.push(response);
   }
 
   async branch(entryId: string) {
@@ -1071,11 +1078,65 @@ describe("OMP direct provider", () => {
     const alternate = event.catalog.models.find((model) => model.id === ALTERNATE_MODEL_PUBLIC_ID);
     expect(alternate?.contextWindowMaxTokens).toBeUndefined();
     expect(alternate?.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
+
     expect(event.catalog.modes.map((mode) => mode.id)).toEqual(["full", "write", "ask"]);
     expect(runtime.starts[0]).toEqual(
       expect.objectContaining({ cwd: "/repo", noSession: true, environment: TEST_RUNTIME_ENV }),
     );
     expect(sessionAt(runtime).closes).toBe(1);
+    await connection.close();
+  });
+  test("uses strict profile-aware options for availability and catalog cache identity", async () => {
+    const observed: Array<{ options: unknown; timeoutMs: number | undefined }> = [];
+    const runtime = new FakeOmpRuntime();
+    const provider = createOmpProvider({
+      environment: TEST_RUNTIME_ENV,
+      runtime,
+      availabilityProbe: async (options, timeoutMs) => {
+        observed.push({ options, timeoutMs });
+        return { status: "available" };
+      },
+    });
+    const base = {
+      scope: "workspace" as const,
+      cwd: "/repo",
+      providerOptions: { command: ["/opt/omp-work"], params: { sessionDir: "/sessions/work" } },
+      settings: {},
+    };
+    await expect(provider.checkAvailability?.(base, { timeoutMs: 321 })).resolves.toEqual({
+      status: "available",
+    });
+    const baseKey = await provider.getCatalogCacheKey?.(base);
+    const changedOptionsKey = await provider.getCatalogCacheKey?.({
+      ...base,
+      providerOptions: { command: ["/opt/omp-home"] },
+    });
+    const changedSettingsKey = await provider.getCatalogCacheKey?.({
+      ...base,
+      settings: { profile: "work" },
+    });
+    expect(observed).toEqual([{ options: base, timeoutMs: 321 }]);
+    expect(baseKey).toBeDefined();
+    expect(changedOptionsKey).not.toBe(baseKey);
+    expect(changedSettingsKey).not.toBe(baseKey);
+    await expect(
+      provider.getCatalogCacheKey?.({ ...base, providerOptions: { unknown: true } }),
+    ).rejects.toThrow("Invalid OMP provider options");
+    expect(() => provider.providerOptionsSchema?.parse({ unknown: true })).toThrow();
+    const connection = await provider.connect({ versions: [1], capabilities: ["permission"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({ type: "catalog", requestId: "profile-catalog", ...base } as never);
+    await events.waitFor(
+      (event) => event.type === "catalog" && event.requestId === "profile-catalog",
+    );
+    expect(runtime.starts[0]).toEqual(
+      expect.objectContaining({
+        command: ["/opt/omp-work"],
+        sessionDir: "/sessions/work",
+        noSession: true,
+      }),
+    );
     await connection.close();
   });
 
@@ -1361,6 +1422,7 @@ describe("OMP direct provider", () => {
       API_TOKEN: "credential-secret",
     });
     const session = sessionAt(runtime);
+    session.supportsTypedToolApprovals = false;
     session.emit({
       type: "extension_ui_request",
       id: "spoofed-tool-approval",
@@ -1383,35 +1445,176 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("reports unsupported legacy profile fields before spawning OMP", async () => {
+  test("publishes trusted typed tool permissions and correlates each response once", async () => {
     const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events, "typed-approval-open", "session-1", {
+      API_TOKEN: "credential-secret",
+    });
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "tool_approval_request",
+      id: "native-shell",
+      toolCallId: "call-shell",
+      toolKind: "shell",
+      toolName: "bash",
+      tier: "exec",
+      identity: { kind: "shell", command: "echo credential-secret" },
+      input: { token: "credential-secret", command: "echo credential-secret" },
+      detail: {
+        lines: ["Review credential-secret"],
+        truncated: false,
+        truncatedFields: [],
+        redacted: true,
+        redactedFields: ["input.token"],
+      },
+    });
+    session.emit({
+      type: "tool_approval_request",
+      id: "native-edit",
+      toolCallId: "call-edit",
+      toolKind: "edit",
+      toolName: "edit",
+      tier: "write",
+      identity: { kind: "edit", paths: ["src/a.ts", "src/b.ts"], content: "replacement" },
+      input: { paths: ["src/a.ts", "src/b.ts"] },
+      detail: {
+        lines: [],
+        truncated: false,
+        truncatedFields: [],
+        redacted: false,
+        redactedFields: [],
+      },
+    });
+    const editPermission = events.findLast(
+      (event) => event.type === "session.permission" && event.request.name === "omp.edit",
+    );
+    if (editPermission?.type !== "session.permission") throw new Error("Expected edit permission");
+    expect(editPermission.request.detail).toEqual({
+      type: "edit",
+      filePath: "src/a.ts",
+      newString: "replacement",
+    });
     await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: editPermission.request.id,
+      response: { behavior: "deny", selectedActionId: "deny" },
+    });
+    const permission = events.findLast(
+      (event) => event.type === "session.permission" && event.request.name === "omp.bash",
+    );
+    if (permission?.type !== "session.permission") throw new Error("Expected tool permission");
+    expect(permission.request).toMatchObject({
+      kind: "tool",
+      detail: { type: "shell", command: "echo <redacted>" },
+      actions: [
+        expect.objectContaining({ id: "allow", behavior: "allow" }),
+        expect.objectContaining({ id: "deny", behavior: "deny" }),
+      ],
+    });
+    expect(JSON.stringify(permission.request)).not.toContain("credential-secret");
+    await connection.send({
+      type: "session.permission",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+      response: { behavior: "allow", selectedActionId: "allow" },
+    });
+    await expect(
+      connection.send({
+        type: "session.permission",
+        sessionId: "session-1",
+        permissionId: permission.request.id,
+        response: { behavior: "allow", selectedActionId: "allow" },
+      }),
+    ).rejects.toThrow("Unknown OMP permission request");
+    expect(session.toolApprovalResponses).toEqual([
+      {
+        type: "tool_approval_response",
+        id: "native-edit",
+        toolCallId: "call-edit",
+        approved: false,
+      },
+      {
+        type: "tool_approval_response",
+        id: "native-shell",
+        toolCallId: "call-shell",
+        approved: true,
+      },
+    ]);
+
+    session.emit({
+      type: "tool_approval_request",
+      id: "native-cancel",
+      toolCallId: "call-cancel",
+      toolKind: "write",
+      toolName: "write",
+      tier: "write",
+      identity: { kind: "write", path: "out.txt", content: "safe" },
+      input: { path: "out.txt", content: "safe" },
+      detail: {
+        lines: [],
+        truncated: false,
+        truncatedFields: [],
+        redacted: false,
+        redactedFields: [],
+      },
+    });
+    const canceled = events.findLast(
+      (event) => event.type === "session.permission" && event.request.name === "omp.write",
+    );
+    if (canceled?.type !== "session.permission") throw new Error("Expected cancellable permission");
+    session.emit({
+      type: "tool_approval_cancel",
+      id: "cancel-frame",
+      targetId: "native-cancel",
+      toolCallId: "call-cancel",
+    });
+    session.emit({
+      type: "tool_approval_cancel",
+      id: "duplicate-cancel-frame",
+      targetId: "native-cancel",
+      toolCallId: "call-cancel",
+    });
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.permission_resolved" &&
+          event.permissionId === canceled.request.id,
+      ),
+    ).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("forwards and enforces denied tools before launching OMP", async () => {
+    const { connection, events, runtime } = await createHarness();
+    type SessionOpenInput = Extract<ProviderInput, { type: "session.open" }>;
+    const request: Omit<SessionOpenInput, "config"> & {
+      config: SessionOpenInput["config"] & { deniedTools: readonly string[] };
+    } = {
       type: "session.open",
-      requestId: "unsupported-profile",
-      sessionId: "unsupported-profile-session",
+      requestId: "denied-tools",
+      sessionId: "denied-tools-session",
       config: {
         cwd: "/repo",
         env: {},
         mcpServers: {},
         mode: "full",
         settings: {},
-        providerOptions: { disallowedTools: ["bash"] },
-        persist: true,
+        deniedTools: ["bash", "write"],
+        persist: false,
       },
       history: "skip",
-    });
-    const failure = await events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "unsupported-profile",
+    };
+    await connection.send(request);
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "denied-tools",
     );
-
-    expect(failure).toEqual(
-      expect.objectContaining({
-        error: expect.objectContaining({ message: expect.stringContaining("disallowedTools") }),
-      }),
-    );
-    expect(runtime.starts).toHaveLength(0);
+    expect(runtime.starts[0]?.tools).not.toContain("bash");
+    expect(runtime.starts[0]?.tools).not.toContain("write");
+    expect(runtime.starts[0]?.tools).toContain("read");
     await connection.close();
   });
+
   test("omits thinking options without recognized effort metadata", () => {
     const variants: OmpModel[] = [
       { provider: "test", id: "absent", reasoning: true },
@@ -9165,6 +9368,7 @@ describe("OMP direct provider", () => {
       runtime,
       timelineScheduler: new ManualScheduler(),
       environment: TEST_RUNTIME_ENV,
+      availabilityProbe: async () => ({ status: "available" }),
     });
     // Dynamic imports intentionally exercise the installed daemon's CJS/ESM plugin boundary.
     const adapter = (await import(pluginProviderModulePath)) as unknown as {
