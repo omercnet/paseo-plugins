@@ -4,11 +4,9 @@ import { chmod, mkdir, mkdtemp, readFile, rm, watch, writeFile } from "node:fs/p
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import type {
   AgentClient,
-  AgentPersistenceHandle,
   AgentPromptInput,
   AgentSession,
   AgentSessionConfig,
@@ -18,19 +16,12 @@ import { ompModelId } from "../server/provider/catalog";
 import type { OmpModel } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
 
-const coreRoot = process.env.PASEO_CUTOVER_CORE_ROOT?.trim();
-const pluginProviderModulePath = coreRoot
-  ? pathToFileURL(join(coreRoot, "packages/server/dist/server/server/agent/plugin-provider.js"))
-      .href
-  : new URL(
-      "../node_modules/@getpaseo/server/dist/server/server/agent/plugin-provider.js",
-      import.meta.url,
-    ).href;
-const hostRequire = createRequire(
-  coreRoot ? join(coreRoot, "package.json") : pluginProviderModulePath,
-);
+const pluginProviderModulePath = new URL(
+  "../node_modules/@getpaseo/server/dist/server/server/agent/plugin-provider.js",
+  import.meta.url,
+).href;
+const hostRequire = createRequire(pluginProviderModulePath);
 const pino = hostRequire("pino") as (options: { enabled: boolean }) => object;
-const coreIntegrationTest = coreRoot ? test : test.skip;
 const fixturePath = resolve(import.meta.dir, "fixtures/fake-omp.ts");
 const PRIMARY_SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";
 const BRANCHED_SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfcc";
@@ -330,8 +321,8 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
   test("exposes catalog, profile identity, strict options, and availability", async () => {
     const harness = await createHarness();
     try {
-      expect(harness.registry.has("omp")).toBe(true);
-      expect(harness.registry.definitions()).toHaveProperty("omp");
+      expect(harness.registry.has("omp-plugin")).toBe(true);
+      expect(harness.registry.definitions()).toHaveProperty("omp-plugin");
       const catalog = await harness.client.fetchCatalog({
         scope: "workspace",
         cwd: harness.cwd,
@@ -345,7 +336,7 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
         expect.arrayContaining([
           expect.objectContaining({
             id: MODEL_ID,
-            provider: "omp",
+            provider: "omp-plugin",
             contextWindowMaxTokens: 200_000,
             defaultThinkingOptionId: "medium",
           }),
@@ -873,96 +864,6 @@ describe("OMP plugin provider conformance through PluginAgentClientRegistry", ()
       await harness.close();
     }
   });
-
-  coreIntegrationTest(
-    "resumes and imports legacy bundled OMP persistence through the production plugin",
-    async () => {
-      const harness = await createHarness({ chunkHistory: true });
-      const sessionFile = await writePersistedSession(harness);
-      const legacyHandle: AgentPersistenceHandle = {
-        provider: "omp",
-        sessionId: PRIMARY_SESSION_ID,
-        nativeHandle: sessionFile,
-        metadata: {
-          cwd: harness.cwd,
-          model: MODEL_ID,
-          modeId: "full",
-          thinkingOptionId: "medium",
-        },
-      };
-      let resumed: AgentSession | undefined;
-      let imported: AgentSession | undefined;
-      try {
-        resumed = await harness.client.resumeSession(
-          legacyHandle,
-          harness.config(),
-          harness.launchEnv(),
-        );
-        expect(resumed.describePersistence()).toEqual({
-          provider: "omp",
-          sessionId: PRIMARY_SESSION_ID,
-          nativeHandle: sessionFile,
-          metadata: {
-            cwd: harness.cwd,
-            model: MODEL_ID,
-            modeId: "full",
-            thinkingOptionId: "medium",
-            pluginProviderPersistence: { version: 1, data: { sessionId: PRIMARY_SESSION_ID } },
-          },
-        });
-        await resumed.close();
-        resumed = undefined;
-
-        if (!harness.client.importSession) throw new Error("session import unavailable");
-        const result = await harness.client.importSession(
-          { providerHandleId: sessionFile, cwd: harness.cwd },
-          {
-            config: harness.config(),
-            storedConfig: harness.config(),
-            launchContext: harness.launchEnv(),
-          },
-        );
-        imported = result.session;
-        expect(result.persistence).toEqual({
-          provider: "omp",
-          sessionId: PRIMARY_SESSION_ID,
-          nativeHandle: sessionFile,
-          metadata: {
-            cwd: harness.cwd,
-            pluginProviderPersistence: { version: 1, data: { sessionId: PRIMARY_SESSION_ID } },
-          },
-        });
-        expect(result.timeline).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              item: expect.objectContaining({ type: "assistant_message", text: "replayed answer" }),
-            }),
-          ]),
-        );
-        const importedHandle = result.persistence;
-        await imported.close();
-        imported = undefined;
-        resumed = await harness.client.resumeSession(
-          importedHandle,
-          harness.config(),
-          harness.launchEnv(),
-        );
-        expect(resumed.describePersistence()).toEqual(importedHandle);
-        const starts = (await readLog(harness.logPath)).filter(
-          (entry): entry is Extract<FakeLogEntry, { kind: "start" }> => entry.kind === "start",
-        );
-        expect(starts.slice(-3).map((entry) => entry.argv)).toEqual([
-          expect.arrayContaining(["--resume", PRIMARY_SESSION_ID]),
-          expect.arrayContaining(["--resume", PRIMARY_SESSION_ID]),
-          expect.arrayContaining(["--resume", PRIMARY_SESSION_ID]),
-        ]);
-      } finally {
-        await resumed?.close();
-        await imported?.close();
-        await harness.close();
-      }
-    },
-  );
 
   test("publishes child and nested child sessions before completing the root", async () => {
     const harness = await createHarness();

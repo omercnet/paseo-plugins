@@ -66,15 +66,13 @@ async function compileClientBundle(entryPath: string) {
 }
 
 describe("plugin server bundle", () => {
-  test("requires the first Paseo release with nested provider ancestry", async () => {
+  test("requires the published Paseo 0.8 provider contract", async () => {
     const manifest = await Bun.file(join(pluginRoot, "paseo-plugin.json")).json();
-    expect(manifest).toEqual(expect.objectContaining({ requirements: { paseo: "^0.8.1" } }));
-    expect(await Bun.file(join(pluginRoot, "README.md")).text()).toContain(
-      "requires Paseo `^0.8.1`",
-    );
+    expect(manifest).toEqual(expect.objectContaining({ requirements: { paseo: "^0.8.0" } }));
+    expect(await Bun.file(join(pluginRoot, "README.md")).text()).toContain("Paseo `^0.8.0`");
   });
 
-  test("loads and registers the production provider in the daemon CJS sandbox", async () => {
+  test("loads and registers the plugin provider in the daemon CJS sandbox", async () => {
     const { code, warnings } = await compileServerBundle(join(pluginRoot, "index.server.ts"));
     expect(warnings.map((warning) => warning.text)).toEqual([]);
     // biome-ignore lint/security/noGlobalEval: mirrors the daemon's plugin loader
@@ -100,7 +98,51 @@ describe("plugin server bundle", () => {
       });
       expect(handlers).toHaveLength(7);
       expect(beforeHooks).toHaveLength(1);
-      expect(providers).toEqual([expect.objectContaining({ id: "omp", label: "OMP" })]);
+      const [hookName, hook] = beforeHooks[0] as [
+        string,
+        (event: {
+          request: {
+            agentId: string;
+            workspaceId: string | null;
+            provider: string;
+            cwd: string;
+            env: Record<string, string>;
+          };
+        }) => unknown,
+      ];
+      expect(hookName).toBe("agent.session_open");
+      expect(
+        hook({
+          request: {
+            agentId: "plugin-agent",
+            workspaceId: "plugin-workspace",
+            provider: "omp-plugin",
+            cwd: "/workspace",
+            env: { PASEO_AGENT_ID: "spoofed" },
+          },
+        }),
+      ).toEqual(
+        expect.objectContaining({
+          env: {
+            PASEO_AGENT_ID: "plugin-agent",
+            PASEO_WORKSPACE_ID: "plugin-workspace",
+          },
+        }),
+      );
+      expect(
+        hook({
+          request: {
+            agentId: "builtin-agent",
+            workspaceId: "builtin-workspace",
+            provider: "omp",
+            cwd: "/workspace",
+            env: {},
+          },
+        }),
+      ).toBeUndefined();
+      expect(providers).toEqual([
+        expect.objectContaining({ id: "omp-plugin", label: "OMP Plugin" }),
+      ]);
       const provider = providers[0];
       if (!provider) throw new Error("Registered provider is missing");
       const connection = await provider.connect({
@@ -141,10 +183,10 @@ describe("plugin server bundle", () => {
       const files = unzipSync(await Bun.file(archivePath).bytes());
       expect(files["paseo-omp/server/provider/security.ts"]).toBeDefined();
       expect(new TextDecoder().decode(files["paseo-omp/paseo-plugin.json"])).toContain(
-        '"paseo": "^0.8.1"',
+        '"paseo": "^0.8.0"',
       );
       expect(new TextDecoder().decode(files["paseo-omp/README.md"])).toContain(
-        "nested-subagent ancestry",
+        "coexists with Paseo's bundled `omp` provider",
       );
       await extractArchiveFiles(files, extractionRoot);
 

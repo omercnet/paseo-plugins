@@ -83,9 +83,9 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
   const runtime = options.runtime ?? new OmpRpcRuntime({ environment: options.environment });
   const nativeReservations = new OmpNativeSessionReservations();
   return {
-    id: "omp",
-    label: "OMP",
-    description: "Direct provider for OMP's rpc-ui protocol",
+    id: "omp-plugin",
+    label: "OMP Plugin",
+    description: "Direct plugin provider for OMP's rpc-ui protocol",
     icon: "server/provider/omp.svg",
     providerOptionsSchema: OmpProviderOptionsSchema,
     async getCatalogCacheKey(catalogOptions) {

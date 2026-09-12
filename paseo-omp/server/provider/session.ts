@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { basename } from "node:path";
 import type {
   ProviderConfigState,
   ProviderContent,
@@ -93,13 +92,6 @@ const MAX_BUFFERED_TURN_BYTES = 4 * 1024 * 1024;
 const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
 const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
-const CORE_RESUME_PERSISTENCE_KEYS: Readonly<Record<string, true>> = {
-  source: true,
-  kind: true,
-  sessionId: true,
-  nativeHandle: true,
-  metadata: true,
-};
 class OmpCatalogEscape extends OmpPublicError {}
 const MAX_REPLAY_MESSAGES = 100_000;
 const REPLAY_TIMEOUT_MS = 20_000;
@@ -138,54 +130,30 @@ const OMP_BUILTIN_COMMANDS: readonly OmpAvailableCommand[] = [
   },
 ];
 
+function applicableThinkingLevel(
+  model: OmpModel | undefined,
+  level: OmpSessionState["thinkingLevel"],
+): OmpSessionState["thinkingLevel"] {
+  return model?.reasoning === false ? undefined : level;
+}
+
 export function ompPersistenceSessionId(input: SessionOpenInput): string | undefined {
   if (!input.persistence) return;
-  const data = input.persistence.data;
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    throw new OmpPublicError("Invalid OMP session persistence");
-  }
-  const record = data as Record<string, unknown>;
-  let sessionId: unknown;
-  if (input.persistence.version === 1) {
-    if (!Object.hasOwn(record, "sessionId") || Object.keys(record).length !== 1) {
-      throw new OmpPublicError("Invalid OMP session persistence");
-    }
-    sessionId = record.sessionId;
-  } else if (input.persistence.version === 0 && record.source === "paseo-core") {
-    if (record.kind === "resume") {
-      if (
-        Object.keys(record).some((key) => !Object.hasOwn(CORE_RESUME_PERSISTENCE_KEYS, key)) ||
-        (record.nativeHandle !== undefined && typeof record.nativeHandle !== "string") ||
-        (record.metadata !== undefined &&
-          (!record.metadata ||
-            typeof record.metadata !== "object" ||
-            Array.isArray(record.metadata)))
-      ) {
-        throw new OmpPublicError("Invalid OMP core resume persistence");
-      }
-      sessionId = record.sessionId;
-    } else if (record.kind === "import") {
-      if (
-        Object.keys(record).length !== 3 ||
-        typeof record.providerHandleId !== "string" ||
-        record.providerHandleId.includes("\0")
-      ) {
-        throw new OmpPublicError("Invalid OMP core import persistence");
-      }
-      const fileName = basename(record.providerHandleId);
-      if (!fileName.endsWith(".jsonl")) {
-        throw new OmpPublicError("Invalid OMP core import handle");
-      }
-      const stem = fileName.slice(0, -".jsonl".length);
-      sessionId = stem.slice(stem.lastIndexOf("_") + 1);
-    } else {
-      throw new OmpPublicError("Invalid OMP core persistence kind");
-    }
-  } else {
+  if (input.persistence.version !== 1) {
     throw new OmpPublicError("Unsupported OMP persistence version");
   }
+  const data = input.persistence.data;
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    !Object.hasOwn(data, "sessionId") ||
+    Object.keys(data).length !== 1
+  ) {
+    throw new OmpPublicError("Invalid OMP session persistence");
+  }
   try {
-    return validateNativeSessionId(sessionId);
+    return validateNativeSessionId((data as Record<string, unknown>).sessionId);
   } catch {
     throw new OmpPublicError("Invalid OMP session identifier");
   }
@@ -290,12 +258,15 @@ type ActiveTurn = {
   userEchoes: OmpMessage[];
   userCorrelationActive: boolean;
   userLookups: Set<Promise<void>>;
+  completedMessageCount: number;
+  lastCompletedAssistantFailed?: boolean;
 };
 
 type PendingAbort = {
   turn: ActiveTurn;
   generation: number;
   runtime: OmpRuntimeSession;
+  forceTerminal: boolean;
   promise: Promise<void>;
 };
 type PendingPermission = {
@@ -521,21 +492,30 @@ function nativeEntryId(message: OmpMessage): string | undefined {
   return message.entryId;
 }
 
-function terminalError(event: Extract<OmpRpcEvent, { type: "agent_end" }>): string | undefined {
+function terminalError(
+  event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  turn: Pick<ActiveTurn, "completedMessageCount" | "lastCompletedAssistantFailed">,
+): string | undefined {
   const messages = event.messages;
-  if (!messages) {
-    return event.messageCount === 0
-      ? undefined
-      : "OMP agent_end omitted terminal messages; outcome is unknown";
-  }
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "assistant") continue;
-    if (message.stopReason === "error" || message.errorMessage) {
-      return "OMP assistant turn failed";
+  if (messages) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role !== "assistant") continue;
+      return message.stopReason === "error" || message.errorMessage
+        ? "OMP assistant turn failed"
+        : undefined;
     }
   }
-  return undefined;
+  if (messages && event.messageCount === undefined) return undefined;
+  if (event.messageCount === 0) return undefined;
+  if (
+    turn.lastCompletedAssistantFailed !== undefined &&
+    (event.messageCount === undefined ||
+      turn.completedMessageCount + (messages?.length ?? 0) >= event.messageCount)
+  ) {
+    return turn.lastCompletedAssistantFailed ? "OMP assistant turn failed" : undefined;
+  }
+  return "OMP agent_end omitted terminal messages; outcome is unknown";
 }
 
 function isNativeTurnActivity(event: OmpRpcEvent): boolean {
@@ -614,6 +594,7 @@ function createActiveTurn(
     userCorrelationActive: false,
     userLookups: new Set(),
     userEchoes: [],
+    completedMessageCount: 0,
     bufferedEvents: [],
     pendingUsers: [
       {
@@ -727,6 +708,7 @@ export class OmpProviderSession {
       scheduler,
       sensitiveValues,
       capabilities.includes("session.revert.conversation"),
+      hostTools.labels,
     );
     this.subsessions = capabilities.includes("session.subsession")
       ? new OmpSubsessionProjector(
@@ -868,6 +850,7 @@ export class OmpProviderSession {
         throw new OmpPublicError("OMP runtime selected an unadvertised model");
       }
       const thinkingOptions = thinkingForModel(currentModel);
+      const committedThinkingLevel = applicableThinkingLevel(currentModel, state.thinkingLevel);
       if (
         !resumeSessionId &&
         input.config.thinkingOption !== undefined &&
@@ -876,15 +859,15 @@ export class OmpProviderSession {
         throw new OmpPublicError("OMP thinking level is unavailable for the selected model");
       }
       if (
-        state.thinkingLevel &&
-        !thinkingOptions.some((option) => option.id === state.thinkingLevel)
+        committedThinkingLevel &&
+        !thinkingOptions.some((option) => option.id === committedThinkingLevel)
       ) {
         throw new OmpPublicError("OMP runtime selected an unsupported thinking level");
       }
       const configState: ProviderConfigState = {
         ...(state.model ? { model: ompModelId(state.model) } : {}),
         mode: normalizedConfig.mode,
-        ...(state.thinkingLevel ? { thinkingOption: state.thinkingLevel } : {}),
+        ...(committedThinkingLevel ? { thinkingOption: committedThinkingLevel } : {}),
         models,
         modes: OMP_MODES,
         thinkingOptions,
@@ -893,7 +876,7 @@ export class OmpProviderSession {
       const { signal: _signal, ...recoveryTemplate } = startOptions;
       const recoveryOptions = withCommittedOmpSelection(recoveryTemplate, {
         model: state.model ? nativeOmpModelId(state.model) : undefined,
-        thinkingOption: state.thinkingLevel,
+        thinkingOption: committedThinkingLevel,
       });
       if (!hostTools.isBoundTo(native)) {
         throw new Error("OMP host tool bridge detached during session initialization");
@@ -1308,10 +1291,14 @@ export class OmpProviderSession {
       if (messages.length > MAX_REPLAY_MESSAGES) {
         throw new OmpPublicError("OMP session history exceeds replay limits");
       }
+      this.unclaimedBranchEntries.length = 0;
       for (const message of messages) {
         replay.signal.throwIfAborted();
+        const entryId = nativeEntryId(message);
+        if (entryId) this.seenEntryIds.add(entryId);
         this.projector.projectReplayMessage(message);
       }
+      this.branchWatermarkValid = true;
       this.projector.finishReplay();
       await this.subsessions?.replay(messages, this.runtime, this.runtimeFactory, replay.signal);
       replay.signal.throwIfAborted();
@@ -1871,7 +1858,9 @@ export class OmpProviderSession {
       this.emit({ type: "request.completed", requestId: input.requestId });
       return;
     }
+    const forceTerminal = turn.awaitingPermissionEvidence;
     turn.awaitingPermissionEvidence = false;
+    if (forceTerminal) this.resolveTurnPermissions(turn.turnId);
     const pending = this.activeAbort;
     if (turn.interrupted) {
       if (pending?.turn === turn) await this.settleInterrupt(input.requestId, pending);
@@ -1884,6 +1873,7 @@ export class OmpProviderSession {
       turn,
       generation: turn.generation,
       runtime,
+      forceTerminal,
       promise: runtime.abort(),
     };
     this.activeAbort = abort;
@@ -1893,7 +1883,11 @@ export class OmpProviderSession {
   private async settleInterrupt(requestId: string, abort: PendingAbort): Promise<void> {
     try {
       await abort.promise;
-      if (abort.turn.terminalizing && !abort.turn.terminal && this.activeTurn === abort.turn) {
+      if (
+        (abort.turn.terminalizing || abort.forceTerminal) &&
+        !abort.turn.terminal &&
+        this.activeTurn === abort.turn
+      ) {
         await this.finishTurn(abort.turn, "canceled", undefined, true, true);
       }
       this.emit({ type: "request.completed", requestId });
@@ -2197,9 +2191,10 @@ export class OmpProviderSession {
       throw new OmpCatalogEscape("OMP runtime selected an unadvertised model");
     }
     const thinkingOptions = thinkingForModel(advertisedModel);
+    const committedThinkingLevel = applicableThinkingLevel(advertisedModel, state.thinkingLevel);
     if (
-      state.thinkingLevel &&
-      !thinkingOptions.some((option) => option.id === state.thinkingLevel)
+      committedThinkingLevel &&
+      !thinkingOptions.some((option) => option.id === committedThinkingLevel)
     ) {
       throw new OmpCatalogEscape("OMP runtime selected an unsupported thinking level");
     }
@@ -2208,8 +2203,8 @@ export class OmpProviderSession {
     const nextConfig: ProviderConfigState = {
       ...this.configState,
       ...(publicModelId ? { model: publicModelId } : { model: undefined }),
-      ...(state.thinkingLevel
-        ? { thinkingOption: state.thinkingLevel }
+      ...(committedThinkingLevel
+        ? { thinkingOption: committedThinkingLevel }
         : { thinkingOption: undefined }),
       thinkingOptions,
     };
@@ -2540,9 +2535,10 @@ export class OmpProviderSession {
       if (state.model && !advertisedModel) {
         throw new Error("OMP recovered with an unadvertised model");
       }
+      const recoveredThinkingLevel = applicableThinkingLevel(advertisedModel, state.thinkingLevel);
       if (
-        state.thinkingLevel &&
-        !thinkingForModel(advertisedModel).some((option) => option.id === state.thinkingLevel)
+        recoveredThinkingLevel &&
+        !thinkingForModel(advertisedModel).some((option) => option.id === recoveredThinkingLevel)
       ) {
         throw new Error("OMP recovered with an unsupported thinking level");
       }
@@ -2800,6 +2796,13 @@ export class OmpProviderSession {
       this.activeTurn !== turn
     ) {
       return;
+    }
+    if (event.type === "message_end") {
+      turn.completedMessageCount += 1;
+      if (event.message.role === "assistant") {
+        turn.lastCompletedAssistantFailed =
+          event.message.stopReason === "error" || !!event.message.errorMessage;
+      }
     }
     if (event.type === "prompt_error") {
       if (event.id !== turn.nativeRequestId) return;
@@ -4095,7 +4098,7 @@ export class OmpProviderSession {
     usageSampled = false,
   ): Promise<void> {
     if (turn.terminal || this.activeTurn !== turn) return;
-    const error = terminalError(event);
+    const error = terminalError(event, turn);
     if (turn.interrupted) this.subsessions?.terminalize("canceled");
     else if (error) this.subsessions?.terminalize("failed");
     if (turn.interrupted) await this.finishTurn(turn, "canceled", undefined, usageSampled);

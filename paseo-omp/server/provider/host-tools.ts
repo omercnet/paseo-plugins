@@ -100,6 +100,13 @@ function safeName(value: string, fallback: string): string {
     .replace(/^_+|_+$/gu, "");
   return normalized || fallback;
 }
+function humanizeName(value: string): string {
+  const normalized = value
+    .trim()
+    .replace(/[-_.]+/gu, " ")
+    .replace(/\s+/gu, " ");
+  return normalized ? `${normalized[0]?.toUpperCase() ?? ""}${normalized.slice(1)}` : "Tool";
+}
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
@@ -331,13 +338,16 @@ export class OmpHostToolsBridge {
   private closePromise: Promise<void> | null = null;
   private fatalHandler: ((error: Error) => void) | null = null;
 
+  readonly labels: ReadonlyMap<string, string>;
   private constructor(
     private readonly connections: readonly OmpMcpConnection[],
     private readonly definitions: readonly OmpHostToolDefinition[],
     private readonly targets: ReadonlyMap<string, ToolTarget>,
     private readonly callTimeoutMs: number,
     private readonly callScheduler: OmpHostToolScheduler,
-  ) {}
+  ) {
+    this.labels = new Map(definitions.map(({ name, label }) => [name, label ?? name]));
+  }
   static async open(
     config: ProviderSessionConfig,
     options: OmpHostToolsOpenOptions = {},
@@ -418,7 +428,12 @@ export class OmpHostToolsBridge {
             name = `${name.slice(0, MAX_HOST_TOOL_NAME_BYTES - suffix.length - 1)}_${suffix}`;
           }
           if (targets.has(name)) throw new Error("MCP host tool names collide");
-          const fallbackLabel = `${server.name}/${tool.name}`;
+          const normalizedServerName = safeName(server.name, "server");
+          const normalizedToolName = safeName(tool.name, "tool");
+          const friendlyToolName = normalizedToolName.startsWith(`${normalizedServerName}_`)
+            ? normalizedToolName.slice(normalizedServerName.length + 1)
+            : tool.name;
+          const fallbackLabel = `${humanizeName(server.name)}: ${humanizeName(friendlyToolName)}`;
           definitions.push({
             name,
             label: boundedText(tool.title ?? fallbackLabel, MAX_HOST_TOOL_LABEL_BYTES, name),

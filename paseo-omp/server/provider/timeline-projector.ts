@@ -173,6 +173,22 @@ function firstString(
   }
   return undefined;
 }
+function xdeviceToolName(nativeName: string, input: JsonValue): string | undefined {
+  if (nativeName.toLowerCase() !== "write") return;
+  const record = jsonRecord(input);
+  const nestedInput = jsonRecord(record?.input) ?? record;
+  const path = firstString(nestedInput, "path", "filePath");
+  const match = path?.match(/^xd:\/\/([A-Za-z0-9_][A-Za-z0-9_.-]{0,255})(?:[/?#]|$)/u);
+  return match?.[1];
+}
+function friendlyXdeviceToolName(name: string): string {
+  const routedName = name.startsWith("mcp__") ? name.slice("mcp__".length) : name;
+  const words = routedName
+    .replace(/[-_.]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return words ? `${words[0]?.toUpperCase() ?? ""}${words.slice(1)}` : name;
+}
 function sanitizePublishedUrl(value: string | undefined): string | undefined {
   if (!value) return undefined;
   try {
@@ -359,6 +375,7 @@ export class OmpTimelineProjector {
     private readonly scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
     sensitiveValues: Iterable<string> = [],
     private readonly conversationRevertEnabled = false,
+    private readonly hostToolLabels: ReadonlyMap<string, string> = new Map(),
   ) {
     this.dataFilter = new OmpPublicDataFilter(sensitiveValues);
   }
@@ -445,10 +462,14 @@ export class OmpTimelineProjector {
           return;
         }
         if (!previous) this.toolSequence += 1;
+        const routedToolName = xdeviceToolName(event.toolName, input);
+        const displayName = routedToolName
+          ? (this.hostToolLabels.get(routedToolName) ?? friendlyXdeviceToolName(routedToolName))
+          : event.toolName;
         const snapshot: ToolSnapshot = {
           publicId: previous?.publicId ?? `omp:tool:${this.toolSequence}`,
           nativeName: event.toolName,
-          name: this.dataFilter.text(event.toolName, 256),
+          name: this.dataFilter.text(displayName, 256),
           input,
           output: null,
           retainedBytes,
@@ -1470,6 +1491,9 @@ export class OmpTimelineProjector {
     const details = resultDetails(snapshot.output);
     const resultText = displayText(snapshot.output);
     const name = snapshot.nativeName.toLowerCase();
+    if (xdeviceToolName(snapshot.nativeName, snapshot.input)) {
+      return { type: "unknown", input: snapshot.input, output: snapshot.output };
+    }
     if (["bash", "shell", "exec", "run_command"].includes(name)) {
       const exitCode = details?.exitCode ?? output?.exitCode;
       return {

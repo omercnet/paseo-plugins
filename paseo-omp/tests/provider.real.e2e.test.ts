@@ -165,7 +165,7 @@ describe("OMP 18.1.15 real provider", () => {
         });
         expect(catalog.models).toContainEqual(
           expect.objectContaining({
-            provider: "omp",
+            provider: "omp-plugin",
             label: "paseo-ci/Conformance Model",
           }),
         );
@@ -198,7 +198,7 @@ describe("OMP 18.1.15 real provider", () => {
         if (!model) throw new Error("OMP did not load the hermetic CI model");
         session = await harness.client.createSession(
           {
-            provider: "omp",
+            provider: "omp-plugin",
             cwd: harness.cwd,
             model: model.id,
             modeId: "full",

@@ -23,7 +23,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpConfig, resolveListOmpConfig);
   server.handle(getOmpProviderHealth, resolveGetOmpProviderHealth);
   const removeIdentityHook = server.before("agent.session_open", ({ request }) => {
-    if (request.provider !== "omp") return;
+    if (request.provider !== "omp-plugin") return;
     return withOmpWorkspaceIdentity(request);
   });
   server.registerProvider(createOmpProvider());

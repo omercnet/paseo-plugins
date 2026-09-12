@@ -184,10 +184,29 @@ describe("OMP host tool bridge", () => {
     expect(observed.map(({ name }) => name)).toEqual(["paseo", "daemon-sibling", "repo"]);
     expect(observed.every(({ cwd, signal }) => cwd === "/workspace" && !signal.aborted)).toBe(true);
     expect(runtime.catalogs[0]).toEqual([
-      expect.objectContaining({ name: "mcp__paseo_read", loadMode: "essential" }),
-      expect.objectContaining({ name: "mcp__daemon_sibling_status", loadMode: "essential" }),
-      expect.objectContaining({ name: "mcp__repo_search", loadMode: "discoverable" }),
+      expect.objectContaining({
+        name: "mcp__paseo_read",
+        label: "Read workspace file",
+        loadMode: "essential",
+      }),
+      expect.objectContaining({
+        name: "mcp__daemon_sibling_status",
+        label: "Daemon sibling: Status",
+        loadMode: "essential",
+      }),
+      expect.objectContaining({
+        name: "mcp__repo_search",
+        label: "Repo: Search",
+        loadMode: "discoverable",
+      }),
     ]);
+    expect(bridge.labels).toEqual(
+      new Map([
+        ["mcp__paseo_read", "Read workspace file"],
+        ["mcp__daemon_sibling_status", "Daemon sibling: Status"],
+        ["mcp__repo_search", "Repo: Search"],
+      ]),
+    );
 
     bridge.handle({
       type: "host_tool_call",
@@ -817,7 +836,7 @@ describe("OMP host tool bridge", () => {
       withOmpWorkspaceIdentity({
         agentId: "agent-1",
         workspaceId: "workspace-1",
-        provider: "omp",
+        provider: "omp-plugin",
         cwd: "/workspace",
         reason: "create" as const,
         purpose: "interactive" as const,

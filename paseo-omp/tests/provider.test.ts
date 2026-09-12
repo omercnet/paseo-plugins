@@ -744,14 +744,14 @@ class FakeOmpRuntime implements OmpRuntime {
     childTranscriptId: string;
   }> = [];
   readonly sessionListRequests: Array<{
-    cwd: string;
+    cwd?: string;
     query?: string;
     limit?: number;
     sessionId?: string;
     sessionDir?: string;
   }> = [];
   listSessions(options: {
-    cwd: string;
+    cwd?: string;
     query?: string;
     limit?: number;
     sessionId?: string;
@@ -761,14 +761,14 @@ class FakeOmpRuntime implements OmpRuntime {
     const source =
       this.descriptors.length > 0
         ? this.descriptors
-        : this.resolveSessions && options.sessionId
+        : this.resolveSessions && options.sessionId && options.cwd
           ? [{ id: options.sessionId, cwd: options.cwd }]
           : [];
     return Promise.resolve(
       source.filter(
         (descriptor) =>
           (!options.sessionId || descriptor.id === options.sessionId) &&
-          descriptor.cwd === options.cwd,
+          (options.cwd === undefined || descriptor.cwd === options.cwd),
       ),
     );
   }
@@ -1372,6 +1372,51 @@ describe("OMP direct provider", () => {
         (event) => event.type === "request.completed" && event.requestId === `close-${mode}`,
       );
     }
+    await connection.close();
+  });
+
+  test("cancels a turn waiting for generic permission after native abort acknowledgement", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "extension_ui_request",
+      id: "interrupt-permission",
+      method: "select",
+      title: "Allow tool: bash",
+      options: ["Approve", "Deny"],
+    });
+    const permission = await events.waitFor((event) => event.type === "session.permission");
+    if (permission.type !== "session.permission") throw new Error("Expected permission event");
+
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "interrupt-permission-turn",
+      sessionId: "session-1",
+    });
+
+    await events.waitFor(
+      (event) =>
+        event.type === "request.completed" && event.requestId === "interrupt-permission-turn",
+    );
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "canceled",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.permission_resolved" &&
+          event.permissionId === permission.request.id,
+      ),
+    ).toHaveLength(1);
+    expect(session.aborts).toBe(1);
+    expect(session.extensionUiResponses).toContainEqual({
+      type: "extension_ui_response",
+      id: "interrupt-permission",
+      cancelled: true,
+    });
     await connection.close();
   });
 
@@ -2152,7 +2197,12 @@ describe("OMP direct provider", () => {
     }
     expect(replacementUser.item.revertToken).not.toBe(token);
 
+    session.branchMessages = [
+      { entryId: "entry-user-1", text: "first" },
+      { entryId: "entry-user-live", text: "continue" },
+    ];
     session.promptEvents = [
+      { type: "message_end", message: { role: "user", content: "continue" } },
       { type: "message_end", message: firstAssistant },
       {
         type: "message_end",
@@ -2172,7 +2222,12 @@ describe("OMP direct provider", () => {
             : [],
         ),
     ).toEqual(["live reply"]);
-    await finishTurn(events, session, turnId);
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
 
     await connection.send({
       type: "session.revert",
@@ -2921,6 +2976,58 @@ describe("OMP direct provider", () => {
     projector.project({ type: "message_end", message: duplicate }, "replay-boundary");
     expect(events.slice(baseline)).toHaveLength(0);
     projector.close();
+  });
+
+  test("ignores an inactive runtime thinking level for a nonreasoning model", async () => {
+    const runtime = new FakeOmpRuntime();
+    const nonReasoningModel: OmpModel = {
+      provider: "paseo-ci",
+      id: "conformance-model",
+      name: "Conformance Model",
+      reasoning: false,
+      input: ["text"],
+    };
+    runtime.availableModels = [nonReasoningModel];
+    runtime.nextModel = nonReasoningModel;
+    runtime.nextThinkingLevel = "medium";
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.configure",
+    ]);
+
+    await connection.send({
+      type: "session.open",
+      requestId: "nonreasoning-open",
+      sessionId: "nonreasoning-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        model: ompModelId(nonReasoningModel),
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "nonreasoning-open",
+    );
+    const config = events.findLast(
+      (event) => event.type === "session.config" && event.sessionId === "nonreasoning-session",
+    );
+    expect(config).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          model: ompModelId(nonReasoningModel),
+          thinkingOptions: [],
+        }),
+      }),
+    );
+    if (config?.type !== "session.config") throw new Error("Expected session config");
+    expect(Object.hasOwn(config.config, "thinkingOption")).toBe(false);
+    await connection.close();
   });
 
   test("ignores stale resume thinking and rejects unsupported restored thinking", async () => {
@@ -3813,7 +3920,7 @@ describe("OMP direct provider", () => {
     );
     await connection.close();
   });
-  test("rejects cwd relocation and unscoped listing before touching OMP", async () => {
+  test("lists host-wide sessions while rejecting cwd relocation", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/other" });
     const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
@@ -3822,9 +3929,15 @@ describe("OMP direct provider", () => {
       "session.persistence",
     ]);
     await connection.send({ type: "sessions", requestId: "unscoped-list" });
-    await events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "unscoped-list",
-    );
+    await expect(
+      events.waitFor((event) => event.type === "sessions" && event.requestId === "unscoped-list"),
+    ).resolves.toEqual({
+      type: "sessions",
+      requestId: "unscoped-list",
+      sessions: [
+        { persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } }, cwd: "/other" },
+      ],
+    });
     await connection.send({
       type: "session.open",
       requestId: "wrong-cwd",
@@ -3845,6 +3958,7 @@ describe("OMP direct provider", () => {
     );
     expect(runtime.starts).toHaveLength(0);
     expect(runtime.sessionListRequests).toEqual([
+      { query: undefined, limit: undefined, sessionDir: undefined },
       { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2 },
     ]);
     await connection.close();
@@ -10613,6 +10727,80 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("uses completed streamed assistant evidence when agent_end payload is incomplete", async () => {
+    for (const [suffix, assistant, expectedState, expectedError] of [
+      [
+        "success",
+        { role: "assistant" as const, content: "done", stopReason: "stop" },
+        "completed",
+        null,
+      ],
+      [
+        "failure",
+        {
+          role: "assistant" as const,
+          content: "failed",
+          stopReason: "error",
+          errorMessage: "native failure",
+        },
+        "failed",
+        "OMP assistant turn failed",
+      ],
+    ] as const) {
+      const { connection, events, runtime } = await createHarness();
+      await openSession(connection, events);
+      const result = await startPrompt(connection, events, `degraded-${suffix}`, "work");
+      const turnId = turnIdFrom(result);
+      const session = sessionAt(runtime);
+      establishTerminalOwnership(session);
+      session.emit({ type: "message_end", message: assistant });
+      session.emit({
+        type: "agent_end",
+        messageCount: 1,
+        isTerminal: true,
+        ...(suffix === "success" ? { messages: [] } : {}),
+      });
+      const terminal = await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      );
+
+      expect(terminal).toEqual(
+        expect.objectContaining({
+          state: expectedState,
+          ...(expectedError ? { error: { message: expectedError } } : {}),
+        }),
+      );
+      await connection.close();
+    }
+  });
+
+  test("fails closed when streamed terminal evidence does not cover agent_end messageCount", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const result = await startPrompt(connection, events, "degraded-partial", "work");
+    const turnId = turnIdFrom(result);
+    const session = sessionAt(runtime);
+    establishTerminalOwnership(session);
+    session.emit({
+      type: "message_end",
+      message: { role: "assistant", content: "partial", stopReason: "stop" },
+    });
+    session.emit({ type: "agent_end", messageCount: 2, isTerminal: true });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        state: "failed",
+        error: { message: "OMP agent_end omitted terminal messages; outcome is unknown" },
+      }),
+    );
+    await connection.close();
+  });
+
   test("projects safe passive updates outside a turn without wedging the session", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
@@ -14855,6 +15043,36 @@ describe("OMP direct provider", () => {
       expect(new Set(snapshots.map((item) => item.id)).size).toBe(1);
       expect(snapshots.at(-1)?.detail.type).toBe(detailType);
     }
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "mcp-route",
+      toolName: "write",
+      args: { path: "xd://mcp__paseo_list_agents", content: "{}" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "mcp-route",
+      toolName: "write",
+      result: { content: [{ type: "text", text: "agent-1" }] },
+    });
+    const mcpSnapshots = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "tool_call" &&
+      event.item.name === "Paseo list agents"
+        ? [event.item]
+        : [],
+    );
+    expect(mcpSnapshots).toHaveLength(2);
+    expect(new Set(mcpSnapshots.map((item) => item.id)).size).toBe(1);
+    expect(mcpSnapshots.at(-1)).toMatchObject({
+      name: "Paseo list agents",
+      status: "completed",
+      detail: {
+        type: "unknown",
+        input: { path: "xd://mcp__paseo_list_agents", content: "{}" },
+        output: { content: [{ type: "text", text: "agent-1" }] },
+      },
+    });
     session.emit({
       type: "tool_execution_start",
       toolCallId: "sensitive-fetch",

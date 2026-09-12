@@ -36,7 +36,7 @@ export interface OmpPersistedSubagentTranscript {
   messages: unknown[];
 }
 export interface OmpSessionListOptions {
-  cwd: string;
+  cwd?: string;
   query?: string;
   limit?: number;
   sessionId?: string;
@@ -286,8 +286,11 @@ export async function listOmpSessionDescriptors(
   options: OmpSessionListOptions,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<OmpSessionDescriptor[]> {
-  if (!options.cwd || !isAbsolute(options.cwd) || options.cwd.includes("\0")) {
-    throw new Error("OMP session listing requires an absolute working directory");
+  if (
+    options.cwd !== undefined &&
+    (!options.cwd || !isAbsolute(options.cwd) || options.cwd.includes("\0"))
+  ) {
+    throw new Error("OMP session listing requires an absolute working directory when scoped");
   }
   const requestedId = options.sessionId ? validateNativeSessionId(options.sessionId) : undefined;
   const limit = Math.min(Math.max(options.limit ?? 100, 1), MAX_LIST_RESULTS);
@@ -305,14 +308,18 @@ export async function listOmpSessionDescriptors(
   const root = options.sessionDir
     ? options.sessionDir.startsWith("~/")
       ? join(environment.HOME ?? environment.USERPROFILE ?? homedir(), options.sessionDir.slice(2))
-      : resolve(options.cwd, options.sessionDir)
+      : resolve(options.cwd ?? homedir(), options.sessionDir)
     : ompSessionDir(environment);
   await scanSessionFiles(root, budget, async (file) => {
     const fileName = basename(file);
     const stem = fileName.slice(0, -".jsonl".length);
     if (requestedId && !stem.endsWith(`_${requestedId}`)) return true;
     const descriptor = await parseDescriptor(file, budget);
-    if (!descriptor || !stem.endsWith(`_${descriptor.id}`) || descriptor.cwd !== options.cwd)
+    if (
+      !descriptor ||
+      !stem.endsWith(`_${descriptor.id}`) ||
+      (options.cwd !== undefined && descriptor.cwd !== options.cwd)
+    )
       return !budgetExceeded(budget);
     if (
       query &&

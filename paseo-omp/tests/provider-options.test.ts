@@ -24,8 +24,8 @@ function sessionConfig(overrides: Partial<ProviderSessionConfig> = {}): Provider
   };
 }
 
-describe("OMP provider option migration", () => {
-  test("maps legacy command, environment, params, and ephemeral sessions to argv", () => {
+describe("OMP provider option normalization", () => {
+  test("maps command, environment, params, and ephemeral sessions to argv", () => {
     const normalized = normalizeOmpSessionConfig(
       sessionConfig({
         env: { SESSION_VALUE: "session-wins" },

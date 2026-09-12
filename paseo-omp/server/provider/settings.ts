@@ -46,7 +46,7 @@ export const OmpProviderParamsSchema = z
   })
   .strict();
 
-/** Session-scoped migration target for the legacy `agents.providers.omp` override. */
+/** Strict provider-scoped OMP launch options. */
 export const OmpProviderOptionsSchema = z
   .object({
     command: z

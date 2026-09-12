@@ -191,13 +191,16 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
     if (!isBoundedIdentifier(record.requestId))
       throw new OmpPublicError("Invalid provider request");
     if (
-      typeof record.cwd !== "string" ||
-      record.cwd.length === 0 ||
-      !isAbsolute(record.cwd) ||
-      utf8Bytes(record.cwd) > 4_096 ||
-      record.cwd.includes("\0")
+      record.cwd !== undefined &&
+      (typeof record.cwd !== "string" ||
+        record.cwd.length === 0 ||
+        !isAbsolute(record.cwd) ||
+        utf8Bytes(record.cwd) > 4_096 ||
+        record.cwd.includes("\0"))
     ) {
-      throw new OmpPublicError("OMP session listing requires an absolute working directory");
+      throw new OmpPublicError(
+        "OMP session listing requires an absolute working directory when scoped",
+      );
     }
     if (
       record.query !== undefined &&
@@ -515,25 +518,23 @@ export function createOmpConnection(
         return;
       case "sessions":
         try {
-          if (!input.cwd)
-            throw new OmpPublicError("OMP session listing requires a working directory");
           nativeReservations.assertListable();
           const configuredInput = input as typeof input & ProviderConfigurationCompat;
           const listingConfig = normalizeOmpCatalogOptions(
             {
-              scope: "workspace",
-              cwd: input.cwd,
+              scope: input.cwd ? "workspace" : "global",
+              ...(input.cwd ? { cwd: input.cwd } : {}),
               providerOptions: configuredInput.providerOptions,
               settings: configuredInput.settings,
             },
-            input.cwd,
+            input.cwd ?? homedir(),
           );
           emit({
             type: "sessions",
             requestId: input.requestId,
             sessions: (
               await runtime.listSessions({
-                cwd: input.cwd,
+                ...(input.cwd ? { cwd: input.cwd } : {}),
                 query: input.query,
                 limit: input.limit,
                 sessionDir: listingConfig.sessionDir,

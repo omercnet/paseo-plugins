@@ -80,6 +80,11 @@ describe("OMP session descriptor discovery", () => {
       expect.objectContaining({ id: SESSION_ID, cwd: "/repo", title: "Safe Title" }),
     ]);
     expect(
+      (await listOmpSessionDescriptors({ limit: 10 }, { OMP_SESSION_DIR: sessionRoot }))
+        .map(({ id }) => id)
+        .sort(),
+    ).toEqual([EXACT_CWD_ID, OTHER_ID, SESSION_ID].sort());
+    expect(
       await listOmpSessionDescriptors(
         { cwd: "/repo ", limit: 10 },
         { OMP_SESSION_DIR: sessionRoot },
@@ -244,10 +249,13 @@ describe("OMP session descriptor discovery", () => {
     );
   });
 
-  test("rejects unscoped listing", async () => {
+  test("rejects invalid scoped listing", async () => {
     await expect(
       listOmpSessionDescriptors({ cwd: "" }, { OMP_SESSION_DIR: "/tmp/unused" }),
-    ).rejects.toThrow("requires an absolute working directory");
+    ).rejects.toThrow("requires an absolute working directory when scoped");
+    await expect(
+      listOmpSessionDescriptors({ cwd: "relative" }, { OMP_SESSION_DIR: "/tmp/unused" }),
+    ).rejects.toThrow("requires an absolute working directory when scoped");
   });
 
   test("filters invalid descriptors and extracts array prompt content", async () => {
