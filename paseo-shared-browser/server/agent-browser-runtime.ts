@@ -107,6 +107,10 @@ interface NavigationHistory {
   currentIndex: number;
   entries: Array<{ id: number; url: string; title: string }>;
 }
+interface PageLifecycleEvent {
+  name: string;
+  loaderId: string;
+}
 
 interface ScreencastFrame {
   data: string;
@@ -339,12 +343,45 @@ export class AgentBrowserRuntime {
 
   async navigate(url: string): Promise<void> {
     await this.withInvalidatedScreencast(async (page) => {
-      const result = await page.send<{ errorText?: string }>(
-        "Page.navigate",
-        { url },
-        { mutation: true, timeoutMs: 30_000 },
-      );
-      if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);
+      await page.send("Page.setLifecycleEventsEnabled", { enabled: true });
+      const observedLoaders = new Set<string>();
+      const loaded = Promise.withResolvers<void>();
+      let expectedLoaderId: string | undefined;
+      const onLifecycle = (event: PageLifecycleEvent) => {
+        if (event.name !== "DOMContentLoaded") return;
+        if (expectedLoaderId === undefined) {
+          observedLoaders.add(event.loaderId);
+          return;
+        }
+        if (event.loaderId === expectedLoaderId) loaded.resolve();
+      };
+      page.on("Page.lifecycleEvent", onLifecycle);
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const result = await page.send<{ errorText?: string; loaderId?: string }>(
+          "Page.navigate",
+          { url },
+          { mutation: true, timeoutMs: 30_000 },
+        );
+        if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);
+        if (!result.loaderId) return;
+        expectedLoaderId = result.loaderId;
+        if (observedLoaders.has(expectedLoaderId)) return;
+        timer = setTimeout(
+          () =>
+            loaded.reject(
+              new CdpUnknownOutcomeError(
+                "Page.navigate did not reach DOMContentLoaded; mutation outcome is unknown",
+              ),
+            ),
+          30_000,
+        );
+        timer.unref();
+        await loaded.promise;
+      } finally {
+        clearTimeout(timer);
+        page.off("Page.lifecycleEvent", onLifecycle);
+      }
     });
   }
 

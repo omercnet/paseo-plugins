@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   MAX_VIEWPORT,
@@ -154,5 +155,25 @@ describe("browser epoch fencing", () => {
     };
     expect(isBrowserStateCurrent(current, restarted)).toBe(true);
     expect(didBrowserRuntimeRestart(current, restarted)).toBe(true);
+  });
+});
+
+describe("runtime installation compatibility", () => {
+  it("requires at least the Node major required by agent-browser", async () => {
+    const pluginPackage = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { engines?: { node?: string } };
+    const agentBrowserPackage = JSON.parse(
+      await readFile(
+        new URL("../node_modules/agent-browser/package.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { engines?: { node?: string } };
+    const pluginMajor = Number(pluginPackage.engines?.node?.match(/^>=(\d+)/)?.[1]);
+    const agentBrowserMajor = Number(agentBrowserPackage.engines?.node?.match(/^>=(\d+)/)?.[1]);
+
+    expect(Number.isInteger(pluginMajor)).toBe(true);
+    expect(Number.isInteger(agentBrowserMajor)).toBe(true);
+    expect(pluginMajor).toBeGreaterThanOrEqual(agentBrowserMajor);
   });
 });

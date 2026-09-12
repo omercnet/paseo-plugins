@@ -76,15 +76,22 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       response.end("<!doctype html><html><body style='background:#123456'>New page</body></html>");
       return;
     }
-    response.setHeader("Content-Type", "text/html; charset=utf-8");
-    response.end(`<!doctype html>
+    const page = `<!doctype html>
       <html><head><title>Shared Browser Smoke</title><style>
         input{position:absolute;left:40px;top:30px;width:220px;height:32px}
         button{position:absolute;left:300px;top:30px;width:140px;height:36px}
       </style></head><body>
         <input aria-label="Shared value" oninput="fetch('/typed?value='+encodeURIComponent(this.value))">
         <button onclick="fetch('/clicked')">Record click</button>
-      </body></html>`);
+      </body></html>`;
+    response.setHeader("Content-Type", "text/html; charset=utf-8");
+    if (url.searchParams.has("delayed")) {
+      response.flushHeaders();
+      // Real network delay is intentional: fake timers would also stall Chromium's response.
+      setTimeout(() => response.end(page), 100);
+      return;
+    }
+    response.end(page);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -124,9 +131,10 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       viewerToken: first.viewerToken,
       controlToken: firstControl.controlToken,
       expected: expected(firstControl.state),
-      action: { kind: "goto", url: origin },
+      action: { kind: "goto", url: `${origin}/?delayed=1` },
     });
-    expect(navigated.state.url).toBe(`${origin}/`);
+    expect(navigated.state.url).toBe(`${origin}/?delayed=1`);
+    expect(navigated.state.title).toBe("Shared Browser Smoke");
 
     const firstCapture = await manager.capture(first.viewerToken, "medium", null);
     expect(firstCapture.frame?.transport).toBe("cdp-screencast");

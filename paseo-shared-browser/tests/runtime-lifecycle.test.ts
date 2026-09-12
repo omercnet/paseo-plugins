@@ -345,6 +345,105 @@ describe("detached runtime supervisor lifecycle", () => {
     }
   });
 
+  it("resumes a quiet socket after global backpressure clears", async () => {
+    const root = await mkdtemp(join(tmpdir(), "shared-browser-global-backpressure-"));
+    const paths = testPaths(root);
+    const owner = new FakeOwner();
+    const server = await startSupervisorServer(owner, paths);
+    const token = await readFile(paths.token, "utf8");
+    const sockets = await Promise.all(Array.from({ length: 5 }, () => openSocket(paths.socket)));
+    try {
+      const claim = await sendRequest(sockets[0]!, {
+        id: "claim",
+        token,
+        version: RUNTIME_PROTOCOL_VERSION,
+        method: "bridge.claim",
+        bridgeId: "bridge-one",
+      });
+      if (
+        !("result" in claim) ||
+        !claim.result ||
+        typeof claim.result !== "object" ||
+        !("epoch" in claim.result) ||
+        typeof claim.result.epoch !== "number"
+      )
+        throw new Error("Bridge claim did not return an epoch");
+      const epoch = claim.result.epoch;
+      await sendRequest(sockets[0]!, {
+        id: "ensure",
+        token,
+        version: RUNTIME_PROTOCOL_VERSION,
+        method: "workspace.ensure",
+        bridgeId: "bridge-one",
+        epoch,
+        workspaceId: "workspace-one",
+      });
+
+      owner.requestGate = deferred<void>();
+      owner.requestStarted = deferred<void>();
+      const localBusyResponses = sockets.slice(0, 4).map((socket, socketIndex) => {
+        const response = new Promise<Record<string, unknown>>((resolve, reject) => {
+          socket.once("data", (chunk) => resolve(JSON.parse(String(chunk).trim())));
+          socket.once("error", reject);
+        });
+        for (let requestIndex = 0; requestIndex <= 16; requestIndex += 1) {
+          socket.write(
+            `${JSON.stringify({
+              id: `socket-${socketIndex}-request-${requestIndex}`,
+              token,
+              version: RUNTIME_PROTOCOL_VERSION,
+              method: "workspace.request",
+              bridgeId: "bridge-one",
+              epoch,
+              workspaceId: "workspace-one",
+              operation: `mutation-${socketIndex}-${requestIndex}`,
+              input: null,
+            })}\n`,
+          );
+        }
+        return response;
+      });
+      await owner.requestStarted.promise;
+      const localBusy = await Promise.all(localBusyResponses);
+      for (const response of localBusy) {
+        expect(response).toMatchObject({ ok: false, error: { code: "RUNTIME_BUSY" } });
+      }
+
+      await expect(
+        sendRequest(sockets[4]!, {
+          id: "global-busy",
+          token,
+          version: RUNTIME_PROTOCOL_VERSION,
+          method: "workspace.request",
+          bridgeId: "bridge-one",
+          epoch,
+          workspaceId: "workspace-one",
+          operation: "globally-rejected",
+          input: null,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "RUNTIME_BUSY" } });
+
+      owner.requestGate.resolve();
+      await vi.waitFor(() => expect(owner.requests).toHaveLength(64));
+      await vi.waitFor(() => expect(owner.activeRequests).toBe(0));
+      await expect(
+        sendRequest(sockets[4]!, {
+          id: "heartbeat-after-busy",
+          token,
+          version: RUNTIME_PROTOCOL_VERSION,
+          method: "bridge.heartbeat",
+          bridgeId: "bridge-one",
+          epoch,
+        }),
+      ).resolves.toMatchObject({ ok: true });
+    } finally {
+      owner.requestGate?.resolve();
+      for (const socket of sockets) socket.destroy();
+      await server.close().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("removes endpoint metadata and the startup lock when stopping rejects", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-cleanup-"));
     const paths = testPaths(root);

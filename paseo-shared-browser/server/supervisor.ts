@@ -894,6 +894,7 @@ export async function startSupervisorServer<Runtime extends RuntimeInstance>(
         })}\n`,
         (error) => {
           if (error) socket.destroy();
+          else socket.resume();
         },
       );
       return false;

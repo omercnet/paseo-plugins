@@ -80,7 +80,7 @@ npm run prepare:runtime
 paseo plugin install "$PWD"
 ```
 
-The build requires Node.js and npm on the daemon host. The runtime also needs a
+The build requires Node.js 24 or newer and npm on the daemon host. The runtime also needs a
 Chromium-compatible executable. Linux ARM64 requires a native ARM64 Chromium installation because
 the bundled download is not available for that target; set
 `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` to its absolute executable path before installing or
