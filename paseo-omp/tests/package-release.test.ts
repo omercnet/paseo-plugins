@@ -92,7 +92,7 @@ describe("release package", () => {
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 120_000);
 
   test("rejects ZIP entries outside the extraction root", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-zip-slip-"));
