@@ -6,9 +6,9 @@
       "name": "@omercnet/paseo-dracula",
       "devDependencies": {
         "@biomejs/biome": "^2.5.10",
-        "@getpaseo/client": "0.8.0-beta.1",
-        "@getpaseo/plugin": "0.8.0-beta.1",
-        "@getpaseo/protocol": "0.8.0-beta.1",
+        "@getpaseo/client": "0.8.0",
+        "@getpaseo/plugin": "0.8.0",
+        "@getpaseo/protocol": "0.8.0",
         "@types/bun": "^1.4.0",
         "fflate": "^0.8.3",
         "typescript": "^5.9.3",
@@ -36,13 +36,13 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.12", "", { "os": "win32", "cpu": "x64" }, "sha512-B1R/l+CwEpKFSuqiwePzPNRk1EiJN8kc0UhdafNz6MZN9v5OFP9HYP1irptvWzHrwVI4blVNGMbxc5zt70m3IA=="],
 
-    "@getpaseo/client": ["@getpaseo/client@0.8.0-beta.1", "", { "dependencies": { "@getpaseo/protocol": "0.8.0-beta.1", "@getpaseo/relay": "0.8.0-beta.1", "zod": "^4.4.3" } }, "sha512-+JHqeg4eCWYa3TqMNN1FLaDWpoXM6PrPArOpzfV/Qm+2Mhw/bA07QS+zjMzDpVz7QZ+z6eN/96qAbQ1eFOD6Zg=="],
+    "@getpaseo/client": ["@getpaseo/client@0.8.0", "", { "dependencies": { "@getpaseo/protocol": "0.8.0", "@getpaseo/relay": "0.8.0", "zod": "^4.4.3" } }, "sha512-sX0PPR47a9MoK4cUpZXo4vrZLSfP39/l9jlxYslQTGTiXE/9g6EDr6XlRQZVlTkgZZ47xGRVJZ/wxhE37nLWkw=="],
 
-    "@getpaseo/plugin": ["@getpaseo/plugin@0.8.0-beta.1", "", { "dependencies": { "@agentclientprotocol/sdk": "^1.4.0", "use-sync-external-store": "^1.6.0" }, "peerDependencies": { "@getpaseo/client": "0.8.0-beta.1", "@getpaseo/protocol": "0.8.0-beta.1", "react": "~19.1.0", "react-native": ">=0.81.5", "zod": "^4.4.3" }, "optionalPeers": ["react-native"] }, "sha512-7/4cAfd3+GNB8rEYytFbp+Z8x/QfXlLIGMa8pcdn2YgrQUuO8Hjc3L9CGan3IoAYva/ttQn9biCOvvVWcDmMoQ=="],
+    "@getpaseo/plugin": ["@getpaseo/plugin@0.8.0", "", { "dependencies": { "@agentclientprotocol/sdk": "^1.4.0", "use-sync-external-store": "^1.6.0" }, "peerDependencies": { "@getpaseo/client": "0.8.0", "@getpaseo/protocol": "0.8.0", "react": "~19.1.0", "react-native": ">=0.81.5", "zod": "^4.4.3" }, "optionalPeers": ["react-native"] }, "sha512-VWdqMuYhv6oVrbNr+phDkSkMd4qfjb55UkFB0S4u4sHgo66UtJwvn8U9bwp1zU5wktW2LdXEa4OpcEGFDSkdVw=="],
 
-    "@getpaseo/protocol": ["@getpaseo/protocol@0.8.0-beta.1", "", { "dependencies": { "semver": "^7.8.5", "zod": "^4.4.3" } }, "sha512-7GQfNTe8cGgWPQDvY4F6CwEe75HdtPB7d+XQ+SZYRWM4IGkQhgXPM6hGFaDqut9LAweKNYllttA2FaDAJmmo+g=="],
+    "@getpaseo/protocol": ["@getpaseo/protocol@0.8.0", "", { "dependencies": { "semver": "^7.8.5", "zod": "^4.4.3" } }, "sha512-SytigneLVG61useJ9yU400WFVWlqluwwUeWF/giRs0+ZOmgMSBZvYduqPAJdTRMAvJlrj62T/uVBH8gzMuHYLw=="],
 
-    "@getpaseo/relay": ["@getpaseo/relay@0.8.0-beta.1", "", { "dependencies": { "base64-js": "^1.5.1", "tweetnacl": "^1.0.3", "ws": "^8.14.2" } }, "sha512-aZGmgbQEU/DgPCW/zOdKce//nWiuMU1N5ikMG1q0z2acRQNPwdAok9fQO3iuNIcTENF/32azpWqgsr/qeMp5gA=="],
+    "@getpaseo/relay": ["@getpaseo/relay@0.8.0", "", { "dependencies": { "base64-js": "^1.5.1", "tweetnacl": "^1.0.3", "ws": "^8.14.2" } }, "sha512-YBCMAI3WOx7HgEToryyB94Mnugb7o2opuxN6ZycVK+K2wk2T25aV0sG3enzlKVM1oyiFVoJxJrAZyGDWfWpxpQ=="],
 
     "@types/bun": ["@types/bun@1.4.1", "", { "dependencies": { "bun-types": "1.4.1" } }, "sha512-0AVGiTXGajf1rgKom3N+c5L7CBxuoyyv1i44M0nX4UDK0G/fnRAMiri93nHuVPIb429KKtAgj7HatVmmOjeQLA=="],
 

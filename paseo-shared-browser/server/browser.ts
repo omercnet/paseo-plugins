@@ -155,7 +155,7 @@ function loadChromium(stateRoot: string): BrowserType {
     return playwrightRuntime.chromium;
   } catch {
     throw new Error(
-      "The Shared Browser runtime is not prepared. Reinstall the plugin or run npm run prepare:runtime.",
+      "The Shared Browser runtime is not prepared. Reinstall the plugin or run bun run prepare:runtime.",
     );
   }
 }

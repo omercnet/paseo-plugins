@@ -21,6 +21,10 @@ jobs:
       paseo-omp-created: ${{ steps.release.outputs['paseo-omp--release_created'] }}
       paseo-omp-tag: ${{ steps.release.outputs['paseo-omp--tag_name'] }}
       paseo-omp-sha: ${{ steps.release.outputs['paseo-omp--sha'] }}
+      paseo-beads-created: ${{ steps.release.outputs['paseo-beads--release_created'] }}
+      paseo-beads-tag: ${{ steps.release.outputs['paseo-beads--tag_name'] }}
+      paseo-gas-city-created: ${{ steps.release.outputs['paseo-gas-city--release_created'] }}
+      paseo-gas-city-tag: ${{ steps.release.outputs['paseo-gas-city--tag_name'] }}
     steps:
       - name: Create or update releases
         id: release
@@ -28,6 +32,79 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+  publish-existing-assets:
+    needs: metadata
+    if: ${{ needs.metadata.outputs.paseo-beads-created == 'true' || needs.metadata.outputs.paseo-gas-city-created == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: Install paseo-beads dependencies
+        if: needs.metadata.outputs.paseo-beads-created == 'true'
+        working-directory: paseo-beads
+        run: bun install --frozen-lockfile
+      - name: Verify paseo-beads package
+        if: needs.metadata.outputs.paseo-beads-created == 'true'
+        working-directory: paseo-beads
+        run: bun run verify:package
+      - name: Build paseo-beads release package
+        if: needs.metadata.outputs.paseo-beads-created == 'true'
+        working-directory: paseo-beads
+        run: bun run package:release
+      - name: Upload paseo-beads release asset
+        if: needs.metadata.outputs.paseo-beads-created == 'true'
+        working-directory: paseo-beads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.paseo-beads-tag }}
+        run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_TAG.zip" --clobber
+      - name: Install paseo-gas-city dependencies
+        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
+        working-directory: paseo-gas-city
+        run: bun install --frozen-lockfile
+      - name: Check paseo-gas-city
+        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
+        working-directory: paseo-gas-city
+        run: bun run check
+      - name: Typecheck paseo-gas-city
+        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
+        working-directory: paseo-gas-city
+        run: bun run typecheck
+      - name: Test paseo-gas-city with coverage
+        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
+        working-directory: paseo-gas-city
+        run: bun run test:coverage
+      - name: Verify paseo-gas-city package
+        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
+        working-directory: paseo-gas-city
+        run: bun run verify:package
+      - name: Build paseo-gas-city release package
+        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
+        working-directory: paseo-gas-city
+        run: bun run package:release
+      - name: Checksum paseo-gas-city release package
+        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
+        working-directory: paseo-gas-city
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.paseo-gas-city-tag }}
+        run: sha256sum "dist/$RELEASE_TAG.zip" > "dist/$RELEASE_TAG.zip.sha256"
+      - name: Upload paseo-gas-city release asset
+        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
+        working-directory: paseo-gas-city
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.paseo-gas-city-tag }}
+        run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_TAG.zip" "dist/$RELEASE_TAG.zip.sha256" --clobber
+
 
   publish-paseo-omp:
     needs: metadata

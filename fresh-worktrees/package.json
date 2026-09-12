@@ -1,18 +1,22 @@
 {
   "name": "@omercnet/paseo-fresh-worktrees",
-  "description": "Keeps new Paseo worktrees based on current remote refs without mutating the source checkout",
+  "description": "Fast-forwards clean local base branches before Paseo creates branch-off worktrees",
   "license": "MIT",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@getpaseo/plugin": "0.8.0-beta.1",
+    "@getpaseo/client": "0.8.0",
+    "@getpaseo/plugin": "0.8.0",
     "@types/bun": "^1.2.23",
     "@types/node": "^24.5.2",
-    "typescript": "^5.9.3"
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
   }
 }

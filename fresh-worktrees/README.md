@@ -1,10 +1,10 @@
 # Fresh Worktrees
 
-A headless Paseo plugin that keeps branch-off workspaces based on current remote refs without
-mutating the source checkout.
+A Paseo plugin that fast-forwards the source checkout's clean local base branch before creating a
+branch-off workspace.
 
-Fresh Worktrees has no client entry or visual surface, so there is no UI screenshot. It runs only
-inside the Paseo daemon during worktree creation.
+The plugin runs the refresh inside the Paseo daemon and adds a workspace-header indicator when an
+active worktree falls behind the source checkout's remote base.
 
 ## Behavior
 
@@ -12,13 +12,17 @@ Before Paseo creates a branch-off worktree, the plugin:
 
 1. Resolves the source repository from the request path or Paseo project.
 2. Fetches and prunes the relevant Git remote without interactive prompts.
-3. Replaces an implicit or local base such as `main` with its current remote-tracking ref, such as
-   `origin/main`.
-4. Leaves the source checkout and its local branch untouched.
+3. For an implicit or local base such as `main`, verifies that branch is checked out and the source
+   checkout is clean, then fast-forwards it to its remote-tracking branch.
+4. Leaves the workspace request unchanged, so Paseo forks from the local branch.
+5. Rechecks active worktrees every five minutes and shows `Behind · N` in the workspace header when
+   their `HEAD` is behind the source branch's remote-tracking ref. Select the indicator to recheck it.
 
-Explicit checkout and change-request workspaces are unchanged. Repositories without remotes are
-unchanged. A failed fetch stops worktree creation rather than silently using stale history.
-Concurrent requests for the same repository and remote share one fetch.
+Explicit checkout and change-request workspaces are unchanged. Explicit remote bases are fetched
+but do not mutate a local branch. Repositories without remotes are unchanged. A dirty source
+checkout emits a warning and skips the local branch update, allowing workspace creation to continue
+from the existing local base. Failed fetches and non-fast-forward updates still stop creation.
+Concurrent requests for the same target share one refresh, and updates are serialized per repository.
 
 ## Install
 
@@ -29,7 +33,7 @@ host.
 paseo plugin add omercnet/paseo-plugins:fresh-worktrees
 ```
 
-The plugin requires Paseo `>=0.8.0-beta.1`.
+The plugin requires Paseo `>=0.8.0`.
 
 ## Develop
 

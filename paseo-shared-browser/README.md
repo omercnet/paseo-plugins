@@ -45,9 +45,9 @@ Or install from a local monorepo checkout:
 
 ```bash
 cd paseo-plugins/paseo-shared-browser
-npm ci
-npm run prepare:runtime
-npm exec -- playwright install chromium
+bun install --frozen-lockfile
+bun run prepare:runtime
+bunx playwright install chromium
 paseo plugin install "$PWD"
 ```
 
@@ -77,17 +77,17 @@ Browser** composer pill that appears while a workspace session is open.
 ## Develop
 
 ```bash
-npm install
-npm run typecheck
-npm run lint
-npm run format:check
-npm run test:unit
-npm run prepare:runtime
+bun install
+bun run typecheck
+bun run lint
+bun run format:check
+bun run test:unit
+bun run prepare:runtime
 paseo plugin install "$PWD"
 paseo plugin reload shared-browser
 ```
 
-`npm run test:smoke` launches real Chromium and exercises two viewers, control handoff, stale-frame
+`bun run test:smoke` launches real Chromium and exercises two viewers, control handoff, stale-frame
 rejection, viewport changes, device emulation, and profile persistence. It binds its fixture server
 to the host's Tailscale IPv4 address, so it runs locally rather than in CI.
 
@@ -96,4 +96,4 @@ Conventional Commits in the monorepo.
 
 Both the Paseo daemon and app must run Paseo 0.8.x (`>=0.8.0 <0.9.0`, including prereleases);
 Paseo 0.9 and later are intentionally excluded until compatibility is validated. Typechecking targets
-the `0.8.0-beta.1` plugin API with React `19.1`, React Native `0.81`, and Playwright `1.63`.
+the stable `0.8.0` plugin API with React `19.1`, React Native `0.81`, and Playwright `1.63`.

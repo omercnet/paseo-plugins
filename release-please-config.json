@@ -7,6 +7,11 @@
       "package-name": "agent-crew",
       "include-component-in-tag": true
     },
+    "tell-agent": {
+      "release-type": "node",
+      "package-name": "tell-agent",
+      "include-component-in-tag": true
+    },
     "agent-monitor": {
       "release-type": "node",
       "package-name": "agent-monitor",
@@ -15,6 +20,11 @@
     "fresh-worktrees": {
       "release-type": "node",
       "package-name": "fresh-worktrees",
+      "include-component-in-tag": true
+    },
+    "paseo-beads": {
+      "release-type": "node",
+      "package-name": "paseo-beads",
       "include-component-in-tag": true
     },
     "paseo-omp": {
@@ -32,6 +42,11 @@
     "paseo-shared-browser": {
       "release-type": "node",
       "package-name": "shared-browser",
+      "include-component-in-tag": true
+    },
+    "paseo-gas-city": {
+      "release-type": "node",
+      "package-name": "paseo-gas-city",
       "include-component-in-tag": true
     },
     "pr-radar": {

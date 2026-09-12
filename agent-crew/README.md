@@ -125,7 +125,7 @@ paseo plugin reload agent-crew
 
 The manifest requires Paseo `^0.8.0`, which accepts Paseo 0.8.x including compatible prereleases.
 The project pins `@getpaseo/cli`, `@getpaseo/client`, `@getpaseo/plugin`, and
-`@getpaseo/protocol` to `0.8.0-beta.1`. React 19.1 and React Native 0.81 match the host.
+`@getpaseo/protocol` to stable `0.8.0`. React 19.1 and React Native 0.81 match the host.
 
 Release Please maintains versions, changelog entries, component tags, and GitHub releases from
 Conventional Commits in the monorepo.

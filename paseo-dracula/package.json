@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-dracula",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "Dracula Classic and Alucard Classic themes for Paseo.",
   "license": "MIT",
@@ -40,9 +40,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",
-    "@getpaseo/client": "0.8.0-beta.1",
-    "@getpaseo/plugin": "0.8.0-beta.1",
-    "@getpaseo/protocol": "0.8.0-beta.1",
+    "@getpaseo/client": "0.8.0",
+    "@getpaseo/plugin": "0.8.0",
+    "@getpaseo/protocol": "0.8.0",
     "@types/bun": "^1.4.0",
     "fflate": "^0.8.3",
     "typescript": "^5.9.3"
