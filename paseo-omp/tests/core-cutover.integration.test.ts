@@ -206,9 +206,9 @@ coreTest(
       cutoverService = new cutover.PluginService(
         cutover.pino({ level: "silent" }),
         cutoverConfigStore,
-        "0.8.1",
+        cutover.version,
       );
-      bindSessionHost(cutoverService, "0.8.1");
+      bindSessionHost(cutoverService, cutover.version);
       await cutoverService.start();
       await cutoverService.installDirectory({ path: pluginDirectory });
       expect(cutoverService.getProviderRegistrations()).toEqual([
