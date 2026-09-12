@@ -4,7 +4,7 @@
 
 `@omercnet` maintains the `paseo-omp` package, its release artifacts, and the translation between Paseo's provider protocol and OMP's `rpc-ui` protocol. Support is best effort; no response-time or compatibility SLA is promised.
 
-Report plugin packaging, provider behavior, migration, and cutover failures in the [paseo-plugins issue tracker](https://github.com/omercnet/paseo-plugins/issues). Use the [OMP RPC compatibility template](../.github/ISSUE_TEMPLATE/omp-rpc-compatibility.yml) for native protocol changes.
+Report plugin packaging, provider behavior, migration, and cutover failures in the [paseo-plugins issue tracker](https://github.com/omercnet/paseo-plugins/issues). Use the [OMP RPC compatibility template](https://github.com/omercnet/paseo-plugins/issues/new?template=omp-rpc-compatibility.yml) for native protocol changes.
 
 After the failure is isolated:
 

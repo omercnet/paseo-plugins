@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, posix, relative } from "node:path";
 import { build } from "esbuild";
 import { unzipSync } from "fflate";
 import packageJson from "../package.json";
@@ -15,6 +15,26 @@ async function collectFiles(path: string, files: string[]): Promise<void> {
     return;
   }
   for (const entry of await readdir(path)) await collectFiles(join(path, entry), files);
+}
+
+function findBrokenMarkdownLinks(archive: Record<string, Uint8Array>): string[] {
+  const broken: string[] = [];
+  const decoder = new TextDecoder();
+  const linkPattern = /(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gu;
+
+  for (const [path, contents] of Object.entries(archive)) {
+    if (!path.endsWith(".md")) continue;
+    for (const match of decoder.decode(contents).matchAll(linkPattern)) {
+      const href = match[1];
+      if (!href || /^(?:https?:|mailto:|#)/u.test(href)) continue;
+      const target = decodeURIComponent(href.split("#", 1)[0]?.split("?", 1)[0] ?? "");
+      if (!target) continue;
+      const resolved = posix.normalize(posix.join(posix.dirname(path), target));
+      if (!Object.hasOwn(archive, resolved)) broken.push(`${path} -> ${href}`);
+    }
+  }
+
+  return broken;
 }
 
 describe("release package", () => {
@@ -41,6 +61,7 @@ describe("release package", () => {
       expect(Object.keys(archive).sort()).toEqual(
         expectedFiles.map((path) => `paseo-omp/${path}`).sort(),
       );
+      expect(findBrokenMarkdownLinks(archive)).toEqual([]);
       expect(archive["paseo-omp/server/provider/host-tools.ts"]).toBeDefined();
       expect(archive["paseo-omp/server/provider/mcp-transport.ts"]).toBeDefined();
       expect(archive["paseo-omp/server/provider/security.ts"]).toBeDefined();

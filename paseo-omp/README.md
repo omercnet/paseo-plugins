@@ -74,7 +74,7 @@ Provider options are strict and normalized once by Paseo before availability, ca
 
 Non-persisted Paseo sessions use OMP's `--no-session`. An ephemeral native session has no resumable handle, so a later runtime failure fails visibly and requires a new Paseo session. Persistent recovery retains the complete launch template while replacing only the model and thinking level confirmed by OMP.
 
-`full`, `write`, and `ask` modes are advertised only when Paseo negotiates provider permission support. OMP's trusted typed approval frames become `kind: "tool"` permissions when both sides opt in to `typedToolApprovals: 1`; builds without that capability retain the bounded generic extension-question flow. Approval mode changes still require a new session.
+`full` mode is always available. `write` and `ask` are advertised only when Paseo negotiates provider permission support. OMP's trusted typed approval frames become `kind: "tool"` permissions when both sides opt in to `typedToolApprovals: 1`; builds without that capability retain the bounded generic extension-question flow. Approval mode changes still require a new session.
 
 For text-only models, image inputs are materialized into a private, size-bounded temporary directory and removed when the turn, session, or provider connection ends. This relies on the direct provider process and its OMP child sharing the daemon host filesystem; remote execution belongs behind a transport that owns file transfer.
 
