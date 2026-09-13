@@ -12885,6 +12885,67 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("does not backfill a reused task call from another session", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    await startPrompt(connection, events);
+    for (const status of ["started", "completed"] as const) {
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "old-child",
+          agent: "old-child",
+          status,
+          parentToolCallId: "reused-task-call",
+          index: 0,
+        },
+      });
+    }
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: { id: "new-parent", agent: "new-parent", status: "started", index: 1 },
+    });
+    const parent = events.findLast(
+      (event) => event.type === "session.opened" && event.title === "new-parent",
+    );
+    if (parent?.type !== "session.opened") throw new Error("Missing parent session");
+    for (const event of [
+      {
+        type: "tool_execution_start" as const,
+        toolCallId: "reused-task-call",
+        toolName: "task",
+        args: { tasks: [{ task: "inspect" }] },
+      },
+      {
+        type: "tool_execution_end" as const,
+        toolCallId: "reused-task-call",
+        toolName: "task",
+        result: { details: { results: [{ id: "new-child", agent: "new-child" }] } },
+      },
+    ]) {
+      session.emit({ type: "subagent_event", payload: { id: "new-parent", event } });
+    }
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "new-child",
+        agent: "new-child",
+        status: "started",
+        parentToolCallId: "reused-task-call",
+        index: 0,
+      },
+    });
+    expect(
+      events.findLast((event) => event.type === "session.opened" && event.title === "new-child"),
+    ).toEqual(expect.objectContaining({ parentSessionId: parent.sessionId }));
+    await connection.close();
+  });
+
   test("settles a successful task acknowledgement with no child evidence", async () => {
     const { connection, events, runtime } = await createHarness(
       new FakeOmpRuntime(),

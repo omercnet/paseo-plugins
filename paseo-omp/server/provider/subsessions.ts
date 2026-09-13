@@ -334,7 +334,10 @@ export class OmpSubsessionProjector {
           acknowledged: false,
         };
         for (const child of this.children.values()) {
-          if (child.parentToolCallId === event.toolCallId) {
+          if (
+            child.parentToolCallId === event.toolCallId &&
+            child.parentSessionId === ownerSessionId
+          ) {
             dispatch.childSessionIds.add(child.sessionId);
           }
         }
@@ -510,10 +513,12 @@ export class OmpSubsessionProjector {
     const existing = existingSessionId ? this.children.get(existingSessionId) : undefined;
     if (existing) {
       if (ref.parentToolCallId) existing.parentToolCallId = ref.parentToolCallId;
-      const dispatch = existing.parentToolCallId
-        ? this.dispatches.get(existing.parentToolCallId)
-        : undefined;
-      dispatch?.childSessionIds.add(existing.sessionId);
+      if (existing.parentToolCallId) {
+        const dispatch = this.dispatches.get(existing.parentToolCallId);
+        if (dispatch?.ownerSessionId === existing.parentSessionId) {
+          dispatch.childSessionIds.add(existing.sessionId);
+        }
+      }
       return existing;
     }
     if (this.children.size >= MAX_CHILDREN) throw new OmpPublicError("OMP subagent limit reached");
@@ -552,8 +557,10 @@ export class OmpSubsessionProjector {
     };
     this.children.set(sessionId, child);
     this.sessionIdByNativeId.set(ref.id, sessionId);
-    const dispatch = ref.parentToolCallId ? this.dispatches.get(ref.parentToolCallId) : undefined;
-    dispatch?.childSessionIds.add(sessionId);
+    if (ref.parentToolCallId) {
+      const dispatch = this.dispatches.get(ref.parentToolCallId);
+      if (dispatch?.ownerSessionId === parentSessionId) dispatch.childSessionIds.add(sessionId);
+    }
     this.emit({
       type: "session.opened",
       sessionId,
