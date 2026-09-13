@@ -3591,6 +3591,28 @@ describe("OMP direct provider", () => {
     await second.connection.close();
   });
 
+  test("wakes session discovery when persistent registration is cancelled", async () => {
+    const reservations = new OmpNativeSessionReservations();
+    const owner = Symbol("cancelled-open");
+    reservations.beginPersistentOpen(owner);
+
+    const listing = reservations.waitUntilListable();
+    reservations.cancelPersistentOpen(owner);
+
+    await expect(listing).resolves.toBeUndefined();
+  });
+
+  test("wakes session discovery when persistent registration enters quarantine", async () => {
+    const reservations = new OmpNativeSessionReservations();
+    const owner = Symbol("quarantined-open");
+    reservations.beginPersistentOpen(owner);
+
+    const listing = reservations.waitUntilListable();
+    reservations.quarantine(undefined, owner);
+
+    await expect(listing).rejects.toThrow("OMP native session cleanup quarantine is active");
+  });
+
   test("caps provider-global cleanup quarantine growth", async () => {
     const reservations = new OmpNativeSessionReservations();
     const entries = Array.from({ length: 256 }, (_, index) => ({
