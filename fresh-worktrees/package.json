@@ -17,8 +17,8 @@
     "@getpaseo/client": "0.8.0",
     "@getpaseo/plugin": "0.8.0",
     "@types/node": "^24.5.2",
-    "@types/react": "~19.2.0",
-    "react": "19.1.0",
+    "@types/react": "~19.3.0",
+    "react": "19.3.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.6",
     "zod": "^4.4.3"
