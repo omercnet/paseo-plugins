@@ -211,23 +211,20 @@ function todoPublicId(nativeId: string | undefined, index: number): string {
   return `omp:todo:${digest}`;
 }
 
-function displayText(value: JsonValue): string | undefined {
+function toolResultText(value: JsonValue): string | undefined {
   if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    const text = value
-      .flatMap((part) => {
-        const record = jsonRecord(part);
-        return record?.type === "text" && typeof record.text === "string" ? [record.text] : [];
-      })
-      .join("\n");
-    return text || (value.length > 0 ? JSON.stringify(value) : undefined);
-  }
-  const record = jsonRecord(value);
-  const direct = firstString(record, "text", "output", "message", "result", "log");
-  if (direct !== undefined) return direct;
-  if (record?.content !== undefined) return displayText(record.content);
-  if (value === null) return undefined;
-  return JSON.stringify(value);
+  const result = jsonRecord(value);
+  if (!result) return undefined;
+
+  const directText = firstString(result, "output", "stdout", "text");
+  if (directText) return directText;
+  if (!Array.isArray(result.content)) return undefined;
+
+  const textParts = result.content.flatMap((part) => {
+    const block = jsonRecord(part);
+    return block?.type === "text" && typeof block.text === "string" ? [block.text] : [];
+  });
+  return textParts.length > 0 ? textParts.join("\n") : undefined;
 }
 
 function resultDetails(value: JsonValue): Record<string, JsonValue> | undefined {
@@ -301,7 +298,7 @@ function nativeImageResult(
       MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
       MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
     );
-    const rendered = displayText(sanitized);
+    const rendered = toolResultText(sanitized);
     if (!rendered) continue;
     const separatorBytes = text.length > 0 ? 1 : 0;
     const remainingBytes = MAX_PUBLIC_TOOL_PAYLOAD_BYTES - textBytes - separatorBytes;
@@ -874,7 +871,10 @@ export class OmpTimelineProjector {
           type: "tool_execution_end",
           toolCallId: message.toolCallId,
           toolName: message.toolName,
-          result: message.content,
+          result: {
+            content: message.content,
+            ...(message.details !== undefined ? { details: message.details } : {}),
+          },
           isError: message.isError,
         },
         this.replayTurnId,
@@ -1472,7 +1472,7 @@ export class OmpTimelineProjector {
     const nestedInput = jsonRecord(input?.input) ?? input;
     const output = jsonRecord(snapshot.output);
     const details = resultDetails(snapshot.output);
-    const resultText = displayText(snapshot.output);
+    const resultText = toolResultText(snapshot.output);
     const name = snapshot.nativeName.toLowerCase();
     if (xdeviceToolName(snapshot.nativeName, snapshot.input)) {
       return { type: "unknown", input: snapshot.input, output: snapshot.output };

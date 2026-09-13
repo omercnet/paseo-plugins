@@ -6156,13 +6156,13 @@ describe("OMP direct provider", () => {
       type: "tool_execution_update",
       toolCallId: "tool-1",
       toolName: "read",
-      partialResult: { content: "partial" },
+      partialResult: { output: "partial" },
     });
     session.emit({
       type: "tool_execution_end",
       toolCallId: "tool-1",
       toolName: "read",
-      result: { content: "complete" },
+      result: { output: "complete" },
     });
     session.emit({
       type: "message_start",
@@ -6879,13 +6879,13 @@ describe("OMP direct provider", () => {
       type: "tool_execution_update",
       toolCallId: "active-tool",
       toolName: "read",
-      partialResult: { content: "still active." },
+      partialResult: { output: "still active." },
     });
     session.emit({
       type: "tool_execution_end",
       toolCallId: "active-tool",
       toolName: "read",
-      result: { content: "done" },
+      result: { output: "done" },
     });
     session.emit({
       type: "message_end",
@@ -7076,13 +7076,13 @@ describe("OMP direct provider", () => {
       type: "tool_execution_update",
       toolCallId: "post-steer-tool",
       toolName: "read",
-      partialResult: { content: "partial" },
+      partialResult: { output: "partial" },
     });
     session.emit({
       type: "tool_execution_end",
       toolCallId: "post-steer-tool",
       toolName: "read",
-      result: { content: "done" },
+      result: { output: "done" },
     });
     session.emit({
       type: "message_update",
@@ -11317,6 +11317,335 @@ describe("OMP direct provider", () => {
     expect(Object.getPrototypeOf(output)).toBeNull();
   });
 
+  test("matches native OMP result text precedence for typed details", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector(
+      "result-text-session",
+      (event) => events.push(event),
+      new ManualScheduler(),
+    );
+    const turnId = "result-text-turn";
+    const cases = [
+      {
+        id: "string-result",
+        toolName: "read",
+        args: { path: "direct.txt" },
+        result: "direct string",
+        detail: { type: "read", filePath: "direct.txt", content: "direct string" },
+      },
+      {
+        id: "output-result",
+        toolName: "bash",
+        args: { command: "printf output" },
+        result: {
+          output: "output value",
+          stdout: "stdout value",
+          text: "text value",
+          content: [{ type: "text", text: "content value" }],
+        },
+        detail: { type: "shell", command: "printf output", output: "output value" },
+      },
+      {
+        id: "stdout-result",
+        toolName: "grep",
+        args: { pattern: "needle" },
+        result: {
+          stdout: "stdout value",
+          text: "text value",
+          content: [{ type: "text", text: "content value" }],
+        },
+        detail: {
+          type: "search",
+          query: "needle",
+          toolName: "grep",
+          content: "stdout value",
+        },
+      },
+      {
+        id: "text-result",
+        toolName: "fetch",
+        args: { url: "https://example.com/page" },
+        result: { text: "text value", content: [{ type: "text", text: "content value" }] },
+        detail: { type: "fetch", url: "https://example.com/page", result: "text value" },
+      },
+    ] as const;
+
+    for (const fixture of cases) {
+      projector.project(
+        {
+          type: "tool_execution_start",
+          toolCallId: fixture.id,
+          toolName: fixture.toolName,
+          args: fixture.args,
+        },
+        turnId,
+      );
+      projector.project(
+        {
+          type: "tool_execution_end",
+          toolCallId: fixture.id,
+          toolName: fixture.toolName,
+          result: fixture.result,
+        },
+        turnId,
+      );
+    }
+
+    const completedDetails = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "tool_call" &&
+      event.item.status === "completed"
+        ? [event.item.detail]
+        : [],
+    );
+    expect(completedDetails).toEqual(cases.map(({ detail }) => detail));
+  });
+
+  test("joins text blocks and preserves mixed image results", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector(
+      "mixed-result-session",
+      (event) => events.push(event),
+      new ManualScheduler(),
+    );
+    const turnId = "mixed-result-turn";
+
+    projector.project(
+      {
+        type: "tool_execution_start",
+        toolCallId: "mixed-result",
+        toolName: "task",
+        args: { agent: "reviewer", description: "Review projection" },
+      },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "tool_execution_end",
+        toolCallId: "mixed-result",
+        toolName: "task",
+        result: {
+          content: [
+            { type: "text", text: "first" },
+            { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+            { type: "resource", uri: "file:///ignored" },
+            { type: "text", text: "second" },
+          ],
+          details: { source: "fixture" },
+        },
+      },
+      turnId,
+    );
+
+    const completed = events.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "task" &&
+        event.item.status === "completed",
+    );
+    expect(
+      completed?.type === "timeline.item" && completed.item.type === "tool_call"
+        ? completed.item.detail
+        : undefined,
+    ).toEqual({
+      type: "sub_agent",
+      subAgentType: "reviewer",
+      description: "Review projection",
+      log: "first\nsecond",
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({
+          type: "tool_call",
+          id: "omp:tool:1:images",
+          callId: "omp:tool:1:images",
+          name: "task images",
+          status: "completed",
+          error: null,
+          metadata: {
+            ompImageOwner: "omp",
+            ompImage: {
+              label: "task",
+              images: [
+                {
+                  id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
+                  data: "iVBORw0KGgo=",
+                  mimeType: "image/png",
+                },
+              ],
+              text: "first\nsecond",
+              details: { source: "fixture" },
+            },
+          },
+        }),
+      }),
+    );
+  });
+
+  test("preserves unknown structures while typed details omit absent text", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector(
+      "structured-result-session",
+      (event) => events.push(event),
+      new ManualScheduler(),
+    );
+    const turnId = "structured-result-turn";
+    const input = { operation: "inspect", options: { depth: 2 } };
+    const partial = {
+      output: "partial summary",
+      data: { rows: [{ id: 1, active: true }] },
+      content: [{ type: "record", value: { key: "partial" } }],
+    };
+    const final = {
+      output: "final summary",
+      stdout: "not selected",
+      text: "not selected either",
+      data: { rows: [{ id: 1, active: true }], cursor: null },
+      content: [{ type: "record", value: { key: "final" } }],
+      details: { elapsedMs: 12 },
+    };
+
+    projector.project(
+      {
+        type: "tool_execution_start",
+        toolCallId: "structured-result",
+        toolName: "vendor_tool",
+        args: input,
+      },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "tool_execution_update",
+        toolCallId: "structured-result",
+        toolName: "vendor_tool",
+        partialResult: partial,
+      },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "tool_execution_end",
+        toolCallId: "structured-result",
+        toolName: "vendor_tool",
+        result: final,
+      },
+      turnId,
+    );
+
+    const unknownSnapshots = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "tool_call" &&
+      event.item.name === "vendor_tool"
+        ? [event.item]
+        : [],
+    );
+    expect(unknownSnapshots).toEqual([
+      {
+        type: "tool_call",
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
+        name: "vendor_tool",
+        detail: { type: "unknown", input, output: null },
+        status: "running",
+        error: null,
+      },
+      {
+        type: "tool_call",
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
+        name: "vendor_tool",
+        detail: { type: "unknown", input, output: partial },
+        status: "running",
+        error: null,
+      },
+      {
+        type: "tool_call",
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
+        name: "vendor_tool",
+        detail: { type: "unknown", input, output: final },
+        status: "completed",
+        error: null,
+      },
+    ]);
+
+    projector.project(
+      {
+        type: "tool_execution_start",
+        toolCallId: "structured-read",
+        toolName: "read",
+        args: { path: "structured.txt" },
+      },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "tool_execution_end",
+        toolCallId: "structured-read",
+        toolName: "read",
+        result: {
+          data: { rows: [1, 2] },
+          content: [{ type: "resource", uri: "file:///structured.txt" }],
+        },
+      },
+      turnId,
+    );
+    const completedRead = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "read" &&
+        event.item.status === "completed",
+    );
+    expect(
+      completedRead?.type === "timeline.item" && completedRead.item.type === "tool_call"
+        ? completedRead.item.detail
+        : undefined,
+    ).toEqual({ type: "read", filePath: "structured.txt" });
+
+    const errorResult = {
+      stdout: "permission denied",
+      code: 13,
+      data: { operation: "read", retryable: false },
+    };
+    projector.project(
+      {
+        type: "tool_execution_start",
+        toolCallId: "failed-read",
+        toolName: "read",
+        args: { path: "forbidden.txt" },
+      },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "tool_execution_end",
+        toolCallId: "failed-read",
+        toolName: "read",
+        result: errorResult,
+        isError: true,
+      },
+      turnId,
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: {
+          type: "tool_call",
+          id: "omp:tool:3",
+          callId: "omp:tool:3",
+          name: "read",
+          detail: { type: "read", filePath: "forbidden.txt", content: "permission denied" },
+          status: "failed",
+          error: errorResult,
+        },
+      }),
+    );
+  });
+
   test("projects Windows drive paths as read details", () => {
     const events: ProviderEvent[] = [];
     const projector = new OmpTimelineProjector(
@@ -11340,7 +11669,7 @@ describe("OMP direct provider", () => {
         type: "tool_execution_end",
         toolCallId: "windows-read",
         toolName: "read",
-        result: { content: "file contents" },
+        result: "file contents",
       },
       "windows-read-turn",
     );
@@ -15665,7 +15994,7 @@ describe("OMP direct provider", () => {
       type: "tool_execution_end",
       toolCallId: "preserved-fetch",
       toolName: "web_fetch",
-      result: { content: "page" },
+      result: { output: "page" },
     });
     const preservedFetch = events.findLast(
       (event) =>
@@ -15719,7 +16048,7 @@ describe("OMP direct provider", () => {
       type: "tool_execution_end",
       toolCallId: "unsafe-fetch",
       toolName: "web_fetch",
-      result: { content: "ignored" },
+      result: { output: "ignored" },
     });
     const unsafeFetch = events.findLast(
       (event) =>
