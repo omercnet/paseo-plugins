@@ -238,7 +238,7 @@ type NativeImageEnvelope = {
   details?: JsonValue;
 };
 
-type NativeImageResult = { image: NativeImageEnvelope } | { error: string };
+type NativeImageResult = { image: NativeImageEnvelope; output: JsonValue } | { error: string };
 
 function nativeImageResult(
   value: unknown,
@@ -262,6 +262,7 @@ function nativeImageResult(
   const images: NativeImageEnvelope["images"] = [];
   const text: string[] = [];
   let textBytes = 0;
+  const nonImageContent: unknown[] = [];
   for (const part of value.content) {
     if (
       part &&
@@ -293,6 +294,7 @@ function nativeImageResult(
       });
       continue;
     }
+    nonImageContent.push(part);
     const sanitized = filter.json(
       part,
       MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
@@ -313,12 +315,18 @@ function nativeImageResult(
     "details" in value
       ? filter.json(value.details, MAX_PUBLIC_TOOL_PAYLOAD_BYTES, MAX_PUBLIC_TOOL_PAYLOAD_BYTES)
       : undefined;
+  const output = filter.json(
+    { ...value, content: nonImageContent },
+    MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+    MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
+  );
   return {
     image: {
       images,
       ...(text.length > 0 ? { text: text.join("\n") } : {}),
       ...(details !== undefined ? { details } : {}),
     },
+    output,
   };
 }
 
@@ -515,11 +523,7 @@ export class OmpTimelineProjector {
             this.publishImageError(`${previous.publicId}:images`, preservedImage.error);
             return;
           }
-          const { image } = preservedImage;
-          const output: JsonValue = {
-            ...(image.text ? { content: [{ type: "text", text: image.text }] } : {}),
-            ...(image.details !== undefined ? { details: image.details } : {}),
-          };
+          const { image, output } = preservedImage;
           this.publishTool({ ...previous, output }, "completed");
           this.publishImages(previous.publicId, previous.name, image);
           return;

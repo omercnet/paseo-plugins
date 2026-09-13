@@ -11368,6 +11368,24 @@ describe("OMP direct provider", () => {
         result: { text: "text value", content: [{ type: "text", text: "content value" }] },
         detail: { type: "fetch", url: "https://example.com/page", result: "text value" },
       },
+      {
+        id: "content-result",
+        toolName: "task",
+        args: { agent: "reviewer", description: "Review projection" },
+        result: {
+          content: [
+            { type: "text", text: "first" },
+            { type: "resource", uri: "file:///ignored" },
+            { type: "text", text: "second" },
+          ],
+        },
+        detail: {
+          type: "sub_agent",
+          subAgentType: "reviewer",
+          description: "Review projection",
+          log: "first\nsecond",
+        },
+      },
     ] as const;
 
     for (const fixture of cases) {
@@ -11401,7 +11419,27 @@ describe("OMP direct provider", () => {
     expect(completedDetails).toEqual(cases.map(({ detail }) => detail));
   });
 
-  test("joins text blocks and preserves mixed image results", () => {
+  test("preserves structured unknown output across image finalization and replay", () => {
+    const image = { type: "image" as const, data: "iVBORw0KGgo=", mimeType: "image/png" };
+    const partial = {
+      content: [{ type: "record", value: { key: "partial", rows: [1] } }, image],
+      progress: { done: false },
+    };
+    const final = {
+      content: [
+        { type: "text", text: "first" },
+        { type: "record", value: { key: "final", rows: [1, 2] } },
+        image,
+        { type: "text", text: "second" },
+      ],
+      details: { source: "fixture" },
+      metadata: { complete: true },
+    };
+    const outputWithoutImage = {
+      content: [final.content[0], final.content[1], final.content[3]],
+      details: final.details,
+      metadata: final.metadata,
+    };
     const events: ProviderEvent[] = [];
     const projector = new OmpTimelineProjector(
       "mixed-result-session",
@@ -11414,8 +11452,17 @@ describe("OMP direct provider", () => {
       {
         type: "tool_execution_start",
         toolCallId: "mixed-result",
-        toolName: "task",
-        args: { agent: "reviewer", description: "Review projection" },
+        toolName: "vendor_tool",
+        args: { operation: "inspect" },
+      },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "tool_execution_update",
+        toolCallId: "mixed-result",
+        toolName: "vendor_tool",
+        partialResult: partial,
       },
       turnId,
     );
@@ -11423,37 +11470,45 @@ describe("OMP direct provider", () => {
       {
         type: "tool_execution_end",
         toolCallId: "mixed-result",
-        toolName: "task",
-        result: {
-          content: [
-            { type: "text", text: "first" },
-            { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
-            { type: "resource", uri: "file:///ignored" },
-            { type: "text", text: "second" },
-          ],
-          details: { source: "fixture" },
-        },
+        toolName: "vendor_tool",
+        result: final,
       },
       turnId,
     );
 
-    const completed = events.find(
-      (event) =>
-        event.type === "timeline.item" &&
-        event.item.type === "tool_call" &&
-        event.item.name === "task" &&
-        event.item.status === "completed",
+    const liveSnapshots = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "tool_call" &&
+      event.item.name === "vendor_tool"
+        ? [event.item]
+        : [],
     );
     expect(
-      completed?.type === "timeline.item" && completed.item.type === "tool_call"
-        ? completed.item.detail
-        : undefined,
-    ).toEqual({
-      type: "sub_agent",
-      subAgentType: "reviewer",
-      description: "Review projection",
-      log: "first\nsecond",
-    });
+      liveSnapshots.map(({ id, callId, status, detail }) => ({ id, callId, status, detail })),
+    ).toEqual([
+      {
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
+        status: "running",
+        detail: { type: "unknown", input: { operation: "inspect" }, output: null },
+      },
+      {
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
+        status: "running",
+        detail: { type: "unknown", input: { operation: "inspect" }, output: partial },
+      },
+      {
+        id: "omp:tool:1",
+        callId: "omp:tool:1",
+        status: "completed",
+        detail: {
+          type: "unknown",
+          input: { operation: "inspect" },
+          output: outputWithoutImage,
+        },
+      },
+    ]);
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "timeline.item",
@@ -11461,27 +11516,79 @@ describe("OMP direct provider", () => {
           type: "tool_call",
           id: "omp:tool:1:images",
           callId: "omp:tool:1:images",
-          name: "task images",
+          name: "vendor_tool images",
           status: "completed",
           error: null,
           metadata: {
             ompImageOwner: "omp",
             ompImage: {
-              label: "task",
+              label: "vendor_tool",
               images: [
                 {
                   id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-                  data: "iVBORw0KGgo=",
-                  mimeType: "image/png",
+                  data: image.data,
+                  mimeType: image.mimeType,
                 },
               ],
               text: "first\nsecond",
-              details: { source: "fixture" },
+              details: final.details,
             },
           },
         }),
       }),
     );
+
+    const replayEvents: ProviderEvent[] = [];
+    const replayProjector = new OmpTimelineProjector(
+      "mixed-replay-session",
+      (event) => replayEvents.push(event),
+      new ManualScheduler(),
+    );
+    replayProjector.projectReplayMessage({
+      role: "assistant",
+      responseId: "mixed-replay-response",
+      content: [
+        {
+          type: "toolCall",
+          id: "mixed-replay-result",
+          name: "vendor_tool",
+          arguments: { operation: "replay" },
+        },
+      ],
+    });
+    replayProjector.projectReplayMessage({
+      role: "toolResult",
+      toolCallId: "mixed-replay-result",
+      toolName: "vendor_tool",
+      content: final.content,
+      details: final.details,
+    });
+
+    const replayCompleted = replayEvents.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "vendor_tool" &&
+        event.item.status === "completed",
+    );
+    expect(
+      replayCompleted?.type === "timeline.item" && replayCompleted.item.type === "tool_call"
+        ? replayCompleted.item.detail
+        : undefined,
+    ).toEqual({
+      type: "unknown",
+      input: { operation: "replay" },
+      output: { content: outputWithoutImage.content, details: final.details },
+    });
+    expect(
+      replayEvents.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "tool_call" &&
+          event.item.id === "omp:tool:1:images" &&
+          event.item.status === "completed",
+      ),
+    ).toBe(true);
   });
 
   test("preserves unknown structures while typed details omit absent text", () => {
