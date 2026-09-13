@@ -43,7 +43,7 @@ export default function contribute(client: PluginClientContext) {
       projectRootPath,
       workspaceDirectory: location.workspaceDirectory,
     });
-    if (stopped || !workspaceLocations.has(workspaceId)) return;
+    if (stopped || workspaceLocations.get(workspaceId) !== location) return;
     if (freshness.kind !== "behind") {
       removeIndicator(workspaceId);
       return;
@@ -98,10 +98,24 @@ export default function contribute(client: PluginClientContext) {
       return;
     }
 
-    workspaceLocations.set(workspace.id, {
+    const location = {
       projectId: workspace.projectId,
       workspaceDirectory: workspace.workspaceDirectory,
-    });
+    };
+    workspaceLocations.set(workspace.id, location);
+
+    const existing = checks.get(workspace.id);
+    if (existing) {
+      const recheck = () => {
+        if (stopped || workspaceLocations.get(workspace.id) !== location) return;
+        void scheduleFreshnessCheck(workspace.id).catch((error) => {
+          console.warn(`[fresh-worktrees] Could not inspect workspace ${workspace.id}`, error);
+        });
+      };
+      void existing.then(recheck, recheck);
+      return;
+    }
+
     void scheduleFreshnessCheck(workspace.id).catch((error) => {
       console.warn(`[fresh-worktrees] Could not inspect workspace ${workspace.id}`, error);
     });
