@@ -4921,7 +4921,11 @@ describe("OMP direct provider", () => {
       );
     };
 
-    await expectPromptFailure("empty-prompt", [{ type: "text", text: " \n " }], "OMP prompt cannot be empty");
+    await expectPromptFailure(
+      "empty-prompt",
+      [{ type: "text", text: " \n " }],
+      "OMP prompt cannot be empty",
+    );
     await expectPromptFailure(
       "too-many-parts",
       Array.from({ length: 65 }, () => ({ type: "text" as const, text: "x" })),
