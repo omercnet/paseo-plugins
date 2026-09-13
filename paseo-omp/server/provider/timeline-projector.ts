@@ -987,8 +987,7 @@ export class OmpTimelineProjector {
     for (const contentIndex of indexes) {
       const block = stream.blocks.get(contentIndex);
       if (!block?.text) continue;
-      const publicText =
-        block.kind === "image" ? block.text : this.dataFilter.text(block.text);
+      const publicText = block.kind === "image" ? block.text : this.dataFilter.text(block.text);
       if (!publicText || block.publishedText === publicText) continue;
       const nextPublishedBytes = utf8Bytes(publicText);
       if (

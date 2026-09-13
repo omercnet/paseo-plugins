@@ -125,7 +125,6 @@ export function boundedJsonBytes(
   );
 }
 
-
 export class BoundedStringSet {
   private readonly values = new Map<string, true>();
 

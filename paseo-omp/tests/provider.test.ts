@@ -11220,7 +11220,9 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         item: expect.objectContaining({
           status: "completed",
-          detail: expect.objectContaining({ output: expect.objectContaining({ content: "render" }) }),
+          detail: expect.objectContaining({
+            output: expect.objectContaining({ content: "render" }),
+          }),
         }),
       }),
     );
@@ -11454,11 +11456,7 @@ describe("OMP direct provider", () => {
         ? [event.item.detail.output]
         : [],
     );
-    expect(streamedTool).toEqual([
-      null,
-      { content: "<redacted>" },
-      { content: "<redacted>" },
-    ]);
+    expect(streamedTool).toEqual([null, { content: "<redacted>" }, { content: "<redacted>" }]);
     const deferredTool = events.flatMap((event) =>
       event.type === "timeline.item" &&
       event.item.type === "tool_call" &&
