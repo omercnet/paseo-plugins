@@ -12848,6 +12848,43 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("settles a task dispatch announced after its child completed", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    for (const status of ["started", "completed"] as const) {
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "early-child",
+          agent: "scout",
+          status,
+          parentToolCallId: "late-task",
+          index: 0,
+        },
+      });
+    }
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "late-task",
+      toolName: "task",
+      args: { tasks: [{ task: "inspect" }] },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "late-task",
+      toolName: "task",
+      result: { details: { results: [{ id: "early-child", agent: "scout" }] } },
+    });
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
   test("settles a successful task acknowledgement with no child evidence", async () => {
     const { connection, events, runtime } = await createHarness(
       new FakeOmpRuntime(),
