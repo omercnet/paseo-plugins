@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0 (2026-09-13)
+
+
+### Features
+
+* **paseo-omp:** add first OMP provider plugin ([#19](https://github.com/omercnet/paseo-plugins/issues/19)) ([f6f3e5e](https://github.com/omercnet/paseo-plugins/commit/f6f3e5e224bf8537f85305d79ea5d1bcf5849549))
+
+## Changelog
+
 ## Unreleased
 
 ### Features
