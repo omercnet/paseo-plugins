@@ -67,6 +67,89 @@ jobs:
         if: ${{ matrix.verify-package }}
         run: npm run verify:package
 
+  omp-platform:
+    name: paseo-omp (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: paseo-omp
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: paseo-omp/package-lock.json
+      - name: Install dependencies
+        run: npm ci --include=dev
+      - name: Check formatting and lint
+        run: npm run check
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test on macOS
+        if: ${{ matrix.os == 'macos-latest' }}
+        run: npm test
+      - name: Test on Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: npm test -- --exclude tests/package-release.test.ts --exclude tests/server-bundle.test.ts
+      - name: Test subprocess conformance
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: npm test -- tests/provider-conformance.test.ts
+      - name: Test with coverage
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: npm run test:coverage
+      - name: Archive and Git package installation smoke
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: npm run test:integration:install
+      - name: Docker host-tool ownership integration
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: npm run test:integration:docker
+
+  omp-real-e2e:
+    name: paseo-omp real OMP 18.1.15
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: paseo-omp
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: paseo-omp/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Install pinned OMP
+        env:
+          OMP_SHA256: 747518a41fbb32ac47491b4677a7a921d0d9e5977ae006c358d6836813149adc
+          OMP_URL: https://github.com/can1357/oh-my-pi/releases/download/v18.1.15/omp-linux-x64
+        run: |
+          install -d "$RUNNER_TEMP/omp-bin"
+          curl --fail --location --retry 3 --max-time 300 "$OMP_URL" --output "$RUNNER_TEMP/omp-bin/omp"
+          echo "$OMP_SHA256  $RUNNER_TEMP/omp-bin/omp" | sha256sum --check --strict
+          chmod 0755 "$RUNNER_TEMP/omp-bin/omp"
+          echo "$RUNNER_TEMP/omp-bin" >> "$GITHUB_PATH"
+          test "$("$RUNNER_TEMP/omp-bin/omp" --version)" = "omp/18.1.15"
+      - name: Run real OMP provider scenarios
+        env:
+          PASEO_OMP_REAL_E2E: "1"
+        run: npm test -- tests/provider.real.e2e.test.ts
+
   shared-browser:
     name: paseo-shared-browser
     runs-on: ubuntu-latest
@@ -95,3 +178,57 @@ jobs:
         run: npm run format:check
       - name: Unit tests
         run: npm run test:unit
+
+  wsl-host-tools:
+    name: paseo-omp WSL host ownership
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: paseo-omp
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Windows Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: paseo-omp/package-lock.json
+      - name: Install Windows dependencies
+        run: npm ci
+      - name: Provision WSL distribution
+        uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7
+        with:
+          distribution: Ubuntu-24.04
+          set-as-default: "true"
+      - name: Require an available WSL distribution
+        shell: pwsh
+        working-directory: .
+        run: |
+          $distros = @(wsl.exe --list --quiet | ForEach-Object { $_ -replace "`0", "" } | Where-Object { $_.Trim() })
+          if ($LASTEXITCODE -ne 0 -or $distros.Count -eq 0) {
+            throw "The Windows runner does not provide an executable WSL distribution"
+          }
+          wsl.exe --exec sh -lc "uname -a"
+      - name: Install Node in WSL
+        shell: pwsh
+        working-directory: .
+        run: wsl.exe --exec sh -lc 'curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs'
+      - name: Allow WSL to reach the Windows Node fixture
+        shell: pwsh
+        working-directory: .
+        run: |
+          $node = (Get-Command node).Source
+          New-NetFirewallRule -DisplayName "Paseo OMP WSL CI" -Direction Inbound -Action Allow -Program $node
+      - name: WSL host-tool ownership integration
+        env:
+          PASEO_OMP_REQUIRE_WSL: "1"
+        run: npm run test:integration:wsl
+      - name: Remove WSL fixture firewall rule
+        if: ${{ always() }}
+        shell: pwsh
+        working-directory: .
+        run: Remove-NetFirewallRule -DisplayName "Paseo OMP WSL CI" -ErrorAction SilentlyContinue
