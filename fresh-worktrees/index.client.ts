@@ -72,8 +72,10 @@ export default function contribute(client: PluginClientContext) {
   }
 
   function scheduleFreshnessCheck(workspaceId: string): Promise<void> {
-    const previous = checks.get(workspaceId) ?? Promise.resolve();
-    const scheduled = previous.catch(() => {}).then(() => checkFreshness(workspaceId));
+    const existing = checks.get(workspaceId);
+    if (existing) return existing;
+
+    const scheduled = checkFreshness(workspaceId);
     checks.set(workspaceId, scheduled);
     void scheduled.then(
       () => {
@@ -88,6 +90,14 @@ export default function contribute(client: PluginClientContext) {
 
   function trackWorkspace(workspace: WorkspaceEntry) {
     if (!workspace.workspaceDirectory) return;
+    const previous = workspaceLocations.get(workspace.id);
+    if (
+      previous?.projectId === workspace.projectId &&
+      previous.workspaceDirectory === workspace.workspaceDirectory
+    ) {
+      return;
+    }
+
     workspaceLocations.set(workspace.id, {
       projectId: workspace.projectId,
       workspaceDirectory: workspace.workspaceDirectory,
