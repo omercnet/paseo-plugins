@@ -15335,8 +15335,7 @@ describe("OMP direct provider", () => {
       url: "https://example.com/page?next=%2Fdocs%3Ftab%3Dapi#section%202",
       result: "page",
     });
-    const preservedReadUrl =
-      "https://EXAMPLE.com/%7Eguide?next=%2Fdocs%3Ftab%3Dapi#section%202";
+    const preservedReadUrl = "https://EXAMPLE.com/%7Eguide?next=%2Fdocs%3Ftab%3Dapi#section%202";
     session.emit({
       type: "tool_execution_start",
       toolCallId: "preserved-read-url",
