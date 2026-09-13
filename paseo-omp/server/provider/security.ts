@@ -18,13 +18,6 @@ const OMITTED = "<omitted>";
 
 const SENSITIVE_KEY =
   /(?:^|_)(?:api_?key|access_?token|refresh_?token|auth|authorization|cookie|credential|password|private_?key|secret|session_?token)(?:$|_)/iu;
-const AUTHORIZATION_CREDENTIAL = /\bAuthorization\s*[:=]\s*[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/giu;
-const BEARER_CREDENTIAL = /\bBearer\s+[A-Za-z0-9._~+/=-]{1,}/giu;
-const CREDENTIAL_ASSIGNMENT =
-  /\b(api[ _-]?key|access[ _-]?token|refresh[ _-]?token|authorization|cookie|credential|password|private[ _-]?key|secret|session[ _-]?token)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
-const TOKEN_CREDENTIAL = /\b(?:sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_-]{8,}\b/gu;
-const POSIX_ABSOLUTE_PATH = /(^|[^A-Za-z0-9_./\\])(\/(?!\/)[^\s"'`<>\])},;]+)/gu;
-const WINDOWS_ABSOLUTE_PATH = /\b[A-Za-z]:\\[^\s"'`<>\])},;]+/gu;
 
 export function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, "utf8");
@@ -43,19 +36,6 @@ export function truncateUtf8(value: string, maxBytes: number): string {
     bytes += characterBytes;
   }
   return `${output}${suffix}`;
-}
-
-function replaceControlCharacters(value: string): string {
-  let output = "";
-  let segmentStart = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code === 0x09 || code === 0x0a || code === 0x0d || (code >= 0x20 && code !== 0x7f))
-      continue;
-    output += `${value.slice(segmentStart, index)}<control>`;
-    segmentStart = index + 1;
-  }
-  return segmentStart === 0 ? value : output + value.slice(segmentStart);
 }
 
 export interface BoundedJsonMetrics {
@@ -217,18 +197,8 @@ export class OmpPublicDataFilter {
   }
 
   text(input: string, maxBytes = MAX_PUBLIC_STRING_BYTES): string {
-    let output = input.replace(AUTHORIZATION_CREDENTIAL, `Authorization: ${REDACTED}`);
-    output = output.replace(BEARER_CREDENTIAL, `Bearer ${REDACTED}`);
+    let output = input;
     for (const value of this.sensitiveValues) output = output.split(value).join(REDACTED);
-    output = replaceControlCharacters(
-      output
-        .replace(CREDENTIAL_ASSIGNMENT, (_match, name: string, separator: string) => {
-          return `${name}${separator}${REDACTED}`;
-        })
-        .replace(TOKEN_CREDENTIAL, REDACTED),
-    )
-      .replace(POSIX_ABSOLUTE_PATH, (_match, prefix: string) => `${prefix}<absolute path>`)
-      .replace(WINDOWS_ABSOLUTE_PATH, "<absolute path>");
     return truncateUtf8(output, maxBytes);
   }
 
