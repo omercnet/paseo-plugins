@@ -1911,7 +1911,14 @@ describe("OMP RPC transport", () => {
       CUSTOMER_API_KEY: "session-secret",
     });
     expect(request.sensitiveValues).toEqual(
-      expect.arrayContaining(["proxy-user", "proxy-pass", "proxy-token"]),
+      expect.arrayContaining([
+        "proxy-user",
+        "proxy-pass",
+        "proxy-token",
+        "daemon-secret",
+        "plexus-secret",
+        "session-secret",
+      ]),
     );
     expect(request.env.UNRELATED_DAEMON_VALUE).toBeUndefined();
     expect(request.env.NODE_OPTIONS).toBeUndefined();
