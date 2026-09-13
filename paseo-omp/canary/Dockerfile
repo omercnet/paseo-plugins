@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22.22.1-bookworm-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d AS plugin-build
+FROM node:24.18.1-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS plugin-build
 WORKDIR /src/paseo-omp
 COPY paseo-omp/package.json paseo-omp/package-lock.json ./
 RUN npm ci --ignore-scripts
