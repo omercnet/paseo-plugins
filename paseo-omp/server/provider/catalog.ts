@@ -7,7 +7,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import type { NormalizedOmpStartOptions } from "./config-normalization";
 import type { OmpModel, OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
-import { OmpCleanupFailure, OmpPublicDataFilter, OmpPublicError } from "./security";
+import { OmpCleanupFailure, OmpPublicDataSerializer, OmpPublicError } from "./security";
 
 export const OMP_MODES: readonly ProviderMode[] = [
   {
@@ -57,10 +57,8 @@ export function ompModelId(model: OmpModel): string {
   return `omp:model:${createHash("sha256").update(nativeIdentity).digest("hex")}`;
 }
 
-export function mapOmpModels(
-  models: readonly OmpModel[],
-  filter = new OmpPublicDataFilter(),
-): ProviderModel[] {
+export function mapOmpModels(models: readonly OmpModel[]): ProviderModel[] {
+  const serializer = new OmpPublicDataSerializer();
   const seenIds = new Map<string, string>();
   return models.map((model) => {
     const thinkingOptions = thinkingForModel(model);
@@ -72,9 +70,9 @@ export function mapOmpModels(
     }
     if (existing !== undefined) throw new Error("OMP reported a duplicate model identity");
     seenIds.set(id, nativeIdentity);
-    const provider = filter.text(model.provider, 256);
-    const modelId = filter.text(model.id, 256);
-    const name = model.name ? filter.text(model.name, 256) : modelId;
+    const provider = serializer.text(model.provider, 256);
+    const modelId = serializer.text(model.id, 256);
+    const name = model.name ? serializer.text(model.name, 256) : modelId;
     return {
       id,
       label: `${provider}/${name}`,
@@ -130,8 +128,7 @@ export async function discoverOmpCatalog(
       session.getAvailableModels(),
       session.getState(),
     ]);
-    const filter = new OmpPublicDataFilter(session.redactionValues ?? []);
-    const models = mapOmpModels(nativeModels, filter);
+    const models = mapOmpModels(nativeModels);
     if (models.length === 0) throw new Error("OMP reported no available models");
     const defaultModel = state.model ? ompModelId(state.model) : models[0]?.id;
     const currentModel = state.model

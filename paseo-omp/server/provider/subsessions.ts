@@ -14,7 +14,7 @@ import {
   BoundedStringSet,
   boundedJsonBytes,
   boundedJsonMetrics,
-  OmpPublicDataFilter,
+  OmpPublicDataSerializer,
   OmpPublicError,
 } from "./security";
 import { OmpTimelineProjector, type OmpTimelineScheduler } from "./timeline-projector";
@@ -289,7 +289,6 @@ export class OmpSubsessionProjector {
   private readonly toolOwners = new Map<string, string>();
   private readonly dispatches = new Map<string, TaskDispatch>();
   private readonly bufferedEvents: OmpSubagentEvent[] = [];
-  private readonly sensitiveValues = new Set<string>();
   private bufferedBytes = 0;
   private replaying = false;
   private closed = false;
@@ -301,25 +300,10 @@ export class OmpSubsessionProjector {
     private readonly cwd: string,
     private readonly emit: Emit,
     private readonly scheduler: OmpTimelineScheduler,
-    sensitiveValues: Iterable<string>,
     private readonly onActivityChange: () => void,
-  ) {
-    for (const value of sensitiveValues) this.sensitiveValues.add(value);
-    this.dataFilter = new OmpPublicDataFilter(this.sensitiveValues);
-  }
+  ) {}
 
-  private readonly dataFilter: OmpPublicDataFilter;
-
-  addSensitiveValues(values: Iterable<string>): void {
-    const additions: string[] = [];
-    for (const value of values) {
-      if (this.sensitiveValues.has(value)) continue;
-      this.sensitiveValues.add(value);
-      additions.push(value);
-    }
-    this.dataFilter.addSensitiveValues(additions);
-    for (const child of this.children.values()) child.projector.addSensitiveValues(additions);
-  }
+  private readonly dataFilter = new OmpPublicDataSerializer();
 
   observeSessionEvent(ownerSessionId: string, event: OmpAgentSessionEvent): void {
     if (event.type === "tool_execution_start" && event.toolName === "task") {
@@ -548,12 +532,7 @@ export class OmpSubsessionProjector {
       sessionClosed: false,
       seenAssistantIdentities: new BoundedStringSet(MAX_CHILD_MESSAGE_IDENTITIES),
       seenInSnapshot: false,
-      projector: new OmpTimelineProjector(
-        sessionId,
-        this.emit,
-        this.scheduler,
-        this.sensitiveValues,
-      ),
+      projector: new OmpTimelineProjector(sessionId, this.emit, this.scheduler),
     };
     this.children.set(sessionId, child);
     this.sessionIdByNativeId.set(ref.id, sessionId);
