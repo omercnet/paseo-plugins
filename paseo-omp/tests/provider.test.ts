@@ -11183,6 +11183,103 @@ describe("OMP direct provider", () => {
     expect(filter.text("🙂🙂🙂🙂", 15)).toBe("🙂<truncated>");
   });
 
+  test("bounds JSON-encoded control-heavy tool output", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector(
+      "encoded-budget-session",
+      (event) => events.push(event),
+      new ManualScheduler(),
+    );
+
+    projector.project(
+      { type: "tool_execution_start", toolCallId: "control-output", toolName: "custom", args: {} },
+      "encoded-budget-turn",
+    );
+    projector.project(
+      {
+        type: "tool_execution_end",
+        toolCallId: "control-output",
+        toolName: "custom",
+        result: { content: "\0".repeat(60_000) },
+      },
+      "encoded-budget-turn",
+    );
+
+    const completed = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.status === "completed",
+    );
+    if (
+      completed?.type !== "timeline.item" ||
+      completed.item.type !== "tool_call" ||
+      completed.item.detail.type !== "unknown"
+    ) {
+      throw new Error("Expected completed custom tool output");
+    }
+    const output = completed.item.detail.output;
+    expect(Buffer.byteLength(JSON.stringify(output), "utf8")).toBeLessThanOrEqual(256 * 1024);
+    expect(
+      output && typeof output === "object" && !Array.isArray(output) ? output.content : null,
+    ).toMatch(/^\0+<truncated>$/u);
+  });
+
+  test("preserves structured values unless their exact value is sensitive", () => {
+    const filter = new OmpPublicDataFilter(["known-sensitive-value"]);
+    expect(
+      filter.json({
+        apiKey: "another-secret",
+        password: "known-sensitive-value",
+        secret: { type: "string" },
+      }),
+    ).toEqual({
+      apiKey: "another-secret",
+      password: "<redacted>",
+      secret: { type: "string" },
+    });
+  });
+
+  test("projects Windows drive paths as read details", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector(
+      "windows-read-session",
+      (event) => events.push(event),
+      new ManualScheduler(),
+    );
+    const filePath = String.raw`C:\Users\private\file.txt`;
+
+    projector.project(
+      {
+        type: "tool_execution_start",
+        toolCallId: "windows-read",
+        toolName: "read",
+        args: { path: filePath },
+      },
+      "windows-read-turn",
+    );
+    projector.project(
+      {
+        type: "tool_execution_end",
+        toolCallId: "windows-read",
+        toolName: "read",
+        result: { content: "file contents" },
+      },
+      "windows-read-turn",
+    );
+
+    expect(
+      events.flatMap((event) =>
+        event.type === "timeline.item" && event.item.type === "tool_call"
+          ? [event.item.detail]
+          : [],
+      ),
+    ).toEqual([
+      { type: "read", filePath },
+      { type: "read", filePath, content: "file contents" },
+    ]);
+  });
+
   test("publishes partial snapshots immediately and completes tools from final results", () => {
     const events: ProviderEvent[] = [];
     const projector = new OmpTimelineProjector(
@@ -11419,7 +11516,7 @@ describe("OMP direct provider", () => {
 
     const visible = JSON.stringify(events);
     expect(visible).not.toContain("credential-value-1234");
-    expect(visible).not.toContain("another-secret");
+    expect(visible).toContain("another-secret");
     expect(visible).not.toContain("provider-internal-notice-id");
     expect(visible).not.toContain("credential-value-");
     expect(visible).not.toContain("provider-internal-tool-id");
@@ -11573,6 +11670,7 @@ describe("OMP direct provider", () => {
     expect(Object.getPrototypeOf(detailInput)).toBeNull();
     expect(Object.hasOwn({}, "polluted")).toBe(false);
     expect(Object.keys(detailInput)).toEqual(["apiKey", "/home/private", "literal"]);
+    expect(detailInput.apiKey).toBe("another-secret");
     expect(visible).toContain("<redacted>");
     await finishTurn(events, session, turnId);
     await connection.close();
