@@ -10,6 +10,7 @@ import {
   OmpSettingTypeSchema,
   type updateOmpSettings,
 } from "../shared/omp-settings";
+import { SerialMutationQueue } from "./mutation-queue";
 import {
   type BoundedRun,
   buildStatefulCommandEnv,
@@ -268,21 +269,12 @@ export async function updateOmpSettingsWithDependencies(
   };
 }
 
-let settingsMutationTail: Promise<void> = Promise.resolve();
-
-function enqueueSettingsMutation<T>(operation: () => Promise<T>): Promise<T> {
-  const result = settingsMutationTail.then(operation, operation);
-  settingsMutationTail = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  return result;
-}
+const settingsMutationQueue = new SerialMutationQueue();
 
 export function resolveUpdateOmpSettings(
   input: RpcInput<typeof updateOmpSettings>,
 ): Promise<OmpSettingsUpdateResult> {
-  return enqueueSettingsMutation(() =>
+  return settingsMutationQueue.run(() =>
     updateOmpSettingsWithDependencies(input, DEFAULT_DEPENDENCIES),
   );
 }

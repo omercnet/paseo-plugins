@@ -18,6 +18,7 @@ import {
   OmpPluginNameSchema,
   type OmpPluginState,
 } from "../shared/omp-plugins";
+import { SerialMutationQueue } from "./mutation-queue";
 import {
   type BoundedRun,
   buildStatefulCommandEnv,
@@ -535,7 +536,7 @@ export async function mutateOmpPluginConfigWithDependencies(
 export function resolveMutateOmpPluginConfig(
   input: RpcInput<typeof mutateOmpPluginConfig>,
 ): Promise<{ ok: boolean; message: string; config: OmpPluginConfigState }> {
-  return enqueuePluginMutation(() =>
+  return pluginMutationQueue.run(() =>
     mutateOmpPluginConfigWithDependencies(input, DEFAULT_DEPENDENCIES),
   );
 }
@@ -566,16 +567,7 @@ function mutationSuccess(action: OmpPluginMutation["action"]): string {
   }
 }
 
-let pluginMutationTail: Promise<void> = Promise.resolve();
-
-function enqueuePluginMutation<T>(operation: () => Promise<T>): Promise<T> {
-  const result = pluginMutationTail.then(operation, operation);
-  pluginMutationTail = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  return result;
-}
+const pluginMutationQueue = new SerialMutationQueue();
 
 export async function mutateOmpPluginWithDependencies(
   input: RpcInput<typeof mutateOmpPlugin>,
@@ -604,5 +596,7 @@ export async function mutateOmpPluginWithDependencies(
 export function resolveMutateOmpPlugin(
   input: RpcInput<typeof mutateOmpPlugin>,
 ): Promise<{ ok: boolean; message: string; state: OmpPluginState }> {
-  return enqueuePluginMutation(() => mutateOmpPluginWithDependencies(input, DEFAULT_DEPENDENCIES));
+  return pluginMutationQueue.run(() =>
+    mutateOmpPluginWithDependencies(input, DEFAULT_DEPENDENCIES),
+  );
 }
