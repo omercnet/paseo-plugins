@@ -68,6 +68,13 @@ function hasExpectedHeader(mimeType: string, bytes: readonly number[]): boolean 
   if (mimeType === "image/jpeg") {
     return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
   }
+  if (mimeType === "image/webp") {
+    return (
+      bytes.length >= 12 &&
+      String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+      String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+    );
+  }
   return (
     bytes.length >= 6 && String.fromCharCode(...bytes.slice(0, 6)) in { GIF87a: true, GIF89a: true }
   );
@@ -76,7 +83,7 @@ function hasExpectedHeader(mimeType: string, bytes: readonly number[]): boolean 
 const ompImageSchema = z.object({
   id: z.string().regex(/^[A-Za-z0-9_-]{16}$/u),
   data: z.string().max(MAX_IMAGE_ENCODED_BYTES),
-  mimeType: z.enum(["image/gif", "image/jpeg", "image/png"]),
+  mimeType: z.enum(["image/gif", "image/jpeg", "image/png", "image/webp"]),
 });
 
 export const ompImageTimelineSchema = z

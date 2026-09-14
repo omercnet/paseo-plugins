@@ -89,11 +89,12 @@ describe("OMP image timeline transformer", () => {
     });
   });
 
-  test("accepts PNG, JPEG, and GIF headers with multibyte labels", () => {
+  test("accepts PNG, JPEG, GIF, and WebP headers with multibyte labels", () => {
     for (const [mimeType, data] of [
       ["image/png", Buffer.from("89504e470d0a1a0a", "hex").toString("base64")],
       ["image/jpeg", Buffer.from("ffd8ff", "hex").toString("base64")],
       ["image/gif", Buffer.from("GIF89a").toString("base64")],
+      ["image/webp", Buffer.from("RIFF\0\0\0\0WEBP", "binary").toString("base64")],
     ] as const) {
       expect(
         ompImageTimelineSchema.safeParse({
