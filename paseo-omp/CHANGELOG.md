@@ -33,6 +33,7 @@
 * Add Release Please packaging, Git installation, compatibility policy, and release rollback guidance.
 * Add a digest-pinned official Paseo Docker canary with deterministic mock, configured MCP, and optional local Ollama inference.
 * Document the deduplicated Paseo core OMP issue audit, verified plugin fixes, host-owned concerns, and remaining alpha gaps.
+* Add the OMP sidebar configuration editor with revision-checked scalar writes, structured collection display, and provider-profile visibility including names-only inherited environment settings.
 
 ### Bug Fixes
 

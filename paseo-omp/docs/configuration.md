@@ -1,8 +1,8 @@
 # Configuration
 
-Normal use requires no plugin-specific configuration. Open the **OMP** sidebar in Paseo to inspect the binary, RPC compatibility, storage paths, process health, registered providers, and the safe non-secret subset of the active native OMP configuration.
+Open the **OMP** sidebar to browse the complete installed OMP settings catalog. Boolean, number, string, and enum settings support revision-checked Apply, Discard, and Reset actions; arrays, records, and credentials remain read-only. Configuration writes use OMP's native `config set` and `config reset` commands rather than rewriting YAML.
 
-Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
+The **Plugin** tab lists every `omp-plugin` profile visible through the daemon and exposes command, environment names, output-redaction policy, runtime parameters, and denied tools without displaying environment values. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
 
 ## Optional provider profile overrides
 
@@ -28,6 +28,7 @@ Advanced launch overrides belong in an `omp-plugin` provider profile. The provid
 | --- | --- |
 | `command` | Complete OMP executable and argument prefix. |
 | `env` | Non-secret process overrides applied below the session launch environment. |
+| `inheritEnv` | Daemon environment variable names copied only when OMP starts. Values are never stored in the profile or displayed in the sidebar. |
 | `outputRedaction` | `none` (default) preserves native output. `configured-values` performs best-effort literal replacement only for explicitly supplied configured credential values from profile/session credential environment fields and configured MCP headers or environment. |
 | `params.sessionDir` | Native OMP session directory supplied through `--session-dir`. Used consistently by discovery, import, resume, and launch. |
 | `params.rpcTimeoutMs` | Startup, request, catalog, and availability timeout, from 1 ms through 10 minutes. |

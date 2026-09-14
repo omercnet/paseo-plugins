@@ -1,13 +1,17 @@
+import { createHash } from "node:crypto";
 import { delimiter } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import {
   type listOmpSettings,
   OMP_SETTINGS_CATALOG_VERSION,
+  type OmpScalarValue,
   type OmpSetting,
   type OmpSettingType,
   OmpSettingTypeSchema,
+  type updateOmpSettings,
 } from "../shared/omp-settings";
 import {
+  type BoundedRun,
   buildProbeEnv,
   defaultSpawn,
   resolveExecutablePath,
@@ -29,6 +33,26 @@ type OmpSettingRecord = {
 };
 
 export type ParsedOmpSettings = { settings: OmpSetting[]; droppedCount: number };
+type CatalogResult = {
+  catalogVersion: typeof OMP_SETTINGS_CATALOG_VERSION;
+  available: boolean;
+  revision?: string;
+  droppedCount: number;
+  settings: OmpSetting[];
+  error?: string;
+};
+
+export type OmpSettingsUpdateResult = {
+  conflict: boolean;
+  appliedPaths: string[];
+  failed?: { path: string; message: string };
+  catalog: CatalogResult;
+};
+
+export interface OmpSettingsDependencies {
+  resolveExecutable(): Promise<string | null>;
+  runConfig(executable: string, args: readonly string[]): Promise<BoundedRun>;
+}
 
 function isCredentialSetting(path: string, type: OmpSettingType): boolean {
   if (type !== "string" && type !== "record") return false;
@@ -72,25 +96,42 @@ export function parseOmpSettingsList(raw: unknown): ParsedOmpSettings {
   return { settings, droppedCount };
 }
 
-export async function resolveListOmpSettings(_input: RpcInput<typeof listOmpSettings>): Promise<{
-  catalogVersion: typeof OMP_SETTINGS_CATALOG_VERSION;
-  available: boolean;
-  droppedCount: number;
-  settings: OmpSetting[];
-  error?: string;
-}> {
-  const command = process.env.OMP_COMMAND ?? "omp";
-  const cwd = process.cwd();
-  const executable = await resolveExecutablePath(
-    command,
+async function resolveOmpExecutable(): Promise<string | null> {
+  return resolveExecutablePath(
+    process.env.OMP_COMMAND ?? "omp",
     (process.env.PATH ?? "").split(delimiter),
     {
-      cwd,
+      cwd: process.cwd(),
       platform: process.platform,
       pathExt: process.env.PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
     },
   );
-  if (!executable) {
+}
+
+async function runOmpConfig(executable: string, args: readonly string[]) {
+  return runBounded(
+    defaultSpawn,
+    executable,
+    ["config", ...args],
+    buildProbeEnv(process.env),
+    CONFIG_TIMEOUT_MS,
+    KILL_GRACE_MS,
+    MAX_CONFIG_OUTPUT_BYTES,
+    process.cwd(),
+  );
+}
+
+const DEFAULT_DEPENDENCIES: OmpSettingsDependencies = {
+  resolveExecutable: resolveOmpExecutable,
+  runConfig: runOmpConfig,
+};
+
+async function loadCatalog(
+  executable: string | null | undefined,
+  dependencies: OmpSettingsDependencies,
+): Promise<CatalogResult> {
+  const resolved = executable === undefined ? await dependencies.resolveExecutable() : executable;
+  if (!resolved) {
     return {
       catalogVersion: OMP_SETTINGS_CATALOG_VERSION,
       available: false,
@@ -100,16 +141,7 @@ export async function resolveListOmpSettings(_input: RpcInput<typeof listOmpSett
     };
   }
 
-  const result = await runBounded(
-    defaultSpawn,
-    executable,
-    ["config", "list", "--json"],
-    buildProbeEnv(process.env),
-    CONFIG_TIMEOUT_MS,
-    KILL_GRACE_MS,
-    MAX_CONFIG_OUTPUT_BYTES,
-    cwd,
-  );
+  const result = await dependencies.runConfig(resolved, ["list", "--json"]);
   if (result.outcome !== "exited" || result.exitCode !== 0 || result.truncated) {
     return {
       catalogVersion: OMP_SETTINGS_CATALOG_VERSION,
@@ -129,6 +161,7 @@ export async function resolveListOmpSettings(_input: RpcInput<typeof listOmpSett
     return {
       catalogVersion: OMP_SETTINGS_CATALOG_VERSION,
       available: true,
+      revision: createHash("sha256").update(result.stdout).digest("hex"),
       droppedCount: catalog.droppedCount,
       settings: catalog.settings,
     };
@@ -141,4 +174,94 @@ export async function resolveListOmpSettings(_input: RpcInput<typeof listOmpSett
       error: "OMP returned invalid settings metadata.",
     };
   }
+}
+
+function serializeScalar(type: OmpSettingType, value: OmpScalarValue): string | null {
+  if (type === "boolean") return typeof value === "boolean" ? String(value) : null;
+  if (type === "number")
+    return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
+  if (type === "string" || type === "enum") return typeof value === "string" ? value : null;
+  return null;
+}
+
+export async function listOmpSettingsWithDependencies(
+  _input: RpcInput<typeof listOmpSettings>,
+  dependencies: OmpSettingsDependencies,
+): Promise<CatalogResult> {
+  return loadCatalog(undefined, dependencies);
+}
+
+export async function resolveListOmpSettings(
+  input: RpcInput<typeof listOmpSettings>,
+): Promise<CatalogResult> {
+  return listOmpSettingsWithDependencies(input, DEFAULT_DEPENDENCIES);
+}
+
+export async function updateOmpSettingsWithDependencies(
+  input: RpcInput<typeof updateOmpSettings>,
+  dependencies: OmpSettingsDependencies,
+): Promise<OmpSettingsUpdateResult> {
+  const executable = await dependencies.resolveExecutable();
+  const current = await loadCatalog(executable, dependencies);
+  if (!executable || !current.available || !current.revision) {
+    return { conflict: false, appliedPaths: [], catalog: current };
+  }
+  if (current.revision !== input.revision) {
+    return { conflict: true, appliedPaths: [], catalog: current };
+  }
+
+  const byPath = new Map(current.settings.map((setting) => [setting.path, setting]));
+  const appliedPaths: string[] = [];
+  for (const change of input.changes) {
+    const setting = byPath.get(change.path);
+    if (
+      !setting ||
+      setting.redacted ||
+      !["boolean", "number", "string", "enum"].includes(setting.type)
+    ) {
+      return {
+        conflict: false,
+        appliedPaths,
+        failed: { path: change.path, message: "This setting cannot be edited as a scalar value." },
+        catalog: await loadCatalog(executable, dependencies),
+      };
+    }
+    let args: string[] | null;
+    if (change.operation === "reset") {
+      args = ["reset", change.path];
+    } else {
+      const value = serializeScalar(setting.type, change.value);
+      args = value === null ? null : ["set", change.path, value];
+    }
+    if (!args) {
+      return {
+        conflict: false,
+        appliedPaths,
+        failed: { path: change.path, message: `Expected a ${setting.type} value.` },
+        catalog: current,
+      };
+    }
+    const result = await dependencies.runConfig(executable, args);
+    if (result.outcome !== "exited" || result.exitCode !== 0) {
+      return {
+        conflict: false,
+        appliedPaths,
+        failed: { path: change.path, message: "OMP rejected this setting change." },
+        catalog: await loadCatalog(executable, dependencies),
+      };
+    }
+    appliedPaths.push(change.path);
+  }
+
+  return {
+    conflict: false,
+    appliedPaths,
+    catalog: await loadCatalog(executable, dependencies),
+  };
+}
+
+export async function resolveUpdateOmpSettings(
+  input: RpcInput<typeof updateOmpSettings>,
+): Promise<OmpSettingsUpdateResult> {
+  return updateOmpSettingsWithDependencies(input, DEFAULT_DEPENDENCIES);
 }
