@@ -11591,6 +11591,125 @@ describe("OMP direct provider", () => {
     ).toBe(true);
   });
 
+  test("redacts configured values in structured unknown image output and replay", () => {
+    const image = { type: "image" as const, data: "iVBORw0KGgo=", mimeType: "image/png" };
+    const result = {
+      content: [
+        { type: "record", value: { key: "configured-secret", rows: [1, 2] } },
+        image,
+        { type: "text", text: "result configured-secret" },
+      ],
+      details: { source: "configured-secret" },
+    };
+    const redactedPartial = {
+      content: [
+        { type: "record", value: { key: "<redacted>", rows: [1, 2] } },
+        image,
+        { type: "text", text: "result <redacted>" },
+      ],
+      details: { source: "<redacted>" },
+    };
+    const redactedFinal = {
+      content: [redactedPartial.content[0], redactedPartial.content[2]],
+      details: redactedPartial.details,
+    };
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector(
+      "redacted-result-session",
+      (event) => events.push(event),
+      new ManualScheduler(),
+      ["configured-secret"],
+    );
+
+    projector.project(
+      {
+        type: "tool_execution_start",
+        toolCallId: "redacted-result",
+        toolName: "vendor_tool",
+        args: {},
+      },
+      "redacted-result-turn",
+    );
+    projector.project(
+      {
+        type: "tool_execution_update",
+        toolCallId: "redacted-result",
+        toolName: "vendor_tool",
+        partialResult: result,
+      },
+      "redacted-result-turn",
+    );
+    projector.project(
+      {
+        type: "tool_execution_end",
+        toolCallId: "redacted-result",
+        toolName: "vendor_tool",
+        result,
+      },
+      "redacted-result-turn",
+    );
+
+    const snapshots = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "tool_call" &&
+      event.item.name === "vendor_tool"
+        ? [event.item]
+        : [],
+    );
+    expect(snapshots.map(({ status, detail }) => ({ status, detail }))).toEqual([
+      { status: "running", detail: { type: "unknown", input: {}, output: null } },
+      {
+        status: "running",
+        detail: { type: "unknown", input: {}, output: redactedPartial },
+      },
+      {
+        status: "completed",
+        detail: { type: "unknown", input: {}, output: redactedFinal },
+      },
+    ]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({
+          id: "omp:tool:1:images",
+          metadata: expect.objectContaining({
+            ompImage: expect.objectContaining({
+              text: "result <redacted>",
+              details: redactedPartial.details,
+            }),
+          }),
+        }),
+      }),
+    );
+
+    const replayEvents: ProviderEvent[] = [];
+    const replayProjector = new OmpTimelineProjector(
+      "redacted-replay-session",
+      (event) => replayEvents.push(event),
+      new ManualScheduler(),
+      ["configured-secret"],
+    );
+    replayProjector.projectReplayMessage({
+      role: "toolResult",
+      toolCallId: "redacted-replay-result",
+      toolName: "vendor_tool",
+      content: result.content,
+      details: result.details,
+    });
+    const replayCompleted = replayEvents.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "vendor_tool" &&
+        event.item.status === "completed",
+    );
+    expect(
+      replayCompleted?.type === "timeline.item" && replayCompleted.item.type === "tool_call"
+        ? replayCompleted.item.detail
+        : undefined,
+    ).toEqual({ type: "unknown", input: null, output: redactedFinal });
+  });
+
   test("preserves unknown structures while typed details omit absent text", () => {
     const events: ProviderEvent[] = [];
     const projector = new OmpTimelineProjector(
@@ -16130,7 +16249,7 @@ describe("OMP direct provider", () => {
       type: "tool_execution_end",
       toolCallId: "preserved-read-url",
       toolName: "read",
-      result: { content: "read page" },
+      result: { output: "read page" },
     });
     const preservedRead = events.findLast(
       (event) =>
