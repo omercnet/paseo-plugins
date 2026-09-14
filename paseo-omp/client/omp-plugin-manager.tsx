@@ -316,23 +316,25 @@ function ConfigSettingEditor({
   const [draft, setDraft] = useState<string | boolean>(setting.type === "boolean" ? false : "");
   let value: string | number | boolean | undefined;
   let validationMessage: string | null = null;
-  if (setting.type === "boolean") {
-    value = draft === true;
-  } else if (setting.type === "number") {
-    const raw = typeof draft === "string" ? draft.trim() : "";
-    const parsed = raw ? Number(raw) : Number.NaN;
-    if (!Number.isFinite(parsed)) validationMessage = "Enter a finite number.";
-    else if (setting.minimum !== undefined && parsed < setting.minimum) {
-      validationMessage = `Minimum: ${setting.minimum}`;
-    } else if (setting.maximum !== undefined && parsed > setting.maximum) {
-      validationMessage = `Maximum: ${setting.maximum}`;
-    } else value = parsed;
-  } else if (setting.type === "enum") {
-    if (typeof draft !== "string" || !setting.enumValues.includes(draft)) {
-      validationMessage = "Choose one of the documented values.";
-    } else value = draft;
-  } else if (typeof draft === "string") {
-    value = draft;
+  if (!setting.secret) {
+    if (setting.type === "boolean") {
+      value = draft === true;
+    } else if (setting.type === "number") {
+      const raw = typeof draft === "string" ? draft.trim() : "";
+      const parsed = raw ? Number(raw) : Number.NaN;
+      if (!Number.isFinite(parsed)) validationMessage = "Enter a finite number.";
+      else if (setting.minimum !== undefined && parsed < setting.minimum) {
+        validationMessage = `Minimum: ${setting.minimum}`;
+      } else if (setting.maximum !== undefined && parsed > setting.maximum) {
+        validationMessage = `Maximum: ${setting.maximum}`;
+      } else value = parsed;
+    } else if (setting.type === "enum") {
+      if (typeof draft !== "string" || !setting.enumValues.includes(draft)) {
+        validationMessage = "Choose one of the documented values.";
+      } else value = draft;
+    } else if (typeof draft === "string") {
+      value = draft;
+    }
   }
   const candidate =
     value === undefined

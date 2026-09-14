@@ -1059,6 +1059,9 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
     },
   });
   const draftCount = Object.keys(drafts).length;
+  const displayedConfigPath = settingsQuery.data?.available
+    ? settingsQuery.data.path
+    : configQuery.data?.path;
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
@@ -1079,7 +1082,7 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
               <KeyValueRow
                 styles={styles}
                 label="Source"
-                value={settingsQuery.data?.path ?? configQuery.data?.path ?? "Unavailable"}
+                value={displayedConfigPath ?? "Source unavailable"}
               />
               <KeyValueRow
                 styles={styles}
@@ -1139,11 +1142,11 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
                 />
               ))}
             </View>
-            {(settingsQuery.data?.path ?? configQuery.data?.path) ? (
-              <Text style={styles.source}>
-                {`Source: ${settingsQuery.data?.path ?? configQuery.data?.path}`}
-              </Text>
-            ) : null}
+            {displayedConfigPath ? (
+              <Text style={styles.source}>{`Source: ${displayedConfigPath}`}</Text>
+            ) : (
+              <Text style={styles.source}>Source unavailable</Text>
+            )}
           </View>
           {documentationError ? (
             <Text accessibilityRole="alert" style={styles.error}>
