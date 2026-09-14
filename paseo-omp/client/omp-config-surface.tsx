@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Switch, Text, View } from "react-native";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import {
   categorizeOmpSetting,
@@ -91,8 +91,6 @@ export interface OmpConfigStyles {
   editorActionText: TextStyle;
   editorActionTextPrimary: TextStyle;
   scalarInput: TextStyle;
-  scalarToggle: ViewStyle;
-  scalarToggleText: TextStyle;
   resetAction: TextStyle;
 }
 
@@ -268,13 +266,6 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
         paddingVertical: 6,
         fontSize: 13,
       },
-      scalarToggle: {
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        borderRadius: 7,
-        backgroundColor: theme.colors.surface2,
-      },
-      scalarToggleText: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" },
       resetAction: { color: theme.colors.accent, fontSize: 12, fontWeight: "600" },
     }),
     [compact, theme],
@@ -877,15 +868,12 @@ function EditableScalarValue({
       {draft?.operation === "reset" ? (
         <Text style={styles.muted}>Will reset to the OMP default</Text>
       ) : setting.type === "boolean" ? (
-        <Pressable
-          accessibilityRole="switch"
-          accessibilityState={{ checked: value === true, disabled }}
+        <Switch
+          accessibilityLabel={`Toggle ${formatOmpSettingLabel(setting.path)}`}
           disabled={disabled}
-          onPress={() => onSet(value !== true)}
-          style={styles.scalarToggle}
-        >
-          <Text style={styles.scalarToggleText}>{value === true ? "Enabled" : "Disabled"}</Text>
-        </Pressable>
+          value={value === true}
+          onValueChange={onSet}
+        />
       ) : (
         <TextInput
           accessibilityLabel={`Edit ${formatOmpSettingLabel(setting.path)}`}
