@@ -5,11 +5,12 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { listOmpConfig } from "../shared/omp-config";
+import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import {
   categorizeOmpSetting,
   formatOmpSettingLabel,
   listOmpSettings,
+  OMP_SETTING_CATEGORIES,
   type OmpSetting,
   type OmpSettingCategory,
 } from "../shared/omp-settings";
@@ -117,7 +118,7 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
       topTabLabelActive: { color: theme.colors.accentForeground },
       workspace: {
         flexDirection: compact ? "column" : "row",
-        alignItems: "flex-start",
+        alignItems: compact ? "stretch" : "flex-start",
         gap: compact ? 10 : 18,
       },
       categoryRail: {
@@ -134,7 +135,7 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
       categoryButtonActive: { backgroundColor: theme.colors.surface2 },
       categoryLabel: { color: theme.colors.foregroundMuted, fontSize: 13, fontWeight: "500" },
       categoryLabelActive: { color: theme.colors.foreground, fontWeight: "700" },
-      categoryContent: { flex: 1, minWidth: 0, gap: 10 },
+      categoryContent: { flex: compact ? undefined : 1, minWidth: 0, gap: 10 },
       search: {
         color: theme.colors.foreground,
         borderWidth: 1,
@@ -524,25 +525,56 @@ function ProviderHealthSection({
   );
 }
 
+const CATEGORY_LABELS: Record<OmpSettingCategory, string> = {
+  appearance: "Appearance",
+  model: "Model",
+  interaction: "Interaction",
+  context: "Context",
+  memory: "Memory",
+  files: "Files",
+  shell: "Shell",
+  tools: "Tools",
+  tasks: "Tasks",
+  providers: "Providers",
+  general: "General",
+};
+
+const CONFIG_CATEGORIES = OMP_SETTING_CATEGORIES.map((id) => ({ id, label: CATEGORY_LABELS[id] }));
+
+function fallbackSettingsFromConfig(config: OmpConfig | null | undefined): OmpSetting[] {
+  if (!config) return [];
+  const settings: OmpSetting[] = [];
+  const visit = (value: unknown, path: string) => {
+    if (Array.isArray(value)) {
+      settings.push({ path, type: "array", value, description: "" });
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      const entries = Object.entries(value as Record<string, unknown>);
+      if (entries.length === 0) {
+        settings.push({ path, type: "record", value, description: "" });
+        return;
+      }
+      for (const [key, nested] of entries) visit(nested, path ? `${path}.${key}` : key);
+      return;
+    }
+    if (typeof value === "boolean") {
+      settings.push({ path, type: "boolean", value, description: "" });
+    } else if (typeof value === "number") {
+      settings.push({ path, type: "number", value, description: "" });
+    } else if (typeof value === "string") {
+      settings.push({ path, type: "string", value, description: "" });
+    }
+  };
+  visit(config, "");
+  return settings;
+}
+
 type SurfaceView = "overview" | "configuration" | "diagnostics";
 const SURFACE_VIEWS: readonly { id: SurfaceView; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "configuration", label: "Configuration" },
   { id: "diagnostics", label: "Diagnostics" },
-];
-
-const CONFIG_CATEGORIES: readonly { id: OmpSettingCategory; label: string }[] = [
-  { id: "appearance", label: "Appearance" },
-  { id: "model", label: "Model" },
-  { id: "interaction", label: "Interaction" },
-  { id: "context", label: "Context" },
-  { id: "memory", label: "Memory" },
-  { id: "files", label: "Files" },
-  { id: "shell", label: "Shell" },
-  { id: "tools", label: "Tools" },
-  { id: "tasks", label: "Tasks" },
-  { id: "providers", label: "Providers" },
-  { id: "general", label: "General" },
 ];
 
 function formatScalarValue(value: unknown): string {
@@ -561,7 +593,17 @@ function StructuredSettingValue({
   setting: OmpSetting;
   styles: OmpConfigStyles;
 }) {
-  if (setting.redacted) return <Text style={styles.settingValue}>Configured (hidden)</Text>;
+  if (setting.redacted) {
+    return (
+      <Text style={styles.settingValue}>
+        {setting.configured === true
+          ? "Configured (hidden)"
+          : setting.configured === false
+            ? "Not set"
+            : "Hidden"}
+      </Text>
+    );
+  }
   const value = setting.value;
   if (!Array.isArray(value) && (value === null || typeof value !== "object")) {
     return <Text style={styles.settingValue}>{formatScalarValue(value)}</Text>;
@@ -699,22 +741,34 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
   const settingsQuery = useQuery({
     queryKey: ["paseo-omp", "settings"],
     queryFn: () => loadSettings({}),
-    refetchInterval: CONFIG_POLL_MS,
+    staleTime: Number.POSITIVE_INFINITY,
   });
   const [view, setView] = useState<SurfaceView>("overview");
   const [activeCategory, setActiveCategory] = useState<OmpSettingCategory>("appearance");
   const [search, setSearch] = useState("");
   const styles = useConfigStyles(theme, layout.compact);
   const normalizedSearch = search.trim().toLocaleLowerCase();
-  const matchingSettings = (settingsQuery.data?.settings ?? []).filter((setting) => {
-    if (!normalizedSearch) return true;
-    return `${setting.path}\n${setting.description}`.toLocaleLowerCase().includes(normalizedSearch);
-  });
-  const settingsByCategory = Map.groupBy(matchingSettings, (setting) =>
-    categorizeOmpSetting(setting.path),
-  );
+  const catalog = useMemo(() => {
+    const sourceSettings = settingsQuery.data?.available
+      ? settingsQuery.data.settings
+      : fallbackSettingsFromConfig(configQuery.data?.config);
+    const matching = sourceSettings.filter((setting) => {
+      if (!normalizedSearch) return true;
+      return `${setting.path}\n${setting.description}`
+        .toLocaleLowerCase()
+        .includes(normalizedSearch);
+    });
+    const byCategory = new Map<OmpSettingCategory, OmpSetting[]>();
+    for (const setting of matching) {
+      const category = categorizeOmpSetting(setting.path);
+      const group = byCategory.get(category);
+      if (group) group.push(setting);
+      else byCategory.set(category, [setting]);
+    }
+    return { sourceSettings, matching, byCategory };
+  }, [configQuery.data?.config, normalizedSearch, settingsQuery.data]);
   const visibleCategories = CONFIG_CATEGORIES.filter(
-    (category) => (settingsByCategory.get(category.id)?.length ?? 0) > 0,
+    (category) => (catalog.byCategory.get(category.id)?.length ?? 0) > 0,
   );
   const selectedCategory =
     visibleCategories.find((category) => category.id === activeCategory) ?? visibleCategories[0];
@@ -727,23 +781,31 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
       {view === "overview" ? (
         <>
           <ProviderSetupSection styles={styles} />
-          <SectionCard styles={styles} title="Native configuration">
-            <KeyValueRow
-              styles={styles}
-              label="Source"
-              value={configQuery.data?.path ?? "Loading configuration path…"}
-            />
-            <KeyValueRow
-              styles={styles}
-              label="Status"
-              value={configQuery.data?.available ? "Available" : "Unavailable"}
-            />
-            <KeyValueRow
-              styles={styles}
-              label="Settings discovered"
-              value={String(settingsQuery.data?.settings.length ?? 0)}
-            />
-          </SectionCard>
+          {configQuery.isLoading ? (
+            <Text style={styles.muted}>Loading the native configuration…</Text>
+          ) : configQuery.error ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              Could not read the native OMP configuration.
+            </Text>
+          ) : (
+            <SectionCard styles={styles} title="Native configuration">
+              <KeyValueRow
+                styles={styles}
+                label="Source"
+                value={configQuery.data?.path ?? "Unavailable"}
+              />
+              <KeyValueRow
+                styles={styles}
+                label="Status"
+                value={configQuery.data?.available ? "Available" : "Unavailable"}
+              />
+              <KeyValueRow
+                styles={styles}
+                label="Settings discovered"
+                value={String(catalog.sourceSettings.length)}
+              />
+            </SectionCard>
+          )}
         </>
       ) : null}
 
@@ -779,14 +841,21 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
           ) : null}
           {settingsQuery.error || settingsQuery.data?.error ? (
             <Text accessibilityRole="alert" style={styles.error}>
-              OMP settings metadata is unavailable. Check the configured OMP executable.
+              OMP settings metadata is unavailable. Showing the safe values read from the config
+              file when available.
             </Text>
           ) : null}
-          {settingsQuery.data?.available && settingsQuery.data.settings.length === 0 ? (
-            <Text style={styles.muted}>OMP reported no settings.</Text>
+          {settingsQuery.data?.droppedCount ? (
+            <Text style={styles.muted}>
+              {settingsQuery.data.droppedCount} settings use unsupported metadata types and are not
+              shown.
+            </Text>
+          ) : null}
+          {!settingsQuery.isLoading && catalog.sourceSettings.length === 0 ? (
+            <Text style={styles.muted}>OMP reported no readable settings.</Text>
           ) : null}
 
-          {settingsQuery.data?.available && settingsQuery.data.settings.length > 0 ? (
+          {catalog.sourceSettings.length > 0 ? (
             <View style={styles.workspace}>
               <View style={styles.categoryRail}>
                 <TextInput
@@ -798,12 +867,12 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
                   style={styles.search}
                 />
                 <Text style={styles.source}>
-                  {matchingSettings.length} of {settingsQuery.data.settings.length} settings
+                  {catalog.matching.length} of {catalog.sourceSettings.length} settings
                 </Text>
                 <View style={styles.categoryList}>
                   {visibleCategories.map((category) => {
                     const active = selectedCategory?.id === category.id;
-                    const count = settingsByCategory.get(category.id)?.length ?? 0;
+                    const count = catalog.byCategory.get(category.id)?.length ?? 0;
                     return (
                       <Pressable
                         key={category.id}
@@ -827,7 +896,7 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
                   <ConfigurationCategory
                     category={selectedCategory}
                     styles={styles}
-                    settings={settingsByCategory.get(selectedCategory.id) ?? []}
+                    settings={catalog.byCategory.get(selectedCategory.id) ?? []}
                   />
                 ) : (
                   <Text style={styles.muted}>No settings match this search.</Text>

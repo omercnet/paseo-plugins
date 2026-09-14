@@ -20,6 +20,7 @@ export const OmpSettingSchema = z
     description: z.string(),
     value: z.unknown().optional(),
     redacted: z.boolean().optional(),
+    configured: z.boolean().optional(),
   })
   .strict();
 export type OmpSetting = z.infer<typeof OmpSettingSchema>;
@@ -86,13 +87,11 @@ const CATEGORY_PREFIXES: Readonly<Record<OmpSettingCategory, readonly string[]>>
     "power.",
     "steeringMode",
     "ask.",
-    "notifications.",
-    "sound.",
     "stt.",
     "speech.",
     "live.",
     "collab.",
-    "magic.",
+    "magicKeywords",
     "git.",
   ],
   context: ["compaction.", "context.", "contextPromotion.", "ttsr.", "recap.", "branchSummary."],
@@ -170,6 +169,7 @@ export const listOmpSettings = defineRpc({
   output: z.object({
     catalogVersion: z.literal(OMP_SETTINGS_CATALOG_VERSION),
     available: z.boolean(),
+    droppedCount: z.number().int().nonnegative(),
     settings: z.array(OmpSettingSchema),
     error: z.string().optional(),
   }),

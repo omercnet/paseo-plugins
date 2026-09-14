@@ -3,8 +3,8 @@ import { parseOmpSettingsList } from "../server/omp-settings";
 import { categorizeOmpSetting, formatOmpSettingLabel } from "../shared/omp-settings";
 
 describe("OMP settings inventory", () => {
-  test("preserves typed values while withholding redacted values", () => {
-    const settings = parseOmpSettingsList({
+  test("preserves typed values while withholding credential-shaped values", () => {
+    const catalog = parseOmpSettingsList({
       "retry.enabled": {
         value: true,
         type: "boolean",
@@ -12,28 +12,42 @@ describe("OMP settings inventory", () => {
       },
       "auth.broker.token": {
         value: "must-not-cross-the-rpc-boundary",
-        redacted: true,
         type: "string",
+        description: "",
+      },
+      "images.urls.credentials": {
+        redacted: true,
+        type: "record",
         description: "",
       },
       unsupported: { value: true, type: "mystery" },
     });
 
-    expect(settings).toEqual([
-      {
-        path: "retry.enabled",
-        value: true,
-        type: "boolean",
-        description: "Retry failed requests",
-      },
-      {
-        path: "auth.broker.token",
-        redacted: true,
-        type: "string",
-        description: "",
-      },
-    ]);
-    expect(JSON.stringify(settings)).not.toContain("must-not-cross-the-rpc-boundary");
+    expect(catalog).toEqual({
+      droppedCount: 1,
+      settings: [
+        {
+          path: "retry.enabled",
+          value: true,
+          type: "boolean",
+          description: "Retry failed requests",
+        },
+        {
+          path: "auth.broker.token",
+          redacted: true,
+          configured: true,
+          type: "string",
+          description: "",
+        },
+        {
+          path: "images.urls.credentials",
+          redacted: true,
+          type: "record",
+          description: "",
+        },
+      ],
+    });
+    expect(JSON.stringify(catalog)).not.toContain("must-not-cross-the-rpc-boundary");
   });
 
   test("rejects a non-object document", () => {
