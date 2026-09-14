@@ -1,7 +1,11 @@
 import { existsSync, statSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { OmpImageMaterializer } from "../server/provider/image";
-import { ompImageTimelineSchema, transformOmpImageToolItem } from "../shared/provider-image";
+import {
+  ompImageTimelineSchema,
+  transformOmpImageToolItem,
+  visibleOmpImageText,
+} from "../shared/provider-image";
 
 const PNG = "iVBORw0KGgo=";
 
@@ -87,6 +91,18 @@ describe("OMP image timeline transformer", () => {
       data: PNG,
       mimeType: "image/png",
     });
+  });
+
+  test("hides machine-facing coordinate notes from the image caption", () => {
+    const note =
+      "[Image: original 320x180, displayed at 356x200. Multiply coordinates by 0.90 to map to original image.]";
+    expect(visibleOmpImageText(`Screenshot captured\n${note}\nReleased managed tab`)).toBe(
+      "Screenshot captured\nReleased managed tab",
+    );
+    expect(visibleOmpImageText(note)).toBeUndefined();
+    expect(visibleOmpImageText("[Image: user-authored caption]")).toBe(
+      "[Image: user-authored caption]",
+    );
   });
 
   test("accepts PNG, JPEG, GIF, and WebP headers with multibyte labels", () => {

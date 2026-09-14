@@ -9,6 +9,8 @@ const MAX_IMAGE_DETAILS_BYTES = 256 * 1024;
 const OMP_IMAGE_CALL_ID =
   /^omp:(?:tool:\d+|assistant:\d+:[A-Za-z0-9_-]+:content:\d+:image|custom:[A-Za-z0-9_-]+):images$/u;
 const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const OMP_IMAGE_DIMENSION_NOTE =
+  /^\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by \d+(?:\.\d+)? to map to original image\.\]$/u;
 
 function utf8Bytes(value: string): number {
   let bytes = 0;
@@ -122,6 +124,16 @@ export const ompImageTimelineSchema = z
       context.addIssue({ code: "custom", path: ["details"], message: "image details too large" });
     }
   });
+
+export function visibleOmpImageText(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const visible = text
+    .split("\n")
+    .filter((line) => !OMP_IMAGE_DIMENSION_NOTE.test(line.trim()))
+    .join("\n")
+    .trim();
+  return visible || undefined;
+}
 
 export const ompImageToolMetadataSchema = z.object({
   ompImageOwner: z.literal("omp"),

@@ -1,7 +1,7 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { useMemo, useState } from "react";
 import { Image, Text, View } from "react-native";
-import type { OmpImageTimelineData } from "../shared/provider-image";
+import { type OmpImageTimelineData, visibleOmpImageText } from "../shared/provider-image";
 
 export function OmpImageTimeline({ item, theme }: PluginTimelineItemProps<OmpImageTimelineData>) {
   const styles = useMemo(
@@ -32,10 +32,11 @@ export function OmpImageTimeline({ item, theme }: PluginTimelineItemProps<OmpIma
     [theme],
   );
   const [failedImageIds, setFailedImageIds] = useState<ReadonlySet<string>>(() => new Set());
+  const visibleText = useMemo(() => visibleOmpImageText(item.data.text), [item.data.text]);
   return (
     <View style={styles.root}>
       <Text style={styles.label}>{item.data.label}</Text>
-      {item.data.text ? <Text style={styles.text}>{item.data.text}</Text> : null}
+      {visibleText ? <Text style={styles.text}>{visibleText}</Text> : null}
       {item.data.images.map((image, index) =>
         failedImageIds.has(image.id) ? (
           <View key={image.id} style={[styles.image, styles.imageFallback]}>
