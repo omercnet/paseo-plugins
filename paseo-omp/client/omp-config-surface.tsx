@@ -73,6 +73,14 @@ export interface OmpConfigStyles {
   settingPath: TextStyle;
   settingDescription: TextStyle;
   settingValue: TextStyle;
+  collectionSummary: TextStyle;
+  chipList: ViewStyle;
+  chip: ViewStyle;
+  chipText: TextStyle;
+  recordList: ViewStyle;
+  recordRow: ViewStyle;
+  recordKey: TextStyle;
+  recordValue: TextStyle;
 }
 
 function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): OmpConfigStyles {
@@ -186,6 +194,31 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
       settingPath: { color: theme.colors.foregroundMuted, fontSize: 11, flexShrink: 1 },
       settingDescription: { color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 17 },
       settingValue: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" },
+      collectionSummary: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      chipList: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+      chip: {
+        paddingHorizontal: 8,
+        paddingVertical: 5,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 999,
+        backgroundColor: theme.colors.surface2,
+      },
+      chipText: { color: theme.colors.foreground, fontSize: 12 },
+      recordList: { gap: 6 },
+      recordRow: {
+        flexDirection: compact ? "column" : "row",
+        alignItems: compact ? "flex-start" : "baseline",
+        gap: compact ? 2 : 12,
+        paddingVertical: 5,
+      },
+      recordKey: {
+        width: compact ? undefined : 150,
+        color: theme.colors.foregroundMuted,
+        fontSize: 12,
+        fontWeight: "600",
+      },
+      recordValue: { flex: 1, color: theme.colors.foreground, fontSize: 12 },
     }),
     [compact, theme],
   );
@@ -512,16 +545,82 @@ const CONFIG_CATEGORIES: readonly { id: OmpSettingCategory; label: string }[] = 
   { id: "general", label: "General" },
 ];
 
-function formatOmpSettingValue(setting: OmpSetting): string {
-  if (setting.redacted) return "Configured (hidden)";
-  if (setting.value === undefined) return "Not set";
-  if (typeof setting.value === "boolean") return setting.value ? "Enabled" : "Disabled";
-  if (typeof setting.value === "string" || typeof setting.value === "number") {
-    return String(setting.value);
-  }
-  const serialized = JSON.stringify(setting.value);
+function formatScalarValue(value: unknown): string {
+  if (value === undefined || value === null) return "Not set";
+  if (typeof value === "boolean") return value ? "Enabled" : "Disabled";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  const serialized = JSON.stringify(value);
   if (!serialized) return "Not set";
-  return serialized.length > 400 ? `${serialized.slice(0, 397)}…` : serialized;
+  return serialized.length > 240 ? `${serialized.slice(0, 237)}…` : serialized;
+}
+
+function StructuredSettingValue({
+  setting,
+  styles,
+}: {
+  setting: OmpSetting;
+  styles: OmpConfigStyles;
+}) {
+  if (setting.redacted) return <Text style={styles.settingValue}>Configured (hidden)</Text>;
+  const value = setting.value;
+  if (!Array.isArray(value) && (value === null || typeof value !== "object")) {
+    return <Text style={styles.settingValue}>{formatScalarValue(value)}</Text>;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <Text style={styles.muted}>None</Text>;
+    const allScalar = value.every(
+      (item) => item === null || ["boolean", "number", "string"].includes(typeof item),
+    );
+    const occurrences = new Map<string, number>();
+    const items = value.map((item) => {
+      const text = formatScalarValue(item);
+      const occurrence = (occurrences.get(text) ?? 0) + 1;
+      occurrences.set(text, occurrence);
+      return { item, key: `${text}-${occurrence}`, text };
+    });
+    return (
+      <View style={styles.recordList}>
+        <Text style={styles.collectionSummary}>{value.length} items</Text>
+        {allScalar ? (
+          <View style={styles.chipList}>
+            {items.map(({ key, text }) => (
+              <View key={key} style={styles.chip}>
+                <Text style={styles.chipText}>{text}</Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          items.map(({ item, key }, position) => (
+            <View key={key} style={styles.recordRow}>
+              <Text style={styles.recordKey}>{position + 1}</Text>
+              <Text selectable style={styles.recordValue}>
+                {formatScalarValue(item)}
+              </Text>
+            </View>
+          ))
+        )}
+      </View>
+    );
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) return <Text style={styles.muted}>None</Text>;
+  return (
+    <View style={styles.recordList}>
+      <Text style={styles.collectionSummary}>{entries.length} entries</Text>
+      {entries.map(([key, item]) => (
+        <View key={key} style={styles.recordRow}>
+          <Text selectable style={styles.recordKey}>
+            {key}
+          </Text>
+          <Text selectable style={styles.recordValue}>
+            {formatScalarValue(item)}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
 }
 
 function ConfigurationCategory({
@@ -535,20 +634,26 @@ function ConfigurationCategory({
 }) {
   return (
     <SectionCard styles={styles} title={`${category.label} · ${settings.length}`}>
-      {settings.map((setting) => (
-        <View key={setting.path} style={styles.setting}>
-          <View style={styles.settingHeader}>
-            <Text style={styles.cardTitle}>{formatOmpSettingLabel(setting.path)}</Text>
-            <Text style={styles.settingValue}>{formatOmpSettingValue(setting)}</Text>
+      {settings.map((setting) => {
+        const complex =
+          Array.isArray(setting.value) ||
+          (setting.value !== null && typeof setting.value === "object");
+        return (
+          <View key={setting.path} style={styles.setting}>
+            <View style={styles.settingHeader}>
+              <Text style={styles.cardTitle}>{formatOmpSettingLabel(setting.path)}</Text>
+              {!complex ? <StructuredSettingValue setting={setting} styles={styles} /> : null}
+            </View>
+            <Text selectable style={styles.settingPath}>
+              {setting.path} · {setting.type}
+            </Text>
+            {complex ? <StructuredSettingValue setting={setting} styles={styles} /> : null}
+            {setting.description ? (
+              <Text style={styles.settingDescription}>{setting.description}</Text>
+            ) : null}
           </View>
-          <Text selectable style={styles.settingPath}>
-            {setting.path} · {setting.type}
-          </Text>
-          {setting.description ? (
-            <Text style={styles.settingDescription}>{setting.description}</Text>
-          ) : null}
-        </View>
-      ))}
+        );
+      })}
     </SectionCard>
   );
 }
