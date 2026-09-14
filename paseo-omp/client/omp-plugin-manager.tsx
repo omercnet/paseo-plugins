@@ -560,7 +560,7 @@ export function OmpPluginManagerSection({
   const [notice, setNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [inspected, setInspected] = useState<OmpPluginConfigState | null>(null);
   const [configEditGenerations, setConfigEditGenerations] = useState<Record<string, number>>({});
-  const inspectionTarget = useRef<string | null>(null);
+  const inspectionGeneration = useRef(0);
   const plugins = useQuery({
     queryKey: PLUGINS_QUERY_KEY,
     queryFn: () => loadPlugins({}),
@@ -582,18 +582,19 @@ export function OmpPluginManagerSection({
     },
   });
   const configInspection = useMutation({
-    mutationFn: (plugin: string) => inspectPluginConfig({ plugin }),
-    onSuccess: (result) => {
-      if (inspectionTarget.current === result.plugin) setInspected(result);
+    mutationFn: ({ plugin }: { plugin: string; generation: number }) =>
+      inspectPluginConfig({ plugin }),
+    onSuccess: (result, request) => {
+      if (inspectionGeneration.current === request.generation) setInspected(result);
     },
-    onError: () => {
-      if (inspectionTarget.current) setInspected(null);
+    onError: (_error, request) => {
+      if (inspectionGeneration.current === request.generation) setInspected(null);
     },
   });
   const configMutation = useMutation({
     mutationFn: (input: OmpPluginConfigMutation) => mutatePluginConfig(input),
     onSuccess: (result, input) => {
-      setInspected(result.config);
+      if (result.config.available) setInspected(result.config);
       if (result.ok) {
         const identity = `${input.plugin}:${input.key}`;
         setConfigEditGenerations((current) => ({
@@ -635,17 +636,17 @@ export function OmpPluginManagerSection({
     setConfirmation(configConfirmationFor(input, setting));
   };
   const inspect = (plugin: string) => {
+    inspectionGeneration.current += 1;
     if (inspected?.plugin === plugin) {
-      inspectionTarget.current = null;
       setInspected(null);
       configInspection.reset();
       setConfirmation(null);
       return;
     }
-    inspectionTarget.current = plugin;
+    const generation = inspectionGeneration.current;
     setInspected(null);
     setConfirmation(null);
-    configInspection.mutate(plugin);
+    configInspection.mutate({ plugin, generation });
   };
   const applyConfirmation = () => {
     if (!confirmation) return;
@@ -766,7 +767,8 @@ export function OmpPluginManagerSection({
               plugin={plugin}
               busy={busy}
               inspecting={
-                configInspection.isPending && configInspection.variables === plugin.packageName
+                configInspection.isPending &&
+                configInspection.variables?.plugin === plugin.packageName
               }
               styles={styles}
               onConfirm={requestMutation}
@@ -790,7 +792,7 @@ export function OmpPluginManagerSection({
               disabled={busy}
               styles={styles}
               onPress={() => {
-                inspectionTarget.current = null;
+                inspectionGeneration.current += 1;
                 setInspected(null);
                 setConfirmation(null);
               }}

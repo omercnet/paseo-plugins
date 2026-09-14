@@ -176,6 +176,25 @@ function parseMarketplacePlugin(raw: unknown): OmpInstalledPlugin | null {
   return OmpInstalledPluginSchema.safeParse(plugin).success ? plugin : null;
 }
 
+function pluginAliases(plugin: OmpInstalledPlugin): string[] {
+  const aliases = new Set<string>();
+  if (plugin.packageName) aliases.add(plugin.packageName);
+  aliases.add(plugin.id);
+  if (plugin.source === "marketplace") aliases.add(plugin.id.split("@")[0] ?? plugin.id);
+  return [...aliases];
+}
+
+function markAmbiguousPlugins(plugins: OmpInstalledPlugin[]): OmpInstalledPlugin[] {
+  const counts = new Map<string, number>();
+  for (const plugin of plugins) {
+    for (const alias of pluginAliases(plugin)) counts.set(alias, (counts.get(alias) ?? 0) + 1);
+  }
+  return plugins.map((plugin) => ({
+    ...plugin,
+    ambiguous: pluginAliases(plugin).some((alias) => (counts.get(alias) ?? 0) > 1),
+  }));
+}
+
 export function parseOmpPluginList(raw: unknown): Pick<OmpPluginState, "plugins" | "droppedCount"> {
   const root = objectRecord(raw);
   if (!Array.isArray(root.npm) || !Array.isArray(root.marketplace)) {
@@ -193,18 +212,7 @@ export function parseOmpPluginList(raw: unknown): Pick<OmpPluginState, "plugins"
   };
   for (const plugin of root.npm) append(parseNpmPlugin(plugin));
   for (const plugin of root.marketplace) append(parseMarketplacePlugin(plugin));
-  const identityCounts = new Map<string, number>();
-  for (const plugin of plugins) {
-    const identity = plugin.packageName ?? plugin.id;
-    identityCounts.set(identity, (identityCounts.get(identity) ?? 0) + 1);
-  }
-  return {
-    plugins: plugins.map((plugin) => ({
-      ...plugin,
-      ambiguous: (identityCounts.get(plugin.packageName ?? plugin.id) ?? 0) > 1,
-    })),
-    droppedCount,
-  };
+  return { plugins: markAmbiguousPlugins(plugins), droppedCount };
 }
 
 function runSucceeded(result: BoundedRun): boolean {
@@ -268,23 +276,21 @@ async function enrichMarketplaceConfiguration(
         const metadata = await stat(metadataPath);
         if (!metadata.isFile() || metadata.size > PACKAGE_METADATA_LIMIT) return plugin;
         const raw: unknown = JSON.parse(await readFile(metadataPath, "utf8"));
-        const packageName = OmpPluginNameSchema.safeParse(objectRecord(raw).name);
-        if (!packageName.success) return plugin;
-        return { ...plugin, packageName: packageName.data, configurable: true };
+        const metadataName = OmpPluginNameSchema.safeParse(objectRecord(raw).name);
+        const fallbackName = OmpPluginNameSchema.safeParse(plugin.id.split("@")[0]);
+        const packageName = metadataName.success
+          ? metadataName.data
+          : fallbackName.success
+            ? fallbackName.data
+            : null;
+        if (!packageName) return plugin;
+        return { ...plugin, packageName, configurable: true };
       } catch {
         return plugin;
       }
     }),
   );
-  const identityCounts = new Map<string, number>();
-  for (const plugin of enriched) {
-    const identity = plugin.packageName ?? plugin.id;
-    identityCounts.set(identity, (identityCounts.get(identity) ?? 0) + 1);
-  }
-  return enriched.map((plugin) => ({
-    ...plugin,
-    ambiguous: (identityCounts.get(plugin.packageName ?? plugin.id) ?? 0) > 1,
-  }));
+  return markAmbiguousPlugins(enriched);
 }
 
 const DEFAULT_DEPENDENCIES: OmpPluginDependencies = {
@@ -522,13 +528,17 @@ export async function mutateOmpPluginConfigWithDependencies(
     READ_TIMEOUT_MS,
   );
   const config = await loadPluginConfig(executable, input.plugin, dependencies);
+  const mutationSucceeded = runSucceeded(mutation);
+  const ok = mutationSucceeded && config.available;
   return {
-    ok: runSucceeded(mutation),
-    message: runSucceeded(mutation)
-      ? input.action === "set"
-        ? "Plugin setting saved. New OMP sessions use the updated value."
-        : "Plugin setting deleted. New OMP sessions use its default or environment fallback."
-      : mutationFailure(mutation),
+    ok,
+    message: !mutationSucceeded
+      ? mutationFailure(mutation)
+      : !config.available
+        ? "Plugin setting changed, but refreshed metadata is unavailable."
+        : input.action === "set"
+          ? "Plugin setting saved. New OMP sessions use the updated value."
+          : "Plugin setting deleted. New OMP sessions use its default or environment fallback.",
     config,
   };
 }

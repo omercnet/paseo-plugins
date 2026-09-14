@@ -247,7 +247,7 @@ export async function updateOmpSettingsWithDependencies(
         conflict: false,
         appliedPaths,
         failed: { path: change.path, message: `Expected a ${setting.type} value.` },
-        catalog: current,
+        catalog: appliedPaths.length ? await loadCatalog(executable, dependencies) : current,
       };
     }
     const result = await dependencies.runConfig(executable, args);

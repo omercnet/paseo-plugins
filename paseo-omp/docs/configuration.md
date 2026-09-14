@@ -2,7 +2,7 @@
 
 Open the **OMP** sidebar to browse the complete installed OMP settings catalog. Boolean, number, string, and enum settings support revision-checked Apply, Discard, and Reset actions; arrays, records, and credentials remain read-only. Configuration writes use OMP's native `config set` and `config reset` commands rather than rewriting YAML.
 
-The **Plugin** tab lists every `omp-plugin` profile visible through the daemon and exposes command, environment names, output-redaction policy, runtime parameters, and denied tools without displaying environment values. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
+The **Plugin** tab documents the supported `omp-plugin` launch options, including names-only inherited environment configuration. Paseo's public plugin API does not expose the effective provider options for active launches, so the tab does not claim profile values are active. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
 
 ## Optional provider profile overrides
 
@@ -51,7 +51,7 @@ These options cover every plugin-specific launch value. Values that belong to an
 
 Open **OMP → OMP plugins** to inspect plugins installed through OMP. The manager uses OMP's documented singular `omp plugin` CLI and supports user-scoped install, enable, disable, upgrade, and uninstall operations. Every state-changing action requires an explicit confirmation; already-running OMP sessions are unchanged.
 
-Project-scoped installations remain visible but read-only because their lifecycle commands must run from that project's working directory. Plugin configuration exposes schema metadata without returning current or default values. Scalar plugin settings can be set or deleted through write-only controls; secret values are masked and never returned to the app.
+Project-scoped installations remain visible but read-only because their lifecycle commands must run from that project's working directory. Plugin configuration exposes schema metadata without returning current or default values. Non-secret scalar plugin settings can be set or deleted through write-only controls. Secret settings are presence-only and delete-only because OMP's CLI would otherwise expose a new secret through process arguments.
 
 The Configuration view links to the official OMP settings reference, value parsing and precedence guides, relevant category sections, and a small curated set of setting-specific anchors.
 
