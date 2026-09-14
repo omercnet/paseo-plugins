@@ -47,6 +47,15 @@ Paseo's generic provider profile fields remain available:
 
 These options cover every plugin-specific launch value. Values that belong to an individual agent, including model, mode, thinking level, title, system prompt, MCP servers, persistence, and cwd, remain standard Paseo session fields rather than duplicate plugin options.
 
+## OMP-native plugins
+
+Open **OMP → OMP plugins** to inspect plugins installed through OMP. The manager uses OMP's documented singular `omp plugin` CLI and supports user-scoped install, enable, disable, upgrade, and uninstall operations. Every state-changing action requires an explicit confirmation; already-running OMP sessions are unchanged.
+
+Project-scoped installations remain visible but read-only because their lifecycle commands must run from that project's working directory. Plugin configuration exposes schema metadata without returning current or default values. Scalar plugin settings can be set or deleted through write-only controls; secret values are masked and never returned to the app.
+
+The Configuration view links to the official OMP settings reference, value parsing and precedence guides, relevant category sections, and a small curated set of setting-specific anchors.
+
+
 ## MCP tools and policy boundary
 
 Configured MCP servers and Paseo's caller-scoped MCP tools are supported. The plugin discovers their schemas, assigns collision-safe OMP names, binds them before `session.ready`, forwards progress and terminal results, propagates cancellation, and renders calls with friendly labels.

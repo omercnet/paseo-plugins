@@ -2,9 +2,9 @@ import { type PluginSurfaceProps, usePaseo, useRpc } from "@getpaseo/plugin/clie
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
-import { Pressable, ScrollView, Switch, Text, View } from "react-native";
+import { Linking, Pressable, ScrollView, Switch, Text, View } from "react-native";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import {
   categorizeOmpSetting,
@@ -17,6 +17,14 @@ import {
   updateOmpSettings,
 } from "../shared/omp-settings";
 import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider-diagnostics";
+import {
+  documentationForSettingCategory,
+  documentationForSettingPath,
+  OMP_SETTINGS_GUIDES,
+  OMP_SETTINGS_REFERENCE,
+  type OmpDocumentationLink,
+} from "./omp-doc-links";
+import { OmpPluginManagerSection } from "./omp-plugin-manager";
 import {
   type BinaryHealthSummary,
   loadReadyProviderSnapshot,
@@ -66,8 +74,13 @@ export interface OmpConfigStyles {
   muted: TextStyle;
   error: TextStyle;
   refresh: ViewStyle;
+  docsActions: ViewStyle;
+  docLink: ViewStyle;
+  docLinkPressed: ViewStyle;
+  docLinkText: TextStyle;
   refreshLabel: TextStyle;
   card: ViewStyle;
+  cardHeader: ViewStyle;
   cardTitle: TextStyle;
   row: ViewStyle;
   rowLabel: TextStyle;
@@ -109,6 +122,7 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
         fontWeight: "700",
       },
       topTabs: {
+        flexWrap: "wrap",
         flexDirection: "row",
         alignSelf: "flex-start",
         gap: 4,
@@ -157,7 +171,7 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
         fontSize: 13,
       },
       sectionHeader: { gap: 4, marginTop: compact ? 2 : 4 },
-      sectionHeaderRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+      sectionHeaderRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 10 },
       sectionTitle: {
         color: theme.colors.foreground,
         fontSize: compact ? 16 : 18,
@@ -166,6 +180,17 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
       source: { color: theme.colors.foregroundMuted, fontSize: 12 },
       muted: { color: theme.colors.foregroundMuted, fontSize: 13 },
       error: { color: theme.colors.statusDanger, fontSize: 13 },
+      docsActions: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 },
+      docLink: {
+        paddingHorizontal: 8,
+        paddingVertical: 5,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 7,
+        backgroundColor: theme.colors.surface1,
+      },
+      docLinkPressed: { opacity: 0.72 },
+      docLinkText: { color: theme.colors.accent, fontSize: 12, fontWeight: "600" },
       refresh: {
         flexDirection: "row",
         alignItems: "center",
@@ -178,6 +203,13 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
         backgroundColor: theme.colors.surface1,
       },
       refreshLabel: { color: theme.colors.foreground, fontSize: 13 },
+      cardHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 8,
+      },
       card: {
         gap: 8,
         padding: compact ? 10 : 12,
@@ -294,17 +326,44 @@ function KeyValueRow({
 function SectionCard({
   styles,
   title,
+  action,
   children,
 }: {
   styles: OmpConfigStyles;
   title: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <View style={styles.card}>
-      <Text style={styles.cardTitle}>{title}</Text>
+      <View style={styles.cardHeader}>
+        <Text style={styles.cardTitle}>{title}</Text>
+        {action}
+      </View>
       {children}
     </View>
+  );
+}
+
+function DocumentationLink({
+  link,
+  styles,
+  onOpen,
+}: {
+  link: OmpDocumentationLink;
+  styles: OmpConfigStyles;
+  onOpen(link: OmpDocumentationLink): void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={link.accessibilityLabel}
+      accessibilityHint="Opens in your browser"
+      onPress={() => onOpen(link)}
+      style={({ pressed }) => [styles.docLink, pressed ? styles.docLinkPressed : null]}
+    >
+      <Text style={styles.docLinkText}>{link.label}</Text>
+    </Pressable>
   );
 }
 
@@ -749,10 +808,11 @@ function fallbackSettingsFromConfig(config: OmpConfig | null | undefined): OmpSe
   return settings;
 }
 
-type SurfaceView = "overview" | "plugin" | "configuration" | "diagnostics";
+type SurfaceView = "overview" | "plugin" | "plugins" | "configuration" | "diagnostics";
 const SURFACE_VIEWS: readonly { id: SurfaceView; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "plugin", label: "Plugin" },
+  { id: "plugins", label: "OMP plugins" },
   { id: "configuration", label: "Configuration" },
   { id: "diagnostics", label: "Diagnostics" },
 ];
@@ -898,6 +958,7 @@ function ConfigurationCategory({
   drafts,
   disabled,
   onDraft,
+  onOpenDocumentation,
 }: {
   category: { id: OmpSettingCategory; label: string };
   styles: OmpConfigStyles;
@@ -905,15 +966,30 @@ function ConfigurationCategory({
   drafts: Readonly<Record<string, SettingDraft>>;
   disabled: boolean;
   onDraft(path: string, draft: SettingDraft): void;
+  onOpenDocumentation(link: OmpDocumentationLink): void;
 }) {
+  const categoryDocumentation = documentationForSettingCategory(category.id);
   return (
-    <SectionCard styles={styles} title={`${category.label} · ${settings.length}`}>
+    <SectionCard
+      styles={styles}
+      title={`${category.label} · ${settings.length}`}
+      action={
+        categoryDocumentation ? (
+          <DocumentationLink
+            link={categoryDocumentation}
+            styles={styles}
+            onOpen={onOpenDocumentation}
+          />
+        ) : undefined
+      }
+    >
       {settings.map((setting) => {
         const complex =
           Array.isArray(setting.value) ||
           (setting.value !== null && typeof setting.value === "object");
         const editable =
           !setting.redacted && ["boolean", "number", "string", "enum"].includes(setting.type);
+        const settingDocumentation = documentationForSettingPath(setting.path);
         return (
           <View key={setting.path} style={styles.setting}>
             <View style={styles.settingHeader}>
@@ -925,6 +1001,15 @@ function ConfigurationCategory({
             <Text selectable style={styles.settingPath}>
               {setting.path} · {setting.type}
             </Text>
+            {settingDocumentation ? (
+              <View style={styles.docsActions}>
+                <DocumentationLink
+                  link={settingDocumentation}
+                  styles={styles}
+                  onOpen={onOpenDocumentation}
+                />
+              </View>
+            ) : null}
             {editable ? (
               <EditableScalarValue
                 setting={setting}
@@ -996,6 +1081,7 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
   const [activeCategory, setActiveCategory] = useState<OmpSettingCategory>("appearance");
   const [search, setSearch] = useState("");
   const [drafts, setDrafts] = useState<Record<string, SettingDraft>>({});
+  const [documentationError, setDocumentationError] = useState<string | null>(null);
   const styles = useConfigStyles(theme, layout.compact);
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const catalog = useMemo(() => {
@@ -1022,6 +1108,14 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
   );
   const selectedCategory =
     visibleCategories.find((category) => category.id === activeCategory) ?? visibleCategories[0];
+  const openDocumentation = useCallback(async (link: OmpDocumentationLink) => {
+    setDocumentationError(null);
+    try {
+      await Linking.openURL(link.url);
+    } catch {
+      setDocumentationError(`Could not open ${link.label.toLocaleLowerCase()}.`);
+    }
+  }, []);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -1094,6 +1188,10 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
 
       {view === "plugin" ? <PluginConfigurationSection styles={styles} /> : null}
 
+      {view === "plugins" ? (
+        <OmpPluginManagerSection theme={theme} compact={layout.compact} />
+      ) : null}
+
       {view === "diagnostics" ? <ProviderHealthSection theme={theme} styles={styles} /> : null}
 
       {view === "configuration" ? (
@@ -1116,10 +1214,30 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
                 </Text>
               </Pressable>
             </View>
+            <View style={styles.docsActions}>
+              <DocumentationLink
+                link={OMP_SETTINGS_REFERENCE}
+                styles={styles}
+                onOpen={openDocumentation}
+              />
+              {OMP_SETTINGS_GUIDES.map((link) => (
+                <DocumentationLink
+                  key={link.url}
+                  link={link}
+                  styles={styles}
+                  onOpen={openDocumentation}
+                />
+              ))}
+            </View>
             {configQuery.data?.path ? (
               <Text style={styles.source}>{`Source: ${configQuery.data.path}`}</Text>
             ) : null}
           </View>
+          {documentationError ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {documentationError}
+            </Text>
+          ) : null}
 
           {draftCount > 0 ? (
             <View style={styles.editorActions}>
@@ -1226,6 +1344,7 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
                     onDraft={(path, draft) =>
                       setDrafts((current) => ({ ...current, [path]: draft }))
                     }
+                    onOpenDocumentation={openDocumentation}
                   />
                 ) : (
                   <Text style={styles.muted}>No settings match this search.</Text>
