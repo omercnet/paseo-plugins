@@ -508,6 +508,7 @@ describe("OMP plugin mutations", () => {
     );
 
     expect(calls).toEqual([
+      ["plugin", "list", "--json"],
       ["plugin", "disable", "safe-plugin", "--scope", "user", "--json"],
       ["plugin", "list", "--json"],
     ]);
@@ -521,21 +522,33 @@ describe("OMP plugin mutations", () => {
       { action: "uninstall", plugin: "safe-plugin" },
       dependenciesFor(async (_executable, args) => {
         calls.push([...args]);
-        return args[1] === "uninstall"
-          ? completed("token=must-not-leak", 1)
-          : completed('{"npm":[],"marketplace":[]}');
+        if (args[1] === "uninstall") return completed("token=must-not-leak", 1);
+        return completed(
+          JSON.stringify({
+            npm: [
+              {
+                name: "safe-plugin",
+                version: "1.0.0",
+                path: "/plugins/safe-plugin",
+                manifest: {},
+                enabledFeatures: null,
+                enabled: true,
+              },
+            ],
+            marketplace: [],
+          }),
+        );
       }),
     );
 
     expect(calls).toEqual([
+      ["plugin", "list", "--json"],
       ["plugin", "uninstall", "safe-plugin", "--scope", "user", "--json"],
       ["plugin", "list", "--json"],
     ]);
-    expect(result).toEqual({
-      ok: false,
-      message: "OMP rejected the plugin operation.",
-      state: { available: true, plugins: [], droppedCount: 0 },
-    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("OMP rejected the plugin operation.");
+    expect(result.state.plugins[0]?.id).toBe("safe-plugin");
     expect(JSON.stringify(result)).not.toContain("must-not-leak");
   });
 });

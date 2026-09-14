@@ -171,6 +171,7 @@ export const listOmpSettings = defineRpc({
   output: z.object({
     catalogVersion: z.literal(OMP_SETTINGS_CATALOG_VERSION),
     revision: z.string().optional(),
+    path: z.string().optional(),
     available: z.boolean(),
     droppedCount: z.number().int().nonnegative(),
     settings: z.array(OmpSettingSchema),
@@ -197,6 +198,7 @@ export const updateOmpSettings = defineRpc({
       catalogVersion: z.literal(OMP_SETTINGS_CATALOG_VERSION),
       available: z.boolean(),
       revision: z.string().optional(),
+      path: z.string().optional(),
       droppedCount: z.number().int().nonnegative(),
       settings: z.array(OmpSettingSchema),
       error: z.string().optional(),

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { delimiter } from "node:path";
+import { delimiter, isAbsolute } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import {
   type listOmpSettings,
@@ -11,6 +11,7 @@ import {
   type updateOmpSettings,
 } from "../shared/omp-settings";
 import { SerialMutationQueue } from "./mutation-queue";
+import { readOmpConfigFrom } from "./omp-config";
 import {
   type BoundedRun,
   buildStatefulCommandEnv,
@@ -40,6 +41,7 @@ type CatalogResult = {
   revision?: string;
   droppedCount: number;
   settings: OmpSetting[];
+  path?: string;
   error?: string;
 };
 
@@ -156,6 +158,14 @@ async function loadCatalog(
     };
   }
 
+  let path: string | undefined;
+  const pathResult = await dependencies.runConfig(resolved, ["path"]);
+  const agentDir =
+    pathResult.outcome === "exited" && pathResult.exitCode === 0 ? pathResult.stdout.trim() : "";
+  if (agentDir && isAbsolute(agentDir) && !agentDir.includes("\0")) {
+    path = (await readOmpConfigFrom(agentDir)).path;
+  }
+
   try {
     const parsed: unknown = JSON.parse(result.stdout);
     const catalog = parseOmpSettingsList(parsed);
@@ -164,6 +174,7 @@ async function loadCatalog(
       available: true,
       revision: createHash("sha256").update(result.stdout).digest("hex"),
       droppedCount: catalog.droppedCount,
+      ...(path ? { path } : {}),
       settings: catalog.settings,
     };
   } catch {

@@ -155,7 +155,9 @@ describe("OMP scalar settings updates", () => {
     );
 
     expect(result.conflict).toBe(true);
-    expect(commands.filter(([operation]) => operation !== "list")).toEqual([]);
+    expect(commands.filter(([operation]) => operation !== "list" && operation !== "path")).toEqual(
+      [],
+    );
   });
 
   test("reports the first failed change after preserving applied paths", async () => {

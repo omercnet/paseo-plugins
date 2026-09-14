@@ -589,6 +589,21 @@ export async function mutateOmpPluginWithDependencies(
     return { ok: false, message: "The OMP executable could not be resolved.", state };
   }
 
+  if (input.action !== "install") {
+    const before = await loadPluginState(executable, dependencies);
+    if (!before.available) {
+      return { ok: false, message: "OMP plugin state is unavailable.", state: before };
+    }
+    const matches = before.plugins.filter((plugin) => pluginAliases(plugin).includes(input.plugin));
+    if (matches.length !== 1 || matches[0]?.ambiguous || matches[0]?.scope === "project") {
+      return {
+        ok: false,
+        message: "The plugin target is ambiguous or not user-scoped.",
+        state: before,
+      };
+    }
+  }
+
   const mutation = await dependencies.runPlugin(
     executable,
     buildOmpPluginMutationArgs(input),

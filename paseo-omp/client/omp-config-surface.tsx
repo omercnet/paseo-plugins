@@ -1079,7 +1079,7 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
               <KeyValueRow
                 styles={styles}
                 label="Source"
-                value={configQuery.data?.path ?? "Unavailable"}
+                value={settingsQuery.data?.path ?? configQuery.data?.path ?? "Unavailable"}
               />
               <KeyValueRow
                 styles={styles}
@@ -1139,8 +1139,10 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
                 />
               ))}
             </View>
-            {configQuery.data?.path ? (
-              <Text style={styles.source}>{`Source: ${configQuery.data.path}`}</Text>
+            {(settingsQuery.data?.path ?? configQuery.data?.path) ? (
+              <Text style={styles.source}>
+                {`Source: ${settingsQuery.data?.path ?? configQuery.data?.path}`}
+              </Text>
             ) : null}
           </View>
           {documentationError ? (
