@@ -12,7 +12,7 @@ import {
 } from "../shared/omp-settings";
 import {
   type BoundedRun,
-  buildProbeEnv,
+  buildStatefulCommandEnv,
   defaultSpawn,
   resolveExecutablePath,
   runBounded,
@@ -113,7 +113,7 @@ async function runOmpConfig(executable: string, args: readonly string[]) {
     defaultSpawn,
     executable,
     ["config", ...args],
-    buildProbeEnv(process.env),
+    buildStatefulCommandEnv(process.env),
     CONFIG_TIMEOUT_MS,
     KILL_GRACE_MS,
     MAX_CONFIG_OUTPUT_BYTES,
@@ -204,7 +204,15 @@ export async function updateOmpSettingsWithDependencies(
   const executable = await dependencies.resolveExecutable();
   const current = await loadCatalog(executable, dependencies);
   if (!executable || !current.available || !current.revision) {
-    return { conflict: false, appliedPaths: [], catalog: current };
+    return {
+      conflict: false,
+      appliedPaths: [],
+      failed: {
+        path: input.changes[0]?.path ?? "configuration",
+        message: current.error ?? "OMP settings are unavailable.",
+      },
+      catalog: current,
+    };
   }
   if (current.revision !== input.revision) {
     return { conflict: true, appliedPaths: [], catalog: current };
@@ -231,7 +239,7 @@ export async function updateOmpSettingsWithDependencies(
       args = ["reset", change.path];
     } else {
       const value = serializeScalar(setting.type, change.value);
-      args = value === null ? null : ["set", change.path, value];
+      args = value === null ? null : ["set", change.path, "--json", "--", value];
     }
     if (!args) {
       return {
@@ -260,8 +268,21 @@ export async function updateOmpSettingsWithDependencies(
   };
 }
 
-export async function resolveUpdateOmpSettings(
+let settingsMutationTail: Promise<void> = Promise.resolve();
+
+function enqueueSettingsMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = settingsMutationTail.then(operation, operation);
+  settingsMutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+export function resolveUpdateOmpSettings(
   input: RpcInput<typeof updateOmpSettings>,
 ): Promise<OmpSettingsUpdateResult> {
-  return updateOmpSettingsWithDependencies(input, DEFAULT_DEPENDENCIES);
+  return enqueueSettingsMutation(() =>
+    updateOmpSettingsWithDependencies(input, DEFAULT_DEPENDENCIES),
+  );
 }

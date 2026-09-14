@@ -142,18 +142,24 @@ describe("OMP plugin command construction", () => {
       "plugin",
       "disable",
       "@scope/plugin",
+      "--scope",
+      "user",
       "--json",
     ]);
     expect(buildOmpPluginMutationArgs({ action: "uninstall", plugin: "plain-plugin" })).toEqual([
       "plugin",
       "uninstall",
       "plain-plugin",
+      "--scope",
+      "user",
       "--json",
     ]);
     expect(buildOmpPluginMutationArgs({ action: "upgrade", plugin: "plugin@catalog" })).toEqual([
       "plugin",
       "upgrade",
       "plugin@catalog",
+      "--scope",
+      "user",
       "--json",
     ]);
   });
@@ -166,7 +172,7 @@ describe("OMP plugin command construction", () => {
         key: "retryCount",
         value: 3,
       }),
-    ).toEqual(["plugin", "config", "set", "safe-plugin", "retryCount", "3", "--json"]);
+    ).toEqual(["plugin", "config", "set", "safe-plugin", "retryCount", "--json", "--", "3"]);
     expect(
       buildOmpPluginConfigMutationArgs({
         action: "delete",
@@ -241,6 +247,8 @@ describe("OMP plugin state", () => {
           enabledFeatures: ["search"],
           availableFeatures: ["search", "web"],
           configurable: true,
+          ambiguous: false,
+          usesDefaultFeatures: false,
         },
         {
           id: "review@official",
@@ -254,9 +262,38 @@ describe("OMP plugin state", () => {
           enabledFeatures: [],
           availableFeatures: [],
           configurable: false,
+          ambiguous: false,
+          usesDefaultFeatures: true,
         },
       ],
     });
+  });
+
+  test("marks duplicate actionable package identities as ambiguous", () => {
+    const parsed = parseOmpPluginList({
+      npm: [
+        {
+          name: "duplicate-plugin",
+          version: "1.0.0",
+          path: "/plugins/one",
+          manifest: {},
+          enabledFeatures: null,
+          enabled: true,
+        },
+        {
+          name: "duplicate-plugin",
+          version: "2.0.0",
+          path: "/plugins/two",
+          manifest: {},
+          enabledFeatures: null,
+          enabled: true,
+        },
+      ],
+      marketplace: [],
+    });
+
+    expect(parsed.plugins.map(({ ambiguous }) => ambiguous)).toEqual([true, true]);
+    expect(parsed.plugins.every(({ usesDefaultFeatures }) => usesDefaultFeatures)).toBe(true);
   });
 
   test("returns a sanitized failure without forwarding command output", async () => {
@@ -392,20 +429,18 @@ describe("OMP plugin configuration mutations", () => {
     expect(calls).toEqual([["plugin", "config", "list", "safe-plugin", "--json"]]);
   });
 
-  test("sets a write-only value and refreshes metadata after mutation", async () => {
+  test("rejects secret writes before placing values in argv", async () => {
     const { calls, dependencies } = configHarness();
     const result = await mutateOmpPluginConfigWithDependencies(
       { action: "set", plugin: "safe-plugin", key: "apiKey", value: "must-not-return" },
       dependencies,
     );
 
-    expect(calls).toEqual([
-      ["plugin", "config", "list", "safe-plugin", "--json"],
-      ["plugin", "config", "set", "safe-plugin", "apiKey", "must-not-return", "--json"],
-      ["plugin", "config", "list", "safe-plugin", "--json"],
-    ]);
-    expect(result.ok).toBe(true);
-    expect(result.config.settings.find(({ key }) => key === "apiKey")?.configured).toBe(true);
+    expect(calls).toEqual([["plugin", "config", "list", "safe-plugin", "--json"]]);
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe(
+      "Secret plugin settings cannot be written through process arguments.",
+    );
     expect(JSON.stringify(result)).not.toContain("must-not-return");
   });
 
@@ -473,7 +508,7 @@ describe("OMP plugin mutations", () => {
     );
 
     expect(calls).toEqual([
-      ["plugin", "disable", "safe-plugin", "--json"],
+      ["plugin", "disable", "safe-plugin", "--scope", "user", "--json"],
       ["plugin", "list", "--json"],
     ]);
     expect(result.ok).toBe(true);
@@ -493,7 +528,7 @@ describe("OMP plugin mutations", () => {
     );
 
     expect(calls).toEqual([
-      ["plugin", "uninstall", "safe-plugin", "--json"],
+      ["plugin", "uninstall", "safe-plugin", "--scope", "user", "--json"],
       ["plugin", "list", "--json"],
     ]);
     expect(result).toEqual({

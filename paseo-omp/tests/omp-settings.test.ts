@@ -90,7 +90,8 @@ describe("OMP scalar settings updates", () => {
       },
       async runConfig(_executable, args) {
         commands.push([...args]);
-        if (args[0] === "set" && args[1] === "temperature" && args[2] === "99") {
+        const serializedValue = args.at(-1);
+        if (args[0] === "set" && args[1] === "temperature" && serializedValue === "99") {
           return {
             outcome: "exited",
             stdout: "",
@@ -101,15 +102,15 @@ describe("OMP scalar settings updates", () => {
             cleanupFailed: false,
           };
         }
-        if (args[0] === "set" && args[1] && args[2] !== undefined) {
+        if (args[0] === "set" && args[1] && serializedValue !== undefined) {
           const setting = values[args[1]];
           if (setting) {
             setting.value =
               setting.type === "boolean"
-                ? args[2] === "true"
+                ? serializedValue === "true"
                 : setting.type === "number"
-                  ? Number(args[2])
-                  : args[2];
+                  ? Number(serializedValue)
+                  : serializedValue;
           }
         }
         if (args[0] === "reset" && args[1] === "retry.enabled") values[args[1]].value = false;
@@ -142,7 +143,7 @@ describe("OMP scalar settings updates", () => {
 
     expect(result.conflict).toBe(false);
     expect(result.appliedPaths).toEqual(["personality", "retry.enabled"]);
-    expect(commands).toContainEqual(["set", "personality", "concise"]);
+    expect(commands).toContainEqual(["set", "personality", "--json", "--", "concise"]);
     expect(commands).toContainEqual(["reset", "retry.enabled"]);
   });
 

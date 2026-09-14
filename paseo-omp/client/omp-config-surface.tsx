@@ -387,134 +387,37 @@ function ProviderSetupSection({ styles }: { styles: OmpConfigStyles }) {
   );
 }
 
-type OmpPluginProfile = {
-  id: string;
-  name: string;
-  provider: string;
-  providerOptions?: {
-    command?: string[];
-    env?: Record<string, string>;
-    inheritEnv?: string[];
-    outputRedaction?: string;
-    params?: {
-      sessionDir?: string;
-      rpcTimeoutMs?: number;
-      smolModel?: string;
-      slowModel?: string;
-      planModel?: string;
-    };
-  };
-  disallowedTools?: string[];
-};
-
 function PluginConfigurationSection({ styles }: { styles: OmpConfigStyles }) {
-  const paseo = usePaseo();
-  const profiles = useQuery({
-    queryKey: ["paseo-omp", "plugin-profiles"],
-    queryFn: async () => {
-      const { config } = await paseo.config.get();
-      return ((config.agentProfiles ?? []) as OmpPluginProfile[]).filter(
-        (profile) => profile.provider === "omp-plugin",
-      );
-    },
-  });
-
-  if (profiles.isLoading) return <Text style={styles.muted}>Loading OMP Plugin profiles…</Text>;
-  if (profiles.error) {
-    return <Text style={styles.error}>Could not read OMP Plugin profile configuration.</Text>;
-  }
-  if (!profiles.data?.length) {
-    return (
-      <>
-        <SectionCard styles={styles} title="OMP Plugin profiles">
-          <Text style={styles.muted}>
-            No OMP Plugin profile is visible through this daemon. Standard per-agent settings still
-            apply.
-          </Text>
-        </SectionCard>
-        <SectionCard styles={styles} title="Available profile settings">
-          <KeyValueRow styles={styles} label="Command" value="Executable and argument prefix" />
-          <KeyValueRow
-            styles={styles}
-            label="Inherited environment"
-            value="Daemon variable names copied at OMP spawn time"
-          />
-          <KeyValueRow
-            styles={styles}
-            label="Explicit environment"
-            value="Stored non-secret overrides"
-          />
-          <KeyValueRow styles={styles} label="Output redaction" value="None or configured values" />
-          <KeyValueRow
-            styles={styles}
-            label="Runtime parameters"
-            value="Session directory, RPC timeout, small, slow, and plan models"
-          />
-          <KeyValueRow styles={styles} label="Denied tools" value="Native OMP tool restrictions" />
-        </SectionCard>
-        <Text style={styles.muted}>
-          Inherited environment configuration stores names only. Values stay in the daemon
-          environment and are resolved only when OMP starts.
-        </Text>
-      </>
-    );
-  }
-
   return (
     <>
-      {profiles.data.map((profile) => {
-        const options = profile.providerOptions ?? {};
-        const params = options.params ?? {};
-        return (
-          <SectionCard key={profile.id} styles={styles} title={profile.name}>
-            <KeyValueRow
-              styles={styles}
-              label="Command"
-              value={options.command?.join(" ") ?? "omp"}
-            />
-            <KeyValueRow
-              styles={styles}
-              label="Inherited environment"
-              value={options.inheritEnv?.join(", ") || "None"}
-            />
-            <KeyValueRow
-              styles={styles}
-              label="Explicit environment"
-              value={Object.keys(options.env ?? {}).join(", ") || "None"}
-            />
-            <KeyValueRow
-              styles={styles}
-              label="Output redaction"
-              value={options.outputRedaction ?? "none"}
-            />
-            <KeyValueRow
-              styles={styles}
-              label="Session directory"
-              value={params.sessionDir ?? "Default"}
-            />
-            <KeyValueRow
-              styles={styles}
-              label="RPC timeout"
-              value={params.rpcTimeoutMs === undefined ? "Default" : `${params.rpcTimeoutMs}ms`}
-            />
-            <KeyValueRow
-              styles={styles}
-              label="Small model"
-              value={params.smolModel ?? "Default"}
-            />
-            <KeyValueRow styles={styles} label="Slow model" value={params.slowModel ?? "Default"} />
-            <KeyValueRow styles={styles} label="Plan model" value={params.planModel ?? "Default"} />
-            <KeyValueRow
-              styles={styles}
-              label="Denied native tools"
-              value={profile.disallowedTools?.join(", ") || "None"}
-            />
-          </SectionCard>
-        );
-      })}
+      <SectionCard styles={styles} title="OMP Plugin launch options">
+        <Text style={styles.muted}>
+          Paseo does not expose the effective providerOptions for active launches through the plugin
+          API. Configure these values in the provider profile; this tab documents the supported
+          contract without claiming defaults are active.
+        </Text>
+        <KeyValueRow styles={styles} label="Command" value="Executable and argument prefix" />
+        <KeyValueRow
+          styles={styles}
+          label="Inherited environment"
+          value="Daemon variable names copied at OMP spawn time"
+        />
+        <KeyValueRow
+          styles={styles}
+          label="Explicit environment"
+          value="Stored non-secret overrides"
+        />
+        <KeyValueRow styles={styles} label="Output redaction" value="None or configured values" />
+        <KeyValueRow
+          styles={styles}
+          label="Runtime parameters"
+          value="Session directory, RPC timeout, small, slow, and plan models"
+        />
+        <KeyValueRow styles={styles} label="Denied tools" value="Native OMP tool restrictions" />
+      </SectionCard>
       <Text style={styles.muted}>
-        Environment values stay hidden. Inherited names are resolved from the daemon only when OMP
-        starts.
+        Inherited environment configuration stores names only. Values stay in the daemon environment
+        and are resolved only when OMP starts.
       </Text>
     </>
   );
@@ -1128,7 +1031,9 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
         if (!setting) throw new Error(`Setting ${path} is no longer available.`);
         let value: OmpScalarValue = draft.value;
         if (setting.type === "number") {
-          const parsed = Number(draft.value);
+          const raw = String(draft.value).trim();
+          if (!raw) throw new Error(`${path} requires a number.`);
+          const parsed = Number(raw);
           if (!Number.isFinite(parsed)) throw new Error(`${path} requires a finite number.`);
           value = parsed;
         }
@@ -1138,8 +1043,13 @@ export function OmpConfigSurface({ theme, layout }: PluginSurfaceProps) {
     },
     onSuccess: (result) => {
       queryClient.setQueryData(SETTINGS_QUERY_KEY, result.catalog);
-      if (!result.conflict && !result.failed) setDrafts({});
-      else if (result.appliedPaths.length > 0) {
+      if (
+        !result.conflict &&
+        !result.failed &&
+        result.appliedPaths.length === Object.keys(drafts).length
+      ) {
+        setDrafts({});
+      } else if (result.appliedPaths.length > 0) {
         setDrafts((current) => {
           const next = { ...current };
           for (const path of result.appliedPaths) delete next[path];

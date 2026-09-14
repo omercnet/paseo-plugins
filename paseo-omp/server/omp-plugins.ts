@@ -1,4 +1,5 @@
-import { delimiter } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import { z } from "zod";
 import {
@@ -14,11 +15,12 @@ import {
   type OmpPluginConfigSetting,
   type OmpPluginConfigState,
   type OmpPluginMutation,
+  OmpPluginNameSchema,
   type OmpPluginState,
 } from "../shared/omp-plugins";
 import {
   type BoundedRun,
-  buildProbeEnv,
+  buildStatefulCommandEnv,
   defaultSpawn,
   resolveExecutablePath,
   runBounded,
@@ -36,6 +38,7 @@ const CONFIG_DESCRIPTION_LIMIT = 512;
 const FEATURE_LIMIT = 128;
 const CREDENTIAL_KEY =
   /(?:^|_)(?:API_KEY|ACCESS_KEY|ACCESS_TOKEN|AUTHORIZATION|COOKIE|CREDENTIAL|CREDENTIALS|OAUTH|PASSWORD|PRIVATE_KEY|REFRESH_TOKEN|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/u;
+const PACKAGE_METADATA_LIMIT = 64 * 1024;
 
 const RawNpmPluginSchema = z.object({
   name: z.unknown(),
@@ -130,6 +133,8 @@ function parseNpmPlugin(raw: unknown): OmpInstalledPlugin | null {
     enabledFeatures,
     availableFeatures,
     configurable: Object.keys(objectRecord(manifest.settings)).length > 0,
+    ambiguous: false,
+    usesDefaultFeatures: candidate.data.enabledFeatures == null,
   };
   return OmpInstalledPluginSchema.safeParse(plugin).success ? plugin : null;
 }
@@ -164,6 +169,8 @@ function parseMarketplacePlugin(raw: unknown): OmpInstalledPlugin | null {
     enabledFeatures: [],
     availableFeatures: [],
     configurable: false,
+    ambiguous: false,
+    usesDefaultFeatures: true,
   };
   return OmpInstalledPluginSchema.safeParse(plugin).success ? plugin : null;
 }
@@ -185,7 +192,18 @@ export function parseOmpPluginList(raw: unknown): Pick<OmpPluginState, "plugins"
   };
   for (const plugin of root.npm) append(parseNpmPlugin(plugin));
   for (const plugin of root.marketplace) append(parseMarketplacePlugin(plugin));
-  return { plugins, droppedCount };
+  const identityCounts = new Map<string, number>();
+  for (const plugin of plugins) {
+    const identity = plugin.packageName ?? plugin.id;
+    identityCounts.set(identity, (identityCounts.get(identity) ?? 0) + 1);
+  }
+  return {
+    plugins: plugins.map((plugin) => ({
+      ...plugin,
+      ambiguous: (identityCounts.get(plugin.packageName ?? plugin.id) ?? 0) > 1,
+    })),
+    droppedCount,
+  };
 }
 
 function runSucceeded(result: BoundedRun): boolean {
@@ -230,12 +248,42 @@ async function runOmpPlugin(
     defaultSpawn,
     executable,
     args,
-    buildProbeEnv(process.env),
+    buildStatefulCommandEnv(process.env),
     timeoutMs,
     KILL_GRACE_MS,
     outputLimit,
     process.cwd(),
   );
+}
+
+async function enrichMarketplaceConfiguration(
+  plugins: OmpInstalledPlugin[],
+): Promise<OmpInstalledPlugin[]> {
+  const enriched = await Promise.all(
+    plugins.map(async (plugin) => {
+      if (plugin.source !== "marketplace" || plugin.scope !== "user" || !plugin.path) return plugin;
+      try {
+        const metadataPath = join(plugin.path, "package.json");
+        const metadata = await stat(metadataPath);
+        if (!metadata.isFile() || metadata.size > PACKAGE_METADATA_LIMIT) return plugin;
+        const raw: unknown = JSON.parse(await readFile(metadataPath, "utf8"));
+        const packageName = OmpPluginNameSchema.safeParse(objectRecord(raw).name);
+        if (!packageName.success) return plugin;
+        return { ...plugin, packageName: packageName.data, configurable: true };
+      } catch {
+        return plugin;
+      }
+    }),
+  );
+  const identityCounts = new Map<string, number>();
+  for (const plugin of enriched) {
+    const identity = plugin.packageName ?? plugin.id;
+    identityCounts.set(identity, (identityCounts.get(identity) ?? 0) + 1);
+  }
+  return enriched.map((plugin) => ({
+    ...plugin,
+    ambiguous: (identityCounts.get(plugin.packageName ?? plugin.id) ?? 0) > 1,
+  }));
 }
 
 const DEFAULT_DEPENDENCIES: OmpPluginDependencies = {
@@ -258,7 +306,11 @@ async function loadPluginState(
   if (!runSucceeded(result)) return unavailableState(readFailure(result));
   try {
     const parsed = parseOmpPluginList(JSON.parse(result.stdout) as unknown);
-    return { available: true, ...parsed };
+    return {
+      available: true,
+      plugins: await enrichMarketplaceConfiguration(parsed.plugins),
+      droppedCount: parsed.droppedCount,
+    };
   } catch {
     return unavailableState("OMP returned invalid plugin metadata.");
   }
@@ -397,15 +449,9 @@ export async function resolveInspectOmpPluginConfig(
 }
 
 export function buildOmpPluginConfigMutationArgs(input: OmpPluginConfigMutation): string[] {
-  return [
-    "plugin",
-    "config",
-    input.action,
-    input.plugin,
-    input.key,
-    ...(input.action === "set" ? [String(input.value)] : []),
-    "--json",
-  ];
+  return input.action === "set"
+    ? ["plugin", "config", "set", input.plugin, input.key, "--json", "--", String(input.value)]
+    : ["plugin", "config", "delete", input.plugin, input.key, "--json"];
 }
 
 function configValueError(
@@ -456,6 +502,13 @@ export async function mutateOmpPluginConfigWithDependencies(
       config: current,
     };
   }
+  if (input.action === "set" && setting.secret) {
+    return {
+      ok: false,
+      message: "Secret plugin settings cannot be written through process arguments.",
+      config: current,
+    };
+  }
   if (input.action === "set") {
     const invalid = configValueError(setting, input.value);
     if (invalid) return { ok: false, message: invalid, config: current };
@@ -479,19 +532,17 @@ export async function mutateOmpPluginConfigWithDependencies(
   };
 }
 
-export async function resolveMutateOmpPluginConfig(input: RpcInput<typeof mutateOmpPluginConfig>) {
-  return mutateOmpPluginConfigWithDependencies(input, DEFAULT_DEPENDENCIES);
+export function resolveMutateOmpPluginConfig(
+  input: RpcInput<typeof mutateOmpPluginConfig>,
+): Promise<{ ok: boolean; message: string; config: OmpPluginConfigState }> {
+  return enqueuePluginMutation(() =>
+    mutateOmpPluginConfigWithDependencies(input, DEFAULT_DEPENDENCIES),
+  );
 }
 
 export function buildOmpPluginMutationArgs(input: OmpPluginMutation): string[] {
   const target = input.action === "install" ? input.source : input.plugin;
-  return [
-    "plugin",
-    input.action,
-    target,
-    ...(input.scope ? ["--scope", input.scope] : []),
-    "--json",
-  ];
+  return ["plugin", input.action, target, "--scope", "user", "--json"];
 }
 
 function mutationFailure(result: BoundedRun): string {
@@ -513,6 +564,17 @@ function mutationSuccess(action: OmpPluginMutation["action"]): string {
     case "upgrade":
       return "Plugin upgraded. New runtime extensions load in the next OMP session.";
   }
+}
+
+let pluginMutationTail: Promise<void> = Promise.resolve();
+
+function enqueuePluginMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = pluginMutationTail.then(operation, operation);
+  pluginMutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 export async function mutateOmpPluginWithDependencies(
@@ -539,6 +601,8 @@ export async function mutateOmpPluginWithDependencies(
   };
 }
 
-export async function resolveMutateOmpPlugin(input: RpcInput<typeof mutateOmpPlugin>) {
-  return mutateOmpPluginWithDependencies(input, DEFAULT_DEPENDENCIES);
+export function resolveMutateOmpPlugin(
+  input: RpcInput<typeof mutateOmpPlugin>,
+): Promise<{ ok: boolean; message: string; state: OmpPluginState }> {
+  return enqueuePluginMutation(() => mutateOmpPluginWithDependencies(input, DEFAULT_DEPENDENCIES));
 }

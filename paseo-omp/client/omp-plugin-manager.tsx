@@ -1,7 +1,7 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
 import { Pressable, Switch, Text, View } from "react-native";
 import {
@@ -319,7 +319,8 @@ function ConfigSettingEditor({
   if (setting.type === "boolean") {
     value = draft === true;
   } else if (setting.type === "number") {
-    const parsed = typeof draft === "string" && draft.length > 0 ? Number(draft) : Number.NaN;
+    const raw = typeof draft === "string" ? draft.trim() : "";
+    const parsed = raw ? Number(raw) : Number.NaN;
     if (!Number.isFinite(parsed)) validationMessage = "Enter a finite number.";
     else if (setting.minimum !== undefined && parsed < setting.minimum) {
       validationMessage = `Minimum: ${setting.minimum}`;
@@ -361,7 +362,12 @@ function ConfigSettingEditor({
       {setting.description ? (
         <Text style={styles.settingDescription}>{setting.description}</Text>
       ) : null}
-      {setting.type === "boolean" ? (
+      {setting.secret ? (
+        <Text style={styles.warning}>
+          Secret writes are unavailable because OMP accepts plugin setting values through process
+          arguments. Configure this secret directly with OMP.
+        </Text>
+      ) : setting.type === "boolean" ? (
         <View style={styles.metadataRow}>
           <Switch
             accessibilityLabel={`New value for ${setting.key}`}
@@ -397,9 +403,8 @@ function ConfigSettingEditor({
           editable={!busy}
           value={typeof draft === "string" ? draft : ""}
           onChangeText={setDraft}
-          placeholder={setting.secret ? "Enter replacement secret" : "Enter a new value"}
+          placeholder="Enter a new value"
           placeholderTextColor={theme.colors.foregroundMuted}
-          secureTextEntry={setting.secret}
           keyboardType={setting.type === "number" ? "numeric" : "default"}
           autoCapitalize="none"
           autoCorrect={false}
@@ -410,15 +415,17 @@ function ConfigSettingEditor({
         <Text style={styles.error}>{validationMessage}</Text>
       ) : null}
       <View style={styles.actions}>
-        <ActionButton
-          label="Review change"
-          disabled={busy || !candidate?.success}
-          primary
-          styles={styles}
-          onPress={() => {
-            if (candidate?.success) onConfirm(candidate.data, setting);
-          }}
-        />
+        {!setting.secret ? (
+          <ActionButton
+            label="Review change"
+            disabled={busy || !candidate?.success}
+            primary
+            styles={styles}
+            onPress={() => {
+              if (candidate?.success) onConfirm(candidate.data, setting);
+            }}
+          />
+        ) : null}
         {setting.configured ? (
           <ActionButton
             label="Delete setting"
@@ -473,6 +480,9 @@ function PluginCard({
         {plugin.enabledFeatures.length > 0 ? (
           <MetadataRow styles={styles} label="Features" value={plugin.enabledFeatures.join(", ")} />
         ) : null}
+        {plugin.usesDefaultFeatures ? (
+          <MetadataRow styles={styles} label="Features" value="Manifest defaults" />
+        ) : null}
         {plugin.shadowed ? (
           <Text style={styles.warning}>Shadowed by an enabled project-scoped installation.</Text>
         ) : null}
@@ -481,11 +491,16 @@ function PluginCard({
             Project-scoped actions require OMP to run from that project and are read-only here.
           </Text>
         ) : null}
+        {plugin.ambiguous ? (
+          <Text style={styles.warning}>
+            Multiple installations share this package identity, so lifecycle actions are read-only.
+          </Text>
+        ) : null}
       </View>
       <View style={styles.actions}>
         <ActionButton
           label={plugin.enabled ? "Disable" : "Enable"}
-          disabled={busy || plugin.scope === "project"}
+          disabled={busy || plugin.scope === "project" || plugin.ambiguous}
           styles={styles}
           onPress={() =>
             onConfirm({
@@ -498,7 +513,7 @@ function PluginCard({
         {plugin.configurable && plugin.packageName ? (
           <ActionButton
             label={inspecting ? "Loading settings…" : "Configure settings"}
-            disabled={busy || inspecting || plugin.scope === "project"}
+            disabled={busy || inspecting || plugin.scope === "project" || plugin.ambiguous}
             styles={styles}
             onPress={() => onInspect(plugin.packageName ?? plugin.id)}
           />
@@ -506,7 +521,7 @@ function PluginCard({
         {plugin.source === "marketplace" ? (
           <ActionButton
             label="Upgrade"
-            disabled={busy || plugin.scope === "project"}
+            disabled={busy || plugin.scope === "project" || plugin.ambiguous}
             styles={styles}
             onPress={() =>
               onConfirm({ action: "upgrade", plugin: plugin.id, ...(scope ? { scope } : {}) })
@@ -515,7 +530,7 @@ function PluginCard({
         ) : null}
         <ActionButton
           label="Uninstall"
-          disabled={busy || plugin.scope === "project"}
+          disabled={busy || plugin.scope === "project" || plugin.ambiguous}
           danger
           styles={styles}
           onPress={() =>
@@ -544,8 +559,8 @@ export function OmpPluginManagerSection({
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null);
   const [notice, setNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [inspected, setInspected] = useState<OmpPluginConfigState | null>(null);
-  const [configEditGeneration, setConfigEditGeneration] = useState(0);
-
+  const [configEditGenerations, setConfigEditGenerations] = useState<Record<string, number>>({});
+  const inspectionTarget = useRef<string | null>(null);
   const plugins = useQuery({
     queryKey: PLUGINS_QUERY_KEY,
     queryFn: () => loadPlugins({}),
@@ -568,19 +583,28 @@ export function OmpPluginManagerSection({
   });
   const configInspection = useMutation({
     mutationFn: (plugin: string) => inspectPluginConfig({ plugin }),
-    onSuccess: setInspected,
-    onError: () => setInspected(null),
+    onSuccess: (result) => {
+      if (inspectionTarget.current === result.plugin) setInspected(result);
+    },
+    onError: () => {
+      if (inspectionTarget.current) setInspected(null);
+    },
   });
   const configMutation = useMutation({
     mutationFn: (input: OmpPluginConfigMutation) => mutatePluginConfig(input),
-    onSuccess: (result) => {
+    onSuccess: (result, input) => {
       setInspected(result.config);
-      setConfigEditGeneration((generation) => generation + 1);
+      if (result.ok) {
+        const identity = `${input.plugin}:${input.key}`;
+        setConfigEditGenerations((current) => ({
+          ...current,
+          [identity]: (current[identity] ?? 0) + 1,
+        }));
+      }
       setNotice({ tone: result.ok ? "success" : "error", text: result.message });
       setConfirmation(null);
     },
     onError: () => {
-      setConfigEditGeneration((generation) => generation + 1);
       setNotice({ tone: "error", text: "The plugin setting operation could not be completed." });
       setConfirmation(null);
     },
@@ -612,11 +636,15 @@ export function OmpPluginManagerSection({
   };
   const inspect = (plugin: string) => {
     if (inspected?.plugin === plugin) {
+      inspectionTarget.current = null;
       setInspected(null);
       configInspection.reset();
+      setConfirmation(null);
       return;
     }
+    inspectionTarget.current = plugin;
     setInspected(null);
+    setConfirmation(null);
     configInspection.mutate(plugin);
   };
   const applyConfirmation = () => {
@@ -734,7 +762,7 @@ export function OmpPluginManagerSection({
         <View style={styles.pluginGrid}>
           {plugins.data.plugins.map((plugin) => (
             <PluginCard
-              key={`${plugin.source}:${plugin.scope ?? "global"}:${plugin.id}`}
+              key={`${plugin.source}:${plugin.scope ?? "global"}:${plugin.path ?? plugin.id}:${plugin.version ?? "unknown"}`}
               plugin={plugin}
               busy={busy}
               inspecting={
@@ -761,7 +789,11 @@ export function OmpPluginManagerSection({
               label="Close"
               disabled={busy}
               styles={styles}
-              onPress={() => setInspected(null)}
+              onPress={() => {
+                inspectionTarget.current = null;
+                setInspected(null);
+                setConfirmation(null);
+              }}
             />
           </View>
           <Text style={styles.muted}>
@@ -780,10 +812,10 @@ export function OmpPluginManagerSection({
           <View style={styles.settings}>
             {inspected.settings.map((setting) => (
               <ConfigSettingEditor
-                key={`${setting.key}:${configEditGeneration}`}
+                key={`${inspected.plugin}:${setting.key}:${configEditGenerations[`${inspected.plugin}:${setting.key}`] ?? 0}`}
                 plugin={inspected.plugin}
                 setting={setting}
-                busy={busy}
+                busy={busy || confirmation !== null}
                 theme={theme}
                 styles={styles}
                 onConfirm={requestConfigMutation}

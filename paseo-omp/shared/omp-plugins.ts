@@ -71,6 +71,8 @@ export const OmpInstalledPluginSchema = z
     enabledFeatures: z.array(z.string().min(1).max(128)).max(128),
     availableFeatures: z.array(z.string().min(1).max(128)).max(128),
     configurable: z.boolean(),
+    ambiguous: z.boolean(),
+    usesDefaultFeatures: z.boolean(),
   })
   .strict();
 export type OmpInstalledPlugin = z.infer<typeof OmpInstalledPluginSchema>;
@@ -148,7 +150,7 @@ export const OmpPluginConfigMutationSchema = z.discriminatedUnion("action", [
       action: z.literal("set"),
       plugin: OmpPluginNameSchema,
       key: OmpPluginConfigKeySchema,
-      value: z.union([OmpPluginConfigStringValueSchema, z.number().finite().safe(), z.boolean()]),
+      value: z.union([OmpPluginConfigStringValueSchema, z.number().finite(), z.boolean()]),
     })
     .strict(),
   z
