@@ -11,6 +11,7 @@ import {
   readOmpPersistedSubagentTranscript,
   validateNativeSessionId,
 } from "./session-descriptors";
+import type { OmpOutputRedaction } from "./settings";
 
 const READY_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -948,6 +949,7 @@ export interface OmpPersistedSubagentMessages {
 export interface OmpStartOptions {
   cwd: string;
   env?: Readonly<Record<string, string>>;
+  outputRedaction?: OmpOutputRedaction;
   /** Server-owned environment source; tests provide isolated roots instead of ambient process.env. */
   environment?: NodeJS.ProcessEnv;
   command?: readonly string[];

@@ -368,15 +368,19 @@ export class OmpTimelineProjector {
   private commandText = "";
   private commandPublishedText = "";
   private closed = false;
-  private readonly dataFilter = new OmpPublicDataSerializer();
+
+  private readonly dataFilter: OmpPublicDataSerializer;
 
   constructor(
     private readonly sessionId: string,
     private readonly emit: Emit,
     private readonly scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
+    outputRedactionValues: readonly string[] = [],
     private readonly conversationRevertEnabled = false,
     private readonly hostToolLabels: ReadonlyMap<string, string> = new Map(),
-  ) {}
+  ) {
+    this.dataFilter = new OmpPublicDataSerializer(outputRedactionValues);
+  }
 
   project(event: OmpRpcEvent, turnId: string, bypassReplayFilter = false): void {
     if (this.closed) return;

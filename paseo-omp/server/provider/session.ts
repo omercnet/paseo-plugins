@@ -38,6 +38,7 @@ import { buildOmpSpawnRequest } from "./omp-rpc";
 import {
   BoundedStringSet,
   boundedJsonBytes,
+  configuredOutputRedactionValues,
   isOmpCleanupFailure,
   isOmpPublicError,
   OmpCleanupFailure,
@@ -762,6 +763,7 @@ export class OmpProviderSession {
     nativeSessionFile: string | undefined,
     private readonly config: ProviderSessionConfig,
     private configState: ProviderConfigState,
+    outputRedactionValues: readonly string[],
     nativeModelsByPublicId: ReadonlyMap<string, OmpModel>,
     private readonly capabilities: readonly string[],
     private readonly slashCommands: Set<string>,
@@ -779,7 +781,7 @@ export class OmpProviderSession {
     this.id = id;
     this.cwd = config.cwd;
     this.scheduler = scheduler;
-    this.dataFilter = new OmpPublicDataSerializer();
+    this.dataFilter = new OmpPublicDataSerializer(outputRedactionValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.commandCatalog = commandCatalog;
     this.hostTools.onFatal(() => this.handleRuntimeFailure());
@@ -787,6 +789,7 @@ export class OmpProviderSession {
       id,
       emit,
       scheduler,
+      outputRedactionValues,
       capabilities.includes("session.revert.conversation"),
       hostTools.labels,
     );
@@ -799,6 +802,7 @@ export class OmpProviderSession {
           emit,
           scheduler,
           () => this.resumeDeferredAgentEnd(),
+          outputRedactionValues,
         )
       : null;
     this.bindRuntime(runtime);
@@ -837,6 +841,11 @@ export class OmpProviderSession {
     const normalizedConfig = normalizeOmpSessionConfig(
       effectiveConfig,
       capabilities.includes("permission"),
+    );
+    const outputRedactionValues = configuredOutputRedactionValues(
+      normalizedConfig.outputRedaction ?? "none",
+      normalizedConfig.env,
+      effectiveConfig.mcpServers,
     );
     const persistedDescriptor = resumeSessionId
       ? await authorizeNativeSession(
@@ -900,7 +909,7 @@ export class OmpProviderSession {
       if (resumeSessionId && initialState.sessionId !== resumeSessionId) {
         throw new OmpPublicError("OMP resumed a different native session");
       }
-      const models = mapOmpModels(nativeModels);
+      const models = mapOmpModels(nativeModels, new OmpPublicDataSerializer(outputRedactionValues));
       const nativeModelsByPublicId = new Map(
         nativeModels.map((model) => [ompModelId(model), model] as const),
       );
@@ -978,6 +987,7 @@ export class OmpProviderSession {
         persistedDescriptor?.transcriptFile ?? state.sessionFile,
         effectiveConfig,
         configState,
+        outputRedactionValues,
         nativeModelsByPublicId,
         sessionCapabilities,
         new Set([

@@ -293,6 +293,8 @@ export class OmpSubsessionProjector {
   private replaying = false;
   private closed = false;
 
+  private readonly dataFilter: OmpPublicDataSerializer;
+
   constructor(
     private readonly rootSessionId: string,
     private readonly rootIdentityKey: string,
@@ -301,9 +303,10 @@ export class OmpSubsessionProjector {
     private readonly emit: Emit,
     private readonly scheduler: OmpTimelineScheduler,
     private readonly onActivityChange: () => void,
-  ) {}
-
-  private readonly dataFilter = new OmpPublicDataSerializer();
+    private readonly outputRedactionValues: readonly string[],
+  ) {
+    this.dataFilter = new OmpPublicDataSerializer(outputRedactionValues);
+  }
 
   observeSessionEvent(ownerSessionId: string, event: OmpAgentSessionEvent): void {
     if (event.type === "tool_execution_start" && event.toolName === "task") {
@@ -532,7 +535,12 @@ export class OmpSubsessionProjector {
       sessionClosed: false,
       seenAssistantIdentities: new BoundedStringSet(MAX_CHILD_MESSAGE_IDENTITIES),
       seenInSnapshot: false,
-      projector: new OmpTimelineProjector(sessionId, this.emit, this.scheduler),
+      projector: new OmpTimelineProjector(
+        sessionId,
+        this.emit,
+        this.scheduler,
+        this.outputRedactionValues,
+      ),
     };
     this.children.set(sessionId, child);
     this.sessionIdByNativeId.set(ref.id, sessionId);

@@ -7,7 +7,12 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import type { NormalizedOmpStartOptions } from "./config-normalization";
 import type { OmpModel, OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
-import { OmpCleanupFailure, OmpPublicDataSerializer, OmpPublicError } from "./security";
+import {
+  configuredOutputRedactionValues,
+  OmpCleanupFailure,
+  OmpPublicDataSerializer,
+  OmpPublicError,
+} from "./security";
 
 export const OMP_MODES: readonly ProviderMode[] = [
   {
@@ -57,8 +62,10 @@ export function ompModelId(model: OmpModel): string {
   return `omp:model:${createHash("sha256").update(nativeIdentity).digest("hex")}`;
 }
 
-export function mapOmpModels(models: readonly OmpModel[]): ProviderModel[] {
-  const serializer = new OmpPublicDataSerializer();
+export function mapOmpModels(
+  models: readonly OmpModel[],
+  serializer = new OmpPublicDataSerializer(),
+): ProviderModel[] {
   const seenIds = new Map<string, string>();
   return models.map((model) => {
     const thinkingOptions = thinkingForModel(model);
@@ -128,7 +135,10 @@ export async function discoverOmpCatalog(
       session.getAvailableModels(),
       session.getState(),
     ]);
-    const models = mapOmpModels(nativeModels);
+    const serializer = new OmpPublicDataSerializer(
+      configuredOutputRedactionValues(options.outputRedaction ?? "none", options.env),
+    );
+    const models = mapOmpModels(nativeModels, serializer);
     if (models.length === 0) throw new Error("OMP reported no available models");
     const defaultModel = state.model ? ompModelId(state.model) : models[0]?.id;
     const currentModel = state.model

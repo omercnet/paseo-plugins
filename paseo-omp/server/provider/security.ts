@@ -1,3 +1,6 @@
+import type { ProviderMcpServerConfig } from "@getpaseo/plugin/server/provider";
+import type { OmpOutputRedaction } from "./settings";
+
 export type JsonValue =
   | null
   | boolean
@@ -10,11 +13,34 @@ const MAX_PUBLIC_STRING_BYTES = 1024 * 1024;
 const MAX_PUBLIC_COLLECTION_ITEMS = 128;
 const MAX_PUBLIC_DEPTH = 16;
 const MAX_PUBLIC_NODES = 2_048;
+const MAX_EXACT_REDACTION_VALUES = 256;
+const MAX_EXACT_REDACTION_VALUE_BYTES = 256 * 1024;
 const MAX_PUBLIC_JSON_BYTES = 256 * 1024;
 const OMITTED = "<omitted>";
+const REDACTED = "<redacted>";
+const CREDENTIAL_ENV_NAME =
+  /(?:^|_)(?:API_KEY|ACCESS_KEY|ACCESS_TOKEN|AUTH|AUTHORIZATION|COOKIE|CREDENTIAL|CREDENTIALS|OAUTH|PASSWORD|PRIVATE_KEY|REFRESH_TOKEN|SECRET|SESSION_TOKEN|TOKEN)(?:$|_)/iu;
 
 export function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, "utf8");
+}
+export function configuredOutputRedactionValues(
+  mode: OmpOutputRedaction,
+  env: Readonly<Record<string, string>> | undefined,
+  mcpServers: Readonly<Record<string, ProviderMcpServerConfig>> = {},
+): readonly string[] {
+  if (mode === "none") return [];
+  const values: string[] = [];
+  for (const [name, value] of Object.entries(env ?? {})) {
+    if (CREDENTIAL_ENV_NAME.test(name) && utf8Bytes(value) >= 4) values.push(value);
+  }
+  for (const server of Object.values(mcpServers)) {
+    const configuredValues = server.type === "stdio" ? server.env : server.headers;
+    for (const value of Object.values(configuredValues ?? {})) {
+      if (utf8Bytes(value) >= 4) values.push(value);
+    }
+  }
+  return values;
 }
 
 function jsonStringBytes(value: string): number {
@@ -194,8 +220,26 @@ export function isOmpCleanupFailure(error: unknown): error is OmpCleanupFailure 
 }
 
 export class OmpPublicDataSerializer {
+  private readonly exactValues: readonly string[];
+
+  constructor(values: Iterable<string> = []) {
+    const unique = new Set<string>();
+    let bytes = 0;
+    for (const value of values) {
+      if (utf8Bytes(value) < 4 || unique.has(value)) continue;
+      unique.add(value);
+      bytes += utf8Bytes(value);
+      if (unique.size > MAX_EXACT_REDACTION_VALUES || bytes > MAX_EXACT_REDACTION_VALUE_BYTES) {
+        throw new Error("OMP configured output-redaction budget exceeded");
+      }
+    }
+    this.exactValues = Object.freeze([...unique].sort((left, right) => right.length - left.length));
+  }
+
   text(input: string, maxBytes = MAX_PUBLIC_STRING_BYTES): string {
-    return truncateUtf8(input, maxBytes);
+    let output = input;
+    for (const value of this.exactValues) output = output.split(value).join(REDACTED);
+    return truncateUtf8(output, maxBytes);
   }
 
   json(
