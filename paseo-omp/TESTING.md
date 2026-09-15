@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against the Paseo plugin SDK versions pinned in `package.json`, official Paseo Docker image `0.8.0@sha256:5518da7cdd35f132e8a944c35e509c677a90a8f3ec8a78df98f7fb5fd5e2c6c3`, and the real OMP compatibility matrix: minimum supported 18.1.15, latest published 18.1 patch 18.1.22, and current release 18.2.0.
+Validated against the Paseo plugin SDK versions pinned in `package.json`, official Paseo Docker image `0.8.0@sha256:5518da7cdd35f132e8a944c35e509c677a90a8f3ec8a78df98f7fb5fd5e2c6c3`, and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; latest published 18.1 patch 18.1.22; and current release 18.2.0.
 
 Classifications:
 
@@ -95,7 +95,7 @@ npm run test:integration:wsl
 
 The WSL script skips when `wsl.exe` or WSL Node is unavailable. Set `PASEO_OMP_REQUIRE_WSL=1` to make either condition fatal, as CI does. `PASEO_OMP_WSL_NODE` may override the default `node` executable inside WSL.
 
-The Linux real-OMP CI matrix downloads the checksummed `omp-linux-x64` assets for OMP 18.1.15, 18.1.22, and 18.2.0, verifies each binary's pinned GitHub release SHA-256, and runs `PASEO_OMP_REAL_E2E=1 PASEO_OMP_VERSION=<version> npm test -- tests/provider.real.e2e.test.ts`. These entries cover the supported floor, the newest patch in that minor line, and the current release. The test uses the real OMP binary and a local deterministic OpenAI-compatible model endpoint, so catalog, text-plus-Bash, and oversized-image execution are mandatory without repository secrets.
+The Linux real-OMP CI matrix downloads checksummed `omp-linux-x64` assets for OMP 17.2.15, 17.3.4, 18.0.11, 18.1.10, 18.1.15, 18.1.22, and 18.2.0, verifies each binary's pinned GitHub release SHA-256, and runs `PASEO_OMP_REAL_E2E=1 PASEO_OMP_VERSION=<version> npm test -- tests/provider.real.e2e.test.ts`. The historical entries are the four pre-floor releases with more than 4,000 downloads shown by npm for the seven days ending 2026-09-15; they are compatibility regression probes, not a support commitment. The remaining entries cover the supported floor, newest patch in that minor line, and current release. The test uses the real OMP binary and a local deterministic OpenAI-compatible model endpoint, so catalog, text-plus-Bash, and oversized-image execution are mandatory without repository secrets.
 
 The controlled canary in `canary/compose.yml` builds this plugin into that official Paseo image and installs checksummed OMP binaries for `amd64` and `arm64`. `canary/smoke.ts` passed catalog/mode discovery, text and image prompts, Bash, a configured stdio MCP tool, permission allow/deny/cancel, steering, interruption, session listing/import/resume, subagents, conversation rewind followed by another turn, Hub process visibility, usage, and every plugin RPC. Browser verification loaded the global OMP health/configuration surface and the agent-scoped Hub, Memory, and Sessions controls. The default mock returned `CANARY_MOCK_OK`, `CANARY_TOOL_OK`, and `CANARY_MCP_OK`; the optional Ollama profile pulled `qwen2.5:0.5b` and completed turns without paid credentials. The harness records the canary-only `/compact` and `/handoff` failures instead of masking them.
 
