@@ -1937,11 +1937,26 @@ export class OmpProviderSession {
     text: string,
     invoke: () => Promise<void>,
   ): Promise<void> {
+    if (this.activeTurn) {
+      throw new OmpPublicError("OMP already has an active turn; send this message as a steer");
+    }
     const turn = createActiveTurn(clientMessageId, text, this.generation, false);
     this.activeTurn = turn;
     try {
       await invoke();
-      if (this.closed || turn.terminal || this.activeTurn !== turn) return;
+      if (this.closed || turn.terminal || this.activeTurn !== turn) {
+        if (!turn.terminal) {
+          this.publishPendingUsers(turn);
+          this.publishPromptResult(turn, {
+            type: "failed",
+            error: {
+              message: this.closed ? "OMP session is closed" : "OMP command lost turn ownership",
+            },
+          });
+          this.settleUnstartedTurn(turn);
+        }
+        return;
+      }
       this.publishPromptResult(turn, { type: "turn", turnId: turn.turnId });
       turn.starting = false;
       turn.acknowledged = true;
@@ -1952,16 +1967,13 @@ export class OmpProviderSession {
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
       turn.replayingBufferedEvents = false;
     } catch (error) {
-      if (turn.terminal || this.activeTurn !== turn) return;
+      if (turn.terminal) return;
+      const ownsTurn = this.activeTurn === turn;
       const failure = providerError(error, "OMP command failed");
       this.publishPendingUsers(turn);
       this.publishPromptResult(turn, { type: "failed", error: failure });
-      turn.steerReady.resolve();
-      turn.terminal = true;
-      this.imageMaterializer.clear();
-      this.resolveTurnPermissions(turn.turnId);
-      this.projector.finishTurn(turn.turnId);
-      this.activeTurn = null;
+      this.settleUnstartedTurn(turn);
+      if (ownsTurn) this.imageMaterializer.clear();
     }
   }
 
@@ -2062,6 +2074,14 @@ export class OmpProviderSession {
     this.lifetime.abort(new Error("OMP provider connection closed"));
     this.unsubscribe();
     this.unsubscribe = () => {};
+    const turn = this.activeTurn;
+    if (turn && !turn.started) {
+      this.publishPromptResult(turn, {
+        type: "failed",
+        error: { message: "OMP session closed before the prompt was accepted" },
+      });
+      this.settleUnstartedTurn(turn);
+    }
   }
   async configure(input: SessionConfigureInput): Promise<void> {
     if (this.revertInFlight) {
@@ -2521,12 +2541,8 @@ export class OmpProviderSession {
       });
       if (turn.started) await this.finishTurn(turn, "canceled", undefined, true, true);
       else {
-        turn.steerReady.resolve();
-        turn.terminal = true;
-        this.stopUsagePoll(turn);
+        this.settleUnstartedTurn(turn);
         this.finishCompaction("canceled");
-        this.projector.finishTurn(turn.turnId);
-        if (this.activeTurn === turn) this.activeTurn = null;
       }
     }
     this.imageMaterializer.clear();
@@ -4306,6 +4322,17 @@ export class OmpProviderSession {
       if (entryId) this.seenEntryIds.add(entryId);
     }
     pending.bufferedEchoes.length = 0;
+  }
+
+  private settleUnstartedTurn(turn: ActiveTurn): void {
+    if (turn.started || turn.terminal) return;
+    turn.steerReady.resolve();
+    turn.starting = false;
+    turn.terminal = true;
+    this.stopUsagePoll(turn);
+    this.resolveTurnPermissions(turn.turnId);
+    this.projector.finishTurn(turn.turnId);
+    if (this.activeTurn === turn) this.activeTurn = null;
   }
 
   private publishPromptResult(
