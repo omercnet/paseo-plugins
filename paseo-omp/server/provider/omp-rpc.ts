@@ -2078,7 +2078,11 @@ class OmpRpcProcess {
   private receiveKnownResponse(value: unknown): boolean {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const frame = value as Record<string, unknown>;
-    if (frame.type !== "response" || typeof frame.id !== "string" || !this.pending.has(frame.id)) {
+    if (
+      frame.type !== "response" ||
+      typeof frame.id !== "string" ||
+      (!this.pending.has(frame.id) && !this.acceptedPromptIds.has(frame.id))
+    ) {
       return false;
     }
     this.receiveResponse(frame);

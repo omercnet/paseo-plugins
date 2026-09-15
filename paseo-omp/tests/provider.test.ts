@@ -8463,7 +8463,7 @@ describe("OMP direct provider", () => {
         type: "prompt_error",
         id: "rpc-prompt-1",
         error: "Session is already processing scheduling-secret",
-        code: "session_busy",
+        code: "session_busy:scheduling-secret",
       },
     ];
     const result = await startPrompt(connection, events, "late-error", "work");
@@ -8474,7 +8474,10 @@ describe("OMP direct provider", () => {
     );
     expect(terminal).toEqual(
       expect.objectContaining({
-        error: { message: "Session is already processing <redacted>", code: "session_busy" },
+        error: {
+          message: "Session is already processing <redacted>",
+          code: "session_busy:<redacted>",
+        },
       }),
     );
     await connection.close();

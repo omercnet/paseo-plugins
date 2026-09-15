@@ -516,14 +516,27 @@ describe("OMP RPC transport", () => {
       { error: "OMP prompt scheduling failed", code: "session_busy" },
     ],
     [
+      "deep malformed error",
+      {
+        error: Array.from({ length: 17 }).reduce<unknown>((cause) => ({ cause }), "unsafe"),
+        code: "session_busy",
+      },
+      { error: "OMP prompt scheduling failed", code: "session_busy" },
+    ],
+    [
       "oversized error",
-      { error: "e".repeat(4_097), code: "session_busy" },
+      { error: "é".repeat(2_049), code: "session_busy" },
       { error: "OMP prompt scheduling failed", code: "session_busy" },
     ],
     ["malformed code", { error: "native failure", code: 42 }, { error: "native failure" }],
     [
+      "wide malformed code",
+      { error: "native failure", code: Array(1_025).fill("unsafe") },
+      { error: "native failure" },
+    ],
+    [
       "oversized code",
-      { error: "native failure", code: "c".repeat(257) },
+      { error: "native failure", code: "é".repeat(129) },
       { error: "native failure" },
     ],
   ])("sanitizes %s in late prompt scheduling failures", async (_name, rejected, expected) => {
@@ -562,6 +575,7 @@ describe("OMP RPC transport", () => {
     const session = await opening;
     const failure = nextEvent((listener) => session.onEvent(listener));
     const acknowledgement = await session.prompt("work");
+    child.write({ type: "notice", level: "info", message: "after failure" });
     await expect(failure).resolves.toEqual({
       type: "prompt_error",
       id: acknowledgement.requestId,
@@ -645,6 +659,21 @@ describe("OMP RPC transport", () => {
       type: "notice",
       level: "info",
       message: "still healthy",
+    });
+    const failure = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "response",
+      id: promptId,
+      command: "prompt",
+      success: false,
+      error: "native failure",
+      code: "session_busy",
+    });
+    await expect(failure).resolves.toEqual({
+      type: "prompt_error",
+      id: promptId,
+      error: "native failure",
+      code: "session_busy",
     });
     await session.close();
   });
