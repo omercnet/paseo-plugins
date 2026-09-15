@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v0.2.1...paseo-omp-v0.3.0) (2026-09-15)
+
+
+### Features
+
+* **paseo-omp:** add first-class MCP management ([#64](https://github.com/omercnet/paseo-plugins/issues/64)) ([5a8fefa](https://github.com/omercnet/paseo-plugins/commit/5a8fefa9148e8d01f0461aa4a90619ec6ae2c2fa))
+* **paseo-omp:** add workspace-scoped OMP management ([#59](https://github.com/omercnet/paseo-plugins/issues/59)) ([2807aec](https://github.com/omercnet/paseo-plugins/commit/2807aec6217ed2d52f8b4666f0a41a688109f8f5))
+
+
+### Bug Fixes
+
+* **paseo-omp:** advertise nested subsession capability ([#62](https://github.com/omercnet/paseo-plugins/issues/62)) ([fcb4e82](https://github.com/omercnet/paseo-plugins/commit/fcb4e8243e9559d70f26ac6945e2f3c0bf05d575))
+* **paseo-omp:** fail closed on unowned later-turn terminal events ([#69](https://github.com/omercnet/paseo-plugins/issues/69)) ([072cd09](https://github.com/omercnet/paseo-plugins/commit/072cd09e38e450376bcd3f4c7b5eae9a670b56b5))
+* **paseo-omp:** preserve prompt scheduling error fidelity ([#67](https://github.com/omercnet/paseo-plugins/issues/67)) ([1c6d549](https://github.com/omercnet/paseo-plugins/commit/1c6d549fddca48be8fd86b4dd2c5faea526c8ac0))
+* **paseo-omp:** reconcile incomplete terminal outcomes ([#68](https://github.com/omercnet/paseo-plugins/issues/68)) ([854f4e6](https://github.com/omercnet/paseo-plugins/commit/854f4e6daddf905c671bb39a94d06a2de0c6d51d))
+* **paseo-omp:** settle concurrent startup races ([#70](https://github.com/omercnet/paseo-plugins/issues/70)) ([9d4e6ef](https://github.com/omercnet/paseo-plugins/commit/9d4e6efb26041f9c88ab4ed6c02a9526520b83e9))
+* **paseo-omp:** show immutable approval mode ([#66](https://github.com/omercnet/paseo-plugins/issues/66)) ([4c586dc](https://github.com/omercnet/paseo-plugins/commit/4c586dc7d012127ee7570077a0d12cc0d6415bd4))
+
 ## [0.2.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v0.2.0...paseo-omp-v0.2.1) (2026-09-15)
 
 
