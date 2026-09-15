@@ -31,7 +31,7 @@ Classifications:
 | Text prompts | **Equivalent** | Bounded multipart text joins and native prompt lifecycle coverage in `tests/provider.test.ts`. |
 | Image prompts | **Equivalent** | Valid native image models receive image blocks; text-only models receive private content-addressed local files with an aggregate cap and turn/session/failure cleanup. The file path is valid because the direct provider and OMP child share the daemon host. |
 | Structured attachments | **Equivalent** | Forge change requests/issues, legacy GitHub forms, text, reviews, and uploaded files render to bounded OMP prompt text; regression in `tests/provider.test.ts`. |
-| Optimistic message correlation | **Equivalent** | Native entry lookup, repeated-text occurrence ownership, steering correlation, replay-boundary dedupe, and exactly-one `session.prompt_result` regressions. |
+| Optimistic message correlation | **Equivalent** | Native entry lookup, repeated-text occurrence ownership, steering correlation, replay-boundary dedupe, exactly-one `session.prompt_result`, and bounded branch-watermark fallback for OMP 18.2 terminal ownership regressions. The fallback covers second turns, resumed sessions, and live user echoes without entry IDs while rejecting stale `agent_end` frames that lack a new matching branch entry. |
 | Streaming assistant text | **Equivalent** | `OmpTimelineProjector` publishes stable complete snapshots with frame coalescing and bounded retained bytes. |
 | Streaming reasoning | **Equivalent** | Indexed thinking blocks map to stable `reasoning` items and share stream bounds. |
 | `contentIndex` ordering | **Equivalent** | Stable 0→1→0 updates, sparse-index rejection, and 64-block bounds are tested in `tests/provider.test.ts`. |
