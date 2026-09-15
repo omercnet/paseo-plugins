@@ -11274,28 +11274,7 @@ describe("OMP direct provider", () => {
     await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 
-  test("fails a degraded terminal frame with no outcome messages", async () => {
-    const { connection, events, runtime } = await createHarness();
-    await openSession(connection, events);
-    const result = await startPrompt(connection, events, "degraded-1", "work");
-    const turnId = turnIdFrom(result);
-    establishTerminalOwnership(sessionAt(runtime));
-    sessionAt(runtime).emit({ type: "agent_end", messageCount: 1, isTerminal: true });
-    const terminal = await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-    );
-
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: { message: "OMP agent_end omitted terminal messages; outcome is unknown" },
-      }),
-    );
-    await connection.close();
-  });
-
-  test("uses completed streamed assistant evidence when agent_end payload is incomplete", async () => {
+  test("uses complete streamed evidence when agent_end omits terminal messages", async () => {
     for (const [suffix, assistant, expectedState, expectedError] of [
       [
         "success",
@@ -11320,14 +11299,10 @@ describe("OMP direct provider", () => {
       const result = await startPrompt(connection, events, `degraded-${suffix}`, "work");
       const turnId = turnIdFrom(result);
       const session = sessionAt(runtime);
+      session.canReplayHistory = false;
       establishTerminalOwnership(session);
       session.emit({ type: "message_end", message: assistant });
-      session.emit({
-        type: "agent_end",
-        messageCount: 1,
-        isTerminal: true,
-        ...(suffix === "success" ? { messages: [] } : {}),
-      });
+      session.emit({ type: "agent_end", messageCount: 1, messages: [], isTerminal: true });
       const terminal = await events.waitFor(
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
@@ -11339,16 +11314,89 @@ describe("OMP direct provider", () => {
           ...(expectedError ? { error: { message: expectedError } } : {}),
         }),
       );
+      expect(session.historyRequests).toBe(0);
       await connection.close();
     }
   });
 
-  test("fails closed when streamed terminal evidence does not cover agent_end messageCount", async () => {
+  test("fails closed when retained evidence hides a missing middle message", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
-    const result = await startPrompt(connection, events, "degraded-partial", "work");
+    const result = await startPrompt(connection, events, "degraded-middle", "work");
     const turnId = turnIdFrom(result);
     const session = sessionAt(runtime);
+    session.canReplayHistory = false;
+    establishTerminalOwnership(session);
+    const finalAssistant = { role: "assistant" as const, content: "done", stopReason: "stop" };
+    session.emit({
+      type: "message_end",
+      message: { role: "assistant", content: "before gap", stopReason: "stop" },
+    });
+    session.emit({ type: "message_end", message: finalAssistant });
+    session.emit({
+      type: "agent_end",
+      messageCount: 3,
+      messages: [finalAssistant],
+      isTerminal: true,
+    });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        state: "failed",
+        error: {
+          message:
+            "OMP agent_end omitted terminal messages; outcome is unknown " +
+            "(declaredCount=3, observedCount=2, retainedTerminalMessages=1, " +
+            "lastAssistantStatus=completed)",
+        },
+      }),
+    );
+    expect(session.historyRequests).toBe(0);
+    await connection.close();
+  });
+
+  test("recovers omitted terminal messages from bounded history after provider idle", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const result = await startPrompt(connection, events, "degraded-history", "work");
+    const turnId = turnIdFrom(result);
+    const session = sessionAt(runtime);
+    const history = Array.from(
+      { length: 46 },
+      (_, index): OmpMessage => ({
+        role: "assistant",
+        entryId: `history-${index}`,
+        content: index === 45 ? "done" : `step ${index}`,
+        stopReason: "stop",
+      }),
+    );
+    session.historyMessages = history;
+    establishTerminalOwnership(session);
+    for (const [index, message] of history.entries()) {
+      if (index !== 20) session.emit({ type: "message_end", message });
+    }
+    session.emit({ type: "agent_end", messageCount: 46, isTerminal: true });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+
+    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    expect(session.historyRequests).toBe(1);
+    await connection.close();
+  });
+
+  test("fails closed with count diagnostics when bounded history is unavailable", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const result = await startPrompt(connection, events, "degraded-unavailable", "work");
+    const turnId = turnIdFrom(result);
+    const session = sessionAt(runtime);
+    session.historyError = new Error("history unavailable");
     establishTerminalOwnership(session);
     session.emit({
       type: "message_end",
@@ -11363,9 +11411,15 @@ describe("OMP direct provider", () => {
     expect(terminal).toEqual(
       expect.objectContaining({
         state: "failed",
-        error: { message: "OMP agent_end omitted terminal messages; outcome is unknown" },
+        error: {
+          message:
+            "OMP agent_end omitted terminal messages; outcome is unknown " +
+            "(declaredCount=2, observedCount=1, retainedTerminalMessages=0, " +
+            "lastAssistantStatus=completed)",
+        },
       }),
     );
+    expect(session.historyRequests).toBe(1);
     await connection.close();
   });
 
