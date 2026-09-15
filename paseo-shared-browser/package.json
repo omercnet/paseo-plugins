@@ -30,7 +30,7 @@
   "devDependencies": {
     "@getpaseo/plugin": "0.8.0",
     "@tanstack/react-query": "^5.90.11",
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.0.0",
     "@types/react": "~19.2.0",
     "esbuild": "^0.28.0",
     "oxfmt": "0.66.0",
