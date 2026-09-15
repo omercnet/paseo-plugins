@@ -33,7 +33,7 @@ This checklist prepares `paseo-omp-v0.1.0-alpha.1`. It does not authorize public
 
 ## Alpha blocker
 
-- [x] `omp-audit.1`: incomplete or compacted `agent_end` frames recover success or failure from complete streamed `message_end` evidence, or from bounded post-idle history whose entry IDs correlate with the streamed turn. Missing, unavailable, or non-correlatable evidence still fails closed with content-free count diagnostics.
+- [x] `omp-audit.1`: incomplete or compacted `agent_end` frames recover success, failure, or native cancellation from complete streamed `message_end` evidence, or from bounded history whose entry IDs correlate with the streamed turn. Idle state is confirmed before and after retrieval, and concurrent interrupts remain authoritative. Missing, unavailable, non-correlatable, or conflicting terminal evidence fails closed with content-free count diagnostics.
 
 ## Accepted alpha limitations
 

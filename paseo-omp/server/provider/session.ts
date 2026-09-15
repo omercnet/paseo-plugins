@@ -278,7 +278,8 @@ type ActiveTurn = {
   completedMessageCount: number;
   streamedMessageEntryIds: string[];
   streamedMessageIdentityComplete: boolean;
-  lastCompletedAssistantFailed?: boolean;
+  lastCompletedAssistantOutcome?: AgentEndOutcome;
+  lastCompletedAssistantEntryId?: string;
 };
 
 type PendingAbort = {
@@ -612,8 +613,18 @@ function nativeEntryId(message: OmpMessage): string | undefined {
   return message.entryId;
 }
 
-type AgentEndOutcome = "completed" | "failed";
+type AgentEndOutcome = "completed" | "failed" | "canceled";
 type AssistantTerminalStatus = AgentEndOutcome | "unavailable";
+
+function assistantTerminalOutcome(
+  message: Extract<OmpMessage, { role: "assistant" }>,
+): AgentEndOutcome {
+  const stopReason = message.stopReason?.toLowerCase();
+  if (stopReason === "aborted" || stopReason === "canceled" || stopReason === "cancelled") {
+    return "canceled";
+  }
+  return stopReason === "error" || message.errorMessage ? "failed" : "completed";
+}
 
 function lastAssistantStatus(
   messages: readonly OmpMessage[],
@@ -622,14 +633,14 @@ function lastAssistantStatus(
   for (let index = messages.length - 1; index >= startIndex; index -= 1) {
     const message = messages[index];
     if (message?.role !== "assistant") continue;
-    return message.stopReason === "error" || message.errorMessage ? "failed" : "completed";
+    return assistantTerminalOutcome(message);
   }
   return "unavailable";
 }
 
 function terminalOutcome(
   event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  turn: Pick<ActiveTurn, "completedMessageCount" | "lastCompletedAssistantFailed">,
+  turn: Pick<ActiveTurn, "completedMessageCount" | "lastCompletedAssistantOutcome">,
 ): AgentEndOutcome | undefined {
   const messages = event.messages;
   if (
@@ -637,14 +648,14 @@ function terminalOutcome(
     (event.messageCount === undefined || messages.length >= event.messageCount)
   ) {
     const status = lastAssistantStatus(messages);
-    return status === "failed" ? "failed" : "completed";
+    return status === "unavailable" ? "completed" : status;
   }
   if (event.messageCount === 0) return "completed";
   if (
-    turn.lastCompletedAssistantFailed !== undefined &&
+    turn.lastCompletedAssistantOutcome !== undefined &&
     (event.messageCount === undefined || turn.completedMessageCount >= event.messageCount)
   ) {
-    return turn.lastCompletedAssistantFailed ? "failed" : "completed";
+    return turn.lastCompletedAssistantOutcome;
   }
   return undefined;
 }
@@ -652,7 +663,13 @@ function terminalOutcome(
 function historyTerminalOutcome(
   messages: readonly OmpMessage[],
   declaredCount: number,
-  turn: Pick<ActiveTurn, "streamedMessageEntryIds" | "streamedMessageIdentityComplete">,
+  turn: Pick<
+    ActiveTurn,
+    | "streamedMessageEntryIds"
+    | "streamedMessageIdentityComplete"
+    | "lastCompletedAssistantOutcome"
+    | "lastCompletedAssistantEntryId"
+  >,
   retainedMessages: readonly OmpMessage[],
 ): AgentEndOutcome | undefined {
   if (
@@ -671,6 +688,13 @@ function historyTerminalOutcome(
       historyIndex += 1;
     }
     if (historyIndex >= messages.length) return undefined;
+    const correlated = messages[historyIndex];
+    if (
+      entryId === turn.lastCompletedAssistantEntryId &&
+      (correlated?.role !== "assistant" ||
+        assistantTerminalOutcome(correlated) !== turn.lastCompletedAssistantOutcome)
+    )
+      return undefined;
     historyIndex += 1;
   }
   historyIndex = startIndex;
@@ -683,25 +707,29 @@ function historyTerminalOutcome(
       historyIndex += 1;
     }
     if (historyIndex >= messages.length) return undefined;
+    const correlated = messages[historyIndex];
+    if (!correlated || correlated.role !== retained.role) return undefined;
+    if (
+      retained.role === "assistant" &&
+      correlated.role === "assistant" &&
+      assistantTerminalOutcome(retained) !== assistantTerminalOutcome(correlated)
+    )
+      return undefined;
     historyIndex += 1;
   }
   const status = lastAssistantStatus(messages, startIndex);
-  return status === "unavailable" ? "completed" : status;
+  return status === "unavailable" ? undefined : status;
 }
 
 function unknownTerminalOutcomeError(
   event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  turn: Pick<ActiveTurn, "completedMessageCount" | "lastCompletedAssistantFailed">,
+  turn: Pick<ActiveTurn, "completedMessageCount" | "lastCompletedAssistantOutcome">,
 ): string {
   const retainedMessages = event.messages?.length ?? 0;
   const retainedStatus = event.messages ? lastAssistantStatus(event.messages) : "unavailable";
   const lastStatus =
     retainedStatus === "unavailable"
-      ? turn.lastCompletedAssistantFailed === undefined
-        ? "unavailable"
-        : turn.lastCompletedAssistantFailed
-          ? "failed"
-          : "completed"
+      ? (turn.lastCompletedAssistantOutcome ?? "unavailable")
       : retainedStatus;
   return (
     "OMP agent_end omitted terminal messages; outcome is unknown " +
@@ -3062,8 +3090,8 @@ export class OmpProviderSession {
       }
       turn.completedMessageCount += 1;
       if (event.message.role === "assistant") {
-        turn.lastCompletedAssistantFailed =
-          event.message.stopReason === "error" || !!event.message.errorMessage;
+        turn.lastCompletedAssistantOutcome = assistantTerminalOutcome(event.message);
+        turn.lastCompletedAssistantEntryId = entryId;
       }
     }
     if (event.type === "prompt_error") {
@@ -4361,12 +4389,7 @@ export class OmpProviderSession {
     providerIdle = false,
   ): Promise<void> {
     if (turn.terminal || this.activeTurn !== turn) return;
-    if (turn.interrupted) {
-      this.subsessions?.terminalize("canceled");
-      await this.finishTurn(turn, "canceled");
-      return;
-    }
-    let outcome = terminalOutcome(event, turn);
+    let outcome = turn.interrupted ? ("canceled" as const) : terminalOutcome(event, turn);
     if (!outcome && providerIdle && event.messageCount !== undefined) {
       const runtime = this.runtime;
       const history = await this.readRuntimeHistoryWithTimeout(runtime);
@@ -4375,12 +4398,32 @@ export class OmpProviderSession {
         history.length <= MAX_REPLAY_MESSAGES &&
         this.isCurrentRuntime(runtime, turn.generation) &&
         !turn.terminal &&
+        !turn.interrupted &&
         this.activeTurn === turn
       ) {
-        outcome = historyTerminalOutcome(history, event.messageCount, turn, event.messages ?? []);
+        const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
+        if (
+          turn.terminal ||
+          this.activeTurn !== turn ||
+          !this.isCurrentRuntime(runtime, turn.generation)
+        )
+          return;
+        if (!turn.interrupted && state && (state.isStreaming || state.isCompacting)) {
+          turn.agentEndPending = false;
+          turn.deferredAgentEnd = undefined;
+          return;
+        }
+        if (state && !state.isStreaming && !state.isCompacting) {
+          outcome = historyTerminalOutcome(history, event.messageCount, turn, event.messages ?? []);
+        }
       }
     }
     if (turn.terminal || this.activeTurn !== turn) return;
+    if (turn.interrupted || outcome === "canceled") {
+      this.subsessions?.terminalize("canceled");
+      await this.finishTurn(turn, "canceled");
+      return;
+    }
     if (outcome === "completed") {
       await this.finishTurn(turn, "completed");
       return;
