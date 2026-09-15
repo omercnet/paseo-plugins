@@ -7723,20 +7723,23 @@ describe("OMP direct provider", () => {
     ];
     const firstTurnId = turnIdFrom(await startPrompt(connection, events, "owner-1", "repeat"));
     session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
-    await events.waitFor(
-      (event) =>
-        event.type === "timeline.item" &&
-        event.item.type === "user_message" &&
-        event.item.clientMessageId === "owner-1",
-    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === "owner-1",
+      ),
+    ).toEqual([]);
     await finishTurn(events, session, firstTurnId);
 
     session.branchMessages = [
       { entryId: "entry-owned-1", text: "repeat" },
       { entryId: "entry-surplus", text: "repeat" },
-      { entryId: "entry-owned-2", text: "repeat" },
     ];
     const secondTurnId = turnIdFrom(await startPrompt(connection, events, "owner-2", "repeat"));
+    session.branchMessages.push({ entryId: "entry-owned-2", text: "repeat" });
     session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
     await events.waitFor(
       (event) =>
@@ -7766,7 +7769,6 @@ describe("OMP direct provider", () => {
         text: "repeat",
       },
     ]);
-    expect(session.branchMessageLookups).toBe(2);
     await connection.close();
   });
 
@@ -10721,7 +10723,6 @@ describe("OMP direct provider", () => {
       const secondTurn = turnIdFrom(
         await startPrompt(connection, events, "terminal-owner-b", "second"),
       );
-      const stateLookups = session.stateLookups;
       session.emit({ type: "turn_end" });
       session.emit({
         type: "message_end",
@@ -10737,7 +10738,6 @@ describe("OMP direct provider", () => {
             event.state !== "started",
         ),
       ).toHaveLength(0);
-      expect(session.stateLookups).toBe(stateLookups + 1);
 
       session.emit({ type: "prompt_result", id: "rpc-prompt-2", agentInvoked: true });
       session.emit({
@@ -10753,132 +10753,349 @@ describe("OMP direct provider", () => {
       await connection.close();
     }
   });
-  test("correlates a second OMP 18.2 turn without positive prompt or live entry IDs", async () => {
+
+  test("does not finish from idle state sampled before branch ownership", async () => {
     const { connection, events, runtime } = await createHarness();
+    onTestFinished(() => connection.close());
     await openSession(connection, events);
     const session = sessionAt(runtime);
-    session.promptAgentInvoked = undefined;
-
-    const firstTurn = turnIdFrom(await startPrompt(connection, events, "omp-18-2-first", "first"));
-    session.branchMessages = [{ entryId: "entry-first", text: "first" }];
-    session.emit({ type: "message_end", message: { role: "user", content: "first" } });
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === firstTurn && event.state === "completed",
-    );
-
-    const secondTurn = turnIdFrom(
-      await startPrompt(connection, events, "omp-18-2-second", "second"),
-    );
-    session.emit({ type: "message_end", message: { role: "user", content: "second" } });
-    await Promise.resolve();
-    await Promise.resolve();
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "branch-race-a", "first"));
     session.emit({
-      type: "agent_end",
-      messages: [{ role: "assistant", content: "stale first response" }],
-      isTerminal: true,
+      type: "message_end",
+      message: { role: "user", content: "first", entryId: "branch-race-first" },
     });
-    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    await finishTurn(events, session, firstTurn);
+
+    session.promptAgentInvoked = undefined;
+    const secondTurn = turnIdFrom(await startPrompt(connection, events, "branch-race-b", "second"));
+    const branch = Promise.withResolvers<void>();
+    session.getBranchMessages = async () => {
+      await branch.promise;
+      return session.branchMessages;
+    };
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    session.isStreaming = true;
+    session.branchMessages = [{ entryId: "branch-race-second", text: "second" }];
+    branch.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
     expect(
-      events.filter(
+      events.filter((event) => event.type === "session.turn" && event.turnId === secondTurn),
+    ).toEqual([expect.objectContaining({ state: "started" })]);
+    session.isStreaming = false;
+    establishTerminalOwnership(session);
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    expect(
+      await events.waitFor(
         (event) =>
           event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
       ),
-    ).toHaveLength(0);
-
-    session.branchMessages.push({ entryId: "entry-second", text: "second" });
-    session.emit({
-      type: "agent_end",
-      messages: [{ role: "assistant", content: "second response" }],
-      isTerminal: true,
-    });
-    const terminal = await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
-    );
-
-    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
-    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
-    expect(
-      events.flatMap((event) =>
-        event.type === "timeline.item" &&
-        event.item.type === "user_message" &&
-        event.item.clientMessageId === "omp-18-2-second"
-          ? [event.item]
-          : [],
-      ),
-    ).toHaveLength(1);
-    await connection.close();
+    ).toEqual(expect.objectContaining({ state: "completed" }));
   });
 
-  test("correlates repeated second turns after a resumed session watermark", async () => {
-    const runtime = new FakeOmpRuntime();
-    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
-    runtime.nextHistoryMessages = [
-      { role: "user", content: "repeat" },
-      { role: "assistant", responseId: "history-response", content: "old response" },
-    ];
-    runtime.nextBranchMessages = [{ entryId: "entry-history", text: "repeat" }];
-    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
-      "prompt.message",
-      "session.persistence",
-    ]);
-    await connection.send({
-      type: "session.open",
-      requestId: "resume-ownership",
-      sessionId: "resumed-ownership",
-      config: {
-        cwd: "/repo",
-        env: {},
-        mcpServers: {},
-        model: MODEL_PUBLIC_ID,
-        mode: "full",
-        thinkingOption: "medium",
-        settings: {},
-        persist: true,
-      },
-      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
-      history: "replay",
-    });
-    await events.waitFor(
-      (event) => event.type === "session.ready" && event.requestId === "resume-ownership",
-    );
+  test("fails closed when branch ownership hangs without a live user echo", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
     const session = sessionAt(runtime);
-    session.promptAgentInvoked = undefined;
-
-    const firstTurn = turnIdFrom(
-      await startPrompt(connection, events, "resumed-first", "warm up", "resumed-ownership"),
-    );
-    session.branchMessages.push({ entryId: "entry-warm-up", text: "warm up" });
-    session.emit({ type: "message_end", message: { role: "user", content: "warm up" } });
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
-    await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === firstTurn && event.state === "completed",
-    );
-
-    const secondTurn = turnIdFrom(
-      await startPrompt(connection, events, "resumed-second", "repeat", "resumed-ownership"),
-    );
-    session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
-    await Promise.resolve();
-    await Promise.resolve();
-    session.branchMessages.push({ entryId: "entry-current", text: "repeat" });
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "branch-hang-a", "first"));
     session.emit({
-      type: "agent_end",
-      messages: [{ role: "assistant", content: "new response" }],
-      isTerminal: true,
+      type: "message_end",
+      message: { role: "user", content: "first", entryId: "branch-hang-first" },
     });
+    await finishTurn(events, session, firstTurn);
+
+    session.promptAgentInvoked = undefined;
+    const secondTurn = turnIdFrom(await startPrompt(connection, events, "branch-hang-b", "second"));
+    const branch = Promise.withResolvers<Array<{ entryId: string; text: string }>>();
+    session.getBranchMessages = () => branch.promise;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await scheduler.flush(2_000);
+    await scheduler.flush(5_000);
     const terminal = await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
     );
+    branch.resolve([{ entryId: "branch-hang-second", text: "second" }]);
 
-    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
-    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
-    await connection.close();
+    expect(terminal).toEqual(expect.objectContaining({ state: "failed" }));
+    expect(session.closes).toBe(1);
   });
+
+  test("rejects ambiguous branch ownership for repeated identical prompts", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(
+      await startPrompt(connection, events, "branch-ambiguous-a", "repeat"),
+    );
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "repeat", entryId: "branch-ambiguous-first" },
+    });
+    await finishTurn(events, session, firstTurn);
+
+    session.promptAgentInvoked = undefined;
+    const secondTurn = turnIdFrom(
+      await startPrompt(connection, events, "branch-ambiguous-b", "repeat"),
+    );
+    session.branchMessages = [
+      { entryId: "branch-ambiguous-first", text: "repeat" },
+      { entryId: "branch-ambiguous-unknown", text: "repeat" },
+      { entryId: "branch-ambiguous-second", text: "repeat" },
+    ];
+    session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await scheduler.flush(2_000);
+
+    expect(
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      ),
+    ).toEqual(expect.objectContaining({ state: "failed" }));
+  });
+  test.each([false, true])(
+    "does not let branch acceptance authorize a stale terminal (live echo: %s)",
+    async (liveEcho) => {
+      const { connection, events, runtime } = await createHarness();
+      onTestFinished(() => connection.close());
+      await openSession(connection, events);
+      const session = sessionAt(runtime);
+      session.promptAgentInvoked = undefined;
+      const firstTurn = turnIdFrom(
+        await startPrompt(connection, events, "omp-18-2-first", "repeat"),
+      );
+      session.branchMessages = [{ entryId: "entry-first", text: "repeat" }];
+      session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+      await finishTurn(events, session, firstTurn);
+
+      const secondTurn = turnIdFrom(
+        await startPrompt(connection, events, "omp-18-2-second", "repeat"),
+      );
+      session.branchMessages.push({ entryId: "entry-second", text: "repeat" });
+      session.emit({ type: "agent_start" });
+      if (liveEcho)
+        session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+      session.emit({ type: "prompt_result", id: "rpc-prompt-2", agentInvoked: false });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      session.emit({
+        type: "agent_end",
+        messages: [{ role: "assistant", content: "old error", stopReason: "error" }],
+        isTerminal: true,
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(
+        events.filter((event) => event.type === "session.turn" && event.turnId === secondTurn),
+      ).toEqual([expect.objectContaining({ state: "started" })]);
+
+      expect(await finishTurn(events, session, secondTurn)).toEqual(
+        expect.objectContaining({ state: "completed" }),
+      );
+      expect(
+        events.flatMap((event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === "omp-18-2-second"
+            ? [event.item]
+            : [],
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  test("does not authorize an in-flight stale terminal with a later prompt result", async () => {
+    const { connection, events, runtime } = await createHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    await finishTurn(
+      events,
+      session,
+      turnIdFrom(await startPrompt(connection, events, "inflight-a", "first")),
+    );
+    const turnId = turnIdFrom(await startPrompt(connection, events, "inflight-b", "second"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const state = Promise.withResolvers<void>();
+    session.stateGate = state.promise;
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    establishTerminalOwnership(session);
+    state.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(
+      events.filter((event) => event.type === "session.turn" && event.turnId === turnId),
+    ).toEqual([expect.objectContaining({ state: "started" })]);
+    expect(await finishTurn(events, session, turnId)).toEqual(
+      expect.objectContaining({ state: "completed" }),
+    );
+  });
+
+  test.each([
+    "unavailable",
+    "too many entries",
+    "too many bytes",
+    "duplicate IDs",
+    "different text",
+  ])("fails closed on %s branch history", async (history) => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "bounded-a", "first"));
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "first", entryId: "bounded-first" },
+    });
+    await finishTurn(events, session, firstTurn);
+    session.promptAgentInvoked = undefined;
+    const turnId = turnIdFrom(await startPrompt(connection, events, "bounded-b", "second"));
+    session.branchMessages = [{ entryId: "bounded-second", text: "second" }];
+    if (history === "unavailable") session.branchMessagesError = new Error("unavailable");
+    if (history === "too many entries")
+      session.branchMessages.push(
+        ...Array.from({ length: 1_024 }, (_, index) => ({
+          entryId: `bounded-${index}`,
+          text: "other",
+        })),
+      );
+    if (history === "too many bytes")
+      session.branchMessages.push({ entryId: "oversized", text: "x".repeat(4 * 1024 * 1024) });
+    if (history === "duplicate IDs")
+      session.branchMessages.push({ entryId: "bounded-second", text: "other" });
+    if (history === "different text")
+      session.branchMessages[0] = { entryId: "bounded-second", text: "second " };
+    session.emit({ type: "message_end", message: { role: "user", content: "second" } });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === "bounded-b",
+      ),
+    ).toEqual([]);
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await scheduler.flush(2_000);
+    expect(
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual(expect.objectContaining({ state: "failed" }));
+  });
+
+  test.each(["missing IDs", "evicted IDs", "compacted context"])(
+    "rebuilds the resumed branch watermark with %s",
+    async (history) => {
+      const runtime = new FakeOmpRuntime();
+      runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+      runtime.nextHistoryMessages = [
+        { role: "user", content: "repeat" },
+        { role: "assistant", responseId: "history-response", content: "old response" },
+      ];
+      if (history === "evicted IDs") {
+        runtime.nextHistoryMessages = [
+          { role: "user", content: "repeat", entryId: "entry-history" },
+          ...Array.from(
+            { length: 1_024 },
+            (_, index): OmpMessage => ({
+              role: "assistant",
+              content: "old response",
+              entryId: `old-assistant-${index}`,
+            }),
+          ),
+        ];
+      } else if (history === "compacted context") {
+        runtime.nextHistoryMessages = [{ role: "assistant", content: "summary" }];
+      }
+      runtime.nextBranchMessages = [{ entryId: "entry-history", text: "repeat" }];
+      const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+        "prompt.message",
+        "session.persistence",
+      ]);
+      onTestFinished(() => connection.close());
+      await connection.send({
+        type: "session.open",
+        requestId: "resume-ownership",
+        sessionId: "resumed-ownership",
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          model: MODEL_PUBLIC_ID,
+          mode: "full",
+          thinkingOption: "medium",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+      await events.waitFor(
+        (event) => event.type === "session.ready" && event.requestId === "resume-ownership",
+      );
+      const session = sessionAt(runtime);
+      session.promptAgentInvoked = undefined;
+
+      const firstTurn = turnIdFrom(
+        await startPrompt(connection, events, "resumed-first", "warm up", "resumed-ownership"),
+      );
+      session.branchMessages.push({ entryId: "entry-warm-up", text: "warm up" });
+      session.emit({
+        type: "message_end",
+        message: { role: "user", content: "warm up", entryId: "entry-warm-up" },
+      });
+      session.emit({ type: "agent_end", messages: [], isTerminal: true });
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === firstTurn &&
+          event.state === "completed",
+      );
+
+      const secondTurn = turnIdFrom(
+        await startPrompt(connection, events, "resumed-second", "repeat", "resumed-ownership"),
+      );
+      session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "timeline.item" &&
+            event.item.type === "user_message" &&
+            event.item.clientMessageId === "resumed-second",
+        ),
+      ).toEqual([]);
+      session.branchMessages.push({ entryId: "entry-current", text: "repeat" });
+      session.emit({ type: "message_end", message: { role: "user", content: "repeat" } });
+      await events.waitFor(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === "resumed-second",
+      );
+      establishTerminalOwnership(session);
+      session.emit({
+        type: "agent_end",
+        messages: [{ role: "assistant", content: "new response" }],
+        isTerminal: true,
+      });
+      const terminal = await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      );
+
+      expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+      expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+      await connection.close();
+    },
+  );
 
   test("grants terminal ownership to a buffered result confirmed by the prompt acknowledgement", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();

@@ -741,6 +741,7 @@ export class OmpProviderSession {
   private readonly emittedEntryIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
   private readonly seenEntryIds = new BoundedStringSet(MAX_TRACKED_ENTRY_IDS);
   private branchWatermarkValid = true;
+  private readonly branchEntryIds = new Set<string>();
   private readonly unclaimedBranchEntries: Array<{ entryId: string; text: string }> = [];
   private readonly scheduler: OmpTimelineScheduler;
   private readonly dataFilter: OmpPublicDataSerializer;
@@ -1423,10 +1424,8 @@ export class OmpProviderSession {
       if (messages.length > MAX_REPLAY_MESSAGES) {
         throw new OmpPublicError("OMP session history exceeds replay limits");
       }
-      this.unclaimedBranchEntries.length = 0;
-      this.branchWatermarkValid = messages.every(
-        (message) => message.role !== "user" || nativeEntryId(message) !== undefined,
-      );
+      // Replay is model context, not necessarily the complete persisted branching history.
+      this.quarantineBranchEntries();
       for (const message of messages) {
         replay.signal.throwIfAborted();
         const entryId = nativeEntryId(message);
@@ -3073,6 +3072,16 @@ export class OmpProviderSession {
       turn.awaitingPermissionEvidence = false;
     }
     if (event.type === "agent_end") {
+      if (event.isTerminal === false) return;
+      if (
+        !turn.interrupted &&
+        turn.terminalOwnershipRequired &&
+        !turn.terminalOwnershipEvidence &&
+        !(turn.replayingBufferedEvents && turn.bufferedTerminalOwnershipEvidence)
+      ) {
+        this.scheduleTerminalOwnershipTimeout(turn);
+        return;
+      }
       const hasAssistantEvidence =
         event.messages?.some((message) => message.role === "assistant") ?? false;
       if (turn.awaitingPermissionEvidence && !hasAssistantEvidence) {
@@ -3080,7 +3089,6 @@ export class OmpProviderSession {
         return;
       }
       if (hasAssistantEvidence) turn.awaitingPermissionEvidence = false;
-      if (event.isTerminal === false) return;
       if (turn.terminalizing) {
         turn.deferredAgentEnd = event;
         return;
@@ -3169,9 +3177,9 @@ export class OmpProviderSession {
         pending.bufferedEchoes.push(...turn.userEchoes.splice(0));
         return;
       }
-      let resolvedId = entryId ?? this.claimUnclaimedBranchEntry(pending.text);
+      let resolvedId = entryId ?? this.claimUnclaimedBranchEntry(turn, pending.text);
       if (!resolvedId && (await this.refreshBranchEntries(turn, pending))) {
-        resolvedId = this.claimUnclaimedBranchEntry(pending.text);
+        resolvedId = this.claimUnclaimedBranchEntry(turn, pending.text);
       }
       if (
         this.closed ||
@@ -3201,19 +3209,29 @@ export class OmpProviderSession {
       ) {
         return false;
       }
-      if (retainedBytes(messages, MAX_UNCLAIMED_BRANCH_BYTES) === Number.POSITIVE_INFINITY) {
+      if (
+        messages.length > MAX_UNCLAIMED_BRANCH_ENTRIES ||
+        retainedBytes(messages, MAX_UNCLAIMED_BRANCH_BYTES) === Number.POSITIVE_INFINITY
+      ) {
         this.quarantineBranchEntries();
         return false;
       }
       const unseen: Array<{ entryId: string; text: string }> = [];
+      const snapshotIds = new Set<string>();
       for (const message of messages) {
-        if (!this.seenEntryIds.has(message.entryId)) unseen.push(message);
+        if (snapshotIds.has(message.entryId)) {
+          this.quarantineBranchEntries();
+          return false;
+        }
+        snapshotIds.add(message.entryId);
+        if (!this.branchEntryIds.has(message.entryId)) unseen.push(message);
       }
       if (!this.branchWatermarkValid) {
         this.unclaimedBranchEntries.length = 0;
         this.branchWatermarkValid = true;
       } else if (
         unseen.length <= MAX_UNCLAIMED_BRANCH_ENTRIES - this.unclaimedBranchEntries.length &&
+        this.branchEntryIds.size + unseen.length <= MAX_UNCLAIMED_BRANCH_ENTRIES &&
         retainedBytes(this.unclaimedBranchEntries, MAX_UNCLAIMED_BRANCH_BYTES) +
           retainedBytes(unseen, MAX_UNCLAIMED_BRANCH_BYTES) <=
           MAX_UNCLAIMED_BRANCH_BYTES
@@ -3221,8 +3239,12 @@ export class OmpProviderSession {
         this.unclaimedBranchEntries.push(...unseen);
       } else {
         this.quarantineBranchEntries();
+        return false;
       }
-      for (const message of messages) this.seenEntryIds.add(message.entryId);
+      for (const message of messages) {
+        this.branchEntryIds.add(message.entryId);
+        this.seenEntryIds.add(message.entryId);
+      }
       return true;
     } catch {
       if (
@@ -3239,14 +3261,25 @@ export class OmpProviderSession {
     }
   }
 
-  private claimUnclaimedBranchEntry(text: string): string | undefined {
+  private claimUnclaimedBranchEntry(turn: ActiveTurn, text: string): string | undefined {
     const index = this.unclaimedBranchEntries.findIndex((entry) => entry.text === text);
     if (index < 0) return undefined;
+    let matches = 0;
+    let expected = 0;
+    for (const entry of this.unclaimedBranchEntries) if (entry.text === text) matches += 1;
+    for (const pending of turn.pendingUsers) {
+      if (pending.accepted && pending.text === text) expected += 1;
+    }
+    if (matches > expected) {
+      this.quarantineBranchEntries();
+      return undefined;
+    }
     return this.unclaimedBranchEntries.splice(index, 1)[0]?.entryId;
   }
 
   private quarantineBranchEntries(): void {
     this.unclaimedBranchEntries.length = 0;
+    this.branchEntryIds.clear();
     this.branchWatermarkValid = false;
   }
 
@@ -4030,7 +4063,12 @@ export class OmpProviderSession {
       if (this.emittedEntryIds.has(entryId)) return;
       this.seenEntryIds.add(entryId);
       this.emittedEntryIds.add(entryId);
-      this.markTerminalOwnershipEvidence(turn);
+      if (!turn.terminalOwnershipRequired) this.markTerminalOwnershipEvidence(turn);
+      if (this.branchWatermarkValid && !this.branchEntryIds.has(entryId)) {
+        if (this.branchEntryIds.size >= MAX_UNCLAIMED_BRANCH_ENTRIES)
+          this.quarantineBranchEntries();
+        else this.branchEntryIds.add(entryId);
+      }
       const unclaimedIndex = this.unclaimedBranchEntries.findIndex(
         (entry) => entry.entryId === entryId,
       );
@@ -4046,18 +4084,6 @@ export class OmpProviderSession {
     turn.localOnlyEligible = false;
     this.cancelLocalOnlyCompletion(turn);
     if (!turn.awaitingPermissionEvidence) turn.deferredAgentEnd = undefined;
-  }
-
-  // OMP 18.2 emits no positive result for an ordinary prompt. Accept an otherwise unowned
-  // terminal only when the bounded branch snapshot proves this turn added its exact user prompt.
-  private async confirmTerminalOwnershipFromBranch(turn: ActiveTurn): Promise<void> {
-    if (turn.terminalOwnershipEvidence || !turn.terminalOwnershipRequired) return;
-    const pending = turn.pendingUsers[0];
-    if (!pending?.accepted || !(await this.refreshBranchEntries(turn, pending))) return;
-    const entryId = this.claimUnclaimedBranchEntry(pending.text);
-    if (!entryId) return;
-    turn.pendingUsers.shift();
-    this.publishCorrelatedUser(turn, pending, entryId);
   }
 
   private markTerminalOwnershipEvidence(turn: ActiveTurn): void {
@@ -4156,7 +4182,10 @@ export class OmpProviderSession {
     turn.agentEndDeadlineTimer = this.scheduler.set(() => {
       turn.agentEndDeadlineTimer = undefined;
       if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
-      if (turn.userEchoObserved) {
+      if (
+        turn.userEchoObserved ||
+        (turn.terminalOwnershipRequired && !turn.terminalOwnershipEvidence)
+      ) {
         this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
       } else {
         void this.completeAgentEnd(turn, event);
@@ -4234,6 +4263,9 @@ export class OmpProviderSession {
     turn: ActiveTurn,
     event: Extract<OmpRpcEvent, { type: "agent_end" }>,
   ): Promise<void> {
+    // Evidence arriving during this check cannot authorize an older terminal frame.
+    const ownershipObserved =
+      turn.terminalOwnershipEvidence || turn.bufferedTerminalOwnershipEvidence;
     await Promise.allSettled(turn.userLookups);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
     while (turn.userEchoes.length > 0) {
@@ -4265,11 +4297,10 @@ export class OmpProviderSession {
         turn.deferredAgentEnd = undefined;
         return;
       }
-      if (!turn.terminalOwnershipEvidence && turn.terminalOwnershipRequired) {
-        await this.confirmTerminalOwnershipFromBranch(turn);
-        if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
-      }
-      if (!turn.terminalOwnershipEvidence && turn.terminalOwnershipRequired) {
+      if (
+        turn.terminalOwnershipRequired &&
+        (!ownershipObserved || !turn.terminalOwnershipEvidence)
+      ) {
         turn.agentEndPending = false;
         turn.terminalizing = false;
         turn.deferredAgentEnd = undefined;
