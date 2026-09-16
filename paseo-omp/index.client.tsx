@@ -273,7 +273,7 @@ export default function contribute(client: PluginClientContext) {
       entry.sessions = undefined;
     }
 
-    if (settings.quota && isOmpProvider(entry.provider)) {
+    if (settings.quota) {
       entry.quota ??= client.addComposerPill({
         id: "quota",
         workspaceId: entry.workspaceId,
