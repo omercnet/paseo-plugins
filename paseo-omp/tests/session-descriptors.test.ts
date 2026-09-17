@@ -211,6 +211,7 @@ describe("OMP session descriptor discovery", () => {
 
   test("reads the active root transcript branch without dropping failed tool turns", async () => {
     const root = await temporaryRoot();
+    const cwd = root;
     const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
     const assistantContent = [
       ...Array.from({ length: 64 }, (_, index) => ({ type: "text", text: `part-${index}` })),
@@ -219,7 +220,7 @@ describe("OMP session descriptor discovery", () => {
     await writeFile(
       sessionFile,
       `${[
-        { type: "session", version: 3, id: SESSION_ID, cwd: "/repo" },
+        { type: "session", version: 3, id: SESSION_ID, cwd },
         {
           type: "message",
           id: "user-1",
@@ -254,9 +255,7 @@ describe("OMP session descriptor discovery", () => {
         .join("\n")}\n`,
     );
 
-    await expect(
-      readOmpPersistedSessionTranscript(sessionFile, SESSION_ID, "/repo"),
-    ).resolves.toEqual({
+    await expect(readOmpPersistedSessionTranscript(sessionFile, SESSION_ID, cwd)).resolves.toEqual({
       sessionFile: await realpath(sessionFile),
       nativeSessionId: SESSION_ID,
       byteLength: expect.any(Number),
@@ -275,14 +274,14 @@ describe("OMP session descriptor discovery", () => {
         }),
       ],
     });
-    await expect(readOmpPersistedSessionTranscript(sessionFile, OTHER_ID, "/repo")).rejects.toThrow(
+    await expect(readOmpPersistedSessionTranscript(sessionFile, OTHER_ID, cwd)).rejects.toThrow(
       "identity does not match",
     );
     const linkedSession = join(root, "linked.jsonl");
     await symlink(sessionFile, linkedSession);
-    await expect(
-      readOmpPersistedSessionTranscript(linkedSession, SESSION_ID, "/repo"),
-    ).rejects.toThrow(/could not be opened|failed ownership validation/u);
+    await expect(readOmpPersistedSessionTranscript(linkedSession, SESSION_ID, cwd)).rejects.toThrow(
+      /could not be opened|failed ownership validation/u,
+    );
   });
 
   test("reads only canonically owned child transcripts", async () => {
