@@ -1,5 +1,5 @@
 import { constants, type Dir } from "node:fs";
-import { type FileHandle, open, opendir, realpath } from "node:fs/promises";
+import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { ompSessionDir } from "../paths";
@@ -399,11 +399,18 @@ export async function readOmpPersistedSessionTranscript(
     throw new Error("OMP session transcript could not be opened");
   }
   try {
-    const [stat, canonicalFile] = await Promise.all([handle.stat(), realpath(expectedFile)]);
+    const [stat, pathStat, canonicalFile] = await Promise.all([
+      handle.stat(),
+      lstat(expectedFile),
+      realpath(expectedFile),
+    ]);
     if (
       !stat.isFile() ||
-      stat.size > MAX_SESSION_TRANSCRIPT_BYTES ||
-      canonicalFile !== expectedFile
+      !pathStat.isFile() ||
+      pathStat.isSymbolicLink() ||
+      stat.dev !== pathStat.dev ||
+      stat.ino !== pathStat.ino ||
+      stat.size > MAX_SESSION_TRANSCRIPT_BYTES
     ) {
       throw new Error("OMP session transcript failed ownership validation");
     }
