@@ -16,6 +16,8 @@ const SCAN_YIELD_INTERVAL = 128;
 const MAX_LIST_RESULTS = 500;
 const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
 const MAX_CHILD_TRANSCRIPT_MESSAGES = 100_000;
+const MAX_SESSION_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+const MAX_SESSION_TRANSCRIPT_ENTRIES = 200_000;
 const CHILD_TRANSCRIPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u;
 const NATIVE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/u;
 
@@ -30,6 +32,13 @@ export interface OmpSessionDescriptor {
 }
 
 export interface OmpPersistedSubagentTranscript {
+  sessionFile: string;
+  nativeSessionId: string;
+  byteLength: number;
+  messages: unknown[];
+}
+
+export interface OmpPersistedSessionTranscript {
   sessionFile: string;
   nativeSessionId: string;
   byteLength: number;
@@ -334,6 +343,141 @@ export async function listOmpSessionDescriptors(
     return !requestedId || matches.length < 2;
   });
   return matches;
+}
+
+interface PersistedTranscriptNode {
+  parentId: string | null;
+  message?: unknown;
+}
+
+function persistedTranscriptMessage(record: Record<string, unknown>, entryId: string): unknown {
+  if (record.type === "message") {
+    if (!record.message || typeof record.message !== "object" || Array.isArray(record.message))
+      return;
+    return { ...(record.message as Record<string, unknown>), entryId };
+  }
+  if (record.type !== "custom_message") return;
+  return {
+    role: "custom",
+    entryId,
+    customType: record.customType,
+    content: record.content,
+    display: record.display,
+    details: record.details,
+  };
+}
+
+/**
+ * Reads the active root-to-leaf display history from an already authorized native transcript.
+ * OMP's get_messages endpoint exposes model-safe context and deliberately removes failed turns,
+ * so persisted replay must use the journal to preserve user-visible assistant and tool history.
+ */
+export async function readOmpPersistedSessionTranscript(
+  sessionFile: string,
+  sessionId: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<OmpPersistedSessionTranscript> {
+  signal?.throwIfAborted();
+  const expectedSessionId = validateNativeSessionId(sessionId);
+  if (
+    !isAbsolute(sessionFile) ||
+    !sessionFile.endsWith(".jsonl") ||
+    sessionFile.includes("\0") ||
+    validatedCwd(cwd) !== cwd
+  ) {
+    throw new Error("Invalid OMP session transcript descriptor");
+  }
+  const expectedFile = resolve(sessionFile);
+  let handle: FileHandle;
+  try {
+    handle = await open(
+      expectedFile,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    throw new Error("OMP session transcript could not be opened");
+  }
+  try {
+    const [stat, canonicalFile] = await Promise.all([handle.stat(), realpath(expectedFile)]);
+    if (
+      !stat.isFile() ||
+      stat.size > MAX_SESSION_TRANSCRIPT_BYTES ||
+      canonicalFile !== expectedFile
+    ) {
+      throw new Error("OMP session transcript failed ownership validation");
+    }
+    const bytes = await handle.readFile();
+    signal?.throwIfAborted();
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const nodes = new Map<string, PersistedTranscriptNode>();
+    let nativeSessionId: string | undefined;
+    let leafId: string | undefined;
+    for (const line of text.split("\n")) {
+      signal?.throwIfAborted();
+      if (!line.trim()) continue;
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      if (record.type === "session") {
+        const candidateId = validateNativeSessionId(record.id);
+        if (candidateId !== expectedSessionId || validatedCwd(record.cwd) !== cwd) {
+          throw new Error("OMP session transcript identity does not match its descriptor");
+        }
+        nativeSessionId ??= candidateId;
+        if (nativeSessionId !== candidateId) {
+          throw new Error("OMP session transcript identity changed");
+        }
+        continue;
+      }
+      if (typeof record.id !== "string" || !CHILD_TRANSCRIPT_ID.test(record.id)) {
+        if (record.type === "message" || record.type === "custom_message") {
+          throw new Error("OMP session transcript contains an unlinked message");
+        }
+        continue;
+      }
+      const parentId = record.parentId;
+      if (
+        parentId !== null &&
+        (typeof parentId !== "string" || !CHILD_TRANSCRIPT_ID.test(parentId))
+      ) {
+        throw new Error("OMP session transcript contains an invalid parent identity");
+      }
+      if (nodes.size >= MAX_SESSION_TRANSCRIPT_ENTRIES) {
+        throw new Error("OMP session transcript exceeds entry limits");
+      }
+      if (nodes.has(record.id))
+        throw new Error("OMP session transcript contains duplicate entries");
+      nodes.set(record.id, {
+        parentId,
+        message: persistedTranscriptMessage(record, record.id),
+      });
+      leafId = record.id;
+    }
+    if (!nativeSessionId) throw new Error("OMP session transcript is missing session identity");
+
+    const messages: unknown[] = [];
+    const seen = new Set<string>();
+    let currentId = leafId;
+    while (currentId) {
+      if (seen.has(currentId)) throw new Error("OMP session transcript contains a parent cycle");
+      seen.add(currentId);
+      const node = nodes.get(currentId);
+      if (!node) throw new Error("OMP session transcript contains an unresolved parent");
+      if (node.message !== undefined) messages.push(node.message);
+      currentId = node.parentId ?? undefined;
+    }
+    messages.reverse();
+    if (messages.length > MAX_CHILD_TRANSCRIPT_MESSAGES) {
+      throw new Error("OMP session transcript exceeds message limits");
+    }
+    return { sessionFile: canonicalFile, nativeSessionId, byteLength: bytes.byteLength, messages };
+  } catch (error) {
+    if (error instanceof Error) throw error;
+    throw new Error("OMP session transcript could not be decoded");
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 export async function readOmpPersistedSubagentTranscript(

@@ -8,6 +8,7 @@ import {
   listOmpSessionDescriptors,
   type OmpSessionDescriptor,
   type OmpSessionListOptions,
+  readOmpPersistedSessionTranscript,
   readOmpPersistedSubagentTranscript,
   validateNativeSessionId,
 } from "./session-descriptors";
@@ -54,7 +55,9 @@ const MAX_PENDING_ONE_WAY_WRITES = 256;
 const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const MAX_LINE_PARTS = 4_096;
 const MAX_ARRAY_ITEMS = 512;
-const MAX_CONTENT_PARTS = 64;
+// Tool-intensive OMP turns legitimately exceed 64 blocks; transport byte/node budgets remain the
+// primary resource bounds.
+const MAX_CONTENT_PARTS = 4_096;
 const MAX_TODOS = 256;
 const MAX_ENV_ENTRIES = 256;
 const MAX_ENV_VALUE_LENGTH = 64 * 1024;
@@ -949,6 +952,12 @@ export interface OmpPersistedSubagentMessages {
   byteLength: number;
   messages: OmpMessage[];
 }
+export interface OmpPersistedSessionMessages {
+  sessionFile: string;
+  nativeSessionId: string;
+  byteLength: number;
+  messages: OmpMessage[];
+}
 
 export interface OmpStartOptions {
   cwd: string;
@@ -1026,6 +1035,12 @@ export interface OmpRuntime {
   readonly supportsPersistence: boolean;
   startSession(options: OmpStartOptions): Promise<OmpRuntimeSession>;
   listSessions(options: OmpSessionListOptions): Promise<OmpSessionDescriptor[]>;
+  readPersistedSessionTranscript?(options: {
+    sessionFile: string;
+    sessionId: string;
+    cwd: string;
+    signal?: AbortSignal;
+  }): Promise<OmpPersistedSessionMessages>;
   readPersistedSubagentTranscript(options: {
     parentSessionFile: string;
     childTranscriptId: string;
@@ -2691,6 +2706,23 @@ export class OmpRpcRuntime implements OmpRuntime {
       this.options.listSessions?.(options) ??
         listOmpSessionDescriptors(options, this.options.environment ?? process.env),
     );
+  }
+  async readPersistedSessionTranscript(options: {
+    sessionFile: string;
+    sessionId: string;
+    cwd: string;
+    signal?: AbortSignal;
+  }): Promise<OmpPersistedSessionMessages> {
+    const transcript = await readOmpPersistedSessionTranscript(
+      options.sessionFile,
+      options.sessionId,
+      options.cwd,
+      options.signal,
+    );
+    return {
+      ...transcript,
+      messages: z.array(OmpMessageSchema).max(100_000).parse(transcript.messages),
+    };
   }
   async readPersistedSubagentTranscript(options: {
     parentSessionFile: string;

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   listOmpSessionDescriptors,
+  readOmpPersistedSessionTranscript,
   readOmpPersistedSubagentTranscript,
 } from "../server/provider/session-descriptors";
 
@@ -206,6 +207,82 @@ describe("OMP session descriptor discovery", () => {
     const sessions = await scan;
     expect(sessions.length).toBeLessThanOrEqual(7);
     expect(new Set(sessions.map((session) => session.id)).size).toBe(sessions.length);
+  });
+
+  test("reads the active root transcript branch without dropping failed tool turns", async () => {
+    const root = await temporaryRoot();
+    const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
+    const assistantContent = [
+      ...Array.from({ length: 64 }, (_, index) => ({ type: "text", text: `part-${index}` })),
+      { type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
+    ];
+    await writeFile(
+      sessionFile,
+      `${[
+        { type: "session", version: 3, id: SESSION_ID, cwd: "/repo" },
+        {
+          type: "message",
+          id: "user-1",
+          parentId: null,
+          message: { role: "user", content: "prompt" },
+        },
+        {
+          type: "message",
+          id: "assistant-failed",
+          parentId: "user-1",
+          message: { role: "assistant", content: assistantContent, stopReason: "error" },
+        },
+        {
+          type: "message",
+          id: "sibling-assistant",
+          parentId: "user-1",
+          message: { role: "assistant", content: "inactive sibling" },
+        },
+        {
+          type: "message",
+          id: "tool-1",
+          parentId: "assistant-failed",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "read",
+            content: [{ type: "text", text: "completed result" }],
+          },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n")}\n`,
+    );
+
+    await expect(
+      readOmpPersistedSessionTranscript(sessionFile, SESSION_ID, "/repo"),
+    ).resolves.toEqual({
+      sessionFile: await realpath(sessionFile),
+      nativeSessionId: SESSION_ID,
+      byteLength: expect.any(Number),
+      messages: [
+        expect.objectContaining({ role: "user", entryId: "user-1", content: "prompt" }),
+        expect.objectContaining({
+          role: "assistant",
+          entryId: "assistant-failed",
+          content: assistantContent,
+          stopReason: "error",
+        }),
+        expect.objectContaining({
+          role: "toolResult",
+          entryId: "tool-1",
+          toolCallId: "call-1",
+        }),
+      ],
+    });
+    await expect(readOmpPersistedSessionTranscript(sessionFile, OTHER_ID, "/repo")).rejects.toThrow(
+      "identity does not match",
+    );
+    const linkedSession = join(root, "linked.jsonl");
+    await symlink(sessionFile, linkedSession);
+    await expect(
+      readOmpPersistedSessionTranscript(linkedSession, SESSION_ID, "/repo"),
+    ).rejects.toThrow(/could not be opened|failed ownership validation/u);
   });
 
   test("reads only canonically owned child transcripts", async () => {
