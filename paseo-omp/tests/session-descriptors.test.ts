@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import {
   listOmpSessionDescriptors,
   readOmpPersistedSessionTranscript,
@@ -212,11 +214,20 @@ describe("OMP session descriptor discovery", () => {
   test("reads the active root transcript branch without dropping failed tool turns", async () => {
     const root = await temporaryRoot();
     const cwd = root;
+    const blobDirectory = join(root, "blobs");
+    await mkdir(blobDirectory);
+    const imageBytes = Buffer.from("89504e470d0a1a0a", "hex");
+    const imageHash = createHash("sha256").update(imageBytes).digest("hex");
+    await writeFile(join(blobDirectory, imageHash), imageBytes);
     const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
     const assistantContent = [
       ...Array.from({ length: 64 }, (_, index) => ({ type: "text", text: `part-${index}` })),
+      { type: "image", data: `blob:sha256:${imageHash}`, mimeType: "image/png" },
       { type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
     ];
+    const hydratedAssistantContent = assistantContent.map((part) =>
+      part.type === "image" ? { ...part, data: imageBytes.toString("base64") } : part,
+    );
     await writeFile(
       sessionFile,
       `${[
@@ -255,7 +266,14 @@ describe("OMP session descriptor discovery", () => {
         .join("\n")}\n`,
     );
 
-    await expect(readOmpPersistedSessionTranscript(sessionFile, SESSION_ID, cwd)).resolves.toEqual({
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    await expect(
+      runtime.readPersistedSessionTranscript({
+        sessionFile,
+        sessionId: SESSION_ID,
+        cwd,
+      }),
+    ).resolves.toEqual({
       sessionFile: await realpath(sessionFile),
       nativeSessionId: SESSION_ID,
       byteLength: expect.any(Number),
@@ -264,7 +282,7 @@ describe("OMP session descriptor discovery", () => {
         expect.objectContaining({
           role: "assistant",
           entryId: "assistant-failed",
-          content: assistantContent,
+          content: hydratedAssistantContent,
           stopReason: "error",
         }),
         expect.objectContaining({

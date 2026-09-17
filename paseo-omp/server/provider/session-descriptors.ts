@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants, type Dir } from "node:fs";
 import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -18,6 +19,10 @@ const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
 const MAX_CHILD_TRANSCRIPT_MESSAGES = 100_000;
 const MAX_SESSION_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
 const MAX_SESSION_TRANSCRIPT_ENTRIES = 200_000;
+const MAX_SESSION_TRANSCRIPT_BLOB_BYTES = 16 * 1024 * 1024;
+const MAX_SESSION_IMAGE_BLOB_BYTES = 6 * 1024 * 1024;
+const FILE_READ_CHUNK_BYTES = 64 * 1024;
+const BLOB_REFERENCE = /^blob:sha256:([a-f0-9]{64})$/u;
 const CHILD_TRANSCRIPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u;
 const NATIVE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/u;
 
@@ -150,6 +155,128 @@ async function yieldToEventLoop(): Promise<void> {
   const result = Promise.withResolvers<void>();
   setImmediate(result.resolve);
   await result.promise;
+}
+async function readStableFile(
+  handle: FileHandle,
+  byteLength: number,
+  signal: AbortSignal | undefined,
+  changedMessage: string,
+): Promise<Buffer> {
+  const bytes = Buffer.allocUnsafe(byteLength);
+  let offset = 0;
+  while (offset < byteLength) {
+    signal?.throwIfAborted();
+    const { bytesRead } = await handle.read(
+      bytes,
+      offset,
+      Math.min(FILE_READ_CHUNK_BYTES, byteLength - offset),
+      offset,
+    );
+    if (bytesRead === 0) throw new Error(changedMessage);
+    offset += bytesRead;
+  }
+  signal?.throwIfAborted();
+  const extra = Buffer.allocUnsafe(1);
+  if ((await handle.read(extra, 0, 1, byteLength)).bytesRead !== 0) throw new Error(changedMessage);
+  return bytes;
+}
+
+async function hydrateBlobImageData(
+  data: string,
+  blobDirectory: string,
+  budget: { bytes: number },
+  signal?: AbortSignal,
+): Promise<string> {
+  const match = BLOB_REFERENCE.exec(data);
+  if (!match) return data;
+  const hash = match[1];
+  const blobFile = join(blobDirectory, hash);
+  let handle: FileHandle;
+  try {
+    handle = await open(
+      blobFile,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    throw new Error("OMP transcript image blob could not be opened");
+  }
+  try {
+    const [stat, pathStat] = await Promise.all([handle.stat(), lstat(blobFile)]);
+    if (
+      !stat.isFile() ||
+      !pathStat.isFile() ||
+      pathStat.isSymbolicLink() ||
+      stat.dev !== pathStat.dev ||
+      stat.ino !== pathStat.ino ||
+      stat.size > MAX_SESSION_IMAGE_BLOB_BYTES ||
+      budget.bytes + stat.size > MAX_SESSION_TRANSCRIPT_BLOB_BYTES
+    ) {
+      throw new Error("OMP transcript image blob failed ownership or size validation");
+    }
+    const bytes = await readStableFile(
+      handle,
+      stat.size,
+      signal,
+      "OMP transcript image blob changed while reading",
+    );
+    if (createHash("sha256").update(bytes).digest("hex") !== hash) {
+      throw new Error("OMP transcript image blob failed integrity validation");
+    }
+    budget.bytes += bytes.byteLength;
+    return bytes.toString("base64");
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+async function hydrateImageParts(
+  value: unknown,
+  blobDirectory: string,
+  budget: { bytes: number },
+  signal?: AbortSignal,
+): Promise<unknown> {
+  if (!Array.isArray(value)) return value;
+  let hydrated: unknown[] | undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const part = value[index];
+    if (
+      !part ||
+      typeof part !== "object" ||
+      Array.isArray(part) ||
+      !("type" in part) ||
+      part.type !== "image" ||
+      !("data" in part) ||
+      typeof part.data !== "string" ||
+      !BLOB_REFERENCE.test(part.data)
+    ) {
+      continue;
+    }
+    const data = await hydrateBlobImageData(part.data, blobDirectory, budget, signal);
+    hydrated ??= [...value];
+    hydrated[index] = { ...part, data };
+  }
+  return hydrated ?? value;
+}
+
+async function hydratePersistedMessageImages(
+  message: unknown,
+  blobDirectory: string | undefined,
+  budget: { bytes: number },
+  signal?: AbortSignal,
+): Promise<unknown> {
+  if (!blobDirectory || !message || typeof message !== "object" || Array.isArray(message)) {
+    return message;
+  }
+  const record = message as Record<string, unknown>;
+  let content = await hydrateImageParts(record.content, blobDirectory, budget, signal);
+  if (content && typeof content === "object" && !Array.isArray(content)) {
+    const contentRecord = content as Record<string, unknown>;
+    const nested = await hydrateImageParts(contentRecord.content, blobDirectory, budget, signal);
+    if (nested !== contentRecord.content) content = { ...contentRecord, content: nested };
+  }
+  const images = await hydrateImageParts(record.images, blobDirectory, budget, signal);
+  if (content === record.content && images === record.images) return message;
+  return { ...record, content, images };
 }
 
 async function parseDescriptor(
@@ -377,6 +504,7 @@ export async function readOmpPersistedSessionTranscript(
   sessionId: string,
   cwd: string,
   signal?: AbortSignal,
+  blobDirectory?: string,
 ): Promise<OmpPersistedSessionTranscript> {
   signal?.throwIfAborted();
   const expectedSessionId = validateNativeSessionId(sessionId);
@@ -414,14 +542,21 @@ export async function readOmpPersistedSessionTranscript(
     ) {
       throw new Error("OMP session transcript failed ownership validation");
     }
-    const bytes = await handle.readFile();
-    signal?.throwIfAborted();
+    const bytes = await readStableFile(
+      handle,
+      stat.size,
+      signal,
+      "OMP session transcript changed while reading",
+    );
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     const nodes = new Map<string, PersistedTranscriptNode>();
     let nativeSessionId: string | undefined;
     let leafId: string | undefined;
+    let recordsRead = 0;
     for (const line of text.split("\n")) {
       signal?.throwIfAborted();
+      recordsRead += 1;
+      if (recordsRead % 1_024 === 0) await yieldToEventLoop();
       if (!line.trim()) continue;
       const value: unknown = JSON.parse(line);
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
@@ -466,7 +601,13 @@ export async function readOmpPersistedSessionTranscript(
     const messages: unknown[] = [];
     const seen = new Set<string>();
     let currentId = leafId;
+    let pathEntriesRead = 0;
     while (currentId) {
+      pathEntriesRead += 1;
+      if (pathEntriesRead % 1_024 === 0) {
+        await yieldToEventLoop();
+        signal?.throwIfAborted();
+      }
       if (seen.has(currentId)) throw new Error("OMP session transcript contains a parent cycle");
       seen.add(currentId);
       const node = nodes.get(currentId);
@@ -478,7 +619,20 @@ export async function readOmpPersistedSessionTranscript(
     if (messages.length > MAX_CHILD_TRANSCRIPT_MESSAGES) {
       throw new Error("OMP session transcript exceeds message limits");
     }
-    return { sessionFile: canonicalFile, nativeSessionId, byteLength: bytes.byteLength, messages };
+    const hydratedMessages: unknown[] = [];
+    const blobBudget = { bytes: 0 };
+    for (const message of messages) {
+      signal?.throwIfAborted();
+      hydratedMessages.push(
+        await hydratePersistedMessageImages(message, blobDirectory, blobBudget, signal),
+      );
+    }
+    return {
+      sessionFile: canonicalFile,
+      nativeSessionId,
+      byteLength: bytes.byteLength,
+      messages: hydratedMessages,
+    };
   } catch (error) {
     if (error instanceof Error) throw error;
     throw new Error("OMP session transcript could not be decoded");

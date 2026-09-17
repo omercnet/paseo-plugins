@@ -2258,6 +2258,7 @@ describe("OMP direct provider", () => {
       arguments: { path: `file-${index}.txt` },
     }));
     const assistantContent = [
+      ...toolCalls.slice(0, 64),
       ...Array.from({ length: 6 }, (_, index) => ({
         type: "text" as const,
         text: `partial-${index}`,
@@ -2266,7 +2267,7 @@ describe("OMP direct provider", () => {
         type: "thinking" as const,
         thinking: `thought-${index}`,
       })),
-      ...toolCalls,
+      ...toolCalls.slice(64),
     ];
     runtime.persistedSessionMessages = {
       sessionFile: "/sessions/root.jsonl",
@@ -2333,9 +2334,20 @@ describe("OMP direct provider", () => {
         text: expect.stringContaining("partial-0"),
       }),
     );
-    expect(
-      timelineItems.filter((item) => item.type === "tool_call" && item.status === "completed"),
-    ).toHaveLength(79);
+    expect(timelineItems).toContainEqual(
+      expect.objectContaining({ type: "reasoning", text: expect.stringContaining("thought-21") }),
+    );
+    const completedTools = timelineItems.filter(
+      (item) => item.type === "tool_call" && item.status === "completed",
+    );
+    expect(completedTools).toHaveLength(79);
+    expect(completedTools).toEqual(
+      toolCalls.map((_, index) =>
+        expect.objectContaining({
+          detail: expect.objectContaining({ type: "read", filePath: `file-${index}.txt` }),
+        }),
+      ),
+    );
     await connection.close();
   });
 
@@ -6868,6 +6880,13 @@ describe("OMP direct provider", () => {
         message: { role: "assistant", content: [], responseId: "response-bounded" },
       });
     }
+    for (const contentIndex of [4_095, 4_096]) {
+      session.emit({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex, delta: `block-${contentIndex}` },
+        message: { role: "assistant", content: [], responseId: "response-bounded" },
+      });
+    }
     await scheduler.flush();
 
     expect(
@@ -6876,14 +6895,20 @@ describe("OMP direct provider", () => {
           ? [event.item]
           : [],
       ),
-    ).toEqual(
-      Array.from({ length: 64 }, (_, contentIndex) => ({
-        type: "assistant_message",
+    ).toEqual([
+      ...Array.from({ length: 65 }, (_, contentIndex) => ({
+        type: "assistant_message" as const,
         id: `omp:assistant:1:B7lAkpW__Trl:content:${contentIndex}:text`,
         messageId: "omp:assistant:1:B7lAkpW__Trl",
         text: `block-${contentIndex}`,
       })),
-    );
+      {
+        type: "assistant_message",
+        id: "omp:assistant:1:B7lAkpW__Trl:content:4095:text",
+        messageId: "omp:assistant:1:B7lAkpW__Trl",
+        text: "block-4095",
+      },
+    ]);
     await finishTurn(events, session, turnId);
     await connection.close();
   });

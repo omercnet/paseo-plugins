@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { ompDataDir } from "../paths";
 import { isValidImagePayload } from "./image";
 import { boundedJsonBytes, OmpCleanupFailure, OmpPublicError, utf8Bytes } from "./security";
 import {
@@ -57,7 +58,7 @@ const MAX_LINE_PARTS = 4_096;
 const MAX_ARRAY_ITEMS = 512;
 // Tool-intensive OMP turns legitimately exceed 64 blocks; transport byte/node budgets remain the
 // primary resource bounds.
-const MAX_CONTENT_PARTS = 4_096;
+export const OMP_MAX_CONTENT_PARTS = 4_096;
 const MAX_TODOS = 256;
 const MAX_ENV_ENTRIES = 256;
 const MAX_ENV_VALUE_LENGTH = 64 * 1024;
@@ -148,11 +149,11 @@ const OmpContentPartSchema = z
   });
 const OmpDisplayContentSchema = z.union([
   TEXT,
-  z.array(OmpContentPartSchema).max(MAX_CONTENT_PARTS),
+  z.array(OmpContentPartSchema).max(OMP_MAX_CONTENT_PARTS),
 ]);
 const OmpImageArraySchema = z
   .array(OmpContentPartSchema)
-  .max(MAX_CONTENT_PARTS)
+  .max(OMP_MAX_CONTENT_PARTS)
   .superRefine((parts, context) => {
     if (parts.some((part) => part.type !== "image")) {
       context.addIssue({ code: "custom", message: "invalid image collection" });
@@ -265,7 +266,7 @@ const OmpAssistantMessageEventSchema = z
       .number()
       .int()
       .nonnegative()
-      .max(MAX_CONTENT_PARTS - 1)
+      .max(OMP_MAX_CONTENT_PARTS - 1)
       .optional(),
     delta: TEXT.optional(),
     content: z
@@ -2718,6 +2719,7 @@ export class OmpRpcRuntime implements OmpRuntime {
       options.sessionId,
       options.cwd,
       options.signal,
+      join(ompDataDir(this.options.environment ?? process.env), "blobs"),
     );
     return {
       ...transcript,
