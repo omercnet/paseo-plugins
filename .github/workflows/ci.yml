@@ -25,8 +25,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Test affected plugin detection
-        run: node --test .github/scripts/detect-affected.test.mjs
+      - name: Test workflow scripts
+        run: node --test .github/scripts/*.test.mjs
       - name: Detect affected plugins
         id: affected
         env:
