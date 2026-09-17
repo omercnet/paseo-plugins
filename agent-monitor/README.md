@@ -58,15 +58,21 @@ Interrupting a turn is not part of `PaseoApi`, so archive is the only lifecycle 
 Requires a compatible Paseo 0.8.x release, including 0.8 prereleases. The manifest declares
 `requirements.paseo` as `^0.8.0`, and the development SDK is pinned to stable `0.8.0`.
 
-Install from the plugin's monorepo directory on the daemon host:
+Install the published package on the daemon host:
 
 ```bash
-paseo plugin add omercnet/paseo-plugins:agent-monitor
+paseo plugin install npm:@omercnet/paseo-agent-monitor
 paseo plugin update agent-monitor
 ```
 
-Git installs track the default branch and run no package manager; the plugin has no runtime
-dependencies. For an air-gapped host, clone or download the monorepo and install this directory:
+Alternatively, install from Git. Git installs track the default branch and run no package manager;
+the plugin has no runtime dependencies:
+
+```bash
+paseo plugin add omercnet/paseo-plugins:agent-monitor
+```
+
+For an air-gapped host, clone or download the monorepo and install this directory:
 
 ```bash
 cd paseo-plugins/agent-monitor

@@ -18,13 +18,32 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
+      agent-crew-created: ${{ steps.release.outputs['agent-crew--release_created'] }}
+      agent-crew-tag: ${{ steps.release.outputs['agent-crew--tag_name'] }}
+      agent-crew-sha: ${{ steps.release.outputs['agent-crew--sha'] }}
+      tell-agent-created: ${{ steps.release.outputs['tell-agent--release_created'] }}
+      tell-agent-tag: ${{ steps.release.outputs['tell-agent--tag_name'] }}
+      tell-agent-sha: ${{ steps.release.outputs['tell-agent--sha'] }}
+      agent-monitor-created: ${{ steps.release.outputs['agent-monitor--release_created'] }}
+      agent-monitor-tag: ${{ steps.release.outputs['agent-monitor--tag_name'] }}
+      agent-monitor-sha: ${{ steps.release.outputs['agent-monitor--sha'] }}
+      paseo-beads-created: ${{ steps.release.outputs['paseo-beads--release_created'] }}
+      paseo-beads-tag: ${{ steps.release.outputs['paseo-beads--tag_name'] }}
+      paseo-beads-sha: ${{ steps.release.outputs['paseo-beads--sha'] }}
       paseo-omp-created: ${{ steps.release.outputs['paseo-omp--release_created'] }}
       paseo-omp-tag: ${{ steps.release.outputs['paseo-omp--tag_name'] }}
       paseo-omp-sha: ${{ steps.release.outputs['paseo-omp--sha'] }}
-      paseo-beads-created: ${{ steps.release.outputs['paseo-beads--release_created'] }}
-      paseo-beads-tag: ${{ steps.release.outputs['paseo-beads--tag_name'] }}
+      paseo-dracula-created: ${{ steps.release.outputs['paseo-dracula--release_created'] }}
+      paseo-dracula-tag: ${{ steps.release.outputs['paseo-dracula--tag_name'] }}
+      paseo-dracula-sha: ${{ steps.release.outputs['paseo-dracula--sha'] }}
       paseo-gas-city-created: ${{ steps.release.outputs['paseo-gas-city--release_created'] }}
       paseo-gas-city-tag: ${{ steps.release.outputs['paseo-gas-city--tag_name'] }}
+      paseo-gas-city-sha: ${{ steps.release.outputs['paseo-gas-city--sha'] }}
+      pr-radar-created: ${{ steps.release.outputs['pr-radar--release_created'] }}
+      pr-radar-tag: ${{ steps.release.outputs['pr-radar--tag_name'] }}
+      pr-radar-sha: ${{ steps.release.outputs['pr-radar--sha'] }}
+      npm-matrix: ${{ steps.npm-matrix.outputs.matrix }}
+      npm-released: ${{ steps.npm-matrix.outputs.released }}
     steps:
       - name: Create or update releases
         id: release
@@ -32,6 +51,145 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - name: Build npm release matrix
+        id: npm-matrix
+        env:
+          AGENT_CREW_CREATED: ${{ steps.release.outputs['agent-crew--release_created'] }}
+          AGENT_CREW_TAG: ${{ steps.release.outputs['agent-crew--tag_name'] }}
+          AGENT_CREW_SHA: ${{ steps.release.outputs['agent-crew--sha'] }}
+          TELL_AGENT_CREATED: ${{ steps.release.outputs['tell-agent--release_created'] }}
+          TELL_AGENT_TAG: ${{ steps.release.outputs['tell-agent--tag_name'] }}
+          TELL_AGENT_SHA: ${{ steps.release.outputs['tell-agent--sha'] }}
+          AGENT_MONITOR_CREATED: ${{ steps.release.outputs['agent-monitor--release_created'] }}
+          AGENT_MONITOR_TAG: ${{ steps.release.outputs['agent-monitor--tag_name'] }}
+          AGENT_MONITOR_SHA: ${{ steps.release.outputs['agent-monitor--sha'] }}
+          PASEO_BEADS_CREATED: ${{ steps.release.outputs['paseo-beads--release_created'] }}
+          PASEO_BEADS_TAG: ${{ steps.release.outputs['paseo-beads--tag_name'] }}
+          PASEO_BEADS_SHA: ${{ steps.release.outputs['paseo-beads--sha'] }}
+          PASEO_OMP_CREATED: ${{ steps.release.outputs['paseo-omp--release_created'] }}
+          PASEO_OMP_TAG: ${{ steps.release.outputs['paseo-omp--tag_name'] }}
+          PASEO_OMP_SHA: ${{ steps.release.outputs['paseo-omp--sha'] }}
+          PASEO_DRACULA_CREATED: ${{ steps.release.outputs['paseo-dracula--release_created'] }}
+          PASEO_DRACULA_TAG: ${{ steps.release.outputs['paseo-dracula--tag_name'] }}
+          PASEO_DRACULA_SHA: ${{ steps.release.outputs['paseo-dracula--sha'] }}
+          PASEO_GAS_CITY_CREATED: ${{ steps.release.outputs['paseo-gas-city--release_created'] }}
+          PASEO_GAS_CITY_TAG: ${{ steps.release.outputs['paseo-gas-city--tag_name'] }}
+          PASEO_GAS_CITY_SHA: ${{ steps.release.outputs['paseo-gas-city--sha'] }}
+          PR_RADAR_CREATED: ${{ steps.release.outputs['pr-radar--release_created'] }}
+          PR_RADAR_TAG: ${{ steps.release.outputs['pr-radar--tag_name'] }}
+          PR_RADAR_SHA: ${{ steps.release.outputs['pr-radar--sha'] }}
+        run: |
+          matrix="$(jq -cn \
+            --arg agent_crew_created "$AGENT_CREW_CREATED" --arg agent_crew_tag "$AGENT_CREW_TAG" --arg agent_crew_sha "$AGENT_CREW_SHA" \
+            --arg tell_agent_created "$TELL_AGENT_CREATED" --arg tell_agent_tag "$TELL_AGENT_TAG" --arg tell_agent_sha "$TELL_AGENT_SHA" \
+            --arg agent_monitor_created "$AGENT_MONITOR_CREATED" --arg agent_monitor_tag "$AGENT_MONITOR_TAG" --arg agent_monitor_sha "$AGENT_MONITOR_SHA" \
+            --arg paseo_beads_created "$PASEO_BEADS_CREATED" --arg paseo_beads_tag "$PASEO_BEADS_TAG" --arg paseo_beads_sha "$PASEO_BEADS_SHA" \
+            --arg paseo_omp_created "$PASEO_OMP_CREATED" --arg paseo_omp_tag "$PASEO_OMP_TAG" --arg paseo_omp_sha "$PASEO_OMP_SHA" \
+            --arg paseo_dracula_created "$PASEO_DRACULA_CREATED" --arg paseo_dracula_tag "$PASEO_DRACULA_TAG" --arg paseo_dracula_sha "$PASEO_DRACULA_SHA" \
+            --arg paseo_gas_city_created "$PASEO_GAS_CITY_CREATED" --arg paseo_gas_city_tag "$PASEO_GAS_CITY_TAG" --arg paseo_gas_city_sha "$PASEO_GAS_CITY_SHA" \
+            --arg pr_radar_created "$PR_RADAR_CREATED" --arg pr_radar_tag "$PR_RADAR_TAG" --arg pr_radar_sha "$PR_RADAR_SHA" \
+            '{include: [
+              {released: $agent_crew_created, directory: "agent-crew", name: "@omercnet/paseo-agent-crew", tag: $agent_crew_tag, sha: $agent_crew_sha},
+              {released: $tell_agent_created, directory: "tell-agent", name: "@omercnet/paseo-tell-agent", tag: $tell_agent_tag, sha: $tell_agent_sha},
+              {released: $agent_monitor_created, directory: "agent-monitor", name: "@omercnet/paseo-agent-monitor", tag: $agent_monitor_tag, sha: $agent_monitor_sha},
+              {released: $paseo_beads_created, directory: "paseo-beads", name: "@omercnet/paseo-beads", tag: $paseo_beads_tag, sha: $paseo_beads_sha},
+              {released: $paseo_omp_created, directory: "paseo-omp", name: "@omercnet/paseo-omp", tag: $paseo_omp_tag, sha: $paseo_omp_sha},
+              {released: $paseo_dracula_created, directory: "paseo-dracula", name: "@omercnet/paseo-dracula", tag: $paseo_dracula_tag, sha: $paseo_dracula_sha},
+              {released: $paseo_gas_city_created, directory: "paseo-gas-city", name: "@omercnet/paseo-gas-city", tag: $paseo_gas_city_tag, sha: $paseo_gas_city_sha},
+              {released: $pr_radar_created, directory: "pr-radar", name: "@omercnet/paseo-pr-radar", tag: $pr_radar_tag, sha: $pr_radar_sha}
+            ] | map(select(.released == "true") | del(.released))}')"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "released=$(jq -r '.include | length > 0' <<<"$matrix")" >> "$GITHUB_OUTPUT"
+
+  publish-npm:
+    needs: metadata
+    if: ${{ needs.metadata.outputs.npm-released == 'true' }}
+    name: Publish ${{ matrix.directory }} to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.metadata.outputs.npm-matrix) }}
+    steps:
+      - name: Require successful CI for release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ matrix.sha }}
+        run: |
+          run_id=""
+          for _ in $(seq 1 60); do
+            run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "No CI push run found for release commit $SHA" >&2
+            exit 1
+          fi
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+      - name: Check out exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - name: Validate release identity
+        working-directory: ${{ matrix.directory }}
+        env:
+          DIRECTORY: ${{ matrix.directory }}
+          EXPECTED_NAME: ${{ matrix.name }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^${DIRECTORY}-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            exit 1
+          fi
+          version="${TAG#"${DIRECTORY}-v"}"
+          test "$(node -p "require('./package.json').name")" = "$EXPECTED_NAME"
+          test "$(node -p "require('./package.json').version")" = "$version"
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Verify trusted publishing npm
+        run: node -e "const v=require('node:child_process').execFileSync('npm',['--version'],{encoding:'utf8'}).trim(); const [major,minor,patch]=v.split('.').map(Number); if (!(major>11 || (major===11 && (minor>5 || (minor===5 && patch>=1))))) throw new Error('npm 11.5.1 or newer is required; found '+v)"
+      - name: Install package dependencies
+        working-directory: ${{ matrix.directory }}
+        run: npm ci --include=dev
+      - name: Preview npm package
+        working-directory: ${{ matrix.directory }}
+        run: npm pack --dry-run
+      - name: Publish npm package
+        working-directory: ${{ matrix.directory }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [[ "$version" == *-* ]]; then
+            npm publish --access public --provenance --tag next
+          else
+            npm publish --access public --provenance
+          fi
+      - name: Verify npm publication
+        working-directory: ${{ matrix.directory }}
+        env:
+          EXPECTED_NAME: ${{ matrix.name }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          published=""
+          for _ in $(seq 1 180); do
+            published="$(npm view "$EXPECTED_NAME@$version" version --json 2>/dev/null | tr -d '"' || true)"
+            if [[ "$published" == "$version" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          test "$published" = "$version"
   publish-existing-assets:
     needs: metadata
     if: ${{ needs.metadata.outputs.paseo-beads-created == 'true' || needs.metadata.outputs.paseo-gas-city-created == 'true' }}
@@ -115,7 +273,7 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: $/.github/workflows/publish-paseo-omp.yml
+    uses: ./.github/workflows/publish-paseo-omp.yml
     with:
       tag: ${{ needs.metadata.outputs.paseo-omp-tag }}
       sha: ${{ needs.metadata.outputs.paseo-omp-sha }}

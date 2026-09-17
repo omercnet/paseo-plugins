@@ -12,14 +12,21 @@ The first public build is an alpha. Alpha releases are compatibility previews an
 
 ## Install a release
 
-Prefer a reviewed release tag over a moving branch:
+Install an exact published version from npm:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-omp@<version>
+paseo plugin ls paseo-omp
+```
+
+Alternatively, install the matching reviewed Git tag:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-omp --ref paseo-omp-v<version>
 paseo plugin ls paseo-omp
 ```
 
-A tag-pinned installation does not advance through `paseo plugin update`. To upgrade, record the current installation, then replace it with the new tag in one maintenance window:
+A Git tag-pinned installation does not advance through `paseo plugin update`. To upgrade, record the current installation, then replace it with the new tag in one maintenance window:
 
 ```bash
 paseo plugin ls paseo-omp --json > paseo-omp-before-update.json

@@ -79,6 +79,12 @@ host. Enabling a remote endpoint sends requests to that host from the Paseo daem
 
 ## Install
 
+From npm:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-gas-city
+```
+
 From GitHub:
 
 ```bash
