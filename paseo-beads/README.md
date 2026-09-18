@@ -75,6 +75,12 @@ failures provide a retry action.
 Paseo plugins are trusted, unsandboxed code. Review the source before installing it on the daemon
 host.
 
+From npm:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-beads
+```
+
 From GitHub:
 
 ```bash

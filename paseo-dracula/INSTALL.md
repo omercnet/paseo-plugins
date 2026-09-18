@@ -1,11 +1,15 @@
 ### Paseo
 
-#### Install from Git
+#### Install from npm
 
 Paseo plugins are trusted code. Review the source before installing a plugin on the daemon host.
 This theme is data-only and does not access the filesystem, processes, credentials, or network.
 
-Install the latest version from the public monorepo:
+```bash
+paseo plugin install npm:@omercnet/paseo-dracula
+```
+
+To install the latest version from the public monorepo instead:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-dracula

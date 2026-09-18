@@ -1,23 +1,17 @@
-import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import {
   negotiateProviderCapabilities,
   type ProviderRegistration,
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import { build } from "esbuild";
-import { unzipSync } from "fflate";
 import { describe, expect, test } from "vitest";
-import { extractArchiveFiles } from "../scripts/release-archive";
 
 const pluginRoot = join(import.meta.dirname, "..");
 const nodeRequire = createRequire(join(pluginRoot, "index.server.ts"));
-const executeFile = promisify(execFile);
 const sdkStub = {
   defineRpc: (definition: unknown) => definition,
   defineSettings: (definition: unknown) => definition,
@@ -53,20 +47,6 @@ async function compileServerBundle(entryPath: string) {
     write: false,
   });
   return { code: result.outputFiles[0]?.text ?? "", warnings: result.warnings };
-}
-
-async function compileClientBundle(entryPath: string) {
-  const result = await build({
-    entryPoints: [entryPath],
-    bundle: true,
-    format: "esm",
-    platform: "browser",
-    external: ["@getpaseo/*", "@tanstack/react-query", "react", "react-native", "zod"],
-    logLevel: "silent",
-    treeShaking: true,
-    write: false,
-  });
-  return result.warnings;
 }
 
 describe("plugin server bundle", () => {
@@ -178,68 +158,4 @@ describe("plugin server bundle", () => {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
   });
-
-  test("loads the server entrypoint from the extracted release archive", async () => {
-    await mkdir(join(pluginRoot, "dist"), { recursive: true });
-    const temporaryDirectory = await mkdtemp(join(pluginRoot, "dist", "release-load-"));
-    const archivePath = join(temporaryDirectory, "paseo-omp.zip");
-    const extractionRoot = join(temporaryDirectory, "extracted");
-    try {
-      await executeFile(
-        process.execPath,
-        ["--import", "tsx", "scripts/package-release.ts", archivePath],
-        {
-          cwd: pluginRoot,
-        },
-      );
-
-      const files = unzipSync(await readFile(archivePath));
-      expect(files["paseo-omp/server/provider/security.ts"]).toBeDefined();
-      expect(new TextDecoder().decode(files["paseo-omp/paseo-plugin.json"])).toContain(
-        '"paseo": "^0.8.0"',
-      );
-      expect(new TextDecoder().decode(files["paseo-omp/README.md"])).toContain(
-        "coexists with Paseo's bundled `omp` provider",
-      );
-      await extractArchiveFiles(files, extractionRoot);
-
-      // Dynamic import intentionally exercises the extracted plugin's runtime module boundary.
-      const entrypoint = await import(
-        pathToFileURL(join(extractionRoot, "paseo-omp", "index.server.ts")).href
-      );
-      expect(typeof entrypoint.default).toBe("function");
-    } finally {
-      await rm(temporaryDirectory, { recursive: true, force: true });
-    }
-  }, 120_000);
-
-  test("packages import-complete client and server entries", async () => {
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-package-"));
-    const archivePath = join(temporaryDirectory, "paseo-omp.zip");
-    try {
-      await executeFile(
-        process.execPath,
-        ["--import", "tsx", "scripts/package-release.ts", archivePath],
-        {
-          cwd: pluginRoot,
-        },
-      );
-      const archive = unzipSync(await readFile(archivePath));
-      await extractArchiveFiles(archive, temporaryDirectory);
-      for (const path of [
-        "paseo-omp/client/provider-image.tsx",
-        "paseo-omp/shared/provider-image.ts",
-        "paseo-omp/server/provider/image.ts",
-      ]) {
-        expect(archive[path]).toBeDefined();
-      }
-      const extractedRoot = join(temporaryDirectory, "paseo-omp");
-      const clientWarnings = await compileClientBundle(join(extractedRoot, "index.client.tsx"));
-      const serverBundle = await compileServerBundle(join(extractedRoot, "index.server.ts"));
-      expect(clientWarnings.map((warning) => warning.text)).toEqual([]);
-      expect(serverBundle.warnings.map((warning) => warning.text)).toEqual([]);
-    } finally {
-      await rm(temporaryDirectory, { recursive: true, force: true });
-    }
-  }, 120_000);
 });

@@ -4,6 +4,15 @@
   "type": "module",
   "description": "Dracula Classic and Alucard Classic themes for Paseo.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "paseo-dracula"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/paseo-dracula#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
