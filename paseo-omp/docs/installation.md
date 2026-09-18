@@ -4,7 +4,7 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its producti
 
 ## Requirements
 
-- Paseo daemon and apps: `>=0.8.0 <0.10.0`; `0.9.0-beta.1` is recommended
+- Paseo daemon and apps: `>=0.8.0 <0.10.0`; use `0.9.0-beta.1` or newer for nested provider-subagent ancestry and spawning-tool links
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 

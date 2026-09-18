@@ -555,6 +555,7 @@ export class OmpSubsessionProjector {
       type: "session.opened",
       sessionId,
       parentSessionId,
+      toolCallId: ref.parentToolCallId,
       capabilities: ["session.subsession"],
       restoration: "parent",
       cwd: this.cwd,

@@ -507,6 +507,14 @@ try {
     (candidate) => candidate.parentSubagentId == null,
   );
   assert(directChild, "Direct provider subagent is missing");
+  assert(
+    directChild.parentSubagentId === null,
+    `Direct provider subagent has unexpected parent ${String(directChild.parentSubagentId)}`,
+  );
+  assert(
+    directChild.toolCallId === "call_canary_nested_root",
+    `Direct provider subagent has unexpected tool call ${String(directChild.toolCallId)}`,
+  );
   const nestedChild = nestedSubagents.subagents.find(
     (candidate) => candidate.parentSubagentId === directChild.id,
   );
@@ -520,8 +528,10 @@ try {
       observed: nestedSubagents.subagents,
     };
   } else {
-    assert(directChild.status === "completed", `Direct subagent ended as ${directChild.status}`);
-    assert(nestedChild.status === "completed", `Nested subagent ended as ${nestedChild.status}`);
+    assert(
+      nestedChild.toolCallId === "call_canary_nested_child",
+      `Nested provider subagent has unexpected tool call ${String(nestedChild.toolCallId)}`,
+    );
     const directTimeline = await client.fetchProviderSubagentTimeline(
       nestedAgent.id,
       directChild.id,
@@ -544,6 +554,35 @@ try {
       `Nested subagent timeline failed: ${nestedChildTimeline.error}`,
     );
     assert(
+      directChild.status === "completed",
+      `Direct subagent ended as ${directChild.status}: ${JSON.stringify(directTimeline.rows)}`,
+    );
+    assert(
+      nestedChild.status === "completed",
+      `Nested subagent ended as ${nestedChild.status}: ${JSON.stringify(nestedChildTimeline.rows)}`,
+    );
+    assert(
+      directTimeline.rows.some(
+        (row) =>
+          row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_CHILD_OK"),
+      ),
+      "Direct subagent completion is missing from its timeline",
+    );
+    assert(
+      !directTimeline.rows.some(
+        (row) =>
+          row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_LEAF_OK"),
+      ),
+      "Nested completion leaked into the direct subagent timeline",
+    );
+    assert(
+      !nestedChildTimeline.rows.some(
+        (row) =>
+          row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_CHILD_OK"),
+      ),
+      "Direct completion leaked into the nested subagent timeline",
+    );
+    assert(
       nestedChildTimeline.rows.some(
         (row) =>
           row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_LEAF_OK"),
@@ -555,6 +594,8 @@ try {
       direct: directChild.id,
       nested: nestedChild.id,
       nestedParent: nestedChild.parentSubagentId,
+      directToolCallId: directChild.toolCallId,
+      nestedToolCallId: nestedChild.toolCallId,
     };
   }
   const hubAgent = await client.createAgent({

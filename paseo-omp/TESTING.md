@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; latest published 18.1 patch 18.1.22; and current release 18.2.0. Validation against official Paseo Docker image `0.9.0-beta.1@sha256:f75a0eb3547ad3cc6bbdeaa7277d2d50eb4d06a9dd669d480371d7adf1c911b5` is partial as recorded below.
+Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; latest published 18.1 patch 18.1.22; and current release 18.2.0. On 2026-09-18, the full controlled canary passed against OMP 18.1.15 and 18.2.0 on official Paseo image `0.9.0-beta.1@sha256:f75a0eb3547ad3cc6bbdeaa7277d2d50eb4d06a9dd669d480371d7adf1c911b5`.
 
 Classifications:
 
@@ -101,11 +101,11 @@ Run the full local provider integration canary with:
 npm run test:integration:canary
 ```
 
-Set `PASEO_CANARY_OMP_VERSION` to exercise another pinned release. The local runner knows the SHA-256 values for every version in the compatibility matrix; an unlisted version requires explicit `PASEO_CANARY_OMP_SHA256_AMD64` and `PASEO_CANARY_OMP_SHA256_ARM64` values. It allocates isolated loopback ports, builds a version-specific image, waits for both services to become healthy, runs the deterministic provider scenarios, prints container logs on failure, and always removes its containers, volumes, and image namespace.
+Set `PASEO_CANARY_OMP_VERSION` to exercise another pinned release. The local runner knows the SHA-256 values for every version in the compatibility matrix; an unlisted version requires explicit `PASEO_CANARY_OMP_SHA256_AMD64` and `PASEO_CANARY_OMP_SHA256_ARM64` values. It allocates isolated loopback ports, builds a version-specific image, waits for both services to become healthy, runs the deterministic provider scenarios, prints container logs on failure, and always removes its containers, volumes, and image namespace. CI runs this full canary for OMP 18.1.15 and 18.2.0 whenever `paseo-omp` changes; both matrix entries feed the required `CI sentinel` gate and must pass before the supported OMP floor changes.
 
 The Linux real-OMP CI matrix downloads checksummed `omp-linux-x64` assets for OMP 17.2.15, 17.3.4, 18.0.11, 18.1.10, 18.1.15, 18.1.22, and 18.2.0, verifies each binary's pinned GitHub release SHA-256, and runs `PASEO_OMP_REAL_E2E=1 PASEO_OMP_VERSION=<version> npm test -- tests/provider.real.e2e.test.ts`. The historical entries are the four pre-floor releases with more than 4,000 downloads shown by npm for the seven days ending 2026-09-15; they are compatibility regression probes, not a support commitment. The remaining entries cover the supported floor, newest patch in that minor line, and current release. The test uses the real OMP binary and a local deterministic OpenAI-compatible model endpoint, including three sequential prompts on one native session, a Bash tool, and oversized-image transport.
 
-The controlled canary in `canary/compose.yml` successfully built the plugin into that official Paseo image, started the daemon, loaded `paseo-omp`, and completed runtime health, catalog/mode discovery, initial text, model switching, `autocompact`, `follow-up`, and the documented compact/handoff error collection. It then failed on the first Bash scenario because the later turn ended without request-correlated terminal ownership: `OMP terminal ownership could not be confirmed`. The subsequent image, MCP, permission, steering, interruption, persistence, subagent, Hub, usage, rewind, browser, and optional Ollama scenarios were not reached and remain unverified on Paseo 0.9.0-beta.1.
+The controlled canary passed end to end with OMP 18.1.15 and 18.2.0 on 2026-09-18. In addition to runtime health, catalog, prompts, tools, MCP, permissions, steering, interruption, persistence, Hub, usage, rewind, and plugin RPC coverage, it verified that a direct child has `parentSubagentId: null` and the root task's `toolCallId`, a nested child has its direct parent's public subagent ID and the nested task's `toolCallId`, both children finish as `completed`, and both timelines remain independently fetchable without cross-contamination.
 
 ## OMP RPC compatibility intake
 
@@ -145,6 +145,6 @@ The go/no-go criteria, manual acceptance boundary, and alpha limitation list are
 - `npm run test:integration:install`: npm package acquisition retains required production dependencies, and a fresh Git-style checkout runs frozen production-only preparation with lifecycle scripts disabled. Both installed trees resolve runtime dependencies, compile the client and server entries with Paseo's host compiler, and load the server contribution.
 - `npm run test:integration:docker`: verifies the host/container ownership boundary.
 - `npm run test:integration:wsl`: locally skips when `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
-- `docker compose -f canary/compose.yml`: official Paseo 0.9.0-beta.1 image build, daemon startup, plugin load, and early deterministic scenarios passed; the smoke stopped at the first later-turn Bash scenario with `OMP terminal ownership could not be confirmed`, so the remaining scenarios are unverified.
+- `npm run test:integration:canary`: passed against OMP 18.1.15 and 18.2.0 on official Paseo `0.9.0-beta.1`; direct and nested ancestry, spawning-tool links, terminal status, and independently addressable child timelines passed.
 - `zizmor .github/workflows`: no findings (offline audit; six repository-wide suppressions remain).
 - Release Please 17.1.2 `config.json` and `manifest.json` schema validation: passed for `release-please-config.json` and `.release-please-manifest.json`.

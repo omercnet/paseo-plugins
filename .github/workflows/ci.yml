@@ -152,6 +152,37 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: npm run test:integration:docker
 
+  omp-canary:
+    needs: changes
+    if: ${{ needs.changes.outputs.omp_affected == 'true' }}
+    name: paseo-omp Docker canary ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["18.1.15", "18.2.0"]
+    defaults:
+      run:
+        working-directory: paseo-omp
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: paseo-omp/package-lock.json
+      - name: Install dependencies
+        run: npm ci --include=dev
+      - name: Run full provider compatibility canary
+        env:
+          PASEO_CANARY_OMP_VERSION: ${{ matrix.version }}
+        run: npm run test:integration:canary
+
   omp-real-e2e:
     needs: changes
     if: ${{ needs.changes.outputs.omp_affected == 'true' }}
@@ -306,6 +337,7 @@ jobs:
       - npm-plugins
       - omp-platform
       - omp-real-e2e
+      - omp-canary
       - shared-browser
       - wsl-host-tools
     runs-on: ubuntu-latest

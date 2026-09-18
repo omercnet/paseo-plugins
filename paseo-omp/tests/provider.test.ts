@@ -15634,6 +15634,7 @@ describe("OMP direct provider", () => {
     expect(opened).toEqual(
       expect.objectContaining({
         capabilities: ["session.subsession"],
+        toolCallId: "task-single",
         restoration: "parent",
         title: "<redacted> scout",
         description: "Inspect <redacted>",
@@ -16175,6 +16176,7 @@ describe("OMP direct provider", () => {
     );
     if (parentChild?.type !== "session.opened") throw new Error("Missing parent child session");
     expect(parentChild.capabilities).toEqual(["session.subsession"]);
+    expect(parentChild.toolCallId).toBe("root-task");
     for (const event of [
       {
         type: "tool_execution_start" as const,
@@ -16209,6 +16211,7 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         type: "session.opened",
         parentSessionId: parentChild.sessionId,
+        toolCallId: "nested-task",
         capabilities: ["session.subsession"],
       }),
     );
@@ -16533,6 +16536,7 @@ describe("OMP direct provider", () => {
         (event) => event.type === "session.opened" && event.parentSessionId === sessionId,
       );
       if (childOpened?.type !== "session.opened") throw new Error("Missing replayed child");
+      expect(childOpened.toolCallId).toBe("replayed-task");
       expect(
         replay.filter(
           (event) =>

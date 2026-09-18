@@ -88,12 +88,14 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
     }
   }
   const latestUser = latestUserIndex >= 0 ? messages[latestUserIndex] : undefined;
-  const hasToolResult = messages
-    .slice(latestUserIndex + 1)
-    .some(
-      (message) =>
-        message && typeof message === "object" && "role" in message && message.role === "tool",
-    );
+  const toolResultIds = new Set(
+    messages.slice(latestUserIndex + 1).flatMap((message) => {
+      if (!message || typeof message !== "object" || !("role" in message)) return [];
+      if (message.role !== "tool" || !("tool_call_id" in message)) return [];
+      return typeof message.tool_call_id === "string" ? [message.tool_call_id] : [];
+    }),
+  );
+  const hasToolResult = toolResultIds.size > 0;
   const prompt =
     latestUser && typeof latestUser === "object" && "content" in latestUser
       ? textFromContent(latestUser.content)
@@ -150,6 +152,18 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
           task: "# Target\nNo files.\n# Change\nReturn CANARY_NESTED_LEAF_OK.\n# Acceptance\nThe response contains CANARY_NESTED_LEAF_OK.",
         },
       ],
+    });
+  }
+
+  if (
+    hasTool(tools, "hub") &&
+    prompt.includes("CANARY_NESTED_CHILD") &&
+    toolResultIds.has("call_canary_nested_child") &&
+    !toolResultIds.has("call_canary_nested_wait")
+  ) {
+    return toolCallResponse(base, "call_canary_nested_wait", "hub", {
+      i: "Waiting for nested canary leaf",
+      op: "wait",
     });
   }
 
