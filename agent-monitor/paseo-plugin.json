@@ -1,5 +1,4 @@
 {
   "id": "agent-monitor",
-  "description": "A host-wide agent triage roster.",
   "requirements": { "paseo": "^0.8.0 || ^0.9.0-beta.1" }
 }
