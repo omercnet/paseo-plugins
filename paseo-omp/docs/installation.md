@@ -4,29 +4,53 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its producti
 
 ## Requirements
 
-- Paseo daemon and apps: `^0.8.0`
+- Paseo daemon and apps: `>=0.8.0 <0.10.0`; `0.9.0-beta.1` is recommended
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 
 The first public build is an alpha. Alpha releases are compatibility previews and may require deleting and re-importing agents created by an earlier preview.
 
-## Install a release
+## Install or update from npm on Paseo 0.9
 
-Install an exact published version from npm:
+Paseo 0.9.0-beta.1 can acquire the published package and its production dependencies directly from npm on the daemon host:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
 paseo plugin ls paseo-omp
 ```
 
-Alternatively, install the matching reviewed Git tag:
+Check for the registry's current `latest` version and approve the proposed update, or select an exact version explicitly:
+
+```bash
+paseo plugin update paseo-omp
+paseo plugin update paseo-omp --version <new-version>
+```
+
+The daemon uses its own npm registry and authentication configuration. npm acquisition installs the artifact's production dependencies before preparation; because npm artifacts omit `package-lock.json`, the preparation helper leaves that tree unchanged. A Git checkout with the committed lockfile runs frozen `npm ci --omit=dev --ignore-scripts`. A failed download, preparation, compatibility check, or activation keeps the installed revision active. Paseo 0.8 does not support npm plugin sources; use a Git tag or local directory instead.
+
+## Install a Git release on Paseo 0.8 or 0.9
+
+Install the matching reviewed Git tag:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-omp --ref paseo-omp-v<version>
 paseo plugin ls paseo-omp
 ```
 
-A Git tag-pinned installation does not advance through `paseo plugin update`. To upgrade, record the current installation, then replace it with the new tag in one maintenance window:
+### Update a Git installation on Paseo 0.9
+
+An ordinary update reviews the remote repository's current default HEAD. To move directly to another reviewed tag or commit, select it explicitly:
+
+```bash
+paseo plugin update paseo-omp
+paseo plugin update paseo-omp --ref paseo-omp-v<new-version>
+```
+
+The install-time `--ref` does not constrain later updates. Paseo 0.9 stages and validates the selected revision before replacing the active installation, so plugin settings remain intact and a failed update leaves the previous revision running.
+
+### Update a tag-pinned Git installation on Paseo 0.8
+
+Paseo 0.8 does not provide the 0.9 non-destructive explicit-ref update flow. Record the current installation, then replace it with the new tag in one maintenance window:
 
 ```bash
 paseo plugin ls paseo-omp --json > paseo-omp-before-update.json
@@ -56,12 +80,10 @@ paseo plugin ls paseo-omp
 
 ## Track a branch
 
-Tracking `main` executes future dependency and plugin updates with the daemon user's privileges. Record the installed commit before each update:
+Tracking `main` executes future dependency and plugin updates with the daemon user's privileges:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-omp --ref main
-paseo plugin ls paseo-omp --json > paseo-omp-before-update.json
-paseo plugin update paseo-omp
 ```
 
-A failed Git build or incompatible update leaves the previous revision active. Remove and re-add the recorded commit to roll back.
+On Paseo 0.9, preview and approve the remote default HEAD with `paseo plugin update paseo-omp`, or select `main` explicitly with `paseo plugin update paseo-omp --ref main`. On Paseo 0.8, record the installed commit before its existing branch-update workflow. A failed build or compatibility check leaves the previous revision active.

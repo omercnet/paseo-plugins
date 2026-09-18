@@ -1,4 +1,3 @@
-import type { PaseoApi, PaseoProviderSnapshotResult } from "@getpaseo/client";
 import type {
   OmpLspDiagnostics,
   OmpMcpDiagnostics,
@@ -8,8 +7,8 @@ import type {
   OmpVersionStatus,
   PathState,
 } from "../shared/provider-diagnostics";
-
 import { isOmpProvider } from "./omp-store-state";
+import type { PaseoApi, PaseoProviderSnapshotResult } from "./paseo-types";
 
 export type ProviderHealthTone = "ok" | "warning" | "danger" | "muted";
 export const OMP_PROVIDER_IDS = ["omp", "omp-plugin"] as const;

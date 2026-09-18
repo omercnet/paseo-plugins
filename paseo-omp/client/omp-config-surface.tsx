@@ -10,7 +10,7 @@ import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
-import { Linking, Pressable, ScrollView, Switch, Text, View } from "react-native";
+import { Pressable, ScrollView, Switch, Text, View } from "react-native";
 import type { ComposerPillSettings } from "../shared/composer-pill-settings";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import {
@@ -26,6 +26,7 @@ import {
 import { type OmpStore, storeLabel } from "../shared/omp-store";
 import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider-diagnostics";
 import { ComposerPillSettingsSection } from "./composer-pill-settings";
+import { openOmpExternalUrl } from "./external-url";
 import {
   documentationForSettingCategory,
   documentationForSettingPath,
@@ -1072,7 +1073,7 @@ function OmpConfigContent({
   const openDocumentation = useCallback(async (link: OmpDocumentationLink) => {
     setDocumentationError(null);
     try {
-      await Linking.openURL(link.url);
+      await openOmpExternalUrl(link.url);
     } catch {
       setDocumentationError(`Could not open ${link.label.toLocaleLowerCase()}.`);
     }

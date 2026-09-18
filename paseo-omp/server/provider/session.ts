@@ -228,6 +228,24 @@ type PendingUser = {
   fallbackOnFinish: boolean;
   bufferedEchoes: OmpMessage[];
 };
+type TerminalCorrelationEvidence = "fresh-native-user" | "current-assistant";
+
+type TerminalCorrelation = {
+  policy: "initial-turn" | "ordered-legacy" | "native-command";
+  evidence: Map<TerminalCorrelationEvidence, number>;
+};
+
+type TerminalCandidate = {
+  event: Extract<OmpRpcEvent, { type: "agent_end" }>;
+  arrivalSequence: number;
+  confidence:
+    | "keyed"
+    | "initial-turn"
+    | "ordered-legacy"
+    | "native-command"
+    | "interrupted"
+    | "ambiguous";
+};
 
 type ActiveTurn = {
   turnId: string;
@@ -245,10 +263,8 @@ type ActiveTurn = {
   awaitingPermissionEvidence: boolean;
   activitySequence: number;
   acknowledged: boolean;
-  terminalOwnershipEvidence: boolean;
-  terminalOwnershipRequired: boolean;
+  terminalCorrelation: TerminalCorrelation;
   replayingBufferedEvents: boolean;
-  bufferedTerminalOwnershipEvidence: boolean;
   agentInvoked?: boolean;
   nativeRequestId?: string;
   promptAcceptedEventIndex?: number;
@@ -263,14 +279,15 @@ type ActiveTurn = {
   agentEndRetryTimer?: unknown;
   agentEndDeadlineTimer?: unknown;
   agentEndCheck?: Promise<void>;
-  terminalOwnershipTimer?: unknown;
+  ambiguousTerminalTimer?: unknown;
   terminalizing: boolean;
   terminalization?: Promise<void>;
   terminalOutcome?: TurnOutcome;
   terminalWake?: VoidDeferred;
   steerReady: VoidDeferred;
   steersInFlight: number;
-  deferredAgentEnd?: Extract<OmpRpcEvent, { type: "agent_end" }>;
+  deferredAgentEnd?: TerminalCandidate;
+  activeToolCallIds: Set<string>;
   bufferedEvents: OmpRpcEvent[];
   pendingUsers: PendingUser[];
   userEchoes: OmpMessage[];
@@ -784,7 +801,7 @@ function createActiveTurn(
   clientMessageId: string,
   text: string,
   generation: number,
-  terminalOwnershipRequired: boolean,
+  terminalPolicy: TerminalCorrelation["policy"],
   manualCompaction = false,
 ): ActiveTurn {
   return {
@@ -809,11 +826,10 @@ function createActiveTurn(
     manualCompaction,
     activitySequence: 0,
     acknowledged: false,
-    terminalOwnershipEvidence: false,
+    terminalCorrelation: { policy: terminalPolicy, evidence: new Map() },
     replayingBufferedEvents: false,
-    bufferedTerminalOwnershipEvidence: false,
-    terminalOwnershipRequired,
     steersInFlight: 0,
+    activeToolCallIds: new Set(),
     steerReady: Promise.withResolvers<void>(),
     userCorrelationActive: false,
     userLookups: new Set(),
@@ -832,6 +848,35 @@ function createActiveTurn(
       },
     ],
   };
+}
+function classifyTerminalCandidate(
+  turn: ActiveTurn,
+  event: Extract<OmpRpcEvent, { type: "agent_end" }>,
+  arrivalSequence = turn.activitySequence,
+): TerminalCandidate {
+  if (event.requestId !== undefined) return { event, confidence: "keyed", arrivalSequence };
+  if (turn.agentInvoked === false) return { event, confidence: "ambiguous", arrivalSequence };
+  if (turn.terminalCorrelation.policy === "initial-turn") {
+    return { event, confidence: "initial-turn", arrivalSequence };
+  }
+  const assistantSequence = turn.terminalCorrelation.evidence.get("current-assistant");
+  if (
+    turn.terminalCorrelation.policy === "native-command" &&
+    assistantSequence !== undefined &&
+    assistantSequence <= arrivalSequence
+  ) {
+    return { event, confidence: "native-command", arrivalSequence };
+  }
+  const userSequence = turn.terminalCorrelation.evidence.get("fresh-native-user");
+  if (
+    userSequence !== undefined &&
+    assistantSequence !== undefined &&
+    userSequence < assistantSequence &&
+    assistantSequence <= arrivalSequence
+  ) {
+    return { event, confidence: "ordered-legacy", arrivalSequence };
+  }
+  return { event, confidence: "ambiguous", arrivalSequence };
 }
 
 export class OmpProviderSession {
@@ -1864,7 +1909,7 @@ export class OmpProviderSession {
       input.prompt.clientMessageId,
       payload.text,
       this.generation,
-      this.runtimeTurnCompleted,
+      this.runtimeTurnCompleted ? "ordered-legacy" : "initial-turn",
       slashCommandName(payload.text) === "compact",
     );
     this.activeTurn = turn;
@@ -1901,7 +1946,11 @@ export class OmpProviderSession {
         return;
       }
       const ownershipPending = turn.pendingUsers[0];
-      if (turn.terminalOwnershipRequired && !this.branchWatermarkValid && ownershipPending) {
+      if (
+        turn.terminalCorrelation.policy === "ordered-legacy" &&
+        !this.branchWatermarkValid &&
+        ownershipPending
+      ) {
         await this.refreshBranchEntries(turn, ownershipPending);
         if (
           this.closed ||
@@ -1939,13 +1988,10 @@ export class OmpProviderSession {
         0,
         turn.promptAcceptedEventIndex ?? bufferedEvents.length,
       );
-      for (const event of preAcceptanceEvents) this.handleTurnEvent(turn, event);
+      for (const event of preAcceptanceEvents) this.handleTurnEvent(turn, event, false);
       this.projector.acceptLiveTurn(turn.turnId);
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
       turn.replayingBufferedEvents = false;
-      if (acknowledgement.agentInvoked === true && turn.bufferedTerminalOwnershipEvidence) {
-        this.markTerminalOwnershipEvidence(turn);
-      }
       if (
         acknowledgement.agentInvoked === false &&
         turn.agentInvoked !== true &&
@@ -2096,7 +2142,7 @@ export class OmpProviderSession {
     if (this.activeTurn) {
       throw new OmpPublicError("OMP already has an active turn; send this message as a steer");
     }
-    const turn = createActiveTurn(clientMessageId, text, this.generation, false);
+    const turn = createActiveTurn(clientMessageId, text, this.generation, "native-command");
     this.activeTurn = turn;
     try {
       await invoke();
@@ -2994,6 +3040,7 @@ export class OmpProviderSession {
         return;
       }
       turn.localOnlyDisabled = true;
+      this.cancelAmbiguousTerminal(turn);
       turn.deferredAgentEnd = undefined;
       this.acceptPendingUser(turn, pending);
       this.emit({
@@ -3145,7 +3192,11 @@ export class OmpProviderSession {
     this.handleTurnEvent(turn, event);
   }
 
-  private handleTurnEvent(turn: ActiveTurn, event: OmpRpcEvent): void {
+  private handleTurnEvent(
+    turn: ActiveTurn,
+    event: OmpRpcEvent,
+    correlatesToAcceptedPrompt = true,
+  ): void {
     if (
       turn.generation !== this.generation ||
       turn.terminal ||
@@ -3161,7 +3212,7 @@ export class OmpProviderSession {
     ) {
       return;
     }
-    if (event.type === "message_end") {
+    if (event.type === "message_end" && correlatesToAcceptedPrompt) {
       const entryId = nativeEntryId(event.message);
       if (!entryId || turn.streamedMessageEntryIds.length >= MAX_AGENT_END_CORRELATION_MESSAGES) {
         turn.streamedMessageIdentityComplete = false;
@@ -3187,15 +3238,19 @@ export class OmpProviderSession {
     if (event.type === "prompt_result") {
       if (!event.id || event.id !== turn.nativeRequestId) return;
       if (event.agentInvoked) {
+        // A request-keyed prompt result proves dispatch, but an unkeyed terminal still needs
+        // ordered native user and assistant evidence from this accepted prompt.
         this.markAgentEvidence(turn);
-        if (turn.replayingBufferedEvents) turn.bufferedTerminalOwnershipEvidence = true;
-        else this.markTerminalOwnershipEvidence(turn);
         return;
       }
       if (turn.localOnlyDisabled || turn.steersInFlight > 0) return;
       if (!turn.nativeActivity && !turn.awaitingPermissionEvidence) {
         turn.agentInvoked = false;
         turn.localOnlyEligible = true;
+        if (turn.deferredAgentEnd?.confidence === "ambiguous") {
+          turn.deferredAgentEnd = undefined;
+          this.cancelAmbiguousTerminal(turn);
+        }
         this.scheduleLocalOnlyCompletion(turn);
       }
       return;
@@ -3243,8 +3298,10 @@ export class OmpProviderSession {
       return;
     }
     if (event.type === "agent_end" && turn.manualCompactionPending) return;
-    if (event.type === "tool_execution_end" && event.toolName === "ask_user") {
-      this.pendingFreeformSelection = null;
+    if (event.type === "tool_execution_start") turn.activeToolCallIds.add(event.toolCallId);
+    if (event.type === "tool_execution_end") {
+      turn.activeToolCallIds.delete(event.toolCallId);
+      if (event.toolName === "ask_user") this.pendingFreeformSelection = null;
     }
     if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
       try {
@@ -3253,6 +3310,37 @@ export class OmpProviderSession {
         this.handleRuntimeFailure("OMP subagent dispatch tracking failed");
         return;
       }
+    }
+    if (event.type === "agent_end") {
+      if (event.isTerminal === false) {
+        turn.completedMessageCount = 0;
+        turn.streamedMessageEntryIds.length = 0;
+        turn.streamedMessageIdentityComplete = true;
+        turn.lastCompletedAssistantOutcome = undefined;
+        turn.lastCompletedAssistantEntryId = undefined;
+        return;
+      }
+      const candidate: TerminalCandidate = turn.interrupted
+        ? { event, confidence: "interrupted", arrivalSequence: turn.activitySequence }
+        : classifyTerminalCandidate(turn, event);
+      if (candidate.confidence === "ambiguous") {
+        this.deferAmbiguousTerminal(turn, candidate);
+        return;
+      }
+      turn.nativeActivity = true;
+      this.cancelLocalOnlyCompletion(turn);
+      if (
+        (!turn.interrupted &&
+          candidate.confidence !== "keyed" &&
+          this.hasTerminalConflict(turn, false)) ||
+        turn.steersInFlight > 0 ||
+        turn.terminalizing
+      ) {
+        turn.deferredAgentEnd = candidate;
+        return;
+      }
+      this.beginTerminalization(turn, candidate);
+      return;
     }
     if (isNativeTurnActivity(event)) {
       turn.nativeActivity = true;
@@ -3270,51 +3358,13 @@ export class OmpProviderSession {
       event.message.role === "assistant"
     ) {
       turn.awaitingPermissionEvidence = false;
-    }
-    if (event.type === "agent_end") {
-      if (event.isTerminal === false) {
-        turn.completedMessageCount = 0;
-        turn.streamedMessageEntryIds.length = 0;
-        turn.streamedMessageIdentityComplete = true;
-        turn.lastCompletedAssistantOutcome = undefined;
-        turn.lastCompletedAssistantEntryId = undefined;
-        return;
+      if (correlatesToAcceptedPrompt) {
+        turn.terminalCorrelation.evidence.set("current-assistant", turn.activitySequence + 1);
       }
-      if (event.requestId !== undefined) this.markTerminalOwnershipEvidence(turn);
-      if (
-        !turn.interrupted &&
-        turn.terminalOwnershipRequired &&
-        !turn.terminalOwnershipEvidence &&
-        !(turn.replayingBufferedEvents && turn.bufferedTerminalOwnershipEvidence)
-      ) {
-        this.scheduleTerminalOwnershipTimeout(turn);
-        return;
-      }
-      const hasAssistantEvidence =
-        event.messages?.some((message) => message.role === "assistant") ?? false;
-      if (turn.awaitingPermissionEvidence && !hasAssistantEvidence) {
-        turn.deferredAgentEnd = event;
-        return;
-      }
-      if (hasAssistantEvidence) turn.awaitingPermissionEvidence = false;
-      if (turn.terminalizing) {
-        turn.deferredAgentEnd = event;
-        return;
-      }
-      if (turn.steersInFlight > 0) {
-        turn.deferredAgentEnd = event;
-        return;
-      }
-      this.beginTerminalization(turn, event);
-      return;
     }
     if (isNativeTurnActivity(event)) this.markAgentEvidence(turn);
-    if (event.type === "message_end" && event.message.role === "user") {
-      this.markAgentEvidence(turn);
-      this.projectUserEcho(turn, event.message);
-      return;
-    }
     this.projector.project(event, turn.turnId);
+    if (event.type === "tool_execution_end") this.resumeDeferredAgentEnd();
   }
 
   private projectUserEcho(turn: ActiveTurn, message: OmpMessage): void {
@@ -3385,6 +3435,7 @@ export class OmpProviderSession {
         pending.bufferedEchoes.push(...turn.userEchoes.splice(0));
         return;
       }
+      const observedSequence = turn.activitySequence;
       let resolvedId = entryId ?? this.claimUnclaimedBranchEntry(turn, pending.text);
       if (!resolvedId && (await this.refreshBranchEntries(turn, pending))) {
         resolvedId = this.claimUnclaimedBranchEntry(turn, pending.text);
@@ -3400,7 +3451,7 @@ export class OmpProviderSession {
       turn.userEchoes.shift();
       if (!resolvedId) return;
       turn.pendingUsers.shift();
-      this.publishCorrelatedUser(turn, pending, resolvedId);
+      this.publishCorrelatedUser(turn, pending, resolvedId, observedSequence);
     }
   }
   private async refreshBranchEntries(turn: ActiveTurn, pending: PendingUser): Promise<boolean> {
@@ -4234,23 +4285,27 @@ export class OmpProviderSession {
     return this.activeTurn?.turnId === pending.turnId && !this.activeTurn.terminal;
   }
 
-  private reevaluateDeferredPermissionTerminal(): void {
-    const turn = this.activeTurn;
-    if (!turn?.deferredAgentEnd || turn.terminal || turn.terminalizing) return;
+  private hasTerminalConflict(turn: ActiveTurn, includeChildren = true): boolean {
     const ownsTurn = (pending: PendingPermission | PendingToolPermission) =>
       pending.turnId === turn.turnId;
-    if (
+    return (
+      turn.awaitingPermissionEvidence ||
       [...this.pendingPermissions.values()].some(ownsTurn) ||
       [...this.inFlightPermissions.values()].some(ownsTurn) ||
       [...this.pendingToolPermissions.values()].some(ownsTurn) ||
-      [...this.inFlightToolPermissions.values()].some(ownsTurn)
-    ) {
-      return;
-    }
-    const hasAssistantEvidence =
-      turn.deferredAgentEnd.messages?.some((message) => message.role === "assistant") ?? false;
-    if (!hasAssistantEvidence || turn.awaitingPermissionEvidence) return;
+      [...this.inFlightToolPermissions.values()].some(ownsTurn) ||
+      turn.activeToolCallIds.size > 0 ||
+      turn.steersInFlight > 0 ||
+      (includeChildren && Boolean(this.subsessions?.hasActiveChildren()))
+    );
+  }
+
+  private reevaluateDeferredPermissionTerminal(): void {
+    const turn = this.activeTurn;
+    if (!turn?.deferredAgentEnd || turn.terminal || turn.terminalizing) return;
+    if (this.hasTerminalConflict(turn)) return;
     const deferred = turn.deferredAgentEnd;
+    if (deferred.confidence === "ambiguous") return;
     turn.deferredAgentEnd = undefined;
     this.beginTerminalization(turn, deferred);
   }
@@ -4266,12 +4321,18 @@ export class OmpProviderSession {
     return this.slashCommands.has(commandName);
   }
 
-  private publishCorrelatedUser(turn: ActiveTurn, pending: PendingUser, entryId?: string): void {
+  private publishCorrelatedUser(
+    turn: ActiveTurn,
+    pending: PendingUser,
+    entryId: string | undefined,
+    observedSequence: number,
+  ): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
       this.seenEntryIds.add(entryId);
       this.emittedEntryIds.add(entryId);
-      if (!turn.terminalOwnershipRequired) this.markTerminalOwnershipEvidence(turn);
+      turn.terminalCorrelation.evidence.set("fresh-native-user", observedSequence);
+      this.refreshAmbiguousTerminal(turn);
       if (this.branchWatermarkValid && !this.branchEntryIds.has(entryId)) {
         if (this.branchEntryIds.size >= MAX_UNCLAIMED_BRANCH_ENTRIES)
           this.quarantineBranchEntries();
@@ -4291,12 +4352,7 @@ export class OmpProviderSession {
     turn.activitySequence += 1;
     turn.localOnlyEligible = false;
     this.cancelLocalOnlyCompletion(turn);
-    if (!turn.awaitingPermissionEvidence) turn.deferredAgentEnd = undefined;
-  }
-
-  private markTerminalOwnershipEvidence(turn: ActiveTurn): void {
-    turn.terminalOwnershipEvidence = true;
-    this.cancelTerminalOwnershipTimeout(turn);
+    this.refreshAmbiguousTerminal(turn);
   }
 
   private scheduleLocalOnlyCompletion(turn: ActiveTurn): void {
@@ -4322,32 +4378,68 @@ export class OmpProviderSession {
     turn.localOnlyTimer = undefined;
   }
 
-  private scheduleTerminalOwnershipTimeout(turn: ActiveTurn): void {
-    if (
-      turn.terminalOwnershipTimer !== undefined ||
-      turn.terminalOwnershipEvidence ||
-      (turn.agentInvoked === false && turn.localOnlyEligible)
-    ) {
+  private refreshAmbiguousTerminal(turn: ActiveTurn): void {
+    const candidate = turn.deferredAgentEnd;
+    if (candidate?.confidence !== "ambiguous") return;
+    const resolved = classifyTerminalCandidate(turn, candidate.event, candidate.arrivalSequence);
+    if (resolved.confidence !== "ambiguous") {
+      this.cancelAmbiguousTerminal(turn);
+      turn.deferredAgentEnd = undefined;
+      if (turn.terminalizing || this.hasTerminalConflict(turn, false)) {
+        turn.deferredAgentEnd = resolved;
+      } else {
+        this.beginTerminalization(turn, resolved);
+      }
       return;
     }
-    turn.terminalOwnershipTimer = this.scheduler.set(() => {
-      turn.terminalOwnershipTimer = undefined;
-      if (
-        this.closed ||
-        turn.terminal ||
-        this.activeTurn !== turn ||
-        turn.terminalOwnershipEvidence
-      ) {
-        return;
-      }
-      this.handleRuntimeFailure("OMP terminal ownership could not be confirmed");
+    if (turn.activitySequence > candidate.arrivalSequence) {
+      turn.deferredAgentEnd = undefined;
+      this.cancelAmbiguousTerminal(turn);
+    }
+  }
+
+  private deferAmbiguousTerminal(turn: ActiveTurn, candidate: TerminalCandidate): void {
+    if (turn.agentInvoked === false && turn.localOnlyEligible) return;
+    this.cancelAmbiguousTerminal(turn);
+    turn.deferredAgentEnd = candidate;
+    turn.ambiguousTerminalTimer = this.scheduler.set(() => {
+      turn.ambiguousTerminalTimer = undefined;
+      void this.settleAmbiguousTerminal(turn, candidate);
     }, AGENT_END_STATE_TIMEOUT_MS);
   }
 
-  private cancelTerminalOwnershipTimeout(turn: ActiveTurn): void {
-    if (turn.terminalOwnershipTimer === undefined) return;
-    this.scheduler.clear(turn.terminalOwnershipTimer);
-    turn.terminalOwnershipTimer = undefined;
+  private cancelAmbiguousTerminal(turn: ActiveTurn): void {
+    if (turn.ambiguousTerminalTimer === undefined) return;
+    this.scheduler.clear(turn.ambiguousTerminalTimer);
+    turn.ambiguousTerminalTimer = undefined;
+  }
+
+  private async settleAmbiguousTerminal(
+    turn: ActiveTurn,
+    candidate: TerminalCandidate,
+  ): Promise<void> {
+    if (
+      this.closed ||
+      turn.terminal ||
+      this.activeTurn !== turn ||
+      turn.deferredAgentEnd !== candidate
+    ) {
+      return;
+    }
+    await Promise.allSettled(turn.userLookups);
+    this.refreshAmbiguousTerminal(turn);
+    if (turn.terminal || this.activeTurn !== turn || turn.deferredAgentEnd !== candidate) return;
+    const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
+    if (turn.terminal || this.activeTurn !== turn || turn.deferredAgentEnd !== candidate) return;
+    if (!state) {
+      this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
+      return;
+    }
+    turn.deferredAgentEnd = undefined;
+    if (state.isStreaming || state.isCompacting) return;
+    await this.finishTurn(turn, "failed", {
+      message: "OMP unkeyed agent_end could not be correlated to the current prompt",
+    });
   }
 
   private async completeLocalOnlyTurn(turn: ActiveTurn): Promise<void> {
@@ -4373,15 +4465,44 @@ export class OmpProviderSession {
     await this.finishTurn(turn, "completed", undefined, false, false, true);
   }
 
-  private beginTerminalization(
-    turn: ActiveTurn,
-    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  ): void {
+  private resetAgentEndProbe(turn: ActiveTurn): void {
+    turn.agentEndPending = false;
+    turn.terminalizing = false;
+    if (turn.agentEndRetryTimer !== undefined) {
+      this.scheduler.clear(turn.agentEndRetryTimer);
+      turn.agentEndRetryTimer = undefined;
+    }
+    if (turn.agentEndDeadlineTimer !== undefined) {
+      this.scheduler.clear(turn.agentEndDeadlineTimer);
+      turn.agentEndDeadlineTimer = undefined;
+    }
+  }
+  private ignoreActiveTerminalCandidate(turn: ActiveTurn, candidate: TerminalCandidate): void {
+    const replacement =
+      turn.deferredAgentEnd && turn.deferredAgentEnd !== candidate
+        ? turn.deferredAgentEnd
+        : undefined;
+    this.resetAgentEndProbe(turn);
+    turn.deferredAgentEnd = replacement;
+    if (replacement && replacement.confidence !== "ambiguous") {
+      turn.deferredAgentEnd = undefined;
+      this.beginTerminalization(turn, replacement);
+      return;
+    }
+    this.pollUsage(turn);
+  }
+
+  private beginTerminalization(turn: ActiveTurn, candidate: TerminalCandidate): void {
     if (turn.terminal || turn.terminalizing || turn.agentEndPending || this.activeTurn !== turn) {
       return;
     }
-    if (!turn.interrupted && this.deferAgentEndForSubsessions(turn, event)) return;
+    if (!turn.interrupted && this.deferAgentEndForSubsessions(turn, candidate)) return;
     turn.agentEndPending = true;
+    if (turn.deferredAgentEnd?.confidence === "ambiguous") {
+      turn.deferredAgentEnd = undefined;
+    }
+    turn.terminalizing = true;
+    this.cancelAmbiguousTerminal(turn);
     turn.usageSampleFloor = this.usageSequence + 1;
     if (this.usageSample?.turn === turn && this.usageSample.sequence < turn.usageSampleFloor) {
       this.usageSample = null;
@@ -4391,21 +4512,21 @@ export class OmpProviderSession {
       turn.agentEndDeadlineTimer = undefined;
       if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
       if (
-        turn.userEchoObserved ||
-        (turn.terminalOwnershipRequired && !turn.terminalOwnershipEvidence)
+        candidate.confidence === "keyed" ||
+        (candidate.confidence === "initial-turn" && !turn.userEchoObserved)
       ) {
-        this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
+        void this.completeAgentEnd(turn, candidate.event);
       } else {
-        void this.completeAgentEnd(turn, event);
+        this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
       }
     }, AGENT_END_SETTLE_MS);
-    this.finishFromAgentEnd(turn, event);
+    this.finishFromAgentEnd(turn, candidate);
   }
 
   private resumeAfterFailedSteer(turn: ActiveTurn): void {
     if (turn.terminal || this.activeTurn !== turn || turn.steersInFlight > 0) return;
     const deferred = turn.deferredAgentEnd;
-    if (deferred) {
+    if (deferred && deferred.confidence !== "ambiguous" && !this.hasTerminalConflict(turn)) {
       turn.deferredAgentEnd = undefined;
       this.beginTerminalization(turn, deferred);
       return;
@@ -4414,13 +4535,11 @@ export class OmpProviderSession {
       this.scheduleLocalOnlyCompletion(turn);
     }
   }
-  private deferAgentEndForSubsessions(
-    turn: ActiveTurn,
-    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  ): boolean {
+
+  private deferAgentEndForSubsessions(turn: ActiveTurn, candidate: TerminalCandidate): boolean {
     if (!this.subsessions?.hasActiveChildren()) return false;
     turn.terminalizing = false;
-    turn.deferredAgentEnd = event;
+    turn.deferredAgentEnd = candidate;
     void this.subsessions.reconcile(this.runtime).catch(() => {
       if (!turn.terminal && this.activeTurn === turn) {
         this.handleRuntimeFailure("OMP subagent reconciliation failed");
@@ -4431,31 +4550,22 @@ export class OmpProviderSession {
 
   private resumeDeferredAgentEnd(): void {
     const turn = this.activeTurn;
-    if (
-      !turn ||
-      turn.terminal ||
-      turn.terminalizing ||
-      turn.steersInFlight > 0 ||
-      this.subsessions?.hasActiveChildren()
-    ) {
+    if (!turn || turn.terminal || turn.terminalizing || this.hasTerminalConflict(turn)) {
       return;
     }
-    const event = turn.deferredAgentEnd;
-    if (!event) return;
+    const candidate = turn.deferredAgentEnd;
+    if (!candidate || candidate.confidence === "ambiguous") return;
     turn.deferredAgentEnd = undefined;
-    this.beginTerminalization(turn, event);
+    this.beginTerminalization(turn, candidate);
   }
 
-  private finishFromAgentEnd(
-    turn: ActiveTurn,
-    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  ): void {
+  private finishFromAgentEnd(turn: ActiveTurn, candidate: TerminalCandidate): void {
     if (!turn.agentEndPending || turn.terminal) return;
     if (turn.agentEndCheck) {
-      turn.deferredAgentEnd = event;
+      turn.deferredAgentEnd = candidate;
       return;
     }
-    const check = this.checkAgentEndState(turn, event);
+    const check = this.checkAgentEndState(turn, candidate);
     turn.agentEndCheck = check;
     void check.finally(() => {
       if (turn.agentEndCheck !== check) return;
@@ -4467,13 +4577,7 @@ export class OmpProviderSession {
     });
   }
 
-  private async checkAgentEndState(
-    turn: ActiveTurn,
-    event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  ): Promise<void> {
-    // Evidence arriving during this check cannot authorize an older terminal frame.
-    const ownershipObserved =
-      turn.terminalOwnershipEvidence || turn.bufferedTerminalOwnershipEvidence;
+  private async checkAgentEndState(turn: ActiveTurn, candidate: TerminalCandidate): Promise<void> {
     await Promise.allSettled(turn.userLookups);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
     while (turn.userEchoes.length > 0) {
@@ -4482,40 +4586,42 @@ export class OmpProviderSession {
       await Promise.allSettled(turn.userLookups);
       if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
     }
+    if (
+      !turn.interrupted &&
+      candidate.confidence !== "keyed" &&
+      this.hasTerminalConflict(turn, false)
+    ) {
+      this.resetAgentEndProbe(turn);
+      turn.deferredAgentEnd = candidate;
+      this.pollUsage(turn);
+      return;
+    }
     if (turn.interrupted) {
-      await this.completeAgentEnd(turn, event);
+      await this.completeAgentEnd(turn, candidate.event);
       return;
     }
     const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
     if (!turn.interrupted && this.subsessions?.hasActiveChildren()) {
-      turn.agentEndPending = false;
-      if (this.deferAgentEndForSubsessions(turn, event)) return;
+      this.resetAgentEndProbe(turn);
+      if (this.deferAgentEndForSubsessions(turn, candidate)) return;
+    }
+    if (
+      !turn.interrupted &&
+      candidate.confidence !== "keyed" &&
+      this.hasTerminalConflict(turn, false)
+    ) {
+      this.resetAgentEndProbe(turn);
+      turn.deferredAgentEnd = candidate;
+      this.pollUsage(turn);
+      return;
     }
     if (state) {
       if (state.isStreaming || state.isCompacting) {
-        if (!turn.terminalOwnershipEvidence && !turn.terminalOwnershipRequired) {
-          const message = "OMP agent_end arrived while the native runtime remained active";
-          this.invalidateRuntime(message);
-          await this.finishTurn(turn, "failed", { message }, true, true);
-          return;
-        }
-        turn.agentEndPending = false;
-        turn.terminalizing = false;
-        turn.deferredAgentEnd = undefined;
+        this.ignoreActiveTerminalCandidate(turn, candidate);
         return;
       }
-      if (
-        turn.terminalOwnershipRequired &&
-        (!ownershipObserved || !turn.terminalOwnershipEvidence)
-      ) {
-        turn.agentEndPending = false;
-        turn.terminalizing = false;
-        turn.deferredAgentEnd = undefined;
-        this.scheduleTerminalOwnershipTimeout(turn);
-        return;
-      }
-      await this.completeAgentEnd(turn, event, true);
+      await this.completeAgentEnd(turn, candidate.event, true);
       return;
     }
     if (turn.userEchoObserved) {
@@ -4525,7 +4631,7 @@ export class OmpProviderSession {
     if (turn.agentEndRetryTimer === undefined) {
       turn.agentEndRetryTimer = this.scheduler.set(() => {
         turn.agentEndRetryTimer = undefined;
-        this.finishFromAgentEnd(turn, event);
+        this.finishFromAgentEnd(turn, candidate);
       }, USAGE_POLL_MS);
     }
   }
@@ -4556,8 +4662,11 @@ export class OmpProviderSession {
         )
           return;
         if (!turn.interrupted && state && (state.isStreaming || state.isCompacting)) {
-          turn.agentEndPending = false;
-          turn.deferredAgentEnd = undefined;
+          this.ignoreActiveTerminalCandidate(turn, {
+            event,
+            arrivalSequence: turn.activitySequence,
+            confidence: event.requestId === undefined ? "ordered-legacy" : "keyed",
+          });
           return;
         }
         if (state && !state.isStreaming && !state.isCompacting) {
@@ -4623,6 +4732,7 @@ export class OmpProviderSession {
     turn.starting = false;
     turn.terminal = true;
     this.stopUsagePoll(turn);
+    this.cancelAmbiguousTerminal(turn);
     this.resolveTurnPermissions(turn.turnId);
     this.projector.finishTurn(turn.turnId);
     if (this.activeTurn === turn) this.activeTurn = null;
@@ -4677,7 +4787,7 @@ export class OmpProviderSession {
     turn.manualCompactionPending = false;
     turn.agentEndPending = false;
     this.cancelLocalOnlyCompletion(turn);
-    this.cancelTerminalOwnershipTimeout(turn);
+    this.cancelAmbiguousTerminal(turn);
     this.stopUsagePoll(turn);
     if (turn.manualCompactionDeadlineTimer !== undefined) {
       this.scheduler.clear(turn.manualCompactionDeadlineTimer);

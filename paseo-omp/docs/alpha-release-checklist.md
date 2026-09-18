@@ -7,7 +7,7 @@ This checklist prepares `paseo-omp-v0.1.0-alpha.1`. It does not authorize public
 - [ ] Release Please proposes `0.1.0-alpha.1` from manifest version `0.0.0`.
 - [ ] Package and tag names are `@omercnet/paseo-omp` and `paseo-omp-v0.1.0-alpha.1`.
 - [ ] Provider identity remains `omp-plugin`; bundled `omp` remains independent and enabled or disabled by the user.
-- [ ] Paseo requirement remains an official released range, currently `^0.8.0`.
+- [ ] Paseo requirement remains the reviewed dual-version range, currently `>=0.8.0 <0.10.0`.
 - [ ] Minimum tested OMP version, checksum, CI job, README, SUPPORT, and TESTING agree.
 
 ## Required gates
