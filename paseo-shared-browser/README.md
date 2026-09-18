@@ -61,14 +61,21 @@ wanted.
 
 ## Install
 
-Enable trusted plugins on the target Paseo daemon, then install from Git:
+Enable trusted plugins on the target Paseo daemon, then install from npm:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-shared-browser
+paseo plugin ls
+```
+
+Or install from Git:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-shared-browser
 paseo plugin ls
 ```
 
-Git installation runs `npm ci --include=dev` and `npm run prepare:runtime` on the daemon host. The
+Installation runs `npm ci --include=dev` and `npm run prepare:runtime` on the daemon host. The
 preparation step installs the pinned browser runtime and builds both `supervisor.cjs` and
 `shared-browser-mcp.cjs` under
 `$PASEO_HOME/plugin-data/shared-browser/runtime`. For a local monorepo checkout:
@@ -171,5 +178,6 @@ persistence, and archive teardown.
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-Both the Paseo daemon and app must satisfy `^0.8.0`, including Paseo 0.8 prereleases. The client
-surface uses React Native primitives and works in desktop, web, iOS, and Android Paseo clients.
+Both the Paseo daemon and app must satisfy `^0.8.0 || ^0.9.0-beta.1`, which supports Paseo 0.8
+and the Paseo 0.9 beta line. The client surface uses React Native primitives and works in desktop,
+web, iOS, and Android Paseo clients.

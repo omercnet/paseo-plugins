@@ -59,24 +59,21 @@ Requires Paseo 0.8.x or the 0.9 release line starting with `0.9.0-beta.1`. The m
 `requirements.paseo` as `^0.8.0 || ^0.9.0-beta.1`, and the development SDK is pinned to
 `0.9.0-beta.1`.
 
-On Paseo 0.8, install the plugin from its Git monorepo on the daemon host:
+Install the published package on the daemon host:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-agent-monitor
+paseo plugin update agent-monitor
+```
+
+Alternatively, install from Git. Git installs track the default branch and run no package manager;
+the plugin has no runtime dependencies:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:agent-monitor
 ```
 
-On Paseo 0.9, install the published npm package and use reviewed updates:
-
-```bash
-paseo plugin add npm:@omercnet/paseo-agent-monitor
-paseo plugin update agent-monitor
-```
-
-On Paseo 0.9, `plugin update` shows the available package change and asks before applying it. Use
-`paseo plugin update agent-monitor --check` to inspect updates without installing them.
-
-For an air-gapped host on either release line, clone or download the monorepo and install this
-directory:
+For an air-gapped host, clone or download the monorepo and install this directory:
 
 ```bash
 cd paseo-plugins/agent-monitor

@@ -18,104 +18,145 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      paseo-omp-created: ${{ steps.release.outputs['paseo-omp--release_created'] }}
-      paseo-omp-tag: ${{ steps.release.outputs['paseo-omp--tag_name'] }}
-      paseo-omp-sha: ${{ steps.release.outputs['paseo-omp--sha'] }}
-      paseo-beads-created: ${{ steps.release.outputs['paseo-beads--release_created'] }}
-      paseo-beads-tag: ${{ steps.release.outputs['paseo-beads--tag_name'] }}
-      paseo-gas-city-created: ${{ steps.release.outputs['paseo-gas-city--release_created'] }}
-      paseo-gas-city-tag: ${{ steps.release.outputs['paseo-gas-city--tag_name'] }}
+      package-paths: ${{ steps.packages.outputs.paths }}
+      paths-released: ${{ steps.release.outputs.paths_released }}
     steps:
+      - name: Check out release configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Discover package paths
+        id: packages
+        run: echo "paths=$(jq -c '.packages | keys' release-please-config.json)" >> "$GITHUB_OUTPUT"
       - name: Create or update releases
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-  publish-existing-assets:
+
+  publish-next:
     needs: metadata
-    if: ${{ needs.metadata.outputs.paseo-beads-created == 'true' || needs.metadata.outputs.paseo-gas-city-created == 'true' }}
+    if: ${{ needs.metadata.outputs.package-paths != '' && needs.metadata.outputs.package-paths != '[]' }}
+    name: Publish ${{ matrix.directory }} to next
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
-      contents: write
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: ${{ fromJSON(needs.metadata.outputs.package-paths) }}
     steps:
-      - name: Check out repository
+      - name: Check out main commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Set up Node
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-      - name: Install paseo-beads dependencies
-        if: needs.metadata.outputs.paseo-beads-created == 'true'
-        working-directory: paseo-beads
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install package dependencies
+        working-directory: ${{ matrix.directory }}
         run: npm ci --include=dev
-      - name: Verify paseo-beads package
-        if: needs.metadata.outputs.paseo-beads-created == 'true'
-        working-directory: paseo-beads
-        run: npm run verify:package
-      - name: Build paseo-beads release package
-        if: needs.metadata.outputs.paseo-beads-created == 'true'
-        working-directory: paseo-beads
-        run: npm run package:release
-      - name: Upload paseo-beads release asset
-        if: needs.metadata.outputs.paseo-beads-created == 'true'
-        working-directory: paseo-beads
+      - name: Set next version
+        working-directory: ${{ matrix.directory }}
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.metadata.outputs.paseo-beads-tag }}
-        run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_TAG.zip" --clobber
-      - name: Install paseo-gas-city dependencies
-        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
-        working-directory: paseo-gas-city
-        run: npm ci --include=dev
-      - name: Check paseo-gas-city
-        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
-        working-directory: paseo-gas-city
-        run: npm run check
-      - name: Typecheck paseo-gas-city
-        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
-        working-directory: paseo-gas-city
-        run: npm run typecheck
-      - name: Test paseo-gas-city with coverage
-        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
-        working-directory: paseo-gas-city
-        run: npm run test:coverage
-      - name: Verify paseo-gas-city package
-        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
-        working-directory: paseo-gas-city
-        run: npm run verify:package
-      - name: Build paseo-gas-city release package
-        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
-        working-directory: paseo-gas-city
-        run: npm run package:release
-      - name: Checksum paseo-gas-city release package
-        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
-        working-directory: paseo-gas-city
-        env:
-          RELEASE_TAG: ${{ needs.metadata.outputs.paseo-gas-city-tag }}
-        run: sha256sum "dist/$RELEASE_TAG.zip" > "dist/$RELEASE_TAG.zip.sha256"
-      - name: Upload paseo-gas-city release asset
-        if: needs.metadata.outputs.paseo-gas-city-created == 'true'
-        working-directory: paseo-gas-city
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.metadata.outputs.paseo-gas-city-tag }}
-        run: gh release upload "$RELEASE_TAG" "dist/$RELEASE_TAG.zip" "dist/$RELEASE_TAG.zip.sha256" --clobber
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          current="$(node -p "require('./package.json').version")"
+          version="${current%%-*}-next.${RUN_NUMBER}.${RUN_ATTEMPT}"
+          npm pkg set "version=${version}"
+      - name: Preview npm package
+        working-directory: ${{ matrix.directory }}
+        run: npm pack --dry-run
+      - name: Publish next package
+        working-directory: ${{ matrix.directory }}
+        run: npm publish --access public --provenance --tag next
+      - name: Verify next publication
+        working-directory: ${{ matrix.directory }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          name="$(node -p "require('./package.json').name")"
+          published=""
+          tagged=""
+          for _ in $(seq 1 180); do
+            published="$(npm view "$name@$version" version --json 2>/dev/null | tr -d '"' || true)"
+            tagged="$(npm view "$name" dist-tags.next --json 2>/dev/null | tr -d '"' || true)"
+            if [[ "$published" == "$version" && "$tagged" == "$version" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          test "$published" = "$version"
+          test "$tagged" = "$version"
 
-
-  publish-paseo-omp:
+  publish-release:
     needs: metadata
-    if: ${{ needs.metadata.outputs.paseo-omp-created == 'true' }}
+    if: ${{ needs.metadata.outputs.paths-released != '' && needs.metadata.outputs.paths-released != '[]' }}
+    name: Publish ${{ matrix.directory }} release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
-      actions: read
-      contents: write
+      contents: read
       id-token: write
-      attestations: write
-      artifact-metadata: write
-    uses: $/.github/workflows/publish-paseo-omp.yml
-    with:
-      tag: ${{ needs.metadata.outputs.paseo-omp-tag }}
-      sha: ${{ needs.metadata.outputs.paseo-omp-sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: ${{ fromJSON(needs.metadata.outputs.paths-released) }}
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install package dependencies
+        working-directory: ${{ matrix.directory }}
+        run: npm ci --include=dev
+      - name: Preview npm package
+        working-directory: ${{ matrix.directory }}
+        run: npm pack --dry-run
+      - name: Publish release package
+        working-directory: ${{ matrix.directory }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [[ "$version" == *-* ]]; then
+            channel="${version#*-}"
+            npm publish --access public --provenance --tag "${channel%%.*}"
+          else
+            npm publish --access public --provenance --tag latest
+          fi
+      - name: Verify release publication
+        working-directory: ${{ matrix.directory }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          name="$(node -p "require('./package.json').name")"
+          if [[ "$version" == *-* ]]; then
+            channel="${version#*-}"
+            channel="${channel%%.*}"
+          else
+            channel="latest"
+          fi
+          published=""
+          tagged=""
+          for _ in $(seq 1 180); do
+            published="$(npm view "$name@$version" version --json 2>/dev/null | tr -d '"' || true)"
+            tagged="$(npm view "$name" "dist-tags.${channel}" --json 2>/dev/null | tr -d '"' || true)"
+            if [[ "$published" == "$version" && "$tagged" == "$version" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          test "$published" = "$version"
+          test "$tagged" = "$version"

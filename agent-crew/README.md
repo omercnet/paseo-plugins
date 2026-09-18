@@ -58,7 +58,7 @@ shown without hiding the failure.
 
 `usePaseo().agents.list()` and `usePaseo().workspaces.list()` page the selected daemon directory at
 200 entries per page, up to 10 pages. Parent relationships come from the first-class
-`parentAgentId` field when the public 0.8 SDK exposes it, with a legacy label fallback for older
+`parentAgentId` field when the public SDK exposes it, with a legacy label fallback for older
 snapshots. The workspace crew contains local agents, their managed descendants, and only the foreign
 ancestor paths needed to explain local membership. Archived agents are omitted, malformed parent
 cycles are bounded, and siblings are ordered by actionable state, creation time, then ID.
@@ -93,13 +93,26 @@ Agent Crew intentionally stays inside the public Paseo plugin SDK.
 
 Paseo plugins are trusted, unsandboxed code. Review the source before installing it.
 
+From npm:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-agent-crew
+```
+
 From GitHub:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:agent-crew
 ```
 
-From a local checkout on the Paseo daemon host:
+Update a Git installation on either version, or an npm installation on Paseo 0.9, after reviewing
+the proposed revision:
+
+```bash
+paseo plugin update agent-crew
+```
+
+From a local checkout on the Paseo daemon host, on Paseo 0.8 or 0.9:
 
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
@@ -123,9 +136,10 @@ paseo plugin install /absolute/path/to/paseo-agent-crew
 paseo plugin reload agent-crew
 ```
 
-The manifest requires Paseo `^0.8.0`, which accepts Paseo 0.8.x including compatible prereleases.
-The project pins `@getpaseo/cli`, `@getpaseo/client`, `@getpaseo/plugin`, and
-`@getpaseo/protocol` to stable `0.8.0`. React 19.1 and React Native 0.81 match the host.
+The manifest supports Paseo 0.8.x and the 0.9 beta line with
+`^0.8.0 || ^0.9.0-beta.1`. The project pins `@getpaseo/cli`, `@getpaseo/client`,
+`@getpaseo/plugin`, and `@getpaseo/protocol` to `0.9.0-beta.1` for development. React 19.1 and
+React Native 0.81 match the host.
 
 Release Please maintains versions, changelog entries, component tags, and GitHub releases from
 Conventional Commits in the monorepo.
