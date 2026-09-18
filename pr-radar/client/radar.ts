@@ -1,6 +1,6 @@
 import type { usePaseo } from "@getpaseo/plugin/client";
 import { z } from "zod";
-import type { GitHubInboxItem } from "../shared/viewer-scope";
+import { type GitHubInboxItem, HttpsUrlSchema } from "../shared/viewer-scope";
 
 export type PaseoApi = ReturnType<typeof usePaseo>;
 export type PaseoWorkspace = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>["entries"][number];
@@ -349,14 +349,15 @@ export function buildRadarSnapshot(
 
     const pullRequest = runtime?.pullRequest;
     if (!pullRequest || !isOpenPullRequest(pullRequest.state, pullRequest.isMerged)) continue;
+    const parsedUrl = HttpsUrlSchema.safeParse(pullRequest.url);
+    if (!parsedUrl.success) continue;
+    const url = parsedUrl.data;
 
     const repository =
       pullRequest.repoOwner && pullRequest.repoName
         ? `${pullRequest.repoOwner}/${pullRequest.repoName}`
-        : parseRepository(pullRequest.url);
-    const id = pullRequest.number
-      ? `${repository.toLowerCase()}#${pullRequest.number}`
-      : pullRequest.url;
+        : parseRepository(url);
+    const id = pullRequest.number ? `${repository.toLowerCase()}#${pullRequest.number}` : url;
     const parsedFacts = PullRequestFactsSchema.safeParse(pullRequest);
     const facts = parsedFacts.success
       ? (parsedFacts.data.forgeSpecific ?? parsedFacts.data.github ?? null)
@@ -386,7 +387,7 @@ export function buildRadarSnapshot(
     const row: RadarRow = {
       id,
       number: pullRequest.number ?? null,
-      url: pullRequest.url,
+      url,
       title: pullRequest.title,
       repository,
       baseRefName: pullRequest.baseRefName,

@@ -15,7 +15,7 @@ import {
   type RadarAgent,
   type RadarRow,
 } from "../client/radar";
-import type { GitHubInboxItem } from "../shared/viewer-scope";
+import { type GitHubInboxItem, GitHubInboxItemSchema } from "../shared/viewer-scope";
 
 function agent(overrides: Partial<RadarAgent> = {}): RadarAgent {
   return {
@@ -439,33 +439,34 @@ describe("agent actions", () => {
   });
 });
 
-describe("GitHub inbox merge", () => {
+describe("GitHub inbox", () => {
+  const item: GitHubInboxItem = {
+    id: "PR_9",
+    number: 9,
+    url: "https://github.com/example/project/pull/9",
+    title: "Fix production rollout",
+    repository: "example/project",
+    author: "omercnet",
+    authorKind: "human",
+    createdAt: "2026-09-01T08:00:00.000Z",
+    updatedAt: "2026-09-02T08:00:00.000Z",
+    baseRefName: "main",
+    headRefName: "fix/rollout",
+    isDraft: false,
+    isSecurity: false,
+    comments: 2,
+    labels: [],
+    mergeable: "MERGEABLE",
+    mergeStateStatus: "BLOCKED",
+    checksStatus: "failure",
+    reviewDecision: "changes_requested",
+    role: "author",
+    changes: ["Checks: success → failure"],
+  };
+
   test("adds an authored inbox PR without a linked workspace", () => {
     const snapshot = buildRadarSnapshot([], []);
     snapshot.repositoryRoots["example/project"] = "/work/project";
-    const item: GitHubInboxItem = {
-      id: "PR_9",
-      number: 9,
-      url: "https://github.com/example/project/pull/9",
-      title: "Fix production rollout",
-      repository: "example/project",
-      author: "omercnet",
-      authorKind: "human",
-      createdAt: "2026-09-01T08:00:00.000Z",
-      updatedAt: "2026-09-02T08:00:00.000Z",
-      baseRefName: "main",
-      headRefName: "fix/rollout",
-      isDraft: false,
-      isSecurity: false,
-      comments: 2,
-      labels: [],
-      mergeable: "MERGEABLE",
-      mergeStateStatus: "BLOCKED",
-      checksStatus: "failure",
-      reviewDecision: "changes_requested",
-      role: "author",
-      changes: ["Checks: success → failure"],
-    };
 
     const [merged] = mergeInboxRows(snapshot, [item]);
     expect(merged).toMatchObject({
@@ -476,6 +477,15 @@ describe("GitHub inbox merge", () => {
       localProjectRoot: "/work/project",
       changes: ["Checks: success → failure"],
     });
+  });
+
+  test("rejects non-HTTPS inbox URLs at the RPC boundary", () => {
+    const result = GitHubInboxItemSchema.safeParse({
+      ...item,
+      url: "http://github.com/example/project/pull/9",
+    });
+
+    expect(result.success).toBe(false);
   });
 
   test("preserves active agents when GitHub refreshes a linked PR", () => {
@@ -569,6 +579,19 @@ describe("radar snapshot", () => {
     });
 
     expect(buildRadarSnapshot([closed, merged], []).rows).toEqual([]);
+  });
+
+  test("does not expose pull requests with non-HTTPS URLs", () => {
+    const template = workspace("template").githubRuntime?.pullRequest;
+    if (!template) throw new Error("expected pull request fixture");
+    const insecure = workspace("insecure", {
+      pullRequest: { ...template, url: "http://github.com/getpaseo/paseo/pull/42" },
+    });
+    const executable = workspace("executable", {
+      pullRequest: { ...template, url: "javascript:alert(1)" },
+    });
+
+    expect(buildRadarSnapshot([insecure, executable], []).rows).toEqual([]);
   });
 
   test("preserves per-workspace forge errors", () => {

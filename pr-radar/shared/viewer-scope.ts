@@ -1,10 +1,12 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
+export const HttpsUrlSchema = z.url({ protocol: /^https$/ });
+
 export const GitHubInboxItemSchema = z.object({
   id: z.string(),
   number: z.number().int().positive(),
-  url: z.url(),
+  url: HttpsUrlSchema,
   title: z.string(),
   repository: z.string(),
   author: z.string().nullable(),
@@ -30,13 +32,13 @@ export type GitHubInboxItem = z.infer<typeof GitHubInboxItemSchema>;
 export const viewerScope = defineRpc({
   name: "pr-radar.viewer-scope",
   input: z.object({
-    urls: z.array(z.url()).max(200),
+    urls: z.array(HttpsUrlSchema).max(200),
     windowDays: z.number().int().min(1).max(365).default(30),
   }),
   output: z.object({
     viewer: z.string().nullable(),
-    authoredUrls: z.array(z.url()),
-    reviewRequestedUrls: z.array(z.url()),
+    authoredUrls: z.array(HttpsUrlSchema),
+    reviewRequestedUrls: z.array(HttpsUrlSchema),
     inboxItems: z.array(GitHubInboxItemSchema),
     truncated: z.boolean(),
     coverageNote: z.string(),
