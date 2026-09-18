@@ -130,10 +130,27 @@ async function installChromium() {
     .map((entry) => entry.name)
     .sort()
     .reverse();
-  const chrome = releases[0] && join(browsersRoot, releases[0], "chrome");
+  const releaseDir = releases[0] && join(browsersRoot, releases[0]);
+  const chrome =
+    releaseDir &&
+    (platform() === "darwin"
+      ? join(releaseDir, "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing")
+      : join(releaseDir, "chrome"));
   if (!chrome) throw new Error("agent-browser install did not produce a Chromium release");
   await requireExecutable(chrome, "Installed Chromium executable");
-  await cp(dirname(chrome), join(stagingRoot, "chromium"), { recursive: true, force: true });
+  await cp(releaseDir, join(stagingRoot, "chromium"), { recursive: true, force: true });
+  if (platform() === "darwin") {
+    // chrome can't be a symlink to the .app's real binary here: macOS dyld
+    // resolves @executable_path from the invoked path's own directory, so a
+    // symlink at chromium/chrome would break the bundle's relative Frameworks
+    // lookup. Exec the real binary by its actual path instead.
+    const chromeShim = join(stagingRoot, "chromium", "chrome");
+    await writeFile(
+      chromeShim,
+      `#!/bin/sh\nexec "$(cd "$(dirname "$0")" && pwd)/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" "$@"\n`,
+    );
+    await chmod(chromeShim, 0o700);
+  }
   await rm(installHome, { recursive: true, force: true });
 }
 
