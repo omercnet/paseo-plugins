@@ -8,8 +8,8 @@
 
 ## Install
 
-See [INSTALL.md](./INSTALL.md) for Git installation, activation, updates, removal, and local
-development installation.
+See [INSTALL.md](./INSTALL.md) for npm and Git installation, activation, updates, removal, and
+local development installation.
 
 ## Themes
 
@@ -29,7 +29,7 @@ colors. For Alucard, use one of Paseo's light-capable syntax themes.
 
 ## Requirements and limits
 
-- Requires Paseo 0.8.x, including compatible 0.8 prereleases.
+- Supports Paseo 0.8.x and Paseo 0.9.x starting with 0.9.0-beta.1.
 - The plugin contains no daemon-side behavior and does not read or change application state.
 
 ## Palette mapping

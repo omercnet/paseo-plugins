@@ -1,11 +1,20 @@
 ### Paseo
 
-#### Install from Git
-
 Paseo plugins are trusted code. Review the source before installing a plugin on the daemon host.
+
 This theme is data-only and does not access the filesystem, processes, credentials, or network.
 
-Install the latest version from the public monorepo:
+#### Install from npm
+
+Paseo 0.9.0-beta.1 and later can install the published package directly:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-dracula
+```
+
+#### Install from Git
+
+Git installation remains available for Paseo 0.8.x and later:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-dracula
@@ -18,11 +27,14 @@ paseo plugin add omercnet/paseo-plugins:paseo-dracula
 3. Syntax highlighting is configured separately. For Dracula, optionally set **Highlight theme**
    to **Dracula**. For Alucard, select one of Paseo's light-capable highlight themes.
 
-#### Update
+#### Update on Paseo 0.9.0-beta.1 or later
 
 ```bash
 paseo plugin update paseo-dracula
 ```
+
+The command checks the npm or Git source used for the installation and asks before applying the
+new revision.
 
 #### Remove
 

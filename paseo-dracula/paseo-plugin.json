@@ -1,6 +1,7 @@
 {
   "id": "paseo-dracula",
+  "description": "Dracula Classic and Alucard Classic themes for Paseo.",
   "requirements": {
-    "paseo": "^0.8.0"
+    "paseo": "^0.8.0 || ^0.9.0-beta.1"
   }
 }
