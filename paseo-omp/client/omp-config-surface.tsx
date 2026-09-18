@@ -1,5 +1,4 @@
 import {
-  openExternalUrl,
   type PluginSurfaceProps,
   type PluginWorkspacePanelProps,
   usePaseo,
@@ -27,6 +26,7 @@ import {
 import { type OmpStore, storeLabel } from "../shared/omp-store";
 import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider-diagnostics";
 import { ComposerPillSettingsSection } from "./composer-pill-settings";
+import { openOmpExternalUrl } from "./external-url";
 import {
   documentationForSettingCategory,
   documentationForSettingPath,
@@ -1073,7 +1073,7 @@ function OmpConfigContent({
   const openDocumentation = useCallback(async (link: OmpDocumentationLink) => {
     setDocumentationError(null);
     try {
-      await openExternalUrl(link.url);
+      await openOmpExternalUrl(link.url);
     } catch {
       setDocumentationError(`Could not open ${link.label.toLocaleLowerCase()}.`);
     }

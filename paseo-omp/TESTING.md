@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against the Paseo plugin SDK versions pinned in `package.json`, official Paseo Docker image `0.9.0-beta.1@sha256:f75a0eb3547ad3cc6bbdeaa7277d2d50eb4d06a9dd669d480371d7adf1c911b5`, and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; latest published 18.1 patch 18.1.22; and current release 18.2.0.
+Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; latest published 18.1 patch 18.1.22; and current release 18.2.0. Validation against official Paseo Docker image `0.9.0-beta.1@sha256:f75a0eb3547ad3cc6bbdeaa7277d2d50eb4d06a9dd669d480371d7adf1c911b5` is partial as recorded below.
 
 Classifications:
 
@@ -105,7 +105,7 @@ Set `PASEO_CANARY_OMP_VERSION` to exercise another pinned release. The local run
 
 The Linux real-OMP CI matrix downloads checksummed `omp-linux-x64` assets for OMP 17.2.15, 17.3.4, 18.0.11, 18.1.10, 18.1.15, 18.1.22, and 18.2.0, verifies each binary's pinned GitHub release SHA-256, and runs `PASEO_OMP_REAL_E2E=1 PASEO_OMP_VERSION=<version> npm test -- tests/provider.real.e2e.test.ts`. The historical entries are the four pre-floor releases with more than 4,000 downloads shown by npm for the seven days ending 2026-09-15; they are compatibility regression probes, not a support commitment. The remaining entries cover the supported floor, newest patch in that minor line, and current release. The test uses the real OMP binary and a local deterministic OpenAI-compatible model endpoint, so catalog, text-plus-Bash, and oversized-image execution are mandatory without repository secrets.
 
-The controlled canary in `canary/compose.yml` builds this plugin into that official Paseo image and installs checksummed OMP binaries for `amd64` and `arm64`. `canary/smoke.ts` passed catalog/mode discovery, text and image prompts, Bash, a configured stdio MCP tool, permission allow/deny/cancel, steering, interruption, session listing/import/resume, subagents, conversation rewind followed by another turn, Hub process visibility, usage, and every plugin RPC. Browser verification loaded the global OMP health/configuration surface and the agent-scoped Hub, Memory, and Sessions controls. The default mock returned `CANARY_MOCK_OK`, `CANARY_TOOL_OK`, and `CANARY_MCP_OK`; the optional Ollama profile pulled `qwen2.5:0.5b` and completed turns without paid credentials. The harness records the canary-only `/compact` and `/handoff` failures instead of masking them.
+The controlled canary in `canary/compose.yml` successfully built the plugin into that official Paseo image, started the daemon, loaded `paseo-omp`, and completed runtime health, catalog/mode discovery, initial text, model switching, `autocompact`, `follow-up`, and the documented compact/handoff error collection. It then failed on the first Bash scenario because the later turn ended without request-correlated terminal ownership: `OMP terminal ownership could not be confirmed`. The subsequent image, MCP, permission, steering, interruption, persistence, subagent, Hub, usage, rewind, browser, and optional Ollama scenarios were not reached and remain unverified on Paseo 0.9.0-beta.1.
 
 ## OMP RPC compatibility intake
 
@@ -145,6 +145,6 @@ The go/no-go criteria, manual acceptance boundary, and alpha limitation list are
 - `npm run test:integration:install`: a packed npm package retains required production dependencies and bundles successfully; a fresh Git-style checkout installs with lifecycle scripts disabled, typechecks, and loads the server contribution.
 - `npm run test:integration:docker`: verifies the host/container ownership boundary.
 - `npm run test:integration:wsl`: locally skips when `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
-- `docker compose -f canary/compose.yml`: official Paseo 0.9.0-beta.1, deterministic mock, Tailscale-bound web UI, and optional Ollama `qwen2.5:0.5b` passed end-to-end.
+- `docker compose -f canary/compose.yml`: official Paseo 0.9.0-beta.1 image build, daemon startup, plugin load, and early deterministic scenarios passed; the smoke stopped at the first later-turn Bash scenario with `OMP terminal ownership could not be confirmed`, so the remaining scenarios are unverified.
 - `zizmor .github/workflows`: no findings (offline audit; six repository-wide suppressions remain).
 - Release Please 17.1.2 `config.json` and `manifest.json` schema validation: passed for `release-please-config.json` and `.release-please-manifest.json`.

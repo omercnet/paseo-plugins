@@ -55,7 +55,7 @@ describe("plugin server bundle", () => {
     expect(manifest).toEqual({
       id: "paseo-omp",
       requirements: { paseo: ">=0.8.0 <0.10.0" },
-      build: [["npm", "ci", "--ignore-scripts"]],
+      build: [["npm", "install", "--ignore-scripts"]],
     });
     const packageManifest = JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8"));
     expect(packageManifest.description).toBe(

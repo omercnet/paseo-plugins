@@ -1,4 +1,4 @@
-import { openExternalUrl, type PluginTimelineItemProps, useRpc } from "@getpaseo/plugin/client";
+import { type PluginTimelineItemProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -6,6 +6,7 @@ import {
   type OmpMcpAuthorizationTimeline,
   openOmpMcpAuthorizationInPaseoBrowser,
 } from "../shared/mcp";
+import { openOmpExternalUrl } from "./external-url";
 
 function browserAuthorizationError(error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
@@ -98,7 +99,7 @@ export function OmpMcpAuthorizationCard({
     setError(null);
     setMessage(null);
     try {
-      await openExternalUrl(item.data.url);
+      await openOmpExternalUrl(item.data.url);
     } catch {
       setError("Could not open the authorization URL. Copy the URL below into a browser.");
     } finally {

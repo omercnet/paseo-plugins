@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -145,6 +145,44 @@ async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<voi
   await verifyRuntimeDependencies(checkoutPlugin);
   await run([npmCommand, "run", "typecheck"], checkoutPlugin);
   await run([npmCommand, "test", "--", "tests/server-bundle.test.ts"], checkoutPlugin);
+}
+
+async function verifyNpmArtifactInstall(temporaryDirectory: string): Promise<void> {
+  const packDirectory = join(temporaryDirectory, "npm-pack");
+  await mkdir(packDirectory, { recursive: true });
+  const packed: unknown = JSON.parse(
+    await run([npmCommand, "pack", "--json", "--pack-destination", packDirectory], pluginRoot),
+  );
+  const artifact = Array.isArray(packed) ? packed[0] : undefined;
+  const filename =
+    artifact && typeof artifact === "object" && "filename" in artifact
+      ? artifact.filename
+      : undefined;
+  if (typeof filename !== "string" || !filename) throw new Error("npm pack returned no artifact");
+
+  const installRoot = join(temporaryDirectory, "npm-install");
+  await run(
+    [
+      npmCommand,
+      "install",
+      "--ignore-scripts",
+      "--prefix",
+      installRoot,
+      join(packDirectory, filename),
+    ],
+    temporaryDirectory,
+  );
+  const installedPlugin = join(installRoot, "node_modules", "@omercnet", "paseo-omp");
+  const artifactHasLockfile = await access(join(installedPlugin, "package-lock.json")).then(
+    () => true,
+    () => false,
+  );
+  if (artifactHasLockfile) throw new Error("npm artifact unexpectedly contains package-lock.json");
+
+  const commands = await buildCommands(installedPlugin);
+  for (const command of commands) await run(command, installedPlugin);
+  await verifyRuntimeDependencies(installedPlugin);
+  await run([npmCommand, "run", "typecheck"], installedPlugin);
 }
 
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-install-"));
