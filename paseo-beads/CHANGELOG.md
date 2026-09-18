@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v0.1.0...paseo-beads-v0.2.0) (2026-09-18)
+
+
+### Features
+
+* **release:** publish plugins to npm ([#80](https://github.com/omercnet/paseo-plugins/issues/80)) ([3c93048](https://github.com/omercnet/paseo-plugins/commit/3c93048cfefda97d8c2bc1631e3428fb64bdad09))
+
+
+### Bug Fixes
+
+* **paseo-beads:** support Paseo 0.9 beta ([#87](https://github.com/omercnet/paseo-plugins/issues/87)) ([7c895c8](https://github.com/omercnet/paseo-plugins/commit/7c895c8a82541e2e2d7d626a8f1d9ef28d6c7536))
+
 ## [0.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v0.0.1...paseo-beads-v0.1.0) (2026-09-11)
 
 
