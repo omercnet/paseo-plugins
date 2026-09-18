@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-omp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "Paseo integration for OMP, including its direct provider and workspace tooling.",
   "license": "MIT",
@@ -57,19 +57,18 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@getpaseo/protocol": "0.9.0-beta.1",
     "@modelcontextprotocol/sdk": "1.29.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",
-    "@getpaseo/cli": "0.8.0",
-    "@getpaseo/client": "0.8.0",
-    "@getpaseo/plugin": "0.8.0",
-    "@getpaseo/protocol": "0.8.0",
+    "@getpaseo/cli": "0.9.0-beta.1",
+    "@getpaseo/client": "0.9.0-beta.1",
+    "@getpaseo/plugin": "0.9.0-beta.1",
     "@tanstack/react-query": "^5.102.3",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.18",
-    "esbuild": "^0.28.0",
     "@vitest/coverage-v8": "^5.0.0",
     "react": "19.1.0",
     "react-native": "0.81.5",

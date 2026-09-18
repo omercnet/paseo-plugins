@@ -1,13 +1,25 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import { build } from "esbuild";
+import {
+  negotiateProviderCapabilities,
+  requireProviderCapabilities,
+} from "@getpaseo/plugin/server/provider";
+import { compilePlugin } from "../node_modules/@getpaseo/server/dist/server/server/plugins/compiler.js";
 
 const executeFile = promisify(execFile);
 const pluginRoot = join(import.meta.dirname, "..");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const sdkStub = {
+  defineRpc: (definition: unknown) => definition,
+  defineSettings: (definition: unknown) => definition,
+  negotiateProviderCapabilities,
+  requireProviderCapabilities,
+};
+
 const ignoredCheckoutEntries: Record<string, true> = {
   ".git": true,
   coverage: true,
@@ -68,31 +80,45 @@ async function verifyRuntimeDependencies(root: string): Promise<void> {
   }
 }
 
-async function verifyServerBundle(root: string): Promise<void> {
-  await build({
-    absWorkingDir: root,
-    entryPoints: ["index.server.ts"],
-    bundle: true,
-    platform: "node",
-    format: "cjs",
-    write: false,
-    external: [
-      "@getpaseo/plugin",
-      "@getpaseo/protocol/*",
-      "@getpaseo/plugin/server",
-      "@getpaseo/plugin/server/provider",
-      "zod",
-    ],
-    logLevel: "silent",
+async function verifyProductionOnly(root: string, source: string): Promise<void> {
+  const installedDevDependency = await access(join(root, "node_modules", "typescript")).then(
+    () => true,
+    () => false,
+  );
+  if (installedDevDependency) throw new Error(`${source} preparation installed devDependencies`);
+}
+
+async function verifyHostCompilationAndServerLoad(root: string): Promise<void> {
+  const { clientBundle, serverBundle } = await compilePlugin({
+    client: join(root, "index.client.tsx"),
+    server: join(root, "index.server.ts"),
   });
+  if (!clientBundle || !serverBundle) {
+    throw new Error("Paseo host compilation did not produce both plugin bundles");
+  }
+  const installedRequire = createRequire(join(root, "package.json"));
+  // biome-ignore lint/security/noGlobalEval: mirrors the Paseo host's plugin bundle loader
+  const factory = globalThis.eval(serverBundle) as (require: (name: string) => unknown) => {
+    default?: unknown;
+  };
+  const loaded = factory((name) =>
+    name.startsWith("@getpaseo/plugin") ? sdkStub : installedRequire(name),
+  );
+  if (typeof loaded.default !== "function") {
+    throw new Error("Paseo host compilation produced no server contribution");
+  }
 }
 
 async function verifyNpmPackageInstall(temporaryDirectory: string): Promise<void> {
-  const packed = JSON.parse(
+  const packed: unknown = JSON.parse(
     await run([npmCommand, "pack", "--json", "--pack-destination", temporaryDirectory], pluginRoot),
-  ) as Array<{ filename?: string }>;
-  const filename = packed[0]?.filename;
-  if (!filename) throw new Error("npm pack did not return a package filename");
+  );
+  const artifact = Array.isArray(packed) ? packed[0] : undefined;
+  const filename =
+    artifact && typeof artifact === "object" && "filename" in artifact
+      ? artifact.filename
+      : undefined;
+  if (typeof filename !== "string" || !filename) throw new Error("npm pack returned no artifact");
 
   const consumerRoot = join(temporaryDirectory, "consumer");
   await mkdir(consumerRoot);
@@ -103,10 +129,21 @@ async function verifyNpmPackageInstall(temporaryDirectory: string): Promise<void
   );
 
   const installedPlugin = join(consumerRoot, "node_modules", "@omercnet", "paseo-omp");
+  const packagedLockfile = await access(join(installedPlugin, "package-lock.json")).then(
+    () => true,
+    () => false,
+  );
+  if (packagedLockfile) throw new Error("npm artifact unexpectedly contains package-lock.json");
   const commands = await buildCommands(installedPlugin);
   for (const command of commands) await run(command, installedPlugin);
+  const generatedLockfile = await access(join(installedPlugin, "package-lock.json")).then(
+    () => true,
+    () => false,
+  );
+  if (generatedLockfile) throw new Error("npm preparation generated package-lock.json");
+  await verifyProductionOnly(installedPlugin, "npm artifact");
   await verifyRuntimeDependencies(installedPlugin);
-  await verifyServerBundle(installedPlugin);
+  await verifyHostCompilationAndServerLoad(installedPlugin);
 }
 
 async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<void> {
@@ -142,9 +179,9 @@ async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<voi
   const checkoutPlugin = join(checkoutRoot, "paseo-omp");
   const commands = await buildCommands(checkoutPlugin);
   for (const command of commands) await run(command, checkoutPlugin);
+  await verifyProductionOnly(checkoutPlugin, "Git");
   await verifyRuntimeDependencies(checkoutPlugin);
-  await run([npmCommand, "run", "typecheck"], checkoutPlugin);
-  await run([npmCommand, "test", "--", "tests/server-bundle.test.ts"], checkoutPlugin);
+  await verifyHostCompilationAndServerLoad(checkoutPlugin);
 }
 
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-install-"));

@@ -6,7 +6,7 @@ COPY paseo-omp/package.json paseo-omp/package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY paseo-omp/ ./
 
-FROM ghcr.io/getpaseo/paseo:0.8.0@sha256:5518da7cdd35f132e8a944c35e509c677a90a8f3ec8a78df98f7fb5fd5e2c6c3
+FROM ghcr.io/getpaseo/paseo:0.9.0-beta.1@sha256:f75a0eb3547ad3cc6bbdeaa7277d2d50eb4d06a9dd669d480371d7adf1c911b5
 
 ARG TARGETARCH
 ARG OMP_VERSION=18.1.15

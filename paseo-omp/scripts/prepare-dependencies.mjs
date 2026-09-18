@@ -8,10 +8,14 @@ const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 export function prepareDependencies(root = projectRoot, execute = execFileSync) {
   if (!existsSync(join(root, "package-lock.json"))) return false;
 
-  execute(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--ignore-scripts"], {
-    cwd: root,
-    stdio: "inherit",
-  });
+  execute(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["ci", "--omit=dev", "--ignore-scripts"],
+    {
+      cwd: root,
+      stdio: "inherit",
+    },
+  );
   return true;
 }
 

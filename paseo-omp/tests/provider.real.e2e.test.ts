@@ -180,7 +180,7 @@ describe(`OMP ${expectedOmpVersion} real provider`, () => {
   );
 
   testReal(
-    "runs a text and Bash tool turn without duplicate or hanging completion",
+    "runs three sequential prompts with one Bash tool without duplicate or hanging completion",
     async () => {
       const harness = await createHarness();
       let session: AgentSession | undefined;
@@ -209,24 +209,35 @@ describe(`OMP ${expectedOmpVersion} real provider`, () => {
         const events: Array<{ type: string; turnId?: string }> = [];
         const unsubscribe = session.subscribe((event) => events.push(event));
         try {
-          const result = await session.run(
+          const prompts = [
             "Use the bash tool exactly once to run `printf REAL_OMP_TOOL_OK`, then reply with exactly REAL_OMP_DONE.",
-            { clientMessageId: "real-omp-tool" },
-          );
-          expect(result.finalText).toBe("REAL_OMP_DONE");
-          expect(events.filter((event) => event.type === "turn_started")).toHaveLength(1);
-          expect(events.filter((event) => event.type === "turn_completed")).toHaveLength(1);
+            "Reply with exactly REAL_OMP_DONE.",
+            "Again reply with exactly REAL_OMP_DONE.",
+          ];
+          const results = [];
+          for (const [index, prompt] of prompts.entries()) {
+            results.push(
+              await session.run(prompt, { clientMessageId: `real-omp-sequential-${index + 1}` }),
+            );
+          }
+          expect(results.map((result) => result.finalText)).toEqual([
+            "REAL_OMP_DONE",
+            "REAL_OMP_DONE",
+            "REAL_OMP_DONE",
+          ]);
+          expect(events.filter((event) => event.type === "turn_started")).toHaveLength(3);
+          expect(events.filter((event) => event.type === "turn_completed")).toHaveLength(3);
           expect(events.filter((event) => event.type === "turn_failed")).toHaveLength(0);
           expect(events.filter((event) => event.type === "turn_canceled")).toHaveLength(0);
           expect(
-            result.timeline.some(
+            results[0]?.timeline.some(
               (item) =>
                 item.type === "tool_call" &&
                 item.status === "completed" &&
                 item.name.toLowerCase() === "bash",
             ),
           ).toBe(true);
-          expect(harness.requests).toHaveLength(2);
+          expect(harness.requests).toHaveLength(4);
           expect(JSON.stringify(harness.requests[1])).toContain("REAL_OMP_TOOL_OK");
         } finally {
           unsubscribe();

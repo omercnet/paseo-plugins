@@ -1,4 +1,3 @@
-import type { PaseoAgentListResult, PaseoApi } from "@getpaseo/client";
 import { settingsRpc } from "@getpaseo/plugin";
 import type {
   PluginButtonRegistration,
@@ -19,6 +18,7 @@ import {
   isOmpProvider,
   ompStoreKey,
 } from "./client/omp-store-state";
+import type { PaseoAgentListResult, PaseoApi } from "./client/paseo-types";
 import { quotaProviderIcon } from "./client/provider-icon";
 import { OmpImageTimeline } from "./client/provider-image";
 import { QuotaPopover } from "./client/quota-popover";
