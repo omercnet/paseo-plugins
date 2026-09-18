@@ -24,10 +24,10 @@ import {
   crewState,
   formatAge,
   isWorking,
+  listenToCrewDirectory,
   type PaseoApi,
   type PaseoWorkspace,
   parentAgentId,
-  subscribeToCrewDirectory,
 } from "./crew";
 
 const PAGE_LIMIT = 200;
@@ -210,8 +210,6 @@ export function AgentCrew({
 
   useEffect(() => {
     let debounce: ReturnType<typeof setTimeout> | undefined;
-    let disposed = false;
-    let releaseDirectory: (() => Promise<void>) | undefined;
     const invalidate = () => {
       if (debounce) return;
       debounce = setTimeout(() => {
@@ -219,32 +217,10 @@ export function AgentCrew({
         void queryClient.invalidateQueries({ queryKey });
       }, REFRESH_DEBOUNCE_MS);
     };
-    const unsubscribeAgents = paseo.agents.subscribe(invalidate);
-    const unsubscribeWorkspaces = paseo.workspaces.subscribe(invalidate);
-    void subscribeToCrewDirectory(paseo)
-      .then((cleanup) => {
-        if (disposed) {
-          void cleanup().catch((error) =>
-            console.error("Agent Crew subscription cleanup failed", error),
-          );
-          return;
-        }
-        releaseDirectory = cleanup;
-        invalidate();
-      })
-      .catch((error) => {
-        if (!disposed) console.error("Agent Crew live updates unavailable", error);
-      });
+    const unsubscribeDirectory = listenToCrewDirectory(paseo, invalidate);
     return () => {
-      disposed = true;
       clearTimeout(debounce);
-      unsubscribeAgents();
-      unsubscribeWorkspaces();
-      if (releaseDirectory) {
-        void releaseDirectory().catch((error) =>
-          console.error("Agent Crew subscription cleanup failed", error),
-        );
-      }
+      unsubscribeDirectory();
     };
   }, [paseo, queryClient, queryKey]);
 
