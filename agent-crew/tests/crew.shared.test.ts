@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { AgentEntry } from "../client/crew";
 import {
   agentAgeTimestamp,
@@ -7,6 +7,7 @@ import {
   crewCounts,
   crewState,
   formatAge,
+  subscribeToCrewDirectory,
 } from "../client/crew";
 
 function entry(
@@ -212,5 +213,57 @@ describe("age", () => {
     }).agent;
     expect(agentAgeTimestamp(agent)).toBe(Date.parse("2026-09-01T12:04:00.000Z"));
     expect(formatAge(agentAgeTimestamp(agent), Date.parse("2026-09-01T12:09:00.000Z"))).toBe("5m");
+  });
+});
+
+describe("subscribeToCrewDirectory", () => {
+  test("owns and releases Paseo 0.9 directory subscriptions", async () => {
+    const releaseAgents = vi.fn().mockResolvedValue(undefined);
+    const releaseWorkspaces = vi.fn().mockResolvedValue(undefined);
+    const agentsList = vi.fn().mockResolvedValue({ subscription: { release: releaseAgents } });
+    const workspacesList = vi
+      .fn()
+      .mockResolvedValue({ subscription: { release: releaseWorkspaces } });
+    const paseo = {
+      agents: { list: agentsList },
+      workspaces: { list: workspacesList },
+    } as unknown as Parameters<typeof subscribeToCrewDirectory>[0];
+
+    const release = await subscribeToCrewDirectory(paseo);
+
+    expect(agentsList).toHaveBeenCalledWith({ subscribe: {} });
+    expect(workspacesList).toHaveBeenCalledWith({ subscribe: {} });
+    await release();
+    expect(releaseAgents).toHaveBeenCalledOnce();
+    expect(releaseWorkspaces).toHaveBeenCalledOnce();
+  });
+
+  test("releases an established observation when later setup fails", async () => {
+    const releaseAgents = vi.fn().mockResolvedValue(undefined);
+    const failure = new Error("workspace observation failed");
+    const paseo = {
+      agents: {
+        list: vi.fn().mockResolvedValue({ subscription: { release: releaseAgents } }),
+      },
+      workspaces: { list: vi.fn().mockRejectedValue(failure) },
+    } as unknown as Parameters<typeof subscribeToCrewDirectory>[0];
+
+    await expect(subscribeToCrewDirectory(paseo)).rejects.toBe(failure);
+    expect(releaseAgents).toHaveBeenCalledOnce();
+  });
+
+  test("keeps Paseo 0.8 directory subscriptions compatible without owned handles", async () => {
+    const agentsList = vi.fn().mockResolvedValue({ entries: [] });
+    const workspacesList = vi.fn().mockResolvedValue({ entries: [] });
+    const paseo = {
+      agents: { list: agentsList },
+      workspaces: { list: workspacesList },
+    } as unknown as Parameters<typeof subscribeToCrewDirectory>[0];
+
+    const release = await subscribeToCrewDirectory(paseo);
+
+    await expect(release()).resolves.toBeUndefined();
+    expect(agentsList).toHaveBeenCalledWith({ subscribe: {} });
+    expect(workspacesList).toHaveBeenCalledWith({ subscribe: {} });
   });
 });

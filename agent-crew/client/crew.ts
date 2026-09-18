@@ -5,6 +5,32 @@ export type PaseoWorkspace = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>
 export type AgentEntry = Awaited<ReturnType<PaseoApi["agents"]["list"]>>["entries"][number];
 type AgentSnapshot = AgentEntry["agent"];
 
+type OwnedDirectorySubscription = {
+  release(): Promise<void>;
+};
+
+export async function subscribeToCrewDirectory(paseo: PaseoApi): Promise<() => Promise<void>> {
+  const subscriptions: OwnedDirectorySubscription[] = [];
+  try {
+    const agents = await paseo.agents.list({ subscribe: {} });
+    const agentSubscription =
+      "subscription" in agents ? (agents.subscription as OwnedDirectorySubscription) : null;
+    if (agentSubscription) subscriptions.push(agentSubscription);
+
+    const workspaces = await paseo.workspaces.list({ subscribe: {} });
+    const workspaceSubscription =
+      "subscription" in workspaces ? (workspaces.subscription as OwnedDirectorySubscription) : null;
+    if (workspaceSubscription) subscriptions.push(workspaceSubscription);
+  } catch (error) {
+    await Promise.allSettled(subscriptions.map((subscription) => subscription.release()));
+    throw error;
+  }
+
+  return async () => {
+    await Promise.all(subscriptions.map((subscription) => subscription.release()));
+  };
+}
+
 const LEGACY_PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
 
 export type CrewState = "needs-input" | "failed" | "working" | "ready" | "idle" | "closed";

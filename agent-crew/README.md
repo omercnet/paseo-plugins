@@ -93,25 +93,28 @@ Agent Crew intentionally stays inside the public Paseo plugin SDK.
 
 Paseo plugins are trusted, unsandboxed code. Review the source before installing it.
 
-From npm:
+From npm on Paseo 0.9:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-agent-crew
 ```
 
-From GitHub:
+Paseo 0.8 users should install from Git or a local checkout instead.
+
+From GitHub on Paseo 0.8 or 0.9:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:agent-crew
 ```
 
-Update an npm or Git installation after reviewing the proposed revision:
+Update a Git installation on either version, or an npm installation on Paseo 0.9, after reviewing
+the proposed revision:
 
 ```bash
 paseo plugin update agent-crew
 ```
 
-From a local checkout on the Paseo daemon host:
+From a local checkout on the Paseo daemon host, on Paseo 0.8 or 0.9:
 
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
