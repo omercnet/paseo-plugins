@@ -12,14 +12,21 @@ The first public build is an alpha. Alpha releases are compatibility previews an
 
 ## Install a release
 
-Prefer a reviewed release tag over a moving branch:
+Install an exact published version from npm:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-omp@<version>
+paseo plugin ls paseo-omp
+```
+
+Alternatively, install the matching reviewed Git tag:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-omp --ref paseo-omp-v<version>
 paseo plugin ls paseo-omp
 ```
 
-A tag-pinned installation does not advance through `paseo plugin update`. To upgrade, record the current installation, then replace it with the new tag in one maintenance window:
+A Git tag-pinned installation does not advance through `paseo plugin update`. To upgrade, record the current installation, then replace it with the new tag in one maintenance window:
 
 ```bash
 paseo plugin ls paseo-omp --json > paseo-omp-before-update.json
@@ -28,19 +35,6 @@ paseo plugin add omercnet/paseo-plugins:paseo-omp --ref paseo-omp-v<new-version>
 ```
 
 Removal deletes plugin-scoped settings and briefly makes `omp-plugin` unavailable. It does not modify Paseo's bundled `omp` provider or native OMP transcripts. Roll back by repeating the remove/add sequence with the recorded tag or commit.
-
-## Install a release archive
-
-Release ZIPs contain the production dependency tree and install offline. Authenticate provenance before installation:
-
-```bash
-gh attestation verify paseo-omp-v<version>.zip --repo omercnet/paseo-plugins
-sha256sum --check paseo-omp-v<version>.zip.sha256
-unzip paseo-omp-v<version>.zip
-paseo plugin install "$PWD/paseo-omp"
-```
-
-The checksum detects accidental corruption; the GitHub attestation authenticates the artifact.
 
 ## Install a local checkout
 

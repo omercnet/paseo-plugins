@@ -4,6 +4,15 @@
   "type": "module",
   "description": "A Paseo plugin that provides a host-wide agent triage roster.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "agent-monitor"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/agent-monitor#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
   "publishConfig": {
     "access": "public"
   },

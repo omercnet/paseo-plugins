@@ -61,14 +61,21 @@ wanted.
 
 ## Install
 
-Enable trusted plugins on the target Paseo daemon, then install from Git:
+Enable trusted plugins on the target Paseo daemon, then install from npm:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-shared-browser
+paseo plugin ls
+```
+
+Or install from Git:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-shared-browser
 paseo plugin ls
 ```
 
-Git installation runs `npm ci --include=dev` and `npm run prepare:runtime` on the daemon host. The
+Installation runs `npm ci --include=dev` and `npm run prepare:runtime` on the daemon host. The
 preparation step installs the pinned browser runtime and builds both `supervisor.cjs` and
 `shared-browser-mcp.cjs` under
 `$PASEO_HOME/plugin-data/shared-browser/runtime`. For a local monorepo checkout:

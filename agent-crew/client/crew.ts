@@ -5,6 +5,15 @@ export type PaseoWorkspace = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>
 export type AgentEntry = Awaited<ReturnType<PaseoApi["agents"]["list"]>>["entries"][number];
 type AgentSnapshot = AgentEntry["agent"];
 
+export function listenToCrewDirectory(paseo: PaseoApi, invalidate: () => void): () => void {
+  const unsubscribeAgents = paseo.agents.subscribe(invalidate);
+  const unsubscribeWorkspaces = paseo.workspaces.subscribe(invalidate);
+  return () => {
+    unsubscribeAgents();
+    unsubscribeWorkspaces();
+  };
+}
+
 const LEGACY_PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
 
 export type CrewState = "needs-input" | "failed" | "working" | "ready" | "idle" | "closed";
