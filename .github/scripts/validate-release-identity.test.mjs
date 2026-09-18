@@ -15,10 +15,13 @@ function runValidation(t, tagSha, options = {}) {
   mkdirSync(bin);
   const directory = options.directory ?? "agent-crew";
   const component = options.component ?? directory;
-  const name = options.name ?? "@omercnet/paseo-agent-crew";
   const version = options.version ?? "0.2.4";
   const tag = options.tag ?? `${component}-v${version}`;
-  writeFileSync(join(root, "package.json"), JSON.stringify({ name, version }));
+  const expectedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: options.name ?? "@omercnet/paseo-agent-crew", version }),
+  );
   const gh = join(bin, "gh");
   writeFileSync(gh, "#!/bin/sh\nprintf '%s\\n' \"$FAKE_TAG_SHA\"\n");
   chmodSync(gh, 0o755);
@@ -28,14 +31,15 @@ function runValidation(t, tagSha, options = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
-      COMPONENT: component,
       DIRECTORY: directory,
-      EXPECTED_NAME: name,
       FAKE_TAG_SHA: tagSha,
       GITHUB_REPOSITORY: "omercnet/paseo-plugins",
       PATH: `${bin}:${process.env.PATH}`,
-      SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      TAG: tag,
+      RELEASE_OUTPUTS: JSON.stringify({
+        [`${directory}--tag_name`]: tag,
+        [`${directory}--sha`]: options.releaseSha ?? expectedSha,
+      }),
+      SHA: expectedSha,
     },
   });
 }
@@ -50,10 +54,7 @@ test("rejects a release tag that resolves to a different commit", (t) => {
   const result = runValidation(t, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
   assert.equal(result.status, 1);
-  assert.match(
-    result.stderr,
-    /resolves to b{40}, expected a{40}/,
-  );
+  assert.match(result.stderr, /resolves to b{40}, expected a{40}/);
 });
 
 test("accepts a release component that differs from its package directory", (t) => {
@@ -61,9 +62,17 @@ test("accepts a release component that differs from its package directory", (t) 
     component: "shared-browser",
     directory: "paseo-shared-browser",
     name: "@omercnet/paseo-shared-browser",
-    tag: "shared-browser-v0.3.1",
     version: "0.3.1",
   });
 
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("rejects a Release Please SHA that differs from the workflow commit", (t) => {
+  const result = runValidation(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {
+    releaseSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Release Please reported b{40}.*expected a{40}/);
 });

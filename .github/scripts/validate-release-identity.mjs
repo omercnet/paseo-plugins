@@ -8,24 +8,23 @@ function requiredEnvironment(name) {
 }
 
 const directory = requiredEnvironment("DIRECTORY");
-const component = process.env.COMPONENT || directory;
-const expectedName = requiredEnvironment("EXPECTED_NAME");
-const tag = requiredEnvironment("TAG");
 const expectedSha = requiredEnvironment("SHA");
 const repository = requiredEnvironment("GITHUB_REPOSITORY");
-const tagPrefix = `${component}-v`;
-const version = tag.startsWith(tagPrefix) ? tag.slice(tagPrefix.length) : "";
-
-if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(version)) {
-  throw new Error(`Invalid release tag: ${tag}`);
+const releaseOutputs = JSON.parse(requiredEnvironment("RELEASE_OUTPUTS"));
+const tag = releaseOutputs[`${directory}--tag_name`];
+const releaseSha = releaseOutputs[`${directory}--sha`];
+if (!tag || !releaseSha) {
+  throw new Error(`Release Please omitted tag or SHA outputs for ${directory}`);
+}
+if (releaseSha !== expectedSha) {
+  throw new Error(`Release Please reported ${releaseSha} for ${directory}, expected ${expectedSha}`);
 }
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
-if (packageJson.name !== expectedName) {
-  throw new Error(`Package name ${packageJson.name} does not match ${expectedName}`);
-}
-if (packageJson.version !== version) {
-  throw new Error(`Package version ${packageJson.version} does not match ${version}`);
+const suffix = `-v${packageJson.version}`;
+const component = tag.endsWith(suffix) ? tag.slice(0, -suffix.length) : "";
+if (!/^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(component)) {
+  throw new Error(`Invalid release tag: ${tag}`);
 }
 
 const tagSha = execFileSync(
