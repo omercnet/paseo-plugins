@@ -4,19 +4,37 @@ Send a message from one Paseo agent to another agent or workspace on the same da
 
 ## Install
 
-Paseo 0.9.0-beta.1 or later can install the package from npm:
+### Paseo 0.9.0-beta.1 or later
+
+Install the npm package:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-tell-agent
 ```
 
-The manifest uses only fields accepted by both Paseo 0.8.x and 0.9.0-beta.1. npm-managed installation and updates require Paseo 0.9.0-beta.1 or later.
-
-Update an existing installation by its plugin ID:
+Update an npm installation by its plugin ID:
 
 ```bash
 paseo plugin update tell-agent
 ```
+
+Paseo 0.9's reviewed update flow shows the current and proposed revisions before asking for approval. Add `--check` to preview without applying or `--yes` to skip the approval prompt. npm installation and this reviewed update behavior are not available in Paseo 0.8.
+
+### Paseo 0.8.x
+
+The manifest remains compatible with Paseo 0.8. Install from the Git repository:
+
+```bash
+paseo plugin add omercnet/paseo-plugins:tell-agent
+```
+
+Or install a local checkout on the daemon host:
+
+```bash
+paseo plugin install /absolute/path/to/paseo-plugins/tell-agent
+```
+
+Use `paseo plugin update tell-agent` to refresh a Git installation. After changing a local checkout, use `paseo plugin reload tell-agent`.
 
 ## Use
 
