@@ -55,18 +55,21 @@ Interrupting a turn is not part of `PaseoApi`, so archive is the only lifecycle 
 
 ## Install
 
-Requires a compatible Paseo 0.8.x release, including 0.8 prereleases. The manifest declares
-`requirements.paseo` as `^0.8.0`, and the development SDK is pinned to stable `0.8.0`.
+Requires Paseo 0.8.x or the 0.9 release line starting with `0.9.0-beta.1`. The manifest declares
+`requirements.paseo` as `^0.8.0 || ^0.9.0-beta.1`, and the development SDK is pinned to
+`0.9.0-beta.1`.
 
-Install from the plugin's monorepo directory on the daemon host:
+Install the published npm package on the daemon host:
 
 ```bash
-paseo plugin add omercnet/paseo-plugins:agent-monitor
+paseo plugin add npm:@omercnet/paseo-agent-monitor
 paseo plugin update agent-monitor
 ```
 
-Git installs track the default branch and run no package manager; the plugin has no runtime
-dependencies. For an air-gapped host, clone or download the monorepo and install this directory:
+`plugin update` shows the available package change for review and asks before applying it. Use
+`paseo plugin update agent-monitor --check` to inspect updates without installing them.
+
+For an air-gapped host, clone or download the monorepo and install this directory:
 
 ```bash
 cd paseo-plugins/agent-monitor
@@ -89,8 +92,8 @@ npx paseo plugin reload agent-monitor
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The project targets the Paseo 0.8.x release line and pins `@getpaseo/plugin`, `@getpaseo/client`,
-`@getpaseo/protocol`, and `@getpaseo/cli` to stable `0.8.0`. Renovate groups
-`@getpaseo/*` updates so the SDKs move together.
+The project supports Paseo 0.8.x and the 0.9 release line from `0.9.0-beta.1`, and pins
+`@getpaseo/plugin`, `@getpaseo/client`, `@getpaseo/protocol`, and `@getpaseo/cli` to
+`0.9.0-beta.1`. Renovate groups `@getpaseo/*` updates so the SDKs move together.
 
-React `19.1` and React Native `0.81` intentionally match the versions supplied by Paseo 0.8.
+React `19.1` and React Native `0.81` intentionally match the versions supplied by Paseo.
