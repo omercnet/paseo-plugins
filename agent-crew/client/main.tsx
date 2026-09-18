@@ -636,7 +636,10 @@ export function AgentCrew({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Open ${agentTitle(item.entry)}`}
-            onPress={() => navigation.openAgent({ agentId: agent.id })}
+            onPress={() => {
+              const target = { agentId: agent.id, serverId: host.id };
+              navigation.openAgent(target);
+            }}
             style={({ pressed }) => [panelStyles.rowBody, pressed && styles.pressed]}
           >
             {rowBody}
