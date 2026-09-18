@@ -8,11 +8,12 @@ function requiredEnvironment(name) {
 }
 
 const directory = requiredEnvironment("DIRECTORY");
+const component = process.env.COMPONENT || directory;
 const expectedName = requiredEnvironment("EXPECTED_NAME");
 const tag = requiredEnvironment("TAG");
 const expectedSha = requiredEnvironment("SHA");
 const repository = requiredEnvironment("GITHUB_REPOSITORY");
-const tagPrefix = `${directory}-v`;
+const tagPrefix = `${component}-v`;
 const version = tag.startsWith(tagPrefix) ? tag.slice(tagPrefix.length) : "";
 
 if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(version)) {
