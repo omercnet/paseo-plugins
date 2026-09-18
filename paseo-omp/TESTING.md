@@ -124,11 +124,7 @@ The plugin maintainer owns triage and adaptation. Escalate an isolated OMP imple
 
 ## Release publication
 
-`release-please.yml` only creates release metadata and forwards the created `paseo-omp` tag and commit SHA to `publish-paseo-omp.yml`. The metadata job never checks out or executes repository code. The publisher has no pull-request permission, resolves the tag independently, and waits for a successful `CI` push run whose `head_sha` is exactly the tagged commit before checkout or execution.
-
-The publisher builds the self-contained ZIP, writes its corruption-detection checksum, creates a signed GitHub build-provenance attestation for both files, rechecks that the tag still resolves to the gated SHA, and uploads with `--clobber`. To recover an interrupted upload, dispatch **Publish Paseo OMP** with the existing `paseo-omp-v<version>` tag; the same identity and CI gates apply, so reruns are idempotent.
-
-The SHA-256 file is not a signature. Consumers authenticate the archive with `gh attestation verify` and may use the checksum only to detect accidental transfer or storage corruption.
+`release-please.yml` creates GitHub releases and publishes every released plugin path to npm through trusted publishing. Stable versions use the `latest` distribution tag; prereleases use `next`. npm generates provenance from the GitHub Actions OIDC identity, and the workflow waits for registry propagation before succeeding.
 
 ### Alpha release channel
 
@@ -140,17 +136,15 @@ The go/no-go criteria, manual acceptance boundary, and alpha limitation list are
 
 ## Audit verification
 
-- `npm run check`: clean across 84 files.
+- `npm run check`: clean.
 - `npm run typecheck`: clean.
 - `npm test`: full Vitest suite passed, with environment-gated scenarios skipped when their runtimes were unavailable.
 - `npm test -- tests/provider-conformance.test.ts`: host-boundary conformance coverage includes `prompt.command`, `session.configure`, typed and fallback permission allow/deny/cancel paths, registry-driven reload/removal, verified stubborn-descendant cleanup, and sequential turns plus interrupt races with post-turn barriers.
 - `PASEO_OMP_REAL_E2E=1 PASEO_OMP_VERSION=<version> npm test -- tests/provider.real.e2e.test.ts`: the installed matrix version's catalog and hermetic real-binary text/Bash and oversized-image scenarios run against a local deterministic model.
 - `npm run test:coverage`: Vitest enforces aggregate 85% function and 89% line coverage over loaded source modules. Generated `dist/**` trees are excluded.
-- `npm run package:release`: `dist/paseo-omp-v0.0.0.zip` builds from tracked allowlisted source plus its closed production/compiler dependency set.
-- `npm run test:integration:install`: the self-contained archive imports dependencies and compiles with an unreachable proxy; a fresh Git-style checkout installs with lifecycle scripts disabled, retains required runtime packages, typechecks, bundles both entries, and loads the server contribution.
+- `npm run test:integration:install`: a packed npm package retains required production dependencies and bundles successfully; a fresh Git-style checkout installs with lifecycle scripts disabled, typechecks, and loads the server contribution.
 - `npm run test:integration:docker`: verifies the host/container ownership boundary.
 - `npm run test:integration:wsl`: locally skips when `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
 - `docker compose -f canary/compose.yml`: official Paseo 0.8.0, deterministic mock, Tailscale-bound web UI, and optional Ollama `qwen2.5:0.5b` passed end-to-end.
-- `mise x actionlint@1.7.12 -- actionlint .github/workflows/*.yml`: passed.
 - `zizmor .github/workflows`: no findings (offline audit; six repository-wide suppressions remain).
 - Release Please 17.1.2 `config.json` and `manifest.json` schema validation: passed for `release-please-config.json` and `.release-please-manifest.json`.

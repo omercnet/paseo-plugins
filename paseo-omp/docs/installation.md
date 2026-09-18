@@ -36,19 +36,6 @@ paseo plugin add omercnet/paseo-plugins:paseo-omp --ref paseo-omp-v<new-version>
 
 Removal deletes plugin-scoped settings and briefly makes `omp-plugin` unavailable. It does not modify Paseo's bundled `omp` provider or native OMP transcripts. Roll back by repeating the remove/add sequence with the recorded tag or commit.
 
-## Install a release archive
-
-Release ZIPs contain the production dependency tree and install offline. Authenticate provenance before installation:
-
-```bash
-gh attestation verify paseo-omp-v<version>.zip --repo omercnet/paseo-plugins
-sha256sum --check paseo-omp-v<version>.zip.sha256
-unzip paseo-omp-v<version>.zip
-paseo plugin install "$PWD/paseo-omp"
-```
-
-The checksum detects accidental corruption; the GitHub attestation authenticates the artifact.
-
 ## Install a local checkout
 
 ```bash
