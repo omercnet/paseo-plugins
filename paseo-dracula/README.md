@@ -8,8 +8,9 @@
 
 ## Install
 
-See [INSTALL.md](./INSTALL.md) for npm and Git installation, activation, updates, removal, and
-local development installation.
+Paseo 0.9.0-beta.1 and later can install from npm and use Paseo's update command. Paseo 0.8.x
+users can install from Git or a local checkout. See [INSTALL.md](./INSTALL.md) for commands,
+activation, removal, and development installation.
 
 ## Themes
 
