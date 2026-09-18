@@ -10,7 +10,7 @@ Paseo 0.9.0-beta.1 or later can install the package from npm:
 paseo plugin install npm:@omercnet/paseo-tell-agent
 ```
 
-The plugin remains runtime-compatible with Paseo 0.8.x. npm-managed installation and updates require Paseo 0.9.0-beta.1 or later.
+The manifest uses only fields accepted by both Paseo 0.8.x and 0.9.0-beta.1. npm-managed installation and updates require Paseo 0.9.0-beta.1 or later.
 
 Update an existing installation by its plugin ID:
 
