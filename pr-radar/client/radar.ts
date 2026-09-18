@@ -312,6 +312,23 @@ export function buildAgentPrompt(row: RadarRow): string {
   return `Continue work on ${row.url}. Current state: ${row.reason}. Inspect the pull request and workspace, resolve the actionable blocker, run relevant validation, push the fix, and report the result. Do not merge the pull request.`;
 }
 
+type UrlOpener = (url: string) => Promise<unknown>;
+
+export async function openPullRequestUrl(
+  url: string,
+  guardedOpen: UrlOpener | undefined,
+  fallback: { openURL: UrlOpener },
+): Promise<void> {
+  const parsed = HttpsUrlSchema.safeParse(url);
+  if (!parsed.success) throw new Error("Only HTTPS pull request URLs are supported.");
+
+  if (guardedOpen) {
+    await guardedOpen(parsed.data);
+    return;
+  }
+  await fallback.openURL(parsed.data);
+}
+
 export function buildRadarSnapshot(
   workspaces: readonly PaseoWorkspace[],
   entries: readonly AgentEntry[],
