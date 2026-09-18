@@ -3,12 +3,7 @@ import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import {
-  discoverSupervisor,
-  type GasCitySettings,
-  gasCitySettings,
-  toGasCityRpcSettings,
-} from "../shared";
+import { discoverSupervisor, type GasCitySettings, gasCitySettings } from "../shared";
 import { CityOperations } from "./city-operations";
 import { selectAvailableCity } from "./view-model";
 
@@ -49,11 +44,10 @@ function ReadyGasCitySurface({
   settings,
 }: PluginSurfaceProps & { settings: GasCitySettings }) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
-  const rpcSettings = useMemo(() => toGasCityRpcSettings(settings), [settings]);
   const loadDiscovery = useRpc(discoverSupervisor);
   const discovery = useQuery({
     queryKey: ["gas-city", host.id, settings.endpointUrl, "discovery"],
-    queryFn: () => loadDiscovery({ settings: rpcSettings }),
+    queryFn: () => loadDiscovery({}),
     refetchInterval: settings.refreshIntervalMs,
   });
   const retryDiscovery = () => void discovery.refetch();

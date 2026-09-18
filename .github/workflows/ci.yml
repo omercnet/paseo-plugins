@@ -25,8 +25,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Test affected plugin detection
-        run: node --test .github/scripts/detect-affected.test.mjs
+      - name: Test workflow scripts
+        run: node --test .github/scripts/*.test.mjs
       - name: Detect affected plugins
         id: affected
         env:
@@ -138,14 +138,14 @@ jobs:
         run: npm test
       - name: Test on Windows
         if: ${{ matrix.os == 'windows-latest' }}
-        run: npm test -- --exclude tests/package-release.test.ts --exclude tests/server-bundle.test.ts
+        run: npm test -- --exclude tests/server-bundle.test.ts
       - name: Test subprocess conformance
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: npm test -- tests/provider-conformance.test.ts
       - name: Test with coverage
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: npm run test:coverage
-      - name: Archive and Git package installation smoke
+      - name: npm and Git package installation smoke
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: npm run test:integration:install
       - name: Docker host-tool ownership integration

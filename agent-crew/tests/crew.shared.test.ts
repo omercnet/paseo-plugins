@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { AgentEntry } from "../client/crew";
 import {
   agentAgeTimestamp,
@@ -7,6 +7,7 @@ import {
   crewCounts,
   crewState,
   formatAge,
+  listenToCrewDirectory,
 } from "../client/crew";
 
 function entry(
@@ -212,5 +213,52 @@ describe("age", () => {
     }).agent;
     expect(agentAgeTimestamp(agent)).toBe(Date.parse("2026-09-01T12:04:00.000Z"));
     expect(formatAge(agentAgeTimestamp(agent), Date.parse("2026-09-01T12:09:00.000Z"))).toBe("5m");
+  });
+});
+
+describe("listenToCrewDirectory", () => {
+  test("uses existing host observations without replacing Paseo 0.8 directory state", () => {
+    const agentsList = vi.fn();
+    const workspacesList = vi.fn();
+    const unsubscribeAgents = vi.fn();
+    const unsubscribeWorkspaces = vi.fn();
+    const paseo = {
+      agents: { list: agentsList, subscribe: vi.fn(() => unsubscribeAgents) },
+      workspaces: { list: workspacesList, subscribe: vi.fn(() => unsubscribeWorkspaces) },
+    } as unknown as Parameters<typeof listenToCrewDirectory>[0];
+
+    const unsubscribe = listenToCrewDirectory(paseo, vi.fn());
+
+    expect(agentsList).not.toHaveBeenCalled();
+    expect(workspacesList).not.toHaveBeenCalled();
+    unsubscribe();
+    expect(unsubscribeAgents).toHaveBeenCalledOnce();
+    expect(unsubscribeWorkspaces).toHaveBeenCalledOnce();
+  });
+
+  test("forwards updates from host-owned Paseo 0.9 observations", () => {
+    const invalidate = vi.fn();
+    let onAgentUpdate: (() => void) | undefined;
+    let onWorkspaceUpdate: (() => void) | undefined;
+    const paseo = {
+      agents: {
+        subscribe: vi.fn((listener: () => void) => {
+          onAgentUpdate = listener;
+          return vi.fn();
+        }),
+      },
+      workspaces: {
+        subscribe: vi.fn((listener: () => void) => {
+          onWorkspaceUpdate = listener;
+          return vi.fn();
+        }),
+      },
+    } as unknown as Parameters<typeof listenToCrewDirectory>[0];
+
+    listenToCrewDirectory(paseo, invalidate);
+    onAgentUpdate?.();
+    onWorkspaceUpdate?.();
+
+    expect(invalidate).toHaveBeenCalledTimes(2);
   });
 });

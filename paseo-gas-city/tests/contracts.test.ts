@@ -5,16 +5,15 @@ import {
   ConvoyListSchema,
   DispatchRequestSchema,
   DispatchResultSchema,
+  discoverSupervisor,
   EventListSchema,
   endpointUrlSchema,
   GAS_CITY_LIMITS,
   GasCitySettingsSchema,
-  listEvents,
   SessionActionRequestSchema,
   SessionActionResultSchema,
   SessionListSchema,
   SupervisorDiscoverySchema,
-  toGasCityRpcSettings,
   WorkListSchema,
   WorkspaceRigMappingSchema,
 } from "../shared";
@@ -72,14 +71,9 @@ describe("Gas City shared contracts", () => {
     });
   });
 
-  test("projects only server-relevant persisted settings into RPC input", () => {
-    expect(toGasCityRpcSettings(settingsFixture)).toEqual({
-      endpointUrl: settingsFixture.endpointUrl,
-      allowRemoteEndpoint: settingsFixture.allowRemoteEndpoint,
-      mutationsEnabled: settingsFixture.mutationsEnabled,
-      eventLimit: settingsFixture.eventLimit,
-      workspaceMappings: settingsFixture.workspaceMappings,
-    });
+  test("keeps persisted policy out of RPC payloads", () => {
+    expect(discoverSupervisor.input.safeParse({}).success).toBe(true);
+    expect(discoverSupervisor.input.safeParse({ settings: settingsFixture }).success).toBe(false);
   });
 
   test("rejects endpoint components forbidden by the public contract", () => {
@@ -111,18 +105,13 @@ describe("Gas City shared contracts", () => {
     }
   });
 
-  test("rejects oversized lists at the RPC boundary", () => {
+  test("rejects oversized event collections and configured limits", () => {
     const items = Array.from({ length: GAS_CITY_LIMITS.events + 1 }, () => eventsFixture.items[0]);
     expect(EventListSchema.safeParse({ ...eventsFixture, items }).success).toBe(false);
     expect(
-      listEvents.input.safeParse({
-        settings: {
-          ...toGasCityRpcSettings(settingsFixture),
-          eventLimit: GAS_CITY_LIMITS.events + 1,
-        },
-        scope: "city",
-        cityName: "alpha-city",
-        cursor: null,
+      GasCitySettingsSchema.safeParse({
+        ...settingsFixture,
+        eventLimit: GAS_CITY_LIMITS.events + 1,
       }).success,
     ).toBe(false);
   });

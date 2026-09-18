@@ -1,9 +1,9 @@
-import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginSettings } from "@getpaseo/plugin/server";
 import { describe, expect, test } from "vitest";
 import { GasCityClient, GasCityClientError } from "../server/gas-city-client";
 import { createGasCityHandlers } from "../server/handlers";
 import { mapWorkspaceToRig } from "../server/workspace-mapping";
-import { GasCitySettingsSchema, toGasCityRpcSettings } from "../shared";
+import { type GasCitySettings, GasCitySettingsSchema, type gasCitySettings } from "../shared";
 
 function jsonResponse(value: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(value), {
@@ -181,10 +181,16 @@ function fixtureFetch(request: string | URL | Request, init?: RequestInit): Prom
   return Promise.resolve(jsonResponse({ title: "not found" }, { status: 404 }));
 }
 
+function settingsHandle(values: GasCitySettings): PluginSettings<typeof gasCitySettings.schema> {
+  return {
+    read: async () => ({ status: "ready", revision: "test", values }),
+    subscribe: () => () => {},
+  };
+}
+
 function handlerFixture(mutationsEnabled = false) {
   const settings = GasCitySettingsSchema.parse({ mutationsEnabled });
-  const rpcSettings = toGasCityRpcSettings(settings);
-  const handlers = createGasCityHandlers({
+  const handlers = createGasCityHandlers(settingsHandle(settings), {
     createClient: (requestSettings) =>
       new GasCityClient({
         endpointUrl: requestSettings.endpointUrl,
@@ -200,7 +206,7 @@ function handlerFixture(mutationsEnabled = false) {
       },
     },
   } as unknown as PluginHandlerContext;
-  return { handlers, context, settings: rpcSettings };
+  return { handlers, context, settings };
 }
 
 describe("GasCityClient security boundary", () => {
@@ -417,15 +423,15 @@ describe("workspace-to-rig mapping", () => {
 
 describe("Gas City RPC handlers", () => {
   test("normalizes scoped control-plane data", async () => {
-    const { handlers, context, settings } = handlerFixture();
-    expect(await handlers.discoverSupervisor({ settings }, context)).toMatchObject({
+    const { handlers, context } = handlerFixture();
+    expect(await handlers.discoverSupervisor({}, context)).toMatchObject({
       state: "available",
       supervisor: { endpointUrl: "http://127.0.0.1:8372", version: "1.4.1" },
     });
     expect(
-      await handlers.resolveWorkspaceRig({ settings, workspaceId: "workspace-1" }, context),
+      await handlers.resolveWorkspaceRig({ workspaceId: "workspace-1" }, context),
     ).toMatchObject({ state: "mapped", rigName: "alpha" });
-    const scope = { settings, cityName: "alpha-city", rigName: "alpha" } as const;
+    const scope = { cityName: "alpha-city", rigName: "alpha" } as const;
     expect(await handlers.getCityRigSnapshot(scope, context)).toMatchObject({
       city: { work: { open: 3, ready: 2, inProgress: 1 }, totalsScope: "city" },
       rig: { name: "alpha", git: { branch: "main", clean: true } },
@@ -446,10 +452,7 @@ describe("Gas City RPC handlers", () => {
       partial: false,
     });
     expect(
-      await handlers.listEvents(
-        { settings, scope: "city", cityName: "alpha-city", cursor: null },
-        context,
-      ),
+      await handlers.listEvents({ scope: "city", cityName: "alpha-city", cursor: null }, context),
     ).toMatchObject({ scope: "city", items: [{ sequence: 42, cityName: "alpha-city" }] });
     expect(await handlers.listAttention(scope, context)).toMatchObject({
       scope: "city-and-rig",
@@ -465,10 +468,8 @@ describe("Gas City RPC handlers", () => {
   });
 
   test("exposes supervisor events as a bounded head snapshot", async () => {
-    const { handlers, context, settings } = handlerFixture();
-    await expect(
-      handlers.listEvents({ settings, scope: "supervisor" }, context),
-    ).resolves.toMatchObject({
+    const { handlers, context } = handlerFixture();
+    await expect(handlers.listEvents({ scope: "supervisor" }, context)).resolves.toMatchObject({
       scope: "supervisor-head",
       cursor: null,
       items: [{ sequence: 42, cityName: "alpha-city" }],
@@ -492,7 +493,7 @@ describe("Gas City RPC handlers", () => {
 
   test("keeps valid custom events when a page also contains malformed events", async () => {
     const { context, settings } = handlerFixture();
-    const handlers = createGasCityHandlers({
+    const handlers = createGasCityHandlers(settingsHandle(settings), {
       createClient: (requestSettings) =>
         new GasCityClient({
           endpointUrl: requestSettings.endpointUrl,
@@ -510,30 +511,23 @@ describe("Gas City RPC handlers", () => {
     });
 
     await expect(
-      handlers.listEvents(
-        { settings, scope: "city", cityName: "alpha-city", cursor: null },
-        context,
-      ),
+      handlers.listEvents({ scope: "city", cityName: "alpha-city", cursor: null }, context),
     ).resolves.toMatchObject({
       items: [{ sequence: 42, metadata: {} }],
       truncated: true,
     });
   });
 
-  test("uses the validated RPC settings for connection, limits, and mapping overrides", async () => {
-    const settings = toGasCityRpcSettings(
-      GasCitySettingsSchema.parse({
-        endpointUrl: "http://192.0.2.10:9000",
-        allowRemoteEndpoint: true,
-        eventLimit: 25,
-        workspaceMappings: [
-          { workspaceId: "workspace-1", cityName: "alpha-city", rigName: "alpha" },
-        ],
-      }),
-    );
+  test("uses authoritative persisted settings for connection, limits, and mappings", async () => {
+    const settings = GasCitySettingsSchema.parse({
+      endpointUrl: "http://192.0.2.10:9000",
+      allowRemoteEndpoint: true,
+      eventLimit: 25,
+      workspaceMappings: [{ workspaceId: "workspace-1", cityName: "alpha-city", rigName: "alpha" }],
+    });
     const observedSettings: unknown[] = [];
     const requests: string[] = [];
-    const handlers = createGasCityHandlers({
+    const handlers = createGasCityHandlers(settingsHandle(settings), {
       createClient: (requestSettings) => {
         observedSettings.push(requestSettings);
         return new GasCityClient({
@@ -549,15 +543,9 @@ describe("Gas City RPC handlers", () => {
     });
     const { context } = handlerFixture();
 
-    await handlers.discoverSupervisor({ settings }, context);
-    const mapping = await handlers.resolveWorkspaceRig(
-      { settings, workspaceId: "workspace-1" },
-      context,
-    );
-    await handlers.listEvents(
-      { settings, scope: "city", cityName: "alpha-city", cursor: null },
-      context,
-    );
+    await handlers.discoverSupervisor({}, context);
+    const mapping = await handlers.resolveWorkspaceRig({ workspaceId: "workspace-1" }, context);
+    await handlers.listEvents({ scope: "city", cityName: "alpha-city", cursor: null }, context);
 
     expect(observedSettings).toEqual([settings, settings, settings]);
     expect(mapping).toMatchObject({
@@ -570,7 +558,7 @@ describe("Gas City RPC handlers", () => {
 
   test("marks attention truncated when an upstream aggregate is partial", async () => {
     const { context, settings } = handlerFixture();
-    const handlers = createGasCityHandlers({
+    const handlers = createGasCityHandlers(settingsHandle(settings), {
       createClient: (requestSettings) =>
         new GasCityClient({
           endpointUrl: requestSettings.endpointUrl,
@@ -589,26 +577,26 @@ describe("Gas City RPC handlers", () => {
     });
 
     await expect(
-      handlers.listAttention({ settings, cityName: "alpha-city", rigName: "alpha" }, context),
+      handlers.listAttention({ cityName: "alpha-city", rigName: "alpha" }, context),
     ).resolves.toMatchObject({ truncated: true });
   });
 
   test("returns typed discovery and mapping states for rejected endpoints", async () => {
-    const settings = toGasCityRpcSettings(
-      GasCitySettingsSchema.parse({
-        endpointUrl: "http://192.0.2.10:8372",
-        allowRemoteEndpoint: false,
-      }),
-    );
-    const handlers = createGasCityHandlers({ now: () => new Date("2026-09-11T06:00:00Z") });
+    const settings = GasCitySettingsSchema.parse({
+      endpointUrl: "http://192.0.2.10:8372",
+      allowRemoteEndpoint: false,
+    });
+    const handlers = createGasCityHandlers(settingsHandle(settings), {
+      now: () => new Date("2026-09-11T06:00:00Z"),
+    });
     const { context } = handlerFixture();
 
-    await expect(handlers.discoverSupervisor({ settings }, context)).resolves.toMatchObject({
+    await expect(handlers.discoverSupervisor({}, context)).resolves.toMatchObject({
       state: "not-configured",
       diagnostics: [{ code: "invalid-endpoint", retryable: false }],
     });
     await expect(
-      handlers.resolveWorkspaceRig({ settings, workspaceId: "workspace-1" }, context),
+      handlers.resolveWorkspaceRig({ workspaceId: "workspace-1" }, context),
     ).resolves.toMatchObject({
       state: "unavailable",
       diagnostics: [{ code: "mapping-unavailable" }],
@@ -617,7 +605,7 @@ describe("Gas City RPC handlers", () => {
 
   test("surfaces partial city status and a missing requested rig", async () => {
     const { context, settings } = handlerFixture();
-    const handlers = createGasCityHandlers({
+    const handlers = createGasCityHandlers(settingsHandle(settings), {
       createClient: (requestSettings) =>
         new GasCityClient({
           endpointUrl: requestSettings.endpointUrl,
@@ -634,10 +622,7 @@ describe("Gas City RPC handlers", () => {
     });
 
     await expect(
-      handlers.getCityRigSnapshot(
-        { settings, cityName: "alpha-city", rigName: "missing" },
-        context,
-      ),
+      handlers.getCityRigSnapshot({ cityName: "alpha-city", rigName: "missing" }, context),
     ).resolves.toMatchObject({
       partial: true,
       rig: null,
@@ -647,7 +632,7 @@ describe("Gas City RPC handlers", () => {
 
   test("derives city-level attention from degraded status", async () => {
     const { context, settings } = handlerFixture();
-    const handlers = createGasCityHandlers({
+    const handlers = createGasCityHandlers(settingsHandle(settings), {
       createClient: (requestSettings) =>
         new GasCityClient({
           endpointUrl: requestSettings.endpointUrl,
@@ -671,7 +656,7 @@ describe("Gas City RPC handlers", () => {
     });
 
     const response = await handlers.listAttention(
-      { settings, cityName: "alpha-city", rigName: null },
+      { cityName: "alpha-city", rigName: null },
       context,
     );
     expect(response.items.map(({ code }) => code)).toEqual([
@@ -683,7 +668,7 @@ describe("Gas City RPC handlers", () => {
     ]);
   });
 
-  test("keeps mutations behind the client safety interlock and preserves correlation", async () => {
+  test("keeps mutations behind persisted settings and preserves correlation", async () => {
     const disabled = handlerFixture();
     const dispatchRequest = {
       kind: "bead",
@@ -698,23 +683,16 @@ describe("Gas City RPC handlers", () => {
       merge: "direct",
     } as const;
     await expect(
-      disabled.handlers.dispatchWork(
-        { settings: disabled.settings, request: dispatchRequest },
-        disabled.context,
-      ),
+      disabled.handlers.dispatchWork({ request: dispatchRequest }, disabled.context),
     ).rejects.toThrow("interactive safety interlock");
 
     const enabled = handlerFixture(true);
     await expect(
-      enabled.handlers.dispatchWork(
-        { settings: enabled.settings, request: dispatchRequest },
-        enabled.context,
-      ),
+      enabled.handlers.dispatchWork({ request: dispatchRequest }, enabled.context),
     ).resolves.toMatchObject({ status: "slung", beadId: "al-1" });
     await expect(
       enabled.handlers.dispatchWork(
         {
-          settings: enabled.settings,
           request: {
             kind: "formula",
             confirmed: true,
@@ -733,7 +711,6 @@ describe("Gas City RPC handlers", () => {
     await expect(
       enabled.handlers.performSessionAction(
         {
-          settings: enabled.settings,
           request: {
             action: "message",
             cityName: "alpha-city",
@@ -753,7 +730,6 @@ describe("Gas City RPC handlers", () => {
     await expect(
       enabled.handlers.performSessionAction(
         {
-          settings: enabled.settings,
           request: {
             action: "respond",
             cityName: "alpha-city",
