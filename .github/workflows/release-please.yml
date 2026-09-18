@@ -60,8 +60,6 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - name: Verify trusted publishing npm
-        run: node -e "const v=require('node:child_process').execFileSync('npm',['--version'],{encoding:'utf8'}).trim(); const [major,minor,patch]=v.split('.').map(Number); if (!(major>11 || (major===11 && (minor>5 || (minor===5 && patch>=1))))) throw new Error('npm 11.5.1 or newer is required; found '+v)"
       - name: Install package dependencies
         working-directory: ${{ matrix.directory }}
         run: npm ci --include=dev
@@ -123,8 +121,6 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - name: Verify trusted publishing npm
-        run: node -e "const v=require('node:child_process').execFileSync('npm',['--version'],{encoding:'utf8'}).trim(); const [major,minor,patch]=v.split('.').map(Number); if (!(major>11 || (major===11 && (minor>5 || (minor===5 && patch>=1))))) throw new Error('npm 11.5.1 or newer is required; found '+v)"
       - name: Install package dependencies
         working-directory: ${{ matrix.directory }}
         run: npm ci --include=dev
