@@ -6,6 +6,18 @@
 
 * Migrate the plugin to Paseo 0.8 runtime entries and require Paseo ^0.8.0.
 
+## [0.3.0](https://github.com/omercnet/paseo-plugins/compare/paseo-dracula-v0.2.2...paseo-dracula-v0.3.0) (2026-09-18)
+
+
+### Features
+
+* **release:** publish plugins to npm ([#80](https://github.com/omercnet/paseo-plugins/issues/80)) ([3c93048](https://github.com/omercnet/paseo-plugins/commit/3c93048cfefda97d8c2bc1631e3428fb64bdad09))
+
+
+### Bug Fixes
+
+* **paseo-dracula:** support Paseo 0.9 beta ([#88](https://github.com/omercnet/paseo-plugins/issues/88)) ([5f4a4b2](https://github.com/omercnet/paseo-plugins/commit/5f4a4b2d676b8ae405edf7312dc8f493781f355c))
+
 ## [0.2.2](https://github.com/omercnet/paseo-plugins/compare/paseo-dracula-v0.2.1...paseo-dracula-v0.2.2) (2026-09-10)
 
 
