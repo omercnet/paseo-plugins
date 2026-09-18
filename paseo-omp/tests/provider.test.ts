@@ -1131,7 +1131,43 @@ function establishTerminalOwnership(session: FakeOmpSession): void {
 
 function finishTurn(events: EventLog, session: FakeOmpSession, turnId: string) {
   establishTerminalOwnership(session);
-  session.emit({ type: "agent_end", messages: [], isTerminal: true });
+  session.emit({
+    type: "agent_end",
+    requestId: `rpc-prompt-${session.promptCount}`,
+    messages: [],
+    isTerminal: true,
+  });
+  return events.waitFor(
+    (event) =>
+      event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+  );
+}
+
+async function finishLegacyTurn(
+  events: EventLog,
+  session: FakeOmpSession,
+  turnId: string,
+  clientMessageId: string,
+  text: string,
+  sequence: number,
+) {
+  const userEntryId = `legacy-user-${sequence}`;
+  const assistant = {
+    role: "assistant" as const,
+    content: `legacy response ${sequence}`,
+    entryId: `legacy-assistant-${sequence}`,
+    stopReason: "stop",
+  };
+  session.branchMessages.push({ entryId: userEntryId, text });
+  session.emit({ type: "message_end", message: { role: "user", content: text } });
+  await events.waitFor(
+    (event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "user_message" &&
+      event.item.clientMessageId === clientMessageId,
+  );
+  session.emit({ type: "message_end", message: assistant });
+  session.emit({ type: "agent_end", messages: [assistant], isTerminal: true });
   return events.waitFor(
     (event) =>
       event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
@@ -8509,7 +8545,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("completes a correlated local-only prompt exactly once", async () => {
+  test("keeps prompt_result false local-only despite an unkeyed agent_end", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -8522,6 +8558,11 @@ describe("OMP direct provider", () => {
 
     const result = await startPrompt(connection, events, "local-1", "/help");
     const turnId = turnIdFrom(result);
+    session.emit({
+      type: "agent_end",
+      messages: [{ role: "assistant", content: "stale prior turn" }],
+      isTerminal: true,
+    });
     expect(scheduler.delays).toContain(5_000);
     await scheduler.flush();
     const terminal = await events.waitFor(
@@ -9332,7 +9373,12 @@ describe("OMP direct provider", () => {
 
     await observed.promise;
     establishTerminalOwnership(session);
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    session.emit({
+      type: "agent_end",
+      requestId: "rpc-prompt-1",
+      messages: [],
+      isTerminal: true,
+    });
     await scheduler.flush(5_000);
     await scheduler.flush(250);
     await events.waitFor(
@@ -9348,7 +9394,12 @@ describe("OMP direct provider", () => {
     expect(session.stateLookups).toBe(afterFirstStateLookups + 1);
     expect(session.statsLookups).toBe(afterFirstStatsLookups + 1);
     establishTerminalOwnership(session);
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    session.emit({
+      type: "agent_end",
+      requestId: "rpc-prompt-2",
+      messages: [],
+      isTerminal: true,
+    });
     await scheduler.flush(5_000);
     await scheduler.flush(250);
     await events.waitFor(
@@ -9376,7 +9427,12 @@ describe("OMP direct provider", () => {
     expect(session.statsLookups).toBe(afterSecondStatsLookups + 1);
 
     establishTerminalOwnership(session);
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    session.emit({
+      type: "agent_end",
+      requestId: "rpc-prompt-3",
+      messages: [],
+      isTerminal: true,
+    });
     await events.waitFor(
       (event) =>
         event.type === "session.turn" &&
@@ -9899,7 +9955,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("fails agent-end settlement when native state remains active", async () => {
+  test("ignores agent_end while native state remains active", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -9918,22 +9974,18 @@ describe("OMP direct provider", () => {
     session.stateError = null;
     session.isStreaming = true;
     await scheduler.flush(1_000);
-    const terminal = await events.waitFor(
-      (event) =>
-        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
-    );
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        error: { message: "OMP agent_end arrived while the native runtime remained active" },
-      }),
-    );
-    expect(session.closes).toBe(1);
     expect(
-      events.some(
+      events.filter(
         (event) =>
-          event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
-    ).toBe(false);
+    ).toEqual([]);
+    expect(session.closes).toBe(0);
+
+    session.isStreaming = false;
+    await expect(finishTurn(events, session, turnId)).resolves.toEqual(
+      expect.objectContaining({ state: "completed" }),
+    );
     await connection.close();
   });
 
@@ -9977,7 +10029,12 @@ describe("OMP direct provider", () => {
       willRetry: false,
     });
     establishTerminalOwnership(first);
-    first.emit({ type: "agent_end", messages: [], isTerminal: true });
+    first.emit({
+      type: "agent_end",
+      requestId: "rpc-prompt-2",
+      messages: [],
+      isTerminal: true,
+    });
     await events.waitFor(
       (event) =>
         event.type === "session.turn" &&
@@ -11068,6 +11125,76 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("completes three sequential prompts through ordered unkeyed terminal evidence", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    session.promptAgentInvoked = undefined;
+
+    for (let sequence = 1; sequence <= 3; sequence += 1) {
+      const clientMessageId = `legacy-sequential-${sequence}`;
+      const text = `ordinary prompt ${sequence}`;
+      const turnId = turnIdFrom(await startPrompt(connection, events, clientMessageId, text));
+      await expect(
+        finishLegacyTurn(events, session, turnId, clientMessageId, text, sequence),
+      ).resolves.toEqual(expect.objectContaining({ state: "completed" }));
+    }
+
+    expect(session.promptCount).toBe(3);
+    expect(session.closes).toBe(0);
+    expect(runtime.starts).toHaveLength(1);
+    await connection.close();
+  });
+  test("fails only the legacy turn when terminal history is unavailable", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    await finishTurn(
+      events,
+      session,
+      turnIdFrom(await startPrompt(connection, events, "legacy-history-first", "first")),
+    );
+
+    session.promptAgentInvoked = undefined;
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "legacy-history-second", "second"),
+    );
+    session.branchMessages.push({ entryId: "legacy-history-user", text: "second" });
+    session.emit({ type: "message_end", message: { role: "user", content: "second" } });
+    await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.clientMessageId === "legacy-history-second",
+    );
+    session.historyError = new Error("history unavailable");
+    session.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: "partial",
+        entryId: "legacy-history-assistant",
+        stopReason: "stop",
+      },
+    });
+    session.emit({ type: "agent_end", messageCount: 3, messages: [], isTerminal: true });
+
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        state: "failed",
+        error: expect.objectContaining({ message: expect.stringContaining("outcome is unknown") }),
+      }),
+    );
+    expect(session.historyRequests).toBe(1);
+    expect(session.closes).toBe(0);
+    await connection.close();
+  });
+
   test("rejects delayed prior-turn activity after true and false B acknowledgements", async () => {
     for (const acknowledgement of [true, false]) {
       const { connection, events, runtime } = await createHarness();
@@ -11098,17 +11225,9 @@ describe("OMP direct provider", () => {
         ),
       ).toHaveLength(0);
 
-      session.emit({ type: "prompt_result", id: "rpc-prompt-2", agentInvoked: true });
-      session.emit({
-        type: "agent_end",
-        messages: [{ role: "assistant", content: "second complete" }],
-        isTerminal: true,
-      });
-      const terminal = await events.waitFor(
-        (event) =>
-          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      await expect(finishTurn(events, session, secondTurn)).resolves.toEqual(
+        expect.objectContaining({ state: "completed" }),
       );
-      expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
       await connection.close();
     }
   });
@@ -11143,8 +11262,7 @@ describe("OMP direct provider", () => {
       events.filter((event) => event.type === "session.turn" && event.turnId === secondTurn),
     ).toEqual([expect.objectContaining({ state: "started" })]);
     session.isStreaming = false;
-    establishTerminalOwnership(session);
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await finishTurn(events, session, secondTurn);
     expect(
       await events.waitFor(
         (event) =>
@@ -11153,7 +11271,7 @@ describe("OMP direct provider", () => {
     ).toEqual(expect.objectContaining({ state: "completed" }));
   });
 
-  test("fails closed when branch ownership hangs without a live user echo", async () => {
+  test("fails only the turn when an unkeyed terminal has no current evidence", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     onTestFinished(() => connection.close());
     await openSession(connection, events);
@@ -11179,8 +11297,13 @@ describe("OMP direct provider", () => {
     );
     branch.resolve([{ entryId: "branch-hang-second", text: "second" }]);
 
-    expect(terminal).toEqual(expect.objectContaining({ state: "failed" }));
-    expect(session.closes).toBe(1);
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        state: "failed",
+        error: { message: "OMP unkeyed agent_end could not be correlated to the current prompt" },
+      }),
+    );
+    expect(session.closes).toBe(0);
   });
 
   test("rejects ambiguous branch ownership for repeated identical prompts", async () => {
@@ -11217,6 +11340,7 @@ describe("OMP direct provider", () => {
           event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
       ),
     ).toEqual(expect.objectContaining({ state: "failed" }));
+    expect(session.closes).toBe(0);
   });
   test.each([false, true])(
     "does not let branch acceptance authorize a stale terminal (live echo: %s)",
@@ -11532,6 +11656,14 @@ describe("OMP direct provider", () => {
       );
       establishTerminalOwnership(session);
       session.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: "new response",
+          entryId: "entry-current-assistant",
+        },
+      });
+      session.emit({
         type: "agent_end",
         messages: [{ role: "assistant", content: "new response" }],
         isTerminal: true,
@@ -11547,7 +11679,7 @@ describe("OMP direct provider", () => {
     },
   );
 
-  test("grants terminal ownership to a buffered result confirmed by the prompt acknowledgement", async () => {
+  test("does not treat a buffered prompt result as unkeyed terminal proof", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -11563,20 +11695,20 @@ describe("OMP direct provider", () => {
     );
     session.promptEvents = [];
     session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await scheduler.flush(2_000);
     const terminal = await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
     );
-    await scheduler.flush(2_000);
 
-    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
-    expect(
-      events.filter(
-        (event) =>
-          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
-      ),
-    ).toHaveLength(1);
+    expect(terminal).toEqual(
+      expect.objectContaining({
+        state: "failed",
+        error: { message: "OMP unkeyed agent_end could not be correlated to the current prompt" },
+      }),
+    );
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    expect(session.closes).toBe(0);
 
     const thirdTurn = turnIdFrom(
       await startPrompt(connection, events, "buffered-owner-c", "continue"),
@@ -11635,8 +11767,22 @@ describe("OMP direct provider", () => {
       ),
     ).toHaveLength(0);
 
-    establishTerminalOwnership(session);
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    session.branchMessages.push({ entryId: "busy-current-user", text: "second" });
+    session.emit({ type: "message_end", message: { role: "user", content: "second" } });
+    await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.clientMessageId === "busy-owner-b",
+    );
+    const assistant = {
+      role: "assistant" as const,
+      content: "current response",
+      entryId: "busy-current-assistant",
+      stopReason: "stop",
+    };
+    session.emit({ type: "message_end", message: assistant });
+    session.emit({ type: "agent_end", messages: [assistant], isTerminal: true });
     const terminal = await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
@@ -12424,7 +12570,13 @@ describe("OMP direct provider", () => {
     });
     const permission = await events.waitFor((event) => event.type === "session.permission");
     if (permission.type !== "session.permission") throw new Error("Expected permission event");
-    session.emit({ type: "agent_end", messageCount: 2, messages: [retained], isTerminal: true });
+    session.emit({
+      type: "agent_end",
+      requestId: "rpc-prompt-1",
+      messageCount: 2,
+      messages: [retained],
+      isTerminal: true,
+    });
     await observed.promise;
     await connection.send({
       type: "session.permission",
@@ -12451,6 +12603,7 @@ describe("OMP direct provider", () => {
     session.isStreaming = false;
     session.emit({
       type: "agent_end",
+      requestId: "rpc-prompt-1",
       messages: [{ role: "assistant", stopReason: "error" }],
       isTerminal: true,
     });
@@ -14806,6 +14959,13 @@ describe("OMP direct provider", () => {
                 sessionId: nativeSessionId,
               },
             });
+          } else if (type === "get_messages") {
+            child.write({
+              type: "response",
+              id: command.id,
+              success: true,
+              data: { messages: [] },
+            });
           } else if (type === "get_session_stats") {
             child.write({
               type: "response",
@@ -14985,6 +15145,7 @@ describe("OMP direct provider", () => {
     });
     children[0]?.write({
       type: "agent_end",
+      requestId: promptRequestIds[0],
       messages: [
         ...Array.from({ length: 128 }, () => ({ role: "assistant" as const, content: "ok" })),
         { role: "assistant", content: "failed", stopReason: "error", errorMessage: "private" },
@@ -15020,6 +15181,7 @@ describe("OMP direct provider", () => {
     children[1]?.writeChunked(
       {
         type: "agent_end",
+        requestId: promptRequestIds.at(-1),
         messages: [{ role: "assistant", content: "é".repeat((1024 * 1024) / 2 + 1) }],
         isTerminal: true,
       },
@@ -15050,6 +15212,7 @@ describe("OMP direct provider", () => {
     children[1]?.write({ type: "agent_start" });
     children[1]?.write({
       type: "agent_end",
+      requestId: promptRequestIds.at(-1),
       messages: Array.from({ length: 400 }, () => ({
         role: "assistant",
         content: Array.from({ length: 10 }, () => ({ type: "text", text: "x" })),
@@ -15104,7 +15267,12 @@ describe("OMP direct provider", () => {
         agentInvoked: true,
       });
       children[1]?.write({ type: "agent_start" });
-      children[1]?.write({ type: "agent_end", messages, isTerminal: true });
+      children[1]?.write({
+        type: "agent_end",
+        requestId: promptRequestIds.at(-1),
+        messages,
+        isTerminal: true,
+      });
       await events.waitFor(
         (event) =>
           event.type === "session.turn" &&
@@ -15190,7 +15358,12 @@ describe("OMP direct provider", () => {
       agentInvoked: true,
     });
     children.at(-1)?.write({ type: "agent_start" });
-    children.at(-1)?.write({ type: "agent_end", messages: [], isTerminal: true });
+    children.at(-1)?.write({
+      type: "agent_end",
+      requestId: promptRequestIds.at(-1),
+      messages: [],
+      isTerminal: true,
+    });
     await events.waitFor(
       (event) =>
         event.type === "session.turn" && event.turnId === finalTurn && event.state === "completed",
@@ -15573,7 +15746,8 @@ describe("OMP direct provider", () => {
         },
       });
       establishTerminalOwnership(session);
-      session.emit({ type: "agent_end", messages: [], isTerminal: true });
+      const requestId = `rpc-prompt-${session.promptCount}`;
+      session.emit({ type: "agent_end", requestId, messages: [], isTerminal: true });
       await Promise.resolve();
       expect(
         events.some(
@@ -16694,7 +16868,19 @@ describe("OMP direct provider", () => {
     expect(recovered.handoffs).toEqual(["first"]);
     expect(recovered.followUps).toEqual([]);
     expect(recovered.steers).toEqual(["change direction"]);
-    await finishTurn(events, recovered, commandTurnId);
+    const assistant = {
+      role: "assistant" as const,
+      responseId: "recovered-command-response",
+      content: "done",
+    };
+    recovered.emit({ type: "message_end", message: assistant });
+    recovered.emit({ type: "agent_end", messages: [assistant], isTerminal: true });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === commandTurnId &&
+        event.state === "completed",
+    );
     await connection.close();
   });
 
