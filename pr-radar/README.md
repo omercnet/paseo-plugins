@@ -30,17 +30,38 @@ Paseo supplies normalized workspace pull request status. A daemon-side plugin ha
 
 ## Install
 
-Install the published npm package on the Paseo daemon host:
+### Paseo 0.9 beta
+
+Paseo 0.9 supports npm plugin sources. Install the published package on the daemon host:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-pr-radar
 ```
 
-Update an existing installation to the latest published release:
+Update an npm installation to the latest published release:
 
 ```bash
 paseo plugin update pr-radar
 ```
+
+The npm install and update flow requires Paseo 0.9. Paseo 0.8 does not accept npm plugin sources.
+
+### Paseo 0.8
+
+Install from the Git monorepo:
+
+```bash
+paseo plugin add omercnet/paseo-plugins:pr-radar
+```
+
+Or install a local checkout by absolute path on the daemon host:
+
+```bash
+paseo plugin install /absolute/path/to/paseo-plugins/pr-radar
+```
+
+On Paseo 0.8, `plugin update` updates Git-managed installations only. Local directory
+installations continue to use their checked-out source and require `plugin reload` after edits.
 
 The daemon must have plugins enabled and `gh` authenticated for GitHub viewer-aware triage.
 
