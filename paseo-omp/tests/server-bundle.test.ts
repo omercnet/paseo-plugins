@@ -55,7 +55,7 @@ describe("plugin server bundle", () => {
     expect(manifest).toEqual({
       id: "paseo-omp",
       requirements: { paseo: ">=0.8.0 <0.10.0" },
-      build: [["npm", "install", "--ignore-scripts"]],
+      build: [["node", "scripts/prepare-dependencies.mjs"]],
     });
     const packageManifest = JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8"));
     expect(packageManifest.description).toBe(
@@ -168,5 +168,4 @@ describe("plugin server bundle", () => {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
   });
-
 });

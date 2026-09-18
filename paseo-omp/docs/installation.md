@@ -26,18 +26,11 @@ paseo plugin update paseo-omp
 paseo plugin update paseo-omp --version <new-version>
 ```
 
-The daemon uses its own npm registry and authentication configuration. npm artifacts omit `package-lock.json`, so manifest preparation uses `npm install --ignore-scripts`; a Git checkout uses the committed lockfile when present. Both paths disable dependency lifecycle scripts. A failed download, preparation, compatibility check, or activation keeps the installed revision active. Paseo 0.8 does not support npm plugin sources; use a Git tag, release archive, or local directory instead.
+The daemon uses its own npm registry and authentication configuration. npm acquisition installs the artifact's production dependencies before preparation; because npm artifacts omit `package-lock.json`, the preparation helper leaves that tree unchanged. A Git checkout with the committed lockfile runs frozen `npm ci --omit=dev --ignore-scripts`. A failed download, preparation, compatibility check, or activation keeps the installed revision active. Paseo 0.8 does not support npm plugin sources; use a Git tag or local directory instead.
 
 ## Install a Git release on Paseo 0.8 or 0.9
 
-Install an exact published version from npm:
-
-```bash
-paseo plugin install npm:@omercnet/paseo-omp@<version>
-paseo plugin ls paseo-omp
-```
-
-Alternatively, install the matching reviewed Git tag:
+Install the matching reviewed Git tag:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-omp --ref paseo-omp-v<version>
