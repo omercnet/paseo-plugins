@@ -6,7 +6,12 @@ test("does not register a native session provider for Gas City v1.4.1", () => {
   let registrations = 0;
 
   contribute({
-    registerSettings() {},
+    registerSettings() {
+      return {
+        read: async () => ({ status: "invalid", revision: "test", error: "unused" }),
+        subscribe: () => () => {},
+      };
+    },
     handle() {},
     registerProvider() {
       registrations += 1;

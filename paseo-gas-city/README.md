@@ -64,7 +64,7 @@ host. Enabling a remote endpoint sends requests to that host from the Paseo daem
 
 ## Requirements and limitations
 
-- Paseo `^0.8.0` with plugins enabled.
+- Paseo `^0.8.0` or `^0.9.0-beta.1` with plugins enabled.
 - A reachable Gas City v1.4.1 supervisor exposing its HTTP API.
 - HTTP or HTTPS endpoints only. Credentials, query strings, and fragments are rejected.
 - Automatic workspace mapping requires the workspace path to be inside exactly one discovered rig;
@@ -79,19 +79,27 @@ host. Enabling a remote endpoint sends requests to that host from the Paseo daem
 
 ## Install
 
-From GitHub:
+With Paseo `0.9.0-beta.1`, install the npm package:
 
 ```bash
-paseo plugin add omercnet/paseo-plugins:paseo-gas-city
+paseo plugin install npm:@omercnet/paseo-gas-city
 ```
 
-Update an existing Git installation with:
+Paseo 0.9 npm updates are reviewed before they are applied. Check for a candidate, then run the
+interactive review:
 
 ```bash
+paseo plugin update gas-city --check
 paseo plugin update gas-city
 ```
 
-From a local checkout on the Paseo daemon host:
+Paseo 0.8 users can install from Git instead:
+
+```bash
+paseo plugin install omercnet/paseo-plugins:paseo-gas-city
+```
+
+Paseo 0.8 and 0.9 can also install from a local checkout on the Paseo daemon host:
 
 ```bash
 git clone https://github.com/omercnet/paseo-plugins.git
@@ -135,6 +143,3 @@ npm run package:release
 Release Please maintains the package version, changelog, component tag, and GitHub release. Tags use
 `paseo-gas-city-v<version>`. The release workflow re-runs checks, typechecking, coverage, and package
 verification before uploading the ZIP asset and its SHA-256 checksum.
-
-The package is `@omercnet/paseo-gas-city` at version `0.0.1`. The supported distribution paths are
-the Git source above and the versioned GitHub release ZIP.
