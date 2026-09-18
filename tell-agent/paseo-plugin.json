@@ -1,4 +1,5 @@
 {
   "id": "tell-agent",
-  "requirements": { "paseo": "^0.8.0" }
+  "description": "Send messages to agents in other workspaces on the same Paseo host.",
+  "requirements": { "paseo": "^0.8.0 || ^0.9.0-beta.1" }
 }
