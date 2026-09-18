@@ -1,3 +1,4 @@
+import { resolveDependencyRoot } from "./prepare-dependencies.mjs";
 import { build } from "esbuild";
 import { execFile } from "node:child_process";
 import {
@@ -26,7 +27,7 @@ const pluginDataRoot = join(paseoHome, "plugin-data", "shared-browser");
 const runtimeRoot = join(pluginDataRoot, "runtime");
 const stagingRoot = join(pluginDataRoot, `.runtime-${process.pid}`);
 const runtimeModules = join(stagingRoot, "node_modules");
-const packagedAgentBrowser = join(projectRoot, "node_modules", "agent-browser");
+const packagedAgentBrowser = resolveDependencyRoot("agent-browser");
 const runtimeEntry = join(runtimeModules, ".bin", "agent-browser");
 const supervisorEntry = join(projectRoot, "server", "supervisor-entry.ts");
 const mcpEntry = join(projectRoot, "server", "mcp-entry.ts");

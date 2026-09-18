@@ -62,22 +62,6 @@ export const GasCitySettingsSchema = GasCitySettingsBaseSchema.superRefine(
   rejectDuplicateWorkspaceMappings,
 );
 
-export const GasCityRpcSettingsSchema = GasCitySettingsBaseSchema.omit({
-  refreshIntervalMs: true,
-}).superRefine(rejectDuplicateWorkspaceMappings);
-
-export type GasCityRpcSettings = z.infer<typeof GasCityRpcSettingsSchema>;
-
-export function toGasCityRpcSettings(settings: GasCitySettings): GasCityRpcSettings {
-  return GasCityRpcSettingsSchema.parse({
-    endpointUrl: settings.endpointUrl,
-    allowRemoteEndpoint: settings.allowRemoteEndpoint,
-    mutationsEnabled: settings.mutationsEnabled,
-    eventLimit: settings.eventLimit,
-    workspaceMappings: settings.workspaceMappings,
-  });
-}
-
 export type GasCitySettings = z.infer<typeof GasCitySettingsSchema>;
 export type WorkspaceMappingOverride = z.infer<typeof WorkspaceMappingOverrideSchema>;
 

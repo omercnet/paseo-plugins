@@ -30,7 +30,13 @@ Paseo plugins are trusted, unsandboxed code. Review the source before installing
 host.
 
 ```bash
-paseo plugin install github:omercnet/paseo-plugins:fresh-worktrees
+paseo plugin install npm:@omercnet/paseo-fresh-worktrees
+```
+
+Or install from Git:
+
+```bash
+paseo plugin add omercnet/paseo-plugins:fresh-worktrees
 ```
 
 The plugin requires Paseo `>=0.8.0`.

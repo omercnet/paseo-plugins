@@ -30,7 +30,6 @@ import {
   listWork,
   performSessionAction,
   type SessionActionRequest,
-  toGasCityRpcSettings,
 } from "../shared";
 import type { SlingIntent } from "./dispatch-intent";
 import {
@@ -392,7 +391,6 @@ export function CityOperations({
   const [sessionMessage, setSessionMessage] = useState("");
   const [interactionResponse, setInteractionResponse] = useState<InteractionResponse>("allow");
   const [eventCursor, setEventCursor] = useState<string | null>(null);
-  const rpcSettings = useMemo(() => toGasCityRpcSettings(settings), [settings]);
 
   useEffect(() => {
     if (!slingIntent) return;
@@ -403,10 +401,7 @@ export function CityOperations({
     onDismissSlingIntent?.(slingIntent.id);
   }, [onDismissSlingIntent, slingIntent]);
 
-  const scope = useMemo(
-    () => ({ settings: rpcSettings, cityName, rigName }),
-    [cityName, rigName, rpcSettings],
-  );
+  const scope = useMemo(() => ({ cityName, rigName }), [cityName, rigName]);
   const queryRoot = useMemo(
     () => cityQueryRoot(host.id, settings.endpointUrl, cityName, rigName),
     [cityName, host.id, rigName, settings.endpointUrl],
@@ -433,8 +428,7 @@ export function CityOperations({
   });
   const eventsQuery = useQuery({
     queryKey: [...queryRoot, "events", settings.eventLimit, eventCursor],
-    queryFn: () =>
-      loadEvents({ settings: rpcSettings, scope: "city", cityName, cursor: eventCursor }),
+    queryFn: () => loadEvents({ scope: "city", cityName, cursor: eventCursor }),
     refetchInterval: settings.refreshIntervalMs,
   });
   const attentionQuery = useQuery({
@@ -507,7 +501,7 @@ export function CityOperations({
         noConvoy: false,
         merge: "direct",
       } satisfies DispatchRequest;
-      return runDispatch({ settings: rpcSettings, request });
+      return runDispatch({ request });
     },
     onSuccess: (result) => {
       toast.show(`Dispatched ${result.beadId ?? "work"} to ${result.target}.`, {
@@ -554,7 +548,7 @@ export function CityOperations({
       } else {
         request = { ...base, action: sessionAction };
       }
-      return runSessionAction({ settings: rpcSettings, request });
+      return runSessionAction({ request });
     },
     onSuccess: (result) => {
       toast.show(`${sessionAction} accepted for ${result.sessionId}.`, { variant: "success" });

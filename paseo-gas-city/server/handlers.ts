@@ -1,5 +1,5 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
-import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginSettings } from "@getpaseo/plugin/server";
 import {
   AttentionListSchema,
   CityRigSnapshotSchema,
@@ -10,8 +10,8 @@ import {
   EventListSchema,
   GAS_CITY_LIMITS,
   type GasCityDiagnostic,
-  type GasCityRpcSettings,
-  GasCityRpcSettingsSchema,
+  type GasCitySettings,
+  type gasCitySettings,
   type getCityRigSnapshot,
   type listAttention,
   type listConvoys,
@@ -39,9 +39,11 @@ import {
 import { mapWorkspaceToRig } from "./workspace-mapping";
 
 export interface GasCityHandlerDependencies {
-  createClient?: (settings: GasCityRpcSettings) => GasCityClient;
+  createClient?: (settings: GasCitySettings) => GasCityClient;
   now?: () => Date;
 }
+
+type GasCitySettingsHandle = PluginSettings<typeof gasCitySettings.schema>;
 
 export interface GasCityHandlers {
   discoverSupervisor(
@@ -317,7 +319,7 @@ function parseEventItems(items: readonly unknown[] | null, fallbackCity: string 
   return { items: parsed, dropped };
 }
 
-function requireMutations(settings: GasCityRpcSettings, confirmed: boolean) {
+function requireMutations(settings: GasCitySettings, confirmed: boolean) {
   if (!settings.mutationsEnabled) {
     throw new Error("Gas City mutations are disabled by the interactive safety interlock.");
   }
@@ -333,6 +335,7 @@ async function workspacePath(
 }
 
 export function createGasCityHandlers(
+  settingsHandle: GasCitySettingsHandle,
   dependencies: GasCityHandlerDependencies = {},
 ): GasCityHandlers {
   const createClient =
@@ -344,15 +347,17 @@ export function createGasCityHandlers(
       }));
   const now = dependencies.now ?? (() => new Date());
 
-  const resources = (input: { settings: GasCityRpcSettings }) => {
-    const settings = GasCityRpcSettingsSchema.parse(input.settings);
+  const resources = async () => {
+    const state = await settingsHandle.read();
+    if (state.status !== "ready") throw new Error(`Gas City settings are invalid: ${state.error}`);
+    const settings = state.values;
     return { settings, client: createClient(settings) };
   };
 
   return {
-    async discoverSupervisor(input) {
+    async discoverSupervisor(_input) {
       try {
-        const { client } = resources(input);
+        const { client } = await resources();
         const [health, cities] = await Promise.all([client.health(), client.cities()]);
         return SupervisorDiscoverySchema.parse({
           state: "available",
@@ -374,7 +379,7 @@ export function createGasCityHandlers(
     },
 
     async resolveWorkspaceRig(input, context) {
-      const { settings, client } = resources(input);
+      const { settings, client } = await resources();
       try {
         const [path, cityResponse] = await Promise.all([
           workspacePath(input.workspaceId, context),
@@ -421,7 +426,7 @@ export function createGasCityHandlers(
       }
     },
     async getCityRigSnapshot(input, _context) {
-      const { client } = resources(input);
+      const { client } = await resources();
       try {
         const [cities, status, rigs] = await Promise.all([
           client.cities(),
@@ -480,7 +485,7 @@ export function createGasCityHandlers(
     },
 
     async listSessions(input) {
-      const { client } = resources(input);
+      const { client } = await resources();
       try {
         const response = await client.sessions(input.cityName);
         const items = (response.items ?? [])
@@ -498,7 +503,7 @@ export function createGasCityHandlers(
     },
 
     async listConvoys(input) {
-      const { client } = resources(input);
+      const { client } = await resources();
       try {
         const [response, rigs] = await Promise.all([
           client.convoys(input.cityName),
@@ -523,7 +528,7 @@ export function createGasCityHandlers(
     },
 
     async listWork(input) {
-      const { settings, client } = resources(input);
+      const { settings, client } = await resources();
       try {
         const response = await client.work(input.cityName, input.rigName, settings.eventLimit);
         return WorkListSchema.parse({
@@ -541,7 +546,7 @@ export function createGasCityHandlers(
     },
 
     async listEvents(input) {
-      const { settings, client } = resources(input);
+      const { settings, client } = await resources();
       try {
         if (input.scope === "supervisor") {
           const response = await client.supervisorEvents(settings.eventLimit);
@@ -569,7 +574,7 @@ export function createGasCityHandlers(
     },
 
     async listAttention(input) {
-      const { client } = resources(input);
+      const { client } = await resources();
       try {
         const [status, sessions, convoys, pending, rigs] = await Promise.all([
           client.cityStatus(input.cityName),
@@ -688,7 +693,7 @@ export function createGasCityHandlers(
     },
 
     async dispatchWork(input) {
-      const { settings, client } = resources(input);
+      const { settings, client } = await resources();
       const request = input.request;
       requireMutations(settings, request.confirmed);
       const target = request.target;
@@ -738,7 +743,7 @@ export function createGasCityHandlers(
     },
 
     async performSessionAction(input) {
-      const { settings, client } = resources(input);
+      const { settings, client } = await resources();
       const request = input.request;
       requireMutations(settings, request.confirmed);
       let action: string = request.action;
@@ -775,16 +780,3 @@ export function createGasCityHandlers(
     },
   };
 }
-
-const defaultHandlers = createGasCityHandlers();
-
-export const handleDiscoverSupervisor = defaultHandlers.discoverSupervisor;
-export const handleResolveWorkspaceRig = defaultHandlers.resolveWorkspaceRig;
-export const handleGetCityRigSnapshot = defaultHandlers.getCityRigSnapshot;
-export const handleListSessions = defaultHandlers.listSessions;
-export const handleListConvoys = defaultHandlers.listConvoys;
-export const handleListWork = defaultHandlers.listWork;
-export const handleListEvents = defaultHandlers.listEvents;
-export const handleListAttention = defaultHandlers.listAttention;
-export const handleDispatchWork = defaultHandlers.dispatchWork;
-export const handlePerformSessionAction = defaultHandlers.performSessionAction;
