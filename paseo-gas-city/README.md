@@ -48,6 +48,11 @@ Gas City settings are host-scoped and shared by every Paseo client connected to 
 - **Workspace mappings** override automatic longest-ancestor rig matching when a workspace is
   ambiguous or lives outside its rig path.
 
+Paseo 0.8 does not expose persisted settings to server handlers. On 0.8, server operations therefore
+use schema defaults only: the loopback endpoint, remote access and mutations disabled, the default
+event limit, and no workspace mappings. Customized Gas City settings require Paseo `0.9.0-beta.1`
+or later.
+
 Settings are a safety and routing configuration, not a credential vault. Put authentication and
 network access controls in front of Gas City itself.
 
