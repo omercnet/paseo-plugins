@@ -1,4 +1,5 @@
 import {
+  openExternalUrl,
   type PluginSurfaceProps,
   type PluginWorkspacePanelProps,
   usePaseo,
@@ -10,7 +11,7 @@ import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
-import { Linking, Pressable, ScrollView, Switch, Text, View } from "react-native";
+import { Pressable, ScrollView, Switch, Text, View } from "react-native";
 import type { ComposerPillSettings } from "../shared/composer-pill-settings";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import {
@@ -1072,7 +1073,7 @@ function OmpConfigContent({
   const openDocumentation = useCallback(async (link: OmpDocumentationLink) => {
     setDocumentationError(null);
     try {
-      await Linking.openURL(link.url);
+      await openExternalUrl(link.url);
     } catch {
       setDocumentationError(`Could not open ${link.label.toLocaleLowerCase()}.`);
     }

@@ -4,13 +4,31 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its producti
 
 ## Requirements
 
-- Paseo daemon and apps: `^0.8.0`
+- Paseo daemon and apps: `>=0.8.0 <0.10.0`; `0.9.0-beta.1` is recommended
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 
 The first public build is an alpha. Alpha releases are compatibility previews and may require deleting and re-importing agents created by an earlier preview.
 
-## Install a release
+## Install or update from npm on Paseo 0.9
+
+Paseo 0.9.0-beta.1 can acquire the published package and its production dependencies directly from npm on the daemon host:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-omp@<version>
+paseo plugin ls paseo-omp
+```
+
+Check for the registry's current `latest` version and approve the proposed update, or select an exact version explicitly:
+
+```bash
+paseo plugin update paseo-omp
+paseo plugin update paseo-omp --version <new-version>
+```
+
+The daemon uses its own npm registry and authentication configuration. A failed download, build, compatibility check, or activation keeps the installed revision active. Paseo 0.8 does not support npm plugin sources; use a Git tag, release archive, or local directory instead.
+
+## Install a Git release on Paseo 0.8 or 0.9
 
 Install an exact published version from npm:
 

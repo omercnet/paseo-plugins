@@ -16,7 +16,7 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 
 ## Supported versions
 
-- Paseo: `^0.8.0` on both the daemon and every app loading the client entry.
+- Paseo: `>=0.8.0 <0.10.0` on both the daemon and every app loading the client entry. The pinned SDK and controlled canary use `0.9.0-beta.1`; 0.8.x remains the compatibility line.
 - OMP: `18.1.15` is the oldest release in the required real-binary regression job. The hard runtime contract is `rpc-ui` protocol v2, not the version string alone.
 - Plugin release channel: alpha. Backward compatibility is best effort until stable `0.1.0`; every known migration requirement must be stated in the release notes.
 - Typed approvals: optional. When both peers negotiate `typedToolApprovals: 1`, the plugin uses typed tool permissions. Otherwise it retains the bounded generic extension-question flow.
@@ -33,6 +33,7 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 - The deterministic mock does not implement OMP's compaction-summary contract, so `/compact` reports `OMP compaction failed` in the canary; compaction remains covered by protocol fixtures.
 - `/handoff` reports `OMP command failed` in the controlled canary even with deterministic role models configured; treat handoff as unavailable there until its native prerequisite is isolated.
 - On official Paseo 0.8.0, requesting a live approval-mode change that the plugin rejects can trigger the daemon's unhandled-rejection restart path. Create a new `full`, `write`, or `ask` session instead of changing mode in place.
+- Paseo 0.8 clients do not expose the platform-owned plugin URL opener and transform timeline items after Overview grouping. Use a 0.9.0-beta.1 app for external documentation/device-authorization actions and for reliable image-card transformation of every source tool call.
 - Native Fast mode and a first-class plan mode are not exposed. `/handoff` is implemented but is not reproducible in the controlled canary without its native OMP workflow prerequisites.
 - Terminal-started OMP sessions are discoverable and importable but are not registered automatically through a terminal hook.
 - OMP tool output reaching RPC stdout is strictly parsed and bounded, but channel purity ultimately depends on OMP keeping non-protocol output off stdout.

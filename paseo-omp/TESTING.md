@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against the Paseo plugin SDK versions pinned in `package.json`, official Paseo Docker image `0.8.0@sha256:5518da7cdd35f132e8a944c35e509c677a90a8f3ec8a78df98f7fb5fd5e2c6c3`, and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; latest published 18.1 patch 18.1.22; and current release 18.2.0.
+Validated against the Paseo plugin SDK versions pinned in `package.json`, official Paseo Docker image `0.9.0-beta.1@sha256:f75a0eb3547ad3cc6bbdeaa7277d2d50eb4d06a9dd669d480371d7adf1c911b5`, and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; latest published 18.1 patch 18.1.22; and current release 18.2.0.
 
 Classifications:
 
@@ -145,6 +145,6 @@ The go/no-go criteria, manual acceptance boundary, and alpha limitation list are
 - `npm run test:integration:install`: a packed npm package retains required production dependencies and bundles successfully; a fresh Git-style checkout installs with lifecycle scripts disabled, typechecks, and loads the server contribution.
 - `npm run test:integration:docker`: verifies the host/container ownership boundary.
 - `npm run test:integration:wsl`: locally skips when `wsl.exe` is unavailable; Windows CI sets `PASEO_OMP_REQUIRE_WSL=1`, so this boundary remains required there.
-- `docker compose -f canary/compose.yml`: official Paseo 0.8.0, deterministic mock, Tailscale-bound web UI, and optional Ollama `qwen2.5:0.5b` passed end-to-end.
+- `docker compose -f canary/compose.yml`: official Paseo 0.9.0-beta.1, deterministic mock, Tailscale-bound web UI, and optional Ollama `qwen2.5:0.5b` passed end-to-end.
 - `zizmor .github/workflows`: no findings (offline audit; six repository-wide suppressions remain).
 - Release Please 17.1.2 `config.json` and `manifest.json` schema validation: passed for `release-please-config.json` and `.release-please-manifest.json`.

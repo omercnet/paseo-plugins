@@ -1,4 +1,5 @@
 import { existsSync, statSync } from "node:fs";
+import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { describe, expect, test } from "vitest";
 import { OmpImageMaterializer } from "../server/provider/image";
 import {
@@ -19,26 +20,35 @@ function imageMetadata(data = PNG) {
   };
 }
 
+function toolCall(
+  callId: string,
+  metadata?: Record<string, unknown>,
+): Extract<AgentTimelineItem, { type: "tool_call" }> {
+  return {
+    type: "tool_call",
+    callId,
+    name: "OMP image carrier",
+    status: "completed",
+    error: null,
+    detail: { type: "unknown", input: null, output: null },
+    ...(metadata ? { metadata } : {}),
+  };
+}
+
 describe("OMP image timeline transformer", () => {
   test("ignores foreign and unowned tool calls", () => {
+    expect(transformOmpImageToolItem(toolCall("foreign:tool:1", imageMetadata()))).toBeUndefined();
     expect(
-      transformOmpImageToolItem({ callId: "foreign:tool:1", metadata: imageMetadata() }),
-    ).toBeUndefined();
-    expect(
-      transformOmpImageToolItem({
-        callId: "omp:tool:1:images",
-        metadata: { ompImage: imageMetadata().ompImage },
-      }),
+      transformOmpImageToolItem(
+        toolCall("omp:tool:1:images", { ompImage: imageMetadata().ompImage }),
+      ),
     ).toBeUndefined();
   });
 
   test("rejects oversized cumulative and malformed image payloads", () => {
     const oversized = "A".repeat(8 * 1024 * 1024 + 4);
     expect(
-      transformOmpImageToolItem({
-        callId: "omp:tool:1:images",
-        metadata: imageMetadata(oversized),
-      }),
+      transformOmpImageToolItem(toolCall("omp:tool:1:images", imageMetadata(oversized))),
     ).toBeUndefined();
 
     const largePng = (fill: number) =>
@@ -47,9 +57,8 @@ describe("OMP image timeline transformer", () => {
         Buffer.alloc(5 * 1024 * 1024 - 8, fill),
       ]).toString("base64");
     expect(
-      transformOmpImageToolItem({
-        callId: "omp:assistant:1:abcdefghijkl:content:0:image:images",
-        metadata: {
+      transformOmpImageToolItem(
+        toolCall("omp:assistant:1:abcdefghijkl:content:0:image:images", {
           ompImageOwner: "omp",
           ompImage: {
             label: "Gallery",
@@ -58,26 +67,25 @@ describe("OMP image timeline transformer", () => {
               { id: "ponmlkjihgfedcba", data: largePng(2), mimeType: "image/png" },
             ],
           },
-        },
-      }),
+        }),
+      ),
     ).toBeUndefined();
 
     for (const data of ["not base64", Buffer.from("not an image").toString("base64")]) {
       expect(
-        transformOmpImageToolItem({
-          callId: "omp:custom:abcdefghijkl:images",
-          metadata: imageMetadata(data),
-        }),
+        transformOmpImageToolItem(toolCall("omp:custom:abcdefghijkl:images", imageMetadata(data))),
       ).toBeUndefined();
     }
   });
 
-  test("renders a valid bounded OMP image carrier", () => {
-    const transformed = transformOmpImageToolItem({
-      callId: "omp:tool:7:images",
-      metadata: imageMetadata(),
-    });
-    expect(transformed?.items).toEqual([
+  test("claims a complete image tool item before neighboring calls are grouped", () => {
+    const calls = [
+      toolCall("foreign:tool:6"),
+      toolCall("omp:tool:7:images", imageMetadata()),
+      toolCall("foreign:tool:8"),
+    ];
+    const transformed = calls.map((item) => transformOmpImageToolItem(item));
+    expect(transformed[1]?.items).toEqual([
       {
         type: "plugin",
         kind: "omp-images",
@@ -86,11 +94,13 @@ describe("OMP image timeline transformer", () => {
         data: imageMetadata().ompImage,
       },
     ]);
-    expect(ompImageTimelineSchema.parse(transformed?.items[0]?.data).images[0]).toEqual({
+    expect(ompImageTimelineSchema.parse(transformed[1]?.items[0]?.data).images[0]).toEqual({
       id: "abcdefghijklmnop",
       data: PNG,
       mimeType: "image/png",
     });
+    expect(transformed[0]).toBeUndefined();
+    expect(transformed[2]).toBeUndefined();
   });
 
   test("hides machine-facing coordinate notes from the image caption", () => {
