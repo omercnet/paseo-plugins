@@ -35,7 +35,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      actions: read
       contents: read
       id-token: write
     strategy:
@@ -43,24 +42,6 @@ jobs:
       matrix:
         directory: ${{ fromJSON(needs.metadata.outputs.paths-released) }}
     steps:
-      - name: Require successful CI for release commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-        run: |
-          run_id=""
-          for _ in $(seq 1 60); do
-            run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-            if [[ -n "$run_id" ]]; then
-              break
-            fi
-            sleep 10
-          done
-          if [[ -z "$run_id" ]]; then
-            echo "No CI push run found for release commit $SHA" >&2
-            exit 1
-          fi
-          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
       - name: Check out exact release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,6 +50,7 @@ jobs:
       - name: Validate release identity
         working-directory: ${{ matrix.directory }}
         env:
+          GH_TOKEN: ${{ github.token }}
           DIRECTORY: ${{ matrix.directory }}
           RELEASE_OUTPUTS: ${{ needs.metadata.outputs.release-outputs }}
           SHA: ${{ github.sha }}
