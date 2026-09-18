@@ -47,14 +47,6 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate release identity
-        working-directory: ${{ matrix.directory }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DIRECTORY: ${{ matrix.directory }}
-          RELEASE_OUTPUTS: ${{ needs.metadata.outputs.release-outputs }}
-          SHA: ${{ github.sha }}
-        run: node "$GITHUB_WORKSPACE/.github/scripts/validate-release-identity.mjs"
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:

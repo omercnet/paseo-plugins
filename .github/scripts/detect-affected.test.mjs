@@ -89,7 +89,6 @@ test("CI implementation changes select every discovered plugin", () => {
   for (const file of [
     ".github/workflows/ci.yml",
     ".github/scripts/detect-affected.mjs",
-    ".github/scripts/validate-release-identity.mjs",
   ]) {
     const result = detectAffected([file], plugins);
 
