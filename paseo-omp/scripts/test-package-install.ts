@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +9,7 @@ import { build } from "esbuild";
 const executeFile = promisify(execFile);
 const pluginRoot = join(import.meta.dirname, "..");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+
 const ignoredCheckoutEntries: Record<string, true> = {
   ".git": true,
   coverage: true,
