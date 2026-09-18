@@ -10,6 +10,18 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [0.5.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v0.4.2...agent-monitor-v0.5.0) (2026-09-18)
+
+
+### Features
+
+* **release:** publish plugins to npm ([#80](https://github.com/omercnet/paseo-plugins/issues/80)) ([3c93048](https://github.com/omercnet/paseo-plugins/commit/3c93048cfefda97d8c2bc1631e3428fb64bdad09))
+
+
+### Bug Fixes
+
+* **agent-monitor:** support Paseo 0.9 beta ([#83](https://github.com/omercnet/paseo-plugins/issues/83)) ([6a52638](https://github.com/omercnet/paseo-plugins/commit/6a52638645d6fc9b5e9b586444af561a84bcd358))
+
 ## [0.4.2](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v0.4.1...agent-monitor-v0.4.2) (2026-09-10)
 
 
