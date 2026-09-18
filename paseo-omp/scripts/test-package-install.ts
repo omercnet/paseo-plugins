@@ -70,23 +70,33 @@ async function verifyRuntimeDependencies(root: string): Promise<void> {
   }
 }
 
-async function verifyServerBundle(root: string): Promise<void> {
-  await build({
-    absWorkingDir: root,
-    entryPoints: ["index.server.ts"],
-    bundle: true,
-    platform: "node",
-    format: "cjs",
-    write: false,
-    external: [
-      "@getpaseo/plugin",
-      "@getpaseo/protocol/*",
-      "@getpaseo/plugin/server",
-      "@getpaseo/plugin/server/provider",
-      "zod",
-    ],
-    logLevel: "silent",
+async function verifyProductionOnly(root: string, source: string): Promise<void> {
+  const installedDevDependency = await access(join(root, "node_modules", "typescript")).then(
+    () => true,
+    () => false,
+  );
+  if (installedDevDependency) throw new Error(`${source} preparation installed devDependencies`);
+}
+
+async function verifyHostCompilationAndServerLoad(root: string): Promise<void> {
+  const { clientBundle, serverBundle } = await compilePlugin({
+    client: join(root, "index.client.tsx"),
+    server: join(root, "index.server.ts"),
   });
+  if (!clientBundle || !serverBundle) {
+    throw new Error("Paseo host compilation did not produce both plugin bundles");
+  }
+  const installedRequire = createRequire(join(root, "package.json"));
+  // biome-ignore lint/security/noGlobalEval: mirrors the Paseo host's plugin bundle loader
+  const factory = globalThis.eval(serverBundle) as (require: (name: string) => unknown) => {
+    default?: unknown;
+  };
+  const loaded = factory((name) =>
+    name.startsWith("@getpaseo/plugin") ? sdkStub : installedRequire(name),
+  );
+  if (typeof loaded.default !== "function") {
+    throw new Error("Paseo host compilation produced no server contribution");
+  }
 }
 
 async function verifyNpmPackageInstall(temporaryDirectory: string): Promise<void> {
