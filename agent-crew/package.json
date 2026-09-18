@@ -4,6 +4,15 @@
   "type": "module",
   "description": "A Paseo Explorer panel for visualizing and controlling every managed agent crew in a workspace.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "agent-crew"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/agent-crew#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
