@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { build } from "esbuild";
-import { unzipSync } from "fflate";
-import { extractArchiveFiles } from "./release-archive";
 
 const executeFile = promisify(execFile);
 const pluginRoot = join(import.meta.dirname, "..");
@@ -46,7 +44,7 @@ async function buildCommands(root: string): Promise<string[][]> {
     build?: unknown;
   };
   if (!Array.isArray(manifest.build) || manifest.build.length === 0) {
-    throw new Error("paseo-plugin.json must declare Git preparation commands");
+    throw new Error("paseo-plugin.json must declare source preparation commands");
   }
   for (const command of manifest.build) {
     if (
@@ -60,57 +58,55 @@ async function buildCommands(root: string): Promise<string[][]> {
   return manifest.build as string[][];
 }
 
-async function verifyRuntimeDependencies(
-  root: string,
-  environment: NodeJS.ProcessEnv = process.env,
-): Promise<void> {
+async function verifyRuntimeDependencies(root: string): Promise<void> {
   const probe = join(root, ".package-install-smoke.mjs");
   await writeFile(probe, 'import "@modelcontextprotocol/sdk/server/index.js";\nimport "yaml";\n');
   try {
-    await run([process.execPath, probe], root, environment);
+    await run([process.execPath, probe], root);
   } finally {
     await rm(probe, { force: true });
   }
 }
 
-async function verifyArchiveInstall(temporaryDirectory: string): Promise<void> {
-  const archivePath = join(temporaryDirectory, "paseo-omp.zip");
-  await run(
-    [process.execPath, "--import", "tsx", "scripts/package-release.ts", archivePath],
-    pluginRoot,
-  );
-  const extractionRoot = join(temporaryDirectory, "archive");
-  const archive = unzipSync(await readFile(archivePath));
-  await extractArchiveFiles(archive, extractionRoot);
+async function verifyServerBundle(root: string): Promise<void> {
+  await build({
+    absWorkingDir: root,
+    entryPoints: ["index.server.ts"],
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    write: false,
+    external: [
+      "@getpaseo/plugin",
+      "@getpaseo/protocol/*",
+      "@getpaseo/plugin/server",
+      "@getpaseo/plugin/server/provider",
+      "zod",
+    ],
+    logLevel: "silent",
+  });
+}
 
-  const extractedPlugin = join(extractionRoot, "paseo-omp");
-  const offlineEnvironment = {
-    ...process.env,
-    HTTP_PROXY: "http://127.0.0.1:9",
-    HTTPS_PROXY: "http://127.0.0.1:9",
-    NO_PROXY: "",
-  };
-  await verifyRuntimeDependencies(extractedPlugin, offlineEnvironment);
-  const offlineBundle = join(extractedPlugin, ".offline-server.cjs");
-  try {
-    await build({
-      absWorkingDir: extractedPlugin,
-      entryPoints: ["index.server.ts"],
-      bundle: true,
-      platform: "node",
-      format: "cjs",
-      outfile: offlineBundle,
-      external: [
-        "@getpaseo/plugin",
-        "@getpaseo/plugin/server",
-        "@getpaseo/plugin/server/provider",
-        "zod",
-      ],
-      logLevel: "silent",
-    });
-  } finally {
-    await rm(offlineBundle, { force: true });
-  }
+async function verifyNpmPackageInstall(temporaryDirectory: string): Promise<void> {
+  const packed = JSON.parse(
+    await run([npmCommand, "pack", "--json", "--pack-destination", temporaryDirectory], pluginRoot),
+  ) as Array<{ filename?: string }>;
+  const filename = packed[0]?.filename;
+  if (!filename) throw new Error("npm pack did not return a package filename");
+
+  const consumerRoot = join(temporaryDirectory, "consumer");
+  await mkdir(consumerRoot);
+  await writeFile(join(consumerRoot, "package.json"), '{"private":true,"type":"module"}\n');
+  await run(
+    [npmCommand, "install", join(temporaryDirectory, filename), "--ignore-scripts"],
+    consumerRoot,
+  );
+
+  const installedPlugin = join(consumerRoot, "node_modules", "@omercnet", "paseo-omp");
+  const commands = await buildCommands(installedPlugin);
+  for (const command of commands) await run(command, installedPlugin);
+  await verifyRuntimeDependencies(installedPlugin);
+  await verifyServerBundle(installedPlugin);
 }
 
 async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<void> {
@@ -145,9 +141,6 @@ async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<voi
   );
   const checkoutPlugin = join(checkoutRoot, "paseo-omp");
   const commands = await buildCommands(checkoutPlugin);
-  if (!commands.some((command) => command.includes("--ignore-scripts"))) {
-    throw new Error("Git dependency installation must disable lifecycle scripts");
-  }
   for (const command of commands) await run(command, checkoutPlugin);
   await verifyRuntimeDependencies(checkoutPlugin);
   await run([npmCommand, "run", "typecheck"], checkoutPlugin);
@@ -156,9 +149,9 @@ async function verifyGitCheckoutInstall(temporaryDirectory: string): Promise<voi
 
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-install-"));
 try {
-  await verifyArchiveInstall(temporaryDirectory);
+  await verifyNpmPackageInstall(temporaryDirectory);
   await verifyGitCheckoutInstall(temporaryDirectory);
-  console.log("offline archive and Git checkout package installs passed");
+  console.log("npm package and Git checkout installs passed");
 } finally {
   await rm(temporaryDirectory, { recursive: true, force: true });
 }

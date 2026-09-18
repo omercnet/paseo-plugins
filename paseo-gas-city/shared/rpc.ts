@@ -17,13 +17,10 @@ import {
   WorkListSchema,
   WorkspaceRigMappingSchema,
 } from "./schemas";
-import { GasCityRpcSettingsSchema } from "./settings";
 
-const settingsInput = { settings: GasCityRpcSettingsSchema };
-const noInput = z.object(settingsInput).strict();
+const noInput = z.object({}).strict();
 const cityRigInput = z
   .object({
-    ...settingsInput,
     cityName: nameSchema,
     rigName: nameSchema.nullable(),
   })
@@ -37,7 +34,7 @@ export const discoverSupervisor = defineRpc({
 
 export const resolveWorkspaceRig = defineRpc({
   name: "gas-city.resolve-workspace-rig",
-  input: z.object({ ...settingsInput, workspaceId: identifierSchema }).strict(),
+  input: z.object({ workspaceId: identifierSchema }).strict(),
   output: WorkspaceRigMappingSchema,
 });
 
@@ -67,10 +64,9 @@ export const listWork = defineRpc({
 export const listEvents = defineRpc({
   name: "gas-city.list-events",
   input: z.discriminatedUnion("scope", [
-    z.object({ ...settingsInput, scope: z.literal("supervisor") }).strict(),
+    z.object({ scope: z.literal("supervisor") }).strict(),
     z
       .object({
-        ...settingsInput,
         scope: z.literal("city"),
         cityName: nameSchema,
         cursor: z.string().max(GAS_CITY_LIMITS.cursor).nullable(),
@@ -88,12 +84,12 @@ export const listAttention = defineRpc({
 
 export const dispatchWork = defineRpc({
   name: "gas-city.dispatch-work",
-  input: z.object({ ...settingsInput, request: DispatchRequestSchema }).strict(),
+  input: z.object({ request: DispatchRequestSchema }).strict(),
   output: DispatchResultSchema,
 });
 
 export const performSessionAction = defineRpc({
   name: "gas-city.perform-session-action",
-  input: z.object({ ...settingsInput, request: SessionActionRequestSchema }).strict(),
+  input: z.object({ request: SessionActionRequestSchema }).strict(),
   output: SessionActionResultSchema,
 });

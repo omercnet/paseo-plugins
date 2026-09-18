@@ -4,6 +4,15 @@
   "type": "module",
   "description": "Tell agents in other Paseo workspaces.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "tell-agent"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/tell-agent#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
   "publishConfig": {
     "access": "public"
   },

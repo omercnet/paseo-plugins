@@ -75,13 +75,13 @@ failures provide a retry action.
 Paseo plugins are trusted, unsandboxed code. Review the source before installing it on the daemon
 host.
 
-From npm with Paseo 0.9.0-beta.1 or newer:
+From npm:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-beads
 ```
 
-From GitHub, including on Paseo 0.8:
+From GitHub:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:paseo-beads

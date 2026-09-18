@@ -30,7 +30,13 @@ Paseo supplies normalized workspace pull request status. A daemon-side plugin ha
 
 ## Install
 
-Install from the plugin's monorepo directory on the Paseo daemon host:
+Install the published package on the daemon host:
+
+```bash
+paseo plugin install npm:@omercnet/paseo-pr-radar
+```
+
+Or install from the plugin's monorepo directory:
 
 ```bash
 paseo plugin add omercnet/paseo-plugins:pr-radar

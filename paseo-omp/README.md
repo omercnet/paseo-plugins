@@ -9,7 +9,7 @@ Community OMP integration for Paseo. The plugin registers the distinct `omp-plug
 Requirements: Paseo `^0.8.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2.
 
 ```bash
-paseo plugin add omercnet/paseo-plugins:paseo-omp --ref paseo-omp-v<version>
+paseo plugin install npm:@omercnet/paseo-omp@<version>
 paseo plugin ls paseo-omp
 ```
 

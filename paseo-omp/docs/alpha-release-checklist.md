@@ -1,11 +1,11 @@
 # Alpha release checklist
 
-This checklist prepares `paseo-omp-v0.1.0-alpha.1`. It does not authorize publication. A maintainer must explicitly approve the tested artifact before any push, tag, GitHub release, or package publication.
+This checklist prepares `paseo-omp-v0.1.0-alpha.1`. It does not authorize publication. A maintainer must explicitly approve the tested package before any push, tag, GitHub release, or npm publication.
 
 ## Release identity
 
 - [ ] Release Please proposes `0.1.0-alpha.1` from manifest version `0.0.0`.
-- [ ] Package, tag, and archive names are `@omercnet/paseo-omp`, `paseo-omp-v0.1.0-alpha.1`, and `paseo-omp-v0.1.0-alpha.1.zip`.
+- [ ] Package and tag names are `@omercnet/paseo-omp` and `paseo-omp-v0.1.0-alpha.1`.
 - [ ] Provider identity remains `omp-plugin`; bundled `omp` remains independent and enabled or disabled by the user.
 - [ ] Paseo requirement remains an official released range, currently `^0.8.0`.
 - [ ] Minimum tested OMP version, checksum, CI job, README, SUPPORT, and TESTING agree.
@@ -16,17 +16,15 @@ This checklist prepares `paseo-omp-v0.1.0-alpha.1`. It does not authorize public
 - [ ] `npm run typecheck`
 - [ ] `npm run test:coverage`; aggregate loaded-source coverage meets the configured threshold.
 - [ ] Real installed OMP regression against the documented minimum version.
-- [ ] `npm run package:release`
 - [ ] `npm run test:integration:install`
 - [ ] `npm run test:integration:docker`
 - [ ] Windows/WSL host ownership job passes in CI.
 - [ ] Docker canary matrix passes on the exact release candidate.
 - [ ] GitHub Actions syntax and release-configuration schemas pass.
-- [ ] Release ZIP contents contain documentation, production dependencies, and both plugin entries without development-only files.
 
 ## Required manual acceptance
 
-- [ ] Maintainer installs the exact candidate archive into the controlled official-Paseo Docker canary.
+- [ ] Maintainer installs the exact `npm pack` candidate into the controlled official-Paseo Docker canary.
 - [ ] Maintainer verifies catalog, prompt, tools, configured MCP, permissions, steer, interrupt, import/resume, subagents, rewind, usage, Hub, and plugin surfaces.
 - [ ] Maintainer confirms the known limitations are acceptable for alpha.
 - [ ] Maintainer explicitly authorizes publication after testing. Silence or prior approval for development is not release authorization.
@@ -67,4 +65,4 @@ The prerelease notes must include:
 
 ## Publication boundary
 
-Release Please may prepare metadata. The publisher must resolve the immutable tag, require successful CI for the exact tagged commit, build from tracked allowlisted files, attest the archive and checksum, and remain idempotent for recovery. Never retag an alpha commit as stable.
+Release Please may prepare metadata. Publication must use npm trusted publishing from the immutable release commit. Never retag an alpha commit as stable.

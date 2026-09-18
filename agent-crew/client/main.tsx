@@ -24,6 +24,7 @@ import {
   crewState,
   formatAge,
   isWorking,
+  listenToCrewDirectory,
   type PaseoApi,
   type PaseoWorkspace,
   parentAgentId,
@@ -216,12 +217,10 @@ export function AgentCrew({
         void queryClient.invalidateQueries({ queryKey });
       }, REFRESH_DEBOUNCE_MS);
     };
-    const unsubscribeAgents = paseo.agents.subscribe(invalidate);
-    const unsubscribeWorkspaces = paseo.workspaces.subscribe(invalidate);
+    const unsubscribeDirectory = listenToCrewDirectory(paseo, invalidate);
     return () => {
       clearTimeout(debounce);
-      unsubscribeAgents();
-      unsubscribeWorkspaces();
+      unsubscribeDirectory();
     };
   }, [paseo, queryClient, queryKey]);
 
@@ -636,7 +635,10 @@ export function AgentCrew({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Open ${agentTitle(item.entry)}`}
-            onPress={() => navigation.openAgent({ agentId: agent.id })}
+            onPress={() => {
+              const target = { agentId: agent.id, serverId: host.id };
+              navigation.openAgent(target);
+            }}
             style={({ pressed }) => [panelStyles.rowBody, pressed && styles.pressed]}
           >
             {rowBody}

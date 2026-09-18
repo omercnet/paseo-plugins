@@ -36,6 +36,7 @@
     "SUPPORT.md",
     "TESTING.md",
     "docs",
+    "scripts/prepare-dependencies.mjs",
     "index.client.tsx",
     "index.server.ts",
     "client",
@@ -53,7 +54,6 @@
     "test:integration:wsl": "node --import tsx scripts/test-wsl-host-tools.ts",
     "test:integration:canary": "node --import tsx scripts/test-canary.ts",
     "test:integration:install": "node --import tsx scripts/test-package-install.ts",
-    "package:release": "node --import tsx scripts/package-release.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -71,7 +71,6 @@
     "@types/react": "^19.2.18",
     "esbuild": "^0.28.0",
     "@vitest/coverage-v8": "^5.0.0",
-    "fflate": "^0.8.3",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "tsx": "^4.20.6",

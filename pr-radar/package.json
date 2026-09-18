@@ -5,6 +5,15 @@
   "description": "A viewer-aware delivery queue for pull requests linked to Paseo workspaces.",
   "license": "MIT",
   "author": "Omer Cohen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "pr-radar"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/pr-radar#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
   "publishConfig": {
     "access": "public"
   },

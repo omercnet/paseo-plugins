@@ -2,7 +2,36 @@
   "name": "@omercnet/paseo-fresh-worktrees",
   "description": "Fast-forwards clean local base branches before Paseo creates branch-off worktrees",
   "license": "MIT",
-  "private": true,
+  "author": "Omer Cohen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "fresh-worktrees"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/fresh-worktrees#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "git",
+    "worktrees",
+    "coding-agents"
+  ],
+  "files": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "index.client.ts",
+    "index.server.ts",
+    "server",
+    "shared",
+    "paseo-plugin.json"
+  ],
   "version": "1.1.1",
   "type": "module",
   "packageManager": "npm@11.19.1",
