@@ -29,17 +29,17 @@ test("uses locked lifecycle-free installation for a Git checkout", () => {
   expect(calls).toEqual([
     [
       process.platform === "win32" ? "npm.cmd" : "npm",
-      ["ci", "--ignore-scripts"],
+      ["ci", "--omit=dev", "--ignore-scripts"],
       { cwd: root, stdio: "inherit" },
     ],
   ]);
 });
 
-test("keeps npm-installed production dependencies when no lockfile is packaged", () => {
+test("keeps acquired npm production dependencies when no lockfile is packaged", () => {
   const root = temporaryRoot();
 
   const installed = prepareDependencies(root, () => {
-    throw new Error("npm ci must not run without a packaged lockfile");
+    throw new Error("npm must not run after lockless npm package acquisition");
   });
 
   expect(installed).toBe(false);

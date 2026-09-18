@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.3.1...shared-browser-v0.4.0) (2026-09-18)
+
+
+### Features
+
+* **release:** publish plugins to npm ([#80](https://github.com/omercnet/paseo-plugins/issues/80)) ([3c93048](https://github.com/omercnet/paseo-plugins/commit/3c93048cfefda97d8c2bc1631e3428fb64bdad09))
+
+
+### Bug Fixes
+
+* **shared-browser:** support Paseo 0.9 beta ([#86](https://github.com/omercnet/paseo-plugins/issues/86)) ([3af209f](https://github.com/omercnet/paseo-plugins/commit/3af209f3a8fa347ba7dc05c300061a682d809f88))
+
 ## [0.3.1](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.3.0...shared-browser-v0.3.1) (2026-09-15)
 
 
