@@ -55,7 +55,7 @@ failures provide a retry action.
 
 ## Limits
 
-- Paseo `^0.8.0` with plugins enabled is required.
+- Paseo 0.8.x or 0.9.x, starting with `0.9.0-beta.1`, with plugins enabled is required.
 - Beads `bd` 1.0 or newer must be available on the Paseo daemon's `PATH`.
 - A Beads project must be initialized in the workspace for issue data to appear.
 - CLI calls time out after 10 seconds and accept at most 8 MiB of output. Unexpected CLI details stay
@@ -87,6 +87,17 @@ From GitHub:
 paseo plugin add omercnet/paseo-plugins:paseo-beads
 ```
 
+With Paseo 0.9.0-beta.1 or newer, update an npm or Git installation with:
+
+```bash
+paseo plugin update paseo-beads
+```
+
+Paseo shows the installed and proposed revisions and asks for approval before applying an ordinary
+update. Review the source changes before approving them. Use `--check` to check for an update without
+installing it; installing an exact npm version or Git ref selects that revision once rather than
+pinning future updates.
+
 From a local checkout on the Paseo daemon host:
 
 ```bash
@@ -107,9 +118,9 @@ npm run check
 npm test
 npm run test:coverage
 npm run typecheck
-paseo plugin install "$PWD"
-paseo plugin reload paseo-beads
+npx paseo plugin install "$PWD"
+npx paseo plugin reload paseo-beads
 ```
 
-The package is `@omercnet/paseo-beads` at version `0.0.1`. Release Please maintains versions,
+The package is `@omercnet/paseo-beads` at version `0.1.0`. Release Please maintains versions,
 changelog entries, component tags, and GitHub releases from Conventional Commits in the monorepo.

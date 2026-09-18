@@ -2,7 +2,7 @@
   "name": "@omercnet/paseo-tell-agent",
   "version": "0.2.0",
   "type": "module",
-  "description": "Tell agents in other Paseo workspaces.",
+  "description": "Send messages to agents in other workspaces on the same Paseo host.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -32,6 +32,7 @@
     "index.client.tsx",
     "client",
     "paseo-plugin.json",
+    "README.md",
     "LICENSE"
   ],
   "scripts": {
@@ -42,9 +43,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",
-    "@getpaseo/client": "0.8.0",
-    "@getpaseo/plugin": "0.8.0",
-    "@getpaseo/protocol": "0.8.0",
+    "@getpaseo/client": "0.9.0-beta.1",
+    "@getpaseo/plugin": "0.9.0-beta.1",
+    "@getpaseo/protocol": "0.9.0-beta.1",
     "@tanstack/react-query": "^5.102.3",
     "@types/node": "^24.5.2",
     "@types/react": "^19.2.18",

@@ -43,8 +43,8 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@getpaseo/client": "0.8.0",
-    "@getpaseo/plugin": "0.8.0",
+    "@getpaseo/client": "0.9.0-beta.1",
+    "@getpaseo/plugin": "0.9.0-beta.1",
     "@types/node": "^24.5.2",
     "@types/react": "~19.2.0",
     "react": "19.1.0",
