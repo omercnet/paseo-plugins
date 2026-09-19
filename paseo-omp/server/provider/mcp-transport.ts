@@ -224,6 +224,7 @@ export class SupervisedStdioClientTransport implements Transport {
       this.notifyClose();
       return;
     }
+    const treeCleanup = this.startTreeCleanup();
     if (!this.exited) {
       try {
         child.stdin.end();
@@ -231,7 +232,7 @@ export class SupervisedStdioClientTransport implements Transport {
         // Process-tree cleanup remains authoritative when stdin is already closed.
       }
     }
-    const terminated = await this.startTreeCleanup();
+    const terminated = await treeCleanup;
     const exited =
       this.spawnFailedWithoutProcess ||
       this.exited ||

@@ -12,6 +12,7 @@ import {
   OmpRpcRuntime,
   type OmpSpawnRequest,
   terminatePosixProcessTree,
+  terminateSpawnedProcessTree,
 } from "../server/provider/omp-rpc";
 
 const READY_FRAME = {
@@ -32,6 +33,7 @@ const TEST_RUNTIME_ENV: NodeJS.ProcessEnv = {
   PI_CODING_AGENT_DIR: "/__paseo_omp_test_no_agent_dir__",
   PI_CONFIG_DIR: ".omp-no-config",
 };
+const testOnWindows = process.platform === "win32" ? test : test.skip;
 
 class FakeRpcChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -3061,6 +3063,36 @@ describe("OMP RPC transport", () => {
         ),
       ).toThrow("forbidden variable");
     }
+  });
+
+  testOnWindows("terminates a live Windows process tree with taskkill", async () => {
+    const leader = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const { spawn } = require("node:child_process");
+const descendant = spawn(process.execPath, ["-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)"], {
+  stdio: "ignore",
+  windowsHide: true,
+});
+process.stdout.write(String(descendant.pid) + "\\n", () => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+});`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+    );
+    const [chunk] = (await once(leader.stdout, "data")) as [Buffer];
+    const descendantPid = Number(String(chunk).trim());
+    if (!leader.pid || !Number.isSafeInteger(descendantPid) || descendantPid < 1) {
+      throw new Error("Windows process-tree fixture did not report valid process IDs");
+    }
+    const leaderClosed = once(leader, "close");
+
+    expect(await terminateSpawnedProcessTree(leader.pid, "win32")).toBe(true);
+    await leaderClosed;
+    expect(() => process.kill(descendantPid, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
   });
 
   test("terminates a surviving POSIX process group after its leader exited", async () => {

@@ -155,6 +155,30 @@ describe("MCP transport boundaries", () => {
     await expect(closing).rejects.toThrow("transport cleanup failed");
   });
 
+  test("starts stdio tree cleanup before stdin shutdown can release the Windows tree root", async () => {
+    const child = new FakeMcpChild();
+    let stdinEndedAtCleanup: boolean | undefined;
+    const transport = new SupervisedStdioClientTransport(
+      { command: "mcp-server", cwd: "C:\\workspace" },
+      {
+        platform: "win32",
+        spawnProcess: () => child.asChildProcess(),
+        terminateProcessTree: async () => {
+          stdinEndedAtCleanup = child.stdin.writableEnded;
+          queueMicrotask(() => child.emit("exit", 0, null));
+          return true;
+        },
+      },
+    );
+    const starting = transport.start();
+    child.emit("spawn");
+    await starting;
+
+    await transport.close();
+
+    expect(stdinEndedAtCleanup).toBe(false);
+  });
+
   test("fails cleanup when stdio process-tree termination is not verified", async () => {
     const child = new FakeMcpChild();
     const transport = new SupervisedStdioClientTransport(
