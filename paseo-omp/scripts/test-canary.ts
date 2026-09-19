@@ -87,6 +87,28 @@ const env = {
   PASEO_CANARY_PASSWORD: password,
   PASEO_CANARY_PORT: String(paseoPort),
 };
+const protocolSecret = "CANARY_PROTOCOL_SECRET_DO_NOT_LOG";
+
+function assertProtocolViolationLogs(logs: string): void {
+  if (logs.includes(protocolSecret)) {
+    throw new Error("Canary daemon logs exposed the malformed protocol payload");
+  }
+  const diagnosticLines = logs
+    .split("\n")
+    .filter((line) => line.includes("OMP protocol violation") && line.includes("maxByteSize: 777"));
+  if (diagnosticLines.length !== 2) {
+    throw new Error(`Expected 2 coalesced fixture diagnostics, received ${diagnosticLines.length}`);
+  }
+  const occurrenceCounts = diagnosticLines.flatMap((line) => {
+    const match = /["']?occurrenceCount["']?\s*:\s*(\d+)/u.exec(line);
+    return match?.[1] ? [Number(match[1])] : [];
+  });
+  if (!occurrenceCounts.includes(1) || !occurrenceCounts.includes(99)) {
+    throw new Error(
+      `Expected fixture diagnostic occurrence counts 1 and 99, received ${occurrenceCounts.join(", ")}`,
+    );
+  }
+}
 const compose = ["docker", "compose", "-p", project, "-f", composeFile];
 let failure: unknown;
 try {
@@ -96,6 +118,8 @@ try {
     PASEO_CANARY_URL: `ws://127.0.0.1:${paseoPort}/ws`,
   });
   console.log(output);
+  const daemonLogs = await run([...compose, "logs", "--no-color", "paseo"], env);
+  assertProtocolViolationLogs(daemonLogs);
 } catch (error) {
   failure = error;
   const logs = await run([...compose, "logs", "--no-color"], env).catch(

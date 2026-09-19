@@ -115,6 +115,20 @@ try {
     assert(modeIds.includes(mode), `Provider mode ${mode} is missing`);
   }
   summary.catalog = { models: models.length, modes: modeIds };
+  const protocolAgent = await client.createAgent({
+    provider,
+    cwd,
+    model: mockModel.id,
+    modeId: "full",
+    providerOptions: {
+      command: ["node", "/opt/paseo-omp/canary/protocol-violation-peer.mjs"],
+    },
+    initialPrompt: "Exercise malformed frame recovery.",
+  });
+  createdAgentIds.push(protocolAgent.id);
+  assertFinished(await client.waitForFinish(protocolAgent.id, 120_000), "PROTOCOL_RECOVERED");
+  await deleteTrackedAgent(protocolAgent.id);
+  summary.protocolViolationDiagnostics = { recovered: true, violations: 100 };
 
   const primary = await client.createAgent({
     provider,
