@@ -35,13 +35,22 @@ test("atomically synchronizes the exact next version from package.json", async (
   await expect(readdir(join(root, "server"))).resolves.toEqual(["package-version.ts"]);
 });
 
-test.each(["", "next", "1.2", "1.2.3/unsafe", "1.2.3-next.$RUN_NUMBER"])(
-  "rejects malformed package version %j",
-  async (version) => {
-    const root = await fixture(version, stableDeclaration);
-    await expect(synchronizeBuildVersion(root)).rejects.toThrow("package version is invalid");
-  },
-);
+test.each([
+  "",
+  "next",
+  "1.2",
+  "01.2.3",
+  "1.02.3",
+  "1.2.03",
+  "1.2.3-01",
+  "1.2.3-a..b",
+  "1.2.3-a.",
+  "1.2.3/unsafe",
+  "1.2.3-next.$RUN_NUMBER",
+])("rejects malformed package version %j", async (version) => {
+  const root = await fixture(version, stableDeclaration);
+  await expect(synchronizeBuildVersion(root)).rejects.toThrow("package version is invalid");
+});
 
 test("fails closed when the release marker is missing", async () => {
   const root = await fixture(
@@ -54,9 +63,29 @@ test("fails closed when the release marker is missing", async () => {
 });
 
 test("fails closed when release markers are duplicated", async () => {
-  const root = await fixture("0.3.0-next.1.1", `${stableDeclaration}${stableDeclaration}`);
+  const root = await fixture("0.3.0-next.1.1", `${stableDeclaration}// x-release-please-version\n`);
   await expect(synchronizeBuildVersion(root)).rejects.toThrow(
     "Expected exactly one x-release-please-version marker",
+  );
+});
+
+test("fails closed when a marked declaration has an unmarked duplicate", async () => {
+  const root = await fixture(
+    "0.3.0-next.1.1",
+    `${stableDeclaration}export const PASEO_OMP_PACKAGE_VERSION = "0.3.0";\n`,
+  );
+  await expect(synchronizeBuildVersion(root)).rejects.toThrow(
+    "Expected exactly one PASEO_OMP_PACKAGE_VERSION declaration",
+  );
+});
+
+test("fails closed when the sole marker is detached from the sole declaration", async () => {
+  const root = await fixture(
+    "0.3.0-next.1.1",
+    'export const PASEO_OMP_PACKAGE_VERSION = "0.3.0";\n// x-release-please-version\n',
+  );
+  await expect(synchronizeBuildVersion(root)).rejects.toThrow(
+    "Expected the sole package version declaration to contain the sole marker",
   );
 });
 
@@ -66,6 +95,6 @@ test("fails closed when the marked declaration drifts", async () => {
     'export const OTHER_VERSION = "0.3.0"; // x-release-please-version\n',
   );
   await expect(synchronizeBuildVersion(root)).rejects.toThrow(
-    "Expected exactly one valid paseo-omp package version declaration",
+    "Expected exactly one PASEO_OMP_PACKAGE_VERSION declaration",
   );
 });
