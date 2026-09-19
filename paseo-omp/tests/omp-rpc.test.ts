@@ -1628,6 +1628,165 @@ describe("OMP RPC transport", () => {
     child.write({ type: "message_end", message: toolResult });
     await expect(messageEnd).resolves.toMatchObject({ type: "message_end", message: { details } });
     await expect(session.getMessages()).resolves.toEqual([expect.objectContaining({ details })]);
+
+    const terminal = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "agent_end",
+      messages: [toolResult, { role: "assistant", id: "answer-1", content: "done", stopReason: "stop" }],
+      messageCount: 2,
+      isTerminal: true,
+    });
+    await expect(terminal).resolves.toMatchObject({
+      type: "agent_end",
+      messages: [expect.objectContaining({ toolCallId: "call-1" }), { stopReason: "stop" }],
+      messageCount: 2,
+      isTerminal: true,
+    });
+    await session.close();
+  });
+
+  test("omits over-budget optional metadata without losing completion evidence", async () => {
+    const child = new FakeRpcChild();
+    const details = {
+      contentType: "text",
+      meta: {
+        source: {
+          value: Array.from({ length: 2_049 }, (_, index) => `line-${index}`),
+        },
+      },
+    };
+    const toolResult = {
+      role: "toolResult" as const,
+      id: "tool-message-1",
+      toolCallId: "call-oversized",
+      toolName: "read",
+      content: [{ type: "text", text: "result" }],
+      details,
+    };
+    const assistant = {
+      role: "assistant" as const,
+      id: "answer-oversized",
+      content: "done",
+      stopReason: "stop",
+      details,
+    };
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type === "get_messages") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { messages: [toolResult, assistant] },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const toolStart = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "tool_execution_start",
+      toolCallId: "call-oversized",
+      toolName: "read",
+      args: {},
+    });
+    await expect(toolStart).resolves.toMatchObject({
+      type: "tool_execution_start",
+      toolCallId: "call-oversized",
+    });
+
+    const toolEnd = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "tool_execution_end",
+      toolCallId: "call-oversized",
+      toolName: "read",
+      result: { content: toolResult.content, details },
+    });
+    await expect(toolEnd).resolves.toEqual({
+      type: "tool_execution_end",
+      toolCallId: "call-oversized",
+      toolName: "read",
+      result: { content: toolResult.content },
+    });
+
+    const toolMessageEnd = nextEvent((listener) => session.onEvent(listener));
+    child.write({ type: "message_end", message: toolResult });
+    await expect(toolMessageEnd).resolves.toEqual({
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        id: "tool-message-1",
+        toolCallId: "call-oversized",
+        toolName: "read",
+        content: toolResult.content,
+      },
+    });
+
+    const assistantEnd = nextEvent((listener) => session.onEvent(listener));
+    child.write({ type: "message_end", message: assistant });
+    await expect(assistantEnd).resolves.toEqual({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        id: "answer-oversized",
+        content: "done",
+        stopReason: "stop",
+      },
+    });
+
+    const terminal = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "agent_end",
+      messages: [toolResult, assistant],
+      messageCount: 2,
+      isTerminal: true,
+    });
+    await expect(terminal).resolves.toEqual({
+      type: "agent_end",
+      messages: [
+        {
+          role: "toolResult",
+          id: "tool-message-1",
+          toolCallId: "call-oversized",
+          toolName: "read",
+          content: toolResult.content,
+        },
+        {
+          role: "assistant",
+          id: "answer-oversized",
+          content: "done",
+          stopReason: "stop",
+        },
+      ],
+      messageCount: 2,
+      isTerminal: true,
+    });
+
+    await expect(session.getMessages()).resolves.toEqual([
+      {
+        role: "toolResult",
+        id: "tool-message-1",
+        toolCallId: "call-oversized",
+        toolName: "read",
+        content: toolResult.content,
+      },
+      {
+        role: "assistant",
+        id: "answer-oversized",
+        content: "done",
+        stopReason: "stop",
+      },
+    ]);
     await session.close();
   });
 
