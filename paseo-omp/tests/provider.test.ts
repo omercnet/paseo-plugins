@@ -4818,6 +4818,33 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("keeps default collection limits for unrelated provider options", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHarness(runtime);
+    await connection.send({
+      type: "catalog",
+      requestId: "catalog-unexpected-options",
+      cwd: "/repo",
+      providerOptions: {
+        unexpected: Object.fromEntries(
+          Array.from({ length: 129 }, (_, index) => [`ENTRY_${index}`, "value"]),
+        ),
+      },
+      settings: {},
+    } as never);
+
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "request.failed" && event.requestId === "catalog-unexpected-options",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ error: { message: "Provider configuration is too large" } }),
+    );
+    expect(runtime.starts).toHaveLength(0);
+    await connection.close();
+  });
+
   test("rejects malformed capabilities and filters unsupported capability names", async () => {
     const provider = createOmpProvider({
       runtime: new FakeOmpRuntime(),
