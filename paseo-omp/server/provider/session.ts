@@ -1679,24 +1679,17 @@ export class OmpProviderSession {
         throw new OmpPublicError("OMP conversation rewind requires negotiated RPC protocol v2");
       }
       const entryId = this.projector.resolveRevertToken(input.token);
-      const [branchMessages, beforeState] = await Promise.all([
-        runtime.getBranchMessages(),
-        runtime.getState(),
-      ]);
+      const beforeState = await runtime.getState();
       this.requireCurrentRuntime(runtime, generation);
       if (this.activeTurn || beforeState.isStreaming || beforeState.isCompacting) {
         throw new OmpPublicError("Cannot rewind the OMP conversation while a turn is active");
       }
-      if (!branchMessages.some((message) => message.entryId === entryId)) {
-        throw new OmpPublicError("OMP conversation rewind token is stale");
-      }
-      branchMutationPossible = true;
       const result = await runtime.branch(entryId);
       this.requireCurrentRuntime(runtime, generation);
       if (result.cancelled) {
-        branchMutationPossible = false;
         throw new OmpPublicError("OMP conversation rewind was cancelled");
       }
+      branchMutationPossible = true;
 
       let state = await runtime.getState();
       this.requireCurrentRuntime(runtime, generation);
