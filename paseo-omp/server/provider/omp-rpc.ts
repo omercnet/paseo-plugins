@@ -126,6 +126,13 @@ export const OMP_PROTOCOL_VIOLATION_REASONS = [
   "notice-message-type",
   "notice-schema",
   "event-schema",
+  "message-event-schema",
+  "tool-event-schema",
+  "lifecycle-event-schema",
+  "subagent-event-schema",
+  "configuration-event-schema",
+  "extension-ui-schema",
+  "unknown-event-type",
   "event-state-transition",
 ] as const;
 export type OmpProtocolViolationReason = (typeof OMP_PROTOCOL_VIOLATION_REASONS)[number];
@@ -137,6 +144,46 @@ export const OMP_PROTOCOL_DIAGNOSTIC_PHASES = [
   "closing",
 ] as const;
 export type OmpProtocolDiagnosticPhase = (typeof OMP_PROTOCOL_DIAGNOSTIC_PHASES)[number];
+
+export const OMP_PROTOCOL_EVENT_TYPES = [
+  "agent_start",
+  "agent_end",
+  "turn_start",
+  "turn_end",
+  "message_start",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "compaction_start",
+  "compaction_end",
+  "subagent_lifecycle",
+  "subagent_progress",
+  "subagent_event",
+  "todo_reminder",
+  "model_changed",
+  "thinking_level_changed",
+  "goal_updated",
+  "auto_retry_start",
+  "auto_retry_end",
+  "retry_fallback_applied",
+  "retry_fallback_succeeded",
+  "todo_auto_clear",
+  "auto_compaction_start",
+  "auto_compaction_end",
+  "available_commands_update",
+  "notice",
+  "command_output",
+  "extension_ui_request",
+  "prompt_result",
+  "host_tool_call",
+  "host_tool_cancel",
+  "tool_approval_request",
+  "tool_approval_cancel",
+  "advisor_yielded",
+] as const;
+export type OmpProtocolEventType = (typeof OMP_PROTOCOL_EVENT_TYPES)[number];
 
 export const OMP_PROTOCOL_DIAGNOSTIC_FIELDS = [
   "frame",
@@ -167,6 +214,13 @@ export const OMP_PROTOCOL_DIAGNOSTIC_EXPECTATIONS = [
   "single-ready-frame",
   "valid-event-frame",
   "valid-event-state-transition",
+  "valid-message-event",
+  "valid-tool-event",
+  "valid-lifecycle-event",
+  "valid-subagent-event",
+  "valid-configuration-event",
+  "valid-extension-ui-event",
+  "known-event-type",
   "notice-level-enum",
   "notice-message-string",
   "valid-chunk-frame",
@@ -206,6 +260,7 @@ export interface OmpProtocolViolationDiagnostic {
   reason: OmpProtocolViolationReason;
   phase: OmpProtocolDiagnosticPhase;
   occurrenceCount: number;
+  eventType?: OmpProtocolEventType;
   frameType?: "ready" | "response" | "rpc_chunk" | "rpc_frame_error" | "notice";
   field?: OmpProtocolDiagnosticField;
   expected?: OmpProtocolDiagnosticExpectation;
@@ -225,24 +280,73 @@ function protocolDiagnosticActualType(value: unknown): OmpProtocolDiagnosticActu
   return "object";
 }
 
+function isProtocolEventType(value: string): value is OmpProtocolEventType {
+  return (OMP_PROTOCOL_EVENT_TYPES as readonly string[]).includes(value);
+}
+
+function eventSchemaClassification(
+  eventType: OmpProtocolEventType,
+): Pick<OmpProtocolViolationDiagnostic, "reason" | "expected"> {
+  switch (eventType) {
+    case "message_start":
+    case "message_update":
+    case "message_end":
+      return { reason: "message-event-schema", expected: "valid-message-event" };
+    case "tool_execution_start":
+    case "tool_execution_update":
+    case "tool_execution_end":
+    case "host_tool_call":
+    case "host_tool_cancel":
+    case "tool_approval_request":
+    case "tool_approval_cancel":
+      return { reason: "tool-event-schema", expected: "valid-tool-event" };
+    case "subagent_lifecycle":
+    case "subagent_progress":
+    case "subagent_event":
+      return { reason: "subagent-event-schema", expected: "valid-subagent-event" };
+    case "model_changed":
+    case "thinking_level_changed":
+    case "goal_updated":
+    case "todo_reminder":
+    case "todo_auto_clear":
+    case "available_commands_update":
+    case "retry_fallback_applied":
+    case "retry_fallback_succeeded":
+      return { reason: "configuration-event-schema", expected: "valid-configuration-event" };
+    case "extension_ui_request":
+      return { reason: "extension-ui-schema", expected: "valid-extension-ui-event" };
+    default:
+      return { reason: "lifecycle-event-schema", expected: "valid-lifecycle-event" };
+  }
+}
+
 function invalidEventDiagnosticMetadata(
   frame: Record<string, unknown>,
   type: string,
 ): Pick<
   OmpProtocolViolationDiagnostic,
-  "reason" | "frameType" | "field" | "expected" | "actualType"
+  "reason" | "eventType" | "frameType" | "field" | "expected" | "actualType"
 > {
+  if (!isProtocolEventType(type)) {
+    return {
+      reason: "unknown-event-type",
+      field: "frame.type",
+      expected: "known-event-type",
+      actualType: "string",
+    };
+  }
   if (type !== "notice") {
     return {
-      reason: "event-schema",
+      ...eventSchemaClassification(type),
+      eventType: type,
       field: "event",
-      expected: "valid-event-frame",
       actualType: "object",
     };
   }
   if (typeof frame.level !== "string") {
     return {
       reason: "notice-level-type",
+      eventType: "notice",
       frameType: "notice",
       field: "notice.level",
       expected: "notice-level-enum",
@@ -252,6 +356,7 @@ function invalidEventDiagnosticMetadata(
   if (typeof frame.message !== "string") {
     return {
       reason: "notice-message-type",
+      eventType: "notice",
       frameType: "notice",
       field: "notice.message",
       expected: "notice-message-string",
@@ -260,6 +365,7 @@ function invalidEventDiagnosticMetadata(
   }
   return {
     reason: "notice-schema",
+    eventType: "notice",
     frameType: "notice",
     field: "event",
     expected: "valid-event-frame",
@@ -3013,6 +3119,7 @@ class OmpRpcProcess {
     if (!this.acceptEventState(event.data)) {
       this.recordProtocolViolation("invalid-event-state", {
         reason: "event-state-transition",
+        eventType: event.data.type,
         field: "event.sequence",
         expected: "valid-event-state-transition",
         actualType: "out-of-order",

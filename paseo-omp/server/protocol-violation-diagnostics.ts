@@ -16,6 +16,7 @@ export interface OmpProtocolViolationSummary {
   reasonCounts: Record<OmpProtocolViolationReason, number>;
   latestReason: OmpProtocolViolationDiagnostic["reason"] | null;
   latestPhase: OmpProtocolViolationDiagnostic["phase"] | null;
+  latestEventType: OmpProtocolViolationDiagnostic["eventType"] | null;
   latestFrameType: OmpProtocolViolationDiagnostic["frameType"] | null;
   latestField: OmpProtocolViolationDiagnostic["field"] | null;
   latestExpected: OmpProtocolViolationDiagnostic["expected"] | null;
@@ -58,6 +59,7 @@ function logProtocolViolation(message: string, diagnostic: OmpProtocolViolationD
     `reason: ${diagnostic.reason}`,
     `occurrenceCount: ${diagnostic.occurrenceCount}`,
     `phase: ${diagnostic.phase}`,
+    ...(diagnostic.eventType ? [`eventType: ${diagnostic.eventType}`] : []),
     ...(diagnostic.frameType ? [`frameType: ${diagnostic.frameType}`] : []),
     ...(diagnostic.field ? [`field: ${diagnostic.field}`] : []),
     ...(diagnostic.expected ? [`expected: ${diagnostic.expected}`] : []),
@@ -85,6 +87,7 @@ export class OmpProtocolViolationCollector {
         ),
         latestReason: null,
         latestPhase: null,
+        latestEventType: null,
         latestFrameType: null,
         latestField: null,
         latestExpected: null,
@@ -122,6 +125,7 @@ export class OmpProtocolViolationCollector {
       );
       summary.latestReason = diagnostic.reason;
       summary.latestPhase = diagnostic.phase;
+      summary.latestEventType = diagnostic.eventType ?? null;
       summary.latestFrameType =
         diagnostic.frameType && FRAME_TYPES[diagnostic.frameType] ? diagnostic.frameType : null;
       summary.latestField = diagnostic.field ?? null;
@@ -137,6 +141,7 @@ export class OmpProtocolViolationCollector {
         reason: diagnostic.reason,
         phase: diagnostic.phase,
         occurrenceCount,
+        ...(summary.latestEventType ? { eventType: summary.latestEventType } : {}),
         ...(summary.latestFrameType ? { frameType: summary.latestFrameType } : {}),
         ...(summary.latestField ? { field: summary.latestField } : {}),
         ...(summary.latestExpected ? { expected: summary.latestExpected } : {}),

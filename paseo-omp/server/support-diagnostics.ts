@@ -65,6 +65,39 @@ export interface OmpSupportReportData {
   operationalFailures: readonly OmpOperationalFailureSummary[];
 }
 
+const EXPECTATION_LABELS: Record<
+  NonNullable<OmpProtocolViolationSummary["latestExpected"]>,
+  string
+> = {
+  "complete-json-line": "newline-terminated JSON frame",
+  "within-byte-limit": "byte length within negotiated limit",
+  "valid-json": "valid UTF-8 JSON",
+  "object-envelope": "JSON object envelope",
+  "bounded-frame-type": "frame type string up to 64 bytes",
+  "valid-response-frame": "valid response envelope",
+  "valid-ready-frame": "valid ready handshake",
+  "single-ready-frame": "one ready handshake",
+  "valid-event-frame": "valid event payload",
+  "valid-event-state-transition": "event valid for current stream state",
+  "valid-message-event": "valid message event payload",
+  "valid-tool-event": "valid tool event payload",
+  "valid-lifecycle-event": "valid lifecycle event payload",
+  "valid-subagent-event": "valid subagent event payload",
+  "valid-configuration-event": "valid configuration event payload",
+  "valid-extension-ui-event": "valid extension UI event payload",
+  "known-event-type": "supported event type",
+  "notice-level-enum": "info, warning, or error",
+  "notice-message-string": "bounded string",
+  "valid-chunk-frame": "valid chunk metadata",
+  "valid-base64-chunk": "valid base64 chunk",
+  "first-chunk-index-zero": "first chunk index 0",
+  "contiguous-chunk-sequence": "contiguous chunk sequence",
+  "declared-chunk-byte-count": "decoded bytes equal declared byte length",
+  "chunk-before-deadline": "next chunk before timeout",
+  "no-interleaved-frame": "no interleaved frame during chunk assembly",
+  "no-remote-frame-error": "no remote frame error",
+};
+
 function finiteCount(value: number | null | undefined, maximum = Number.MAX_SAFE_INTEGER): string {
   return value !== null && value !== undefined && Number.isSafeInteger(value) && value >= 0
     ? String(Math.min(value, maximum))
@@ -93,6 +126,7 @@ function formatHealth(health: OmpProviderHealth | null): string[] {
     `compatibility.lsp: ${health.lsp.status}`,
     `mcp.status: ${health.mcp.status}`,
     `mcp.server_count: ${finiteCount(health.mcp.serverCount, 4_096)}`,
+    `mcp.reason: ${health.mcp.reason ?? "unknown"}`,
     `storage.agent_root: ${health.roots.agentRootState}`,
     `storage.config: ${health.roots.configState}`,
     `storage.session_root: ${health.roots.sessionRootState}`,
@@ -135,11 +169,12 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
     lines.push(
       `${prefix}.latest_reason: ${violation.latestReason ?? "unknown"}`,
       `${prefix}.latest_phase: ${violation.latestPhase ?? "unknown"}`,
+      `${prefix}.latest_event_type: ${violation.latestEventType ?? "unknown"}`,
       `${prefix}.first_at_utc: ${violation.firstAt ?? "unavailable"}`,
       `${prefix}.last_at_utc: ${violation.lastAt ?? "unavailable"}`,
       `${prefix}.latest_frame_type: ${violation.latestFrameType ?? "unknown"}`,
       `${prefix}.latest_field: ${violation.latestField ?? "unknown"}`,
-      `${prefix}.latest_expected: ${violation.latestExpected ?? "unknown"}`,
+      `${prefix}.latest_expected: ${violation.latestExpected ? EXPECTATION_LABELS[violation.latestExpected] : "unknown"}`,
       `${prefix}.latest_actual_type: ${violation.latestActualType ?? "unknown"}`,
       `${prefix}.max_byte_size: ${finiteCount(violation.maxByteSize)}`,
       `${prefix}.latest_limit_bytes: ${finiteCount(violation.latestLimitBytes)}`,

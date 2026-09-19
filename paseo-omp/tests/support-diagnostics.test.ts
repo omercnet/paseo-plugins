@@ -88,6 +88,18 @@ describe("OMP support report", () => {
       frameType: "response",
       maxByteSize: 777,
     });
+    collector.report({
+      category: "invalid-event",
+      reason: "notice-level-type",
+      phase: "active-turn",
+      eventType: "notice",
+      frameType: "notice",
+      field: "notice.level",
+      expected: "notice-level-enum",
+      actualType: "number",
+      occurrenceCount: 1,
+      maxByteSize: 762,
+    });
     const data = reportData(collector);
     const first = formatOmpSupportReport(data);
     const second = formatOmpSupportReport(data);
@@ -112,12 +124,17 @@ describe("OMP support report", () => {
     expect(first).toContain("protocol.invalid-json.latest_reason: json-decode");
     expect(first).toContain("protocol.invalid-json.latest_phase: idle");
     expect(first).toContain("protocol.invalid-json.latest_field: frame");
-    expect(first).toContain("protocol.invalid-json.latest_expected: valid-json");
+    expect(first).toContain("protocol.invalid-json.latest_expected: valid UTF-8 JSON");
     expect(first).toContain("protocol.invalid-json.latest_actual_type: invalid-json");
     expect(first).toContain("protocol.invalid-json.reason.json-decode.occurrence_count: 4");
     expect(first).toContain("protocol.invalid-json.latest_frame_type: response");
     expect(first).toContain("protocol.invalid-json.max_byte_size: 777");
     expect(first).not.toContain("operational.session-open.startup");
+    expect(first).toContain("protocol.invalid-event.latest_phase: active-turn");
+    expect(first).toContain("protocol.invalid-event.latest_event_type: notice");
+    expect(first).toContain("protocol.invalid-event.latest_field: notice.level");
+    expect(first).toContain("protocol.invalid-event.latest_expected: info, warning, or error");
+    expect(first).toContain("protocol.invalid-event.latest_actual_type: number");
     expect(first).not.toMatch(/: (?:0|unknown|unavailable)$/mu);
   });
 
@@ -162,6 +179,25 @@ describe("OMP support report", () => {
     );
     expect(namedProfile.report).toContain("selection.store: named-profile");
     expect(namedProfile.report).not.toContain("private-team");
+  });
+
+  test("keeps actionable health reasons while omitting unavailable status rows", () => {
+    const data = reportData();
+    const report = formatOmpSupportReport({
+      ...data,
+      health: {
+        ...providerHealth(),
+        mcp: {
+          status: "unavailable",
+          serverCount: null,
+          reason: "No mcp.json manifest found under the agent root",
+        },
+      },
+    });
+
+    expect(report).toContain("mcp.reason: No mcp.json manifest found under the agent root");
+    expect(report).not.toContain("mcp.status: unavailable");
+    expect(report).not.toMatch(/: (?:0|unknown|unavailable)$/mu);
   });
 
   test("omits unavailable placeholder rows when collection fails", async () => {
@@ -216,7 +252,7 @@ describe("operational failure aggregation", () => {
     for (const failure of OMP_OPERATIONAL_FAILURES) collector.report(failure);
 
     const snapshot = collector.snapshot();
-    expect(snapshot).toHaveLength(10);
+    expect(snapshot).toHaveLength(15);
     expect(snapshot.map(({ category, stage }) => ({ category, stage }))).toEqual(
       OMP_OPERATIONAL_FAILURES,
     );
@@ -227,6 +263,7 @@ describe("operational failure aggregation", () => {
         expect.objectContaining({ category: "session-open", stage: "startup" }),
         expect.objectContaining({ category: "session-open", stage: "catalog" }),
         expect.objectContaining({ category: "replay-recovery", stage: "runtime-recovery" }),
+        expect.objectContaining({ category: "tool-projector", stage: "host-tool-timeout" }),
         expect.objectContaining({ category: "tool-projector", stage: "timeline-projector" }),
         expect.objectContaining({ category: "terminal-outcome", stage: "unresolved" }),
       ]),
@@ -240,7 +277,7 @@ describe("operational failure aggregation", () => {
     }
     collector.report({ category: "unsafe", stage: "payload" } as never);
 
-    expect(collector.snapshot()).toHaveLength(10);
+    expect(collector.snapshot()).toHaveLength(15);
     expect(
       collector
         .snapshot()

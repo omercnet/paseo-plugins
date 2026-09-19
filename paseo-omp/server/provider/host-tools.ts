@@ -30,6 +30,11 @@ import {
   utf8Bytes,
 } from "./security";
 
+type HostToolFailureStage = Extract<
+  OmpOperationalFailure,
+  { category: "tool-projector"; stage: `host-tool-${string}` }
+>["stage"];
+
 const INTERNAL_PASEO_MCP_PATH = "/mcp/agents";
 const RESERVED_PASEO_NAMESPACE = "paseo";
 const MAX_MCP_SERVERS = 32;
@@ -747,7 +752,11 @@ export class OmpHostToolsBridge {
     if (!runtime) return true;
     const target = this.targets.get(event.toolName);
     if (!target) {
-      this.sendOperationalError(runtime, errorResult(event.id, "Unknown OMP host tool"));
+      this.sendOperationalError(
+        "host-tool-unknown",
+        runtime,
+        errorResult(event.id, "Unknown OMP host tool"),
+      );
       return true;
     }
     const retainedBytes = boundedJsonBytes(
@@ -764,6 +773,7 @@ export class OmpHostToolsBridge {
       this.pendingBytes + retainedBytes > MAX_PENDING_HOST_TOOL_BYTES
     ) {
       this.sendOperationalError(
+        "host-tool-capacity",
         runtime,
         errorResult(event.id, "OMP host tool bridge is at capacity"),
       );
@@ -812,10 +822,12 @@ export class OmpHostToolsBridge {
             result: normalized,
             ...(normalized.isError !== undefined ? { isError: normalized.isError } : {}),
           };
-          if (normalized.isError) this.sendOperationalError(runtime, terminal, pending);
-          else this.sendTerminal(runtime, terminal, pending);
+          if (normalized.isError) {
+            this.sendOperationalError("host-tool-call", runtime, terminal, pending);
+          } else this.sendTerminal(runtime, terminal, pending);
         } catch {
           this.sendOperationalError(
+            "host-tool-normalization",
             runtime,
             errorResult(event.id, "MCP host tool execution failed"),
             pending,
@@ -825,6 +837,7 @@ export class OmpHostToolsBridge {
       .catch(() => {
         if (!this.isCurrent(event.id, pending)) return;
         this.sendOperationalError(
+          "host-tool-call",
           runtime,
           errorResult(event.id, "MCP host tool execution failed"),
           pending,
@@ -932,12 +945,13 @@ export class OmpHostToolsBridge {
   }
 
   private sendOperationalError(
+    stage: HostToolFailureStage,
     runtime: OmpRuntimeSession,
     result: OmpHostToolResult,
     pending?: PendingCall,
   ): void {
     if (this.sendTerminal(runtime, result, pending)) {
-      this.recordOperationalFailure({ category: "tool-projector", stage: "host-tool" });
+      this.recordOperationalFailure({ category: "tool-projector", stage });
     }
   }
 
@@ -959,7 +973,7 @@ export class OmpHostToolsBridge {
 
   private failRuntime(runtime: OmpRuntimeSession, error: unknown): void {
     if (this.runtime !== runtime) return;
-    this.recordOperationalFailure({ category: "tool-projector", stage: "host-tool" });
+    this.recordOperationalFailure({ category: "tool-projector", stage: "host-tool-delivery" });
     const failure =
       error instanceof Error ? error : new Error("OMP host tool result delivery failed");
     this.detach();
@@ -980,7 +994,11 @@ export class OmpHostToolsBridge {
     if (!this.isCurrent(id, pending)) return;
     this.releasePending(id, pending);
     pending.controller.abort(new Error("OMP MCP host tool call timed out"));
-    this.sendOperationalError(pending.runtime, errorResult(id, "OMP MCP host tool call timed out"));
+    this.sendOperationalError(
+      "host-tool-timeout",
+      pending.runtime,
+      errorResult(id, "OMP MCP host tool call timed out"),
+    );
   }
 
   private releasePending(id: string, pending: PendingCall): void {

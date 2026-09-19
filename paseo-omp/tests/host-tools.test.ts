@@ -752,8 +752,8 @@ describe("OMP host tool bridge", () => {
       expect.objectContaining({ id: "oversized", isError: true }),
     );
     expect(failures).toEqual([
-      { category: "tool-projector", stage: "host-tool" },
-      { category: "tool-projector", stage: "host-tool" },
+      { category: "tool-projector", stage: "host-tool-capacity" },
+      { category: "tool-projector", stage: "host-tool-capacity" },
     ]);
     await bridge.close();
   });
@@ -812,7 +812,7 @@ describe("OMP host tool bridge", () => {
         }),
       }),
     ]);
-    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool" }]);
+    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool-timeout" }]);
     bridge.handle({
       type: "host_tool_call",
       id: "after-timeout",
@@ -890,7 +890,10 @@ describe("OMP host tool bridge", () => {
       await bridge.close();
     }
     expect(failures).toEqual(
-      Array.from({ length: 3 }, () => ({ category: "tool-projector", stage: "host-tool" })),
+      Array.from({ length: 3 }, () => ({
+        category: "tool-projector" as const,
+        stage: "host-tool-normalization" as const,
+      })),
     );
   });
 
@@ -924,7 +927,7 @@ describe("OMP host tool bridge", () => {
     expect(runtime.results).toEqual([
       expect.objectContaining({ id: "rejected-call", isError: true }),
     ]);
-    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool" }]);
+    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool-call" }]);
     await bridge.close();
   });
 
@@ -1091,7 +1094,7 @@ describe("OMP host tool bridge", () => {
     await expect(failed.promise).resolves.toEqual(
       expect.objectContaining({ message: "OMP RPC has too many pending writes" }),
     );
-    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool" }]);
+    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool-delivery" }]);
 
     const recovered = new FakeRuntime();
     bridge.onFatal(() => {});
