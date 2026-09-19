@@ -110,7 +110,7 @@ function runtimeFor(
   child: FakeRpcChild,
   launches: OmpSpawnRequest[] = [],
   requestTimeoutMs?: number,
-  reportProtocolViolation?: (diagnostic: OmpProtocolViolationDiagnostic) => void,
+  reportProtocolViolation?: (diagnostic: OmpProtocolViolationDiagnostic) => void | Promise<void>,
 ): OmpRpcRuntime {
   return new OmpRpcRuntime({
     spawnProcess(request) {
@@ -2469,9 +2469,9 @@ describe("OMP RPC transport", () => {
       }
     });
     const diagnostics: OmpProtocolViolationDiagnostic[] = [];
-    const opening = runtimeFor(child, [], undefined, (diagnostic) =>
-      diagnostics.push(diagnostic),
-    ).startSession({ cwd: "/repo", mode: "full" });
+    const opening = runtimeFor(child, [], undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    }).startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
     const recovered = nextEvent((listener) => session.onEvent(listener));
@@ -2525,6 +2525,37 @@ describe("OMP RPC transport", () => {
     });
     const opening = runtimeFor(child, [], undefined, () => {
       throw new Error("diagnostic sink failed");
+    }).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const recovered = nextEvent((listener) => session.onEvent(listener));
+
+    child.write({ type: "notice", level: 42, message: "malformed" });
+    child.write({ type: "notice", level: "info", message: "still healthy" });
+
+    await expect(recovered).resolves.toEqual({
+      type: "notice",
+      level: "info",
+      message: "still healthy",
+    });
+    await session.close();
+  });
+
+  test("ignores an asynchronously rejecting protocol diagnostic sink", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child, [], undefined, async () => {
+      await Promise.resolve();
+      throw new Error("diagnostic sink rejected");
     }).startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;

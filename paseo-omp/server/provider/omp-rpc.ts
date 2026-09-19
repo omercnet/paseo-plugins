@@ -1465,7 +1465,7 @@ export interface OmpRpcRuntimeOptions {
   terminateProcessTree?: (pid: number) => Promise<boolean | "uncertain">;
   environment?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
-  reportProtocolViolation?: (diagnostic: OmpProtocolViolationDiagnostic) => void;
+  reportProtocolViolation?: (diagnostic: OmpProtocolViolationDiagnostic) => void | Promise<void>;
   listSessions?: (
     options: OmpSessionListOptions,
   ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
@@ -2010,7 +2010,7 @@ class OmpRpcProcess {
     private readonly requestTimeoutMs = REQUEST_TIMEOUT_MS,
     private readonly reportProtocolViolation: (
       diagnostic: OmpProtocolViolationDiagnostic,
-    ) => void = (diagnostic) => console.error("OMP protocol violation", diagnostic),
+    ) => void | Promise<void> = (diagnostic) => console.error("OMP protocol violation", diagnostic),
   ) {
     const ready = Promise.withResolvers<ReadyFrame>();
     this.rejectReady = ready.reject;
@@ -2885,7 +2885,8 @@ class OmpRpcProcess {
 
   private emitProtocolViolation(diagnostic: OmpProtocolViolationDiagnostic): void {
     try {
-      this.reportProtocolViolation(diagnostic);
+      const reporting = this.reportProtocolViolation(diagnostic);
+      if (reporting) void reporting.catch(() => undefined);
     } catch {
       // Diagnostics must never alter transport flow or cleanup.
     }
