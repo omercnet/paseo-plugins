@@ -4554,7 +4554,8 @@ export class OmpProviderSession {
     turn.deferredAgentEnd = candidate;
     void this.subsessions.reconcile(this.runtime).catch(() => {
       if (!turn.terminal && this.activeTurn === turn) {
-        this.handleRuntimeFailure("OMP subagent reconciliation failed");
+        this.subsessions?.terminalize("failed");
+        this.resumeDeferredAgentEnd();
       }
     });
     return true;

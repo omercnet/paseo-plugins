@@ -359,6 +359,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   subagentSubscriptionError: Error | null = null;
   readonly subagentSubscriptions: string[] = [];
   subagents: OmpSubagentSnapshot[] = [];
+  subagentsError: Error | null = null;
   readonly subagentMessages = new Map<string, OmpSubagentMessagesResult>();
   availableCommandsObserved: (() => void) | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
@@ -551,6 +552,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   }
 
   getSubagents() {
+    if (this.subagentsError) return Promise.reject(this.subagentsError);
     return Promise.resolve(this.subagents);
   }
 
@@ -16063,6 +16065,51 @@ describe("OMP direct provider", () => {
     },
   );
 
+  test("terminalizes children and resumes the parent when reconciliation is unavailable", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "unavailable-child-reconciliation", "work"),
+    );
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: { id: "unavailable-live-child", agent: "scout", status: "started", index: 0 },
+    });
+    const child = events.findLast(
+      (event) => event.type === "session.opened" && event.title === "scout",
+    );
+    if (child?.type !== "session.opened") throw new Error("Missing live child session");
+    session.subagentsError = new Error("snapshot unavailable");
+    establishTerminalOwnership(session);
+    session.emit({
+      type: "agent_end",
+      requestId: `rpc-prompt-${session.promptCount}`,
+      messages: [],
+      isTerminal: true,
+    });
+
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).resolves.toEqual(expect.objectContaining({ state: "completed" }));
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.turn",
+        sessionId: child.sessionId,
+        state: "failed",
+      }),
+    );
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    await connection.close();
+  });
+
   test("reconciles a missing child from repeated unkeyed terminal snapshots", async () => {
     const { connection, events, runtime } = await createHarness(
       new FakeOmpRuntime(),
@@ -16987,6 +17034,182 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("continues root recovery when one persisted child transcript is unavailable", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "missing-task", name: "task", arguments: { task: "missing" } },
+          {
+            type: "toolCall",
+            id: "available-task",
+            name: "task",
+            arguments: { task: "available" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "missing-task",
+        toolName: "task",
+        content: [],
+        details: { results: [{ id: "missing-child", agent: "missing" }] },
+      },
+      {
+        role: "toolResult",
+        toolCallId: "available-task",
+        toolName: "task",
+        content: [],
+        details: { results: [{ id: "available-child", agent: "available" }] },
+      },
+    ];
+    runtime.persistedSubagentMessages.set("/sessions/root.jsonl\0available-child", {
+      sessionFile: "/sessions/root/available-child.jsonl",
+      nativeSessionId: "native_available_child",
+      byteLength: 1,
+      messages: [
+        { role: "assistant", responseId: "available-response", content: "available output" },
+      ],
+    });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "partial-child-replay",
+      sessionId: "partial-child-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "partial-child-replay",
+    );
+
+    const missing = events.find(
+      (event) => event.type === "session.opened" && event.title === "missing",
+    );
+    const available = events.find(
+      (event) => event.type === "session.opened" && event.title === "available",
+    );
+    if (missing?.type !== "session.opened" || available?.type !== "session.opened") {
+      throw new Error("Missing reconstructed child sessions");
+    }
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId === missing.sessionId &&
+          event.state === "failed",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        error: { message: "OMP subagent history is unavailable or incomplete" },
+      }),
+    ]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        sessionId: available.sessionId,
+        item: expect.objectContaining({ type: "assistant_message", text: "available output" }),
+      }),
+    );
+    expect(events.some((event) => event.type === "request.failed")).toBe(false);
+    await connection.close();
+  });
+
+  test("drops replay-time progress overflow while preserving terminal child lifecycle", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "anchor-task", name: "task", arguments: { task: "wait" } },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "anchor-task",
+        toolName: "task",
+        content: [],
+        details: { results: [{ id: "anchor-child", agent: "anchor" }] },
+      },
+    ];
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    runtime.persistedSubagentGates.set("/sessions/root.jsonl\0anchor-child", gate.promise);
+    runtime.persistedSubagentObserved = (key) => {
+      if (key.endsWith("\0anchor-child")) observed.resolve();
+    };
+    runtime.persistedSubagentMessages.set("/sessions/root.jsonl\0anchor-child", {
+      sessionFile: "/sessions/root/anchor-child.jsonl",
+      nativeSessionId: "native_anchor_child",
+      byteLength: 1,
+      messages: [],
+    });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    void connection.send({
+      type: "session.open",
+      requestId: "progress-overflow-replay",
+      sessionId: "progress-overflow-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await observed.promise;
+    const session = sessionAt(runtime);
+    for (let index = 0; index < 1_100; index += 1) {
+      session.emit({
+        type: "subagent_progress",
+        payload: {
+          index,
+          agent: "scout",
+          task: "working",
+          progress: { id: `progress-${index}`, status: "started" },
+        },
+      });
+    }
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: { id: "anchor-child", agent: "anchor", status: "completed", index: 0 },
+    });
+    gate.resolve();
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "progress-overflow-replay",
+    );
+
+    const anchor = events.find(
+      (event) => event.type === "session.opened" && event.title === "anchor",
+    );
+    if (anchor?.type !== "session.opened") throw new Error("Missing anchor child session");
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.turn",
+        sessionId: anchor.sessionId,
+        state: "completed",
+      }),
+    );
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    await connection.close();
+  });
+
   test("cancels recursive child replay at the shared deadline without late publication", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({
@@ -17163,19 +17386,18 @@ describe("OMP direct provider", () => {
         persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
         history: "replay",
       });
-      const failure = await events.waitFor(
-        (event) => event.type === "request.failed" && event.requestId === `budget-${oversized.id}`,
-      );
-      expect(failure).toEqual(
-        expect.objectContaining({
-          error: { message: "OMP subagent history exceeds replay limits" },
-        }),
+      await events.waitFor(
+        (event) => event.type === "session.ready" && event.requestId === `budget-${oversized.id}`,
       );
       expect(
-        events.some(
-          (event) => "sessionId" in event && event.sessionId.startsWith("omp:subsession:"),
+        events.filter(
+          (event) =>
+            event.type === "session.turn" &&
+            event.state === "failed" &&
+            event.error?.message === "OMP subagent history is unavailable or incomplete",
         ),
-      ).toBe(false);
+      ).toHaveLength(1);
+      expect(events.some((event) => event.type === "request.failed")).toBe(false);
       await connection.close();
     }
   });
