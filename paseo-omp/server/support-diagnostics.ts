@@ -115,9 +115,9 @@ function formatVersion(version: OmpVersion | null): string {
 }
 
 function formatHealth(health: OmpProviderHealth | null): string[] {
-  if (!health) return [];
+  if (!health) return ["collection.provider_health: failed"];
   return [
-    "provider_health.status: available",
+    "collection.provider_health: complete",
     `omp.installed: ${health.binary.installed}`,
     `omp.version: ${formatVersion(health.binary.version)}`,
     `omp.version_probe: ${health.binary.versionStatus}`,
@@ -153,6 +153,9 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
     `runtime.node: ${data.nodeVersion}`,
     `selection.scope: ${data.scope}`,
     `selection.store: ${data.store}`,
+    "selection.applies_to: provider-health",
+    "diagnostic_counters.scope: plugin-process-all-stores-workspaces",
+    "diagnostic_counters.lifetime: since-plugin-load",
     ...formatHealth(data.health),
   ];
   for (const violation of data.violations) {

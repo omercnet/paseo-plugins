@@ -113,6 +113,10 @@ describe("OMP support report", () => {
     expect(first).toContain("runtime.platform: linux");
     expect(first).toContain("selection.scope: workspace");
     expect(first).toContain("selection.store: named-profile");
+    expect(first).toContain("selection.applies_to: provider-health");
+    expect(first).toContain("diagnostic_counters.scope: plugin-process-all-stores-workspaces");
+    expect(first).toContain("diagnostic_counters.lifetime: since-plugin-load");
+    expect(first).toContain("collection.provider_health: complete");
     expect(first).toContain("omp.version: 18.4.2-beta.1");
     expect(first).toContain("compatibility.rpc_ui: supported");
     expect(first).toContain("compatibility.lsp: supported");
@@ -218,6 +222,7 @@ describe("OMP support report", () => {
 
     expect(result.report).toContain("schema_version: 1");
     expect(result.report).toContain("selection.store: default");
+    expect(result.report).toContain("collection.provider_health: failed");
     expect(result.report).not.toMatch(/: (?:0|unknown|unavailable)$/mu);
     expect(result.report).not.toContain("secret failure payload");
   });

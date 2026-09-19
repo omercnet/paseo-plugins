@@ -376,6 +376,7 @@ function invalidEventDiagnosticMetadata(
 type PendingProtocolViolation = Omit<OmpProtocolViolationDiagnostic, "occurrenceCount"> & {
   occurrenceCount: number;
 };
+type ProtocolViolationKey = `${OmpProtocolViolationCategory}:${OmpProtocolViolationReason}`;
 const MAX_CONTEXT_PERCENT = 1_000_000;
 function boundedJsonString(maxBytes: number, minBytes = 0) {
   return z.string().refine((value) => {
@@ -2264,7 +2265,7 @@ class OmpRpcProcess {
   private outputSettled = false;
   private turnActive = false;
   private readonly pendingProtocolViolations = new Map<
-    OmpProtocolViolationCategory,
+    ProtocolViolationKey,
     PendingProtocolViolation
   >();
   private protocolViolationTimer: TimerHandle | null = null;
@@ -2849,9 +2850,11 @@ class OmpRpcProcess {
     const knownPending = rawId ? this.pending.get(rawId) : undefined;
     const response = OmpResponseFrameSchema.safeParse(frame);
     if (!response.success) {
-      if (rawId && knownPending) {
-        this.takePending(rawId)?.reject(new Error("OMP RPC response is invalid"));
-      } else if (!rawId || !this.emitAcceptedPromptFailure(rawId, frame)) {
+      const handledAcceptedFailure =
+        rawId !== undefined && knownPending === undefined
+          ? this.emitAcceptedPromptFailure(rawId, frame)
+          : false;
+      if (!handledAcceptedFailure) {
         this.recordProtocolViolation("invalid-response", {
           reason: "response-schema",
           frameType: "response",
@@ -2859,6 +2862,9 @@ class OmpRpcProcess {
           expected: "valid-response-frame",
           actualType: "object",
         });
+      }
+      if (rawId && knownPending) {
+        this.takePending(rawId)?.reject(new Error("OMP RPC response is invalid"));
       }
       return;
     }
@@ -3270,9 +3276,10 @@ class OmpRpcProcess {
       );
       return;
     }
-    const pending = this.pendingProtocolViolations.get(category);
+    const key = `${category}:${metadata.reason}` as ProtocolViolationKey;
+    const pending = this.pendingProtocolViolations.get(key);
     if (!pending) {
-      this.pendingProtocolViolations.set(category, {
+      this.pendingProtocolViolations.set(key, {
         category,
         occurrenceCount: 1,
         phase,
