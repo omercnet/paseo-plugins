@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.4.1...shared-browser-v0.4.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **paseo-shared-browser:** keep Electron running as Node for the MCP launcher ([#130](https://github.com/omercnet/paseo-plugins/issues/130)) ([d4b06e0](https://github.com/omercnet/paseo-plugins/commit/d4b06e0e78630a3786fb6f071138d0b773fad915))
+
 ## [0.4.1](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.4.0...shared-browser-v0.4.1) (2026-09-19)
 
 
