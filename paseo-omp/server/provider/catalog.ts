@@ -81,14 +81,9 @@ export function ompModelId(model: OmpModel): string {
   const nativeIdentity = `${Buffer.byteLength(model.provider, "utf8")}:${model.provider}${Buffer.byteLength(model.id, "utf8")}:${model.id}`;
   return `omp:model:${createHash("sha256").update(nativeIdentity).digest("hex")}`;
 }
-
-export function mapOmpModels(
-  models: readonly OmpModel[],
-  serializer = new OmpPublicDataSerializer(),
-): ProviderModel[] {
+export function validateOmpModelIdentities(models: readonly OmpModel[]): void {
   const seenIds = new Map<string, string>();
-  return models.map((model) => {
-    const thinkingOptions = thinkingForModel(model);
+  for (const model of models) {
     const id = ompModelId(model);
     const nativeIdentity = nativeOmpModelId(model);
     const existing = seenIds.get(id);
@@ -97,6 +92,17 @@ export function mapOmpModels(
     }
     if (existing !== undefined) throw new Error("OMP reported a duplicate model identity");
     seenIds.set(id, nativeIdentity);
+  }
+}
+
+export function mapOmpModels(
+  models: readonly OmpModel[],
+  serializer = new OmpPublicDataSerializer(),
+): ProviderModel[] {
+  validateOmpModelIdentities(models);
+  return models.map((model) => {
+    const thinkingOptions = thinkingForModel(model);
+    const id = ompModelId(model);
     const provider = serializer.text(model.provider, 256);
     const modelId = serializer.text(model.id, 256);
     const name = model.name ? serializer.text(model.name, 256) : modelId;
@@ -164,6 +170,7 @@ export async function discoverOmpCatalog(
         ? [...configuredValues, ...(session.inheritedRedactionValues ?? [])]
         : configuredValues,
     );
+    validateOmpModelIdentities(nativeModels);
     const selectedNativeModels = selectOmpModels(nativeModels, state.model);
     const models = mapOmpModels(selectedNativeModels, serializer);
     if (models.length === 0) throw new Error("OMP reported no available models");
