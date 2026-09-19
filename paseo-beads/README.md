@@ -14,11 +14,11 @@ verified the rendered page contained no private organization names.
 
 ### Wide
 
-![Paseo Beads wide work queue](docs/images/paseo-beads-wide.png)
+![Paseo Beads wide work queue](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-beads/docs/images/paseo-beads-wide.png)
 
 ### Compact
 
-![Paseo Beads compact work queue](docs/images/paseo-beads-compact.png)
+![Paseo Beads compact work queue](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-beads/docs/images/paseo-beads-compact.png)
 
 ## What it shows
 

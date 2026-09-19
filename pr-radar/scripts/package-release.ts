@@ -7,7 +7,6 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 const releaseFiles = [
-  "package-lock.json",
   "LICENSE",
   "README.md",
   "index.client.tsx",
@@ -16,11 +15,8 @@ const releaseFiles = [
   "client/radar.ts",
   "server/viewer-scope.ts",
   "shared/viewer-scope.ts",
-  "docs/images/pr-radar-github-inbox-wide.png",
-  "docs/images/pr-radar-github-inbox-compact.png",
   "package.json",
   "paseo-plugin.json",
-  "tsconfig.json",
 ] as const;
 
 const output = process.argv[2] ?? `dist/pr-radar-v${packageJson.version}.zip`;

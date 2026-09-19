@@ -30,7 +30,6 @@
     "coding-agents"
   ],
   "files": [
-    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "index.client.tsx",
@@ -38,7 +37,6 @@
     "client",
     "server",
     "shared",
-    "docs",
     "paseo-plugin.json"
   ],
   "scripts": {

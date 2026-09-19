@@ -9,11 +9,11 @@ replaces the local host label and verifies that no private organization names re
 
 ### Dracula Classic
 
-![Dracula Classic selected in Paseo Appearance settings](./screenshot.png)
+![Dracula Classic selected in Paseo Appearance settings](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-dracula/screenshot.png)
 
 ### Alucard Classic
 
-![Alucard Classic selected in Paseo Appearance settings](./screenshot-alucard.png)
+![Alucard Classic selected in Paseo Appearance settings](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-dracula/screenshot-alucard.png)
 
 ## Install
 

@@ -7,16 +7,9 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 const releaseFiles = [
-  "package-lock.json",
-  "CHANGELOG.md",
   "icon.svg",
   "LICENSE",
   "README.md",
-  "biome.json",
-  "docs/images/paseo-gas-city-wide-overview.webp",
-  "docs/images/paseo-gas-city-wide-events.webp",
-  "docs/images/paseo-gas-city-dispatch-confirmation.webp",
-  "docs/images/paseo-gas-city-compact-overview.webp",
   "index.client.tsx",
   "index.server.ts",
   "client/city-operations.tsx",
@@ -36,9 +29,6 @@ const releaseFiles = [
   "shared/settings.ts",
   "package.json",
   "paseo-plugin.json",
-  "tsconfig.json",
-  "tsconfig.client.json",
-  "tsconfig.server.json",
 ] as const;
 
 const output = process.argv[2] ?? `dist/paseo-gas-city-v${packageJson.version}.zip`;

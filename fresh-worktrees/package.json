@@ -23,7 +23,6 @@
     "coding-agents"
   ],
   "files": [
-    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "index.client.ts",

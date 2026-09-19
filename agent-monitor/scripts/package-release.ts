@@ -9,7 +9,6 @@ const packageJson = JSON.parse(
 const releaseFiles = [
   "LICENSE",
   "README.md",
-  "CHANGELOG.md",
   "index.client.tsx",
   "index.server.ts",
   "client/agent-monitor.tsx",
@@ -18,11 +17,8 @@ const releaseFiles = [
   "client/settings-screen.tsx",
   "client/settings-state.ts",
   "shared/monitor-settings.ts",
-  "docs/images/agent-monitor-roster.png",
-  "docs/images/agent-monitor-settings.png",
   "package.json",
   "paseo-plugin.json",
-  "tsconfig.json",
 ] as const;
 
 const output = process.argv[2] ?? `dist/agent-monitor-v${packageJson.version}.zip`;

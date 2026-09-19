@@ -13,11 +13,11 @@ no private organization names remained in the rendered page.
 
 ### Project-first roster
 
-![Agent Monitor project-first roster](docs/images/agent-monitor-roster.png)
+![Agent Monitor project-first roster](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/agent-monitor/docs/images/agent-monitor-roster.png)
 
 ### Monitor settings
 
-![Agent Monitor settings sheet](docs/images/agent-monitor-settings.png)
+![Agent Monitor settings sheet](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/agent-monitor/docs/images/agent-monitor-settings.png)
 
 ## What it shows
 

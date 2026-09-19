@@ -22,19 +22,16 @@
     "directory": "paseo-shared-browser"
   },
   "files": [
-    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "index.client.tsx",
     "index.server.ts",
     "client",
-    "docs",
     "scripts/prepare-dependencies.mjs",
     "scripts/prepare-runtime.mjs",
     "server",
     "shared",
-    "paseo-plugin.json",
-    "tsconfig.json"
+    "paseo-plugin.json"
   ],
   "type": "module",
   "publishConfig": {

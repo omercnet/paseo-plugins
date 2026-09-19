@@ -7,17 +7,11 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 const releaseFiles = [
-  "package-lock.json",
-  "CHANGELOG.md",
   "LICENSE",
-  "INSTALL.md",
   "README.md",
-  "screenshot.png",
-  "screenshot-alucard.png",
   "index.client.ts",
   "package.json",
   "paseo-plugin.json",
-  "tsconfig.json",
 ] as const;
 
 const output = process.argv[2] ?? `dist/paseo-dracula-v${packageJson.version}.zip`;

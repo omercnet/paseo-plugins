@@ -29,13 +29,9 @@
     "color-scheme"
   ],
   "files": [
-    "CHANGELOG.md",
-    "INSTALL.md",
     "index.client.ts",
     "paseo-plugin.json",
     "README.md",
-    "screenshot.png",
-    "screenshot-alucard.png",
     "LICENSE"
   ],
   "scripts": {

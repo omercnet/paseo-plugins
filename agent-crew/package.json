@@ -29,15 +29,11 @@
     "orchestration"
   ],
   "files": [
-    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "client",
-    "docs",
     "index.client.tsx",
-    "paseo-plugin.json",
-    "package.json",
-    "tsconfig.json"
+    "paseo-plugin.json"
   ],
   "scripts": {
     "check": "biome check .",

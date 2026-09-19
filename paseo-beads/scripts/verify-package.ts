@@ -6,7 +6,6 @@ import { unzipSync } from "fflate";
 
 const packageRoot = join(import.meta.dirname, "..");
 const requiredFiles = [
-  "CHANGELOG.md",
   "LICENSE",
   "README.md",
   "index.client.tsx",
@@ -16,12 +15,10 @@ const requiredFiles = [
   "client/web.ts",
   "server/beads.ts",
   "shared/beads.ts",
-  "docs/images/paseo-beads-wide.png",
-  "docs/images/paseo-beads-compact.png",
   "package.json",
   "paseo-plugin.json",
 ] as const;
-const requiredReleaseFiles = [...requiredFiles, "package-lock.json"] as const;
+const requiredReleaseFiles = requiredFiles;
 
 function normalized(path: string, root = "") {
   const portablePath = path.replaceAll("\\", "/");
@@ -54,8 +51,18 @@ function isInDirectory(path: string, directory: string) {
   return path === directory || path.startsWith(`${directory}/`);
 }
 
+function isNonRuntimeFile(path: string) {
+  return (
+    isInDirectory(path, "docs") ||
+    ["CHANGELOG.md", "INSTALL.md", "SUPPORT.md", "TESTING.md", "package-lock.json"].includes(
+      path,
+    ) ||
+    /\.(?:png|webp|jpe?g)$/iu.test(path)
+  );
+}
 function isForbiddenNpmFile(path: string) {
   return (
+    isNonRuntimeFile(path) ||
     isInDirectory(path, "tests") ||
     isInDirectory(path, "test") ||
     isInDirectory(path, "scripts") ||
@@ -69,6 +76,7 @@ function isForbiddenNpmFile(path: string) {
 
 function isForbiddenReleaseFile(path: string) {
   return (
+    isNonRuntimeFile(path) ||
     isInDirectory(path, "tests") ||
     isInDirectory(path, "test") ||
     isInDirectory(path, "node_modules") ||

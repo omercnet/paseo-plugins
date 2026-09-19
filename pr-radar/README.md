@@ -11,11 +11,11 @@ DevTools before capture. Both PNGs come from an isolated Paseo test daemon at 2Ã
 
 ### Wide dashboard
 
-![PR Radar wide dashboard](docs/images/pr-radar-github-inbox-wide.png)
+![PR Radar wide dashboard](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/pr-radar/docs/images/pr-radar-github-inbox-wide.png)
 
 ### Compact dashboard
 
-![PR Radar compact dashboard](docs/images/pr-radar-github-inbox-compact.png)
+![PR Radar compact dashboard](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/pr-radar/docs/images/pr-radar-github-inbox-compact.png)
 
 ## What it shows
 

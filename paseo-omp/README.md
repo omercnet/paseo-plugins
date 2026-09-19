@@ -12,11 +12,11 @@ before capture.
 
 ### Native plugin manager
 
-![OMP native plugin manager](docs/images/plugin-manager.png)
+![OMP native plugin manager](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-omp/docs/images/plugin-manager.png)
 
 ### Typed OMP configuration
 
-![OMP typed configuration editor](docs/images/workspace-settings.png)
+![OMP typed configuration editor](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-omp/docs/images/workspace-settings.png)
 
 ## Quick start
 

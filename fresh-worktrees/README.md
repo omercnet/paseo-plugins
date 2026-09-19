@@ -14,11 +14,11 @@ labels and verifies that no private organization names remain before capture.
 
 ### Behind indicator
 
-![Fresh Worktrees behind indicator](docs/images/fresh-worktrees-behind.png)
+![Fresh Worktrees behind indicator](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/fresh-worktrees/docs/images/fresh-worktrees-behind.png)
 
 ### Installed plugin
 
-![Fresh Worktrees plugin settings](docs/images/fresh-worktrees-settings.png)
+![Fresh Worktrees plugin settings](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/fresh-worktrees/docs/images/fresh-worktrees-settings.png)
 
 ## Behavior
 

@@ -33,14 +33,12 @@
     "coding-agents"
   ],
   "files": [
-    "CHANGELOG.md",
     "icon.svg",
     "LICENSE",
     "README.md",
     "index.client.tsx",
     "index.server.ts",
     "client",
-    "docs",
     "server",
     "shared",
     "paseo-plugin.json"

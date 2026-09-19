@@ -10,11 +10,11 @@ remained in the rendered page.
 
 ### Choose a target
 
-![Tell Agent target picker](docs/images/tell-agent-picker.png)
+![Tell Agent target picker](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/tell-agent/docs/images/tell-agent-picker.png)
 
 ### Compose an instruction
 
-![Tell Agent instruction composer](docs/images/tell-agent-compose.png)
+![Tell Agent instruction composer](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/tell-agent/docs/images/tell-agent-compose.png)
 
 ## Install
 

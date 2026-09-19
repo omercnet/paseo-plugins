@@ -29,21 +29,15 @@
     "coding-agents"
   ],
   "files": [
-    "package-lock.json",
-    "CHANGELOG.md",
     "LICENSE",
     "README.md",
-    "SUPPORT.md",
-    "TESTING.md",
-    "docs",
     "scripts/prepare-dependencies.mjs",
     "index.client.tsx",
     "index.server.ts",
     "client",
     "server",
     "shared",
-    "paseo-plugin.json",
-    "tsconfig.json"
+    "paseo-plugin.json"
   ],
   "scripts": {
     "check": "biome check .",

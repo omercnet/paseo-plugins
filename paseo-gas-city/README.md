@@ -11,16 +11,16 @@ omit Paseo's host navigation so the plugin surface remains the focus.
 
 ### Wide overview
 
-![Gas City supervisor, city status, sessions, convoys, and work](docs/images/paseo-gas-city-wide-overview.png)
+![Gas City supervisor, city status, sessions, convoys, and work](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-gas-city/docs/images/paseo-gas-city-wide-overview.png)
 
 ### Work and event feed
 
-![Gas City sessions, work, and recent event feed](docs/images/paseo-gas-city-wide-events.png)
+![Gas City sessions, work, and recent event feed](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-gas-city/docs/images/paseo-gas-city-wide-events.png)
 
 
 ### Compact layout
 
-![Gas City compact mobile layout](docs/images/paseo-gas-city-compact-overview.png)
+![Gas City compact mobile layout](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/paseo-gas-city/docs/images/paseo-gas-city-compact-overview.png)
 
 ## What it does
 

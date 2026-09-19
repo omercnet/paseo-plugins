@@ -7,18 +7,13 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 const releaseFiles = [
-  "package-lock.json",
-  "CHANGELOG.md",
   "LICENSE",
   "README.md",
   "client/crew.ts",
   "client/main.tsx",
-  "docs/images/agent-crew-overview.png",
-  "docs/images/agent-crew-action.png",
   "index.client.tsx",
   "package.json",
   "paseo-plugin.json",
-  "tsconfig.json",
 ] as const;
 
 const output = process.argv[2] ?? `dist/agent-crew-v${packageJson.version}.zip`;
