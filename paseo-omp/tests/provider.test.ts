@@ -17034,6 +17034,77 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("attaches snapshot children using validated nested transcript paths", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [];
+    runtime.nextSubagents = [
+      {
+        id: "nested-snapshot-child",
+        index: 1,
+        agent: "nested snapshot",
+        status: "completed",
+        sessionFile: "/sessions/root/parent-snapshot-child/nested-snapshot-child.jsonl",
+        lastUpdate: 2,
+      },
+      {
+        id: "parent-snapshot-child",
+        index: 0,
+        agent: "parent snapshot",
+        status: "completed",
+        sessionFile: "/sessions/root/parent-snapshot-child.jsonl",
+        lastUpdate: 1,
+      },
+    ];
+    runtime.nextSubagentMessages.set("parent-snapshot-child", {
+      sessionFile: "/sessions/root/parent-snapshot-child.jsonl",
+      fromByte: 0,
+      nextByte: 1,
+      reset: false,
+      messages: [],
+    });
+    runtime.nextSubagentMessages.set("nested-snapshot-child", {
+      sessionFile: "/sessions/root/parent-snapshot-child/nested-snapshot-child.jsonl",
+      fromByte: 0,
+      nextByte: 1,
+      reset: false,
+      messages: [],
+    });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "nested-snapshot-replay",
+      sessionId: "nested-snapshot-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "nested-snapshot-replay",
+    );
+
+    const parent = events.find(
+      (event) => event.type === "session.opened" && event.title === "parent snapshot",
+    );
+    const nested = events.find(
+      (event) => event.type === "session.opened" && event.title === "nested snapshot",
+    );
+    if (parent?.type !== "session.opened" || nested?.type !== "session.opened") {
+      throw new Error("Missing snapshot child sessions");
+    }
+    expect(parent.parentSessionId).toBe("nested-snapshot-root");
+    expect(nested.parentSessionId).toBe(parent.sessionId);
+    await connection.close();
+  });
+
   test("continues root recovery when one persisted child transcript is unavailable", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({
@@ -17190,6 +17261,42 @@ describe("OMP direct provider", () => {
       type: "subagent_lifecycle",
       payload: { id: "anchor-child", agent: "anchor", status: "completed", index: 0 },
     });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "terminal-before-progress",
+        agent: "terminal first",
+        status: "completed",
+        index: 1,
+      },
+    });
+    session.emit({
+      type: "subagent_progress",
+      payload: {
+        index: 1,
+        agent: "terminal first",
+        task: "stale",
+        progress: { id: "terminal-before-progress", status: "started" },
+      },
+    });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: { id: "ordered-child", agent: "ordered", status: "started", index: 2 },
+    });
+    session.emit({
+      type: "subagent_event",
+      payload: {
+        id: "ordered-child",
+        event: {
+          type: "message_end",
+          message: { role: "assistant", responseId: "ordered-output", content: "kept output" },
+        },
+      },
+    });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: { id: "ordered-child", agent: "ordered", status: "completed", index: 2 },
+    });
     gate.resolve();
     await events.waitFor(
       (event) => event.type === "session.ready" && event.requestId === "progress-overflow-replay",
@@ -17203,6 +17310,44 @@ describe("OMP direct provider", () => {
       expect.objectContaining({
         type: "session.turn",
         sessionId: anchor.sessionId,
+        state: "completed",
+      }),
+    );
+    const terminalFirst = events.find(
+      (event) => event.type === "session.opened" && event.title === "terminal first",
+    );
+    const ordered = events.find(
+      (event) => event.type === "session.opened" && event.title === "ordered",
+    );
+    if (terminalFirst?.type !== "session.opened" || ordered?.type !== "session.opened") {
+      throw new Error("Missing buffered child sessions");
+    }
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId === terminalFirst.sessionId &&
+          event.state === "started",
+      ),
+    ).toHaveLength(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.turn",
+        sessionId: terminalFirst.sessionId,
+        state: "completed",
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        sessionId: ordered.sessionId,
+        item: expect.objectContaining({ type: "assistant_message", text: "kept output" }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.turn",
+        sessionId: ordered.sessionId,
         state: "completed",
       }),
     );
