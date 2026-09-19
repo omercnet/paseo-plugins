@@ -360,6 +360,8 @@ class FakeOmpSession implements OmpRuntimeSession {
   readonly subagentSubscriptions: string[] = [];
   subagents: OmpSubagentSnapshot[] = [];
   subagentsError: Error | null = null;
+  subagentsGate: Promise<void> | null = null;
+  subagentsObserved: (() => void) | null = null;
   readonly subagentMessages = new Map<string, OmpSubagentMessagesResult>();
   availableCommandsObserved: (() => void) | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
@@ -551,9 +553,11 @@ class FakeOmpSession implements OmpRuntimeSession {
     this.subagentSubscriptions.push(level);
   }
 
-  getSubagents() {
-    if (this.subagentsError) return Promise.reject(this.subagentsError);
-    return Promise.resolve(this.subagents);
+  async getSubagents() {
+    this.subagentsObserved?.();
+    if (this.subagentsGate) await this.subagentsGate;
+    if (this.subagentsError) throw this.subagentsError;
+    return this.subagents;
   }
 
   getSubagentMessages(selector: { subagentId?: string; sessionFile?: string }) {
@@ -17048,7 +17052,6 @@ describe("OMP direct provider", () => {
         index: 1,
         agent: "nested snapshot",
         status: "completed",
-        sessionFile: "/sessions/root/parent-snapshot-child/nested-snapshot-child.jsonl",
         lastUpdate: 2,
       },
       {
@@ -17056,7 +17059,6 @@ describe("OMP direct provider", () => {
         index: 0,
         agent: "parent snapshot",
         status: "completed",
-        sessionFile: "/sessions/root/parent-snapshot-child.jsonl",
         lastUpdate: 1,
       },
     ];
@@ -17102,6 +17104,161 @@ describe("OMP direct provider", () => {
     }
     expect(parent.parentSessionId).toBe("nested-snapshot-root");
     expect(nested.parentSessionId).toBe(parent.sessionId);
+    await connection.close();
+  });
+
+  test("keeps snapshot terminal state over stale buffered running progress", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [];
+    runtime.nextSubagents = [
+      {
+        id: "completed-snapshot-child",
+        index: 0,
+        agent: "completed snapshot",
+        status: "completed",
+        lastUpdate: 1,
+      },
+    ];
+    runtime.nextSubagentMessages.set("completed-snapshot-child", {
+      sessionFile: "/sessions/root/completed-snapshot-child.jsonl",
+      fromByte: 0,
+      nextByte: 1,
+      reset: false,
+      messages: [],
+    });
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      session.subagentsGate = gate.promise;
+      session.subagentsObserved = observed.resolve;
+    };
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    void connection.send({
+      type: "session.open",
+      requestId: "stale-progress-replay",
+      sessionId: "stale-progress-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await observed.promise;
+    sessionAt(runtime).emit({
+      type: "subagent_progress",
+      payload: {
+        index: 0,
+        agent: "completed snapshot",
+        task: "stale update",
+        progress: { id: "completed-snapshot-child", status: "started" },
+      },
+    });
+    gate.resolve();
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "stale-progress-replay",
+    );
+
+    const child = events.find(
+      (event) => event.type === "session.opened" && event.title === "completed snapshot",
+    );
+    if (child?.type !== "session.opened") throw new Error("Missing completed snapshot child");
+    const turns = events.flatMap((event) =>
+      event.type === "session.turn" && event.sessionId === child.sessionId ? [event] : [],
+    );
+    expect(turns.filter((event) => event.state === "started")).toHaveLength(1);
+    expect(turns.filter((event) => event.state === "completed")).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("retains required child events for all 1024 children at buffer saturation", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [];
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      session.subagentsGate = gate.promise;
+      session.subagentsObserved = observed.resolve;
+    };
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    void connection.send({
+      type: "session.open",
+      requestId: "required-event-saturation",
+      sessionId: "required-event-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await observed.promise;
+    const session = sessionAt(runtime);
+    for (let index = 0; index < 1_024; index += 1) {
+      const id = `saturated-child-${index}`;
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: { id, agent: "worker", status: "started", index },
+      });
+      session.emit({
+        type: "subagent_event",
+        payload: {
+          id,
+          event: {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              responseId: `response-${index}`,
+              content: `output-${index}`,
+            },
+          },
+        },
+      });
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: { id, agent: "worker", status: "completed", index },
+      });
+    }
+    gate.resolve();
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "required-event-saturation",
+    );
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.opened" && event.parentSessionId === "required-event-root",
+      ),
+    ).toHaveLength(1_024);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.sessionId.startsWith("omp:subsession:") &&
+          event.item.type === "assistant_message",
+      ),
+    ).toHaveLength(1_024);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" &&
+          event.sessionId.startsWith("omp:subsession:") &&
+          event.state === "completed",
+      ),
+    ).toHaveLength(1_024);
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
     await connection.close();
   });
 
