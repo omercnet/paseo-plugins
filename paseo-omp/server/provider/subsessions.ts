@@ -94,6 +94,18 @@ const TaskResultDetailsSchema = z.object({
         exitCode: z.number().optional(),
         error: z.unknown().optional(),
         aborted: z.boolean().optional(),
+        status: z
+          .enum([
+            "pending",
+            "running",
+            "completed",
+            "failed",
+            "error",
+            "aborted",
+            "canceled",
+            "cancelled",
+          ])
+          .optional(),
       }),
     )
     .max(MAX_CHILDREN),
@@ -192,8 +204,15 @@ function replayChildren(messages: readonly OmpMessage[]): ReplayChildRef[] {
     const details = taskResultDetails(message);
     const results = details?.results ?? [];
     for (const result of results) {
+      const canceled =
+        result.aborted === true ||
+        result.status === "aborted" ||
+        result.status === "canceled" ||
+        result.status === "cancelled";
       const failed =
         message.isError === true ||
+        result.status === "failed" ||
+        result.status === "error" ||
         Boolean(result.error) ||
         (typeof result.exitCode === "number" && result.exitCode !== 0);
       children.push({
@@ -201,7 +220,7 @@ function replayChildren(messages: readonly OmpMessage[]): ReplayChildRef[] {
         agent: result.agent ?? call?.title,
         description: call?.description,
         parentToolCallId: message.toolCallId,
-        status: result.aborted === true ? "canceled" : failed ? "failed" : "completed",
+        status: canceled ? "canceled" : failed ? "failed" : "completed",
       });
     }
     const resultIds = new Set(results.map((result) => result.id));

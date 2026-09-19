@@ -1574,9 +1574,11 @@ describe("OMP RPC transport", () => {
 
   test("accepts bounded read metadata with more than 1,024 source entries", async () => {
     const child = new FakeRpcChild();
+    const sourceEntries = Array.from({ length: 1_223 }, (_, index) => `line-${index}`);
     const details = {
       contentType: "text",
-      meta: { source: { value: Array.from({ length: 1_223 }, (_, index) => `line-${index}`) } },
+      meta: { source: { value: sourceEntries } },
+      displayContent: { lineNumbers: sourceEntries },
     };
     const toolResult = {
       role: "toolResult" as const,
@@ -1600,7 +1602,12 @@ describe("OMP RPC transport", () => {
           type: "response",
           id: command.id,
           success: true,
-          data: { messages: [toolResult] },
+          data: {
+            messages: Array.from({ length: 4 }, (_, index) => ({
+              ...toolResult,
+              toolCallId: `call-${index}`,
+            })),
+          },
         });
       }
     });
@@ -1627,12 +1634,21 @@ describe("OMP RPC transport", () => {
     const messageEnd = nextEvent((listener) => session.onEvent(listener));
     child.write({ type: "message_end", message: toolResult });
     await expect(messageEnd).resolves.toMatchObject({ type: "message_end", message: { details } });
-    await expect(session.getMessages()).resolves.toEqual([expect.objectContaining({ details })]);
+    const history = await session.getMessages();
+    expect(history.map((message) => message.details !== undefined)).toEqual([
+      true,
+      false,
+      false,
+      false,
+    ]);
 
     const terminal = nextEvent((listener) => session.onEvent(listener));
     child.write({
       type: "agent_end",
-      messages: [toolResult, { role: "assistant", id: "answer-1", content: "done", stopReason: "stop" }],
+      messages: [
+        toolResult,
+        { role: "assistant", id: "answer-1", content: "done", stopReason: "stop" },
+      ],
       messageCount: 2,
       isTerminal: true,
     });
@@ -1747,11 +1763,13 @@ describe("OMP RPC transport", () => {
     const terminal = nextEvent((listener) => session.onEvent(listener));
     child.write({
       type: "agent_end",
+      requestId: "prompt-oversized",
       messages: [toolResult, assistant],
       messageCount: 2,
       isTerminal: true,
     });
     await expect(terminal).resolves.toEqual({
+      requestId: "prompt-oversized",
       type: "agent_end",
       messages: [
         {
@@ -1787,6 +1805,123 @@ describe("OMP RPC transport", () => {
         stopReason: "stop",
       },
     ]);
+    await session.close();
+  });
+
+  test.each([
+    ["byte", { payload: "x".repeat(256 * 1024 + 1) }],
+    ["node", { groups: Array.from({ length: 1_024 }, () => ({ a: 1, b: 2, c: 3 })) }],
+    [
+      "depth",
+      Array.from({ length: 18 }).reduce<Record<string, unknown>>((nested) => ({ nested }), {}),
+    ],
+  ])("omits optional metadata beyond the %s budget", async (_budget, details) => {
+    const child = new FakeRpcChild();
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const messageEnd = nextEvent((listener) => session.onEvent(listener));
+
+    child.write({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        id: `bounded-${_budget}`,
+        content: "done",
+        stopReason: "stop",
+        details,
+      },
+    });
+    await expect(messageEnd).resolves.toEqual({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        id: `bounded-${_budget}`,
+        content: "done",
+        stopReason: "stop",
+      },
+    });
+    await session.close();
+  });
+
+  test("preserves bounded task correlation in a degraded nested subagent event", async () => {
+    const child = new FakeRpcChild();
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const nestedEvent = nextEvent((listener) => session.onEvent(listener));
+
+    child.write({
+      type: "subagent_event",
+      payload: {
+        id: "parent-child",
+        event: {
+          type: "tool_execution_end",
+          toolCallId: "nested-task",
+          toolName: "task",
+          result: {
+            details: {
+              results: [
+                {
+                  id: "nested-child",
+                  status: "failed",
+                  error: "child failed",
+                  aborted: false,
+                  ancillary: "discarded",
+                },
+              ],
+              progress: [{ id: "nested-child", index: 0, status: "completed", extra: true }],
+              displayContent: {
+                lineNumbers: Array.from({ length: 2_049 }, (_, index) => index),
+              },
+            },
+          },
+        },
+      },
+    });
+
+    await expect(nestedEvent).resolves.toEqual({
+      type: "subagent_event",
+      payload: {
+        id: "parent-child",
+        event: {
+          type: "tool_execution_end",
+          toolCallId: "nested-task",
+          toolName: "task",
+          result: {
+            details: {
+              results: [
+                {
+                  id: "nested-child",
+                  status: "failed",
+                  error: "child failed",
+                  aborted: false,
+                },
+              ],
+              progress: [{ id: "nested-child", index: 0, status: "completed" }],
+            },
+          },
+        },
+      },
+    });
     await session.close();
   });
 

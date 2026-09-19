@@ -343,6 +343,74 @@ describe("OMP session descriptor discovery", () => {
     );
   });
 
+  test("sanitizes root and child transcript metadata with the RPC history budget", async () => {
+    const root = await temporaryRoot();
+    const cwd = root;
+    const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
+    const details = {
+      displayContent: {
+        lineNumbers: Array.from({ length: 1_223 }, (_, index) => index + 1),
+      },
+    };
+    const messages = Array.from({ length: 4 }, (_, index) => ({
+      role: "toolResult" as const,
+      toolCallId: `read-${index}`,
+      toolName: "read",
+      content: [{ type: "text", text: `result-${index}` }],
+      details,
+    }));
+    const rootEntries = [
+      { type: "session", version: 3, id: SESSION_ID, cwd },
+      ...messages.map((message, index) => ({
+        type: "message",
+        id: `message-${index}`,
+        parentId: index === 0 ? null : `message-${index - 1}`,
+        message,
+      })),
+    ];
+    await writeFile(
+      sessionFile,
+      `${rootEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+    );
+
+    const childDirectory = sessionFile.slice(0, -".jsonl".length);
+    await mkdir(childDirectory);
+    const childFile = join(childDirectory, "MetadataChild.jsonl");
+    await writeFile(
+      childFile,
+      `${[
+        { type: "session", version: 3, id: OTHER_ID, cwd },
+        ...messages.map((message) => ({ type: "message", message })),
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n")}\n`,
+    );
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const rootTranscript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd,
+    });
+    const childTranscript = await runtime.readPersistedSubagentTranscript({
+      parentSessionFile: sessionFile,
+      childTranscriptId: "MetadataChild",
+      cwd,
+    });
+    expect(rootTranscript.messages.map((message) => message.details !== undefined)).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
+    expect(childTranscript.messages.map((message) => message.details !== undefined)).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
   test("rejects invalid scoped listing", async () => {
     await expect(
       listOmpSessionDescriptors({ cwd: "" }, { OMP_SESSION_DIR: "/tmp/unused" }),
