@@ -476,47 +476,24 @@ export class OmpSubsessionProjector {
   private bufferEvent(event: OmpSubagentEvent): void {
     const isProgress = event.type === "subagent_progress";
     const progressTerminal = isProgress ? terminalStatus(event.payload.progress.status) : undefined;
-    const lifecycle =
-      event.type === "subagent_lifecycle"
-        ? event
-        : isProgress && progressTerminal
-          ? {
-              type: "subagent_lifecycle" as const,
-              payload: {
-                id: event.payload.progress.id,
-                agent: event.payload.agent,
-                status: event.payload.progress.status,
-                index: event.payload.index,
-                ...(event.payload.agentSource ? { agentSource: event.payload.agentSource } : {}),
-                ...(event.payload.parentToolCallId
-                  ? { parentToolCallId: event.payload.parentToolCallId }
-                  : {}),
-                ...(event.payload.detached !== undefined
-                  ? { detached: event.payload.detached }
-                  : {}),
-              },
-            }
-          : undefined;
-    const bufferedEvent: OmpSubagentEvent = lifecycle
-      ? {
-          type: "subagent_lifecycle",
-          payload: {
-            id: lifecycle.payload.id,
-            agent: lifecycle.payload.agent,
-            status: lifecycle.payload.status,
-            index: lifecycle.payload.index,
-            ...(lifecycle.payload.agentSource
-              ? { agentSource: lifecycle.payload.agentSource }
-              : {}),
-            ...(lifecycle.payload.parentToolCallId
-              ? { parentToolCallId: lifecycle.payload.parentToolCallId }
-              : {}),
-            ...(lifecycle.payload.detached !== undefined
-              ? { detached: lifecycle.payload.detached }
-              : {}),
-          },
-        }
-      : event;
+    const isAdvisoryProgress = isProgress && !progressTerminal;
+    const bufferedEvent: OmpSubagentEvent =
+      isProgress && progressTerminal
+        ? {
+            type: "subagent_lifecycle",
+            payload: {
+              id: event.payload.progress.id,
+              agent: event.payload.agent,
+              status: event.payload.progress.status,
+              index: event.payload.index,
+              ...(event.payload.agentSource ? { agentSource: event.payload.agentSource } : {}),
+              ...(event.payload.parentToolCallId
+                ? { parentToolCallId: event.payload.parentToolCallId }
+                : {}),
+              ...(event.payload.detached !== undefined ? { detached: event.payload.detached } : {}),
+            },
+          }
+        : event;
     const bytes = boundedJsonBytes(
       bufferedEvent,
       MAX_BUFFERED_BYTES,
@@ -525,18 +502,22 @@ export class OmpSubsessionProjector {
       4_096,
     );
     if (bytes === Number.POSITIVE_INFINITY) return;
-    const nativeId = isProgress ? event.payload.progress.id : event.payload.id;
-    if (bufferedEvent.type === "subagent_lifecycle" || isProgress) {
+    if (isAdvisoryProgress) {
+      const nativeId = event.payload.progress.id;
       for (let index = this.bufferedEvents.length - 1; index >= 0; index -= 1) {
-        const buffered = this.bufferedEvents[index]?.event;
-        if (!buffered) continue;
-        const bufferedId =
-          buffered.type === "subagent_progress"
-            ? buffered.payload.progress.id
-            : buffered.type === "subagent_lifecycle"
-              ? buffered.payload.id
-              : undefined;
-        if (bufferedId !== nativeId) continue;
+        const queued = this.bufferedEvents[index]?.event;
+        if (!queued) continue;
+        if (
+          queued.type === "subagent_lifecycle" &&
+          queued.payload.id === nativeId &&
+          terminalStatus(queued.payload.status)
+        ) {
+          return;
+        }
+        if (queued.type !== "subagent_progress" || queued.payload.progress.id !== nativeId) {
+          continue;
+        }
+        if (terminalStatus(queued.payload.progress.status)) return;
         const [removed] = this.bufferedEvents.splice(index, 1);
         this.bufferedBytes -= removed?.bytes ?? 0;
         break;
@@ -831,17 +812,16 @@ export class OmpSubsessionProjector {
       if (this.sessionIdByNativeId.has(snapshot.id)) continue;
       let child: ChildState | undefined;
       try {
-        child = this.ensureChild(
-          { ...snapshot, sessionFile: undefined },
-          this.resolveParent(snapshot.parentToolCallId),
-        );
         const history = await waitForReplay(
           runtimeSession.getSubagentMessages({ subagentId: snapshot.id }),
           signal,
         );
-        this.accountReplay(history.messages, budget, signal);
         signal.throwIfAborted();
-        child.sessionFile = history.sessionFile;
+        child = this.ensureChild(
+          { ...snapshot, sessionFile: history.sessionFile },
+          this.resolveParent(snapshot.parentToolCallId, history.sessionFile),
+        );
+        this.accountReplay(history.messages, budget, signal);
         this.projectReplay(child, history.messages, signal);
         visited.add(`${history.sessionFile}\0${snapshot.id}`);
         await this.replayChildren(
@@ -856,7 +836,17 @@ export class OmpSubsessionProjector {
         );
       } catch (error) {
         if (signal.aborted) throw error;
-        if (child) this.failReplayChild(child);
+        if (!child) {
+          try {
+            child = this.ensureChild(
+              { ...snapshot, sessionFile: undefined },
+              this.resolveParent(snapshot.parentToolCallId),
+            );
+          } catch {
+            continue;
+          }
+        }
+        this.failReplayChild(child);
       }
     }
     const activeToolCallIds = new Set(
