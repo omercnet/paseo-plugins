@@ -2223,6 +2223,138 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("sanitizes oversized chunked message_end and agent_end payloads before admission", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    const terminal = Promise.withResolvers<void>();
+    session.onEvent((event) => {
+      events.push(event);
+      if (event.type === "agent_end") terminal.resolve();
+    });
+    const oversized = "x".repeat(8 * 1024 * 1024 + 1);
+
+    writeChunked(
+      child,
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          id: "assistant-native-id",
+          responseId: "assistant-response-id",
+          content: oversized,
+          stopReason: "length",
+        },
+      },
+      "oversized-message-end",
+    );
+    writeChunked(
+      child,
+      {
+        type: "agent_end",
+        messages: [
+          {
+            role: "bashExecution",
+            id: "bash-native-id",
+            entryId: "bash-entry-id",
+            command: "generate-output",
+            output: oversized,
+            exitCode: 137,
+            cancelled: true,
+            truncated: true,
+          },
+        ],
+        messageCount: 1,
+        isTerminal: true,
+      },
+      "oversized-agent-end",
+    );
+    await terminal.promise;
+
+    expect(events).toEqual([
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          id: "assistant-native-id",
+          responseId: "assistant-response-id",
+          content: "<truncated>",
+          stopReason: "length",
+        },
+      },
+      {
+        type: "agent_end",
+        messages: [
+          {
+            role: "bashExecution",
+            id: "bash-native-id",
+            entryId: "bash-entry-id",
+            command: "generate-output",
+            output: "<truncated>",
+            exitCode: 137,
+            cancelled: true,
+            truncated: true,
+          },
+        ],
+        messageCount: 1,
+        isTerminal: true,
+      },
+    ]);
+    await session.close();
+  });
+
+  test("keeps the physical limit for an unchunked oversized terminal payload", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    const terminal = Promise.withResolvers<void>();
+    session.onEvent((event) => {
+      events.push(event);
+      if (event.type === "agent_end") terminal.resolve();
+    });
+
+    child.write({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        id: "oversized-physical-message",
+        content: "x".repeat(8 * 1024 * 1024 + 1),
+        stopReason: "length",
+      },
+    });
+    child.write({ type: "agent_end", messages: [], messageCount: 1, isTerminal: true });
+    await terminal.promise;
+
+    expect(events).toEqual([
+      { type: "agent_end", messages: [], messageCount: 1, isTerminal: true },
+    ]);
+    await session.close();
+  });
+
   test("isolates malformed recognized and physical frames from later valid events", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
