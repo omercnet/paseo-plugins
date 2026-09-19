@@ -2289,14 +2289,14 @@ class OmpRpcProcess {
     this.flushProtocolViolations();
     this.clearChunk();
     this.failPending(new Error("OMP RPC process was closed"));
+    const cleanupPromise = this.startTreeCleanup();
     if (!this.exited) {
       try {
         this.child.stdin.end();
       } catch {
-        // Continue to process-tree cleanup when the input channel is already closed.
+        // Continue waiting for process-tree cleanup when the input channel is already closed.
       }
     }
-    const cleanupPromise = this.startTreeCleanup();
     const cleanup = await cleanupPromise;
     if (cleanup !== "verified") throw new Error("OMP RPC process tree cleanup failed");
     if (

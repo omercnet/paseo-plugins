@@ -3161,6 +3161,36 @@ describe("OMP RPC transport", () => {
     expect(observed.filter((event) => event.type === "process_exit")).toHaveLength(1);
   });
 
+  test("starts process-tree cleanup before stdin shutdown can release the Windows tree root", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    let stdinEndedAtCleanup: boolean | undefined;
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => {
+        stdinEndedAtCleanup = child.stdin.writableEnded;
+        return Promise.resolve(true);
+      },
+      environment: TEST_RUNTIME_ENV,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await session.close();
+
+    expect(stdinEndedAtCleanup).toBe(false);
+  });
+
   test("surfaces unverified process-tree cleanup", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
