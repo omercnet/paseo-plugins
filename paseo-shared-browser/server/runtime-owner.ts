@@ -18,12 +18,25 @@ function paseoHome(): string {
 
 export async function createRuntimeOwner(): Promise<RuntimeOwner<OwnedRuntime>> {
   const root = join(paseoHome(), "plugin-data", "shared-browser");
+  const ipcDirectory =
+    process.platform === "win32"
+      ? join(root, "ipc")
+      : join(
+          "/tmp",
+          `paseo-shared-browser-${createHash("sha256").update(root).digest("hex").slice(0, 16)}`,
+        );
   const binaryPath =
     process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY ??
-    join(root, "runtime", "node_modules", ".bin", "agent-browser");
+    join(
+      root,
+      "runtime",
+      "node_modules",
+      ".bin",
+      process.platform === "win32" ? "agent-browser.exe" : "agent-browser",
+    );
   const executablePath =
     process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE ??
-    join(root, "runtime", "chromium", "chrome");
+    join(root, "runtime", "chromium", process.platform === "win32" ? "chrome.exe" : "chrome");
   return {
     async create(workspaceId) {
       const hash = createHash("sha256").update(workspaceId).digest("hex");
@@ -31,7 +44,7 @@ export async function createRuntimeOwner(): Promise<RuntimeOwner<OwnedRuntime>> 
         binaryPath,
         executablePath,
         profilePath: join(root, "profiles", hash),
-        ipcDirectory: join(root, "ipc"),
+        ipcDirectory,
         session: `ws-${hash.slice(0, 16)}`,
         initialUrl: DEFAULT_BROWSER_URL,
       });

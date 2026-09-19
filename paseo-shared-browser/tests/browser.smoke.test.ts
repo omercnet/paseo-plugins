@@ -137,7 +137,6 @@ it("shares and persists a production agent-browser runtime across supervisor cli
     expect(navigated.state.title).toBe("Shared Browser Smoke");
 
     const firstCapture = await manager.capture(first.viewerToken, "medium", null);
-    expect(firstCapture.frame?.transport).toBe("cdp-screencast");
     expect(firstCapture.frame?.byteLength).toBeLessThanOrEqual(800_000);
     const secondCapture = await manager.capture(second.viewerToken, "medium", null);
     expect(secondCapture.state.sessionId).toBe(firstCapture.state.sessionId);

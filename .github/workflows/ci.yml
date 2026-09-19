@@ -243,9 +243,25 @@ jobs:
   shared-browser:
     needs: changes
     if: ${{ needs.changes.outputs.shared_browser_affected == 'true' }}
-    name: paseo-shared-browser
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: paseo-shared-browser (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            agent_browser: agent-browser
+            chromium: chrome
+            chromium_args: --no-sandbox
+          - os: macos-latest
+            agent_browser: agent-browser
+            chromium: chrome
+            chromium_args: ""
+          - os: windows-latest
+            agent_browser: agent-browser.exe
+            chromium: chrome.exe
+            chromium_args: ""
     defaults:
       run:
         working-directory: paseo-shared-browser
@@ -262,6 +278,10 @@ jobs:
           cache-dependency-path: paseo-shared-browser/package-lock.json
       - name: Install dependencies
         run: npm ci --include=dev
+      - name: Prepare and validate runtime
+        env:
+          PASEO_HOME: ${{ runner.temp }}/paseo-home
+        run: npm run prepare:runtime
       - name: Typecheck
         run: npm run typecheck
       - name: Lint
@@ -270,6 +290,13 @@ jobs:
         run: npm run format:check
       - name: Unit tests
         run: npm run test:unit
+      - name: Browser smoke test
+        env:
+          PASEO_HOME: ${{ runner.temp }}/paseo-home
+          PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY: ${{ runner.temp }}/paseo-home/plugin-data/shared-browser/runtime/node_modules/.bin/${{ matrix.agent_browser }}
+          PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE: ${{ runner.temp }}/paseo-home/plugin-data/shared-browser/runtime/chromium/${{ matrix.chromium }}
+          PASEO_SHARED_BROWSER_CHROMIUM_ARGS: ${{ matrix.chromium_args }}
+        run: npm run test:smoke
 
   wsl-host-tools:
     needs: changes

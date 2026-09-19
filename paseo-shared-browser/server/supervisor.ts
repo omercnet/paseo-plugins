@@ -1,7 +1,7 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { BrowserFrame, BrowserInputEvent, BrowserState, Viewport } from "../shared/browser";
 import { SessionManager } from "./browser-policy";
@@ -826,13 +826,22 @@ export function resolveSupervisorPaths(
     "shared-browser",
     `supervisor-v${RUNTIME_PROTOCOL_VERSION}`,
   );
+  const socketId = createHash("sha256").update(root).digest("hex");
+  const socket =
+    process.platform === "win32"
+      ? String.raw`\\.\pipe\paseo-shared-browser-${socketId}`
+      : join(tmpdir(), `psb-${socketId.slice(0, 16)}.sock`);
   return {
     root,
-    socket: join(root, "runtime.sock"),
+    socket,
     token: join(root, "runtime.token"),
     endpoint: join(root, "runtime.json"),
     lock: join(root, "startup.lock"),
   };
+}
+
+async function removeSupervisorSocket(path: string): Promise<void> {
+  if (process.platform !== "win32") await rm(path, { force: true });
 }
 
 export async function acquireStartupLock(path: string): Promise<() => Promise<void>> {
@@ -956,7 +965,7 @@ export async function startSupervisorServer<Runtime extends RuntimeInstance>(
       await tokenHandle.close();
     }
     await chmod(paths.token, FILE_MODE);
-    await rm(paths.socket, { force: true });
+    await removeSupervisorSocket(paths.socket);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(paths.socket, () => {
@@ -964,7 +973,7 @@ export async function startSupervisorServer<Runtime extends RuntimeInstance>(
         resolve();
       });
     });
-    await chmod(paths.socket, SOCKET_MODE);
+    if (process.platform !== "win32") await chmod(paths.socket, SOCKET_MODE);
     await writeFile(
       paths.endpoint,
       JSON.stringify({ version: RUNTIME_PROTOCOL_VERSION, socket: paths.socket }),
@@ -974,7 +983,7 @@ export async function startSupervisorServer<Runtime extends RuntimeInstance>(
   } catch (error) {
     server.close();
     await Promise.allSettled([
-      rm(paths.socket, { force: true }),
+      removeSupervisorSocket(paths.socket),
       rm(paths.endpoint, { force: true }),
       rm(paths.token, { force: true }),
       releaseLock(),
@@ -1006,7 +1015,7 @@ export async function startSupervisorServer<Runtime extends RuntimeInstance>(
           );
       } finally {
         await Promise.allSettled([
-          rm(paths.socket, { force: true }),
+          removeSupervisorSocket(paths.socket),
           rm(paths.endpoint, { force: true }),
           rm(paths.token, { force: true }),
           releaseLock(),

@@ -393,10 +393,12 @@ export class AgentSupervisorClient {
 }
 
 async function readPrivateFile(path: string): Promise<string> {
-  const metadata = await stat(path);
-  if ((metadata.mode & 0o077) !== 0) throw new Error(`Supervisor file is not private: ${path}`);
-  if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
-    throw new Error(`Supervisor file is owned by another user: ${path}`);
+  if (process.platform !== "win32") {
+    const metadata = await stat(path);
+    if ((metadata.mode & 0o077) !== 0) throw new Error(`Supervisor file is not private: ${path}`);
+    if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
+      throw new Error(`Supervisor file is owned by another user: ${path}`);
+    }
   }
   return await readFile(path, "utf8");
 }

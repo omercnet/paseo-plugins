@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,6 +57,6 @@ test("resolves a dependency hoisted above the installed plugin", (t) => {
 
   assert.equal(
     resolveDependencyRoot("example-runtime", pathToFileURL(pluginScript).href),
-    packageRoot,
+    realpathSync(packageRoot),
   );
 });

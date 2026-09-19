@@ -6,10 +6,10 @@ import { CdpUnknownOutcomeError } from "../server/cdp";
 import type { BrowserState } from "../shared/browser";
 import {
   RuntimeSupervisor,
+  resolveSupervisorPaths,
   startSupervisorServer,
   type RuntimeInstance,
   type RuntimeOwner,
-  type SupervisorPaths,
 } from "../server/supervisor";
 import {
   RUNTIME_PROTOCOL_VERSION,
@@ -106,16 +106,6 @@ function createHarness(now: () => number = Date.now) {
   const supervisor = new RuntimeSupervisor({ owner, now });
   supervisors.push(supervisor);
   return { owner, supervisor, bridge: supervisor.claimBridge("plugin-bridge") };
-}
-
-function pathsFor(root: string): SupervisorPaths {
-  return {
-    root,
-    socket: join(root, "runtime.sock"),
-    token: join(root, "runtime.token"),
-    endpoint: join(root, "runtime.json"),
-    lock: join(root, "startup.lock"),
-  };
 }
 
 async function browserRequest<Result>(
@@ -219,7 +209,7 @@ afterEach(async () => {
 describe("agent shared-browser authorization", () => {
   it("uses an opaque agent ticket without claiming or fencing the admin bridge", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-agent-client-"));
-    const paths = pathsFor(root);
+    const paths = resolveSupervisorPaths(root);
     const owner = new AgentRuntimeOwner();
     const server = await startSupervisorServer(owner, paths);
     const admin = new SupervisorClient({ bridgeId: "plugin-bridge", paths });
@@ -255,7 +245,7 @@ describe("agent shared-browser authorization", () => {
 
   it("reclaims the cached plugin bridge after its socket closes", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-reconnect-"));
-    const paths = pathsFor(root);
+    const paths = resolveSupervisorPaths(root);
     const owner = new AgentRuntimeOwner();
     const server = await startSupervisorServer(owner, paths);
     const admin = new SupervisorClient({ bridgeId: "plugin-bridge", paths });

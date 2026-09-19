@@ -14,13 +14,15 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
-import { arch, homedir, platform } from "node:os";
+import { arch, homedir, platform, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
 const expectedVersion = "0.37.1";
+const hostPlatform = platform();
+const hostArch = arch();
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const paseoHome = process.env.PASEO_HOME || join(homedir(), ".paseo");
 const pluginDataRoot = join(paseoHome, "plugin-data", "shared-browser");
@@ -28,7 +30,16 @@ const runtimeRoot = join(pluginDataRoot, "runtime");
 const stagingRoot = join(pluginDataRoot, `.runtime-${process.pid}`);
 const runtimeModules = join(stagingRoot, "node_modules");
 const packagedAgentBrowser = resolveDependencyRoot("agent-browser");
-const runtimeEntry = join(runtimeModules, ".bin", "agent-browser");
+const runtimeEntry = join(
+  runtimeModules,
+  ".bin",
+  hostPlatform === "win32" ? "agent-browser.exe" : "agent-browser",
+);
+const runtimeChromiumEntry = join(
+  stagingRoot,
+  "chromium",
+  hostPlatform === "win32" ? "chrome.exe" : "chrome",
+);
 const supervisorEntry = join(projectRoot, "server", "supervisor-entry.ts");
 const mcpEntry = join(projectRoot, "server", "mcp-entry.ts");
 
@@ -49,6 +60,15 @@ async function validateAgentBrowser(path) {
     throw new Error(`Expected agent-browser ${expectedVersion}, received ${version ?? "unknown"}`);
   }
 }
+
+async function validateChromium(path) {
+  await execFileAsync(path, ["--version"], {
+    encoding: "utf8",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+}
+
 async function bundleRuntimeEntries() {
   await build({
     entryPoints: {
@@ -81,11 +101,18 @@ async function applyPrivatePermissions(path) {
 async function stageChromiumExecutable(executable) {
   const chromiumRoot = join(stagingRoot, "chromium");
   await mkdir(chromiumRoot, { recursive: true, mode: 0o700 });
-  await symlink(executable, join(chromiumRoot, "chrome"));
+  if (hostPlatform === "darwin") {
+    const quotedExecutable = `'${executable.replaceAll("'", `'"'"'`)}'`;
+    await writeFile(runtimeChromiumEntry, `#!/bin/sh\nexec ${quotedExecutable} "$@"\n`);
+    await chmod(runtimeChromiumEntry, 0o700);
+  } else {
+    await symlink(executable, runtimeChromiumEntry);
+  }
+  return runtimeChromiumEntry;
 }
 
 async function findLinuxArm64Chromium() {
-  if (platform() !== "linux" || arch() !== "arm64") return null;
+  if (hostPlatform !== "linux" || hostArch !== "arm64") return null;
 
   const candidate = "/usr/bin/chromium";
   try {
@@ -99,6 +126,25 @@ async function findLinuxArm64Chromium() {
   }
 }
 
+function installedChromiumExecutable(releaseDir) {
+  switch (hostPlatform) {
+    case "darwin":
+      return join(
+        releaseDir,
+        "Google Chrome for Testing.app",
+        "Contents",
+        "MacOS",
+        "Google Chrome for Testing",
+      );
+    case "linux":
+      return join(releaseDir, "chrome");
+    case "win32":
+      return join(releaseDir, "chrome.exe");
+    default:
+      throw new Error(`Unsupported Chromium platform: ${hostPlatform}`);
+  }
+}
+
 async function installChromium() {
   const override = process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE;
   if (override) {
@@ -106,52 +152,70 @@ async function installChromium() {
       override,
       "PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE",
     );
-    await stageChromiumExecutable(executable);
-    return;
+    if (hostPlatform === "win32") return executable;
+    return stageChromiumExecutable(executable);
   }
 
   const systemChromium = await findLinuxArm64Chromium();
   if (systemChromium) {
-    await stageChromiumExecutable(systemChromium);
+    const executable = await stageChromiumExecutable(systemChromium);
     console.log(`Using system Chromium at ${systemChromium}`);
-    return;
+    return executable;
   }
 
-  const installHome = join(stagingRoot, "install-home");
-  await mkdir(installHome, { recursive: true, mode: 0o700 });
+  // Rust's dirs::home_dir() ignores HOME on Windows and resolves the profile
+  // through SHGetKnownFolderPath. Use that cache there; Unix stays isolated.
+  const installHome =
+    hostPlatform === "win32" ? userInfo().homedir : join(stagingRoot, "install-home");
+  if (hostPlatform !== "win32") {
+    await mkdir(installHome, { recursive: true, mode: 0o700 });
+  }
   await execFileAsync(runtimeEntry, ["install"], {
-    env: { ...process.env, HOME: installHome },
+    env: hostPlatform === "win32" ? process.env : { ...process.env, HOME: installHome },
     timeout: 180_000,
+    windowsHide: true,
   });
 
   const browsersRoot = join(installHome, ".agent-browser", "browsers");
   const releases = (await readdir(browsersRoot, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory() && entry.name.startsWith("chrome-"))
     .map((entry) => entry.name)
-    .sort()
-    .reverse();
+    .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
   const releaseDir = releases[0] && join(browsersRoot, releases[0]);
-  const chrome =
-    releaseDir &&
-    (platform() === "darwin"
-      ? join(releaseDir, "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing")
-      : join(releaseDir, "chrome"));
-  if (!chrome) throw new Error("agent-browser install did not produce a Chromium release");
+  if (!releaseDir) throw new Error("agent-browser install did not produce a Chromium release");
+  const chrome = installedChromiumExecutable(releaseDir);
   await requireExecutable(chrome, "Installed Chromium executable");
   await cp(releaseDir, join(stagingRoot, "chromium"), { recursive: true, force: true });
-  if (platform() === "darwin") {
+  if (hostPlatform === "darwin") {
     // chrome can't be a symlink to the .app's real binary here: macOS dyld
     // resolves @executable_path from the invoked path's own directory, so a
     // symlink at chromium/chrome would break the bundle's relative Frameworks
     // lookup. Exec the real binary by its actual path instead.
-    const chromeShim = join(stagingRoot, "chromium", "chrome");
     await writeFile(
-      chromeShim,
+      runtimeChromiumEntry,
       `#!/bin/sh\nexec "$(cd "$(dirname "$0")" && pwd)/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" "$@"\n`,
     );
-    await chmod(chromeShim, 0o700);
+    await chmod(runtimeChromiumEntry, 0o700);
   }
-  await rm(installHome, { recursive: true, force: true });
+  if (hostPlatform !== "win32") await rm(installHome, { recursive: true, force: true });
+  return runtimeChromiumEntry;
+}
+
+async function stageAgentBrowserEntry() {
+  if (hostPlatform === "win32") {
+    const executableArch = hostArch === "arm64" ? "x64" : hostArch;
+    if (executableArch !== "x64") {
+      throw new Error(`Unsupported agent-browser Windows architecture: ${hostArch}`);
+    }
+    await cp(
+      join(packagedAgentBrowser, "bin", `agent-browser-win32-${executableArch}.exe`),
+      runtimeEntry,
+      { force: true },
+    );
+  } else {
+    await symlink("../agent-browser/bin/agent-browser.js", runtimeEntry);
+  }
+  await chmod(runtimeEntry, 0o700);
 }
 
 await rm(stagingRoot, { recursive: true, force: true });
@@ -161,8 +225,7 @@ await cp(packagedAgentBrowser, join(runtimeModules, "agent-browser"), {
   recursive: true,
   force: true,
 });
-await symlink("../agent-browser/bin/agent-browser.js", runtimeEntry);
-await chmod(runtimeEntry, 0o700);
+await stageAgentBrowserEntry();
 
 const binaryOverride = process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
 if (binaryOverride)
@@ -170,7 +233,7 @@ if (binaryOverride)
     await requireExecutable(binaryOverride, "PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY"),
   );
 await validateAgentBrowser(await requireExecutable(runtimeEntry, "Packaged agent-browser entry"));
-await installChromium();
+const chromiumEntry = await installChromium();
 await bundleRuntimeEntries();
 
 await writeFile(
@@ -179,7 +242,9 @@ await writeFile(
   { mode: 0o600 },
 );
 await applyPrivatePermissions(stagingRoot);
-await rm(runtimeRoot, { recursive: true, force: true });
+if (hostPlatform !== "win32") {
+  await validateChromium(await requireExecutable(chromiumEntry, "Staged Chromium executable"));
+}
 await rename(stagingRoot, runtimeRoot);
 
 console.log(`Prepared immutable Shared Browser runtime assets in ${runtimeRoot}`);

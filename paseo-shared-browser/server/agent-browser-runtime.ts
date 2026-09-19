@@ -139,6 +139,15 @@ function runtimeEnvironment(ipcDirectory: string): NodeJS.ProcessEnv {
     "DISPLAY",
     "WAYLAND_DISPLAY",
     "XAUTHORITY",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
   ]) {
     const value = process.env[key];
     if (value !== undefined) environment[key] = value;
@@ -221,6 +230,7 @@ export class AgentBrowserRuntime {
       chmod(this.ipcDirectory, PRIVATE_DIRECTORY_MODE),
     ]);
     await this.assertVersion();
+    const chromiumArguments = process.env.PASEO_SHARED_BROWSER_CHROMIUM_ARGS;
     const opened = await this.invoke([
       "--session",
       this.session,
@@ -228,6 +238,7 @@ export class AgentBrowserRuntime {
       this.profilePath,
       "--executable-path",
       this.executablePath,
+      ...(chromiumArguments ? ["--args", chromiumArguments] : []),
       "--json",
       "open",
       this.initialUrl,

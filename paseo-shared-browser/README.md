@@ -87,12 +87,16 @@ npm run prepare:runtime
 paseo plugin install "$PWD"
 ```
 
-The build requires Node.js 24 or newer and npm on the daemon host. The runtime also needs a
-Chromium-compatible executable. On Linux ARM64, where the bundled download is unavailable, the
-installer automatically uses native Chromium from `/usr/bin/chromium`. Install a non-Snap Chromium
-build with the system package manager before adding the plugin. Set
-`PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` to an absolute path when Chromium is installed elsewhere.
-The plugin does not emulate x64 Chromium.
+The build requires Node.js 24 or newer and npm on the daemon host. On Linux x64, macOS, and
+Windows, runtime preparation installs and stages the platform's Chrome for Testing distribution. On
+Linux ARM64, where that download is unavailable, the installer automatically uses native Chromium
+from `/usr/bin/chromium`. Install a non-Snap Chromium build with the system package manager before
+adding the plugin. Set `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` to an absolute path when Chromium
+is installed elsewhere. The plugin does not emulate x64 Chromium on Linux.
+
+On Windows, the upstream installer retains its Chrome download cache under the OS user profile.
+Before upgrading the plugin on Windows, close active Shared Browser sessions and stop the Paseo
+daemon; Windows does not allow the installer to replace runtime executables that are still running.
 
 Open a workspace, search the Command Center for **Open Shared Browser**, or tap the **Shared
 Browser** composer pill while a workspace session is open.
@@ -124,11 +128,12 @@ disconnect does not close or reset either process.
 
 The plugin recognizes only these deployment overrides:
 
-| Variable                                    | Meaning                                                                                                                                                                                                                                     |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PASEO_HOME`                                | Paseo data root. Defaults to `~/.paseo`; browser runtime, supervisor IPC, and profiles live below `plugin-data/shared-browser`.                                                                                                             |
-| `PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY` | Absolute path to the pinned `agent-browser` executable. Defaults to `$PASEO_HOME/plugin-data/shared-browser/runtime/node_modules/.bin/agent-browser`.                                                                                       |
-| `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE`  | Absolute path to Chromium. Defaults to `$PASEO_HOME/plugin-data/shared-browser/runtime/chromium/chrome`. On Linux ARM64, installation automatically links `/usr/bin/chromium`; use this override for another compatible, non-Snap location. |
+| Variable                                    | Meaning                                                                                                                                                                                                                                                               |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PASEO_HOME`                                | Paseo data root. Defaults to `~/.paseo`; browser runtime, supervisor IPC, and profiles live below `plugin-data/shared-browser`.                                                                                                                                       |
+| `PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY` | Absolute path to the pinned `agent-browser` executable. Defaults to `$PASEO_HOME/plugin-data/shared-browser/runtime/node_modules/.bin/agent-browser` (`agent-browser.exe` on Windows).                                                                                |
+| `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE`  | Absolute path to Chromium. Defaults to `$PASEO_HOME/plugin-data/shared-browser/runtime/chromium/chrome` (`chrome.exe` on Windows). On Linux ARM64, installation automatically links `/usr/bin/chromium`; use this override for another compatible, non-Snap location. |
+| `PASEO_SHARED_BROWSER_CHROMIUM_ARGS`        | Optional Chromium arguments passed through the managed runtime. Intended for host requirements such as `--no-sandbox` in an already-isolated CI runner; do not disable the browser sandbox on a general-purpose host.                                                 |
 
 User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 
@@ -143,11 +148,16 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 ## Security boundary
 
 - Paseo plugins are trusted, unsandboxed code. The plugin server, detached supervisor,
-  `agent-browser`, and Chromium execute as the daemon OS user and can reach that user's files,
-  processes, credentials, and network.
-- Supervisor IPC uses a user-private Unix socket and token files with owner-only permissions.
-  `agent-browser` IPC metadata and workspace profile directories are also owner-only. The plugin
-  rejects a non-loopback CDP endpoint and disables the `agent-browser` stream port.
+  `agent-browser`, Chromium, and other processes running as the daemon OS user share one trust
+  boundary and can reach that user's files, processes, credentials, and network.
+- Supervisor IPC uses a user-private Unix socket on Linux and macOS or an installation-specific
+  named pipe on Windows, plus a token file under Paseo's user data root for every connection. On
+  Windows, file privacy relies on the ACL inherited from `PASEO_HOME`; custom locations must remain
+  private to the daemon user. `agent-browser` uses loopback TCP for its command and stream services
+  on Windows, so Windows support assumes a trusted single-user host; these services are not an
+  isolation boundary between local OS users.
+- `agent-browser` IPC metadata and workspace profile directories are owner-only on POSIX systems.
+  The plugin rejects a non-loopback CDP endpoint.
 - Viewer and control tokens coordinate clients already paired to the same Paseo daemon. Paseo v0.8
   plugin RPC callbacks expose no authenticated caller identity, so these human-viewer tokens are a
   workflow safeguard, not an authorization boundary. The stdio MCP adapter separately uses an

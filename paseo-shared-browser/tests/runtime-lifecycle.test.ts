@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RuntimeSupervisor,
+  resolveSupervisorPaths,
   startSupervisorServer,
   type RuntimeInstance,
   type RuntimeOwner,
-  type SupervisorPaths,
 } from "../server/supervisor";
 import { RUNTIME_PROTOCOL_VERSION, type JsonValue } from "../server/runtime-protocol";
 
@@ -79,16 +79,6 @@ function createHarness(maxWorkspaces?: number) {
     ...(maxWorkspaces === undefined ? {} : { maxWorkspaces }),
   });
   return { owner, supervisor };
-}
-
-function testPaths(root: string): SupervisorPaths {
-  return {
-    root,
-    socket: join(root, "runtime.sock"),
-    token: join(root, "runtime.token"),
-    endpoint: join(root, "runtime.json"),
-    lock: join(root, "startup.lock"),
-  };
 }
 
 async function openSocket(path: string): Promise<Socket> {
@@ -254,7 +244,7 @@ describe("detached runtime supervisor lifecycle", () => {
 
   it("bounds socket flooding and processes one request per socket", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-flood-"));
-    const paths = testPaths(root);
+    const paths = resolveSupervisorPaths(root);
     const owner = new FakeOwner();
     const server = await startSupervisorServer(owner, paths);
     const token = await readFile(paths.token, "utf8");
@@ -347,7 +337,7 @@ describe("detached runtime supervisor lifecycle", () => {
 
   it("resumes a quiet socket after global backpressure clears", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-global-backpressure-"));
-    const paths = testPaths(root);
+    const paths = resolveSupervisorPaths(root);
     const owner = new FakeOwner();
     const server = await startSupervisorServer(owner, paths);
     const token = await readFile(paths.token, "utf8");
@@ -446,7 +436,7 @@ describe("detached runtime supervisor lifecycle", () => {
 
   it("removes endpoint metadata and the startup lock when stopping rejects", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-cleanup-"));
-    const paths = testPaths(root);
+    const paths = resolveSupervisorPaths(root);
     const owner = new FakeOwner();
     const server = await startSupervisorServer(owner, paths);
     const bridge = server.supervisor.claimBridge("bridge-one");
@@ -454,7 +444,7 @@ describe("detached runtime supervisor lifecycle", () => {
     owner.stopError = new Error("stop failed");
 
     await expect(server.close()).rejects.toThrow("Runtime supervisor shutdown failed");
-    await expect(access(paths.socket)).rejects.toBeDefined();
+    if (process.platform !== "win32") await expect(access(paths.socket)).rejects.toBeDefined();
     await expect(access(paths.endpoint)).rejects.toBeDefined();
     await expect(access(paths.token)).rejects.toBeDefined();
     await expect(access(paths.lock)).rejects.toBeDefined();
