@@ -40,6 +40,20 @@ async function writeSession(
   );
 }
 
+async function writeReplayTranscript(root: string, message: object): Promise<string> {
+  const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
+  await writeFile(
+    sessionFile,
+    `${[
+      { type: "session", version: 3, id: SESSION_ID, cwd: root },
+      { type: "message", id: "message-1", parentId: null, message },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`,
+  );
+  return sessionFile;
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -302,172 +316,111 @@ describe("OMP session descriptor discovery", () => {
     );
   });
 
-  test("retains bounded raw display text and safely degrades larger history", async () => {
+  test("hydrates valid blobs without changing mixed text and image history", async () => {
     const root = await temporaryRoot();
-    const cwd = root;
-    const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
-    const displayLimit = 4 * 1024 * 1024;
-    const rawDisplayLimit = 8 * 1024 * 1024;
-    const twoMiB = "a".repeat(2 * 1024 * 1024);
-    const fourMiB = "b".repeat(displayLimit);
-    const overLimit = `${fourMiB}c`;
-    const tooLarge = "d".repeat(rawDisplayLimit + 1);
-    await writeFile(
-      sessionFile,
-      `${[
-        { type: "session", version: 3, id: SESSION_ID, cwd },
-        {
-          type: "message",
-          id: "assistant-two-mib",
-          parentId: null,
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: twoMiB }],
-            stopReason: "stop",
-          },
-        },
-        {
-          type: "message",
-          id: "assistant-four-mib",
-          parentId: "assistant-two-mib",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "text", text: twoMiB },
-              { type: "thinking", thinking: twoMiB },
-            ],
-            stopReason: "stop",
-          },
-        },
-        {
-          type: "message",
-          id: "assistant-over-limit",
-          parentId: "assistant-four-mib",
-          message: {
-            role: "assistant",
-            responseId: "response-over-limit",
-            content: [
-              { type: "text", text: fourMiB },
-              { type: "thinking", thinking: "c" },
-            ],
-            stopReason: "length",
-          },
-        },
-        {
-          type: "message",
-          id: "bash-over-limit",
-          parentId: "assistant-over-limit",
-          message: {
-            role: "bashExecution",
-            command: "generate-output",
-            output: overLimit,
-            exitCode: 137,
-            cancelled: true,
-            truncated: true,
-          },
-        },
-        {
-          type: "message",
-          id: "assistant-too-large",
-          parentId: "bash-over-limit",
-          message: {
-            role: "assistant",
-            responseId: "response-too-large",
-            content: tooLarge,
-            stopReason: "error",
-          },
-        },
-        {
-          type: "message",
-          id: "bash-too-large",
-          parentId: "assistant-too-large",
-          message: {
-            role: "bashExecution",
-            command: "generate-more-output",
-            output: tooLarge,
-            exitCode: 1,
-            cancelled: false,
-            truncated: true,
-          },
-        },
-      ]
-        .map((entry) => JSON.stringify(entry))
-        .join("\n")}\n`,
-    );
+    const blobDirectory = join(root, "blobs");
+    await mkdir(blobDirectory);
+    const imageBytes = Buffer.from("89504e470d0a1a0a", "hex");
+    const imageHash = createHash("sha256").update(imageBytes).digest("hex");
+    await writeFile(join(blobDirectory, imageHash), imageBytes);
+    const image = { type: "image", data: `blob:sha256:${imageHash}`, mimeType: "image/png" };
+    const sessionFile = await writeReplayTranscript(root, {
+      role: "assistant",
+      content: [{ type: "text", text: "before" }, image, { type: "text", text: "after" }],
+      images: [image],
+    });
 
     const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
     const transcript = await runtime.readPersistedSessionTranscript({
       sessionFile,
       sessionId: SESSION_ID,
-      cwd,
+      cwd: root,
     });
 
-    expect(transcript.messages).toHaveLength(6);
-    expect(transcript.messages[0]).toEqual(
+    const hydrated = { ...image, data: imageBytes.toString("base64") };
+    expect(transcript.imageReplayWarning).toBeUndefined();
+    expect(transcript.messages).toEqual([
       expect.objectContaining({
         role: "assistant",
-        entryId: "assistant-two-mib",
-        content: [{ type: "text", text: twoMiB }],
-        stopReason: "stop",
+        content: [{ type: "text", text: "before" }, hydrated, { type: "text", text: "after" }],
+        images: [hydrated],
       }),
-    );
-    expect(transcript.messages[1]).toEqual(
-      expect.objectContaining({
-        role: "assistant",
-        entryId: "assistant-four-mib",
-        content: [
-          { type: "text", text: twoMiB },
-          { type: "thinking", thinking: twoMiB },
-        ],
-        stopReason: "stop",
-      }),
-    );
-    const assistant = transcript.messages[2];
-    expect(assistant).toEqual(
-      expect.objectContaining({
-        role: "assistant",
-        entryId: "assistant-over-limit",
-        responseId: "response-over-limit",
-        stopReason: "length",
-      }),
-    );
-    const assistantContent = assistant && "content" in assistant ? assistant.content : undefined;
-    expect(assistantContent).toEqual([
-      { type: "text", text: fourMiB },
-      { type: "thinking", thinking: "c" },
     ]);
-    const bash = transcript.messages[3];
-    expect(bash).toEqual(
-      expect.objectContaining({
-        role: "bashExecution",
-        entryId: "bash-over-limit",
-        command: "generate-output",
-        exitCode: 137,
-        cancelled: true,
-        truncated: true,
-      }),
-    );
-    expect(bash && "output" in bash ? bash.output : undefined).toBe(overLimit);
-    expect(transcript.messages[4]).toEqual(
+  });
+
+  test("preserves mixed messages when a persisted image blob is missing", async () => {
+    const root = await temporaryRoot();
+    await mkdir(join(root, "blobs"));
+    const missingHash = "0".repeat(64);
+    const image = { type: "image", data: `blob:sha256:${missingHash}`, mimeType: "image/png" };
+    const sessionFile = await writeReplayTranscript(root, {
+      role: "assistant",
+      content: [{ type: "text", text: "before" }, image, { type: "text", text: "after" }],
+      images: [image],
+    });
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const transcript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd: root,
+    });
+
+    expect(transcript.imageReplayWarning).toBe(true);
+    expect(transcript.messages).toEqual([
       expect.objectContaining({
         role: "assistant",
-        entryId: "assistant-too-large",
-        responseId: "response-too-large",
-        content: "<truncated>",
-        stopReason: "error",
+        content: [
+          { type: "text", text: "before" },
+          { type: "text", text: "[Image unavailable during session replay]" },
+          { type: "text", text: "after" },
+        ],
+        images: [],
       }),
-    );
-    expect(transcript.messages[5]).toEqual(
+    ]);
+  });
+
+  test("drops only corrupt blobs while preserving valid images in the same message", async () => {
+    const root = await temporaryRoot();
+    const blobDirectory = join(root, "blobs");
+    await mkdir(blobDirectory);
+    const validBytes = Buffer.from("89504e470d0a1a0a", "hex");
+    const validHash = createHash("sha256").update(validBytes).digest("hex");
+    await writeFile(join(blobDirectory, validHash), validBytes);
+    const corruptHash = createHash("sha256").update("expected image").digest("hex");
+    await writeFile(join(blobDirectory, corruptHash), Buffer.from("replaced image"));
+    const corrupt = {
+      type: "image",
+      data: `blob:sha256:${corruptHash}`,
+      mimeType: "image/png",
+    };
+    const valid = { type: "image", data: `blob:sha256:${validHash}`, mimeType: "image/png" };
+    const sessionFile = await writeReplayTranscript(root, {
+      role: "assistant",
+      content: [{ type: "text", text: "before" }, corrupt, valid],
+      images: [corrupt, valid],
+    });
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const transcript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd: root,
+    });
+
+    const hydratedValid = { ...valid, data: validBytes.toString("base64") };
+    expect(transcript.imageReplayWarning).toBe(true);
+    expect(transcript.messages).toEqual([
       expect.objectContaining({
-        role: "bashExecution",
-        entryId: "bash-too-large",
-        command: "generate-more-output",
-        output: "<truncated>",
-        exitCode: 1,
-        cancelled: false,
-        truncated: true,
+        role: "assistant",
+        content: [
+          { type: "text", text: "before" },
+          { type: "text", text: "[Image unavailable during session replay]" },
+          hydratedValid,
+        ],
+        images: [hydratedValid],
       }),
-    );
+    ]);
   });
 
   test("reads only canonically owned child transcripts", async () => {

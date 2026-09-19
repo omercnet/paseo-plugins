@@ -1304,6 +1304,7 @@ export interface OmpPersistedSessionMessages {
   nativeSessionId: string;
   byteLength: number;
   messages: OmpMessage[];
+  imageReplayWarning?: true;
 }
 
 export interface OmpStartOptions {

@@ -2397,6 +2397,65 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("warns once while replaying a transcript with unavailable images", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.persistedSessionMessages = {
+      sessionFile: "/sessions/root.jsonl",
+      nativeSessionId: NATIVE_SESSION_ID,
+      byteLength: 4_096,
+      messages: [
+        { role: "user", entryId: "user-1", content: "prompt" },
+        { role: "assistant", entryId: "assistant-1", content: "[Image unavailable]" },
+      ],
+      imageReplayWarning: true,
+    };
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+
+    await connection.send({
+      type: "session.open",
+      requestId: "image-replay-warning",
+      sessionId: "image-replay-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "image-replay-warning",
+    );
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" && event.item.id === "omp:replay-image-unavailable",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({
+          type: "notification",
+          level: "warning",
+          message: "OMP skipped one or more unavailable images while replaying this session.",
+        }),
+      }),
+    ]);
+    expect(sessionAt(runtime).historyRequests).toBe(0);
+    await connection.close();
+  });
+
   test("warns before falling back to filtered RPC history", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({
