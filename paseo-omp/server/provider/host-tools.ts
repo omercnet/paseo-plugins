@@ -44,8 +44,7 @@ const MAX_HOST_TOOL_IMAGE_DATA_BYTES = 8 * 1024 * 1024;
 const MAX_STRUCTURED_CONTENT_FALLBACK_BYTES = 1024 * 1024;
 const CONTENT_TRUNCATED_NOTICE = "[MCP result content truncated: exceeded size limits]";
 const DETAILS_OMITTED_NOTICE = "[MCP structured content omitted: exceeded size limits]";
-const RESULT_TRUNCATED_NOTICE =
-  "[MCP result content truncated; structured content omitted: exceeded size limits]";
+const RESULT_TRUNCATED_NOTICE = "[MCP content truncated; details omitted]";
 const MAX_PENDING_HOST_TOOL_CALLS = 64;
 const MAX_PENDING_HOST_TOOL_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 20_000;

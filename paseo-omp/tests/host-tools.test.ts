@@ -343,7 +343,7 @@ describe("OMP host tool bridge", () => {
         { type: "image", data: image, mimeType: "image/png" },
       ],
       structuredContent: { payload: "x".repeat(12 * 1024 * 1024 + 1) },
-      isError: false,
+      isError: true,
     });
     const bridge = await OmpHostToolsBridge.open(
       sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
@@ -372,9 +372,9 @@ describe("OMP host tool bridge", () => {
             { type: "image", data: image, mimeType: "image/png" },
             { type: "text", text: expect.stringContaining("structured content omitted") },
           ],
-          isError: false,
+          isError: true,
         },
-        isError: false,
+        isError: true,
       },
     ]);
     await bridge.close();
@@ -412,6 +412,74 @@ describe("OMP host tool bridge", () => {
       { type: "text", text: expect.stringContaining("structured content omitted") },
     ]);
     expect(Buffer.byteLength(`${JSON.stringify(result)}\n`)).toBeLessThanOrEqual(512);
+    await bridge.close();
+  });
+
+  test("preserves success at the minimum frame with a maximum escaped identifier", async () => {
+    const id = "\0".repeat(256);
+    const connection = new FakeConnection([{ name: "inspect", inputSchema: { type: "object" } }], {
+      content: [{ type: "text", text: "x".repeat(4_096) }],
+      structuredContent: { payload: "x".repeat(4_096) },
+      isError: false,
+    });
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+      { connectMcp: async () => connection },
+    );
+    const runtime = new FakeRuntime();
+    runtime.maxHostToolFrameBytes = 1_716;
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+
+    bridge.handle({
+      type: "host_tool_call",
+      id,
+      toolCallId: "tool-minimum-frame",
+      toolName: "mcp__repo_inspect",
+      arguments: {},
+    });
+    await flushMicrotasks();
+
+    const result = runtime.results[0];
+    expect(result?.id).toBe(id);
+    expect(result?.isError).toBe(false);
+    expect(result?.result.isError).toBe(false);
+    expect(result?.result.details).toBeUndefined();
+    expect(result?.result.content.at(-1)?.text).toBe("[MCP content truncated; details omitted]");
+    expect(Buffer.byteLength(`${JSON.stringify(result)}\n`)).toBeLessThanOrEqual(1_716);
+    await bridge.close();
+  });
+
+  test("truncates oversized multibyte text only at code-point boundaries", async () => {
+    const connection = new FakeConnection([{ name: "inspect", inputSchema: { type: "object" } }], {
+      content: [{ type: "text", text: "🙂".repeat(262_145) }],
+      isError: false,
+    });
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+      { connectMcp: async () => connection },
+    );
+    const runtime = new FakeRuntime();
+    runtime.maxHostToolFrameBytes = 12 * 1024 * 1024;
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+
+    bridge.handle({
+      type: "host_tool_call",
+      id: "multibyte-text",
+      toolCallId: "tool-multibyte-text",
+      toolName: "mcp__repo_inspect",
+      arguments: {},
+    });
+    await flushMicrotasks();
+
+    const result = runtime.results[0];
+    const text = result?.result.content[0]?.text ?? "";
+    expect(result?.isError).toBe(false);
+    expect(result?.result.isError).toBe(false);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1024 * 1024);
+    expect(text.endsWith("<truncated>")).toBe(true);
+    expect(text.slice(0, -"<truncated>".length).endsWith("🙂")).toBe(true);
+    expect(text).not.toContain("�");
+    expect(result?.result.content.at(-1)?.text).toContain("content truncated");
     await bridge.close();
   });
 
