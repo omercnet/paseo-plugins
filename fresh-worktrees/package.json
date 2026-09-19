@@ -31,7 +31,7 @@
     "shared",
     "paseo-plugin.json"
   ],
-  "version": "1.2.0",
+  "version": "1.2.1",
   "type": "module",
   "packageManager": "npm@11.19.1",
   "engines": {
