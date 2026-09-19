@@ -2332,7 +2332,7 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    this.receiveDecodedFrame(decoded);
+    this.receiveDecodedFrame(decoded, payload.byteLength);
   }
 
   private receiveChunk(frame: ChunkFrame): void {
@@ -2402,10 +2402,25 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    this.receiveDecodedFrame(decodedFrame);
+    this.receiveDecodedFrame(decodedFrame, reassembled.byteLength);
   }
 
-  private receiveDecodedFrame(value: unknown): void {
+  private receiveDecodedFrame(value: unknown, rawByteLength: number): void {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const frame = value as Record<string, unknown>;
+      const pending = typeof frame.id === "string" ? this.pending.get(frame.id) : undefined;
+      if (
+        frame.type === "response" &&
+        (pending?.command === "get_messages" || pending?.command === "get_subagent_messages")
+      ) {
+        this.receiveResponse(frame);
+        return;
+      }
+    }
+    if (rawByteLength > MAX_SEMANTIC_FRAME_BYTES) {
+      this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
+      return;
+    }
     if (this.receiveKnownResponse(value)) return;
     const sanitized = sanitizeLiveDisplayFrame(value);
     if (this.receiveDegradedAgentEnd(sanitized, true)) return;

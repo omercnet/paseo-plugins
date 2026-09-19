@@ -1991,6 +1991,47 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("retains reassembled history responses above the live semantic bound", async () => {
+    const child = new FakeRpcChild();
+    const sevenMiB = "x".repeat(7 * 1024 * 1024);
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages") {
+        writeChunked(
+          child,
+          {
+            type: "response",
+            id: command.id,
+            success: true,
+            data: {
+              messages: [
+                { role: "assistant", id: "history-one", content: sevenMiB },
+                { role: "assistant", id: "history-two", content: sevenMiB },
+              ],
+            },
+          },
+          "large-history-response",
+        );
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const messages = await session.getMessages();
+    expect(messages).toHaveLength(2);
+    expect(messages.map((message) => ("content" in message ? message.content : undefined))).toEqual(
+      [sevenMiB, sevenMiB],
+    );
+    await session.close();
+  });
+
   test("rejects an explicit v1-only ready frame before negotiation", async () => {
     const child = new FakeRpcChild();
     const commands: Record<string, unknown>[] = [];
@@ -2312,6 +2353,54 @@ describe("OMP RPC transport", () => {
         isTerminal: true,
       },
     ]);
+    await session.close();
+  });
+
+  test("rejects a 13 MiB chunked event while a history response is pending", async () => {
+    const child = new FakeRpcChild();
+    const historyRequested = Promise.withResolvers<void>();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages") {
+        historyRequested.resolve();
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    session.onEvent((event) => events.push(event));
+    const failure = nextEvent((listener) => session.onEvent(listener));
+    const history = session.getMessages();
+    void history.catch(() => undefined);
+    await historyRequested.promise;
+
+    writeChunked(
+      child,
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          id: "thirteen-mib-message",
+          content: "x".repeat(13 * 1024 * 1024),
+          stopReason: "length",
+        },
+      },
+      "thirteen-mib-event",
+    );
+
+    await expect(failure).resolves.toEqual({
+      type: "process_exit",
+      error: "OMP RPC frame exceeds the semantic byte limit",
+    });
+    await expect(history).rejects.toThrow("OMP RPC frame exceeds the semantic byte limit");
+    expect(events.some((event) => event.type === "message_end")).toBe(false);
     await session.close();
   });
 
