@@ -3,6 +3,7 @@ import type {
   ProviderMcpServerConfig,
   ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
+import { isValidImagePayload } from "./image";
 import {
   type ConnectedMcpClient,
   type ConnectedMcpTool,
@@ -37,7 +38,14 @@ const MAX_HOST_TOOL_DESCRIPTION_BYTES = 64 * 1024;
 const MAX_HOST_TOOL_SCHEMA_BYTES = 256 * 1024;
 const MAX_HOST_TOOL_CATALOG_BYTES = 768 * 1024;
 const MAX_HOST_TOOL_RESULT_BYTES = 12 * 1024 * 1024;
+const MAX_HOST_TOOL_CONTENT_BLOCKS = 512;
+const MAX_HOST_TOOL_TEXT_BYTES = 1024 * 1024;
+const MAX_HOST_TOOL_IMAGE_DATA_BYTES = 8 * 1024 * 1024;
 const MAX_STRUCTURED_CONTENT_FALLBACK_BYTES = 1024 * 1024;
+const CONTENT_TRUNCATED_NOTICE = "[MCP result content truncated: exceeded size limits]";
+const DETAILS_OMITTED_NOTICE = "[MCP structured content omitted: exceeded size limits]";
+const RESULT_TRUNCATED_NOTICE =
+  "[MCP result content truncated; structured content omitted: exceeded size limits]";
 const MAX_PENDING_HOST_TOOL_CALLS = 64;
 const MAX_PENDING_HOST_TOOL_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 20_000;
@@ -272,42 +280,171 @@ async function discoverMcpTools(
   throw new OmpPublicError("MCP server tool-list pagination exceeds the supported limit");
 }
 
-function normalizeResult(result: unknown): OmpHostToolResult["result"] {
-  if (
-    !result ||
-    typeof result !== "object" ||
+type HostToolContentBlock = OmpHostToolResult["result"]["content"][number];
+
+function hostToolContentIsBounded(content: readonly HostToolContentBlock[]): boolean {
+  return (
     boundedJsonBytes(
-      result,
+      content,
+      MAX_HOST_TOOL_RESULT_BYTES,
+      MAX_HOST_TOOL_CONTENT_BLOCKS,
+      MAX_HOST_TOOL_IMAGE_DATA_BYTES,
+      4_096,
+    ) !== Number.POSITIVE_INFINITY
+  );
+}
+
+function noticeBlock(text: string): HostToolContentBlock {
+  return { type: "text", text };
+}
+
+function appendBoundedNotice(
+  content: readonly HostToolContentBlock[],
+  notice: string,
+): HostToolContentBlock[] {
+  const trailingNotice = content.at(-1)?.text;
+  const contentWasTruncated =
+    trailingNotice === CONTENT_TRUNCATED_NOTICE || trailingNotice === RESULT_TRUNCATED_NOTICE;
+  const prefix = (contentWasTruncated ? content.slice(0, -1) : content).slice(
+    0,
+    MAX_HOST_TOOL_CONTENT_BLOCKS - 1,
+  );
+  const markerText =
+    notice === DETAILS_OMITTED_NOTICE && contentWasTruncated ? RESULT_TRUNCATED_NOTICE : notice;
+  const marker = noticeBlock(markerText);
+  while (prefix.length > 0 && !hostToolContentIsBounded([...prefix, marker])) prefix.pop();
+  return [...prefix, marker];
+}
+
+function boundedTextPrefix(
+  prefix: readonly HostToolContentBlock[],
+  block: HostToolContentBlock,
+): HostToolContentBlock | undefined {
+  if (block.type !== "text" || typeof block.text !== "string") return;
+  const marker = noticeBlock(CONTENT_TRUNCATED_NOTICE);
+  let low = 0;
+  let high = block.text.length;
+  let best = "";
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    let text = block.text.slice(0, middle);
+    if (/\p{Surrogate}$/u.test(text)) text = text.slice(0, -1);
+    const candidate = { type: "text", text } satisfies HostToolContentBlock;
+    if (hostToolContentIsBounded([...prefix, candidate, marker])) {
+      best = text;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best ? { type: "text", text: best } : undefined;
+}
+
+function normalizeContent(content: readonly unknown[]): HostToolContentBlock[] {
+  const normalized: HostToolContentBlock[] = [];
+  for (const value of content) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("MCP tool returned invalid content");
+    }
+    const block = value as Record<string, unknown>;
+    if (typeof block.type !== "string" || !block.type || utf8Bytes(block.type) > 256) {
+      throw new Error("MCP tool returned invalid content");
+    }
+
+    let candidate: HostToolContentBlock;
+    let blockWasTruncated = false;
+    if (block.type === "text") {
+      if (typeof block.text !== "string") throw new Error("MCP tool returned invalid text content");
+      const text = truncateUtf8(block.text, MAX_HOST_TOOL_TEXT_BYTES);
+      candidate = { ...block, type: "text", text } as HostToolContentBlock;
+      blockWasTruncated = text !== block.text;
+    } else if (block.type === "image") {
+      if (typeof block.data !== "string" || typeof block.mimeType !== "string") {
+        throw new Error("MCP tool returned invalid image content");
+      }
+      if (block.data.length > MAX_HOST_TOOL_IMAGE_DATA_BYTES) {
+        return appendBoundedNotice(normalized, CONTENT_TRUNCATED_NOTICE);
+      }
+      if (!isValidImagePayload(block.data, block.mimeType, MAX_HOST_TOOL_IMAGE_DATA_BYTES)) {
+        throw new Error("MCP tool returned invalid image content");
+      }
+      candidate = {
+        ...block,
+        type: "image",
+        data: block.data,
+        mimeType: block.mimeType,
+      } as HostToolContentBlock;
+    } else {
+      candidate = block as HostToolContentBlock;
+    }
+
+    if (normalized.length >= MAX_HOST_TOOL_CONTENT_BLOCKS) {
+      return appendBoundedNotice(normalized, CONTENT_TRUNCATED_NOTICE);
+    }
+    if (!hostToolContentIsBounded([...normalized, candidate])) {
+      const prefix = boundedTextPrefix(normalized, candidate);
+      return appendBoundedNotice(
+        prefix ? [...normalized, prefix] : normalized,
+        CONTENT_TRUNCATED_NOTICE,
+      );
+    }
+    normalized.push(candidate);
+    if (blockWasTruncated) return appendBoundedNotice(normalized, CONTENT_TRUNCATED_NOTICE);
+  }
+  return normalized;
+}
+
+function structuredContentIsBounded(value: unknown): boolean {
+  return (
+    boundedJsonBytes(
+      value,
       MAX_HOST_TOOL_RESULT_BYTES,
       1_024,
       MAX_HOST_TOOL_RESULT_BYTES,
       4_096,
-    ) === Number.POSITIVE_INFINITY
-  ) {
-    throw new Error("MCP tool returned an invalid or oversized result");
+    ) !== Number.POSITIVE_INFINITY
+  );
+}
+
+function normalizeResult(result: unknown): OmpHostToolResult["result"] {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("MCP tool returned an invalid result");
   }
   const record = result as Record<string, unknown>;
   if (Array.isArray(record.content)) {
     const details = record.structuredContent;
-    const content =
-      record.content.length === 0 && details !== undefined
-        ? [
-            {
-              type: "text",
-              text: truncateUtf8(JSON.stringify(details), MAX_STRUCTURED_CONTENT_FALLBACK_BYTES),
-            },
-          ]
-        : record.content;
-    return parseOmpHostToolAgentResult({
+    const detailsAreBounded = details === undefined || structuredContentIsBounded(details);
+    let content = normalizeContent(record.content);
+    if (content.length === 0 && details !== undefined && detailsAreBounded) {
+      content = [
+        {
+          type: "text",
+          text: truncateUtf8(JSON.stringify(details), MAX_STRUCTURED_CONTENT_FALLBACK_BYTES),
+        },
+      ];
+    }
+    if (!detailsAreBounded) content = appendBoundedNotice(content, DETAILS_OMITTED_NOTICE);
+
+    let normalized = parseOmpHostToolAgentResult({
       content,
-      ...(details !== undefined ? { details } : {}),
+      ...(details !== undefined && detailsAreBounded ? { details } : {}),
       ...(typeof record.isError === "boolean" ? { isError: record.isError } : {}),
     });
+    if (!structuredContentIsBounded(normalized)) {
+      normalized = parseOmpHostToolAgentResult({
+        content: appendBoundedNotice(content, DETAILS_OMITTED_NOTICE),
+        ...(typeof record.isError === "boolean" ? { isError: record.isError } : {}),
+      });
+    }
+    return normalized;
   }
   if (Object.hasOwn(record, "toolResult")) {
+    const details = record.toolResult;
+    const detailsAreBounded = structuredContentIsBounded(details);
     return parseOmpHostToolAgentResult({
-      content: [{ type: "text", text: "MCP tool completed" }],
-      details: record.toolResult,
+      content: [noticeBlock(detailsAreBounded ? "MCP tool completed" : DETAILS_OMITTED_NOTICE)],
+      ...(detailsAreBounded ? { details } : {}),
+      ...(typeof record.isError === "boolean" ? { isError: record.isError } : {}),
     });
   }
   throw new Error("MCP tool returned an unsupported result");
@@ -704,12 +841,73 @@ export class OmpHostToolsBridge {
     result: OmpHostToolResult,
   ): OmpHostToolResult {
     const limit = runtime.maxHostToolFrameBytes ?? 1024 * 1024;
-    try {
-      if (Buffer.byteLength(`${JSON.stringify(result)}\n`) <= limit) return result;
-    } catch {
-      // Fall through to the bounded error result.
+    const fits = (candidate: OmpHostToolResult) => {
+      try {
+        return Buffer.byteLength(`${JSON.stringify(candidate)}\n`) <= limit;
+      } catch {
+        return false;
+      }
+    };
+    if (fits(result)) return result;
+
+    const withoutDetails: OmpHostToolResult = {
+      ...result,
+      result: {
+        content: appendBoundedNotice(result.result.content, DETAILS_OMITTED_NOTICE),
+        ...(result.result.isError !== undefined ? { isError: result.result.isError } : {}),
+      },
+    };
+    if (result.result.details !== undefined && fits(withoutDetails)) return withoutDetails;
+
+    const trailingNotice = result.result.content.at(-1)?.text;
+    const detailsWereOmitted =
+      trailingNotice === DETAILS_OMITTED_NOTICE || trailingNotice === RESULT_TRUNCATED_NOTICE;
+    const contentWasTruncated =
+      trailingNotice === CONTENT_TRUNCATED_NOTICE || trailingNotice === RESULT_TRUNCATED_NOTICE;
+    const marker = noticeBlock(
+      result.result.details !== undefined || detailsWereOmitted
+        ? RESULT_TRUNCATED_NOTICE
+        : CONTENT_TRUNCATED_NOTICE,
+    );
+    const sourceContent =
+      detailsWereOmitted || contentWasTruncated
+        ? result.result.content.slice(0, -1)
+        : result.result.content;
+    const boundedContent: HostToolContentBlock[] = [];
+    const terminalWith = (content: HostToolContentBlock[]): OmpHostToolResult => ({
+      ...result,
+      result: {
+        content,
+        ...(result.result.isError !== undefined ? { isError: result.result.isError } : {}),
+      },
+    });
+    for (const block of sourceContent) {
+      const candidate = terminalWith([...boundedContent, block, marker]);
+      if (fits(candidate)) {
+        boundedContent.push(block);
+        continue;
+      }
+      if (block.type === "text" && typeof block.text === "string") {
+        let low = 0;
+        let high = block.text.length;
+        let best = "";
+        while (low <= high) {
+          const middle = Math.floor((low + high) / 2);
+          let text = block.text.slice(0, middle);
+          if (/\p{Surrogate}$/u.test(text)) text = text.slice(0, -1);
+          if (fits(terminalWith([...boundedContent, { type: "text", text }, marker]))) {
+            best = text;
+            low = middle + 1;
+          } else {
+            high = middle - 1;
+          }
+        }
+        if (best) boundedContent.push({ type: "text", text: best });
+      }
+      break;
     }
-    return errorResult(result.id, OMP_HOST_TOOL_FRAME_LIMIT_ERROR);
+    const bounded = terminalWith([...boundedContent, marker]);
+    return fits(bounded) ? bounded : errorResult(result.id, OMP_HOST_TOOL_FRAME_LIMIT_ERROR);
   }
 
   private sendTerminal(
