@@ -14375,7 +14375,7 @@ describe("OMP direct provider", () => {
 
   test("publishes two 2 MiB blocks and redacts before the four MiB display bound", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
-    runtime.nextInheritedRedactionValues = ["configured-secret"];
+    runtime.nextInheritedRedactionValues = ["abcd"];
     await openSession(
       connection,
       events,
@@ -14414,23 +14414,60 @@ describe("OMP direct provider", () => {
       expect.objectContaining({ type: "reasoning", text: twoMiB }),
     ]);
 
-    const redactionPrefix = "x".repeat(2 * 1024 * 1024);
+    const displayLimit = 4 * 1024 * 1024;
+    const boundaryPrefix = "x".repeat(displayLimit - 2);
+    const boundaryBaseline = events.length;
     session.emit({
       type: "message_end",
       message: {
         role: "assistant",
-        responseId: "redacted-large",
-        content: [{ type: "text", text: `${redactionPrefix}configured-secret` }],
+        responseId: "boundary-secret",
+        content: [{ type: "text", text: `${boundaryPrefix}abcd` }],
+        stopReason: "stop",
       },
     });
-    const redacted = events.findLast(
-      (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+    const boundaryItems = events
+      .slice(boundaryBaseline)
+      .flatMap((event) =>
+        event.type === "timeline.item" && event.item.type === "assistant_message"
+          ? [event.item]
+          : [],
+      );
+    expect(boundaryItems).toHaveLength(1);
+    expect(Buffer.byteLength(boundaryItems[0]?.text ?? "", "utf8")).toBeLessThanOrEqual(
+      displayLimit,
     );
+    expect(boundaryItems[0]?.text).toMatch(/<truncated>$/u);
+    expect(boundaryItems[0]?.text).not.toContain("abcd");
+
+    const expandingBlock = "abcd".repeat((2 * 1024 * 1024) / 4);
+    const expansionBaseline = events.length;
+    session.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        responseId: "expanding-blocks",
+        content: [
+          { type: "text", text: expandingBlock },
+          { type: "thinking", thinking: expandingBlock },
+        ],
+        stopReason: "stop",
+      },
+    });
+    const expandedItems = events
+      .slice(expansionBaseline)
+      .flatMap((event) =>
+        event.type === "timeline.item" &&
+        (event.item.type === "assistant_message" || event.item.type === "reasoning")
+          ? [event.item]
+          : [],
+      );
+    expect(expandedItems).toHaveLength(1);
     expect(
-      redacted?.type === "timeline.item" && redacted.item.type === "assistant_message"
-        ? redacted.item.text
-        : undefined,
-    ).toBe(`${redactionPrefix}<redacted>`);
+      expandedItems.reduce((bytes, item) => bytes + Buffer.byteLength(item.text, "utf8"), 0),
+    ).toBeLessThanOrEqual(displayLimit);
+    expect(expandedItems[0]?.text).toMatch(/<truncated>$/u);
+    expect(expandedItems[0]?.text).not.toContain("abcd");
     await finishTurn(events, session, turnId);
     await connection.close();
   });

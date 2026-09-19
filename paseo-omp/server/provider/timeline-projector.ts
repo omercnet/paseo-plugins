@@ -12,11 +12,14 @@ import {
   type JsonValue,
   OmpPublicDataSerializer,
   OmpPublicError,
+  truncateUtf8,
   utf8Bytes,
 } from "./security";
 
 const STREAM_FRAME_MS = 32;
 const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
+const MAX_RAW_STREAM_TEXT_LENGTH = 8 * 1024 * 1024;
+const MAX_REDACTED_STREAM_TEXT_LENGTH = MAX_RAW_STREAM_TEXT_LENGTH * 3;
 const MAX_ACTIVE_TOOLS = 64;
 const MAX_TODOS = 256;
 const MAX_TURN_NATIVE_IDENTITIES = 1_024;
@@ -1004,16 +1007,28 @@ export class OmpTimelineProjector {
     if (!this.stream || this.closed || this.stream.dirtyBlocks.size === 0) return;
     const stream = this.stream;
     if (!stream.nativeIdentity && !finalizeFallback) return;
-    const indexes = [...stream.dirtyBlocks].sort((left, right) => left - right);
+    const indexes = [...stream.blocks.keys()].sort((left, right) => left - right);
+    let remainingTextBytes = MAX_STREAM_TEXT_LENGTH;
     stream.dirtyBlocks.clear();
     for (const contentIndex of indexes) {
       const block = stream.blocks.get(contentIndex);
-      if (!block?.text) continue;
+      if (!block) continue;
       const publicText =
         block.kind === "image"
           ? block.text
-          : this.dataFilter.text(block.text, MAX_STREAM_TEXT_LENGTH);
-      if (!publicText || block.publishedText === publicText) continue;
+          : truncateUtf8(
+              this.dataFilter.text(block.text, MAX_REDACTED_STREAM_TEXT_LENGTH),
+              remainingTextBytes,
+            );
+      if (block.kind !== "image") {
+        remainingTextBytes = Math.max(0, remainingTextBytes - utf8Bytes(publicText));
+      }
+      if (
+        block.publishedText === publicText ||
+        (!publicText && block.publishedText === undefined)
+      ) {
+        continue;
+      }
       const nextPublishedBytes = utf8Bytes(publicText);
       if (
         stream.retainedBytes + stream.publishedBytes + nextPublishedBytes >
@@ -1267,7 +1282,7 @@ export class OmpTimelineProjector {
       (snapshot.kind === "image" ? 0 : snapshotBytes);
     if (
       retainedBytes + stream.publishedBytes > MAX_STREAM_TOTAL_BYTES ||
-      textBytes > MAX_STREAM_TEXT_LENGTH
+      textBytes > MAX_RAW_STREAM_TEXT_LENGTH
     ) {
       return;
     }

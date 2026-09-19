@@ -121,11 +121,13 @@ const IDENTIFIER = boundedString(MAX_ID_LENGTH, 1);
 const NAME = boundedString(MAX_NAME_LENGTH, 1);
 const OMP_PROVIDER_NAME = NAME.refine((provider) => !provider.includes("/"));
 const TEXT = boundedString(MAX_TEXT_LENGTH);
-const DISPLAY_TEXT = boundedString(MAX_STREAM_TEXT_LENGTH);
-const DISPLAY_TRUNCATION_MARKER_BYTES = utf8Bytes("<truncated>");
+const RAW_DISPLAY_TEXT = boundedString(MAX_IMAGE_DATA_LENGTH);
+const DISPLAY_TRUNCATION_MARKER = "<truncated>";
 
-function truncateDisplayContent(value: unknown): unknown {
-  if (typeof value === "string") return truncateUtf8(value, MAX_STREAM_TEXT_LENGTH);
+function boundRawDisplayContent(value: unknown): unknown {
+  if (typeof value === "string") {
+    return utf8Bytes(value) <= MAX_IMAGE_DATA_LENGTH ? value : DISPLAY_TRUNCATION_MARKER;
+  }
   if (!Array.isArray(value)) return value;
   let totalBytes = 0;
   for (const part of value) {
@@ -134,28 +136,19 @@ function truncateDisplayContent(value: unknown): unknown {
     if (typeof record.text === "string") totalBytes += utf8Bytes(record.text);
     if (typeof record.thinking === "string") totalBytes += utf8Bytes(record.thinking);
   }
-  if (totalBytes <= MAX_STREAM_TEXT_LENGTH) return value;
+  if (totalBytes <= MAX_IMAGE_DATA_LENGTH) return value;
 
-  let remainingBytes = MAX_STREAM_TEXT_LENGTH - DISPLAY_TRUNCATION_MARKER_BYTES;
-  let truncated = false;
+  let retainedMarker = false;
   return value.map((part) => {
     if (!part || typeof part !== "object" || Array.isArray(part)) return part;
     const copy = { ...(part as Record<string, unknown>) };
     for (const key of ["text", "thinking"] as const) {
-      const text = copy[key];
-      if (typeof text !== "string") continue;
-      if (truncated) {
-        delete copy[key];
-        continue;
+      if (typeof copy[key] !== "string") continue;
+      if (retainedMarker) delete copy[key];
+      else {
+        copy[key] = DISPLAY_TRUNCATION_MARKER;
+        retainedMarker = true;
       }
-      const bytes = utf8Bytes(text);
-      if (bytes <= remainingBytes) {
-        remainingBytes -= bytes;
-        continue;
-      }
-      copy[key] = truncateUtf8(text, remainingBytes);
-      remainingBytes = 0;
-      truncated = true;
     }
     return copy;
   });
@@ -344,12 +337,12 @@ const OmpContentPartSchema = z
     }
   });
 const OmpAssistantContentPartSchema = OmpContentPartSchema.safeExtend({
-  text: DISPLAY_TEXT.optional(),
-  thinking: DISPLAY_TEXT.optional(),
+  text: RAW_DISPLAY_TEXT.optional(),
+  thinking: RAW_DISPLAY_TEXT.optional(),
 });
 const OmpAssistantDisplayContentSchema = z.preprocess(
-  truncateDisplayContent,
-  z.union([DISPLAY_TEXT, z.array(OmpAssistantContentPartSchema).max(OMP_MAX_CONTENT_PARTS)]),
+  boundRawDisplayContent,
+  z.union([RAW_DISPLAY_TEXT, z.array(OmpAssistantContentPartSchema).max(OMP_MAX_CONTENT_PARTS)]),
 );
 const OmpDisplayContentSchema = z.union([
   TEXT,
@@ -443,8 +436,11 @@ const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
     role: z.literal("bashExecution"),
     command: TEXT,
     output: z.preprocess(
-      (value) => (typeof value === "string" ? truncateUtf8(value, MAX_STREAM_TEXT_LENGTH) : value),
-      DISPLAY_TEXT.optional(),
+      (value) =>
+        typeof value === "string" && utf8Bytes(value) > MAX_IMAGE_DATA_LENGTH
+          ? DISPLAY_TRUNCATION_MARKER
+          : value,
+      RAW_DISPLAY_TEXT.optional(),
     ),
     exitCode: z.number().int().nullable().optional(),
     cancelled: z.boolean().optional(),

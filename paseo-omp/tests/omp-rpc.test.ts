@@ -2116,7 +2116,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("accepts four MiB final text and truncates oversized terminal display data", async () => {
+  test("carries bounded final text intact for redaction-first projection", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
@@ -2140,7 +2140,7 @@ describe("OMP RPC transport", () => {
 
     const displayLimit = 4 * 1024 * 1024;
     const withinLimit = "é".repeat(displayLimit / 2);
-    const overLimit = `${withinLimit}é`;
+    const overLimit = `${"x".repeat(displayLimit - 2)}abcd`;
     writeChunked(
       child,
       {
@@ -2208,12 +2208,7 @@ describe("OMP RPC transport", () => {
         stopReason: "length",
       }),
     );
-    expect(assistant && "content" in assistant ? assistant.content : undefined).toSatisfy(
-      (content: unknown) =>
-        typeof content === "string" &&
-        Buffer.byteLength(content, "utf8") <= displayLimit &&
-        content.endsWith("<truncated>"),
-    );
+    expect(assistant && "content" in assistant ? assistant.content : undefined).toBe(overLimit);
     expect(bash).toEqual(
       expect.objectContaining({
         role: "bashExecution",
@@ -2224,12 +2219,7 @@ describe("OMP RPC transport", () => {
         truncated: true,
       }),
     );
-    expect(bash && "output" in bash ? bash.output : undefined).toSatisfy(
-      (output: unknown) =>
-        typeof output === "string" &&
-        Buffer.byteLength(output, "utf8") <= displayLimit &&
-        output.endsWith("<truncated>"),
-    );
+    expect(bash && "output" in bash ? bash.output : undefined).toBe(overLimit);
     await session.close();
   });
 
