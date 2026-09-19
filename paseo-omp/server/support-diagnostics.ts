@@ -8,6 +8,7 @@ import {
   OMP_SUPPORT_REPORT_SCHEMA_VERSION,
   supportReportByteLength,
 } from "../shared/support-diagnostics";
+import { PASEO_OMP_BUILD_VERSION } from "./generated/package-version.js";
 import type {
   OmpOperationalFailureCollector,
   OmpOperationalFailureSummary,
@@ -22,7 +23,6 @@ const PACKAGE_VERSION = z
   .string()
   .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]{1,48})?$/u)
   .max(64);
-const PASEO_OMP_BUILD_VERSION = "0.3.0";
 const NODE_VERSION = z
   .string()
   .regex(/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]{1,48})?$/u)

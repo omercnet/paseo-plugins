@@ -9,6 +9,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { build } from "esbuild";
 import { describe, expect, test } from "vitest";
+import { generateBuildVersion } from "../scripts/prepare-dependencies.mjs";
 
 const pluginRoot = join(import.meta.dirname, "..");
 const nodeRequire = createRequire(join(pluginRoot, "index.server.ts"));
@@ -67,6 +68,7 @@ describe("plugin server bundle", () => {
   });
 
   test("loads and registers the plugin provider in the daemon CJS sandbox", async () => {
+    generateBuildVersion(pluginRoot);
     const { code, warnings } = await compileServerBundle(join(pluginRoot, "index.server.ts"));
     expect(warnings.map((warning) => warning.text)).toEqual([]);
     // biome-ignore lint/security/noGlobalEval: mirrors the daemon's plugin loader

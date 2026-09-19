@@ -987,10 +987,7 @@ export class OmpProviderSession {
     this.dataFilter = new OmpPublicDataSerializer(outputRedactionValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.commandCatalog = commandCatalog;
-    this.hostTools.onFatal(() => {
-      this.recordOperationalFailure({ category: "tool-projector", stage: "host-tool" });
-      this.handleRuntimeFailure();
-    });
+    this.hostTools.onFatal(() => this.handleRuntimeFailure());
     this.projector = new OmpTimelineProjector(
       id,
       emit,
@@ -1095,6 +1092,7 @@ export class OmpProviderSession {
       connectMcp: mcpConnector,
       signal,
       initializationTimeoutMs: mcpInitializationTimeoutMs,
+      reportOperationalFailure,
     });
     let native: OmpRuntimeSession | undefined;
     let cleanupNativeSessionId: string | undefined;
@@ -4557,6 +4555,7 @@ export class OmpProviderSession {
     }
     turn.deferredAgentEnd = undefined;
     if (state.isStreaming || state.isCompacting) return;
+    turn.operationalTerminalStage = "unresolved";
     await this.finishTurn(turn, "failed", {
       message: "OMP unkeyed agent_end could not be correlated to the current prompt",
     });
@@ -4637,6 +4636,7 @@ export class OmpProviderSession {
       ) {
         void this.completeAgentEnd(turn, candidate.event);
       } else {
+        turn.operationalTerminalStage = "unresolved";
         this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
       }
     }, AGENT_END_SETTLE_MS);
@@ -4661,6 +4661,10 @@ export class OmpProviderSession {
     turn.terminalizing = false;
     turn.deferredAgentEnd = candidate;
     void this.subsessions.reconcile(this.runtime).catch(() => {
+      this.recordOperationalFailure({
+        category: "tool-projector",
+        stage: "subsession-projector",
+      });
       if (!turn.terminal && this.activeTurn === turn) {
         this.subsessions?.terminalize("failed");
         this.resumeDeferredAgentEnd();
@@ -4746,6 +4750,7 @@ export class OmpProviderSession {
       return;
     }
     if (turn.userEchoObserved) {
+      turn.operationalTerminalStage = "unresolved";
       this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
       return;
     }

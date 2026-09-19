@@ -197,7 +197,7 @@ describe("operational failure aggregation", () => {
     for (const failure of OMP_OPERATIONAL_FAILURES) collector.report(failure);
 
     const snapshot = collector.snapshot();
-    expect(snapshot).toHaveLength(9);
+    expect(snapshot).toHaveLength(10);
     expect(snapshot.map(({ category, stage }) => ({ category, stage }))).toEqual(
       OMP_OPERATIONAL_FAILURES,
     );
@@ -206,6 +206,7 @@ describe("operational failure aggregation", () => {
     expect(snapshot).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ category: "session-open", stage: "startup" }),
+        expect.objectContaining({ category: "session-open", stage: "catalog" }),
         expect.objectContaining({ category: "replay-recovery", stage: "runtime-recovery" }),
         expect.objectContaining({ category: "tool-projector", stage: "timeline-projector" }),
         expect.objectContaining({ category: "terminal-outcome", stage: "unresolved" }),
@@ -220,7 +221,7 @@ describe("operational failure aggregation", () => {
     }
     collector.report({ category: "unsafe", stage: "payload" } as never);
 
-    expect(collector.snapshot()).toHaveLength(9);
+    expect(collector.snapshot()).toHaveLength(10);
     expect(
       collector
         .snapshot()

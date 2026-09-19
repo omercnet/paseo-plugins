@@ -2131,8 +2131,15 @@ describe("OMP direct provider", () => {
 
   test("blocks repeated catalog discovery after unverified cleanup", async () => {
     const runtime = new FakeOmpRuntime();
+    const failures: OmpOperationalFailure[] = [];
     runtime.nextCloseError = new Error("catalog cleanup failed");
-    const { connection, events } = await createHarness(runtime);
+    const { connection, events } = await createHarness(
+      runtime,
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
     for (const requestId of ["catalog-cleanup-failure", "catalog-cleanup-retry"]) {
       await connection.send({ type: "catalog", requestId, cwd: "/repo" });
       await events.waitFor(
@@ -2140,6 +2147,7 @@ describe("OMP direct provider", () => {
       );
     }
     expect(runtime.starts).toHaveLength(1);
+    expect(failures).toEqual([{ category: "session-open", stage: "catalog" }]);
     await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 
@@ -3264,17 +3272,19 @@ describe("OMP direct provider", () => {
     ];
 
     for (const testCase of cases) {
+      const failures: OmpOperationalFailure[] = [];
       const runtime = new FakeOmpRuntime();
       runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
       runtime.nextHistoryMessages = [
         { role: "user", entryId: `${testCase.stage}-entry`, content: "earlier" },
       ];
-      const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
-        "prompt.message",
-        "session.list",
-        "session.persistence",
-        "session.revert.conversation",
-      ]);
+      const { connection, events } = await createHarness(
+        runtime,
+        new ManualScheduler(),
+        ["prompt.message", "session.list", "session.persistence", "session.revert.conversation"],
+        undefined,
+        (failure) => failures.push(failure),
+      );
       const sessionId = `${testCase.stage}-failure-session`;
       await connection.send({
         type: "session.open",
@@ -3339,6 +3349,7 @@ describe("OMP direct provider", () => {
         }),
       );
       expect(session.closes).toBe(1);
+      expect(failures).toEqual([{ category: "replay-recovery", stage: "rewind" }]);
 
       await connection.send({
         type: "session.prompt",
@@ -4179,12 +4190,17 @@ describe("OMP direct provider", () => {
 
   test("removes a queued open when its connection shuts down", async () => {
     const runtime = new FakeOmpRuntime();
+    const failures: OmpOperationalFailure[] = [];
     const startGate = Promise.withResolvers<void>();
     const startObserved = Promise.withResolvers<void>();
     runtime.startGate = startGate.promise;
     runtime.startObserved = startObserved.resolve;
     runtime.sessionIds.push("shutdown-native-one", "shutdown-native-two");
-    const provider = createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV });
+    const provider = createOmpProvider({
+      runtime,
+      environment: TEST_RUNTIME_ENV,
+      reportOperationalFailure: (failure) => failures.push(failure),
+    });
     const connect = async () => {
       const connection = await provider.connect({
         versions: [1],
@@ -4207,6 +4223,7 @@ describe("OMP direct provider", () => {
     );
     expect(runtime.starts).toHaveLength(1);
     await cancelled.connection.close();
+    expect(failures).toEqual([]);
 
     await sendPersistentOpen(
       successor.connection,
@@ -4225,6 +4242,7 @@ describe("OMP direct provider", () => {
     expect(runtime.starts).toHaveLength(2);
     await first.connection.close();
     await successor.connection.close();
+    expect(failures).toEqual([]);
   });
 
   test("rejects a duplicate native ID after queued registration completes", async () => {
@@ -5077,10 +5095,14 @@ describe("OMP direct provider", () => {
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
     runtime.nextHistoryError = new Error("invalid chunked history");
     runtime.nextCloseError = new Error("process tree not reaped");
-    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
-      "prompt.message",
-      "session.persistence",
-    ]);
+    const failures: OmpOperationalFailure[] = [];
+    const { connection, events } = await createHarness(
+      runtime,
+      new ManualScheduler(),
+      ["prompt.message", "session.persistence"],
+      undefined,
+      (failure) => failures.push(failure),
+    );
     const open = (requestId: string) =>
       connection.send({
         type: "session.open",
@@ -5106,6 +5128,7 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.failed" && event.requestId === "replay-reopen",
     );
     expect(runtime.starts).toHaveLength(1);
+    expect(failures).toEqual([{ category: "replay-recovery", stage: "persisted-replay" }]);
     expect(events.some((event) => event.type === "session.ready")).toBe(false);
     await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
@@ -12073,7 +12096,14 @@ describe("OMP direct provider", () => {
   });
 
   test("fails only the turn when an unkeyed terminal has no current evidence", async () => {
-    const { connection, events, runtime, scheduler } = await createHarness();
+    const failures: OmpOperationalFailure[] = [];
+    const { connection, events, runtime, scheduler } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
     onTestFinished(() => connection.close());
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -12105,6 +12135,7 @@ describe("OMP direct provider", () => {
       }),
     );
     expect(session.closes).toBe(0);
+    expect(failures).toEqual([{ category: "terminal-outcome", stage: "unresolved" }]);
   });
 
   test("rejects ambiguous branch ownership for repeated identical prompts", async () => {
@@ -12609,7 +12640,14 @@ describe("OMP direct provider", () => {
   });
 
   test("fails a turn when terminal state confirmation times out", async () => {
-    const { connection, events, runtime, scheduler } = await createHarness();
+    const failures: OmpOperationalFailure[] = [];
+    const { connection, events, runtime, scheduler } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
     await openSession(connection, events);
     const session = sessionAt(runtime);
     const staleListener = [...session.listeners][0];
@@ -12638,6 +12676,7 @@ describe("OMP direct provider", () => {
     );
     expect(session.closes).toBe(1);
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    expect(failures).toEqual([{ category: "terminal-outcome", stage: "unresolved" }]);
 
     const recoveredTurn = turnIdFrom(
       await startPrompt(connection, events, "after-stuck", "continue"),
@@ -12659,7 +12698,14 @@ describe("OMP direct provider", () => {
   });
 
   test("fails a turn when terminal state confirmation is unavailable", async () => {
-    const { connection, events, runtime } = await createHarness();
+    const failures: OmpOperationalFailure[] = [];
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
     await openSession(connection, events);
     const session = sessionAt(runtime);
     const branch = Promise.withResolvers<void>();
@@ -12682,6 +12728,7 @@ describe("OMP direct provider", () => {
       }),
     );
     expect(session.closes).toBe(1);
+    expect(failures).toEqual([{ category: "terminal-outcome", stage: "unresolved" }]);
     const recoveredTurn = turnIdFrom(
       await startPrompt(connection, events, "after-unavailable", "continue"),
     );
@@ -16485,10 +16532,13 @@ describe("OMP direct provider", () => {
   );
 
   test("terminalizes children and resumes the parent when reconciliation is unavailable", async () => {
+    const failures: OmpOperationalFailure[] = [];
     const { connection, events, runtime } = await createHarness(
       new FakeOmpRuntime(),
       new ManualScheduler(),
       ["prompt.message", "session.subsession"],
+      undefined,
+      (failure) => failures.push(failure),
     );
     await openSession(connection, events);
     const session = sessionAt(runtime);
@@ -16526,6 +16576,7 @@ describe("OMP direct provider", () => {
       }),
     );
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    expect(failures).toEqual([{ category: "tool-projector", stage: "subsession-projector" }]);
     await connection.close();
   });
 

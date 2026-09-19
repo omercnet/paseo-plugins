@@ -4,3 +4,4 @@ dist/
 *.log
 .DS_Store
 .paseo-dev/
+server/generated/package-version.js

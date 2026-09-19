@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -15,6 +15,7 @@ afterEach(() => {
 function temporaryRoot() {
   const root = mkdtempSync(join(tmpdir(), "paseo-omp-dependencies-"));
   temporaryRoots.push(root);
+  writeFileSync(join(root, "package.json"), '{"version":"0.3.0"}');
   return root;
 }
 
@@ -33,6 +34,9 @@ test("uses locked lifecycle-free installation for a Git checkout", () => {
       { cwd: root, stdio: "inherit" },
     ],
   ]);
+  expect(readFileSync(join(root, "server", "generated", "package-version.js"), "utf8")).toBe(
+    'export const PASEO_OMP_BUILD_VERSION = "0.3.0";\n',
+  );
 });
 
 test("keeps acquired npm production dependencies when no lockfile is packaged", () => {
@@ -43,4 +47,7 @@ test("keeps acquired npm production dependencies when no lockfile is packaged", 
   });
 
   expect(installed).toBe(false);
+  expect(readFileSync(join(root, "server", "generated", "package-version.js"), "utf8")).toBe(
+    'export const PASEO_OMP_BUILD_VERSION = "0.3.0";\n',
+  );
 });

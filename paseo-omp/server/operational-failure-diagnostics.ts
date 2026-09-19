@@ -1,5 +1,6 @@
 export const OMP_OPERATIONAL_FAILURES = [
   { category: "session-open", stage: "startup" },
+  { category: "session-open", stage: "catalog" },
   { category: "replay-recovery", stage: "persisted-replay" },
   { category: "replay-recovery", stage: "runtime-recovery" },
   { category: "replay-recovery", stage: "rewind" },

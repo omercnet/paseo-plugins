@@ -814,6 +814,9 @@ export function createOmpConnection(
                 },
           });
         } catch (error) {
+          if (!closing) {
+            recordOperationalFailure({ category: "session-open", stage: "catalog" });
+          }
           if (isOmpCleanupFailure(error)) catalogCleanup = error.cleanup;
           if (!closing) requestFailure(input.requestId, error, "OMP catalog discovery failed");
         }
@@ -990,11 +993,15 @@ export function createOmpConnection(
             nativeReservations.release(nativeSessionId, token);
           }
         } catch (error) {
-          recordOperationalFailure(
-            input.history === "replay" || nativeSessionId
-              ? { category: "replay-recovery", stage: "persisted-replay" }
-              : { category: "session-open", stage: "startup" },
-          );
+          const openingCancelled =
+            closing || controller.signal.aborted || opening.get(input.sessionId)?.token !== token;
+          if (!openingCancelled) {
+            recordOperationalFailure(
+              input.history === "replay" || nativeSessionId
+                ? { category: "replay-recovery", stage: "persisted-replay" }
+                : { category: "session-open", stage: "startup" },
+            );
+          }
           deleteSession(input.sessionId, token);
           let cleanupError: unknown;
           if (session) {
