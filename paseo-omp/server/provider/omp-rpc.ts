@@ -1263,6 +1263,7 @@ const ProtocolNegotiationResultSchema = z.object({
 });
 
 export type OmpModel = z.infer<typeof OmpModelSchema>;
+export type OmpBranchResult = z.infer<typeof OmpBranchResultSchema>;
 export type OmpSessionState = z.infer<typeof OmpSessionStateSchema>;
 export type OmpSessionStats = z.infer<typeof OmpSessionStatsSchema>;
 export type OmpCompactionResult = z.infer<typeof OmpCompactionResultSchema>;
@@ -1370,7 +1371,7 @@ export interface OmpRuntimeSession {
   respondToExtensionUi(response: OmpExtensionUiResponse): Promise<void>;
   respondToToolApproval(response: OmpToolApprovalResponse): Promise<void>;
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
-  branch(entryId: string): Promise<{ text: string; cancelled: boolean }>;
+  branch(entryId: string): Promise<OmpBranchResult>;
   readonly canReplayHistory: boolean;
   getMessages(): Promise<OmpMessage[]>;
   abort(): Promise<void>;
@@ -1415,6 +1416,13 @@ export interface OmpRpcRuntimeOptions {
   listSessions?: (
     options: OmpSessionListOptions,
   ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
+}
+
+export class OmpRpcRequestRejectedError extends Error {
+  constructor() {
+    super("OMP RPC request failed");
+    this.name = "OmpRpcRequestRejectedError";
+  }
 }
 
 type PendingRequest = {
@@ -2526,7 +2534,7 @@ class OmpRpcProcess {
         settled.reject(new Error("OMP RPC response is invalid"));
       }
     } else {
-      settled.reject(new Error("OMP RPC request failed"));
+      settled.reject(new OmpRpcRequestRejectedError());
     }
   }
 

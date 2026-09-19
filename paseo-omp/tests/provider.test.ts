@@ -33,6 +33,7 @@ import {
   type OmpPersistedSessionMessages,
   type OmpPersistedSubagentMessages,
   type OmpRpcEvent,
+  OmpRpcRequestRejectedError,
   OmpRpcRuntime,
   type OmpRuntime,
   type OmpRuntimeSession,
@@ -337,6 +338,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   branchGate: Promise<void> | null = null;
   branchObserved: (() => void) | null = null;
   branchError: Error | null = null;
+  branchResultError: Error | null = null;
   branchCancelled = false;
   branchHistoryAfter: OmpMessage[] | null = null;
   branchModelAfter: OmpModel | null = null;
@@ -695,6 +697,7 @@ class FakeOmpSession implements OmpRuntimeSession {
     if (!this.branchCancelled && this.branchHistoryErrorAfter) {
       this.historyError = this.branchHistoryErrorAfter;
     }
+    if (this.branchResultError) throw this.branchResultError;
     return {
       text: this.branchMessages.find((message) => message.entryId === entryId)?.text ?? "",
       cancelled: this.branchCancelled,
@@ -2890,7 +2893,7 @@ describe("OMP direct provider", () => {
       throw new Error("Missing failed rewind target");
     }
     const session = sessionAt(runtime);
-    session.branchError = new Error("native branch secret");
+    session.branchError = new OmpRpcRequestRejectedError();
     await connection.send({
       type: "session.revert",
       requestId: "failed-native-rewind",
@@ -2903,7 +2906,7 @@ describe("OMP direct provider", () => {
     );
     expect(failure).toEqual(
       expect.objectContaining({
-        error: { message: "OMP conversation rewind failed" },
+        error: { message: "OMP conversation rewind token is stale" },
       }),
     );
     expect(JSON.stringify(failure)).not.toContain("native branch secret");
@@ -2923,6 +2926,13 @@ describe("OMP direct provider", () => {
       cleanupFails?: boolean;
       fail(session: FakeOmpSession): void;
     }> = [
+      {
+        stage: "response",
+        nativeSessionId: "01a08f6b-8da9-72cb-9080-fc50139bdfd0",
+        fail(session) {
+          session.branchResultError = new Error("OMP RPC response is invalid");
+        },
+      },
       {
         stage: "state",
         nativeSessionId: "01a08f6b-8da9-72cb-9080-fc50139bdfd1",
@@ -3003,6 +3013,7 @@ describe("OMP direct provider", () => {
         scope: "conversation",
       });
       await cleanupStarted.promise;
+      expect(session.nativeSessionId).toBe(testCase.nativeSessionId);
       expect(
         events.some((event) => event.type === "request.failed" && event.requestId === requestId),
       ).toBe(false);
