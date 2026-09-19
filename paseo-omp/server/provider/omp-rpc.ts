@@ -153,6 +153,44 @@ function boundRawDisplayContent(value: unknown): unknown {
     return copy;
   });
 }
+
+function sanitizeLiveMessageDisplay(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const message = value as Record<string, unknown>;
+  if (message.role === "assistant") {
+    const content = boundRawDisplayContent(message.content);
+    return content === message.content ? value : { ...message, content };
+  }
+  if (
+    message.role === "bashExecution" &&
+    typeof message.output === "string" &&
+    utf8Bytes(message.output) > MAX_IMAGE_DATA_LENGTH
+  ) {
+    return { ...message, output: DISPLAY_TRUNCATION_MARKER };
+  }
+  return value;
+}
+
+function sanitizeLiveDisplayFrame(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const frame = value as Record<string, unknown>;
+  if (
+    frame.type === "message_start" ||
+    frame.type === "message_update" ||
+    frame.type === "message_end"
+  ) {
+    const message = sanitizeLiveMessageDisplay(frame.message);
+    return message === frame.message ? value : { ...frame, message };
+  }
+  if (frame.type !== "agent_end" || !Array.isArray(frame.messages)) return value;
+  let changed = false;
+  const messages = frame.messages.map((message) => {
+    const sanitized = sanitizeLiveMessageDisplay(message);
+    if (sanitized !== message) changed = true;
+    return sanitized;
+  });
+  return changed ? { ...frame, messages } : value;
+}
 const OmpThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 function isBoundedJson(
@@ -2294,13 +2332,7 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    if (this.receiveKnownResponse(decoded)) return;
-    const frame = JsonObjectSchema.safeParse(decoded);
-    if (!frame.success) {
-      this.recordProtocolViolation();
-      return;
-    }
-    this.receiveFrame(frame.data);
+    this.receiveDecodedFrame(decoded);
   }
 
   private receiveChunk(frame: ChunkFrame): void {
@@ -2370,13 +2402,26 @@ class OmpRpcProcess {
       this.recordProtocolViolation();
       return;
     }
-    if (this.receiveKnownResponse(decodedFrame)) return;
-    const frameObject = JsonObjectSchema.safeParse(decodedFrame);
-    if (!frameObject.success) {
+    this.receiveDecodedFrame(decodedFrame);
+  }
+
+  private receiveDecodedFrame(value: unknown): void {
+    if (this.receiveKnownResponse(value)) return;
+    const sanitized = sanitizeLiveDisplayFrame(value);
+    if (this.receiveDegradedAgentEnd(sanitized, true)) return;
+    if (
+      boundedJsonBytes(sanitized, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
+      Number.POSITIVE_INFINITY
+    ) {
       this.recordProtocolViolation();
       return;
     }
-    this.receiveFrame(frameObject.data);
+    const frame = JsonObjectSchema.safeParse(sanitized);
+    if (!frame.success) {
+      this.recordProtocolViolation();
+      return;
+    }
+    this.receiveFrame(frame.data);
   }
 
   private receiveKnownResponse(value: unknown): boolean {
