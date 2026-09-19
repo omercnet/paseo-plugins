@@ -2116,7 +2116,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("enforces chunked UTF-8 assistant and image boundaries without stale corruption", async () => {
+  test("accepts four MiB final text and truncates oversized terminal display data", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
@@ -2138,90 +2138,98 @@ describe("OMP RPC transport", () => {
       if (event.type === "agent_end") terminal.resolve();
     });
 
-    const nearText = "é".repeat((1024 * 1024) / 2);
+    const displayLimit = 4 * 1024 * 1024;
+    const withinLimit = "é".repeat(displayLimit / 2);
+    const overLimit = `${withinLimit}é`;
     writeChunked(
       child,
       {
-        type: "message_update",
-        message: { role: "assistant", responseId: "text", content: nearText },
-      },
-      "near-text",
-    );
-    writeChunked(
-      child,
-      {
-        type: "message_update",
-        message: { role: "assistant", responseId: "oversized-text", content: `${nearText}é` },
-      },
-      "oversized-text",
-    );
-    const imageData = Buffer.concat([
-      Buffer.from("89504e470d0a1a0a", "hex"),
-      Buffer.alloc(6 * 1024 * 1024 - 8),
-    ]).toString("base64");
-    writeChunked(
-      child,
-      {
-        type: "message_update",
-        message: { role: "assistant", responseId: "image", content: [] },
-        assistantMessageEvent: {
-          type: "image_end",
-          contentIndex: 0,
-          content: { type: "image", data: imageData, mimeType: "image/png" },
+        type: "message_end",
+        message: {
+          role: "assistant",
+          responseId: "final-within-limit",
+          content: withinLimit,
+          stopReason: "stop",
         },
       },
-      "near-image",
+      "final-within-limit",
     );
     writeChunked(
       child,
       {
-        type: "message_update",
-        message: { role: "assistant", responseId: "oversized-image", content: [] },
-        assistantMessageEvent: {
-          type: "image_end",
-          contentIndex: 0,
-          content: { type: "image", data: `${imageData}AAAA`, mimeType: "image/png" },
-        },
+        type: "agent_end",
+        messages: [
+          {
+            role: "assistant",
+            entryId: "assistant-over-limit",
+            responseId: "response-over-limit",
+            content: overLimit,
+            stopReason: "length",
+          },
+          {
+            role: "bashExecution",
+            entryId: "bash-over-limit",
+            command: "generate-output",
+            output: overLimit,
+            exitCode: 137,
+            cancelled: true,
+            truncated: true,
+          },
+        ],
+        messageCount: 2,
+        isTerminal: true,
       },
-      "oversized-image",
+      "terminal-over-limit",
     );
-    child.write({
-      type: "agent_end",
-      messages: Array.from({ length: 513 }, () => ({ role: "assistant", content: "ok" })),
-      messageCount: 513,
-      isTerminal: true,
-    });
     await terminal.promise;
 
-    expect(events).toHaveLength(3);
-    const receivedText = events[0];
-    expect(
-      receivedText?.type === "message_update" && receivedText.message.role === "assistant"
-        ? receivedText.message.content
-        : null,
-    ).toBe(nearText);
-    const receivedImage = events[1];
-    expect(
-      receivedImage?.type === "message_update" &&
-        receivedImage.assistantMessageEvent?.content &&
-        typeof receivedImage.assistantMessageEvent.content === "object" &&
-        "data" in receivedImage.assistantMessageEvent.content
-        ? receivedImage.assistantMessageEvent.content.data
-        : null,
-    ).toBe(imageData);
-    expect(events[2]).toEqual({
-      type: "agent_end",
-      messageCount: 513,
-      isTerminal: true,
+    expect(events[0]).toEqual({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        responseId: "final-within-limit",
+        content: withinLimit,
+        stopReason: "stop",
+      },
     });
-    expect(
-      events.some(
-        (event) =>
-          event.type === "message_update" &&
-          (event.message.responseId === "oversized-text" ||
-            event.message.responseId === "oversized-image"),
-      ),
-    ).toBe(false);
+    const terminalEvent = events[1];
+    expect(terminalEvent).toEqual(
+      expect.objectContaining({ type: "agent_end", messageCount: 2, isTerminal: true }),
+    );
+    if (terminalEvent?.type !== "agent_end" || !terminalEvent.messages) {
+      throw new Error("Expected terminal messages");
+    }
+    const [assistant, bash] = terminalEvent.messages;
+    expect(assistant).toEqual(
+      expect.objectContaining({
+        role: "assistant",
+        entryId: "assistant-over-limit",
+        responseId: "response-over-limit",
+        stopReason: "length",
+      }),
+    );
+    expect(assistant && "content" in assistant ? assistant.content : undefined).toSatisfy(
+      (content: unknown) =>
+        typeof content === "string" &&
+        Buffer.byteLength(content, "utf8") <= displayLimit &&
+        content.endsWith("<truncated>"),
+    );
+    expect(bash).toEqual(
+      expect.objectContaining({
+        role: "bashExecution",
+        entryId: "bash-over-limit",
+        command: "generate-output",
+        exitCode: 137,
+        cancelled: true,
+        truncated: true,
+      }),
+    );
+    expect(bash && "output" in bash ? bash.output : undefined).toSatisfy(
+      (output: unknown) =>
+        typeof output === "string" &&
+        Buffer.byteLength(output, "utf8") <= displayLimit &&
+        output.endsWith("<truncated>"),
+    );
     await session.close();
   });
 

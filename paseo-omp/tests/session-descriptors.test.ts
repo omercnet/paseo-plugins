@@ -302,6 +302,135 @@ describe("OMP session descriptor discovery", () => {
     );
   });
 
+  test("replays large final display text without letting oversized data poison history", async () => {
+    const root = await temporaryRoot();
+    const cwd = root;
+    const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
+    const displayLimit = 4 * 1024 * 1024;
+    const twoMiB = "a".repeat(2 * 1024 * 1024);
+    const fourMiB = "b".repeat(displayLimit);
+    const overLimit = `${fourMiB}c`;
+    await writeFile(
+      sessionFile,
+      `${[
+        { type: "session", version: 3, id: SESSION_ID, cwd },
+        {
+          type: "message",
+          id: "assistant-two-mib",
+          parentId: null,
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: twoMiB }],
+            stopReason: "stop",
+          },
+        },
+        {
+          type: "message",
+          id: "assistant-four-mib",
+          parentId: "assistant-two-mib",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: twoMiB },
+              { type: "thinking", thinking: twoMiB },
+            ],
+            stopReason: "stop",
+          },
+        },
+        {
+          type: "message",
+          id: "assistant-over-limit",
+          parentId: "assistant-four-mib",
+          message: {
+            role: "assistant",
+            responseId: "response-over-limit",
+            content: [
+              { type: "text", text: fourMiB },
+              { type: "thinking", thinking: "c" },
+            ],
+            stopReason: "length",
+          },
+        },
+        {
+          type: "message",
+          id: "bash-over-limit",
+          parentId: "assistant-over-limit",
+          message: {
+            role: "bashExecution",
+            command: "generate-output",
+            output: overLimit,
+            exitCode: 137,
+            cancelled: true,
+            truncated: true,
+          },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n")}\n`,
+    );
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const transcript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd,
+    });
+
+    expect(transcript.messages).toHaveLength(4);
+    expect(transcript.messages[0]).toEqual(
+      expect.objectContaining({
+        role: "assistant",
+        entryId: "assistant-two-mib",
+        content: [{ type: "text", text: twoMiB }],
+        stopReason: "stop",
+      }),
+    );
+    expect(transcript.messages[1]).toEqual(
+      expect.objectContaining({
+        role: "assistant",
+        entryId: "assistant-four-mib",
+        content: [
+          { type: "text", text: twoMiB },
+          { type: "thinking", thinking: twoMiB },
+        ],
+        stopReason: "stop",
+      }),
+    );
+    const assistant = transcript.messages[2];
+    expect(assistant).toEqual(
+      expect.objectContaining({
+        role: "assistant",
+        entryId: "assistant-over-limit",
+        responseId: "response-over-limit",
+        stopReason: "length",
+      }),
+    );
+    const assistantContent = assistant && "content" in assistant ? assistant.content : undefined;
+    if (!Array.isArray(assistantContent)) throw new Error("Expected structured assistant content");
+    const truncatedText = assistantContent[0]?.text;
+    expect(typeof truncatedText).toBe("string");
+    expect(Buffer.byteLength(truncatedText ?? "", "utf8")).toBeLessThanOrEqual(displayLimit);
+    expect(truncatedText).toMatch(/<truncated>$/u);
+    expect(assistantContent[1]).not.toHaveProperty("thinking");
+    const bash = transcript.messages[3];
+    expect(bash).toEqual(
+      expect.objectContaining({
+        role: "bashExecution",
+        entryId: "bash-over-limit",
+        command: "generate-output",
+        exitCode: 137,
+        cancelled: true,
+        truncated: true,
+      }),
+    );
+    expect(bash && "output" in bash ? bash.output : undefined).toSatisfy(
+      (output: unknown) =>
+        typeof output === "string" &&
+        Buffer.byteLength(output, "utf8") === displayLimit &&
+        output.endsWith("<truncated>"),
+    );
+  });
+
   test("reads only canonically owned child transcripts", async () => {
     const root = await temporaryRoot();
     const sessionRoot = join(root, "sessions");

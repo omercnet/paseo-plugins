@@ -9,6 +9,7 @@ import {
   boundedJsonMetrics,
   OmpCleanupFailure,
   OmpPublicError,
+  truncateUtf8,
   utf8Bytes,
 } from "./security";
 import {
@@ -120,6 +121,45 @@ const IDENTIFIER = boundedString(MAX_ID_LENGTH, 1);
 const NAME = boundedString(MAX_NAME_LENGTH, 1);
 const OMP_PROVIDER_NAME = NAME.refine((provider) => !provider.includes("/"));
 const TEXT = boundedString(MAX_TEXT_LENGTH);
+const DISPLAY_TEXT = boundedString(MAX_STREAM_TEXT_LENGTH);
+const DISPLAY_TRUNCATION_MARKER_BYTES = utf8Bytes("<truncated>");
+
+function truncateDisplayContent(value: unknown): unknown {
+  if (typeof value === "string") return truncateUtf8(value, MAX_STREAM_TEXT_LENGTH);
+  if (!Array.isArray(value)) return value;
+  let totalBytes = 0;
+  for (const part of value) {
+    if (!part || typeof part !== "object" || Array.isArray(part)) continue;
+    const record = part as Record<string, unknown>;
+    if (typeof record.text === "string") totalBytes += utf8Bytes(record.text);
+    if (typeof record.thinking === "string") totalBytes += utf8Bytes(record.thinking);
+  }
+  if (totalBytes <= MAX_STREAM_TEXT_LENGTH) return value;
+
+  let remainingBytes = MAX_STREAM_TEXT_LENGTH - DISPLAY_TRUNCATION_MARKER_BYTES;
+  let truncated = false;
+  return value.map((part) => {
+    if (!part || typeof part !== "object" || Array.isArray(part)) return part;
+    const copy = { ...(part as Record<string, unknown>) };
+    for (const key of ["text", "thinking"] as const) {
+      const text = copy[key];
+      if (typeof text !== "string") continue;
+      if (truncated) {
+        delete copy[key];
+        continue;
+      }
+      const bytes = utf8Bytes(text);
+      if (bytes <= remainingBytes) {
+        remainingBytes -= bytes;
+        continue;
+      }
+      copy[key] = truncateUtf8(text, remainingBytes);
+      remainingBytes = 0;
+      truncated = true;
+    }
+    return copy;
+  });
+}
 const OmpThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 function isBoundedJson(
@@ -303,6 +343,14 @@ const OmpContentPartSchema = z
       context.addIssue({ code: "custom", message: "invalid image payload" });
     }
   });
+const OmpAssistantContentPartSchema = OmpContentPartSchema.safeExtend({
+  text: DISPLAY_TEXT.optional(),
+  thinking: DISPLAY_TEXT.optional(),
+});
+const OmpAssistantDisplayContentSchema = z.preprocess(
+  truncateDisplayContent,
+  z.union([DISPLAY_TEXT, z.array(OmpAssistantContentPartSchema).max(OMP_MAX_CONTENT_PARTS)]),
+);
 const OmpDisplayContentSchema = z.union([
   TEXT,
   z.array(OmpContentPartSchema).max(OMP_MAX_CONTENT_PARTS),
@@ -371,7 +419,7 @@ export type OmpMessage = OmpMessageIdentity &
 const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
   z.object({
     role: z.literal("assistant"),
-    content: OmpDisplayContentSchema.optional(),
+    content: OmpAssistantDisplayContentSchema.optional(),
     ...OmpMessageIdentityShape,
     errorMessage: boundedString(4_096).nullable().optional(),
     stopReason: boundedString(64).optional(),
@@ -394,7 +442,10 @@ const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
   z.object({
     role: z.literal("bashExecution"),
     command: TEXT,
-    output: TEXT.optional(),
+    output: z.preprocess(
+      (value) => (typeof value === "string" ? truncateUtf8(value, MAX_STREAM_TEXT_LENGTH) : value),
+      DISPLAY_TEXT.optional(),
+    ),
     exitCode: z.number().int().nullable().optional(),
     cancelled: z.boolean().optional(),
     truncated: z.boolean().optional(),
@@ -2471,7 +2522,7 @@ class OmpRpcProcess {
           structuralFrame.messages as unknown[],
           MAX_SEMANTIC_FRAME_BYTES,
           OMP_MAX_CONTENT_PARTS,
-          MAX_TEXT_LENGTH,
+          MAX_IMAGE_DATA_LENGTH,
           4_096,
         ) !== Number.POSITIVE_INFINITY);
     const payloadIsSafe =
