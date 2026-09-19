@@ -229,7 +229,7 @@ describe("agent MCP injection", () => {
     expect(ticket).toEqual(expect.any(String));
     expect(browserMocks.issueAgentTicket).toHaveBeenCalledWith(ticket);
     expect(transformed.config.mcpServers).toMatchObject({
-      "shared-browser": { type: "stdio" },
+      "shared-browser": { type: "stdio", env: { ELECTRON_RUN_AS_NODE: "1" } },
     });
   });
 });

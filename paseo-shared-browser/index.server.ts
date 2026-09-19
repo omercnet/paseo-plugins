@@ -94,6 +94,7 @@ export default function contribute(server: PluginServerContext) {
             env: {
               PASEO_HOME: paseoHome(),
               [TICKET_ENV]: ticket,
+              ELECTRON_RUN_AS_NODE: "1",
             },
           },
         },
