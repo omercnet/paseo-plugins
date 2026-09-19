@@ -29,7 +29,7 @@ const requiredFiles = [
   "package.json",
   "paseo-plugin.json",
 ] as const;
-const requiredReleaseFiles = requiredFiles;
+const requiredReleaseFiles = [...requiredFiles, "package-lock.json"] as const;
 
 function normalized(path: string, root = "") {
   const portablePath = path.replaceAll("\\", "/");
@@ -69,9 +69,7 @@ function isPlaceholder(path: string) {
 function isNonRuntimeFile(path: string) {
   return (
     isInDirectory(path, "docs") ||
-    ["CHANGELOG.md", "INSTALL.md", "SUPPORT.md", "TESTING.md", "package-lock.json"].includes(
-      path,
-    ) ||
+    ["CHANGELOG.md", "INSTALL.md", "SUPPORT.md", "TESTING.md"].includes(path) ||
     /\.(?:png|webp|jpe?g)$/iu.test(path)
   );
 }
