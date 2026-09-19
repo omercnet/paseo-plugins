@@ -8,11 +8,11 @@ import {
   OMP_SUPPORT_REPORT_SCHEMA_VERSION,
   supportReportByteLength,
 } from "../shared/support-diagnostics";
-import { PASEO_OMP_BUILD_VERSION } from "./generated/package-version.js";
 import type {
   OmpOperationalFailureCollector,
   OmpOperationalFailureSummary,
 } from "./operational-failure-diagnostics";
+import { PASEO_OMP_PACKAGE_VERSION } from "./package-version";
 import type {
   OmpProtocolViolationCollector,
   OmpProtocolViolationSummary,
@@ -200,7 +200,7 @@ export async function resolveGetOmpSupportReport(
   try {
     const [healthResult, pluginVersionResult] = await Promise.allSettled([
       (dependencies.loadHealth ?? resolveGetOmpProviderHealth)(input),
-      (dependencies.loadPluginVersion ?? (() => Promise.resolve(PASEO_OMP_BUILD_VERSION)))(),
+      (dependencies.loadPluginVersion ?? (() => Promise.resolve(PASEO_OMP_PACKAGE_VERSION)))(),
     ]);
     const platformValue = (dependencies.platform ?? platform)();
     const architectureValue = (dependencies.architecture ?? arch)();

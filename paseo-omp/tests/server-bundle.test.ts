@@ -9,7 +9,6 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { build } from "esbuild";
 import { describe, expect, test } from "vitest";
-import { generateBuildVersion } from "../scripts/prepare-dependencies.mjs";
 
 const pluginRoot = join(import.meta.dirname, "..");
 const nodeRequire = createRequire(join(pluginRoot, "index.server.ts"));
@@ -65,10 +64,16 @@ describe("plugin server bundle", () => {
     expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain(
       "Paseo `>=0.9.0-beta.1 <0.10.0`",
     );
+    const releaseConfig = JSON.parse(
+      await readFile(join(pluginRoot, "..", "release-please-config.json"), "utf8"),
+    ) as { packages: Record<string, { "extra-files"?: unknown }> };
+    expect(releaseConfig.packages["paseo-omp"]?.["extra-files"]).toEqual([
+      { type: "generic", path: "server/package-version.ts" },
+    ]);
   });
 
-  test("loads and registers the plugin provider in the daemon CJS sandbox", async () => {
-    generateBuildVersion(pluginRoot);
+  test("compiles source without preparation and reports the package version", async () => {
+    await rm(join(pluginRoot, "server", "generated", "package-version.js"), { force: true });
     const { code, warnings } = await compileServerBundle(join(pluginRoot, "index.server.ts"));
     expect(warnings.map((warning) => warning.text)).toEqual([]);
     // biome-ignore lint/security/noGlobalEval: mirrors the daemon's plugin loader
@@ -99,7 +104,7 @@ describe("plugin server bundle", () => {
         registerSettings: (definition: unknown) => settings.push(definition),
         registerProvider: (provider: ProviderRegistration) => providers.push(provider),
       });
-      expect(handlers).toHaveLength(16);
+      expect(handlers).toHaveLength(17);
       expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-models");
       expect(settings).toEqual([
         expect.objectContaining({ id: "composer-pills", scope: "host", version: 1 }),

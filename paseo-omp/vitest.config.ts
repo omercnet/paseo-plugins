@@ -1,7 +1,4 @@
 import { defineConfig } from "vitest/config";
-import { generateBuildVersion } from "./scripts/prepare-dependencies.mjs";
-
-generateBuildVersion();
 
 export default defineConfig({
   test: {
