@@ -1447,7 +1447,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("rejects fractional and unbounded usage numerics", async () => {
+  test("omits invalid optional state usage and rejects invalid session metrics", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
       const response = {
@@ -1485,7 +1485,12 @@ describe("OMP RPC transport", () => {
     child.write(READY_FRAME);
     const session = await opening;
 
-    await expect(session.getState()).rejects.toThrow();
+    await expect(session.getState()).resolves.toEqual({
+      model: null,
+      isStreaming: false,
+      isCompacting: false,
+      sessionId: "invalid-usage",
+    });
     await expect(session.getSessionStats()).rejects.toThrow();
     await session.close();
   });
