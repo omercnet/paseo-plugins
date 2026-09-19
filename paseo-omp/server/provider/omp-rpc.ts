@@ -9,7 +9,6 @@ import {
   boundedJsonMetrics,
   OmpCleanupFailure,
   OmpPublicError,
-  truncateUtf8,
   utf8Bytes,
 } from "./security";
 import {
@@ -2423,14 +2422,6 @@ class OmpRpcProcess {
     }
     if (this.receiveKnownResponse(value)) return;
     const sanitized = sanitizeLiveDisplayFrame(value);
-    if (this.receiveDegradedAgentEnd(sanitized, true)) return;
-    if (
-      boundedJsonBytes(sanitized, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
-      Number.POSITIVE_INFINITY
-    ) {
-      this.recordProtocolViolation();
-      return;
-    }
     const frame = JsonObjectSchema.safeParse(sanitized);
     if (!frame.success) {
       this.recordProtocolViolation();
