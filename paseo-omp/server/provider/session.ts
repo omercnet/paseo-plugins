@@ -21,6 +21,7 @@ import { OmpHostToolsBridge, type OmpMcpConnector, validateOmpHostToolConfig } f
 import { isOmpImageMimeType, isValidImagePayload, OmpImageMaterializer } from "./image";
 import type {
   OmpAvailableCommand,
+  OmpBranchResult,
   OmpCompactionResult,
   OmpExtensionUiResponse,
   OmpImage,
@@ -35,7 +36,7 @@ import type {
   OmpToolApprovalCancel,
   OmpToolApprovalRequest,
 } from "./omp-rpc";
-import { buildOmpSpawnRequest } from "./omp-rpc";
+import { buildOmpSpawnRequest, OmpRpcRequestRejectedError } from "./omp-rpc";
 import {
   BoundedStringSet,
   boundedJsonBytes,
@@ -1684,12 +1685,22 @@ export class OmpProviderSession {
       if (this.activeTurn || beforeState.isStreaming || beforeState.isCompacting) {
         throw new OmpPublicError("Cannot rewind the OMP conversation while a turn is active");
       }
-      const result = await runtime.branch(entryId);
+      branchMutationPossible = true;
+      let result: OmpBranchResult;
+      try {
+        result = await runtime.branch(entryId);
+      } catch (error) {
+        if (error instanceof OmpRpcRequestRejectedError) {
+          branchMutationPossible = false;
+          throw new OmpPublicError("OMP conversation rewind token is stale");
+        }
+        throw error;
+      }
       this.requireCurrentRuntime(runtime, generation);
       if (result.cancelled) {
+        branchMutationPossible = false;
         throw new OmpPublicError("OMP conversation rewind was cancelled");
       }
-      branchMutationPossible = true;
 
       let state = await runtime.getState();
       this.requireCurrentRuntime(runtime, generation);

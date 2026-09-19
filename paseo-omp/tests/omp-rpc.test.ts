@@ -7,6 +7,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildOmpSpawnRequest,
   type OmpRpcEvent,
+  OmpRpcRequestRejectedError,
   OmpRpcRuntime,
   type OmpSpawnRequest,
   terminatePosixProcessTree,
@@ -2132,13 +2133,15 @@ describe("OMP RPC transport", () => {
           success: true,
           data: { text: "selected prompt", cancelled: false },
         });
-      } else {
+      } else if (branchCount === 2) {
         child.write({
           type: "response",
           id: command.id,
           success: true,
           data: { text: 42, cancelled: false },
         });
+      } else {
+        child.write({ type: "response", id: command.id, success: false });
       }
     });
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
@@ -2150,10 +2153,11 @@ describe("OMP RPC transport", () => {
       cancelled: false,
     });
     await expect(session.branch("entry-2")).rejects.toThrow("OMP RPC response is invalid");
+    await expect(session.branch("entry-3")).rejects.toBeInstanceOf(OmpRpcRequestRejectedError);
     await expect(session.branch("x".repeat(257))).rejects.toThrow(
       "Invalid OMP branch entry identifier",
     );
-    expect(branchCount).toBe(2);
+    expect(branchCount).toBe(3);
     await session.close();
   });
 
