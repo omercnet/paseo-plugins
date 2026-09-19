@@ -16075,6 +16075,125 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("completes a transported zero-child task after degrading ancillary metadata", async () => {
+    let child: ProviderRpcChild;
+    const runtime = new OmpRpcRuntime({
+      spawnProcess() {
+        child = new ProviderRpcChild((command) => {
+          const respond = (data: unknown) =>
+            child.write({ type: "response", id: command.id, success: true, data });
+          if (command.type === "negotiate_protocol") {
+            respond({ protocolVersion: 2 });
+          } else if (command.type === "get_available_models") {
+            respond({ models: [MODEL] });
+          } else if (command.type === "get_available_commands") {
+            respond({ commands: [] });
+          } else if (command.type === "get_state") {
+            respond({
+              model: MODEL,
+              thinkingLevel: "medium",
+              isStreaming: false,
+              isCompacting: false,
+              sessionId: NATIVE_SESSION_ID,
+            });
+          } else if (command.type === "get_subagents") {
+            respond({ subagents: [] });
+          } else if (command.type === "set_subagent_subscription") {
+            respond({ level: "events" });
+          } else if (command.type === "prompt") {
+            const requestId = String(command.id);
+            respond({ agentInvoked: true });
+            queueMicrotask(() => {
+              child.write({
+                type: "tool_execution_start",
+                toolCallId: "transport-task-no-child",
+                toolName: "task",
+                args: { tasks: [{ task: "cannot schedule" }] },
+              });
+              child.write({
+                type: "tool_execution_end",
+                toolCallId: "transport-task-no-child",
+                toolName: "task",
+                result: {
+                  message: "No agent was scheduled",
+                  details: {
+                    results: [],
+                    progress: [],
+                    displayContent: {
+                      lineNumbers: Array.from({ length: 2_049 }, (_, index) => index),
+                    },
+                  },
+                },
+              });
+              const assistant = {
+                role: "assistant",
+                id: "transport-task-answer",
+                content: "done",
+                stopReason: "stop",
+              };
+              child.write({ type: "message_end", message: assistant });
+              child.write({
+                type: "agent_end",
+                requestId,
+                messages: [assistant],
+                messageCount: 1,
+                isTerminal: true,
+              });
+            });
+          }
+        });
+        queueMicrotask(() =>
+          child.write({
+            type: "ready",
+            protocolVersion: 1,
+            supportedProtocolVersions: [1, 2],
+            maxFrameBytes: 1_048_576,
+            maxReassembledFrameBytes: 67_108_864,
+          }),
+        );
+        return child.asChildProcess();
+      },
+      terminateProcessTree: () => Promise.resolve(true),
+      environment: TEST_RUNTIME_ENV,
+    });
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.subsession"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await openSession(
+      connection,
+      events,
+      "transport-task-open",
+      "transport-task-session",
+      {},
+      MODEL_PUBLIC_ID,
+      "medium",
+      false,
+    );
+
+    const turnId = turnIdFrom(
+      await startPrompt(
+        connection,
+        events,
+        "transport-task-prompt",
+        "delegate",
+        "transport-task-session",
+      ),
+    );
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).resolves.toEqual(expect.objectContaining({ state: "completed" }));
+    expect(
+      events.filter((event) => event.type === "session.opened" && event.parentSessionId),
+    ).toHaveLength(0);
+    await connection.close();
+  });
+
   test("restarts a terminal child id for follow-up work without losing history", async () => {
     const { connection, events, runtime } = await createHarness(
       new FakeOmpRuntime(),
