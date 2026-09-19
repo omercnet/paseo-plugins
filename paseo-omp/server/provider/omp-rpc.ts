@@ -164,6 +164,13 @@ const TASK_RESULT_STATUSES: Readonly<Record<string, true>> = {
   canceled: true,
   cancelled: true,
 };
+const TASK_PROGRESS_STATUSES: Readonly<Record<string, true>> = {
+  pending: true,
+  running: true,
+  completed: true,
+  failed: true,
+  aborted: true,
+};
 
 function boundedTaskId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && utf8Bytes(value) <= MAX_ID_LENGTH;
@@ -180,7 +187,7 @@ function taskCorrelationDetails(value: unknown): unknown {
     const result = value as Record<string, unknown>;
     if (!boundedTaskId(result.id)) return;
     const safe: Record<string, unknown> = { id: result.id };
-    if (typeof result.status === "string" && TASK_RESULT_STATUSES[result.status]) {
+    if (typeof result.status === "string" && Object.hasOwn(TASK_RESULT_STATUSES, result.status)) {
       safe.status = result.status;
     }
     if (typeof result.aborted === "boolean") safe.aborted = result.aborted;
@@ -211,7 +218,7 @@ function taskCorrelationDetails(value: unknown): unknown {
         item.index < 0 ||
         item.index >= MAX_TASK_CORRELATION_ITEMS ||
         typeof item.status !== "string" ||
-        !TASK_RESULT_STATUSES[item.status]
+        !Object.hasOwn(TASK_PROGRESS_STATUSES, item.status)
       ) {
         return;
       }
