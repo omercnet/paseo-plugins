@@ -1572,6 +1572,65 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("accepts bounded read metadata with more than 1,024 source entries", async () => {
+    const child = new FakeRpcChild();
+    const details = {
+      contentType: "text",
+      meta: { source: { value: Array.from({ length: 1_223 }, (_, index) => `line-${index}`) } },
+    };
+    const toolResult = {
+      role: "toolResult" as const,
+      toolCallId: "call-1",
+      toolName: "read",
+      content: [{ type: "text", text: "result" }],
+      details,
+    };
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type === "get_messages") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { messages: [toolResult] },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const toolStart = nextEvent((listener) => session.onEvent(listener));
+    child.write({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read", args: {} });
+    await expect(toolStart).resolves.toMatchObject({ type: "tool_execution_start" });
+
+    const toolEnd = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "tool_execution_end",
+      toolCallId: "call-1",
+      toolName: "read",
+      result: { content: toolResult.content, details },
+    });
+    await expect(toolEnd).resolves.toMatchObject({
+      type: "tool_execution_end",
+      result: { details },
+    });
+
+    const messageEnd = nextEvent((listener) => session.onEvent(listener));
+    child.write({ type: "message_end", message: toolResult });
+    await expect(messageEnd).resolves.toMatchObject({ type: "message_end", message: { details } });
+    await expect(session.getMessages()).resolves.toEqual([expect.objectContaining({ details })]);
+    await session.close();
+  });
+
   test("reads byte-heavy history through negotiated v2 chunking", async () => {
     const child = new FakeRpcChild();
     const text = "é".repeat(350_000);
