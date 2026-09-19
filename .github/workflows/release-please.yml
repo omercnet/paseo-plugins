@@ -72,6 +72,10 @@ jobs:
           current="$(node -p "require('./package.json').version")"
           version="${current%%-*}-next.${RUN_NUMBER}.${RUN_ATTEMPT}"
           npm pkg set "version=${version}"
+      - name: Synchronize paseo-omp next build version
+        if: ${{ matrix.directory == 'paseo-omp' }}
+        working-directory: ${{ matrix.directory }}
+        run: node scripts/sync-build-version.mjs
       - name: Preview npm package
         working-directory: ${{ matrix.directory }}
         run: npm pack --dry-run

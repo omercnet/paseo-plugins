@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,6 +9,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { build } from "esbuild";
 import { describe, expect, test } from "vitest";
+import { synchronizeBuildVersion } from "../scripts/sync-build-version.mjs";
 
 const pluginRoot = join(import.meta.dirname, "..");
 const nodeRequire = createRequire(join(pluginRoot, "index.server.ts"));
@@ -31,6 +32,7 @@ async function compileServerBundle(entryPath: string) {
       resolveDir: dirname(entryPath),
       sourcefile: entryPath,
     },
+    nodePaths: [join(pluginRoot, "node_modules")],
     bundle: true,
     format: "cjs",
     platform: "node",
@@ -47,6 +49,35 @@ async function compileServerBundle(entryPath: string) {
     write: false,
   });
   return { code: result.outputFiles[0]?.text ?? "", warnings: result.warnings };
+}
+
+async function supportReportFromBundle(entryPath: string): Promise<string> {
+  const { code, warnings } = await compileServerBundle(entryPath);
+  if (warnings.length > 0) throw new Error(warnings.map((warning) => warning.text).join("; "));
+  // biome-ignore lint/security/noGlobalEval: mirrors the daemon's plugin loader
+  const factory = globalThis.eval(
+    `(function(require) {\nconst module = { exports: {} };\nconst exports = module.exports;\n${code}\nreturn module.exports;\n})`,
+  ) as (require: (name: string) => unknown) => { default?: unknown };
+  const module = factory(runtimeRequire);
+  if (typeof module.default !== "function") throw new Error("Missing server contribution");
+  const handlers: Array<[{ name: string }, unknown]> = [];
+  const cleanup = module.default({
+    before: () => () => {},
+    handle: (contract: { name: string }, handler: unknown) => handlers.push([contract, handler]),
+    registerSettings: () => {},
+    registerProvider: () => {},
+  });
+  try {
+    const registration = handlers.find(
+      ([contract]) => contract.name === "paseo-omp.get-support-report",
+    ) as
+      | [{ name: string }, (input: { force?: boolean }) => Promise<{ report: string }>]
+      | undefined;
+    if (!registration) throw new Error("Missing support report handler");
+    return (await registration[1]({ force: true })).report;
+  } finally {
+    await Promise.resolve(cleanup());
+  }
 }
 
 describe("plugin server bundle", () => {
@@ -70,6 +101,32 @@ describe("plugin server bundle", () => {
     expect(releaseConfig.packages["paseo-omp"]?.["extra-files"]).toEqual([
       { type: "generic", path: "server/package-version.ts" },
     ]);
+  });
+
+  test("reports the workflow-mutated next version from a direct source bundle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-next-bundle-"));
+    const nextVersion = "0.3.0-next.123.2";
+    try {
+      await Promise.all([
+        cp(join(pluginRoot, "server"), join(root, "server"), { recursive: true }),
+        cp(join(pluginRoot, "shared"), join(root, "shared"), { recursive: true }),
+        cp(join(pluginRoot, "index.server.ts"), join(root, "index.server.ts")),
+      ]);
+      const packageManifest = JSON.parse(
+        await readFile(join(pluginRoot, "package.json"), "utf8"),
+      ) as Record<string, unknown>;
+      packageManifest.version = nextVersion;
+      await writeFile(join(root, "package.json"), `${JSON.stringify(packageManifest, null, 2)}\n`);
+      await synchronizeBuildVersion(root);
+
+      expect(await readFile(join(root, "server", "package-version.ts"), "utf8")).toContain(
+        `PASEO_OMP_PACKAGE_VERSION = "${nextVersion}"`,
+      );
+      const report = await supportReportFromBundle(join(root, "index.server.ts"));
+      expect(report).toContain(`paseo_omp.version: ${nextVersion}`);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
   });
 
   test("compiles source without preparation and reports the package version", async () => {
