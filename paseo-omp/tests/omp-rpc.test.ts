@@ -1887,6 +1887,7 @@ describe("OMP RPC transport", () => {
                   aborted: false,
                   ancillary: "discarded",
                 },
+                { id: "prototype-status", status: "toString" },
               ],
               progress: [{ id: "nested-child", index: 0, status: "completed", extra: true }],
               displayContent: {
@@ -1915,6 +1916,7 @@ describe("OMP RPC transport", () => {
                   error: "child failed",
                   aborted: false,
                 },
+                { id: "prototype-status" },
               ],
               progress: [{ id: "nested-child", index: 0, status: "completed" }],
             },
