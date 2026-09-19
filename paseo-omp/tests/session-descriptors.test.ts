@@ -40,6 +40,20 @@ async function writeSession(
   );
 }
 
+async function writeReplayTranscript(root: string, message: object): Promise<string> {
+  const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
+  await writeFile(
+    sessionFile,
+    `${[
+      { type: "session", version: 3, id: SESSION_ID, cwd: root },
+      { type: "message", id: "message-1", parentId: null, message },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`,
+  );
+  return sessionFile;
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -468,6 +482,193 @@ describe("OMP session descriptor discovery", () => {
         truncated: true,
       }),
     );
+  });
+
+  test("hydrates valid blobs without changing mixed text and image history", async () => {
+    const root = await temporaryRoot();
+    const blobDirectory = join(root, "blobs");
+    await mkdir(blobDirectory);
+    const imageBytes = Buffer.from("89504e470d0a1a0a", "hex");
+    const imageHash = createHash("sha256").update(imageBytes).digest("hex");
+    await writeFile(join(blobDirectory, imageHash), imageBytes);
+    const image = { type: "image", data: `blob:sha256:${imageHash}`, mimeType: "image/png" };
+    const sessionFile = await writeReplayTranscript(root, {
+      role: "assistant",
+      content: [{ type: "text", text: "before" }, image, { type: "text", text: "after" }],
+      images: [image],
+    });
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const transcript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd: root,
+    });
+
+    const hydrated = { ...image, data: imageBytes.toString("base64") };
+    expect(transcript.imageReplayWarning).toBeUndefined();
+    expect(transcript.messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        content: [{ type: "text", text: "before" }, hydrated, { type: "text", text: "after" }],
+        images: [hydrated],
+      }),
+    ]);
+  });
+
+  test("preserves mixed messages when a persisted image blob is missing", async () => {
+    const root = await temporaryRoot();
+    await mkdir(join(root, "blobs"));
+    const missingHash = "0".repeat(64);
+    const image = { type: "image", data: `blob:sha256:${missingHash}`, mimeType: "image/png" };
+    const sessionFile = await writeReplayTranscript(root, {
+      role: "assistant",
+      content: [{ type: "text", text: "before" }, image, { type: "text", text: "after" }],
+      images: [image],
+    });
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const transcript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd: root,
+    });
+
+    expect(transcript.imageReplayWarning).toBe(true);
+    expect(transcript.messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        content: [
+          { type: "text", text: "before" },
+          { type: "text", text: "[Image unavailable during session replay]" },
+          { type: "text", text: "after" },
+        ],
+        images: [],
+      }),
+    ]);
+  });
+
+  test("drops only corrupt blobs while preserving valid images in the same message", async () => {
+    const root = await temporaryRoot();
+    const blobDirectory = join(root, "blobs");
+    await mkdir(blobDirectory);
+    const validBytes = Buffer.from("89504e470d0a1a0a", "hex");
+    const validHash = createHash("sha256").update(validBytes).digest("hex");
+    await writeFile(join(blobDirectory, validHash), validBytes);
+    const corruptHash = createHash("sha256").update("expected image").digest("hex");
+    await writeFile(join(blobDirectory, corruptHash), Buffer.from("replaced image"));
+    const corrupt = {
+      type: "image",
+      data: `blob:sha256:${corruptHash}`,
+      mimeType: "image/png",
+    };
+    const valid = { type: "image", data: `blob:sha256:${validHash}`, mimeType: "image/png" };
+    const sessionFile = await writeReplayTranscript(root, {
+      role: "assistant",
+      content: [{ type: "text", text: "before" }, corrupt, valid],
+      images: [corrupt, valid],
+    });
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const transcript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd: root,
+    });
+
+    const hydratedValid = { ...valid, data: validBytes.toString("base64") };
+    expect(transcript.imageReplayWarning).toBe(true);
+    expect(transcript.messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        content: [
+          { type: "text", text: "before" },
+          { type: "text", text: "[Image unavailable during session replay]" },
+          hydratedValid,
+        ],
+        images: [hydratedValid],
+      }),
+    ]);
+  });
+
+  test("charges corrupt blobs before aggregate replay budget checks", async () => {
+    const root = await temporaryRoot();
+    const blobDirectory = join(root, "blobs");
+    await mkdir(blobDirectory);
+    const corruptImages = await Promise.all(
+      Array.from({ length: 3 }, async (_, index) => {
+        const hash = createHash("sha256").update(`expected-${index}`).digest("hex");
+        await writeFile(join(blobDirectory, hash), Buffer.alloc(5 * 1024 * 1024, index + 1));
+        return { type: "image", data: `blob:sha256:${hash}`, mimeType: "image/png" };
+      }),
+    );
+    const validBytes = Buffer.alloc(2 * 1024 * 1024);
+    Buffer.from("89504e470d0a1a0a", "hex").copy(validBytes);
+    const validHash = createHash("sha256").update(validBytes).digest("hex");
+    await writeFile(join(blobDirectory, validHash), validBytes);
+    const sessionFile = await writeReplayTranscript(root, {
+      role: "assistant",
+      content: [
+        ...corruptImages,
+        { type: "image", data: `blob:sha256:${validHash}`, mimeType: "image/png" },
+      ],
+    });
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const transcript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd: root,
+    });
+
+    expect(transcript.imageReplayWarning).toBe(true);
+    expect(transcript.messages).toEqual([
+      expect.objectContaining({
+        content: Array.from({ length: 4 }, () => ({
+          type: "text",
+          text: "[Image unavailable during session replay]",
+        })),
+      }),
+    ]);
+  });
+
+  test("degrades invalid-MIME and oversized blobs independently", async () => {
+    const root = await temporaryRoot();
+    const blobDirectory = join(root, "blobs");
+    await mkdir(blobDirectory);
+    const pngBytes = Buffer.from("89504e470d0a1a0a", "hex");
+    const pngHash = createHash("sha256").update(pngBytes).digest("hex");
+    await writeFile(join(blobDirectory, pngHash), pngBytes);
+    const oversizedBytes = Buffer.alloc(6 * 1024 * 1024 + 1);
+    pngBytes.copy(oversizedBytes);
+    const oversizedHash = createHash("sha256").update(oversizedBytes).digest("hex");
+    await writeFile(join(blobDirectory, oversizedHash), oversizedBytes);
+    const sessionFile = await writeReplayTranscript(root, {
+      role: "assistant",
+      content: [
+        { type: "text", text: "kept" },
+        { type: "image", data: `blob:sha256:${pngHash}`, mimeType: "image/jpeg" },
+        { type: "image", data: `blob:sha256:${oversizedHash}`, mimeType: "image/png" },
+      ],
+    });
+
+    const runtime = new OmpRpcRuntime({ environment: { PASEO_OMP_AGENT_DIR: root } });
+    const transcript = await runtime.readPersistedSessionTranscript({
+      sessionFile,
+      sessionId: SESSION_ID,
+      cwd: root,
+    });
+
+    expect(transcript.imageReplayWarning).toBe(true);
+    expect(transcript.messages).toEqual([
+      expect.objectContaining({
+        content: [
+          { type: "text", text: "kept" },
+          { type: "text", text: "[Image unavailable during session replay]" },
+          { type: "text", text: "[Image unavailable during session replay]" },
+        ],
+      }),
+    ]);
   });
 
   test("reads only canonically owned child transcripts", async () => {

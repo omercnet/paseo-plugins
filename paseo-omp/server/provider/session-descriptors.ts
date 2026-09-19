@@ -4,6 +4,7 @@ import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promise
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { ompSessionDir } from "../paths";
+import { isValidImagePayload } from "./image";
 
 const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
 const MAX_DESCRIPTOR_SUFFIX_BYTES = 64 * 1024;
@@ -48,6 +49,7 @@ export interface OmpPersistedSessionTranscript {
   nativeSessionId: string;
   byteLength: number;
   messages: unknown[];
+  imageReplayWarning?: true;
 }
 export interface OmpSessionListOptions {
   cwd?: string;
@@ -64,6 +66,11 @@ interface ScanBudget {
   bytes: number;
   entries: number;
   exhausted: boolean;
+}
+
+interface BlobReplayBudget {
+  bytes: number;
+  imageReplayWarning?: true;
 }
 
 export function validateNativeSessionId(value: unknown): string {
@@ -156,6 +163,7 @@ async function yieldToEventLoop(): Promise<void> {
   setImmediate(result.resolve);
   await result.promise;
 }
+const UNAVAILABLE_IMAGE_MARKER = "[Image unavailable during session replay]";
 async function readStableFile(
   handle: FileHandle,
   byteLength: number,
@@ -232,11 +240,13 @@ async function hydrateBlobImageData(
 async function hydrateImageParts(
   value: unknown,
   blobDirectory: string,
-  budget: { bytes: number },
+  budget: BlobReplayBudget,
+  failureMode: "marker" | "omit",
   signal?: AbortSignal,
 ): Promise<unknown> {
   if (!Array.isArray(value)) return value;
   let hydrated: unknown[] | undefined;
+  let omitted: boolean[] | undefined;
   for (let index = 0; index < value.length; index += 1) {
     const part = value[index];
     if (
@@ -251,30 +261,53 @@ async function hydrateImageParts(
     ) {
       continue;
     }
-    const data = await hydrateBlobImageData(part.data, blobDirectory, budget, signal);
-    hydrated ??= [...value];
-    hydrated[index] = { ...part, data };
+    try {
+      const data = await hydrateBlobImageData(part.data, blobDirectory, budget, signal);
+      const mimeType = "mimeType" in part ? part.mimeType : undefined;
+      if (typeof mimeType !== "string" || !isValidImagePayload(data, mimeType, data.length)) {
+        throw new Error("OMP transcript image blob failed MIME validation");
+      }
+      hydrated ??= [...value];
+      hydrated[index] = { ...part, data };
+    } catch {
+      signal?.throwIfAborted();
+      budget.imageReplayWarning = true;
+      hydrated ??= [...value];
+      if (failureMode === "marker") {
+        hydrated[index] = { type: "text", text: UNAVAILABLE_IMAGE_MARKER };
+      } else {
+        omitted ??= [];
+        omitted[index] = true;
+      }
+    }
   }
-  return hydrated ?? value;
+  if (!hydrated) return value;
+  return omitted ? hydrated.filter((_, index) => !omitted[index]) : hydrated;
 }
 
 async function hydratePersistedMessageImages(
   message: unknown,
   blobDirectory: string | undefined,
-  budget: { bytes: number },
+  budget: BlobReplayBudget,
   signal?: AbortSignal,
 ): Promise<unknown> {
   if (!blobDirectory || !message || typeof message !== "object" || Array.isArray(message)) {
     return message;
   }
   const record = message as Record<string, unknown>;
-  let content = await hydrateImageParts(record.content, blobDirectory, budget, signal);
+  let content = await hydrateImageParts(record.content, blobDirectory, budget, "marker", signal);
   if (content && typeof content === "object" && !Array.isArray(content)) {
     const contentRecord = content as Record<string, unknown>;
-    const nested = await hydrateImageParts(contentRecord.content, blobDirectory, budget, signal);
+    const nested = await hydrateImageParts(
+      contentRecord.content,
+      blobDirectory,
+      budget,
+      "marker",
+      signal,
+    );
     if (nested !== contentRecord.content) content = { ...contentRecord, content: nested };
   }
-  const images = await hydrateImageParts(record.images, blobDirectory, budget, signal);
+  const images = await hydrateImageParts(record.images, blobDirectory, budget, "omit", signal);
   if (content === record.content && images === record.images) return message;
   return { ...record, content, images };
 }
@@ -620,7 +653,7 @@ export async function readOmpPersistedSessionTranscript(
       throw new Error("OMP session transcript exceeds message limits");
     }
     const hydratedMessages: unknown[] = [];
-    const blobBudget = { bytes: 0 };
+    const blobBudget: BlobReplayBudget = { bytes: 0 };
     for (const message of messages) {
       signal?.throwIfAborted();
       hydratedMessages.push(
@@ -632,6 +665,7 @@ export async function readOmpPersistedSessionTranscript(
       nativeSessionId,
       byteLength: bytes.byteLength,
       messages: hydratedMessages,
+      ...(blobBudget.imageReplayWarning ? { imageReplayWarning: true as const } : {}),
     };
   } catch (error) {
     if (error instanceof Error) throw error;

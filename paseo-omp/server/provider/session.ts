@@ -1592,6 +1592,18 @@ export class OmpProviderSession {
             replay.signal,
           );
           messages = transcript.messages;
+          if (transcript.imageReplayWarning) {
+            this.emit({
+              type: "timeline.item",
+              sessionId: this.id,
+              item: {
+                id: "omp:replay-image-unavailable",
+                type: "notification",
+                level: "warning",
+                message: "OMP skipped one or more unavailable images while replaying this session.",
+              },
+            });
+          }
         } catch (error) {
           if (replay.signal.aborted) throw error;
           this.emit({
