@@ -47,6 +47,7 @@ import {
   OmpPublicDataSerializer,
   truncateUtf8,
 } from "../server/provider/security";
+import { OmpSubsessionProjector } from "../server/provider/subsessions";
 import {
   OmpTimelineProjector,
   type OmpTimelineScheduler,
@@ -17610,6 +17611,70 @@ describe("OMP direct provider", () => {
     ).toBe(false);
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
     await connection.close();
+  });
+
+  test("does not restart existing children after global omission saturation", async () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpSubsessionProjector(
+      "saturated-root",
+      "saturated-root-identity",
+      "/sessions/root.jsonl",
+      "/repo",
+      (event) => events.push(event),
+      new ManualScheduler(),
+      () => undefined,
+      [],
+    );
+    projector.handle({
+      type: "subagent_lifecycle",
+      payload: { id: "existing-child", agent: "existing", status: "started", index: 0 },
+    });
+    const session = new FakeOmpSession();
+    session.subagents = [
+      {
+        id: "existing-child",
+        index: 0,
+        agent: "existing",
+        status: "started",
+        lastUpdate: 1,
+      },
+    ];
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    session.subagentsGate = gate.promise;
+    session.subagentsObserved = observed.resolve;
+    const replay = projector.replay(
+      [],
+      session,
+      new FakeOmpRuntime(),
+      new AbortController().signal,
+    );
+    await observed.promise;
+    for (let index = 0; index < 1_023; index += 1) {
+      projector.handle({
+        type: "subagent_lifecycle",
+        payload: { id: `buffered-child-${index}`, agent: "buffered", status: "started", index },
+      });
+    }
+    for (let index = 0; index < 1_025; index += 1) {
+      projector.handle({
+        type: "subagent_lifecycle",
+        payload: { id: `omitted-overflow-${index}`, agent: "omitted", status: "completed", index },
+      });
+    }
+    gate.resolve();
+    await replay;
+
+    const child = events.find(
+      (event) => event.type === "session.opened" && event.title === "existing",
+    );
+    if (child?.type !== "session.opened") throw new Error("Missing existing child session");
+    const turns = events.flatMap((event) =>
+      event.type === "session.turn" && event.sessionId === child.sessionId ? [event] : [],
+    );
+    expect(turns.map((event) => event.state)).toEqual(["started", "failed"]);
+    expect(projector.hasActiveChildren()).toBe(false);
+    projector.close();
   });
 
   test("continues root recovery when one persisted child transcript is unavailable", async () => {

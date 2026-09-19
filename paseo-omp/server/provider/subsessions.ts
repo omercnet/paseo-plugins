@@ -593,6 +593,7 @@ export class OmpSubsessionProjector {
       this.omittedBufferedChildren = null;
       this.bufferedEvents.length = 0;
       this.bufferedBytes = 0;
+      for (const child of this.children.values()) child.replayUnavailable = true;
       this.terminalize("failed");
       return;
     }
