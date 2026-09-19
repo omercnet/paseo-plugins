@@ -56,6 +56,9 @@ const MAX_PENDING_ONE_WAY_WRITES = 256;
 const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const MAX_LINE_PARTS = 4_096;
 const MAX_ARRAY_ITEMS = 512;
+// OMP tool metadata can contain one source entry per displayed line. Keep this above the
+// generic collection limit while retaining the frame byte and aggregate node bounds.
+const MAX_NATIVE_MESSAGE_COLLECTION_ITEMS = 4_096;
 // Tool-intensive OMP turns legitimately exceed 64 blocks; transport byte/node budgets remain the
 // primary resource bounds.
 export const OMP_MAX_CONTENT_PARTS = 4_096;
@@ -167,7 +170,9 @@ const OmpMessageIdentityShape = {
   timestamp: z.number().finite().optional(),
   details: z
     .unknown()
-    .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096))
+    .refine((value) =>
+      isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, MAX_NATIVE_MESSAGE_COLLECTION_ITEMS, 4_096),
+    )
     .optional(),
 };
 type OmpContentPart = z.infer<typeof OmpContentPartSchema>;
@@ -234,7 +239,9 @@ const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
     toolName: NAME,
     content: z
       .unknown()
-      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192)),
+      .refine((value) =>
+        isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, MAX_NATIVE_MESSAGE_COLLECTION_ITEMS, 8_192),
+      ),
     isError: z.boolean().optional(),
     ...OmpMessageIdentityShape,
   }),
@@ -252,7 +259,9 @@ const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
     customType: NAME.optional(),
     content: z
       .unknown()
-      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192))
+      .refine((value) =>
+        isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, MAX_NATIVE_MESSAGE_COLLECTION_ITEMS, 8_192),
+      )
       .optional(),
     display: z.boolean().optional(),
     ...OmpMessageIdentityShape,
@@ -408,7 +417,9 @@ const OmpChunkFrameSchema = z.object({
 const JsonObjectSchema = z.record(z.string(), z.unknown());
 const BoundedToolPayloadSchema = z
   .unknown()
-  .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 4_096));
+  .refine((value) =>
+    isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, MAX_NATIVE_MESSAGE_COLLECTION_ITEMS, 4_096),
+  );
 const OmpHostToolDefinitionSchema = z.object({
   name: NAME,
   label: NAME.optional(),
@@ -1991,8 +2002,13 @@ class OmpRpcProcess {
     if (this.receiveKnownResponse(decoded)) return;
     if (this.receiveDegradedAgentEnd(decoded, true)) return;
     if (
-      boundedJsonBytes(decoded, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
-      Number.POSITIVE_INFINITY
+      boundedJsonBytes(
+        decoded,
+        MAX_SEMANTIC_FRAME_BYTES,
+        MAX_NATIVE_MESSAGE_COLLECTION_ITEMS,
+        MAX_IMAGE_DATA_LENGTH,
+        4_096,
+      ) === Number.POSITIVE_INFINITY
     ) {
       this.recordProtocolViolation();
       return;
@@ -2078,7 +2094,7 @@ class OmpRpcProcess {
       boundedJsonBytes(
         decodedFrame,
         MAX_SEMANTIC_FRAME_BYTES,
-        1_024,
+        MAX_NATIVE_MESSAGE_COLLECTION_ITEMS,
         MAX_IMAGE_DATA_LENGTH,
         4_096,
       ) === Number.POSITIVE_INFINITY
@@ -2226,14 +2242,19 @@ class OmpRpcProcess {
         boundedJsonBytes(
           frame.messages,
           MAX_SEMANTIC_FRAME_BYTES,
-          MAX_ARRAY_ITEMS,
+          MAX_NATIVE_MESSAGE_COLLECTION_ITEMS,
           MAX_TEXT_LENGTH,
           4_096,
         ) !== Number.POSITIVE_INFINITY);
     const payloadIsSafe =
       messagesAreSafe &&
-      boundedJsonBytes(frame, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) !==
-        Number.POSITIVE_INFINITY;
+      boundedJsonBytes(
+        frame,
+        MAX_SEMANTIC_FRAME_BYTES,
+        MAX_NATIVE_MESSAGE_COLLECTION_ITEMS,
+        MAX_IMAGE_DATA_LENGTH,
+        4_096,
+      ) !== Number.POSITIVE_INFINITY;
     if (onlyUnsafePayload && payloadIsSafe) return false;
     if (envelope.data.isTerminal === false) {
       this.fail(new Error("OMP emitted an invalid nonterminal agent_end payload"));
@@ -2262,8 +2283,13 @@ class OmpRpcProcess {
     }
     if (this.receiveDegradedAgentEnd(frame, true)) return;
     if (
-      boundedJsonBytes(frame, MAX_SEMANTIC_FRAME_BYTES, 1_024, MAX_IMAGE_DATA_LENGTH, 4_096) ===
-      Number.POSITIVE_INFINITY
+      boundedJsonBytes(
+        frame,
+        MAX_SEMANTIC_FRAME_BYTES,
+        MAX_NATIVE_MESSAGE_COLLECTION_ITEMS,
+        MAX_IMAGE_DATA_LENGTH,
+        4_096,
+      ) === Number.POSITIVE_INFINITY
     ) {
       this.recordProtocolViolation();
       return;
