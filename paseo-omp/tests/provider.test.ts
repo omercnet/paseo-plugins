@@ -2909,6 +2909,68 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("does not restore unadvertised thinking after rewind", async () => {
+    const history = [
+      { role: "user" as const, entryId: "rewind-user", content: "before" },
+      { role: "assistant" as const, entryId: "rewind-assistant", content: "reply" },
+    ];
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = history;
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.revert.conversation",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "unsupported-thinking-rewind-open",
+      sessionId: "unsupported-thinking-rewind-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.ready" && event.requestId === "unsupported-thinking-rewind-open",
+    );
+    const target = events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "user_message",
+    );
+    if (target?.type !== "timeline.item" || target.item.type !== "user_message") {
+      throw new Error("Missing rewind target");
+    }
+    const session = sessionAt(runtime);
+    session.thinkingLevel = "max";
+    session.branchMessages = [{ entryId: "rewind-user", text: "before" }];
+    session.branchHistoryAfter = history;
+    session.branchThinkingAfter = "high";
+
+    await connection.send({
+      type: "session.revert",
+      requestId: "unsupported-thinking-rewind",
+      sessionId: "unsupported-thinking-rewind-session",
+      token: target.item.revertToken ?? null,
+      scope: "conversation",
+    });
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "request.completed" && event.requestId === "unsupported-thinking-rewind",
+      ),
+    ).resolves.toEqual({ type: "request.completed", requestId: "unsupported-thinking-rewind" });
+    expect(session.thinkingChanges).not.toContain("max");
+    expect(session.thinkingLevel).toBe("high");
+    await connection.close();
+  });
+
   test("rewinds a retained target beyond the branch snapshot limit", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
