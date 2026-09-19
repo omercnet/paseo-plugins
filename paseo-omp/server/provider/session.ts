@@ -1120,7 +1120,9 @@ export class OmpProviderSession {
         throw new OmpPublicError("OMP resumed a different native session");
       }
       if (!resumeSessionId && input.config.model) {
-        const selected = nativeModels.find((model) => ompModelId(model) === input.config.model);
+        const selected = selectOmpModels(nativeModels, state.model).find(
+          (model) => ompModelId(model) === input.config.model,
+        );
         if (!selected) {
           throw new OmpPublicError("OMP model is not advertised by the configured session runtime");
         }

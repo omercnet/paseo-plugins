@@ -1967,6 +1967,48 @@ describe("OMP direct provider", () => {
     await session.close();
   });
 
+  test("rejects model 257 during initial session open", async () => {
+    const hiddenModel: OmpModel = { provider: "future-provider", id: "hidden-model" };
+    const runtime = new FakeOmpRuntime();
+    runtime.availableModels = [
+      MODEL,
+      ...Array.from(
+        { length: 255 },
+        (_, index): OmpModel => ({ provider: "provider", id: `model-${index}` }),
+      ),
+      hiddenModel,
+    ];
+    const { connection, events } = await createHarness(runtime);
+
+    await connection.send({
+      type: "session.open",
+      requestId: "hidden-model-open",
+      sessionId: "hidden-model-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        model: ompModelId(hiddenModel),
+        mode: "full",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "hidden-model-open",
+    );
+
+    expect(failure).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP model is not advertised by the configured session runtime" },
+      }),
+    );
+    expect(sessionAt(runtime).modelChanges).toEqual([]);
+    expect(events.some((event) => event.type === "session.ready")).toBe(false);
+    await connection.close();
+  });
+
   test("rebuilds a bounded public catalog when fallback selects model 257", async () => {
     const runtime = new FakeOmpRuntime();
     const fallbackModel: OmpModel = {
