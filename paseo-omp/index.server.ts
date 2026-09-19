@@ -14,7 +14,9 @@ import {
   resolveMutateOmpPluginConfig,
 } from "./server/omp-plugins";
 import { resolveListOmpSettings, resolveUpdateOmpSettings } from "./server/omp-settings";
+import { OmpOperationalFailureCollector } from "./server/operational-failure-diagnostics";
 import { withOmpStore } from "./server/paths";
+import { OmpProtocolViolationCollector } from "./server/protocol-violation-diagnostics";
 import { withOmpWorkspaceIdentity } from "./server/provider/host-tools";
 import {
   createProfileOmpProvider,
@@ -25,6 +27,7 @@ import { createOmpProvider } from "./server/provider/registration";
 import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
 import { resolveListOmpQuotas } from "./server/quota";
 import { resolveListOmpSessions } from "./server/sessions";
+import { resolveGetOmpSupportReport } from "./server/support-diagnostics";
 import { composerPillSettings } from "./shared/composer-pill-settings";
 import { listHubProcesses, tailHubLog } from "./shared/hub";
 import { openOmpMcpAuthorizationInPaseoBrowser } from "./shared/mcp";
@@ -42,6 +45,7 @@ import { listOmpStores, type OmpStore } from "./shared/omp-store";
 import { getOmpProviderHealth } from "./shared/provider-diagnostics";
 import { listOmpQuotas } from "./shared/quota";
 import { listOmpSessions } from "./shared/sessions";
+import { getOmpSupportReport } from "./shared/support-diagnostics";
 
 function scoped<T extends { store?: OmpStore }, R>(handler: (input: T) => R) {
   return (input: T): R => withOmpStore(input.store, () => handler(input));
@@ -50,10 +54,18 @@ function scoped<T extends { store?: OmpStore }, R>(handler: (input: T) => R) {
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(composerPillSettings);
   const browserAuthorizationRegistry = new OmpBrowserAuthorizationRegistry();
+  const protocolViolations = new OmpProtocolViolationCollector();
+  const operationalFailures = new OmpOperationalFailureCollector();
   const profiles = discoverOmpProfilesSync();
   server.handle(listOmpStores, async () => ({ profiles: await discoverOmpProfiles() }));
   for (const profile of profiles) {
-    server.registerProvider(createProfileOmpProvider(profile, { browserAuthorizationRegistry }));
+    server.registerProvider(
+      createProfileOmpProvider(profile, {
+        browserAuthorizationRegistry,
+        reportProtocolViolation: protocolViolations.report,
+        reportOperationalFailure: operationalFailures.report,
+      }),
+    );
   }
   server.handle(listHubProcesses, resolveListHubProcesses);
   server.handle(tailHubLog, resolveTailHubLog);
@@ -69,6 +81,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpSettings, scoped(resolveListOmpSettings));
   server.handle(updateOmpSettings, scoped(resolveUpdateOmpSettings));
   server.handle(getOmpProviderHealth, scoped(resolveGetOmpProviderHealth));
+  server.handle(
+    getOmpSupportReport,
+    scoped((input) => resolveGetOmpSupportReport(input, protocolViolations, operationalFailures)),
+  );
   server.handle(openOmpMcpAuthorizationInPaseoBrowser, (input) =>
     resolveOpenOmpMcpAuthorizationInPaseoBrowser(input, browserAuthorizationRegistry),
   );
@@ -76,7 +92,13 @@ export default function contribute(server: PluginServerContext) {
     if (request.provider !== "omp-plugin" && !request.provider.startsWith("omp-plugin-")) return;
     return withOmpWorkspaceIdentity(request);
   });
-  server.registerProvider(createOmpProvider({ browserAuthorizationRegistry }));
+  server.registerProvider(
+    createOmpProvider({
+      browserAuthorizationRegistry,
+      reportProtocolViolation: protocolViolations.report,
+      reportOperationalFailure: operationalFailures.report,
+    }),
+  );
   return () => {
     browserAuthorizationRegistry.clear();
     removeIdentityHook();

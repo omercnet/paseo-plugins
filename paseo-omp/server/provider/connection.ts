@@ -9,6 +9,10 @@ import {
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import type { OmpBrowserAuthorizationRegistry } from "../mcp-browser";
+import type {
+  OmpOperationalFailure,
+  OmpOperationalFailureReporter,
+} from "../operational-failure-diagnostics";
 import { discoverOmpCatalog } from "./catalog";
 import { normalizeOmpCatalogOptions } from "./config-normalization";
 import type { OmpMcpConnector } from "./host-tools";
@@ -683,6 +687,7 @@ export function createOmpConnection(
   browserAuthorizationRegistry?: OmpBrowserAuthorizationRegistry,
   reportDiagnostic: (diagnostic: OmpConnectionDiagnostic) => void = (diagnostic) =>
     console.error("OMP provider failure", diagnostic),
+  reportOperationalFailure: OmpOperationalFailureReporter = () => {},
 ): ProviderConnection {
   const errorDetails = (error: unknown, fallback: string): { message: string } => {
     if (isOmpPublicError(error)) return { message: error.message };
@@ -695,6 +700,13 @@ export function createOmpConnection(
       // A diagnostic sink must never prevent the request from settling or its cleanup.
     }
     return { message: `${fallback} (diagnostic ${diagnosticId})` };
+  };
+  const recordOperationalFailure = (failure: OmpOperationalFailure) => {
+    try {
+      reportOperationalFailure(failure);
+    } catch {
+      // Diagnostics must never affect provider requests or cleanup.
+    }
   };
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) =>
@@ -802,6 +814,9 @@ export function createOmpConnection(
                 },
           });
         } catch (error) {
+          if (!closing) {
+            recordOperationalFailure({ category: "session-open", stage: "catalog" });
+          }
           if (isOmpCleanupFailure(error)) catalogCleanup = error.cleanup;
           if (!closing) requestFailure(input.requestId, error, "OMP catalog discovery failed");
         }
@@ -925,6 +940,7 @@ export function createOmpConnection(
             environment,
             mcpConnector,
             mcpInitializationTimeoutMs,
+            reportOperationalFailure,
           );
           const discoveredNativeSessionId = session.persistenceSessionId;
           if (discoveredNativeSessionId) nativeSessionId = discoveredNativeSessionId;
@@ -977,6 +993,15 @@ export function createOmpConnection(
             nativeReservations.release(nativeSessionId, token);
           }
         } catch (error) {
+          const openingCancelled =
+            closing || controller.signal.aborted || opening.get(input.sessionId)?.token !== token;
+          if (!openingCancelled) {
+            recordOperationalFailure(
+              input.history === "replay" || nativeSessionId
+                ? { category: "replay-recovery", stage: "persisted-replay" }
+                : { category: "session-open", stage: "startup" },
+            );
+          }
           deleteSession(input.sessionId, token);
           let cleanupError: unknown;
           if (session) {

@@ -4,7 +4,7 @@
 
 `@omercnet` maintains the `paseo-omp` package, its release artifacts, and the translation between Paseo's provider protocol and OMP's `rpc-ui` protocol. Support is best effort; no response-time or compatibility SLA is promised.
 
-Report plugin packaging, installation, provider behavior, and compatibility failures in the [paseo-plugins issue tracker](https://github.com/omercnet/paseo-plugins/issues). Use the [OMP RPC compatibility template](https://github.com/omercnet/paseo-plugins/issues/new?template=omp-rpc-compatibility.yml) for native protocol changes.
+Report general plugin packaging, installation, UI, provider, replay, tool, terminal, and compatibility failures with the [paseo-omp bug template](https://github.com/omercnet/paseo-plugins/issues/new?template=omp-plugin.yml). Open **OMP → Help**, refresh the bounded diagnostic report, review it, and paste it into the issue. Use the narrower [OMP RPC compatibility template](https://github.com/omercnet/paseo-plugins/issues/new?template=omp-rpc-compatibility.yml) for confirmed native protocol changes.
 
 After the failure is isolated:
 
@@ -16,7 +16,7 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 
 ## Supported versions
 
-- Paseo: `>=0.8.0 <0.10.0` on both the daemon and every app loading the client entry. The pinned SDK and controlled canary use `0.9.0-beta.1`, the first release that preserves nested provider-subagent ancestry and spawning-tool links. Paseo 0.8.x remains supported for other provider operations.
+- Paseo: `>=0.9.0-beta.1 <0.10.0` on both the daemon and every app loading the client entry. The 0.9 floor provides the supported plugin copy and external-link APIs as well as nested provider-subagent ancestry and spawning-tool links.
 - OMP: `18.1.15` is the oldest supported release. The required full Docker canary passes with 18.1.15 and 18.2.0; the hard runtime contract remains `rpc-ui` protocol v2, not the version string alone.
 - Plugin release channel: alpha. Backward compatibility is best effort until stable `0.1.0`; every known migration requirement must be stated in the release notes.
 - Typed approvals: optional. When both peers negotiate `typedToolApprovals: 1`, the plugin uses typed tool permissions. Otherwise it retains the bounded generic extension-question flow.
@@ -32,8 +32,7 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 - `qwen2.5:0.5b` is provided only for free exploratory inference. It may ignore exact-output instructions and is not a deterministic protocol or tool-use oracle; use `canary-mock/Deterministic Canary` for assertions.
 - The deterministic mock does not implement OMP's compaction-summary contract, so `/compact` reports `OMP compaction failed` in the canary; compaction remains covered by protocol fixtures.
 - `/handoff` reports `OMP command failed` in the controlled canary even with deterministic role models configured; treat handoff as unavailable there until its native prerequisite is isolated.
-- On official Paseo 0.8.0, requesting a live approval-mode change that the plugin rejects can trigger the daemon's unhandled-rejection restart path. Create a new `full`, `write`, or `ask` session instead of changing mode in place.
-- Paseo 0.8 clients do not expose the platform-owned plugin URL opener and transform timeline items after Overview grouping. Use a 0.9.0-beta.1 app for external documentation/device-authorization actions and for reliable image-card transformation of every source tool call.
+- Paseo 0.9.0-beta.1 or newer is required for platform-owned plugin URL opening and reliable image-card transformation before Overview grouping.
 - Native Fast mode and a first-class plan mode are not exposed. `/handoff` is implemented but is not reproducible in the controlled canary without its native OMP workflow prerequisites.
 - Terminal-started OMP sessions are discoverable and importable but are not registered automatically through a terminal hook.
 - Paseo clients do not own OMP sessions. Mobile or desktop disconnects remain subject to Paseo's reconnect grace while the daemon-owned provider and OMP child continue independently; reconnecting can reveal an existing turn but does not transfer or sever runtime ownership.

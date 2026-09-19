@@ -1,5 +1,6 @@
 import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test } from "vitest";
+import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import {
   type OmpHostToolScheduler,
   OmpHostToolsBridge,
@@ -681,6 +682,7 @@ describe("OMP host tool bridge", () => {
   });
 
   test("caps admitted calls and bytes, releases canceled slots, and ignores stale settlement", async () => {
+    const failures: OmpOperationalFailure[] = [];
     const connection = new FakeConnection(
       [{ name: "read", inputSchema: { type: "object" } }],
       { content: [] },
@@ -694,7 +696,10 @@ describe("OMP host tool bridge", () => {
     );
     const bridge = await OmpHostToolsBridge.open(
       sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
-      { connectMcp: async () => connection },
+      {
+        connectMcp: async () => connection,
+        reportOperationalFailure: (failure) => failures.push(failure),
+      },
     );
     const runtime = new FakeRuntime();
     await bridge.bind(runtime as unknown as OmpRuntimeSession);
@@ -746,10 +751,15 @@ describe("OMP host tool bridge", () => {
     expect(runtime.results.at(-1)).toEqual(
       expect.objectContaining({ id: "oversized", isError: true }),
     );
+    expect(failures).toEqual([
+      { category: "tool-projector", stage: "host-tool-capacity" },
+      { category: "tool-projector", stage: "host-tool-capacity" },
+    ]);
     await bridge.close();
   });
 
   test("expires MCP calls on an absolute deadline despite progress", async () => {
+    const failures: OmpOperationalFailure[] = [];
     let configuredLifetime = 0;
     const progressCallbacks: Array<(value: unknown) => void> = [];
     const connection = new FakeConnection(
@@ -768,7 +778,12 @@ describe("OMP host tool bridge", () => {
     const scheduler = new ManualCallScheduler();
     const bridge = await OmpHostToolsBridge.open(
       sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
-      { connectMcp: async () => connection, callTimeoutMs: 10, callScheduler: scheduler },
+      {
+        connectMcp: async () => connection,
+        callTimeoutMs: 10,
+        callScheduler: scheduler,
+        reportOperationalFailure: (failure) => failures.push(failure),
+      },
     );
     const runtime = new FakeRuntime();
     await bridge.bind(runtime as unknown as OmpRuntimeSession);
@@ -797,6 +812,7 @@ describe("OMP host tool bridge", () => {
         }),
       }),
     ]);
+    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool-timeout" }]);
     bridge.handle({
       type: "host_tool_call",
       id: "after-timeout",
@@ -828,6 +844,7 @@ describe("OMP host tool bridge", () => {
   });
 
   test("degrades malformed MCP content without invalidating runtime", async () => {
+    const failures: OmpOperationalFailure[] = [];
     for (const malformed of [
       { content: [{ type: "text", text: 42 }] },
       { content: "not-an-array" },
@@ -839,7 +856,10 @@ describe("OMP host tool bridge", () => {
       );
       const bridge = await OmpHostToolsBridge.open(
         sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
-        { connectMcp: async () => connection },
+        {
+          connectMcp: async () => connection,
+          reportOperationalFailure: (failure) => failures.push(failure),
+        },
       );
       const runtime = new FakeRuntime();
       runtime.maxHostToolFrameBytes = 12 * 1024 * 1024;
@@ -869,7 +889,48 @@ describe("OMP host tool bridge", () => {
       expect(fatalErrors).toBe(0);
       await bridge.close();
     }
+    expect(failures).toEqual(
+      Array.from({ length: 3 }, () => ({
+        category: "tool-projector" as const,
+        stage: "host-tool-normalization" as const,
+      })),
+    );
   });
+
+  test("reports rejected MCP calls once after returning a nonfatal error result", async () => {
+    const failures: OmpOperationalFailure[] = [];
+    const connection = new FakeConnection(
+      [{ name: "read", inputSchema: { type: "object" } }],
+      { content: [] },
+      async () => {
+        throw new Error("upstream failed");
+      },
+    );
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
+      {
+        connectMcp: async () => connection,
+        reportOperationalFailure: (failure) => failures.push(failure),
+      },
+    );
+    const runtime = new FakeRuntime();
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+    bridge.handle({
+      type: "host_tool_call",
+      id: "rejected-call",
+      toolCallId: "tool-rejected-call",
+      toolName: "mcp__repo_read",
+      arguments: {},
+    });
+    await flushMicrotasks();
+
+    expect(runtime.results).toEqual([
+      expect.objectContaining({ id: "rejected-call", isError: true }),
+    ]);
+    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool-call" }]);
+    await bridge.close();
+  });
+
   test("follows bounded tool pages and rejects repeated cursors", async () => {
     const cursors: Array<string | undefined> = [];
     const connection: OmpMcpConnection = {
@@ -1007,12 +1068,16 @@ describe("OMP host tool bridge", () => {
   });
 
   test("invalidates and drains when terminal result delivery saturates the RPC writer", async () => {
+    const failures: OmpOperationalFailure[] = [];
     const connection = new FakeConnection([{ name: "read", inputSchema: { type: "object" } }], {
       content: [{ type: "text", text: "done" }],
     });
     const bridge = await OmpHostToolsBridge.open(
       sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } }),
-      { connectMcp: async () => connection },
+      {
+        connectMcp: async () => connection,
+        reportOperationalFailure: (failure) => failures.push(failure),
+      },
     );
     const saturated = new FakeRuntime();
     saturated.throwResults = true;
@@ -1029,6 +1094,7 @@ describe("OMP host tool bridge", () => {
     await expect(failed.promise).resolves.toEqual(
       expect.objectContaining({ message: "OMP RPC has too many pending writes" }),
     );
+    expect(failures).toEqual([{ category: "tool-projector", stage: "host-tool-delivery" }]);
 
     const recovered = new FakeRuntime();
     bridge.onFatal(() => {});

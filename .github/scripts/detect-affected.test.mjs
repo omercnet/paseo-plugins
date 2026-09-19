@@ -51,6 +51,7 @@ test("selects only changed npm plugins", () => {
     result.npmMatrix.include.map(({ plugin }) => plugin),
     ["agent-monitor", "paseo-beads"],
   );
+  assert.deepEqual(result.changed, ["agent-monitor", "paseo-beads"]);
   assert.equal(result.npmAffected, true);
   assert.equal(result.ompAffected, false);
   assert.equal(result.sharedBrowserAffected, false);
@@ -81,6 +82,7 @@ test("workflow changes enable security analysis", () => {
 
   assert.equal(result.workflowAffected, true);
   assert.deepEqual(result.affected, []);
+  assert.deepEqual(result.changed, []);
 });
 
 test("CI implementation changes select every discovered plugin", () => {
@@ -99,5 +101,6 @@ test("CI implementation changes select every discovered plugin", () => {
     assert.equal(result.ompAffected, true);
     assert.equal(result.sharedBrowserAffected, true);
     assert.equal(result.affected.length, plugins.length);
+    assert.deepEqual(result.changed, []);
   }
 });

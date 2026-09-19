@@ -66,8 +66,11 @@ export function detectAffected(files, plugins = discoverPlugins()) {
   const workflowAffected = files.some((file) =>
     workflowPaths.some((workflowPath) => file.startsWith(workflowPath)),
   );
-  const changedPlugins = new Set(files.map((file) => file.split("/", 1)[0]));
-  const isAffected = ({ plugin }) => runAll || changedPlugins.has(plugin);
+  const changedPluginNames = new Set(files.map((file) => file.split("/", 1)[0]));
+  const changedPlugins = plugins.filter(({ plugin }) =>
+    changedPluginNames.has(plugin),
+  );
+  const isAffected = ({ plugin }) => runAll || changedPluginNames.has(plugin);
   const affectedPlugins = plugins.filter(isAffected);
   const npmPlugins = affectedPlugins
     .filter(({ kind }) => kind === "npm")
@@ -82,6 +85,7 @@ export function detectAffected(files, plugins = discoverPlugins()) {
     ),
     workflowAffected,
     affected: affectedPlugins.map(({ plugin }) => plugin),
+    changed: changedPlugins.map(({ plugin }) => plugin),
   };
 }
 
@@ -111,6 +115,7 @@ function writeOutputs(result, outputPath) {
     omp_affected: String(result.ompAffected),
     shared_browser_affected: String(result.sharedBrowserAffected),
     workflow_affected: String(result.workflowAffected),
+    changed_plugins: JSON.stringify(result.changed),
   };
 
   appendFileSync(

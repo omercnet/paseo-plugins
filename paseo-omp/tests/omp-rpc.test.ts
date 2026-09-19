@@ -2057,6 +2057,7 @@ describe("OMP RPC transport", () => {
 
   test("rejects invalid branch responses immediately and accepts the next valid response", async () => {
     const child = new FakeRpcChild();
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
     let branchRequestCount = 0;
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
@@ -2071,7 +2072,6 @@ describe("OMP RPC transport", () => {
       if (command.type !== "get_branch_messages") return;
       branchRequestCount += 1;
       if (branchRequestCount === 1) {
-        child.write({ type: "response", id: "unrelated-response", success: "invalid" });
         child.write({ type: "response", id: command.id, success: "invalid" });
         return;
       }
@@ -2088,7 +2088,9 @@ describe("OMP RPC transport", () => {
         },
       });
     });
-    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    const opening = runtimeFor(child, [], undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    }).startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
 
@@ -2104,6 +2106,16 @@ describe("OMP RPC transport", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(malformedOutcome).toBe("OMP RPC response is invalid");
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        category: "invalid-response",
+        reason: "response-schema",
+        frameType: "response",
+        field: "response",
+        expected: "valid-response-frame",
+        actualType: "object",
+      }),
+    ]);
     let oversizedOutcome: string | undefined;
     void session.getBranchMessages().then(
       () => {
@@ -2499,7 +2511,14 @@ describe("OMP RPC transport", () => {
     expect(diagnostics).toEqual([
       {
         category: "invalid-event",
+        reason: "notice-level-type",
+        phase: "idle",
+        eventType: "notice",
         occurrenceCount: 1,
+        frameType: "notice",
+        field: "notice.level",
+        expected: "notice-level-enum",
+        actualType: "number",
         maxByteSize: Buffer.byteLength(JSON.stringify(malformed)),
       },
     ]);
@@ -2507,10 +2526,57 @@ describe("OMP RPC transport", () => {
 
     await session.close();
     expect(diagnostics).toEqual([
-      expect.objectContaining({ category: "invalid-event", occurrenceCount: 1 }),
-      expect.objectContaining({ category: "invalid-event", occurrenceCount: 99 }),
+      expect.objectContaining({
+        category: "invalid-event",
+        reason: "notice-level-type",
+        occurrenceCount: 1,
+        phase: "idle",
+        eventType: "notice",
+        field: "notice.level",
+        expected: "notice-level-enum",
+        actualType: "number",
+      }),
+      expect.objectContaining({
+        category: "invalid-event",
+        reason: "notice-level-type",
+        occurrenceCount: 99,
+        phase: "idle",
+        eventType: "notice",
+        field: "notice.level",
+        expected: "notice-level-enum",
+        actualType: "number",
+      }),
     ]);
     expect(JSON.stringify(diagnostics)).not.toContain(secret);
+  });
+
+  test("coalesces mixed violation reasons independently", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
+    const opening = runtimeFor(child, [], undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    }).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    child.write({ type: "notice", level: 42, message: "bad level" });
+    child.write({ type: "notice", level: "info", message: 42 });
+    await session.close();
+
+    expect(diagnostics).toEqual([
+      expect.objectContaining({ reason: "notice-level-type", occurrenceCount: 1 }),
+      expect.objectContaining({ reason: "notice-message-type", occurrenceCount: 1 }),
+    ]);
   });
 
   test("ignores a throwing protocol diagnostic sink", async () => {

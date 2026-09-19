@@ -1,5 +1,5 @@
 {
   "id": "paseo-omp",
-  "requirements": { "paseo": ">=0.8.0 <0.10.0" },
+  "requirements": { "paseo": ">=0.9.0-beta.1 <0.10.0" },
   "build": [["node", "scripts/prepare-dependencies.mjs"]]
 }

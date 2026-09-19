@@ -87,30 +87,296 @@ const MAX_RPC_ERROR_CODE_BYTES = 256;
 const PROMPT_SCHEDULING_FAILURE = "OMP prompt scheduling failed";
 const PROTOCOL_VIOLATION_COALESCE_MS = 10_000;
 
-export type OmpProtocolViolationCategory =
-  | "duplicate-ready"
-  | "frame-limit"
-  | "incomplete-frame"
-  | "interleaved-chunk"
-  | "invalid-chunk"
-  | "invalid-envelope"
-  | "invalid-event"
-  | "invalid-event-state"
-  | "invalid-json"
-  | "invalid-ready"
-  | "invalid-response"
-  | "remote-frame-error";
+export const OMP_PROTOCOL_VIOLATION_CATEGORIES = [
+  "duplicate-ready",
+  "frame-limit",
+  "incomplete-frame",
+  "interleaved-chunk",
+  "invalid-chunk",
+  "invalid-envelope",
+  "invalid-event",
+  "invalid-event-state",
+  "invalid-json",
+  "invalid-ready",
+  "invalid-response",
+  "remote-frame-error",
+] as const;
+export type OmpProtocolViolationCategory = (typeof OMP_PROTOCOL_VIOLATION_CATEGORIES)[number];
+export const OMP_PROTOCOL_VIOLATION_REASONS = [
+  "output-ended-mid-frame",
+  "physical-frame-limit",
+  "semantic-frame-limit",
+  "json-decode",
+  "chunk-json-decode",
+  "object-envelope",
+  "missing-frame-type",
+  "response-schema",
+  "chunk-schema",
+  "chunk-metadata",
+  "chunk-size",
+  "chunk-start-index",
+  "chunk-sequence",
+  "chunk-byte-count",
+  "chunk-timeout",
+  "frame-interleaved-with-chunk",
+  "remote-frame-error",
+  "ready-already-received",
+  "ready-schema",
+  "notice-level-type",
+  "notice-message-type",
+  "notice-schema",
+  "event-schema",
+  "message-event-schema",
+  "tool-event-schema",
+  "lifecycle-event-schema",
+  "subagent-event-schema",
+  "configuration-event-schema",
+  "extension-ui-schema",
+  "unknown-event-type",
+  "event-state-transition",
+] as const;
+export type OmpProtocolViolationReason = (typeof OMP_PROTOCOL_VIOLATION_REASONS)[number];
+export const OMP_PROTOCOL_DIAGNOSTIC_PHASES = [
+  "startup",
+  "negotiation",
+  "idle",
+  "active-turn",
+  "closing",
+] as const;
+export type OmpProtocolDiagnosticPhase = (typeof OMP_PROTOCOL_DIAGNOSTIC_PHASES)[number];
+
+export const OMP_PROTOCOL_EVENT_TYPES = [
+  "agent_start",
+  "agent_end",
+  "turn_start",
+  "turn_end",
+  "message_start",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "compaction_start",
+  "compaction_end",
+  "subagent_lifecycle",
+  "subagent_progress",
+  "subagent_event",
+  "todo_reminder",
+  "model_changed",
+  "thinking_level_changed",
+  "goal_updated",
+  "auto_retry_start",
+  "auto_retry_end",
+  "retry_fallback_applied",
+  "retry_fallback_succeeded",
+  "todo_auto_clear",
+  "auto_compaction_start",
+  "auto_compaction_end",
+  "available_commands_update",
+  "notice",
+  "command_output",
+  "extension_ui_request",
+  "prompt_result",
+  "host_tool_call",
+  "host_tool_cancel",
+  "tool_approval_request",
+  "tool_approval_cancel",
+  "advisor_yielded",
+] as const;
+export type OmpProtocolEventType = (typeof OMP_PROTOCOL_EVENT_TYPES)[number];
+
+export const OMP_PROTOCOL_DIAGNOSTIC_FIELDS = [
+  "frame",
+  "frame.byteLength",
+  "frame.type",
+  "response",
+  "ready",
+  "event",
+  "event.sequence",
+  "notice.level",
+  "notice.message",
+  "chunk",
+  "chunk.data",
+  "chunk.index",
+  "chunk.sequence",
+  "chunk.byteLength",
+] as const;
+export type OmpProtocolDiagnosticField = (typeof OMP_PROTOCOL_DIAGNOSTIC_FIELDS)[number];
+
+export const OMP_PROTOCOL_DIAGNOSTIC_EXPECTATIONS = [
+  "complete-json-line",
+  "within-byte-limit",
+  "valid-json",
+  "object-envelope",
+  "bounded-frame-type",
+  "valid-response-frame",
+  "valid-ready-frame",
+  "single-ready-frame",
+  "valid-event-frame",
+  "valid-event-state-transition",
+  "valid-message-event",
+  "valid-tool-event",
+  "valid-lifecycle-event",
+  "valid-subagent-event",
+  "valid-configuration-event",
+  "valid-extension-ui-event",
+  "known-event-type",
+  "notice-level-enum",
+  "notice-message-string",
+  "valid-chunk-frame",
+  "valid-base64-chunk",
+  "first-chunk-index-zero",
+  "contiguous-chunk-sequence",
+  "declared-chunk-byte-count",
+  "chunk-before-deadline",
+  "no-interleaved-frame",
+  "no-remote-frame-error",
+] as const;
+export type OmpProtocolDiagnosticExpectation =
+  (typeof OMP_PROTOCOL_DIAGNOSTIC_EXPECTATIONS)[number];
+
+export const OMP_PROTOCOL_DIAGNOSTIC_ACTUAL_TYPES = [
+  "missing",
+  "null",
+  "array",
+  "object",
+  "string",
+  "number",
+  "boolean",
+  "invalid-json",
+  "partial-frame",
+  "oversized",
+  "duplicate",
+  "interleaved",
+  "out-of-order",
+  "timeout",
+  "remote-error",
+  "mismatched",
+] as const;
+export type OmpProtocolDiagnosticActualType = (typeof OMP_PROTOCOL_DIAGNOSTIC_ACTUAL_TYPES)[number];
 
 export interface OmpProtocolViolationDiagnostic {
   category: OmpProtocolViolationCategory;
+  reason: OmpProtocolViolationReason;
+  phase: OmpProtocolDiagnosticPhase;
   occurrenceCount: number;
-  frameType?: "ready" | "response" | "rpc_chunk" | "rpc_frame_error";
+  eventType?: OmpProtocolEventType;
+  frameType?: "ready" | "response" | "rpc_chunk" | "rpc_frame_error" | "notice";
+  field?: OmpProtocolDiagnosticField;
+  expected?: OmpProtocolDiagnosticExpectation;
+  actualType?: OmpProtocolDiagnosticActualType;
   maxByteSize?: number;
+  limitBytes?: number;
+}
+
+function protocolDiagnosticActualType(value: unknown): OmpProtocolDiagnosticActualType {
+  if (value === undefined) return "missing";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "object") return "object";
+  if (typeof value === "string") return "string";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  return "object";
+}
+
+function isProtocolEventType(value: string): value is OmpProtocolEventType {
+  return (OMP_PROTOCOL_EVENT_TYPES as readonly string[]).includes(value);
+}
+
+function eventSchemaClassification(
+  eventType: OmpProtocolEventType,
+): Pick<OmpProtocolViolationDiagnostic, "reason" | "expected"> {
+  switch (eventType) {
+    case "message_start":
+    case "message_update":
+    case "message_end":
+      return { reason: "message-event-schema", expected: "valid-message-event" };
+    case "tool_execution_start":
+    case "tool_execution_update":
+    case "tool_execution_end":
+    case "host_tool_call":
+    case "host_tool_cancel":
+    case "tool_approval_request":
+    case "tool_approval_cancel":
+      return { reason: "tool-event-schema", expected: "valid-tool-event" };
+    case "subagent_lifecycle":
+    case "subagent_progress":
+    case "subagent_event":
+      return { reason: "subagent-event-schema", expected: "valid-subagent-event" };
+    case "model_changed":
+    case "thinking_level_changed":
+    case "goal_updated":
+    case "todo_reminder":
+    case "todo_auto_clear":
+    case "available_commands_update":
+    case "retry_fallback_applied":
+    case "retry_fallback_succeeded":
+      return { reason: "configuration-event-schema", expected: "valid-configuration-event" };
+    case "extension_ui_request":
+      return { reason: "extension-ui-schema", expected: "valid-extension-ui-event" };
+    default:
+      return { reason: "lifecycle-event-schema", expected: "valid-lifecycle-event" };
+  }
+}
+
+function invalidEventDiagnosticMetadata(
+  frame: Record<string, unknown>,
+  type: string,
+): Pick<
+  OmpProtocolViolationDiagnostic,
+  "reason" | "eventType" | "frameType" | "field" | "expected" | "actualType"
+> {
+  if (!isProtocolEventType(type)) {
+    return {
+      reason: "unknown-event-type",
+      field: "frame.type",
+      expected: "known-event-type",
+      actualType: "string",
+    };
+  }
+  if (type !== "notice") {
+    return {
+      ...eventSchemaClassification(type),
+      eventType: type,
+      field: "event",
+      actualType: "object",
+    };
+  }
+  if (typeof frame.level !== "string") {
+    return {
+      reason: "notice-level-type",
+      eventType: "notice",
+      frameType: "notice",
+      field: "notice.level",
+      expected: "notice-level-enum",
+      actualType: protocolDiagnosticActualType(frame.level),
+    };
+  }
+  if (typeof frame.message !== "string") {
+    return {
+      reason: "notice-message-type",
+      eventType: "notice",
+      frameType: "notice",
+      field: "notice.message",
+      expected: "notice-message-string",
+      actualType: protocolDiagnosticActualType(frame.message),
+    };
+  }
+  return {
+    reason: "notice-schema",
+    eventType: "notice",
+    frameType: "notice",
+    field: "event",
+    expected: "valid-event-frame",
+    actualType: "object",
+  };
 }
 
 type PendingProtocolViolation = Omit<OmpProtocolViolationDiagnostic, "occurrenceCount"> & {
   occurrenceCount: number;
 };
+type ProtocolViolationKey = `${OmpProtocolViolationCategory}:${OmpProtocolViolationReason}`;
 const MAX_CONTEXT_PERCENT = 1_000_000;
 function boundedJsonString(maxBytes: number, minBytes = 0) {
   return z.string().refine((value) => {
@@ -1997,8 +2263,9 @@ class OmpRpcProcess {
   private spawnFailedWithoutProcess = false;
   private readyReceived = false;
   private outputSettled = false;
+  private turnActive = false;
   private readonly pendingProtocolViolations = new Map<
-    OmpProtocolViolationCategory,
+    ProtocolViolationKey,
     PendingProtocolViolation
   >();
   private protocolViolationTimer: TimerHandle | null = null;
@@ -2101,6 +2368,10 @@ class OmpRpcProcess {
     this.outputSettled = true;
     if (this.lineBytes > 0 || this.discardingLine) {
       this.recordProtocolViolation("incomplete-frame", {
+        reason: "output-ended-mid-frame",
+        field: "frame",
+        expected: "complete-json-line",
+        actualType: "partial-frame",
         maxByteSize: this.discardingLine ? this.discardedLineBytes : this.lineBytes,
       });
     }
@@ -2383,7 +2654,14 @@ class OmpRpcProcess {
       this.lineParts = [];
       this.lineBytes = 0;
       this.discardingLine = true;
-      this.recordProtocolViolation("frame-limit", { maxByteSize: nextBytes });
+      this.recordProtocolViolation("frame-limit", {
+        reason: "physical-frame-limit",
+        field: "frame.byteLength",
+        expected: "within-byte-limit",
+        actualType: "oversized",
+        maxByteSize: nextBytes,
+        limitBytes: this.physicalFrameLimit,
+      });
       return;
     }
     this.lineParts.push(part);
@@ -2404,7 +2682,13 @@ class OmpRpcProcess {
     try {
       decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
     } catch {
-      this.recordProtocolViolation("invalid-json", { maxByteSize: payload.byteLength });
+      this.recordProtocolViolation("invalid-json", {
+        reason: "json-decode",
+        field: "frame",
+        expected: "valid-json",
+        actualType: "invalid-json",
+        maxByteSize: payload.byteLength,
+      });
       return;
     }
     this.receiveDecodedFrame(decoded, payload.byteLength);
@@ -2427,17 +2711,30 @@ class OmpRpcProcess {
       frame.data.length % 4 !== 0 ||
       !/^[A-Za-z0-9+/]*={0,2}$/u.test(frame.data)
     ) {
-      this.rejectChunk();
+      this.rejectChunk("chunk-metadata", {
+        field: "chunk",
+        expected: "valid-chunk-frame",
+        actualType: "object",
+      });
       return;
     }
     const decoded = Buffer.from(frame.data, "base64");
     if (decoded.byteLength > MAX_CHUNK_BYTES) {
-      this.rejectChunk();
+      this.rejectChunk("chunk-size", {
+        field: "chunk.data",
+        expected: "within-byte-limit",
+        actualType: "oversized",
+        limitBytes: MAX_CHUNK_BYTES,
+      });
       return;
     }
     if (!this.chunk) {
       if (frame.index !== 0) {
-        this.rejectChunk();
+        this.rejectChunk("chunk-start-index", {
+          field: "chunk.index",
+          expected: "first-chunk-index-zero",
+          actualType: "out-of-order",
+        });
         return;
       }
       this.chunk = {
@@ -2446,7 +2743,15 @@ class OmpRpcProcess {
         byteLength: frame.byteLength,
         parts: [],
         receivedBytes: 0,
-        timer: setTimeout(() => this.rejectChunk(), CHUNK_STALE_MS),
+        timer: setTimeout(
+          () =>
+            this.rejectChunk("chunk-timeout", {
+              field: "chunk.sequence",
+              expected: "chunk-before-deadline",
+              actualType: "timeout",
+            }),
+          CHUNK_STALE_MS,
+        ),
       };
     }
     const chunk = this.chunk;
@@ -2458,14 +2763,22 @@ class OmpRpcProcess {
       chunk.receivedBytes + decoded.byteLength > chunk.byteLength ||
       chunk.receivedBytes + decoded.byteLength > this.reassembledFrameLimit
     ) {
-      this.rejectChunk();
+      this.rejectChunk("chunk-sequence", {
+        field: "chunk.sequence",
+        expected: "contiguous-chunk-sequence",
+        actualType: "out-of-order",
+      });
       return;
     }
     chunk.parts.push(decoded);
     chunk.receivedBytes += decoded.byteLength;
     if (chunk.parts.length !== chunk.count) return;
     if (chunk.receivedBytes !== chunk.byteLength) {
-      this.rejectChunk();
+      this.rejectChunk("chunk-byte-count", {
+        field: "chunk.byteLength",
+        expected: "declared-chunk-byte-count",
+        actualType: "mismatched",
+      });
       return;
     }
     const reassembled = Buffer.concat(chunk.parts, chunk.receivedBytes);
@@ -2474,7 +2787,13 @@ class OmpRpcProcess {
     try {
       decodedFrame = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(reassembled));
     } catch {
-      this.recordProtocolViolation("invalid-json", { maxByteSize: reassembled.byteLength });
+      this.recordProtocolViolation("invalid-json", {
+        reason: "chunk-json-decode",
+        field: "chunk.data",
+        expected: "valid-json",
+        actualType: "invalid-json",
+        maxByteSize: reassembled.byteLength,
+      });
       return;
     }
     this.receiveDecodedFrame(decodedFrame, reassembled.byteLength);
@@ -2500,7 +2819,13 @@ class OmpRpcProcess {
     const sanitized = sanitizeLiveDisplayFrame(value);
     const frame = JsonObjectSchema.safeParse(sanitized);
     if (!frame.success) {
-      this.recordProtocolViolation("invalid-envelope", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("invalid-envelope", {
+        reason: "object-envelope",
+        field: "frame",
+        expected: "object-envelope",
+        actualType: protocolDiagnosticActualType(sanitized),
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     this.receiveFrame(frame.data, rawByteLength);
@@ -2525,10 +2850,21 @@ class OmpRpcProcess {
     const knownPending = rawId ? this.pending.get(rawId) : undefined;
     const response = OmpResponseFrameSchema.safeParse(frame);
     if (!response.success) {
+      const handledAcceptedFailure =
+        rawId !== undefined && knownPending === undefined
+          ? this.emitAcceptedPromptFailure(rawId, frame)
+          : false;
+      if (!handledAcceptedFailure) {
+        this.recordProtocolViolation("invalid-response", {
+          reason: "response-schema",
+          frameType: "response",
+          field: "response",
+          expected: "valid-response-frame",
+          actualType: "object",
+        });
+      }
       if (rawId && knownPending) {
         this.takePending(rawId)?.reject(new Error("OMP RPC response is invalid"));
-      } else if (!rawId || !this.emitAcceptedPromptFailure(rawId, frame)) {
-        this.recordProtocolViolation("invalid-response", { frameType: "response" });
       }
       return;
     }
@@ -2686,7 +3022,13 @@ class OmpRpcProcess {
   private receiveFrame(frame: Record<string, unknown>, rawByteLength: number): void {
     const type = typeof frame.type === "string" && frame.type.length <= 64 ? frame.type : null;
     if (!type) {
-      this.recordProtocolViolation("invalid-envelope", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("invalid-envelope", {
+        reason: "missing-frame-type",
+        field: "frame.type",
+        expected: "bounded-frame-type",
+        actualType: protocolDiagnosticActualType(frame.type),
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     const safeFrame = mapRuntimeFrameDetails(frame, createOptionalMetadataSanitizer());
@@ -2700,31 +3042,66 @@ class OmpRpcProcess {
         4_096,
       ) === Number.POSITIVE_INFINITY
     ) {
-      this.recordProtocolViolation("frame-limit", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("frame-limit", {
+        reason: "semantic-frame-limit",
+        field: "frame.byteLength",
+        expected: "within-byte-limit",
+        actualType: "oversized",
+        maxByteSize: rawByteLength,
+        limitBytes: MAX_SEMANTIC_FRAME_BYTES,
+      });
       return;
     }
     if (type === "rpc_chunk") {
       const chunk = OmpChunkFrameSchema.safeParse(safeFrame);
-      if (!chunk.success) this.rejectChunk();
-      else this.receiveChunk(chunk.data);
+      if (!chunk.success) {
+        this.rejectChunk("chunk-schema", {
+          field: "chunk",
+          expected: "valid-chunk-frame",
+          actualType: "object",
+        });
+      } else this.receiveChunk(chunk.data);
       return;
     }
     if (this.chunk) {
       this.clearChunk();
-      this.recordProtocolViolation("interleaved-chunk");
+      this.recordProtocolViolation("interleaved-chunk", {
+        reason: "frame-interleaved-with-chunk",
+        field: "chunk.sequence",
+        expected: "no-interleaved-frame",
+        actualType: "interleaved",
+      });
     }
     if (type === "rpc_frame_error") {
-      this.recordProtocolViolation("remote-frame-error", { frameType: "rpc_frame_error" });
+      this.recordProtocolViolation("remote-frame-error", {
+        reason: "remote-frame-error",
+        frameType: "rpc_frame_error",
+        field: "frame",
+        expected: "no-remote-frame-error",
+        actualType: "remote-error",
+      });
       return;
     }
     if (type === "ready") {
       if (this.readyReceived) {
-        this.recordProtocolViolation("duplicate-ready", { frameType: "ready" });
+        this.recordProtocolViolation("duplicate-ready", {
+          reason: "ready-already-received",
+          frameType: "ready",
+          field: "ready",
+          expected: "single-ready-frame",
+          actualType: "duplicate",
+        });
         return;
       }
       const ready = OmpReadyFrameSchema.safeParse(safeFrame);
       if (!ready.success) {
-        this.recordProtocolViolation("invalid-ready", { frameType: "ready" });
+        this.recordProtocolViolation("invalid-ready", {
+          reason: "ready-schema",
+          frameType: "ready",
+          field: "ready",
+          expected: "valid-ready-frame",
+          actualType: "object",
+        });
       } else {
         this.readyReceived = true;
         this.resolveReady(ready.data);
@@ -2739,16 +3116,29 @@ class OmpRpcProcess {
     if (!event.success) {
       this.rejectMatchingToolApproval(safeFrame);
       if (type === "agent_end" && this.receiveDegradedAgentEnd(safeFrame, false)) return;
-      this.recordProtocolViolation("invalid-event", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("invalid-event", {
+        ...invalidEventDiagnosticMetadata(safeFrame, type),
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     if (!this.acceptEventState(event.data)) {
-      this.recordProtocolViolation("invalid-event-state", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("invalid-event-state", {
+        reason: "event-state-transition",
+        eventType: event.data.type,
+        field: "event.sequence",
+        expected: "valid-event-state-transition",
+        actualType: "out-of-order",
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     this.emit(event.data);
     if (event.data.type === "prompt_result" && event.data.id) {
       this.acceptedPromptIds.delete(event.data.id);
+    }
+    if (event.data.type === "turn_end" || event.data.type === "agent_end") {
+      this.turnActive = false;
     }
     if (
       event.data.type === "message_end" ||
@@ -2777,6 +3167,7 @@ class OmpRpcProcess {
 
   private acceptEventState(event: z.infer<typeof OmpRuntimeEventSchema>): boolean {
     if (event.type === "turn_start") {
+      this.turnActive = true;
       this.streamedBlocks.clear();
       this.commandTextLength = 0;
       this.activeToolCallIds.clear();
@@ -2846,32 +3237,66 @@ class OmpRpcProcess {
     return true;
   }
 
-  private rejectChunk(): void {
+  private protocolDiagnosticPhase(): OmpProtocolDiagnosticPhase {
+    if (this.closed || this.exited || this.outputSettled) return "closing";
+    if (!this.readyReceived) return "startup";
+    for (const pending of this.pending.values()) {
+      if (pending.command === "negotiate_protocol") return "negotiation";
+      if (pending.command === "prompt") return "active-turn";
+    }
+    if (this.turnActive || this.acceptedPromptIds.size > 0) return "active-turn";
+    return "idle";
+  }
+
+  private rejectChunk(
+    reason: OmpProtocolViolationReason,
+    metadata: Omit<
+      OmpProtocolViolationDiagnostic,
+      "category" | "reason" | "occurrenceCount" | "phase" | "frameType"
+    > = {},
+  ): void {
     this.clearChunk();
-    this.recordProtocolViolation("invalid-chunk", { frameType: "rpc_chunk" });
+    this.recordProtocolViolation("invalid-chunk", {
+      reason,
+      frameType: "rpc_chunk",
+      ...metadata,
+    });
   }
 
   private recordProtocolViolation(
     category: OmpProtocolViolationCategory,
-    metadata: Omit<OmpProtocolViolationDiagnostic, "category" | "occurrenceCount"> = {},
+    metadata: Omit<OmpProtocolViolationDiagnostic, "category" | "occurrenceCount" | "phase">,
   ): void {
+    const phase = this.protocolDiagnosticPhase();
     if (!this.protocolViolationTimer) {
-      this.emitProtocolViolation({ category, occurrenceCount: 1, ...metadata });
+      this.emitProtocolViolation({ category, occurrenceCount: 1, phase, ...metadata });
       this.protocolViolationTimer = setTimeout(
         () => this.flushProtocolViolations(),
         PROTOCOL_VIOLATION_COALESCE_MS,
       );
       return;
     }
-    const pending = this.pendingProtocolViolations.get(category);
+    const key = `${category}:${metadata.reason}` as ProtocolViolationKey;
+    const pending = this.pendingProtocolViolations.get(key);
     if (!pending) {
-      this.pendingProtocolViolations.set(category, { category, occurrenceCount: 1, ...metadata });
+      this.pendingProtocolViolations.set(key, {
+        category,
+        occurrenceCount: 1,
+        phase,
+        ...metadata,
+      });
       return;
     }
     pending.occurrenceCount = Math.min(Number.MAX_SAFE_INTEGER, pending.occurrenceCount + 1);
     pending.maxByteSize =
       Math.max(pending.maxByteSize ?? 0, metadata.maxByteSize ?? 0) || undefined;
-    if (pending.frameType !== metadata.frameType) pending.frameType = undefined;
+    pending.reason = metadata.reason;
+    pending.phase = phase;
+    pending.frameType = metadata.frameType;
+    pending.field = metadata.field;
+    pending.expected = metadata.expected;
+    pending.actualType = metadata.actualType;
+    pending.limitBytes = metadata.limitBytes;
   }
 
   private flushProtocolViolations(): void {

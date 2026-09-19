@@ -18,16 +18,20 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      package-paths: ${{ steps.packages.outputs.paths }}
+      package-paths: ${{ steps.packages.outputs.changed_plugins }}
       paths-released: ${{ steps.release.outputs.paths_released }}
     steps:
       - name: Check out release configuration
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: Discover package paths
+      - name: Discover changed package paths
         id: packages
-        run: echo "paths=$(jq -c '.packages | keys' release-please-config.json)" >> "$GITHUB_OUTPUT"
+        env:
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: node .github/scripts/detect-affected.mjs
       - name: Create or update releases
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
@@ -72,6 +76,10 @@ jobs:
           current="$(node -p "require('./package.json').version")"
           version="${current%%-*}-next.${RUN_NUMBER}.${RUN_ATTEMPT}"
           npm pkg set "version=${version}"
+      - name: Synchronize paseo-omp next build version
+        if: ${{ matrix.directory == 'paseo-omp' }}
+        working-directory: ${{ matrix.directory }}
+        run: node scripts/sync-build-version.mjs
       - name: Preview npm package
         working-directory: ${{ matrix.directory }}
         run: npm pack --dry-run

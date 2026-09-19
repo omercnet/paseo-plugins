@@ -20,14 +20,14 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `>=0.8.0 <0.10.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo `0.9.0-beta.1` or newer is required for nested provider-subagent ancestry and spawning-tool links, and is recommended for npm-managed installation and the complete client integration.
+Requirements: Paseo `>=0.9.0-beta.1 <0.10.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo 0.9 is required for the Help report's supported copy and external-link APIs, nested provider-subagent ancestry, spawning-tool links, npm-managed installation, and the complete client integration.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
 paseo plugin ls paseo-omp
 ```
 
-Open the **OMP** sidebar to review the provider-profile contract, choose which composer pills appear, browse and edit native scalar settings, manage OMP-native plugins, verify runtime health, and inspect storage and process diagnostics. Then create an agent and select **OMP Plugin**. Its optional **MCP** composer control runs OMP-native management commands in the current session; setup questions and authorization stay in that chat timeline, where OAuth can open in a workspace-scoped Paseo Browser or on the current device. Composer pill preferences are shared by clients connected to the same host; normal use requires no other plugin-specific settings.
+Open the **OMP** sidebar to review the provider-profile contract, choose which composer pills appear, browse and edit native scalar settings, manage OMP-native plugins, verify runtime health, and generate a bounded support report under **Help**. The same tabs are available in the workspace OMP panel, except for the global Composer preference tab. Then create an agent and select **OMP Plugin**. Its optional **MCP** composer control runs OMP-native management commands in the current session; setup questions and authorization stay in that chat timeline, where OAuth can open in a workspace-scoped Paseo Browser or on the current device. Composer pill preferences are shared by clients connected to the same host; normal use requires no other plugin-specific settings.
 
 - [Install, update, rollback, and local development](docs/installation.md)
 - [Configuration and every provider option](docs/configuration.md)
@@ -36,13 +36,13 @@ Open the **OMP** sidebar to review the provider-profile contract, choose which c
 - [Core-provider issue and parity audit](docs/core-provider-issue-audit.md)
 - [Alpha release checklist](docs/alpha-release-checklist.md)
 
-The plugin uses public Paseo 0.8 and 0.9 beta provider contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
+The plugin uses public Paseo 0.9 beta provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
 
 ## Named OMP profiles
 
 At startup the plugin discovers directory names under `~/.omp/profiles/` (or `PI_CONFIG_DIR`) and registers **OMP · <profile>** for each valid lowercase name. Select that provider when creating a profile-backed agent. Discovery, launch, recovery and persisted session listing share its fixed profile and session root. Matching command wrappers, including Doppler, remain supported; conflicting profile or session-directory overrides fail before launch. Plain `env NAME=value omp` wrappers are supported, but environment-control flags such as `env -i` and `env -u` are rejected because they can discard the selected store. Profile-specific XDG roots cannot be overridden by per-launch environment values. Reload the plugin after adding a profile.
 
-Paseo 0.8 does not pass agent launch options to its model picker. Separate provider identities let the picker request the correct profile catalog before an agent exists. Existing `omp-plugin` and bundled `omp` agents retain their provider; they are not migrated automatically. Profile names use OMP's lowercase grammar, including dotted names such as `team.prod`.
+Separate provider identities let the model picker request the correct profile catalog before an agent exists. Existing `omp-plugin` and bundled `omp` agents retain their provider; they are not migrated automatically. Profile names use OMP's lowercase grammar, including dotted names such as `team.prod`.
 
 The OMP sidebar and memory panel expose an explicit store selector. Settings, plugins, quota, history, memory and diagnostics use that selection, and profile-agent popovers derive it from the provider ID. OMP-compatible XDG data and state roots are honored when a migrated profile uses them. Default-provider views are labelled **Daemon default store**; changing `providerOptions.command` on the default provider does not make those views profile-aware. Workspace configuration remains project-scoped, with the selected profile supplying inherited settings. Hub records are daemon-wide. The RPCs also accept an explicit absolute `store.agentDir` for custom stores; it is mutually exclusive with `store.profile`.
 
@@ -113,7 +113,7 @@ Existing agents whose provider is `omp` remain owned by the bundled provider. Ne
 
 OMP `18.1.15` is the oldest version tested end to end. The direct provider's hard compatibility gate is `rpc-ui` protocol v2: metadata-free legacy ready frames and v1-only runtimes are rejected before a provider session opens because they cannot support the advertised persistence and conversation-rewind capabilities. Typed tool approvals remain capability-gated and fall back as described above. For terminal completion, a matching `agent_end.requestId` is authoritative and mismatches are ignored before state changes. Released OMP 18.2.x builds that omit that field use an ordered fallback requiring a fresh correlated native user entry followed by current-turn assistant activity, an idle non-compacting runtime, and no conflicting permission, tool, steer, or child-session work. Ambiguous events while OMP is active are ignored; unresolved ambiguity after confirmed idle fails only the Paseo turn. This trades a bounded residual same-agent stale-event risk for compatibility with released OMP instead of terminating and lazily restarting the runtime after every later prompt. Paseo clients, including mobile clients inside reconnect grace, do not own or terminate the daemon-managed OMP session.
 
-Paseo 0.9.0-beta.1 is the verified canary target and the first release that preserves nested provider-subagent ancestry and spawning-tool links. The required full Docker canary passes there with OMP 18.1.15 and 18.2.0. Paseo 0.9 also provides npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping. Paseo 0.8.x remains supported for other provider operations and Git or directory installation; its clients do not provide the external URL opener, retain their older timeline presentation semantics, and flatten nested provider subagents.
+Paseo 0.9.0-beta.1 is the verified canary target and minimum supported release. It preserves nested provider-subagent ancestry and spawning-tool links, and provides npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping. The required full Docker canary passes there with OMP 18.1.15 and 18.2.0.
 
 Install, update, disable, or remove `paseo-omp` independently of the bundled provider. Verify the provider snapshot contains `omp-plugin` after installation; a bundled `omp` entry may remain present and is not modified by this plugin.
 

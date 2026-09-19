@@ -5,7 +5,8 @@ import {
   useRpc,
   useWorkspace,
 } from "@getpaseo/plugin/client";
-import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
+import { copyText, Icon, TextInput } from "@getpaseo/plugin/client/react-native";
+import { ExternalLink } from "@getpaseo/plugin/client/ui";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
@@ -27,8 +28,10 @@ import {
 } from "../shared/omp-settings";
 import { type OmpStore, storeLabel } from "../shared/omp-store";
 import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider-diagnostics";
+import { getOmpSupportReport, OMP_SUPPORT_ISSUE_URL } from "../shared/support-diagnostics";
 import { ComposerPillSettingsSection } from "./composer-pill-settings";
 import { openOmpExternalUrl } from "./external-url";
+import { type OmpConfigSurfaceView as SurfaceView, surfaceViewsForScope } from "./omp-config-views";
 import {
   documentationForSettingCategory,
   documentationForSettingPath,
@@ -60,6 +63,11 @@ import {
   summarizeProviderStatus,
   summarizeRpcUiSupport,
 } from "./provider-diagnostics-state";
+import {
+  refreshSupportReport,
+  type SupportReportCopyState,
+  supportDiagnosticsViewState,
+} from "./support-diagnostics-state";
 
 const SETTINGS_QUERY_KEY = ["paseo-omp", "settings"] as const;
 const CONFIG_POLL_MS = 30_000;
@@ -95,6 +103,10 @@ export interface OmpConfigStyles {
   docLinkPressed: ViewStyle;
   docLinkText: TextStyle;
   refreshLabel: TextStyle;
+  helpActions: ViewStyle;
+  helpReport: ViewStyle;
+  helpReportText: TextStyle;
+  helpLinkText: TextStyle;
   card: ViewStyle;
   cardHeader: ViewStyle;
   cardTitle: TextStyle;
@@ -219,6 +231,26 @@ function useConfigStyles(theme: PluginSurfaceProps["theme"], compact: boolean): 
         backgroundColor: theme.colors.surface1,
       },
       refreshLabel: { color: theme.colors.foreground, fontSize: 13 },
+      helpActions: {
+        flexDirection: "row",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 8,
+      },
+      helpReport: {
+        maxWidth: "100%",
+        padding: compact ? 10 : 12,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface1,
+      },
+      helpReportText: {
+        color: theme.colors.foreground,
+        fontSize: compact ? 11 : 12,
+        lineHeight: compact ? 16 : 18,
+      },
+      helpLinkText: { color: theme.colors.accent, fontSize: 13, fontWeight: "600" },
       cardHeader: {
         flexDirection: "row",
         alignItems: "center",
@@ -695,6 +727,131 @@ function ProviderHealthSection({
   );
 }
 
+function SupportDiagnosticsSection({
+  theme,
+  styles,
+  cwd,
+  store,
+}: {
+  theme: PluginSurfaceProps["theme"];
+  styles: OmpConfigStyles;
+  cwd?: string;
+  store?: OmpStore;
+}) {
+  const loadReport = useRpc(getOmpSupportReport);
+  const queryClient = useQueryClient();
+  const context = { store, ...(cwd ? { cwd } : {}) };
+  const queryKey = ["paseo-omp", "support-report", ompStoreKey(store), cwd ?? "global"];
+  const report = useQuery({
+    queryKey,
+    queryFn: () => loadReport(context),
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
+  });
+  const refreshReport = useMutation({
+    mutationFn: () => refreshSupportReport(loadReport, context),
+    onSuccess: (value) => queryClient.setQueryData(queryKey, value),
+  });
+  const [copyState, setCopyState] = useState<SupportReportCopyState>("idle");
+  const [linkError, setLinkError] = useState(false);
+  const viewState = supportDiagnosticsViewState({
+    loading: report.isLoading,
+    refreshing: refreshReport.isPending || (report.isFetching && !report.isLoading),
+    hasReport: Boolean(report.data?.report),
+    reportFailed: Boolean(report.error || refreshReport.error),
+    copyState,
+  });
+
+  const refresh = () => {
+    setCopyState("idle");
+    refreshReport.mutate();
+  };
+  const copyReport = async () => {
+    if (!report.data?.report) return;
+    setCopyState("copying");
+    try {
+      await copyText(report.data.report);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+  };
+
+  return (
+    <>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Support diagnostics</Text>
+        <Text style={styles.muted}>
+          Safe OMP runtime, compatibility, storage-state, and protocol counters for maintainers.
+        </Text>
+      </View>
+      <View style={styles.helpActions}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Refresh OMP support report"
+          disabled={report.isFetching || refreshReport.isPending}
+          onPress={refresh}
+          style={styles.refresh}
+        >
+          <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
+          <Text style={styles.refreshLabel}>{viewState.refreshLabel}</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Copy OMP support report"
+          disabled={viewState.copyDisabled}
+          onPress={() => void copyReport()}
+          style={[styles.refresh, viewState.copyDisabled ? { opacity: 0.55 } : null]}
+        >
+          <Icon name="Copy" size={14} color={theme.colors.foreground} />
+          <Text style={styles.refreshLabel}>{viewState.copyLabel}</Text>
+        </Pressable>
+        <ExternalLink
+          href={OMP_SUPPORT_ISSUE_URL}
+          accessibilityLabel="Create paseo-omp GitHub issue"
+          onError={() => setLinkError(true)}
+        >
+          <Text style={styles.helpLinkText}>Create GitHub issue</Text>
+        </ExternalLink>
+      </View>
+      <Text style={styles.muted}>
+        Review before sharing. The report excludes prompts, transcripts, credentials, commands,
+        URLs, repository names, and private paths.
+      </Text>
+      {viewState.loadingMessage ? (
+        <Text accessibilityLiveRegion="polite" style={styles.muted}>
+          {viewState.loadingMessage}
+        </Text>
+      ) : null}
+      {viewState.reportError ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {viewState.reportError}
+        </Text>
+      ) : null}
+      {viewState.copyFeedback ? (
+        <Text
+          accessibilityLiveRegion="polite"
+          style={copyState === "error" ? styles.error : styles.muted}
+        >
+          {viewState.copyFeedback}
+        </Text>
+      ) : null}
+      {linkError ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          Could not open GitHub. Copy the report and open the issue tracker manually.
+        </Text>
+      ) : null}
+      {report.data?.report ? (
+        <View style={styles.helpReport}>
+          <Text selectable style={styles.helpReportText}>
+            {report.data.report}
+          </Text>
+        </View>
+      ) : null}
+    </>
+  );
+}
+
 const CATEGORY_LABELS: Record<OmpSettingCategory, string> = {
   appearance: "Appearance",
   model: "Model",
@@ -739,16 +896,6 @@ function fallbackSettingsFromConfig(config: OmpConfig | null | undefined): OmpSe
   visit(config, "");
   return settings;
 }
-
-type SurfaceView = "overview" | "plugin" | "plugins" | "composer" | "configuration" | "diagnostics";
-const SURFACE_VIEWS: readonly { id: SurfaceView; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "plugin", label: "Plugin" },
-  { id: "plugins", label: "OMP plugins" },
-  { id: "composer", label: "Composer" },
-  { id: "configuration", label: "Configuration" },
-  { id: "diagnostics", label: "Diagnostics" },
-];
 
 function formatScalarValue(value: unknown): string {
   if (value === undefined || value === null) return "Not set";
@@ -1079,9 +1226,7 @@ function OmpConfigContent({
   const [documentationError, setDocumentationError] = useState<string | null>(null);
   const styles = useConfigStyles(theme, layout.compact);
   const normalizedSearch = search.trim().toLocaleLowerCase();
-  const surfaceViews = cwd
-    ? SURFACE_VIEWS.filter((candidate) => candidate.id !== "composer")
-    : SURFACE_VIEWS;
+  const surfaceViews = surfaceViewsForScope(cwd !== undefined);
   const catalog = useMemo(() => {
     const sourceSettings = settingsQuery.data?.available
       ? settingsQuery.data.settings
@@ -1269,6 +1414,10 @@ function OmpConfigContent({
 
       {view === "diagnostics" ? (
         <ProviderHealthSection theme={theme} styles={styles} cwd={cwd} store={store} />
+      ) : null}
+
+      {view === "help" ? (
+        <SupportDiagnosticsSection theme={theme} styles={styles} cwd={cwd} store={store} />
       ) : null}
 
       {view === "configuration" ? (
