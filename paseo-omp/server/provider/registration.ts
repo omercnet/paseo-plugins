@@ -6,7 +6,7 @@ import type { OmpBrowserAuthorizationRegistry } from "../mcp-browser";
 import { probeOmpAvailability } from "../provider-diagnostics";
 import { createOmpConnection, OmpNativeSessionReservations } from "./connection";
 import type { OmpMcpConnector } from "./host-tools";
-import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
+import { type OmpProtocolViolationDiagnostic, OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
 import { parseOmpProviderOptions } from "./provider-options";
 import { boundedJsonBytes } from "./security";
 import { OmpProviderOptionsSchema } from "./settings";
@@ -66,6 +66,7 @@ export interface OmpProviderOptions {
   mcpInitializationTimeoutMs?: number;
   mcpConnector?: OmpMcpConnector;
   browserAuthorizationRegistry?: OmpBrowserAuthorizationRegistry;
+  reportProtocolViolation?: (diagnostic: OmpProtocolViolationDiagnostic) => void | Promise<void>;
   availabilityProbe?: (
     options: ProviderCatalogOptionsCompat,
     timeoutMs: number | undefined,
@@ -85,7 +86,12 @@ function stableJson(value: unknown): string {
 }
 
 export function createOmpProvider(options: OmpProviderOptions = {}): ProviderRegistrationCompat {
-  const runtime = options.runtime ?? new OmpRpcRuntime({ environment: options.environment });
+  const runtime =
+    options.runtime ??
+    new OmpRpcRuntime({
+      environment: options.environment,
+      reportProtocolViolation: options.reportProtocolViolation,
+    });
   const nativeReservations = new OmpNativeSessionReservations();
   return {
     id: "omp-plugin",

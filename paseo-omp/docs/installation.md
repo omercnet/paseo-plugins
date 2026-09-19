@@ -4,7 +4,7 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its producti
 
 ## Requirements
 
-- Paseo daemon and apps: `>=0.8.0 <0.10.0`; use `0.9.0-beta.1` or newer for nested provider-subagent ancestry and spawning-tool links
+- Paseo daemon and apps: `>=0.9.0-beta.1 <0.10.0`; the 0.9 floor provides the supported plugin copy and external-link APIs, nested provider-subagent ancestry, and spawning-tool links
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 
@@ -86,4 +86,4 @@ Tracking `main` executes future dependency and plugin updates with the daemon us
 paseo plugin add omercnet/paseo-plugins:paseo-omp --ref main
 ```
 
-On Paseo 0.9, preview and approve the remote default HEAD with `paseo plugin update paseo-omp`, or select `main` explicitly with `paseo plugin update paseo-omp --ref main`. On Paseo 0.8, record the installed commit before its existing branch-update workflow. A failed build or compatibility check leaves the previous revision active.
+On Paseo 0.9, preview and approve the remote default HEAD with `paseo plugin update paseo-omp`, or select `main` explicitly with `paseo plugin update paseo-omp --ref main`. A failed build or compatibility check leaves the previous revision active.

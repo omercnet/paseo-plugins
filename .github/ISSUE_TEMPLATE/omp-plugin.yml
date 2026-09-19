@@ -1,0 +1,47 @@
+name: paseo-omp bug
+description: Report a general bug in the paseo-omp plugin.
+title: "[paseo-omp] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open OMP → Help in Paseo, refresh the diagnostic report, review it, and paste it below. The report is designed to exclude private content, but you should still review it before submitting.
+  - type: textarea
+    id: diagnostic-report
+    attributes:
+      label: Help-screen diagnostic report
+      description: Paste the complete plain-text report from OMP → Help. Do not add prompts, transcripts, credentials, commands, repository names, URLs, filenames, or private paths.
+      placeholder: Paste the OMP support diagnostics report here.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the shortest sequence of actions that reproduces the problem. Describe commands generically rather than pasting sensitive command text.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should paseo-omp have done?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Do not paste prompts, transcripts, raw frames, tool payloads, terminal output, or secrets.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I reviewed the diagnostic report and removed any private or identifying information before submitting.
+          required: true
+        - label: I did not include credentials, environment values, prompts, transcripts, tool arguments or results, raw frames, raw terminal output, URLs, repository names, arbitrary filenames, or private paths.
+          required: true

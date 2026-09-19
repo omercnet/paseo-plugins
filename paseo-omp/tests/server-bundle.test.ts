@@ -50,11 +50,11 @@ async function compileServerBundle(entryPath: string) {
 }
 
 describe("plugin server bundle", () => {
-  test("declares the supported Paseo 0.8 and 0.9 manifest contract", async () => {
+  test("declares the supported Paseo 0.9 manifest contract", async () => {
     const manifest = JSON.parse(await readFile(join(pluginRoot, "paseo-plugin.json"), "utf8"));
     expect(manifest).toEqual({
       id: "paseo-omp",
-      requirements: { paseo: ">=0.8.0 <0.10.0" },
+      requirements: { paseo: ">=0.9.0-beta.1 <0.10.0" },
       build: [["node", "scripts/prepare-dependencies.mjs"]],
     });
     const packageManifest = JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8"));
@@ -62,7 +62,7 @@ describe("plugin server bundle", () => {
       "Paseo integration for OMP, including its direct provider and workspace tooling.",
     );
     expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain(
-      "Paseo `>=0.8.0 <0.10.0`",
+      "Paseo `>=0.9.0-beta.1 <0.10.0`",
     );
   });
 

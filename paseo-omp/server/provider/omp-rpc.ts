@@ -87,19 +87,21 @@ const MAX_RPC_ERROR_CODE_BYTES = 256;
 const PROMPT_SCHEDULING_FAILURE = "OMP prompt scheduling failed";
 const PROTOCOL_VIOLATION_COALESCE_MS = 10_000;
 
-export type OmpProtocolViolationCategory =
-  | "duplicate-ready"
-  | "frame-limit"
-  | "incomplete-frame"
-  | "interleaved-chunk"
-  | "invalid-chunk"
-  | "invalid-envelope"
-  | "invalid-event"
-  | "invalid-event-state"
-  | "invalid-json"
-  | "invalid-ready"
-  | "invalid-response"
-  | "remote-frame-error";
+export const OMP_PROTOCOL_VIOLATION_CATEGORIES = [
+  "duplicate-ready",
+  "frame-limit",
+  "incomplete-frame",
+  "interleaved-chunk",
+  "invalid-chunk",
+  "invalid-envelope",
+  "invalid-event",
+  "invalid-event-state",
+  "invalid-json",
+  "invalid-ready",
+  "invalid-response",
+  "remote-frame-error",
+] as const;
+export type OmpProtocolViolationCategory = (typeof OMP_PROTOCOL_VIOLATION_CATEGORIES)[number];
 
 export interface OmpProtocolViolationDiagnostic {
   category: OmpProtocolViolationCategory;

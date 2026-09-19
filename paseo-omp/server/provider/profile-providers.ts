@@ -151,7 +151,12 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
   const id = profileProviderId(profile);
   const environment = fixedEnvironment(profile, options.environment ?? process.env);
   const sessionDir = resolve(ompSessionDir(environment));
-  const runtime = options.runtime ?? new OmpRpcRuntime({ environment });
+  const runtime =
+    options.runtime ??
+    new OmpRpcRuntime({
+      environment,
+      reportProtocolViolation: options.reportProtocolViolation,
+    });
   const readPersistedSessionTranscript = runtime.readPersistedSessionTranscript?.bind(runtime);
   const assertSessionDir = (requested?: string) => {
     if (requested !== undefined && resolve(requested) !== sessionDir) {
