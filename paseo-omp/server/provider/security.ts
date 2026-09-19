@@ -83,16 +83,14 @@ function truncateJsonString(value: string, maxBytes: number): string {
 export function truncateUtf8(value: string, maxBytes: number): string {
   if (utf8Bytes(value) <= maxBytes) return value;
   const suffix = "<truncated>";
-  const budget = Math.max(0, maxBytes - utf8Bytes(suffix));
-  let output = "";
-  let bytes = 0;
-  for (const character of value) {
-    const characterBytes = utf8Bytes(character);
-    if (bytes + characterBytes > budget) break;
-    output += character;
-    bytes += characterBytes;
-  }
-  return `${output}${suffix}`;
+  const suffixBytes = utf8Bytes(suffix);
+  if (maxBytes <= 0) return "";
+  if (maxBytes < suffixBytes) return suffix.slice(0, Math.floor(maxBytes));
+
+  const bytes = Buffer.from(value, "utf8");
+  let end = Math.min(maxBytes - suffixBytes, bytes.byteLength);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return `${bytes.subarray(0, end).toString("utf8")}${suffix}`;
 }
 
 export interface BoundedJsonMetrics {

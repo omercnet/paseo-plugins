@@ -42,7 +42,11 @@ import {
   type OmpToolApprovalResponse,
 } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
-import { OmpCleanupFailure, OmpPublicDataSerializer } from "../server/provider/security";
+import {
+  OmpCleanupFailure,
+  OmpPublicDataSerializer,
+  truncateUtf8,
+} from "../server/provider/security";
 import {
   OmpTimelineProjector,
   type OmpTimelineScheduler,
@@ -2229,9 +2233,9 @@ describe("OMP direct provider", () => {
     );
     expect(timelineItems).toContainEqual(
       expect.objectContaining({
-        type: "assistant_message",
-        id: expect.stringMatching(/^omp:command:/u),
-        text: expect.stringContaining("$ pwd"),
+        type: "tool_call",
+        name: "bashExecution",
+        detail: expect.objectContaining({ type: "shell", command: "pwd", output: "/repo\n" }),
       }),
     );
     const liveTurn = turnIdFrom(
@@ -3334,6 +3338,51 @@ describe("OMP direct provider", () => {
     projector.close();
   });
 
+  test("replays maximum bounded bash output with shell terminal metadata", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector("bash-replay-session", (event) =>
+      events.push(event),
+    );
+    const output = "x".repeat(4 * 1024 * 1024);
+    projector.projectReplayMessage({
+      role: "bashExecution",
+      entryId: "bash-replay-entry",
+      command: "generate-output",
+      output,
+      exitCode: 137,
+      cancelled: true,
+      truncated: true,
+    });
+    projector.finishReplay();
+
+    const replayed = events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "tool_call",
+    );
+    expect(replayed).toEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({
+          type: "tool_call",
+          id: expect.stringMatching(/^omp:custom:/u),
+          callId: expect.stringMatching(/^omp:custom:/u),
+          name: "bashExecution",
+          status: "canceled",
+          detail: {
+            type: "shell",
+            command: "generate-output",
+            output,
+            exitCode: 137,
+          },
+          metadata: { cancelled: true, truncated: true },
+        }),
+      }),
+    );
+    if (replayed?.type === "timeline.item" && replayed.item.type === "tool_call") {
+      expect(replayed.item.callId).toBe(replayed.item.id);
+    }
+    projector.close();
+  });
+
   test("ignores an inactive runtime thinking level for a nonreasoning model", async () => {
     const runtime = new FakeOmpRuntime();
     const nonReasoningModel: OmpModel = {
@@ -4217,7 +4266,7 @@ describe("OMP direct provider", () => {
       "assistant_message",
       "tool_call",
       "tool_call",
-      "assistant_message",
+      "tool_call",
       "assistant_message",
     ]);
     expect(timeline.filter((entry) => entry.item.type === "assistant_message")[0]?.item).toEqual(
@@ -13206,6 +13255,11 @@ describe("OMP direct provider", () => {
     }
 
     expect(serializer.text("🙂🙂🙂🙂", 15)).toBe("🙂<truncated>");
+    const displayLimit = 4 * 1024 * 1024;
+    const multibyte = truncateUtf8("🙂".repeat(displayLimit / 4 + 1), displayLimit);
+    expect(Buffer.byteLength(multibyte, "utf8")).toBe(displayLimit - 1);
+    expect(multibyte).toMatch(/<truncated>$/u);
+    expect(multibyte).not.toContain("�");
   });
 
   test("bounds JSON-encoded control-heavy tool output", () => {
@@ -14319,45 +14373,64 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("preserves a one-MiB UTF-8 snapshot and marks an over-limit display", async () => {
+  test("publishes two 2 MiB blocks and redacts before the four MiB display bound", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
-    await openSession(connection, events);
+    runtime.nextInheritedRedactionValues = ["configured-secret"];
+    await openSession(
+      connection,
+      events,
+      "byte-limit-open",
+      "session-1",
+      { TEST_ENV: "test-value" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      true,
+      { providerOptions: { outputRedaction: "configured-values" } },
+    );
     const turnId = turnIdFrom(await startPrompt(connection, events, "byte-limit", "work"));
     const session = sessionAt(runtime);
-    const nearLimit = "é".repeat((1024 * 1024) / 2);
+    const twoMiB = "é".repeat(1024 * 1024);
     session.emit({
       type: "message_update",
       message: {
         role: "assistant",
-        responseId: "near-limit",
-        content: [{ type: "text", text: nearLimit }],
+        responseId: "two-blocks",
+        content: [
+          { type: "text", text: twoMiB },
+          { type: "thinking", thinking: twoMiB },
+        ],
       },
     });
     await scheduler.flush();
-    const nearEvent = events.find(
-      (event) =>
-        event.type === "timeline.item" &&
-        event.item.type === "assistant_message" &&
-        event.item.text === nearLimit,
+
+    const published = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      (event.item.type === "assistant_message" || event.item.type === "reasoning")
+        ? [event.item]
+        : [],
     );
-    expect(nearEvent).toBeDefined();
+    expect(published).toEqual([
+      expect.objectContaining({ type: "assistant_message", text: twoMiB }),
+      expect.objectContaining({ type: "reasoning", text: twoMiB }),
+    ]);
+
+    const redactionPrefix = "x".repeat(2 * 1024 * 1024);
     session.emit({
-      type: "message_update",
+      type: "message_end",
       message: {
         role: "assistant",
-        responseId: "near-limit",
-        content: [{ type: "text", text: `${nearLimit}é` }],
+        responseId: "redacted-large",
+        content: [{ type: "text", text: `${redactionPrefix}configured-secret` }],
       },
     });
-    await scheduler.flush();
-    const latest = events.findLast(
+    const redacted = events.findLast(
       (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
     );
     expect(
-      latest?.type === "timeline.item" && latest.item.type === "assistant_message"
-        ? latest.item.text.endsWith("<truncated>")
-        : false,
-    ).toBe(true);
+      redacted?.type === "timeline.item" && redacted.item.type === "assistant_message"
+        ? redacted.item.text
+        : undefined,
+    ).toBe(`${redactionPrefix}<redacted>`);
     await finishTurn(events, session, turnId);
     await connection.close();
   });
