@@ -129,13 +129,142 @@ export const OMP_PROTOCOL_VIOLATION_REASONS = [
   "event-state-transition",
 ] as const;
 export type OmpProtocolViolationReason = (typeof OMP_PROTOCOL_VIOLATION_REASONS)[number];
+export const OMP_PROTOCOL_DIAGNOSTIC_PHASES = [
+  "startup",
+  "negotiation",
+  "idle",
+  "active-turn",
+  "closing",
+] as const;
+export type OmpProtocolDiagnosticPhase = (typeof OMP_PROTOCOL_DIAGNOSTIC_PHASES)[number];
+
+export const OMP_PROTOCOL_DIAGNOSTIC_FIELDS = [
+  "frame",
+  "frame.byteLength",
+  "frame.type",
+  "response",
+  "ready",
+  "event",
+  "event.sequence",
+  "notice.level",
+  "notice.message",
+  "chunk",
+  "chunk.data",
+  "chunk.index",
+  "chunk.sequence",
+  "chunk.byteLength",
+] as const;
+export type OmpProtocolDiagnosticField = (typeof OMP_PROTOCOL_DIAGNOSTIC_FIELDS)[number];
+
+export const OMP_PROTOCOL_DIAGNOSTIC_EXPECTATIONS = [
+  "complete-json-line",
+  "within-byte-limit",
+  "valid-json",
+  "object-envelope",
+  "bounded-frame-type",
+  "valid-response-frame",
+  "valid-ready-frame",
+  "single-ready-frame",
+  "valid-event-frame",
+  "valid-event-state-transition",
+  "notice-level-enum",
+  "notice-message-string",
+  "valid-chunk-frame",
+  "valid-base64-chunk",
+  "first-chunk-index-zero",
+  "contiguous-chunk-sequence",
+  "declared-chunk-byte-count",
+  "chunk-before-deadline",
+  "no-interleaved-frame",
+  "no-remote-frame-error",
+] as const;
+export type OmpProtocolDiagnosticExpectation =
+  (typeof OMP_PROTOCOL_DIAGNOSTIC_EXPECTATIONS)[number];
+
+export const OMP_PROTOCOL_DIAGNOSTIC_ACTUAL_TYPES = [
+  "missing",
+  "null",
+  "array",
+  "object",
+  "string",
+  "number",
+  "boolean",
+  "invalid-json",
+  "partial-frame",
+  "oversized",
+  "duplicate",
+  "interleaved",
+  "out-of-order",
+  "timeout",
+  "remote-error",
+  "mismatched",
+] as const;
+export type OmpProtocolDiagnosticActualType = (typeof OMP_PROTOCOL_DIAGNOSTIC_ACTUAL_TYPES)[number];
 
 export interface OmpProtocolViolationDiagnostic {
   category: OmpProtocolViolationCategory;
   reason: OmpProtocolViolationReason;
+  phase: OmpProtocolDiagnosticPhase;
   occurrenceCount: number;
   frameType?: "ready" | "response" | "rpc_chunk" | "rpc_frame_error" | "notice";
+  field?: OmpProtocolDiagnosticField;
+  expected?: OmpProtocolDiagnosticExpectation;
+  actualType?: OmpProtocolDiagnosticActualType;
   maxByteSize?: number;
+  limitBytes?: number;
+}
+
+function protocolDiagnosticActualType(value: unknown): OmpProtocolDiagnosticActualType {
+  if (value === undefined) return "missing";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "object") return "object";
+  if (typeof value === "string") return "string";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  return "object";
+}
+
+function invalidEventDiagnosticMetadata(
+  frame: Record<string, unknown>,
+  type: string,
+): Pick<
+  OmpProtocolViolationDiagnostic,
+  "reason" | "frameType" | "field" | "expected" | "actualType"
+> {
+  if (type !== "notice") {
+    return {
+      reason: "event-schema",
+      field: "event",
+      expected: "valid-event-frame",
+      actualType: "object",
+    };
+  }
+  if (typeof frame.level !== "string") {
+    return {
+      reason: "notice-level-type",
+      frameType: "notice",
+      field: "notice.level",
+      expected: "notice-level-enum",
+      actualType: protocolDiagnosticActualType(frame.level),
+    };
+  }
+  if (typeof frame.message !== "string") {
+    return {
+      reason: "notice-message-type",
+      frameType: "notice",
+      field: "notice.message",
+      expected: "notice-message-string",
+      actualType: protocolDiagnosticActualType(frame.message),
+    };
+  }
+  return {
+    reason: "notice-schema",
+    frameType: "notice",
+    field: "event",
+    expected: "valid-event-frame",
+    actualType: "object",
+  };
 }
 
 type PendingProtocolViolation = Omit<OmpProtocolViolationDiagnostic, "occurrenceCount"> & {
@@ -2027,6 +2156,7 @@ class OmpRpcProcess {
   private spawnFailedWithoutProcess = false;
   private readyReceived = false;
   private outputSettled = false;
+  private turnActive = false;
   private readonly pendingProtocolViolations = new Map<
     OmpProtocolViolationCategory,
     PendingProtocolViolation
@@ -2132,6 +2262,9 @@ class OmpRpcProcess {
     if (this.lineBytes > 0 || this.discardingLine) {
       this.recordProtocolViolation("incomplete-frame", {
         reason: "output-ended-mid-frame",
+        field: "frame",
+        expected: "complete-json-line",
+        actualType: "partial-frame",
         maxByteSize: this.discardingLine ? this.discardedLineBytes : this.lineBytes,
       });
     }
@@ -2416,7 +2549,11 @@ class OmpRpcProcess {
       this.discardingLine = true;
       this.recordProtocolViolation("frame-limit", {
         reason: "physical-frame-limit",
+        field: "frame.byteLength",
+        expected: "within-byte-limit",
+        actualType: "oversized",
         maxByteSize: nextBytes,
+        limitBytes: this.physicalFrameLimit,
       });
       return;
     }
@@ -2440,6 +2577,9 @@ class OmpRpcProcess {
     } catch {
       this.recordProtocolViolation("invalid-json", {
         reason: "json-decode",
+        field: "frame",
+        expected: "valid-json",
+        actualType: "invalid-json",
         maxByteSize: payload.byteLength,
       });
       return;
@@ -2464,17 +2604,30 @@ class OmpRpcProcess {
       frame.data.length % 4 !== 0 ||
       !/^[A-Za-z0-9+/]*={0,2}$/u.test(frame.data)
     ) {
-      this.rejectChunk("chunk-metadata");
+      this.rejectChunk("chunk-metadata", {
+        field: "chunk",
+        expected: "valid-chunk-frame",
+        actualType: "object",
+      });
       return;
     }
     const decoded = Buffer.from(frame.data, "base64");
     if (decoded.byteLength > MAX_CHUNK_BYTES) {
-      this.rejectChunk("chunk-size");
+      this.rejectChunk("chunk-size", {
+        field: "chunk.data",
+        expected: "within-byte-limit",
+        actualType: "oversized",
+        limitBytes: MAX_CHUNK_BYTES,
+      });
       return;
     }
     if (!this.chunk) {
       if (frame.index !== 0) {
-        this.rejectChunk("chunk-start-index");
+        this.rejectChunk("chunk-start-index", {
+          field: "chunk.index",
+          expected: "first-chunk-index-zero",
+          actualType: "out-of-order",
+        });
         return;
       }
       this.chunk = {
@@ -2483,7 +2636,15 @@ class OmpRpcProcess {
         byteLength: frame.byteLength,
         parts: [],
         receivedBytes: 0,
-        timer: setTimeout(() => this.rejectChunk("chunk-timeout"), CHUNK_STALE_MS),
+        timer: setTimeout(
+          () =>
+            this.rejectChunk("chunk-timeout", {
+              field: "chunk.sequence",
+              expected: "chunk-before-deadline",
+              actualType: "timeout",
+            }),
+          CHUNK_STALE_MS,
+        ),
       };
     }
     const chunk = this.chunk;
@@ -2495,14 +2656,22 @@ class OmpRpcProcess {
       chunk.receivedBytes + decoded.byteLength > chunk.byteLength ||
       chunk.receivedBytes + decoded.byteLength > this.reassembledFrameLimit
     ) {
-      this.rejectChunk("chunk-sequence");
+      this.rejectChunk("chunk-sequence", {
+        field: "chunk.sequence",
+        expected: "contiguous-chunk-sequence",
+        actualType: "out-of-order",
+      });
       return;
     }
     chunk.parts.push(decoded);
     chunk.receivedBytes += decoded.byteLength;
     if (chunk.parts.length !== chunk.count) return;
     if (chunk.receivedBytes !== chunk.byteLength) {
-      this.rejectChunk("chunk-byte-count");
+      this.rejectChunk("chunk-byte-count", {
+        field: "chunk.byteLength",
+        expected: "declared-chunk-byte-count",
+        actualType: "mismatched",
+      });
       return;
     }
     const reassembled = Buffer.concat(chunk.parts, chunk.receivedBytes);
@@ -2513,6 +2682,9 @@ class OmpRpcProcess {
     } catch {
       this.recordProtocolViolation("invalid-json", {
         reason: "chunk-json-decode",
+        field: "chunk.data",
+        expected: "valid-json",
+        actualType: "invalid-json",
         maxByteSize: reassembled.byteLength,
       });
       return;
@@ -2542,6 +2714,9 @@ class OmpRpcProcess {
     if (!frame.success) {
       this.recordProtocolViolation("invalid-envelope", {
         reason: "object-envelope",
+        field: "frame",
+        expected: "object-envelope",
+        actualType: protocolDiagnosticActualType(sanitized),
         maxByteSize: rawByteLength,
       });
       return;
@@ -2574,6 +2749,9 @@ class OmpRpcProcess {
         this.recordProtocolViolation("invalid-response", {
           reason: "response-schema",
           frameType: "response",
+          field: "response",
+          expected: "valid-response-frame",
+          actualType: "object",
         });
       }
       return;
@@ -2734,6 +2912,9 @@ class OmpRpcProcess {
     if (!type) {
       this.recordProtocolViolation("invalid-envelope", {
         reason: "missing-frame-type",
+        field: "frame.type",
+        expected: "bounded-frame-type",
+        actualType: protocolDiagnosticActualType(frame.type),
         maxByteSize: rawByteLength,
       });
       return;
@@ -2751,26 +2932,41 @@ class OmpRpcProcess {
     ) {
       this.recordProtocolViolation("frame-limit", {
         reason: "semantic-frame-limit",
+        field: "frame.byteLength",
+        expected: "within-byte-limit",
+        actualType: "oversized",
         maxByteSize: rawByteLength,
+        limitBytes: MAX_SEMANTIC_FRAME_BYTES,
       });
       return;
     }
     if (type === "rpc_chunk") {
       const chunk = OmpChunkFrameSchema.safeParse(safeFrame);
-      if (!chunk.success) this.rejectChunk("chunk-schema");
-      else this.receiveChunk(chunk.data);
+      if (!chunk.success) {
+        this.rejectChunk("chunk-schema", {
+          field: "chunk",
+          expected: "valid-chunk-frame",
+          actualType: "object",
+        });
+      } else this.receiveChunk(chunk.data);
       return;
     }
     if (this.chunk) {
       this.clearChunk();
       this.recordProtocolViolation("interleaved-chunk", {
         reason: "frame-interleaved-with-chunk",
+        field: "chunk.sequence",
+        expected: "no-interleaved-frame",
+        actualType: "interleaved",
       });
     }
     if (type === "rpc_frame_error") {
       this.recordProtocolViolation("remote-frame-error", {
         reason: "remote-frame-error",
         frameType: "rpc_frame_error",
+        field: "frame",
+        expected: "no-remote-frame-error",
+        actualType: "remote-error",
       });
       return;
     }
@@ -2779,6 +2975,9 @@ class OmpRpcProcess {
         this.recordProtocolViolation("duplicate-ready", {
           reason: "ready-already-received",
           frameType: "ready",
+          field: "ready",
+          expected: "single-ready-frame",
+          actualType: "duplicate",
         });
         return;
       }
@@ -2787,6 +2986,9 @@ class OmpRpcProcess {
         this.recordProtocolViolation("invalid-ready", {
           reason: "ready-schema",
           frameType: "ready",
+          field: "ready",
+          expected: "valid-ready-frame",
+          actualType: "object",
         });
       } else {
         this.readyReceived = true;
@@ -2803,15 +3005,7 @@ class OmpRpcProcess {
       this.rejectMatchingToolApproval(safeFrame);
       if (type === "agent_end" && this.receiveDegradedAgentEnd(safeFrame, false)) return;
       this.recordProtocolViolation("invalid-event", {
-        reason:
-          type === "notice"
-            ? typeof safeFrame.level !== "string"
-              ? "notice-level-type"
-              : typeof safeFrame.message !== "string"
-                ? "notice-message-type"
-                : "notice-schema"
-            : "event-schema",
-        ...(type === "notice" ? { frameType: "notice" as const } : {}),
+        ...invalidEventDiagnosticMetadata(safeFrame, type),
         maxByteSize: rawByteLength,
       });
       return;
@@ -2819,6 +3013,9 @@ class OmpRpcProcess {
     if (!this.acceptEventState(event.data)) {
       this.recordProtocolViolation("invalid-event-state", {
         reason: "event-state-transition",
+        field: "event.sequence",
+        expected: "valid-event-state-transition",
+        actualType: "out-of-order",
         maxByteSize: rawByteLength,
       });
       return;
@@ -2826,6 +3023,9 @@ class OmpRpcProcess {
     this.emit(event.data);
     if (event.data.type === "prompt_result" && event.data.id) {
       this.acceptedPromptIds.delete(event.data.id);
+    }
+    if (event.data.type === "turn_end" || event.data.type === "agent_end") {
+      this.turnActive = false;
     }
     if (
       event.data.type === "message_end" ||
@@ -2854,6 +3054,7 @@ class OmpRpcProcess {
 
   private acceptEventState(event: z.infer<typeof OmpRuntimeEventSchema>): boolean {
     if (event.type === "turn_start") {
+      this.turnActive = true;
       this.streamedBlocks.clear();
       this.commandTextLength = 0;
       this.activeToolCallIds.clear();
@@ -2923,17 +3124,39 @@ class OmpRpcProcess {
     return true;
   }
 
-  private rejectChunk(reason: OmpProtocolViolationReason): void {
+  private protocolDiagnosticPhase(): OmpProtocolDiagnosticPhase {
+    if (this.closed || this.exited || this.outputSettled) return "closing";
+    if (!this.readyReceived) return "startup";
+    for (const pending of this.pending.values()) {
+      if (pending.command === "negotiate_protocol") return "negotiation";
+      if (pending.command === "prompt") return "active-turn";
+    }
+    if (this.turnActive || this.acceptedPromptIds.size > 0) return "active-turn";
+    return "idle";
+  }
+
+  private rejectChunk(
+    reason: OmpProtocolViolationReason,
+    metadata: Omit<
+      OmpProtocolViolationDiagnostic,
+      "category" | "reason" | "occurrenceCount" | "phase" | "frameType"
+    > = {},
+  ): void {
     this.clearChunk();
-    this.recordProtocolViolation("invalid-chunk", { reason, frameType: "rpc_chunk" });
+    this.recordProtocolViolation("invalid-chunk", {
+      reason,
+      frameType: "rpc_chunk",
+      ...metadata,
+    });
   }
 
   private recordProtocolViolation(
     category: OmpProtocolViolationCategory,
-    metadata: Omit<OmpProtocolViolationDiagnostic, "category" | "occurrenceCount">,
+    metadata: Omit<OmpProtocolViolationDiagnostic, "category" | "occurrenceCount" | "phase">,
   ): void {
+    const phase = this.protocolDiagnosticPhase();
     if (!this.protocolViolationTimer) {
-      this.emitProtocolViolation({ category, occurrenceCount: 1, ...metadata });
+      this.emitProtocolViolation({ category, occurrenceCount: 1, phase, ...metadata });
       this.protocolViolationTimer = setTimeout(
         () => this.flushProtocolViolations(),
         PROTOCOL_VIOLATION_COALESCE_MS,
@@ -2942,14 +3165,24 @@ class OmpRpcProcess {
     }
     const pending = this.pendingProtocolViolations.get(category);
     if (!pending) {
-      this.pendingProtocolViolations.set(category, { category, occurrenceCount: 1, ...metadata });
+      this.pendingProtocolViolations.set(category, {
+        category,
+        occurrenceCount: 1,
+        phase,
+        ...metadata,
+      });
       return;
     }
     pending.occurrenceCount = Math.min(Number.MAX_SAFE_INTEGER, pending.occurrenceCount + 1);
     pending.maxByteSize =
       Math.max(pending.maxByteSize ?? 0, metadata.maxByteSize ?? 0) || undefined;
-    if (pending.frameType !== metadata.frameType) pending.frameType = undefined;
     pending.reason = metadata.reason;
+    pending.phase = phase;
+    pending.frameType = metadata.frameType;
+    pending.field = metadata.field;
+    pending.expected = metadata.expected;
+    pending.actualType = metadata.actualType;
+    pending.limitBytes = metadata.limitBytes;
   }
 
   private flushProtocolViolations(): void {

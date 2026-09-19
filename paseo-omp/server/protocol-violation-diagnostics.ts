@@ -1,7 +1,9 @@
 import {
   OMP_PROTOCOL_VIOLATION_CATEGORIES,
+  OMP_PROTOCOL_VIOLATION_REASONS,
   type OmpProtocolViolationCategory,
   type OmpProtocolViolationDiagnostic,
+  type OmpProtocolViolationReason,
 } from "./provider/omp-rpc";
 
 export interface OmpProtocolViolationSummary {
@@ -11,9 +13,15 @@ export interface OmpProtocolViolationSummary {
   maxOccurrenceCount: number;
   firstAt: string | null;
   lastAt: string | null;
+  reasonCounts: Record<OmpProtocolViolationReason, number>;
   latestReason: OmpProtocolViolationDiagnostic["reason"] | null;
+  latestPhase: OmpProtocolViolationDiagnostic["phase"] | null;
   latestFrameType: OmpProtocolViolationDiagnostic["frameType"] | null;
+  latestField: OmpProtocolViolationDiagnostic["field"] | null;
+  latestExpected: OmpProtocolViolationDiagnostic["expected"] | null;
+  latestActualType: OmpProtocolViolationDiagnostic["actualType"] | null;
   maxByteSize: number | null;
+  latestLimitBytes: number | null;
 }
 
 type MutableSummary = OmpProtocolViolationSummary;
@@ -49,8 +57,13 @@ function logProtocolViolation(message: string, diagnostic: OmpProtocolViolationD
     `category: ${diagnostic.category}`,
     `reason: ${diagnostic.reason}`,
     `occurrenceCount: ${diagnostic.occurrenceCount}`,
+    `phase: ${diagnostic.phase}`,
     ...(diagnostic.frameType ? [`frameType: ${diagnostic.frameType}`] : []),
+    ...(diagnostic.field ? [`field: ${diagnostic.field}`] : []),
+    ...(diagnostic.expected ? [`expected: ${diagnostic.expected}`] : []),
+    ...(diagnostic.actualType ? [`actualType: ${diagnostic.actualType}`] : []),
     ...(diagnostic.maxByteSize ? [`maxByteSize: ${diagnostic.maxByteSize}`] : []),
+    ...(diagnostic.limitBytes ? [`limitBytes: ${diagnostic.limitBytes}`] : []),
   ];
   console.error(`${message} { ${fields.join(", ")} }`);
 }
@@ -67,9 +80,17 @@ export class OmpProtocolViolationCollector {
         maxOccurrenceCount: 0,
         firstAt: null,
         lastAt: null,
+        reasonCounts: Object.fromEntries(
+          OMP_PROTOCOL_VIOLATION_REASONS.map((reason) => [reason, 0]),
+        ),
         latestReason: null,
+        latestPhase: null,
         latestFrameType: null,
+        latestField: null,
+        latestExpected: null,
+        latestActualType: null,
         maxByteSize: null,
+        latestLimitBytes: null,
       },
     ]),
   ) as Record<OmpProtocolViolationCategory, MutableSummary>;
@@ -95,18 +116,33 @@ export class OmpProtocolViolationCollector {
         summary.firstAt ??= timestamp;
         summary.lastAt = timestamp;
       }
+      summary.reasonCounts[diagnostic.reason] = boundedAdd(
+        summary.reasonCounts[diagnostic.reason],
+        occurrenceCount,
+      );
       summary.latestReason = diagnostic.reason;
+      summary.latestPhase = diagnostic.phase;
       summary.latestFrameType =
         diagnostic.frameType && FRAME_TYPES[diagnostic.frameType] ? diagnostic.frameType : null;
+      summary.latestField = diagnostic.field ?? null;
+      summary.latestExpected = diagnostic.expected ?? null;
+      summary.latestActualType = diagnostic.actualType ?? null;
       const byteSize = boundedCount(diagnostic.maxByteSize);
       if (byteSize > 0) summary.maxByteSize = Math.max(summary.maxByteSize ?? 0, byteSize);
+      const limitBytes = boundedCount(diagnostic.limitBytes);
+      summary.latestLimitBytes = limitBytes || null;
 
       const safeDiagnostic: OmpProtocolViolationDiagnostic = {
         category: diagnostic.category,
         reason: diagnostic.reason,
+        phase: diagnostic.phase,
         occurrenceCount,
         ...(summary.latestFrameType ? { frameType: summary.latestFrameType } : {}),
+        ...(summary.latestField ? { field: summary.latestField } : {}),
+        ...(summary.latestExpected ? { expected: summary.latestExpected } : {}),
+        ...(summary.latestActualType ? { actualType: summary.latestActualType } : {}),
         ...(byteSize > 0 ? { maxByteSize: byteSize } : {}),
+        ...(limitBytes > 0 ? { limitBytes } : {}),
       };
       try {
         const logging = this.log("OMP protocol violation", safeDiagnostic);
@@ -122,6 +158,7 @@ export class OmpProtocolViolationCollector {
   snapshot(): OmpProtocolViolationSummary[] {
     return OMP_PROTOCOL_VIOLATION_CATEGORIES.map((category) => ({
       ...this.summaries[category],
+      reasonCounts: { ...this.summaries[category].reasonCounts },
     }));
   }
 }

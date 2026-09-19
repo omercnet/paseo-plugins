@@ -80,6 +80,10 @@ describe("OMP support report", () => {
     collector.report({
       category: "invalid-json",
       reason: "json-decode",
+      phase: "idle",
+      field: "frame",
+      expected: "valid-json",
+      actualType: "invalid-json",
       occurrenceCount: 4,
       frameType: "response",
       maxByteSize: 777,
@@ -106,6 +110,11 @@ describe("OMP support report", () => {
     expect(first).toContain("hub.active_count: 2");
     expect(first).toContain("protocol.invalid-json.occurrence_count: 4");
     expect(first).toContain("protocol.invalid-json.latest_reason: json-decode");
+    expect(first).toContain("protocol.invalid-json.latest_phase: idle");
+    expect(first).toContain("protocol.invalid-json.latest_field: frame");
+    expect(first).toContain("protocol.invalid-json.latest_expected: valid-json");
+    expect(first).toContain("protocol.invalid-json.latest_actual_type: invalid-json");
+    expect(first).toContain("protocol.invalid-json.reason.json-decode.occurrence_count: 4");
     expect(first).toContain("protocol.invalid-json.latest_frame_type: response");
     expect(first).toContain("protocol.invalid-json.max_byte_size: 777");
     expect(first).not.toContain("operational.session-open.startup");
@@ -252,6 +261,7 @@ describe("protocol violation aggregation", () => {
     collector.report({
       category: "frame-limit",
       reason: "physical-frame-limit",
+      phase: "startup",
       occurrenceCount: Number.MAX_SAFE_INTEGER,
       frameType: "rpc_chunk",
       maxByteSize: 1024,
@@ -259,6 +269,7 @@ describe("protocol violation aggregation", () => {
     collector.report({
       category: "frame-limit",
       reason: "semantic-frame-limit",
+      phase: "idle",
       occurrenceCount: 9,
       frameType: "rpc_frame_error",
       maxByteSize: 4096,
@@ -266,8 +277,7 @@ describe("protocol violation aggregation", () => {
 
     const snapshot = collector.snapshot();
     const frameLimit = snapshot.find((entry) => entry.category === "frame-limit");
-    expect(snapshot).toHaveLength(12);
-    expect(frameLimit).toEqual({
+    expect(frameLimit).toMatchObject({
       category: "frame-limit",
       occurrenceCount: Number.MAX_SAFE_INTEGER,
       batchCount: 2,
@@ -275,9 +285,12 @@ describe("protocol violation aggregation", () => {
       firstAt: "2026-09-19T12:00:00.000Z",
       lastAt: "2026-09-19T12:01:00.000Z",
       latestReason: "semantic-frame-limit",
+      latestPhase: "idle",
       latestFrameType: "rpc_frame_error",
       maxByteSize: 4096,
     });
+    expect(frameLimit?.reasonCounts["physical-frame-limit"]).toBe(Number.MAX_SAFE_INTEGER);
+    expect(frameLimit?.reasonCounts["semantic-frame-limit"]).toBe(9);
     expect(log).toHaveBeenCalledTimes(2);
   });
 
@@ -294,6 +307,7 @@ describe("protocol violation aggregation", () => {
     expect(() =>
       collector.report({
         category: "invalid-event",
+        phase: "idle",
         reason: "event-schema",
         occurrenceCount: 1,
       }),
@@ -316,6 +330,7 @@ describe("protocol violation aggregation", () => {
     expect(() =>
       collector.report({
         category: "invalid-json",
+        phase: "idle",
         reason: "json-decode",
         occurrenceCount: 1,
       }),

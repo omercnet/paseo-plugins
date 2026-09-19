@@ -2500,8 +2500,12 @@ describe("OMP RPC transport", () => {
       {
         category: "invalid-event",
         reason: "notice-level-type",
+        phase: "idle",
         occurrenceCount: 1,
         frameType: "notice",
+        field: "notice.level",
+        expected: "notice-level-enum",
+        actualType: "number",
         maxByteSize: Buffer.byteLength(JSON.stringify(malformed)),
       },
     ]);
@@ -2513,11 +2517,19 @@ describe("OMP RPC transport", () => {
         category: "invalid-event",
         reason: "notice-level-type",
         occurrenceCount: 1,
+        phase: "idle",
+        field: "notice.level",
+        expected: "notice-level-enum",
+        actualType: "number",
       }),
       expect.objectContaining({
         category: "invalid-event",
         reason: "notice-level-type",
         occurrenceCount: 99,
+        phase: "idle",
+        field: "notice.level",
+        expected: "notice-level-enum",
+        actualType: "number",
       }),
     ]);
     expect(JSON.stringify(diagnostics)).not.toContain(secret);

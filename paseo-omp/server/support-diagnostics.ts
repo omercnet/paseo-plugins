@@ -128,11 +128,21 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
       `${prefix}.occurrence_count: ${finiteCount(violation.occurrenceCount)}`,
       `${prefix}.batch_count: ${finiteCount(violation.batchCount)}`,
       `${prefix}.max_batch_count: ${finiteCount(violation.maxOccurrenceCount)}`,
+    );
+    for (const [reason, count] of Object.entries(violation.reasonCounts)) {
+      if (count > 0) lines.push(`${prefix}.reason.${reason}.occurrence_count: ${count}`);
+    }
+    lines.push(
       `${prefix}.latest_reason: ${violation.latestReason ?? "unknown"}`,
+      `${prefix}.latest_phase: ${violation.latestPhase ?? "unknown"}`,
       `${prefix}.first_at_utc: ${violation.firstAt ?? "unavailable"}`,
       `${prefix}.last_at_utc: ${violation.lastAt ?? "unavailable"}`,
       `${prefix}.latest_frame_type: ${violation.latestFrameType ?? "unknown"}`,
+      `${prefix}.latest_field: ${violation.latestField ?? "unknown"}`,
+      `${prefix}.latest_expected: ${violation.latestExpected ?? "unknown"}`,
+      `${prefix}.latest_actual_type: ${violation.latestActualType ?? "unknown"}`,
       `${prefix}.max_byte_size: ${finiteCount(violation.maxByteSize)}`,
+      `${prefix}.latest_limit_bytes: ${finiteCount(violation.latestLimitBytes)}`,
     );
   }
   for (const failure of data.operationalFailures) {
