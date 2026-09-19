@@ -908,10 +908,7 @@ export class OmpTimelineProjector {
       return;
     }
     if (message.role === "bashExecution") {
-      const text = message.output
-        ? `$ ${message.command}\n${message.output}`
-        : `$ ${message.command}`;
-      this.project({ type: "command_output", text }, this.replayTurnId);
+      this.publishCustomMessage(message);
       this.finishTurn(this.replayTurnId);
       this.replayTurnId = null;
     }
@@ -1012,7 +1009,10 @@ export class OmpTimelineProjector {
     for (const contentIndex of indexes) {
       const block = stream.blocks.get(contentIndex);
       if (!block?.text) continue;
-      const publicText = block.kind === "image" ? block.text : this.dataFilter.text(block.text);
+      const publicText =
+        block.kind === "image"
+          ? block.text
+          : this.dataFilter.text(block.text, MAX_STREAM_TEXT_LENGTH);
       if (!publicText || block.publishedText === publicText) continue;
       const nextPublishedBytes = utf8Bytes(publicText);
       if (
@@ -1291,7 +1291,7 @@ export class OmpTimelineProjector {
 
   private publishCommand(turnId: string): void {
     if (!this.commandText) return;
-    const publicText = this.dataFilter.text(this.commandText);
+    const publicText = this.dataFilter.text(this.commandText, MAX_STREAM_TEXT_LENGTH);
     if (!publicText || publicText === this.commandPublishedText) return;
     this.commandPublishedText = publicText;
     this.publish({
@@ -1377,13 +1377,21 @@ export class OmpTimelineProjector {
           type: "shell",
           command,
           ...(firstString(details, "cwd") ? { cwd: firstString(details, "cwd") } : {}),
-          ...(output ? { output: this.dataFilter.text(output) } : {}),
+          ...(output ? { output: this.dataFilter.text(output, MAX_STREAM_TEXT_LENGTH) } : {}),
           ...(typeof message.exitCode === "number" || message.exitCode === null
             ? { exitCode: message.exitCode }
             : typeof details?.exitCode === "number"
               ? { exitCode: details.exitCode }
               : {}),
         },
+        ...(message.cancelled !== undefined || message.truncated !== undefined
+          ? {
+              metadata: {
+                ...(message.cancelled !== undefined ? { cancelled: message.cancelled } : {}),
+                ...(message.truncated !== undefined ? { truncated: message.truncated } : {}),
+              },
+            }
+          : {}),
         status: message.cancelled ? "canceled" : "completed",
         error: null,
       });
