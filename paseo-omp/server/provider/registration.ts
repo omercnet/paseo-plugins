@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import type { OmpBrowserAuthorizationRegistry } from "../mcp-browser";
+import type { OmpOperationalFailureReporter } from "../operational-failure-diagnostics";
 import { probeOmpAvailability } from "../provider-diagnostics";
 import { createOmpConnection, OmpNativeSessionReservations } from "./connection";
 import type { OmpMcpConnector } from "./host-tools";
@@ -67,6 +68,7 @@ export interface OmpProviderOptions {
   mcpConnector?: OmpMcpConnector;
   browserAuthorizationRegistry?: OmpBrowserAuthorizationRegistry;
   reportProtocolViolation?: (diagnostic: OmpProtocolViolationDiagnostic) => void | Promise<void>;
+  reportOperationalFailure?: OmpOperationalFailureReporter;
   availabilityProbe?: (
     options: ProviderCatalogOptionsCompat,
     timeoutMs: number | undefined,
@@ -162,6 +164,8 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         options.mcpInitializationTimeoutMs,
         options.replayTimeoutMs,
         options.browserAuthorizationRegistry,
+        undefined,
+        options.reportOperationalFailure,
       );
     },
   };

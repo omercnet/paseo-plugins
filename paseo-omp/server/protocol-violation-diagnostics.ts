@@ -65,7 +65,7 @@ export class OmpProtocolViolationCollector {
     private readonly log: (
       message: string,
       diagnostic: OmpProtocolViolationDiagnostic,
-    ) => void = console.error,
+    ) => void | PromiseLike<void> = console.error,
   ) {}
 
   report = (diagnostic: OmpProtocolViolationDiagnostic): void => {
@@ -93,7 +93,8 @@ export class OmpProtocolViolationCollector {
         ...(byteSize > 0 ? { maxByteSize: byteSize } : {}),
       };
       try {
-        this.log("OMP protocol violation", safeDiagnostic);
+        const logging = this.log("OMP protocol violation", safeDiagnostic);
+        if (logging) void Promise.resolve(logging).catch(() => undefined);
       } catch {
         // Diagnostics must never affect transport or provider flow.
       }

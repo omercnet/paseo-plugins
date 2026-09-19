@@ -14,6 +14,7 @@ import {
   resolveMutateOmpPluginConfig,
 } from "./server/omp-plugins";
 import { resolveListOmpSettings, resolveUpdateOmpSettings } from "./server/omp-settings";
+import { OmpOperationalFailureCollector } from "./server/operational-failure-diagnostics";
 import { withOmpStore } from "./server/paths";
 import { OmpProtocolViolationCollector } from "./server/protocol-violation-diagnostics";
 import { withOmpWorkspaceIdentity } from "./server/provider/host-tools";
@@ -54,6 +55,7 @@ export default function contribute(server: PluginServerContext) {
   server.registerSettings(composerPillSettings);
   const browserAuthorizationRegistry = new OmpBrowserAuthorizationRegistry();
   const protocolViolations = new OmpProtocolViolationCollector();
+  const operationalFailures = new OmpOperationalFailureCollector();
   const profiles = discoverOmpProfilesSync();
   server.handle(listOmpStores, async () => ({ profiles: await discoverOmpProfiles() }));
   for (const profile of profiles) {
@@ -61,6 +63,7 @@ export default function contribute(server: PluginServerContext) {
       createProfileOmpProvider(profile, {
         browserAuthorizationRegistry,
         reportProtocolViolation: protocolViolations.report,
+        reportOperationalFailure: operationalFailures.report,
       }),
     );
   }
@@ -80,7 +83,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getOmpProviderHealth, scoped(resolveGetOmpProviderHealth));
   server.handle(
     getOmpSupportReport,
-    scoped((input) => resolveGetOmpSupportReport(input, protocolViolations)),
+    scoped((input) => resolveGetOmpSupportReport(input, protocolViolations, operationalFailures)),
   );
   server.handle(openOmpMcpAuthorizationInPaseoBrowser, (input) =>
     resolveOpenOmpMcpAuthorizationInPaseoBrowser(input, browserAuthorizationRegistry),
@@ -93,6 +96,7 @@ export default function contribute(server: PluginServerContext) {
     createOmpProvider({
       browserAuthorizationRegistry,
       reportProtocolViolation: protocolViolations.report,
+      reportOperationalFailure: operationalFailures.report,
     }),
   );
   return () => {

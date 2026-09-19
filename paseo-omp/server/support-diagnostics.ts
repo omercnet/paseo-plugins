@@ -1,8 +1,6 @@
-import { readFile } from "node:fs/promises";
 import { arch, platform } from "node:os";
 import type { RpcInput } from "@getpaseo/plugin";
 import { z } from "zod";
-import { storeLabel } from "../shared/omp-store";
 import type { OmpProviderHealth, OmpVersion } from "../shared/provider-diagnostics";
 import {
   type getOmpSupportReport,
@@ -10,6 +8,10 @@ import {
   OMP_SUPPORT_REPORT_SCHEMA_VERSION,
   supportReportByteLength,
 } from "../shared/support-diagnostics";
+import type {
+  OmpOperationalFailureCollector,
+  OmpOperationalFailureSummary,
+} from "./operational-failure-diagnostics";
 import type {
   OmpProtocolViolationCollector,
   OmpProtocolViolationSummary,
@@ -20,6 +22,7 @@ const PACKAGE_VERSION = z
   .string()
   .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]{1,48})?$/u)
   .max(64);
+const PASEO_OMP_BUILD_VERSION = "0.3.0";
 const NODE_VERSION = z
   .string()
   .regex(/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]{1,48})?$/u)
@@ -56,9 +59,10 @@ export interface OmpSupportReportData {
   architecture: string;
   nodeVersion: string;
   scope: "global" | "workspace";
-  store: string;
+  store: "default" | "named-profile" | "custom-directory";
   health: OmpProviderHealth | null;
   violations: readonly OmpProtocolViolationSummary[];
+  operationalFailures: readonly OmpOperationalFailureSummary[];
 }
 
 function finiteCount(value: number | null | undefined, maximum = Number.MAX_SAFE_INTEGER): string {
@@ -148,6 +152,14 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
       `${prefix}.max_byte_size: ${finiteCount(violation.maxByteSize)}`,
     );
   }
+  for (const failure of data.operationalFailures) {
+    const prefix = `operational.${failure.category}.${failure.stage}`;
+    lines.push(
+      `${prefix}.occurrence_count: ${finiteCount(failure.occurrenceCount)}`,
+      `${prefix}.first_at_utc: ${failure.firstAt ?? "unavailable"}`,
+      `${prefix}.last_at_utc: ${failure.lastAt ?? "unavailable"}`,
+    );
+  }
   const report = `${lines.join("\n")}\n`;
   if (supportReportByteLength(report) > OMP_SUPPORT_REPORT_MAX_BYTES) {
     return [
@@ -162,17 +174,6 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
   return report;
 }
 
-async function readPluginVersion(): Promise<string> {
-  try {
-    const text = await readFile(new URL("../package.json", import.meta.url), "utf8");
-    if (text.length > 16 * 1024) return "unavailable";
-    const parsed = z.object({ version: PACKAGE_VERSION }).safeParse(JSON.parse(text));
-    return parsed.success ? parsed.data.version : "unavailable";
-  } catch {
-    return "unavailable";
-  }
-}
-
 function collectedAt(now: () => Date): string {
   try {
     const value = now();
@@ -185,6 +186,7 @@ function collectedAt(now: () => Date): string {
 export async function resolveGetOmpSupportReport(
   input: RpcInput<typeof getOmpSupportReport>,
   violations: OmpProtocolViolationCollector,
+  operationalFailures: OmpOperationalFailureCollector,
   dependencies: {
     loadHealth?: typeof resolveGetOmpProviderHealth;
     loadPluginVersion?: () => Promise<string>;
@@ -198,7 +200,7 @@ export async function resolveGetOmpSupportReport(
   try {
     const [healthResult, pluginVersionResult] = await Promise.allSettled([
       (dependencies.loadHealth ?? resolveGetOmpProviderHealth)(input),
-      (dependencies.loadPluginVersion ?? readPluginVersion)(),
+      (dependencies.loadPluginVersion ?? (() => Promise.resolve(PASEO_OMP_BUILD_VERSION)))(),
     ]);
     const platformValue = (dependencies.platform ?? platform)();
     const architectureValue = (dependencies.architecture ?? arch)();
@@ -217,9 +219,14 @@ export async function resolveGetOmpSupportReport(
           ? nodeVersionValue
           : "unavailable",
         scope: input.cwd ? "workspace" : "global",
-        store: storeLabel(input.store),
+        store: input.store?.profile
+          ? "named-profile"
+          : input.store?.agentDir
+            ? "custom-directory"
+            : "default",
         health: healthResult.status === "fulfilled" ? healthResult.value : null,
         violations: violations.snapshot(),
+        operationalFailures: operationalFailures.snapshot(),
       }),
     };
   } catch {
@@ -231,9 +238,14 @@ export async function resolveGetOmpSupportReport(
         architecture: "unknown",
         nodeVersion: "unavailable",
         scope: input.cwd ? "workspace" : "global",
-        store: storeLabel(input.store),
+        store: input.store?.profile
+          ? "named-profile"
+          : input.store?.agentDir
+            ? "custom-directory"
+            : "default",
         health: null,
         violations: violations.snapshot(),
+        operationalFailures: operationalFailures.snapshot(),
       }),
     };
   }

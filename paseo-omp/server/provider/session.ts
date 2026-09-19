@@ -11,6 +11,10 @@ import type {
   ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { getForgeDefinitionOrNeutral } from "@getpaseo/protocol/forge-manifest";
+import type {
+  OmpOperationalFailure,
+  OmpOperationalFailureReporter,
+} from "../operational-failure-diagnostics";
 import {
   mapOmpModels,
   nativeOmpModelId,
@@ -292,6 +296,7 @@ type ActiveTurn = {
   terminalizing: boolean;
   terminalization?: Promise<void>;
   terminalOutcome?: TurnOutcome;
+  operationalTerminalStage?: "failed" | "unresolved";
   terminalWake?: VoidDeferred;
   steerReady: VoidDeferred;
   steersInFlight: number;
@@ -973,6 +978,7 @@ export class OmpProviderSession {
     private readonly transitionNativeSession: NativeSessionTransition,
     private readonly quarantineRewindCleanup: RewindCleanupQuarantine,
     private readonly retireRewindSession: RewindSessionRetirement,
+    private readonly reportOperationalFailure: OmpOperationalFailureReporter,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
   ) {
     this.id = id;
@@ -981,7 +987,10 @@ export class OmpProviderSession {
     this.dataFilter = new OmpPublicDataSerializer(outputRedactionValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.commandCatalog = commandCatalog;
-    this.hostTools.onFatal(() => this.handleRuntimeFailure());
+    this.hostTools.onFatal(() => {
+      this.recordOperationalFailure({ category: "tool-projector", stage: "host-tool" });
+      this.handleRuntimeFailure();
+    });
     this.projector = new OmpTimelineProjector(
       id,
       emit,
@@ -1005,6 +1014,13 @@ export class OmpProviderSession {
         )
       : null;
     this.bindRuntime(runtime);
+  }
+  private recordOperationalFailure(failure: OmpOperationalFailure): void {
+    try {
+      this.reportOperationalFailure(failure);
+    } catch {
+      // Diagnostics must never affect provider or session flow.
+    }
   }
   get persistenceSessionId(): string | undefined {
     return this.persistSession ? this.nativeSessionId : undefined;
@@ -1032,6 +1048,7 @@ export class OmpProviderSession {
     environment?: NodeJS.ProcessEnv,
     mcpConnector?: OmpMcpConnector,
     mcpInitializationTimeoutMs?: number,
+    reportOperationalFailure: OmpOperationalFailureReporter = () => {},
   ): Promise<OmpProviderSession> {
     const resumeSessionId = ompPersistenceSessionId(input);
     if (resumeSessionId && !input.config.persist) {
@@ -1236,6 +1253,7 @@ export class OmpProviderSession {
         transitionNativeSession,
         quarantineRewindCleanup,
         retireRewindSession,
+        reportOperationalFailure,
         scheduler,
       );
       session.unsupportedThinkingNoticePending = unsupportedThinkingLevel;
@@ -1653,6 +1671,10 @@ export class OmpProviderSession {
           }
         } catch (error) {
           if (replay.signal.aborted) throw error;
+          this.recordOperationalFailure({
+            category: "replay-recovery",
+            stage: "persisted-replay",
+          });
           this.emit({
             type: "timeline.item",
             sessionId: this.id,
@@ -1807,6 +1829,7 @@ export class OmpProviderSession {
       this.publishCommittedConfig(state, runtime, generation);
       this.emit({ type: "request.completed", requestId: input.requestId });
     } catch (error) {
+      this.recordOperationalFailure({ category: "replay-recovery", stage: "rewind" });
       const failure = branchMutationPossible
         ? { message: "OMP conversation rewind left native state indeterminate" }
         : providerError(error, "OMP conversation rewind failed");
@@ -2924,7 +2947,13 @@ export class OmpProviderSession {
 
   private async recoverRuntime(): Promise<void> {
     if (!this.runtimeDead) return;
-    this.recoveryPromise ??= this.startRecovery();
+    this.recoveryPromise ??= this.startRecovery().catch((error) => {
+      this.recordOperationalFailure({
+        category: "replay-recovery",
+        stage: "runtime-recovery",
+      });
+      throw error;
+    });
     try {
       await this.recoveryPromise;
     } finally {
@@ -3147,6 +3176,10 @@ export class OmpProviderSession {
       try {
         this.subsessions?.handle(event);
       } catch {
+        this.recordOperationalFailure({
+          category: "tool-projector",
+          stage: "subsession-projector",
+        });
         this.handleRuntimeFailure("OMP subagent event processing failed");
       }
       return;
@@ -3381,6 +3414,10 @@ export class OmpProviderSession {
       try {
         this.subsessions?.observeSessionEvent(this.id, event);
       } catch {
+        this.recordOperationalFailure({
+          category: "tool-projector",
+          stage: "subsession-projector",
+        });
         this.handleRuntimeFailure("OMP subagent dispatch tracking failed");
         return;
       }
@@ -3437,7 +3474,15 @@ export class OmpProviderSession {
       }
     }
     if (isNativeTurnActivity(event)) this.markAgentEvidence(turn);
-    this.projector.project(event, turn.turnId);
+    try {
+      this.projector.project(event, turn.turnId);
+    } catch (error) {
+      this.recordOperationalFailure({
+        category: "tool-projector",
+        stage: "timeline-projector",
+      });
+      throw error;
+    }
     if (event.type === "tool_execution_end") this.resumeDeferredAgentEnd();
   }
 
@@ -4506,6 +4551,7 @@ export class OmpProviderSession {
     const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
     if (turn.terminal || this.activeTurn !== turn || turn.deferredAgentEnd !== candidate) return;
     if (!state) {
+      turn.operationalTerminalStage = "unresolved";
       this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
       return;
     }
@@ -4759,6 +4805,7 @@ export class OmpProviderSession {
       await this.finishTurn(turn, "completed");
       return;
     }
+    turn.operationalTerminalStage = outcome === "failed" ? "failed" : "unresolved";
     const error =
       outcome === "failed" ? "OMP assistant turn failed" : unknownTerminalOutcomeError(event, turn);
     this.subsessions?.terminalize("failed");
@@ -4901,6 +4948,12 @@ export class OmpProviderSession {
           usageSampled: true,
         };
       }
+      if (outcome.state === "failed") {
+        this.recordOperationalFailure({
+          category: "terminal-outcome",
+          stage: turn.operationalTerminalStage ?? "failed",
+        });
+      }
       this.imageMaterializer.clear();
       turn.terminal = true;
       if (this.usageSample?.turn === turn) this.usageSample = null;
@@ -4914,7 +4967,15 @@ export class OmpProviderSession {
       }
       this.publishPendingUsers(turn);
       this.resolveTurnPermissions(turn.turnId);
-      this.projector.finishTurn(turn.turnId, preserveCompactions);
+      try {
+        this.projector.finishTurn(turn.turnId, preserveCompactions);
+      } catch (error) {
+        this.recordOperationalFailure({
+          category: "tool-projector",
+          stage: "timeline-projector",
+        });
+        throw error;
+      }
       this.unclaimedBranchEntries.length = 0;
       this.emit({
         type: "session.turn",
@@ -4972,6 +5033,7 @@ export class OmpProviderSession {
     this.publishPromptResult(turn, { type: "failed", error: { message } });
     if (turn.started) void this.finishTurn(turn, "failed", { message }, true, true);
     else {
+      this.recordOperationalFailure({ category: "terminal-outcome", stage: "failed" });
       turn.steerReady.resolve();
       turn.terminal = true;
       this.projector.finishTurn(turn.turnId);

@@ -32,8 +32,7 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 - `qwen2.5:0.5b` is provided only for free exploratory inference. It may ignore exact-output instructions and is not a deterministic protocol or tool-use oracle; use `canary-mock/Deterministic Canary` for assertions.
 - The deterministic mock does not implement OMP's compaction-summary contract, so `/compact` reports `OMP compaction failed` in the canary; compaction remains covered by protocol fixtures.
 - `/handoff` reports `OMP command failed` in the controlled canary even with deterministic role models configured; treat handoff as unavailable there until its native prerequisite is isolated.
-- On official Paseo 0.8.0, requesting a live approval-mode change that the plugin rejects can trigger the daemon's unhandled-rejection restart path. Create a new `full`, `write`, or `ask` session instead of changing mode in place.
-- Paseo 0.8 clients do not expose the platform-owned plugin URL opener and transform timeline items after Overview grouping. Use a 0.9.0-beta.1 app for external documentation/device-authorization actions and for reliable image-card transformation of every source tool call.
+- Paseo 0.9.0-beta.1 or newer is required for platform-owned plugin URL opening and reliable image-card transformation before Overview grouping.
 - Native Fast mode and a first-class plan mode are not exposed. `/handoff` is implemented but is not reproducible in the controlled canary without its native OMP workflow prerequisites.
 - Terminal-started OMP sessions are discoverable and importable but are not registered automatically through a terminal hook.
 - Paseo clients do not own OMP sessions. Mobile or desktop disconnects remain subject to Paseo's reconnect grace while the daemon-owned provider and OMP child continue independently; reconnecting can reveal an existing turn but does not transfer or sever runtime ownership.

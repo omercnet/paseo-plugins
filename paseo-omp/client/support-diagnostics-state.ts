@@ -1,3 +1,15 @@
+import type { OmpStore } from "../shared/omp-store";
+
+type SupportReportInput = { store?: OmpStore; cwd?: string; force?: boolean };
+type SupportReportOutput = { report: string };
+
+export async function refreshSupportReport(
+  loadReport: (input: SupportReportInput) => Promise<SupportReportOutput>,
+  input: Omit<SupportReportInput, "force">,
+): Promise<SupportReportOutput> {
+  return await loadReport({ ...input, force: true });
+}
+
 export type SupportReportCopyState = "idle" | "copying" | "copied" | "error";
 
 export interface SupportDiagnosticsViewState {

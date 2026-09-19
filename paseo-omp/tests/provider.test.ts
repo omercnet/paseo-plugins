@@ -18,6 +18,10 @@ import type {
 import { AgentPermissionRequestPayloadSchema } from "@getpaseo/protocol/messages";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { OmpBrowserAuthorizationRegistry } from "../server/mcp-browser";
+import type {
+  OmpOperationalFailure,
+  OmpOperationalFailureReporter,
+} from "../server/operational-failure-diagnostics";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
 import { OmpNativeSessionReservations } from "../server/provider/connection";
 import { withOmpWorkspaceIdentity } from "../server/provider/host-tools";
@@ -944,12 +948,14 @@ async function createHarness(
     "permission",
   ],
   replayTimeoutMs?: number,
+  reportOperationalFailure?: OmpOperationalFailureReporter,
 ) {
   const connection = await createOmpProvider({
     runtime,
     timelineScheduler: scheduler,
     environment: TEST_RUNTIME_ENV,
     replayTimeoutMs,
+    reportOperationalFailure,
   }).connect({ versions: [1], capabilities });
   const events = new EventLog();
   connection.onEvent((event) => events.push(event));
@@ -21015,5 +21021,92 @@ describe("OMP direct provider", () => {
     ).toBe(false);
     await finishTurn(events, sessionAt(runtime), turnId);
     await connection.close();
+  });
+
+  test("reports startup recovery projector and terminal operational failures once", async () => {
+    const failures: OmpOperationalFailure[] = [];
+    const reportFailure: OmpOperationalFailureReporter = (failure) => failures.push(failure);
+
+    const startupRuntime = new FakeOmpRuntime();
+    startupRuntime.nextStartError = new Error("startup failed");
+    const startup = await createHarness(
+      startupRuntime,
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      reportFailure,
+    );
+    await expect(openSession(startup.connection, startup.events)).rejects.toThrow();
+    expect(failures).toEqual([{ category: "session-open", stage: "startup" }]);
+    await startup.connection.close();
+
+    failures.length = 0;
+    const recovery = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      reportFailure,
+    );
+    await openSession(recovery.connection, recovery.events);
+    sessionAt(recovery.runtime).emit({ type: "process_exit", error: "runtime stopped" });
+    recovery.runtime.nextStartError = new Error("recovery failed");
+    await startPrompt(recovery.connection, recovery.events, "recovery-failure", "continue");
+    expect(failures).toEqual([{ category: "replay-recovery", stage: "runtime-recovery" }]);
+    await recovery.connection.close();
+
+    failures.length = 0;
+    const projector = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      reportFailure,
+    );
+    await openSession(projector.connection, projector.events);
+    await startPrompt(projector.connection, projector.events, "projector-failure", "render");
+    const removeThrowingListener = projector.connection.onEvent((event) => {
+      if (event.type === "timeline.item") throw new Error("renderer unavailable");
+    });
+    sessionAt(projector.runtime).emit({
+      type: "message_start",
+      message: { role: "assistant", responseId: "projector-response", content: [] },
+    });
+    expect(() =>
+      sessionAt(projector.runtime).emit({
+        type: "message_end",
+        message: { role: "assistant", responseId: "projector-response", content: "done" },
+      }),
+    ).toThrow("renderer unavailable");
+    removeThrowingListener();
+    expect(failures).toEqual([{ category: "tool-projector", stage: "timeline-projector" }]);
+    await projector.connection.close();
+
+    failures.length = 0;
+    const terminal = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      reportFailure,
+    );
+    await openSession(terminal.connection, terminal.events);
+    const turnId = turnIdFrom(
+      await startPrompt(terminal.connection, terminal.events, "terminal-failure", "fail"),
+    );
+    const terminalSession = sessionAt(terminal.runtime);
+    establishTerminalOwnership(terminalSession);
+    terminalSession.emit({
+      type: "agent_end",
+      requestId: `rpc-prompt-${terminalSession.promptCount}`,
+      messages: [{ role: "assistant", content: "", errorMessage: "model failed" }],
+      isTerminal: true,
+    });
+    await terminal.events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    expect(failures).toEqual([{ category: "terminal-outcome", stage: "failed" }]);
+    await terminal.connection.close();
   });
 });

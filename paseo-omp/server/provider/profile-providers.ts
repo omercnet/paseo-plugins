@@ -43,7 +43,7 @@ function profileDirectory(environment: NodeJS.ProcessEnv): string {
   );
 }
 
-/** Paseo 0.8 contribution registration is synchronous; inspect directory names only. */
+/** Contribution registration is synchronous; inspect directory names only. */
 export function discoverOmpProfilesSync(environment: NodeJS.ProcessEnv = process.env): string[] {
   let directory: Dir;
   try {

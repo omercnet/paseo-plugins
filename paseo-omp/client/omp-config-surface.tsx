@@ -64,6 +64,7 @@ import {
   summarizeRpcUiSupport,
 } from "./provider-diagnostics-state";
 import {
+  refreshSupportReport,
   type SupportReportCopyState,
   supportDiagnosticsViewState,
 } from "./support-diagnostics-state";
@@ -738,25 +739,32 @@ function SupportDiagnosticsSection({
   store?: OmpStore;
 }) {
   const loadReport = useRpc(getOmpSupportReport);
+  const queryClient = useQueryClient();
+  const context = { store, ...(cwd ? { cwd } : {}) };
+  const queryKey = ["paseo-omp", "support-report", ompStoreKey(store), cwd ?? "global"];
   const report = useQuery({
-    queryKey: ["paseo-omp", "support-report", ompStoreKey(store), cwd ?? "global"],
-    queryFn: () => loadReport({ store, ...(cwd ? { cwd } : {}) }),
+    queryKey,
+    queryFn: () => loadReport(context),
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
+  });
+  const refreshReport = useMutation({
+    mutationFn: () => refreshSupportReport(loadReport, context),
+    onSuccess: (value) => queryClient.setQueryData(queryKey, value),
   });
   const [copyState, setCopyState] = useState<SupportReportCopyState>("idle");
   const [linkError, setLinkError] = useState(false);
   const viewState = supportDiagnosticsViewState({
     loading: report.isLoading,
-    refreshing: report.isFetching && !report.isLoading,
+    refreshing: refreshReport.isPending || (report.isFetching && !report.isLoading),
     hasReport: Boolean(report.data?.report),
-    reportFailed: Boolean(report.error),
+    reportFailed: Boolean(report.error || refreshReport.error),
     copyState,
   });
 
   const refresh = () => {
     setCopyState("idle");
-    void report.refetch();
+    refreshReport.mutate();
   };
   const copyReport = async () => {
     if (!report.data?.report) return;
@@ -781,7 +789,7 @@ function SupportDiagnosticsSection({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Refresh OMP support report"
-          disabled={report.isFetching}
+          disabled={report.isFetching || refreshReport.isPending}
           onPress={refresh}
           style={styles.refresh}
         >
@@ -811,7 +819,9 @@ function SupportDiagnosticsSection({
         URLs, repository names, and private paths.
       </Text>
       {viewState.loadingMessage ? (
-        <Text style={styles.muted}>{viewState.loadingMessage}</Text>
+        <Text accessibilityLiveRegion="polite" style={styles.muted}>
+          {viewState.loadingMessage}
+        </Text>
       ) : null}
       {viewState.reportError ? (
         <Text accessibilityRole="alert" style={styles.error}>
@@ -820,7 +830,7 @@ function SupportDiagnosticsSection({
       ) : null}
       {viewState.copyFeedback ? (
         <Text
-          accessibilityRole={copyState === "error" ? "alert" : undefined}
+          accessibilityLiveRegion="polite"
           style={copyState === "error" ? styles.error : styles.muted}
         >
           {viewState.copyFeedback}
@@ -833,11 +843,7 @@ function SupportDiagnosticsSection({
       ) : null}
       {report.data?.report ? (
         <View style={styles.helpReport}>
-          <Text
-            selectable
-            accessibilityLabel="OMP support diagnostic report"
-            style={styles.helpReportText}
-          >
+          <Text selectable style={styles.helpReportText}>
             {report.data.report}
           </Text>
         </View>

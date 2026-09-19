@@ -1,4 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
+import {
+  OMP_OPERATIONAL_FAILURES,
+  OmpOperationalFailureCollector,
+} from "../server/operational-failure-diagnostics";
 import { OmpProtocolViolationCollector } from "../server/protocol-violation-diagnostics";
 import {
   formatOmpSupportReport,
@@ -58,9 +62,12 @@ function reportData(
     architecture: "arm64",
     nodeVersion: "v24.8.0",
     scope: "workspace",
-    store: "Profile: work",
+    store: "named-profile",
     health: providerHealth(),
     violations: collector.snapshot(),
+    operationalFailures: new OmpOperationalFailureCollector(
+      () => new Date("2026-09-19T12:00:00.000Z"),
+    ).snapshot(),
   };
 }
 
@@ -88,7 +95,7 @@ describe("OMP support report", () => {
     expect(first).toContain("paseo_omp.version: 0.3.0");
     expect(first).toContain("runtime.platform: linux");
     expect(first).toContain("selection.scope: workspace");
-    expect(first).toContain("selection.store: Profile: work");
+    expect(first).toContain("selection.store: named-profile");
     expect(first).toContain("omp.version: 18.4.2-beta.1");
     expect(first).toContain("compatibility.rpc_ui: supported");
     expect(first).toContain("compatibility.lsp: supported");
@@ -99,16 +106,19 @@ describe("OMP support report", () => {
     expect(first).toContain("protocol.invalid-json.occurrence_count: 4");
     expect(first).toContain("protocol.invalid-json.latest_frame_type: response");
     expect(first).toContain("protocol.invalid-json.max_byte_size: 777");
+    expect(first).toContain("operational.session-open.startup.occurrence_count: 0");
   });
 
   test("excludes paths and private payloads at the resolver boundary", async () => {
     const collector = new OmpProtocolViolationCollector(() => new Date(), vi.fn());
+    const operational = new OmpOperationalFailureCollector(() => new Date());
     const result = await resolveGetOmpSupportReport(
       {
         cwd: "/Users/alice/repositories/private-project",
         store: { agentDir: "/Users/alice/custom-secret-store" },
       },
       collector,
+      operational,
       {
         loadHealth: async () => providerHealth(),
         loadPluginVersion: async () => "0.3.0",
@@ -119,16 +129,33 @@ describe("OMP support report", () => {
       },
     );
 
-    expect(result.report).toContain("selection.store: Custom agent directory");
+    expect(result.report).toContain("selection.store: custom-directory");
     expect(result.report).not.toContain("/Users/alice");
     expect(result.report).not.toContain("private-project");
     expect(result.report).not.toContain("omp-secret");
     expect(result.report).not.toContain("https://");
+
+    const namedProfile = await resolveGetOmpSupportReport(
+      { store: { profile: "private-team" } },
+      collector,
+      operational,
+      {
+        loadHealth: async () => providerHealth(),
+        loadPluginVersion: async () => "0.3.0",
+        now: () => new Date("2026-09-19T12:00:00.000Z"),
+        platform: () => "linux",
+        architecture: () => "arm64",
+        nodeVersion: "v24.8.0",
+      },
+    );
+    expect(namedProfile.report).toContain("selection.store: named-profile");
+    expect(namedProfile.report).not.toContain("private-team");
   });
 
   test("uses explicit unavailable fields when collection fails", async () => {
     const collector = new OmpProtocolViolationCollector(() => new Date(), vi.fn());
-    const result = await resolveGetOmpSupportReport({}, collector, {
+    const operational = new OmpOperationalFailureCollector(() => new Date());
+    const result = await resolveGetOmpSupportReport({}, collector, operational, {
       loadHealth: async () => {
         throw new Error("secret failure payload");
       },
@@ -158,6 +185,50 @@ describe("OMP support report", () => {
     expect(supportReportByteLength(oversized)).toBeLessThanOrEqual(OMP_SUPPORT_REPORT_MAX_BYTES);
     expect(oversized).toContain("collection_error: report-size-limit");
     expect(getOmpSupportReport.output.safeParse({ report: oversized }).success).toBe(true);
+  });
+});
+
+describe("operational failure aggregation", () => {
+  test("covers every fixed failure class with bounded timestamp-only cells", () => {
+    const times = OMP_OPERATIONAL_FAILURES.map(
+      (_, index) => new Date(Date.UTC(2026, 8, 19, 12, index)),
+    );
+    const collector = new OmpOperationalFailureCollector(() => times.shift() ?? new Date(0));
+    for (const failure of OMP_OPERATIONAL_FAILURES) collector.report(failure);
+
+    const snapshot = collector.snapshot();
+    expect(snapshot).toHaveLength(9);
+    expect(snapshot.map(({ category, stage }) => ({ category, stage }))).toEqual(
+      OMP_OPERATIONAL_FAILURES,
+    );
+    expect(snapshot.every((entry) => entry.occurrenceCount === 1)).toBe(true);
+    expect(snapshot.every((entry) => entry.firstAt === entry.lastAt)).toBe(true);
+    expect(snapshot).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: "session-open", stage: "startup" }),
+        expect.objectContaining({ category: "replay-recovery", stage: "runtime-recovery" }),
+        expect.objectContaining({ category: "tool-projector", stage: "timeline-projector" }),
+        expect.objectContaining({ category: "terminal-outcome", stage: "unresolved" }),
+      ]),
+    );
+  });
+
+  test("stays constant-space, ignores unknown cells, and resets with a new plugin instance", () => {
+    const collector = new OmpOperationalFailureCollector(() => new Date(0));
+    for (let index = 0; index < 10_000; index += 1) {
+      collector.report({ category: "terminal-outcome", stage: "failed" });
+    }
+    collector.report({ category: "unsafe", stage: "payload" } as never);
+
+    expect(collector.snapshot()).toHaveLength(9);
+    expect(
+      collector
+        .snapshot()
+        .find((entry) => entry.category === "terminal-outcome" && entry.stage === "failed"),
+    ).toMatchObject({ occurrenceCount: 10_000 });
+    expect(
+      new OmpOperationalFailureCollector().snapshot().every((entry) => entry.occurrenceCount === 0),
+    ).toBe(true);
   });
 });
 
@@ -211,6 +282,21 @@ describe("protocol violation aggregation", () => {
       occurrenceCount: 1,
       firstAt: null,
       lastAt: null,
+    });
+  });
+
+  test("suppresses asynchronous logger rejection", async () => {
+    const collector = new OmpProtocolViolationCollector(
+      () => new Date("2026-09-19T12:00:00.000Z"),
+      async () => {
+        throw new Error("async logger failed");
+      },
+    );
+
+    expect(() => collector.report({ category: "invalid-json", occurrenceCount: 1 })).not.toThrow();
+    await Promise.resolve();
+    expect(collector.snapshot().find((entry) => entry.category === "invalid-json")).toMatchObject({
+      occurrenceCount: 1,
     });
   });
 });

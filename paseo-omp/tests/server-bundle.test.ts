@@ -102,6 +102,19 @@ describe("plugin server bundle", () => {
       expect(settings).toEqual([
         expect.objectContaining({ id: "composer-pills", scope: "host", version: 1 }),
       ]);
+      const supportRegistration = handlers.find(
+        (entry) =>
+          Array.isArray(entry) &&
+          (entry[0] as { name?: string } | undefined)?.name === "paseo-omp.get-support-report",
+      ) as
+        | [{ name: string }, (input: { force?: boolean }) => Promise<{ report: string }>]
+        | undefined;
+      expect(supportRegistration).toBeDefined();
+      const packageManifest = JSON.parse(
+        await readFile(join(pluginRoot, "package.json"), "utf8"),
+      ) as { version: string };
+      const supportReport = await supportRegistration?.[1]({ force: true });
+      expect(supportReport?.report).toContain(`paseo_omp.version: ${packageManifest.version}`);
       expect(beforeHooks).toHaveLength(1);
       const [hookName, hook] = beforeHooks[0] as [
         string,

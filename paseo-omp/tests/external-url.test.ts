@@ -12,7 +12,7 @@ describe("external URL opening", () => {
     expect(linking).not.toHaveBeenCalled();
   });
 
-  test("falls back to React Native Linking on Paseo 0.8", async () => {
+  test("falls back to React Native Linking when the platform opener is unavailable", async () => {
     const linking = vi.fn(async () => {});
 
     await selectExternalUrlOpener(undefined, linking)(validatedHttpUrl("http://example.com/auth"));
