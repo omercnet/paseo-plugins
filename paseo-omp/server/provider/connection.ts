@@ -69,6 +69,19 @@ function hasOwnEntries(value: unknown): boolean {
   return false;
 }
 
+function providerOptionsExceedPreflightLimits(value: unknown): boolean {
+  if (
+    boundedJsonBytes(value, MAX_NESTED_OPTION_BYTES, MAX_ENV_ENTRIES) === Number.POSITIVE_INFINITY
+  ) {
+    return true;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const unrelatedOptions = Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== "env" && key !== "inheritEnv"),
+  );
+  return boundedJsonBytes(unrelatedOptions, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY;
+}
+
 function preflightProviderInput(input: unknown): void {
   if (!input || typeof input !== "object") throw new OmpPublicError("Invalid provider request");
   const record = input as Record<string, unknown>;
@@ -83,14 +96,14 @@ function preflightProviderInput(input: unknown): void {
       throw new OmpPublicError("Session persistence input is too large");
     }
     const config = record.config as Record<string, unknown> | undefined;
-    for (const value of [config?.env, config?.providerOptions]) {
-      if (
-        value !== undefined &&
-        boundedJsonBytes(value, MAX_NESTED_OPTION_BYTES, MAX_ENV_ENTRIES) ===
-          Number.POSITIVE_INFINITY
-      ) {
-        throw new OmpPublicError("Session configuration is too large");
-      }
+    if (
+      (config?.env !== undefined &&
+        boundedJsonBytes(config.env, MAX_NESTED_OPTION_BYTES, MAX_ENV_ENTRIES) ===
+          Number.POSITIVE_INFINITY) ||
+      (config?.providerOptions !== undefined &&
+        providerOptionsExceedPreflightLimits(config.providerOptions))
+    ) {
+      throw new OmpPublicError("Session configuration is too large");
     }
     for (const value of [config?.mcpServers, config?.settings]) {
       if (
@@ -121,8 +134,7 @@ function preflightProviderInput(input: unknown): void {
   if (record.type === "catalog" || record.type === "sessions") {
     if (
       record.providerOptions !== undefined &&
-      boundedJsonBytes(record.providerOptions, MAX_NESTED_OPTION_BYTES, MAX_ENV_ENTRIES) ===
-        Number.POSITIVE_INFINITY
+      providerOptionsExceedPreflightLimits(record.providerOptions)
     ) {
       throw new OmpPublicError("Provider configuration is too large");
     }
