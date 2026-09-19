@@ -221,6 +221,7 @@ async function hydrateBlobImageData(
     ) {
       throw new Error("OMP transcript image blob failed ownership or size validation");
     }
+    budget.bytes += stat.size;
     const bytes = await readStableFile(
       handle,
       stat.size,
@@ -230,7 +231,6 @@ async function hydrateBlobImageData(
     if (createHash("sha256").update(bytes).digest("hex") !== hash) {
       throw new Error("OMP transcript image blob failed integrity validation");
     }
-    budget.bytes += bytes.byteLength;
     return bytes.toString("base64");
   } finally {
     await handle.close().catch(() => undefined);
