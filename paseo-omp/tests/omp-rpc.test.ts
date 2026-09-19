@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, test } from "vitest";
 import {
   buildOmpSpawnRequest,
+  type OmpProtocolViolationDiagnostic,
   type OmpRpcEvent,
   OmpRpcRequestRejectedError,
   OmpRpcRuntime,
@@ -109,6 +110,7 @@ function runtimeFor(
   child: FakeRpcChild,
   launches: OmpSpawnRequest[] = [],
   requestTimeoutMs?: number,
+  reportProtocolViolation?: (diagnostic: OmpProtocolViolationDiagnostic) => void,
 ): OmpRpcRuntime {
   return new OmpRpcRuntime({
     spawnProcess(request) {
@@ -118,6 +120,7 @@ function runtimeFor(
     environment: TEST_RUNTIME_ENV,
     terminateProcessTree: () => Promise.resolve(true),
     requestTimeoutMs,
+    reportProtocolViolation,
   });
 }
 
@@ -2450,6 +2453,91 @@ describe("OMP RPC transport", () => {
     expect(events).toEqual([
       { type: "agent_end", messages: [], messageCount: 1, isTerminal: true },
     ]);
+    await session.close();
+  });
+
+  test("reports safe coalesced protocol diagnostics without changing frame recovery", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
+    const opening = runtimeFor(child, [], undefined, (diagnostic) =>
+      diagnostics.push(diagnostic),
+    ).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const recovered = nextEvent((listener) => session.onEvent(listener));
+    const secret = "API_KEY=fabricated-secret";
+    const malformed = {
+      type: "notice",
+      level: 42,
+      message: secret,
+      arguments: { token: secret },
+      result: secret,
+      path: `/private/${secret}`,
+      environment: { TOKEN: secret },
+    };
+
+    for (let index = 0; index < 100; index += 1) child.write(malformed);
+    child.write({ type: "notice", level: "info", message: "still healthy" });
+
+    await expect(recovered).resolves.toEqual({
+      type: "notice",
+      level: "info",
+      message: "still healthy",
+    });
+    expect(diagnostics).toEqual([
+      {
+        category: "invalid-event",
+        occurrenceCount: 1,
+        maxByteSize: Buffer.byteLength(JSON.stringify(malformed)),
+      },
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain(secret);
+
+    await session.close();
+    expect(diagnostics).toEqual([
+      expect.objectContaining({ category: "invalid-event", occurrenceCount: 1 }),
+      expect.objectContaining({ category: "invalid-event", occurrenceCount: 99 }),
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain(secret);
+  });
+
+  test("ignores a throwing protocol diagnostic sink", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child, [], undefined, () => {
+      throw new Error("diagnostic sink failed");
+    }).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const recovered = nextEvent((listener) => session.onEvent(listener));
+
+    child.write({ type: "notice", level: 42, message: "malformed" });
+    child.write({ type: "notice", level: "info", message: "still healthy" });
+
+    await expect(recovered).resolves.toEqual({
+      type: "notice",
+      level: "info",
+      message: "still healthy",
+    });
     await session.close();
   });
 
