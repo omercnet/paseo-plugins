@@ -17107,6 +17107,88 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("parents an oversized nested snapshot before failing only that child", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [];
+    runtime.nextSubagents = [
+      {
+        id: "oversized-nested-snapshot",
+        index: 1,
+        agent: "oversized nested",
+        status: "running",
+        lastUpdate: 2,
+      },
+      {
+        id: "oversized-parent-snapshot",
+        index: 0,
+        agent: "oversized parent",
+        status: "completed",
+        lastUpdate: 1,
+      },
+    ];
+    runtime.nextSubagentMessages.set("oversized-parent-snapshot", {
+      sessionFile: "/sessions/root/oversized-parent-snapshot.jsonl",
+      fromByte: 0,
+      nextByte: 1,
+      reset: false,
+      messages: [],
+    });
+    runtime.nextSubagentMessages.set("oversized-nested-snapshot", {
+      sessionFile: "/sessions/root/oversized-parent-snapshot/oversized-nested-snapshot.jsonl",
+      fromByte: 0,
+      nextByte: 1,
+      reset: false,
+      messages: Array.from({ length: 3_100 }, (_, index) => ({
+        role: "assistant" as const,
+        responseId: `oversized-nested-${index}`,
+        content: Array.from({ length: 64 }, () => ({ type: "text" as const, text: "x" })),
+      })),
+    });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "oversized-nested-snapshot-replay",
+      sessionId: "oversized-nested-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.ready" && event.requestId === "oversized-nested-snapshot-replay",
+    );
+
+    const parent = events.find(
+      (event) => event.type === "session.opened" && event.title === "oversized parent",
+    );
+    const nested = events.find(
+      (event) => event.type === "session.opened" && event.title === "oversized nested",
+    );
+    if (parent?.type !== "session.opened" || nested?.type !== "session.opened") {
+      throw new Error("Missing oversized snapshot child sessions");
+    }
+    expect(nested.parentSessionId).toBe(parent.sessionId);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.turn",
+        sessionId: nested.sessionId,
+        state: "failed",
+        error: { message: "OMP subagent history is unavailable or incomplete" },
+      }),
+    );
+    expect(events.some((event) => event.type === "request.failed")).toBe(false);
+    await connection.close();
+  });
+
   test("keeps snapshot terminal state over stale buffered running progress", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({
@@ -17174,6 +17256,213 @@ describe("OMP direct provider", () => {
     );
     expect(turns.filter((event) => event.state === "started")).toHaveLength(1);
     expect(turns.filter((event) => event.state === "completed")).toHaveLength(1);
+    await connection.close();
+  });
+
+  test("fail-closes a buffered child selected for advisory eviction", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [];
+    runtime.nextSubagents = [
+      {
+        id: "evicted-snapshot-child",
+        index: 0,
+        agent: "evicted snapshot",
+        status: "running",
+        lastUpdate: 1,
+      },
+    ];
+    runtime.nextSubagentMessages.set("evicted-snapshot-child", {
+      sessionFile: "/sessions/root/evicted-snapshot-child.jsonl",
+      fromByte: 0,
+      nextByte: 1,
+      reset: false,
+      messages: [],
+    });
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      session.subagentsGate = gate.promise;
+      session.subagentsObserved = observed.resolve;
+    };
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    void connection.send({
+      type: "session.open",
+      requestId: "evicted-snapshot-replay",
+      sessionId: "evicted-snapshot-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await observed.promise;
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "subagent_progress",
+      payload: {
+        index: 0,
+        agent: "evicted snapshot",
+        task: "advisory",
+        progress: { id: "evicted-snapshot-child", status: "started" },
+      },
+    });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "evicted-snapshot-child",
+        agent: "evicted snapshot",
+        status: "started",
+        index: 0,
+      },
+    });
+    session.emit({
+      type: "subagent_event",
+      payload: {
+        id: "evicted-snapshot-child",
+        event: {
+          type: "message_end",
+          message: { role: "assistant", responseId: "evicted-output", content: "must not leak" },
+        },
+      },
+    });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "evicted-snapshot-child",
+        agent: "evicted snapshot",
+        status: "completed",
+        index: 0,
+      },
+    });
+    for (let index = 1; index < 1_024; index += 1) {
+      session.emit({
+        type: "subagent_progress",
+        payload: {
+          index,
+          agent: "scout",
+          task: "advisory",
+          progress: { id: `advisory-child-${index}`, status: "started" },
+        },
+      });
+    }
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: { id: "replacement-child", agent: "replacement", status: "completed", index: 0 },
+    });
+    gate.resolve();
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "evicted-snapshot-replay",
+    );
+
+    const evicted = events.find(
+      (event) => event.type === "session.opened" && event.title === "evicted snapshot",
+    );
+    if (evicted?.type !== "session.opened") throw new Error("Missing evicted snapshot child");
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.turn",
+        sessionId: evicted.sessionId,
+        state: "failed",
+        error: { message: "OMP subagent history is unavailable or incomplete" },
+      }),
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.sessionId === evicted.sessionId &&
+          event.item.type === "assistant_message",
+      ),
+    ).toBe(false);
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    await connection.close();
+  });
+
+  test("fails a snapshot child whose buffered event exceeded replay bounds", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [];
+    runtime.nextSubagents = [
+      {
+        id: "oversized-buffered-snapshot",
+        index: 0,
+        agent: "oversized buffered snapshot",
+        status: "running",
+        lastUpdate: 1,
+      },
+    ];
+    runtime.nextSubagentMessages.set("oversized-buffered-snapshot", {
+      sessionFile: "/sessions/root/oversized-buffered-snapshot.jsonl",
+      fromByte: 0,
+      nextByte: 1,
+      reset: false,
+      messages: [],
+    });
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      session.subagentsGate = gate.promise;
+      session.subagentsObserved = observed.resolve;
+    };
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    void connection.send({
+      type: "session.open",
+      requestId: "oversized-buffered-snapshot-replay",
+      sessionId: "oversized-buffered-snapshot-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await observed.promise;
+    sessionAt(runtime).emit({
+      type: "subagent_event",
+      payload: {
+        id: "oversized-buffered-snapshot",
+        event: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            responseId: "oversized-buffered-output",
+            content: "x".repeat(4 * 1024 * 1024),
+          },
+        },
+      },
+    });
+    gate.resolve();
+    await events.waitFor(
+      (event) =>
+        event.type === "session.ready" && event.requestId === "oversized-buffered-snapshot-replay",
+    );
+
+    const child = events.find(
+      (event) => event.type === "session.opened" && event.title === "oversized buffered snapshot",
+    );
+    if (child?.type !== "session.opened") throw new Error("Missing oversized buffered child");
+    const turns = events.flatMap((event) =>
+      event.type === "session.turn" && event.sessionId === child.sessionId ? [event] : [],
+    );
+    expect(turns.filter((event) => event.state === "started")).toHaveLength(1);
+    expect(turns.filter((event) => event.state === "failed")).toEqual([
+      expect.objectContaining({
+        error: { message: "OMP subagent history is unavailable or incomplete" },
+      }),
+    ]);
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
     await connection.close();
   });
 
@@ -17258,6 +17547,67 @@ describe("OMP direct provider", () => {
           event.state === "completed",
       ),
     ).toHaveLength(1_024);
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    await connection.close();
+  });
+
+  test("keeps omitted child tracking bounded after more than 1024 unique overflows", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [];
+    const gate = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    runtime.sessionCreated = (session) => {
+      session.subagentsGate = gate.promise;
+      session.subagentsObserved = observed.resolve;
+    };
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    void connection.send({
+      type: "session.open",
+      requestId: "omitted-child-overflow",
+      sessionId: "omitted-child-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await observed.promise;
+    const session = sessionAt(runtime);
+    for (let index = 0; index < 1_024; index += 1) {
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: { id: `retained-child-${index}`, agent: "retained", status: "started", index },
+      });
+    }
+    for (let index = 0; index < 1_025; index += 1) {
+      session.emit({
+        type: "subagent_lifecycle",
+        payload: { id: `omitted-child-${index}`, agent: "omitted", status: "completed", index },
+      });
+    }
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: { id: "omitted-child-0", agent: "omitted", status: "completed", index: 0 },
+    });
+    gate.resolve();
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "omitted-child-overflow",
+    );
+
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.opened" &&
+          (event.title === "retained" || event.title === "omitted"),
+      ),
+    ).toBe(false);
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
     await connection.close();
   });

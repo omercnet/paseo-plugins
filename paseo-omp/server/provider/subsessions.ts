@@ -316,7 +316,8 @@ export class OmpSubsessionProjector {
   private readonly toolOwners = new Map<string, string>();
   private readonly dispatches = new Map<string, TaskDispatch>();
   private readonly bufferedEvents: BufferedSubagentEvent[] = [];
-  private readonly omittedBufferedChildren = new Set<string>();
+  // null means every child observed during this replay is omitted after tombstone saturation.
+  private omittedBufferedChildren: Set<string> | null = new Set();
   private bufferedBytes = 0;
   private replaying = false;
   private closed = false;
@@ -451,7 +452,7 @@ export class OmpSubsessionProjector {
         this.dispatches.clear();
         this.toolOwners.clear();
       }
-      this.omittedBufferedChildren.clear();
+      this.omittedBufferedChildren = new Set();
     }
   }
 
@@ -486,7 +487,7 @@ export class OmpSubsessionProjector {
     }
     this.bufferedEvents.length = 0;
     this.bufferedBytes = 0;
-    this.omittedBufferedChildren.clear();
+    this.omittedBufferedChildren = new Set();
   }
 
   private bufferEvent(event: OmpSubagentEvent): void {
@@ -511,7 +512,7 @@ export class OmpSubsessionProjector {
           }
         : event;
     const incomingId = bufferedNativeId(bufferedEvent);
-    if (this.omittedBufferedChildren.has(incomingId)) return;
+    if (this.isBufferedChildOmitted(incomingId)) return;
     const bytes = boundedJsonBytes(
       bufferedEvent,
       MAX_BUFFERED_BYTES,
@@ -558,12 +559,8 @@ export class OmpSubsessionProjector {
         return;
       }
       const evictedId = bufferedNativeId(advisory.event);
-      for (let index = this.bufferedEvents.length - 1; index >= 0; index -= 1) {
-        const queued = this.bufferedEvents[index];
-        if (!queued || bufferedNativeId(queued.event) !== evictedId) continue;
-        const [removed] = this.bufferedEvents.splice(index, 1);
-        this.bufferedBytes -= removed?.bytes ?? 0;
-      }
+      this.omitBufferedChild(evictedId);
+      if (this.isBufferedChildOmitted(incomingId)) return;
     }
 
     while (
@@ -585,8 +582,21 @@ export class OmpSubsessionProjector {
     this.bufferedBytes += bytes;
   }
 
+  private isBufferedChildOmitted(nativeId: string): boolean {
+    return this.omittedBufferedChildren === null || this.omittedBufferedChildren.has(nativeId);
+  }
+
   private omitBufferedChild(nativeId: string): void {
-    this.omittedBufferedChildren.add(nativeId);
+    const omitted = this.omittedBufferedChildren;
+    if (!omitted || omitted.has(nativeId)) return;
+    if (omitted.size >= MAX_CHILDREN) {
+      this.omittedBufferedChildren = null;
+      this.bufferedEvents.length = 0;
+      this.bufferedBytes = 0;
+      this.terminalize("failed");
+      return;
+    }
+    omitted.add(nativeId);
     for (let index = this.bufferedEvents.length - 1; index >= 0; index -= 1) {
       const queued = this.bufferedEvents[index];
       if (!queued || bufferedNativeId(queued.event) !== nativeId) continue;
@@ -862,56 +872,64 @@ export class OmpSubsessionProjector {
     budget: ReplayBudget,
     signal: AbortSignal,
   ): Promise<void> {
-    const replayable: Array<{
+    const collected: Array<{
       snapshot: OmpSubagentSnapshot;
-      history: ReplayHistory;
+      sessionFile?: string;
+      messages?: OmpMessage[];
     }> = [];
     for (const snapshot of snapshots) {
       signal.throwIfAborted();
       if (this.sessionIdByNativeId.has(snapshot.id)) continue;
-      let history: ReplayHistory | undefined;
       try {
-        const loaded = await waitForReplay(
+        const history = await waitForReplay(
           runtimeSession.getSubagentMessages({ subagentId: snapshot.id }),
           signal,
         );
-        history = loaded;
-        this.accountReplay(loaded.messages, budget, signal);
-        replayable.push({ snapshot, history: loaded });
+        try {
+          this.accountReplay(history.messages, budget, signal);
+          collected.push({
+            snapshot,
+            sessionFile: history.sessionFile,
+            messages: history.messages,
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          collected.push({ snapshot, sessionFile: history.sessionFile });
+        }
       } catch (error) {
         if (signal.aborted) throw error;
-        let child: ChildState | undefined;
-        try {
-          child = this.ensureChild(
-            { ...snapshot, sessionFile: history?.sessionFile },
-            this.resolveParent(snapshot.parentToolCallId, history?.sessionFile),
-          );
-        } catch {
-          continue;
-        }
-        this.failReplayChild(child);
+        collected.push({ snapshot });
       }
     }
-    replayable.sort(
-      (left, right) =>
-        left.history.sessionFile.split("/").length - right.history.sessionFile.split("/").length,
-    );
-    const snapshotIds = new Set(replayable.map(({ snapshot }) => snapshot.id));
-    for (const { snapshot, history } of replayable) {
+    collected.sort((left, right) => {
+      const leftDepth = left.sessionFile?.split("/").length ?? Number.MAX_SAFE_INTEGER;
+      const rightDepth = right.sessionFile?.split("/").length ?? Number.MAX_SAFE_INTEGER;
+      return leftDepth - rightDepth;
+    });
+    const snapshotIds = new Set(collected.map(({ snapshot }) => snapshot.id));
+    for (const { snapshot, sessionFile, messages } of collected) {
       signal.throwIfAborted();
       if (this.sessionIdByNativeId.has(snapshot.id)) continue;
       let child: ChildState | undefined;
       try {
         child = this.ensureChild(
-          { ...snapshot, sessionFile: history.sessionFile },
-          this.resolveParent(snapshot.parentToolCallId, history.sessionFile),
+          { ...snapshot, sessionFile },
+          this.resolveParent(snapshot.parentToolCallId, sessionFile),
         );
-        this.projectReplay(child, history.messages, signal);
-        visited.add(`${history.sessionFile}\0${snapshot.id}`);
+        if (!messages || this.isBufferedChildOmitted(snapshot.id)) {
+          this.failReplayChild(child);
+          continue;
+        }
+        this.projectReplay(child, messages, signal);
+        if (!sessionFile) {
+          this.failReplayChild(child);
+          continue;
+        }
+        visited.add(`${sessionFile}\0${snapshot.id}`);
         await this.replayChildren(
           child.sessionId,
-          history.sessionFile,
-          history.messages,
+          sessionFile,
+          messages,
           runtime,
           visited,
           budget,
