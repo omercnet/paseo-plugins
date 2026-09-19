@@ -2499,7 +2499,9 @@ describe("OMP RPC transport", () => {
     expect(diagnostics).toEqual([
       {
         category: "invalid-event",
+        reason: "notice-level-type",
         occurrenceCount: 1,
+        frameType: "notice",
         maxByteSize: Buffer.byteLength(JSON.stringify(malformed)),
       },
     ]);
@@ -2507,8 +2509,16 @@ describe("OMP RPC transport", () => {
 
     await session.close();
     expect(diagnostics).toEqual([
-      expect.objectContaining({ category: "invalid-event", occurrenceCount: 1 }),
-      expect.objectContaining({ category: "invalid-event", occurrenceCount: 99 }),
+      expect.objectContaining({
+        category: "invalid-event",
+        reason: "notice-level-type",
+        occurrenceCount: 1,
+      }),
+      expect.objectContaining({
+        category: "invalid-event",
+        reason: "notice-level-type",
+        occurrenceCount: 99,
+      }),
     ]);
     expect(JSON.stringify(diagnostics)).not.toContain(secret);
   });

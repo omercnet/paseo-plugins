@@ -79,6 +79,7 @@ describe("OMP support report", () => {
     );
     collector.report({
       category: "invalid-json",
+      reason: "json-decode",
       occurrenceCount: 4,
       frameType: "response",
       maxByteSize: 777,
@@ -104,9 +105,11 @@ describe("OMP support report", () => {
     expect(first).toContain("storage.memory_backend: mnemopi");
     expect(first).toContain("hub.active_count: 2");
     expect(first).toContain("protocol.invalid-json.occurrence_count: 4");
+    expect(first).toContain("protocol.invalid-json.latest_reason: json-decode");
     expect(first).toContain("protocol.invalid-json.latest_frame_type: response");
     expect(first).toContain("protocol.invalid-json.max_byte_size: 777");
-    expect(first).toContain("operational.session-open.startup.occurrence_count: 0");
+    expect(first).not.toContain("operational.session-open.startup");
+    expect(first).not.toMatch(/: (?:0|unknown|unavailable)$/mu);
   });
 
   test("excludes paths and private payloads at the resolver boundary", async () => {
@@ -152,7 +155,7 @@ describe("OMP support report", () => {
     expect(namedProfile.report).not.toContain("private-team");
   });
 
-  test("uses explicit unavailable fields when collection fails", async () => {
+  test("omits unavailable placeholder rows when collection fails", async () => {
     const collector = new OmpProtocolViolationCollector(() => new Date(), vi.fn());
     const operational = new OmpOperationalFailureCollector(() => new Date());
     const result = await resolveGetOmpSupportReport({}, collector, operational, {
@@ -168,15 +171,22 @@ describe("OMP support report", () => {
       nodeVersion: "private-build-string",
     });
 
-    expect(result.report).toContain("paseo_omp.version: unavailable");
-    expect(result.report).toContain("provider_health.status: unavailable");
-    expect(result.report).toContain("omp.version: unavailable");
-    expect(result.report).toContain("runtime.platform: unknown");
+    expect(result.report).toContain("schema_version: 1");
+    expect(result.report).toContain("selection.store: default");
+    expect(result.report).not.toMatch(/: (?:0|unknown|unavailable)$/mu);
     expect(result.report).not.toContain("secret failure payload");
   });
 
   test("falls back to a valid bounded report if formatting would exceed 64 KiB", () => {
-    const sample = reportData().violations[0];
+    const sample = {
+      ...reportData().violations[0],
+      occurrenceCount: 1,
+      batchCount: 1,
+      maxOccurrenceCount: 1,
+      latestReason: "event-schema" as const,
+      firstAt: "2026-09-19T12:00:00.000Z",
+      lastAt: "2026-09-19T12:00:00.000Z",
+    };
     const oversized = formatOmpSupportReport({
       ...reportData(),
       violations: Array.from({ length: 2_000 }, () => sample),
@@ -241,12 +251,14 @@ describe("protocol violation aggregation", () => {
 
     collector.report({
       category: "frame-limit",
+      reason: "physical-frame-limit",
       occurrenceCount: Number.MAX_SAFE_INTEGER,
       frameType: "rpc_chunk",
       maxByteSize: 1024,
     });
     collector.report({
       category: "frame-limit",
+      reason: "semantic-frame-limit",
       occurrenceCount: 9,
       frameType: "rpc_frame_error",
       maxByteSize: 4096,
@@ -262,6 +274,7 @@ describe("protocol violation aggregation", () => {
       maxOccurrenceCount: Number.MAX_SAFE_INTEGER,
       firstAt: "2026-09-19T12:00:00.000Z",
       lastAt: "2026-09-19T12:01:00.000Z",
+      latestReason: "semantic-frame-limit",
       latestFrameType: "rpc_frame_error",
       maxByteSize: 4096,
     });
@@ -278,7 +291,13 @@ describe("protocol violation aggregation", () => {
       },
     );
 
-    expect(() => collector.report({ category: "invalid-event", occurrenceCount: 1 })).not.toThrow();
+    expect(() =>
+      collector.report({
+        category: "invalid-event",
+        reason: "event-schema",
+        occurrenceCount: 1,
+      }),
+    ).not.toThrow();
     expect(collector.snapshot().find((entry) => entry.category === "invalid-event")).toMatchObject({
       occurrenceCount: 1,
       firstAt: null,
@@ -294,7 +313,13 @@ describe("protocol violation aggregation", () => {
       },
     );
 
-    expect(() => collector.report({ category: "invalid-json", occurrenceCount: 1 })).not.toThrow();
+    expect(() =>
+      collector.report({
+        category: "invalid-json",
+        reason: "json-decode",
+        occurrenceCount: 1,
+      }),
+    ).not.toThrow();
     await Promise.resolve();
     expect(collector.snapshot().find((entry) => entry.category === "invalid-json")).toMatchObject({
       occurrenceCount: 1,

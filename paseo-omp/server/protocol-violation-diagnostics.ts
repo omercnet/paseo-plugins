@@ -11,6 +11,7 @@ export interface OmpProtocolViolationSummary {
   maxOccurrenceCount: number;
   firstAt: string | null;
   lastAt: string | null;
+  latestReason: OmpProtocolViolationDiagnostic["reason"] | null;
   latestFrameType: OmpProtocolViolationDiagnostic["frameType"] | null;
   maxByteSize: number | null;
 }
@@ -22,6 +23,7 @@ const FRAME_TYPES: Record<NonNullable<OmpProtocolViolationDiagnostic["frameType"
   response: true,
   rpc_chunk: true,
   rpc_frame_error: true,
+  notice: true,
 };
 
 function boundedCount(value: unknown): number {
@@ -42,6 +44,17 @@ function safeTimestamp(now: () => Date): string | null {
   }
 }
 
+function logProtocolViolation(message: string, diagnostic: OmpProtocolViolationDiagnostic): void {
+  const fields = [
+    `category: ${diagnostic.category}`,
+    `reason: ${diagnostic.reason}`,
+    `occurrenceCount: ${diagnostic.occurrenceCount}`,
+    ...(diagnostic.frameType ? [`frameType: ${diagnostic.frameType}`] : []),
+    ...(diagnostic.maxByteSize ? [`maxByteSize: ${diagnostic.maxByteSize}`] : []),
+  ];
+  console.error(`${message} { ${fields.join(", ")} }`);
+}
+
 /** Fixed-category, saturating in-process aggregation. A new instance is created on each reload. */
 export class OmpProtocolViolationCollector {
   private readonly summaries = Object.fromEntries(
@@ -54,6 +67,7 @@ export class OmpProtocolViolationCollector {
         maxOccurrenceCount: 0,
         firstAt: null,
         lastAt: null,
+        latestReason: null,
         latestFrameType: null,
         maxByteSize: null,
       },
@@ -65,7 +79,7 @@ export class OmpProtocolViolationCollector {
     private readonly log: (
       message: string,
       diagnostic: OmpProtocolViolationDiagnostic,
-    ) => void | PromiseLike<void> = console.error,
+    ) => void | PromiseLike<void> = logProtocolViolation,
   ) {}
 
   report = (diagnostic: OmpProtocolViolationDiagnostic): void => {
@@ -81,6 +95,7 @@ export class OmpProtocolViolationCollector {
         summary.firstAt ??= timestamp;
         summary.lastAt = timestamp;
       }
+      summary.latestReason = diagnostic.reason;
       summary.latestFrameType =
         diagnostic.frameType && FRAME_TYPES[diagnostic.frameType] ? diagnostic.frameType : null;
       const byteSize = boundedCount(diagnostic.maxByteSize);
@@ -88,6 +103,7 @@ export class OmpProtocolViolationCollector {
 
       const safeDiagnostic: OmpProtocolViolationDiagnostic = {
         category: diagnostic.category,
+        reason: diagnostic.reason,
         occurrenceCount,
         ...(summary.latestFrameType ? { frameType: summary.latestFrameType } : {}),
         ...(byteSize > 0 ? { maxByteSize: byteSize } : {}),

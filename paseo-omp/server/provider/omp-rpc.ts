@@ -102,11 +102,39 @@ export const OMP_PROTOCOL_VIOLATION_CATEGORIES = [
   "remote-frame-error",
 ] as const;
 export type OmpProtocolViolationCategory = (typeof OMP_PROTOCOL_VIOLATION_CATEGORIES)[number];
+export const OMP_PROTOCOL_VIOLATION_REASONS = [
+  "output-ended-mid-frame",
+  "physical-frame-limit",
+  "semantic-frame-limit",
+  "json-decode",
+  "chunk-json-decode",
+  "object-envelope",
+  "missing-frame-type",
+  "response-schema",
+  "chunk-schema",
+  "chunk-metadata",
+  "chunk-size",
+  "chunk-start-index",
+  "chunk-sequence",
+  "chunk-byte-count",
+  "chunk-timeout",
+  "frame-interleaved-with-chunk",
+  "remote-frame-error",
+  "ready-already-received",
+  "ready-schema",
+  "notice-level-type",
+  "notice-message-type",
+  "notice-schema",
+  "event-schema",
+  "event-state-transition",
+] as const;
+export type OmpProtocolViolationReason = (typeof OMP_PROTOCOL_VIOLATION_REASONS)[number];
 
 export interface OmpProtocolViolationDiagnostic {
   category: OmpProtocolViolationCategory;
+  reason: OmpProtocolViolationReason;
   occurrenceCount: number;
-  frameType?: "ready" | "response" | "rpc_chunk" | "rpc_frame_error";
+  frameType?: "ready" | "response" | "rpc_chunk" | "rpc_frame_error" | "notice";
   maxByteSize?: number;
 }
 
@@ -2103,6 +2131,7 @@ class OmpRpcProcess {
     this.outputSettled = true;
     if (this.lineBytes > 0 || this.discardingLine) {
       this.recordProtocolViolation("incomplete-frame", {
+        reason: "output-ended-mid-frame",
         maxByteSize: this.discardingLine ? this.discardedLineBytes : this.lineBytes,
       });
     }
@@ -2385,7 +2414,10 @@ class OmpRpcProcess {
       this.lineParts = [];
       this.lineBytes = 0;
       this.discardingLine = true;
-      this.recordProtocolViolation("frame-limit", { maxByteSize: nextBytes });
+      this.recordProtocolViolation("frame-limit", {
+        reason: "physical-frame-limit",
+        maxByteSize: nextBytes,
+      });
       return;
     }
     this.lineParts.push(part);
@@ -2406,7 +2438,10 @@ class OmpRpcProcess {
     try {
       decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
     } catch {
-      this.recordProtocolViolation("invalid-json", { maxByteSize: payload.byteLength });
+      this.recordProtocolViolation("invalid-json", {
+        reason: "json-decode",
+        maxByteSize: payload.byteLength,
+      });
       return;
     }
     this.receiveDecodedFrame(decoded, payload.byteLength);
@@ -2429,17 +2464,17 @@ class OmpRpcProcess {
       frame.data.length % 4 !== 0 ||
       !/^[A-Za-z0-9+/]*={0,2}$/u.test(frame.data)
     ) {
-      this.rejectChunk();
+      this.rejectChunk("chunk-metadata");
       return;
     }
     const decoded = Buffer.from(frame.data, "base64");
     if (decoded.byteLength > MAX_CHUNK_BYTES) {
-      this.rejectChunk();
+      this.rejectChunk("chunk-size");
       return;
     }
     if (!this.chunk) {
       if (frame.index !== 0) {
-        this.rejectChunk();
+        this.rejectChunk("chunk-start-index");
         return;
       }
       this.chunk = {
@@ -2448,7 +2483,7 @@ class OmpRpcProcess {
         byteLength: frame.byteLength,
         parts: [],
         receivedBytes: 0,
-        timer: setTimeout(() => this.rejectChunk(), CHUNK_STALE_MS),
+        timer: setTimeout(() => this.rejectChunk("chunk-timeout"), CHUNK_STALE_MS),
       };
     }
     const chunk = this.chunk;
@@ -2460,14 +2495,14 @@ class OmpRpcProcess {
       chunk.receivedBytes + decoded.byteLength > chunk.byteLength ||
       chunk.receivedBytes + decoded.byteLength > this.reassembledFrameLimit
     ) {
-      this.rejectChunk();
+      this.rejectChunk("chunk-sequence");
       return;
     }
     chunk.parts.push(decoded);
     chunk.receivedBytes += decoded.byteLength;
     if (chunk.parts.length !== chunk.count) return;
     if (chunk.receivedBytes !== chunk.byteLength) {
-      this.rejectChunk();
+      this.rejectChunk("chunk-byte-count");
       return;
     }
     const reassembled = Buffer.concat(chunk.parts, chunk.receivedBytes);
@@ -2476,7 +2511,10 @@ class OmpRpcProcess {
     try {
       decodedFrame = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(reassembled));
     } catch {
-      this.recordProtocolViolation("invalid-json", { maxByteSize: reassembled.byteLength });
+      this.recordProtocolViolation("invalid-json", {
+        reason: "chunk-json-decode",
+        maxByteSize: reassembled.byteLength,
+      });
       return;
     }
     this.receiveDecodedFrame(decodedFrame, reassembled.byteLength);
@@ -2502,7 +2540,10 @@ class OmpRpcProcess {
     const sanitized = sanitizeLiveDisplayFrame(value);
     const frame = JsonObjectSchema.safeParse(sanitized);
     if (!frame.success) {
-      this.recordProtocolViolation("invalid-envelope", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("invalid-envelope", {
+        reason: "object-envelope",
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     this.receiveFrame(frame.data, rawByteLength);
@@ -2530,7 +2571,10 @@ class OmpRpcProcess {
       if (rawId && knownPending) {
         this.takePending(rawId)?.reject(new Error("OMP RPC response is invalid"));
       } else if (!rawId || !this.emitAcceptedPromptFailure(rawId, frame)) {
-        this.recordProtocolViolation("invalid-response", { frameType: "response" });
+        this.recordProtocolViolation("invalid-response", {
+          reason: "response-schema",
+          frameType: "response",
+        });
       }
       return;
     }
@@ -2688,7 +2732,10 @@ class OmpRpcProcess {
   private receiveFrame(frame: Record<string, unknown>, rawByteLength: number): void {
     const type = typeof frame.type === "string" && frame.type.length <= 64 ? frame.type : null;
     if (!type) {
-      this.recordProtocolViolation("invalid-envelope", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("invalid-envelope", {
+        reason: "missing-frame-type",
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     const safeFrame = mapRuntimeFrameDetails(frame, createOptionalMetadataSanitizer());
@@ -2702,31 +2749,45 @@ class OmpRpcProcess {
         4_096,
       ) === Number.POSITIVE_INFINITY
     ) {
-      this.recordProtocolViolation("frame-limit", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("frame-limit", {
+        reason: "semantic-frame-limit",
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     if (type === "rpc_chunk") {
       const chunk = OmpChunkFrameSchema.safeParse(safeFrame);
-      if (!chunk.success) this.rejectChunk();
+      if (!chunk.success) this.rejectChunk("chunk-schema");
       else this.receiveChunk(chunk.data);
       return;
     }
     if (this.chunk) {
       this.clearChunk();
-      this.recordProtocolViolation("interleaved-chunk");
+      this.recordProtocolViolation("interleaved-chunk", {
+        reason: "frame-interleaved-with-chunk",
+      });
     }
     if (type === "rpc_frame_error") {
-      this.recordProtocolViolation("remote-frame-error", { frameType: "rpc_frame_error" });
+      this.recordProtocolViolation("remote-frame-error", {
+        reason: "remote-frame-error",
+        frameType: "rpc_frame_error",
+      });
       return;
     }
     if (type === "ready") {
       if (this.readyReceived) {
-        this.recordProtocolViolation("duplicate-ready", { frameType: "ready" });
+        this.recordProtocolViolation("duplicate-ready", {
+          reason: "ready-already-received",
+          frameType: "ready",
+        });
         return;
       }
       const ready = OmpReadyFrameSchema.safeParse(safeFrame);
       if (!ready.success) {
-        this.recordProtocolViolation("invalid-ready", { frameType: "ready" });
+        this.recordProtocolViolation("invalid-ready", {
+          reason: "ready-schema",
+          frameType: "ready",
+        });
       } else {
         this.readyReceived = true;
         this.resolveReady(ready.data);
@@ -2741,11 +2802,25 @@ class OmpRpcProcess {
     if (!event.success) {
       this.rejectMatchingToolApproval(safeFrame);
       if (type === "agent_end" && this.receiveDegradedAgentEnd(safeFrame, false)) return;
-      this.recordProtocolViolation("invalid-event", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("invalid-event", {
+        reason:
+          type === "notice"
+            ? typeof safeFrame.level !== "string"
+              ? "notice-level-type"
+              : typeof safeFrame.message !== "string"
+                ? "notice-message-type"
+                : "notice-schema"
+            : "event-schema",
+        ...(type === "notice" ? { frameType: "notice" as const } : {}),
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     if (!this.acceptEventState(event.data)) {
-      this.recordProtocolViolation("invalid-event-state", { maxByteSize: rawByteLength });
+      this.recordProtocolViolation("invalid-event-state", {
+        reason: "event-state-transition",
+        maxByteSize: rawByteLength,
+      });
       return;
     }
     this.emit(event.data);
@@ -2848,14 +2923,14 @@ class OmpRpcProcess {
     return true;
   }
 
-  private rejectChunk(): void {
+  private rejectChunk(reason: OmpProtocolViolationReason): void {
     this.clearChunk();
-    this.recordProtocolViolation("invalid-chunk", { frameType: "rpc_chunk" });
+    this.recordProtocolViolation("invalid-chunk", { reason, frameType: "rpc_chunk" });
   }
 
   private recordProtocolViolation(
     category: OmpProtocolViolationCategory,
-    metadata: Omit<OmpProtocolViolationDiagnostic, "category" | "occurrenceCount"> = {},
+    metadata: Omit<OmpProtocolViolationDiagnostic, "category" | "occurrenceCount">,
   ): void {
     if (!this.protocolViolationTimer) {
       this.emitProtocolViolation({ category, occurrenceCount: 1, ...metadata });
@@ -2874,6 +2949,7 @@ class OmpRpcProcess {
     pending.maxByteSize =
       Math.max(pending.maxByteSize ?? 0, metadata.maxByteSize ?? 0) || undefined;
     if (pending.frameType !== metadata.frameType) pending.frameType = undefined;
+    pending.reason = metadata.reason;
   }
 
   private flushProtocolViolations(): void {

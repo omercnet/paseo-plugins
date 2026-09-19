@@ -71,6 +71,10 @@ function finiteCount(value: number | null | undefined, maximum = Number.MAX_SAFE
     : "unknown";
 }
 
+function usefulReportLine(line: string): boolean {
+  return !line.endsWith(": unavailable") && !line.endsWith(": unknown") && !line.endsWith(": 0");
+}
+
 function formatVersion(version: OmpVersion | null): string {
   if (!version) return "unavailable";
   const core = `${version.major}.${version.minor}.${version.patch}`;
@@ -78,30 +82,7 @@ function formatVersion(version: OmpVersion | null): string {
 }
 
 function formatHealth(health: OmpProviderHealth | null): string[] {
-  if (!health) {
-    return [
-      "provider_health.status: unavailable",
-      "omp.installed: unknown",
-      "omp.version: unavailable",
-      "omp.version_probe: unavailable",
-      "omp.process_cleanup: unknown",
-      "compatibility.rpc_ui: unknown",
-      "compatibility.lsp: unknown",
-      "mcp.status: unknown",
-      "mcp.server_count: unknown",
-      "storage.agent_root: unknown",
-      "storage.config: unknown",
-      "storage.session_root: unknown",
-      "storage.agent_database: unknown",
-      "storage.history_database: unknown",
-      "storage.memory_backend: unknown",
-      "hub.status: unknown",
-      "hub.tracked_count: unknown",
-      "hub.active_count: unknown",
-      "hub.historical_count: unknown",
-      "hub.unknown_count: unknown",
-    ];
-  }
+  if (!health) return [];
   return [
     "provider_health.status: available",
     `omp.installed: ${health.binary.installed}`,
@@ -141,11 +122,13 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
     ...formatHealth(data.health),
   ];
   for (const violation of data.violations) {
+    if (violation.occurrenceCount === 0) continue;
     const prefix = `protocol.${violation.category}`;
     lines.push(
       `${prefix}.occurrence_count: ${finiteCount(violation.occurrenceCount)}`,
       `${prefix}.batch_count: ${finiteCount(violation.batchCount)}`,
       `${prefix}.max_batch_count: ${finiteCount(violation.maxOccurrenceCount)}`,
+      `${prefix}.latest_reason: ${violation.latestReason ?? "unknown"}`,
       `${prefix}.first_at_utc: ${violation.firstAt ?? "unavailable"}`,
       `${prefix}.last_at_utc: ${violation.lastAt ?? "unavailable"}`,
       `${prefix}.latest_frame_type: ${violation.latestFrameType ?? "unknown"}`,
@@ -153,6 +136,7 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
     );
   }
   for (const failure of data.operationalFailures) {
+    if (failure.occurrenceCount === 0) continue;
     const prefix = `operational.${failure.category}.${failure.stage}`;
     lines.push(
       `${prefix}.occurrence_count: ${finiteCount(failure.occurrenceCount)}`,
@@ -160,13 +144,13 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
       `${prefix}.last_at_utc: ${failure.lastAt ?? "unavailable"}`,
     );
   }
-  const report = `${lines.join("\n")}\n`;
+  const report = `${lines.filter(usefulReportLine).join("\n")}\n`;
   if (supportReportByteLength(report) > OMP_SUPPORT_REPORT_MAX_BYTES) {
     return [
       "OMP support diagnostics",
       `schema_version: ${OMP_SUPPORT_REPORT_SCHEMA_VERSION}`,
       `collected_at_utc: ${data.collectedAt}`,
-      "collection_status: unavailable",
+      "collection_status: failed",
       "collection_error: report-size-limit",
       "",
     ].join("\n");
