@@ -58,6 +58,7 @@ const MAX_CONNECTION_SESSIONS = 32;
 const MAX_ACTIVE_OPERATIONS = 128;
 const MAX_PROVIDER_INPUT_BYTES = 2 * 1024 * 1024;
 const MAX_NESTED_OPTION_BYTES = 256 * 1024;
+const MAX_ENV_ENTRIES = 256;
 const MAX_NATIVE_SESSION_RESERVATIONS = 256;
 
 function hasOwnEntries(value: unknown): boolean {
@@ -82,7 +83,16 @@ function preflightProviderInput(input: unknown): void {
       throw new OmpPublicError("Session persistence input is too large");
     }
     const config = record.config as Record<string, unknown> | undefined;
-    for (const value of [config?.mcpServers, config?.providerOptions, config?.settings]) {
+    for (const value of [config?.env, config?.providerOptions]) {
+      if (
+        value !== undefined &&
+        boundedJsonBytes(value, MAX_NESTED_OPTION_BYTES, MAX_ENV_ENTRIES) ===
+          Number.POSITIVE_INFINITY
+      ) {
+        throw new OmpPublicError("Session configuration is too large");
+      }
+    }
+    for (const value of [config?.mcpServers, config?.settings]) {
       if (
         value !== undefined &&
         boundedJsonBytes(value, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
@@ -109,13 +119,18 @@ function preflightProviderInput(input: unknown): void {
     }
   }
   if (record.type === "catalog" || record.type === "sessions") {
-    for (const value of [record.providerOptions, record.settings]) {
-      if (
-        value !== undefined &&
-        boundedJsonBytes(value, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
-      ) {
-        throw new OmpPublicError("Provider configuration is too large");
-      }
+    if (
+      record.providerOptions !== undefined &&
+      boundedJsonBytes(record.providerOptions, MAX_NESTED_OPTION_BYTES, MAX_ENV_ENTRIES) ===
+        Number.POSITIVE_INFINITY
+    ) {
+      throw new OmpPublicError("Provider configuration is too large");
+    }
+    if (
+      record.settings !== undefined &&
+      boundedJsonBytes(record.settings, MAX_NESTED_OPTION_BYTES) === Number.POSITIVE_INFINITY
+    ) {
+      throw new OmpPublicError("Provider configuration is too large");
     }
   }
   if (record.type === "session.prompt") {

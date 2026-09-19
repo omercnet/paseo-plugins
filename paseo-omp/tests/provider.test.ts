@@ -4720,6 +4720,104 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test.each([129, 256])(
+    "accepts %i inherited and session environment entries through preflight",
+    async (entryCount) => {
+      const inheritedNames = Array.from({ length: entryCount }, (_, index) => `INHERITED_${index}`);
+      const runtime = new FakeOmpRuntime();
+      const connection = await createOmpProvider({
+        runtime,
+        environment: {
+          ...TEST_RUNTIME_ENV,
+          ...Object.fromEntries(
+            inheritedNames.map((name, index) => [name, `inherited-value-${index}`]),
+          ),
+        },
+      }).connect({ versions: [1], capabilities: ["prompt.message"] });
+      const events = new EventLog();
+      connection.onEvent((event) => events.push(event));
+      const sessionEnvironment = Object.fromEntries(
+        Array.from({ length: entryCount }, (_, index) => [`SESSION_${index}`, "value"]),
+      );
+
+      await connection.send({
+        type: "catalog",
+        requestId: `catalog-env-${entryCount}`,
+        cwd: "/repo",
+        providerOptions: { inheritEnv: inheritedNames },
+        settings: {},
+      } as never);
+      await events.waitFor(
+        (event) => event.type === "catalog" && event.requestId === `catalog-env-${entryCount}`,
+      );
+      await openSession(
+        connection,
+        events,
+        `session-env-${entryCount}`,
+        `session-${entryCount}`,
+        sessionEnvironment,
+        MODEL_PUBLIC_ID,
+        "medium",
+        false,
+        { providerOptions: { inheritEnv: inheritedNames } },
+      );
+
+      expect(runtime.starts.at(-1)?.env).toHaveProperty(`SESSION_${entryCount - 1}`, "value");
+      expect(runtime.starts.at(-1)?.inheritEnv).toContain(`INHERITED_${entryCount - 1}`);
+      await connection.close();
+    },
+  );
+
+  test("rejects 257 inherited or session environment entries", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHarness(runtime);
+    const names = Array.from({ length: 257 }, (_, index) => `VALUE_${index}`);
+    const entries = Object.fromEntries(names.map((name) => [name, "value"]));
+
+    await connection.send({
+      type: "catalog",
+      requestId: "catalog-env-257",
+      cwd: "/repo",
+      providerOptions: { inheritEnv: names },
+      settings: {},
+    } as never);
+    await expect(
+      events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === "catalog-env-257",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ error: { message: "Provider configuration is too large" } }),
+    );
+    await expect(
+      openSession(
+        connection,
+        events,
+        "inherit-env-257",
+        "inherit-257",
+        {},
+        MODEL_PUBLIC_ID,
+        "medium",
+        false,
+        { providerOptions: { inheritEnv: names } },
+      ),
+    ).rejects.toThrow();
+    await expect(
+      openSession(
+        connection,
+        events,
+        "session-env-257",
+        "session-257",
+        entries,
+        MODEL_PUBLIC_ID,
+        "medium",
+        false,
+      ),
+    ).rejects.toThrow();
+
+    expect(runtime.starts).toHaveLength(0);
+    await connection.close();
+  });
+
   test("rejects malformed capabilities and filters unsupported capability names", async () => {
     const provider = createOmpProvider({
       runtime: new FakeOmpRuntime(),
