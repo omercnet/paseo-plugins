@@ -15560,21 +15560,23 @@ describe("OMP direct provider", () => {
       agentInvoked: true,
     });
     children[1]?.write({ type: "agent_start" });
+    const largeTerminalText = "é".repeat((1024 * 1024) / 2 + 1);
     children[1]?.writeChunked(
       {
         type: "agent_end",
         requestId: promptRequestIds.at(-1),
-        messages: [{ role: "assistant", content: "é".repeat((1024 * 1024) / 2 + 1) }],
+        messages: [{ role: "assistant", content: largeTerminalText }],
         isTerminal: true,
       },
       "oversized-terminal-text",
     );
-    await events.waitFor(
+    const largeTextTerminal = await events.waitFor(
       (event) =>
         event.type === "session.turn" &&
         event.turnId === recoveredTurnId &&
-        event.state === "failed",
+        event.state !== "started",
     );
+    expect(largeTextTerminal).toEqual(expect.objectContaining({ state: "completed" }));
     expect(
       events.filter(
         (event) =>
