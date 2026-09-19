@@ -48,6 +48,27 @@ const THINKING_OPTIONS: readonly ProviderThinkingOption[] = [
   { id: "xhigh", label: "XHigh", description: "Extra-high reasoning" },
   { id: "max", label: "Max", description: "Maximum reasoning" },
 ];
+export const OMP_MAX_CATALOG_MODELS = 256;
+
+export function selectOmpModels(
+  models: readonly OmpModel[],
+  activeModel: OmpModel | null | undefined,
+): OmpModel[] {
+  if (models.length <= OMP_MAX_CATALOG_MODELS) return [...models];
+  const selected = models.slice(0, OMP_MAX_CATALOG_MODELS);
+  if (!activeModel) return selected;
+  const active = models.find(
+    (model) => model.provider === activeModel.provider && model.id === activeModel.id,
+  );
+  if (
+    !active ||
+    selected.some((model) => model.provider === active.provider && model.id === active.id)
+  ) {
+    return selected;
+  }
+  selected[OMP_MAX_CATALOG_MODELS - 1] = active;
+  return selected;
+}
 
 export function nativeOmpModelId(model: OmpModel): string {
   if (model.provider.includes("/")) {
@@ -143,14 +164,15 @@ export async function discoverOmpCatalog(
         ? [...configuredValues, ...(session.inheritedRedactionValues ?? [])]
         : configuredValues,
     );
-    const models = mapOmpModels(nativeModels, serializer);
+    const selectedNativeModels = selectOmpModels(nativeModels, state.model);
+    const models = mapOmpModels(selectedNativeModels, serializer);
     if (models.length === 0) throw new Error("OMP reported no available models");
     const defaultModel = state.model ? ompModelId(state.model) : models[0]?.id;
     const currentModel = state.model
-      ? nativeModels.find(
+      ? selectedNativeModels.find(
           (model) => model.provider === state.model?.provider && model.id === state.model.id,
         )
-      : nativeModels[0];
+      : selectedNativeModels[0];
     if (state.model && !currentModel) throw new Error("OMP reported an unadvertised active model");
     const thinkingOptions = thinkingForModel(currentModel);
     const defaultThinkingOption = thinkingOptions.some(
