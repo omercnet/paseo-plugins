@@ -409,8 +409,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   totalCostUsd = 0.25;
   isStreaming = false;
   isCompacting = false;
-  thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined =
-    "medium";
+  thinkingLevel: string | undefined = "medium";
   promptAgentInvoked: boolean | undefined = true;
   promptEvents: OmpRpcEvent[] = [];
   promptError: Error | null = null;
@@ -740,7 +739,7 @@ class FakeOmpRuntime implements OmpRuntime {
   readonly starts: OmpStartOptions[] = [];
   readonly sessionIds: string[] = [];
   nextModel: OmpModel | null = null;
-  nextThinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null = null;
+  nextThinkingLevel: string | null = null;
   nextInheritedRedactionValues: readonly string[] = [];
   omitNextThinkingLevel = false;
   nextCloseError: Error | null = null;
@@ -1883,6 +1882,138 @@ describe("OMP direct provider", () => {
 
     expect(event.catalog.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
     expect("defaultThinkingOption" in event.catalog).toBe(false);
+    await connection.close();
+  });
+  test("accepts bounded future model and state metadata from RPC", async () => {
+    const futureModel = {
+      provider: "future-provider",
+      id: "future-model",
+      name: 42,
+      reasoning: true,
+      thinking: {
+        efforts: ["low", 42, "x".repeat(33), "high", ...Array(20).fill("medium")],
+        defaultLevel: { future: true },
+      },
+      input: ["text", 42, "x".repeat(257), "image", ...Array(20).fill("audio")],
+      contextWindow: "large",
+    };
+    const futureCatalog = [
+      ...Array.from({ length: 600 }, (_, index) => ({
+        provider: "provider",
+        id: `model-${index}`,
+      })),
+      futureModel,
+    ];
+    let child: ProviderRpcChild;
+    const runtime = new OmpRpcRuntime({
+      spawnProcess() {
+        child = new ProviderRpcChild((command) => {
+          child.write({
+            type: "response",
+            id: command.id,
+            success: true,
+            data:
+              command.type === "negotiate_protocol"
+                ? { protocolVersion: 2 }
+                : command.type === "get_available_models"
+                  ? { models: futureCatalog }
+                  : {
+                      model: futureModel,
+                      thinkingLevel: "future-thinking",
+                      isStreaming: false,
+                      isCompacting: false,
+                      sessionId: NATIVE_SESSION_ID,
+                    },
+          });
+        });
+        queueMicrotask(() =>
+          child.write({
+            type: "ready",
+            protocolVersion: 1,
+            supportedProtocolVersions: [1, 2],
+            maxFrameBytes: 1_048_576,
+            maxReassembledFrameBytes: 67_108_864,
+          }),
+        );
+        return child.asChildProcess();
+      },
+      terminateProcessTree: () => Promise.resolve(true),
+      environment: TEST_RUNTIME_ENV,
+    });
+    const session = await runtime.startSession({
+      cwd: "/repo",
+      environment: TEST_RUNTIME_ENV,
+      noSession: true,
+    });
+    const [models, state] = await Promise.all([session.getAvailableModels(), session.getState()]);
+
+    expect(models).toHaveLength(601);
+    expect(models.at(-1)).toEqual({
+      provider: "future-provider",
+      id: "future-model",
+      reasoning: true,
+      thinking: {
+        efforts: ["low", "high", ...Array(14).fill("medium")],
+      },
+      input: ["text", "image", ...Array(14).fill("audio")],
+    });
+    expect(state).toMatchObject({
+      model: models.at(-1),
+      thinkingLevel: "future-thinking",
+      isStreaming: false,
+      isCompacting: false,
+      sessionId: NATIVE_SESSION_ID,
+    });
+    await session.close();
+  });
+
+  test("opens with an oversized catalog by retaining the active model", async () => {
+    const runtime = new FakeOmpRuntime();
+    const activeModel: OmpModel = {
+      provider: "future-provider",
+      id: "active-model",
+      reasoning: true,
+      thinking: { efforts: ["low", "high"], defaultLevel: "high" },
+    };
+    runtime.availableModels = [
+      ...Array.from(
+        { length: 256 },
+        (_, index): OmpModel => ({
+          provider: "provider",
+          id: `model-${index}`,
+        }),
+      ),
+      activeModel,
+    ];
+    runtime.nextModel = activeModel;
+    runtime.nextThinkingLevel = "future-thinking";
+    const { connection, events } = await createHarness(runtime);
+
+    await openSession(
+      connection,
+      events,
+      "oversized-catalog-open",
+      "oversized-catalog-session",
+      {},
+      ompModelId(activeModel),
+      null,
+      false,
+    );
+
+    const config = events.findLast((event) => event.type === "session.config");
+    if (config?.type !== "session.config") throw new Error("Expected session config");
+    expect(config.config.models).toHaveLength(256);
+    expect(config.config.models.some((model) => model.id === ompModelId(activeModel))).toBe(true);
+    expect(config.config.model).toBe(ompModelId(activeModel));
+    expect(config.config.thinkingOption).toBeUndefined();
+    expect(events).toContainEqual({
+      type: "session.notice",
+      sessionId: "oversized-catalog-session",
+      notice: expect.objectContaining({
+        id: "omp:unsupported-thinking-level",
+        severity: "warning",
+      }),
+    });
     await connection.close();
   });
 
@@ -3571,7 +3702,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("ignores stale resume thinking and rejects unsupported restored thinking", async () => {
+  test("opens restored sessions while omitting unsupported current thinking", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
     runtime.nextThinkingLevel = "max";
@@ -3595,17 +3726,19 @@ describe("OMP direct provider", () => {
       persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
       history: "replay",
     });
-    const failure = await events.waitFor(
+    await events.waitFor(
       (event) =>
-        event.type === "request.failed" && event.requestId === "unsupported-restored-thinking",
+        event.type === "session.ready" && event.requestId === "unsupported-restored-thinking",
     );
-    expect(failure).toEqual(
-      expect.objectContaining({
-        error: { message: "OMP runtime selected an unsupported thinking level" },
-      }),
-    );
+    const config = events.findLast((event) => event.type === "session.config");
+    if (config?.type !== "session.config") throw new Error("Expected session config");
+    expect(config.config.thinkingOption).toBeUndefined();
     expect(runtime.starts[0]?.thinkingOption).toBeUndefined();
-    expect(events.some((event) => event.type === "session.ready")).toBe(false);
+    expect(events).toContainEqual({
+      type: "session.notice",
+      sessionId: "unsupported-restored-thinking-session",
+      notice: expect.objectContaining({ id: "omp:unsupported-thinking-level" }),
+    });
     await connection.close();
   });
 
@@ -6182,21 +6315,28 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("invalidates runtime state with a thinking level outside the model catalog", async () => {
+  test("omits unsupported thinking when refreshing runtime state", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
-    const baselineConfigs = events.filter((event) => event.type === "session.config").length;
-    const closed = Promise.withResolvers<void>();
-    session.closeObserved = closed.resolve;
     session.currentModel = ALTERNATE_MODEL;
     session.thinkingLevel = "medium";
 
+    const refreshed = events.waitFor(
+      (event) =>
+        event.type === "session.config" && event.config.model === ALTERNATE_MODEL_PUBLIC_ID,
+    );
     session.emit({ type: "model_changed" });
-    await closed.promise;
+    const config = await refreshed;
 
-    expect(session.closes).toBe(1);
-    expect(events.filter((event) => event.type === "session.config")).toHaveLength(baselineConfigs);
+    if (config.type !== "session.config") throw new Error("Expected session config");
+    expect(config.config.thinkingOption).toBeUndefined();
+    expect(session.closes).toBe(0);
+    expect(events).toContainEqual({
+      type: "session.notice",
+      sessionId: "session-1",
+      notice: expect.objectContaining({ id: "omp:unsupported-thinking-level" }),
+    });
     await connection.close();
   });
 

@@ -70,6 +70,7 @@ const MAX_OPTIONAL_METADATA_NODES = 4_096;
 const MAX_TASK_CORRELATION_BYTES = 256 * 1024;
 const MAX_TASK_CORRELATION_ITEMS = 1_024;
 const MAX_TASK_CORRELATION_NODES = 4_096;
+const MAX_MODEL_CATALOG_ITEMS = 4_096;
 // Tool-intensive OMP turns legitimately exceed 64 blocks; transport byte/node budgets remain the
 // primary resource bounds.
 export const OMP_MAX_CONTENT_PARTS = 4_096;
@@ -113,6 +114,17 @@ function boundedString(maxBytes: number, minBytes = 0) {
   return z.string().refine((value) => {
     const bytes = utf8Bytes(value);
     return bytes >= minBytes && bytes <= maxBytes;
+  });
+}
+function boundedOptionalStringArray(maxItems: number, maxBytes: number) {
+  return z.unknown().transform((value): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    return value
+      .filter(
+        (item): item is string =>
+          typeof item === "string" && item.length > 0 && utf8Bytes(item) <= maxBytes,
+      )
+      .slice(0, maxItems);
   });
 }
 
@@ -191,6 +203,7 @@ function sanitizeLiveDisplayFrame(value: unknown): unknown {
   return changed ? { ...frame, messages } : value;
 }
 const OmpThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const OmpCurrentThinkingLevelSchema = boundedString(32).optional().catch(undefined);
 
 function isBoundedJson(
   value: unknown,
@@ -546,19 +559,33 @@ const OmpAvailableCommandSchema = z.object({
     .optional(),
   source: boundedString(64).optional(),
 });
+const OmpThinkingMetadataSchema = z
+  .unknown()
+  .transform((value): { efforts?: string[]; defaultLevel?: string } | undefined => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    const efforts = boundedOptionalStringArray(16, 32).parse(record.efforts);
+    const defaultLevel = boundedString(32).optional().catch(undefined).parse(record.defaultLevel);
+    return {
+      ...(efforts !== undefined ? { efforts } : {}),
+      ...(defaultLevel !== undefined ? { defaultLevel } : {}),
+    };
+  });
 const OmpModelSchema = z.object({
   provider: OMP_PROVIDER_NAME,
   id: NAME,
-  name: boundedString(MAX_NAME_LENGTH).optional(),
-  reasoning: z.boolean().optional(),
-  thinking: z
-    .object({
-      efforts: z.array(boundedString(32)).max(16).optional(),
-      defaultLevel: boundedString(32).optional(),
-    })
-    .optional(),
-  input: z.array(NAME).max(16).optional(),
-  contextWindow: z.number().int().nonnegative().max(100_000_000).nullable().optional(),
+  name: boundedString(MAX_NAME_LENGTH).optional().catch(undefined),
+  reasoning: z.boolean().optional().catch(undefined),
+  thinking: OmpThinkingMetadataSchema.optional(),
+  input: boundedOptionalStringArray(16, MAX_NAME_LENGTH).optional(),
+  contextWindow: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(100_000_000)
+    .nullable()
+    .optional()
+    .catch(undefined),
 });
 const TokenCountSchema = z.number().int().nonnegative().max(MAX_TOKEN_COUNT);
 const OptionalTokenCountSchema = TokenCountSchema.nullable().optional();
@@ -610,13 +637,13 @@ const OmpCompactionResultSchema = z.object({
 });
 const OmpSessionStateSchema = z.object({
   model: OmpModelSchema.nullable().optional(),
-  thinkingLevel: OmpThinkingLevelSchema.optional(),
+  thinkingLevel: OmpCurrentThinkingLevelSchema,
   isStreaming: z.boolean(),
   isCompacting: z.boolean(),
   sessionId: IDENTIFIER,
   autoCompactionEnabled: z.boolean().optional(),
-  contextUsage: OmpContextUsageSchema.nullable().optional(),
-  sessionFile: boundedString(MAX_PATH_LENGTH).optional(),
+  contextUsage: OmpContextUsageSchema.nullable().optional().catch(undefined),
+  sessionFile: boundedString(MAX_PATH_LENGTH).optional().catch(undefined),
 });
 const OmpReadyFrameSchema = z.object({
   type: z.literal("ready"),
@@ -1217,7 +1244,7 @@ function runtimeFrameCollectionLimit(frame: Record<string, unknown>): number {
   return 1_024;
 }
 const OmpModelsResultSchema = z.object({
-  models: z.array(OmpModelSchema).min(1).max(256),
+  models: z.array(OmpModelSchema).min(1).max(MAX_MODEL_CATALOG_ITEMS),
 });
 const OmpPromptAckSchema = z.object({ agentInvoked: z.boolean().optional() }).optional();
 const OmpAvailableCommandsResultSchema = z.object({
@@ -2480,13 +2507,19 @@ class OmpRpcProcess {
       : response.data.data;
     const boundedFrame =
       responseData === response.data.data ? frame : { ...frame, data: responseData };
-    const responseItemLimit = isBranchHistory ? 1_024 : isHistory ? 100_000 : MAX_ARRAY_ITEMS;
+    const responseItemLimit = isBranchHistory
+      ? 1_024
+      : isHistory
+        ? 100_000
+        : pending.command === "get_available_models"
+          ? MAX_MODEL_CATALOG_ITEMS
+          : MAX_ARRAY_ITEMS;
     const responseByteLimit =
       isBranchHistory || isHistory
         ? Math.min(MAX_REASSEMBLED_FRAME_BYTES, this.reassembledFrameLimit)
         : 2 * 1024 * 1024;
-    // A model catalog contains up to 256 structured models, so its aggregate
-    // node budget must exceed the small state/command-response budget.
+    // Model catalogs are truncated before publication, while the transport still enforces
+    // aggregate byte and node budgets over the complete response.
     const responseNodeLimit = isBranchHistory
       ? 4_096
       : isHistory
