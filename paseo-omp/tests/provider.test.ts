@@ -2510,7 +2510,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("rewinds to an earlier native message and replays the active branch once", async () => {
+  test("verifies session, model, and thinking state after a successful rewind", async () => {
     const firstUser = { role: "user" as const, entryId: "entry-user-1", content: "first" };
     const firstAssistant = {
       role: "assistant" as const,
@@ -2570,10 +2570,6 @@ describe("OMP direct provider", () => {
     expect(token).not.toContain("entry-user-2");
 
     const session = sessionAt(runtime);
-    session.branchMessages = [
-      { entryId: "entry-user-1", text: "first" },
-      { entryId: "entry-user-2", text: "second" },
-    ];
     session.branchHistoryAfter = [firstUser, firstAssistant];
     session.branchModelAfter = ALTERNATE_MODEL;
     session.branchThinkingAfter = "high";
@@ -2595,6 +2591,7 @@ describe("OMP direct provider", () => {
 
     expect(session.branches).toEqual(["entry-user-2"]);
     expect(session.historyRequests).toBe(2);
+    expect(session.branchMessageLookups).toBe(0);
     expect(session.modelChanges).toEqual([{ provider: MODEL.provider, modelId: MODEL.id }]);
     expect(session.thinkingChanges).toEqual(["medium"]);
     expect(session.currentModel).toEqual(MODEL);
@@ -2669,6 +2666,69 @@ describe("OMP direct provider", () => {
       expect.objectContaining({ error: { message: "OMP conversation rewind token is stale" } }),
     );
     expect(session.branches).toEqual(["entry-user-2"]);
+    await connection.close();
+  });
+
+  test("rewinds a retained target beyond the branch snapshot limit", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = Array.from({ length: 1_025 }, (_, index) => ({
+      role: "user" as const,
+      entryId: `retained-entry-${index}`,
+      content: `retained-message-${index}`,
+    }));
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.revert.conversation",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "retained-rewind-open",
+      sessionId: "retained-rewind-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        mode: "full",
+        settings: {},
+        persist: true,
+      },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "retained-rewind-open",
+    );
+    const target = events.find(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.text === "retained-message-1024",
+    );
+    if (target?.type !== "timeline.item" || target.item.type !== "user_message") {
+      throw new Error("Missing retained rewind target");
+    }
+
+    const session = sessionAt(runtime);
+    session.branchHistoryAfter = [];
+    await connection.send({
+      type: "session.revert",
+      requestId: "retained-rewind",
+      sessionId: "retained-rewind-session",
+      token: target.item.revertToken ?? null,
+      scope: "conversation",
+    });
+    await expect(
+      events.waitFor(
+        (event) =>
+          (event.type === "request.completed" || event.type === "request.failed") &&
+          event.requestId === "retained-rewind",
+      ),
+    ).resolves.toEqual({ type: "request.completed", requestId: "retained-rewind" });
+    expect(session.branches).toEqual(["retained-entry-1024"]);
+    expect(session.branchMessageLookups).toBe(0);
+    expect(session.closes).toBe(0);
     await connection.close();
   });
 
@@ -2796,7 +2856,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("closes after an indeterminate native branch failure", async () => {
+  test("does not close the session when OMP rejects a stale branch target", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
     runtime.nextHistoryMessages = [{ role: "user", entryId: "failure-entry", content: "earlier" }];
@@ -2830,7 +2890,6 @@ describe("OMP direct provider", () => {
       throw new Error("Missing failed rewind target");
     }
     const session = sessionAt(runtime);
-    session.branchMessages = [{ entryId: "failure-entry", text: "earlier" }];
     session.branchError = new Error("native branch secret");
     await connection.send({
       type: "session.revert",
@@ -2844,15 +2903,17 @@ describe("OMP direct provider", () => {
     );
     expect(failure).toEqual(
       expect.objectContaining({
-        error: { message: "OMP conversation rewind left native state indeterminate" },
+        error: { message: "OMP conversation rewind failed" },
       }),
     );
     expect(JSON.stringify(failure)).not.toContain("native branch secret");
     expect(session.historyRequests).toBe(1);
-    expect(events).toContainEqual(
+    expect(session.branchMessageLookups).toBe(0);
+    expect(events).not.toContainEqual(
       expect.objectContaining({ type: "session.closed", sessionId: "failure-session" }),
     );
-    await expect(connection.close()).resolves.toBeUndefined();
+    expect(session.closes).toBe(0);
+    await connection.close();
     expect(session.closes).toBe(1);
   });
   test("closes the mutated runtime after post-branch state, restore, or replay failure", async () => {
@@ -2927,7 +2988,6 @@ describe("OMP direct provider", () => {
       }
       const session = sessionAt(runtime);
       if (testCase.cleanupFails) session.closeError = new Error("cleanup failed");
-      session.branchMessages = [{ entryId: `${testCase.stage}-entry`, text: "earlier" }];
       session.branchSessionIdAfter = testCase.nativeSessionId;
       testCase.fail(session);
       const cleanup = Promise.withResolvers<void>();
@@ -3097,7 +3157,6 @@ describe("OMP direct provider", () => {
         event.type === "session.opened" && event.parentSessionId === "security-rewind-session",
     );
     if (child?.type !== "session.opened") throw new Error("Expected rewind child session");
-    session.branchMessages = [{ entryId: "security-rewind-entry", text: "earlier" }];
     session.branchSessionIdAfter = BRANCHED_NATIVE_SESSION_ID;
     session.branchHistoryErrorAfter = new Error("replay failed");
     session.closeGate = runtimeCleanup.promise;
