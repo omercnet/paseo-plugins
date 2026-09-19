@@ -13,6 +13,10 @@ interface WorkspaceEntry {
   workspaceDirectory: string | null;
 }
 
+interface ReleasableSubscription {
+  release(): Promise<void>;
+}
+
 export default function contribute(client: PluginClientContext) {
   const buttons = new Map<string, PluginButtonRegistration>();
   const checks = new Map<string, Promise<void>>();
@@ -22,6 +26,18 @@ export default function contribute(client: PluginClientContext) {
   >();
   const projectRoots = new Map<string, string>();
   let stopped = false;
+  let workspaceSubscription: ReleasableSubscription | undefined;
+  let releaseSubscriptionPromise: Promise<void> | undefined;
+  let initializationFailed = false;
+
+  function releaseWorkspaceSubscription(): Promise<void> {
+    if (releaseSubscriptionPromise) return releaseSubscriptionPromise;
+    const subscription = workspaceSubscription;
+    workspaceSubscription = undefined;
+    if (!subscription) return Promise.resolve();
+    releaseSubscriptionPromise = subscription.release();
+    return releaseSubscriptionPromise;
+  }
 
   function removeIndicator(workspaceId: string) {
     buttons.get(workspaceId)?.remove();
@@ -129,17 +145,26 @@ export default function contribute(client: PluginClientContext) {
     }
   });
 
-  void Promise.all([
-    client.paseo.projects.list(),
-    client.paseo.workspaces.list({ subscribe: { subscriptionId: "fresh-worktrees-status" } }),
-  ])
+  const workspaceList = client.paseo.workspaces.list({ subscribe: {} }).then(async (result) => {
+    workspaceSubscription = result.subscription;
+    if (stopped || initializationFailed) await releaseWorkspaceSubscription();
+    return result;
+  });
+
+  void Promise.all([client.paseo.projects.list(), workspaceList])
     .then(([{ projects }, { entries }]) => {
       if (stopped) return;
       for (const project of projects) projectRoots.set(project.projectId, project.projectRootPath);
       for (const workspace of entries) trackWorkspace(workspace);
     })
-    .catch((error) => {
-      console.warn("[fresh-worktrees] Could not list workspaces", error);
+    .catch(async (error) => {
+      initializationFailed = true;
+      try {
+        await releaseWorkspaceSubscription();
+      } catch (releaseError) {
+        console.warn("[fresh-worktrees] Could not release workspace observation", releaseError);
+      }
+      if (!stopped) console.warn("[fresh-worktrees] Could not list workspaces", error);
     });
 
   const interval = setInterval(() => {
@@ -158,5 +183,6 @@ export default function contribute(client: PluginClientContext) {
     buttons.clear();
     workspaceLocations.clear();
     projectRoots.clear();
+    return releaseWorkspaceSubscription();
   };
 }
