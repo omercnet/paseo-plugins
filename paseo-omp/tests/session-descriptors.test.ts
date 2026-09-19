@@ -302,14 +302,16 @@ describe("OMP session descriptor discovery", () => {
     );
   });
 
-  test("replays large final display text without letting oversized data poison history", async () => {
+  test("retains bounded raw display text and safely degrades larger history", async () => {
     const root = await temporaryRoot();
     const cwd = root;
     const sessionFile = join(root, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
     const displayLimit = 4 * 1024 * 1024;
+    const rawDisplayLimit = 8 * 1024 * 1024;
     const twoMiB = "a".repeat(2 * 1024 * 1024);
     const fourMiB = "b".repeat(displayLimit);
     const overLimit = `${fourMiB}c`;
+    const tooLarge = "d".repeat(rawDisplayLimit + 1);
     await writeFile(
       sessionFile,
       `${[
@@ -364,6 +366,30 @@ describe("OMP session descriptor discovery", () => {
             truncated: true,
           },
         },
+        {
+          type: "message",
+          id: "assistant-too-large",
+          parentId: "bash-over-limit",
+          message: {
+            role: "assistant",
+            responseId: "response-too-large",
+            content: tooLarge,
+            stopReason: "error",
+          },
+        },
+        {
+          type: "message",
+          id: "bash-too-large",
+          parentId: "assistant-too-large",
+          message: {
+            role: "bashExecution",
+            command: "generate-more-output",
+            output: tooLarge,
+            exitCode: 1,
+            cancelled: false,
+            truncated: true,
+          },
+        },
       ]
         .map((entry) => JSON.stringify(entry))
         .join("\n")}\n`,
@@ -376,7 +402,7 @@ describe("OMP session descriptor discovery", () => {
       cwd,
     });
 
-    expect(transcript.messages).toHaveLength(4);
+    expect(transcript.messages).toHaveLength(6);
     expect(transcript.messages[0]).toEqual(
       expect.objectContaining({
         role: "assistant",
@@ -406,12 +432,10 @@ describe("OMP session descriptor discovery", () => {
       }),
     );
     const assistantContent = assistant && "content" in assistant ? assistant.content : undefined;
-    if (!Array.isArray(assistantContent)) throw new Error("Expected structured assistant content");
-    const truncatedText = assistantContent[0]?.text;
-    expect(typeof truncatedText).toBe("string");
-    expect(Buffer.byteLength(truncatedText ?? "", "utf8")).toBeLessThanOrEqual(displayLimit);
-    expect(truncatedText).toMatch(/<truncated>$/u);
-    expect(assistantContent[1]).not.toHaveProperty("thinking");
+    expect(assistantContent).toEqual([
+      { type: "text", text: fourMiB },
+      { type: "thinking", thinking: "c" },
+    ]);
     const bash = transcript.messages[3];
     expect(bash).toEqual(
       expect.objectContaining({
@@ -423,11 +447,26 @@ describe("OMP session descriptor discovery", () => {
         truncated: true,
       }),
     );
-    expect(bash && "output" in bash ? bash.output : undefined).toSatisfy(
-      (output: unknown) =>
-        typeof output === "string" &&
-        Buffer.byteLength(output, "utf8") === displayLimit &&
-        output.endsWith("<truncated>"),
+    expect(bash && "output" in bash ? bash.output : undefined).toBe(overLimit);
+    expect(transcript.messages[4]).toEqual(
+      expect.objectContaining({
+        role: "assistant",
+        entryId: "assistant-too-large",
+        responseId: "response-too-large",
+        content: "<truncated>",
+        stopReason: "error",
+      }),
+    );
+    expect(transcript.messages[5]).toEqual(
+      expect.objectContaining({
+        role: "bashExecution",
+        entryId: "bash-too-large",
+        command: "generate-more-output",
+        output: "<truncated>",
+        exitCode: 1,
+        cancelled: false,
+        truncated: true,
+      }),
     );
   });
 
