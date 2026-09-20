@@ -40,9 +40,11 @@ Place exactly one queen in every row, column, and colored region. Queens may not
 
 ## Puzzle catalog
 
-The bundled catalog contains 97,184 curated puzzles across 40 size and difficulty combinations. Puzzle layouts, classifications, and solutions are sourced from the public [Queens Ultimate](https://queensultimate.com/) puzzle corpus.
+The catalog contains 97,184 curated puzzles across 40 size and difficulty combinations. Puzzle layouts, classifications, and solutions are sourced from the public [Queens Ultimate](https://queensultimate.com/) puzzle corpus.
 
-The generated catalog records its source URL patterns in `server/curated-data.ts`. To validate the public indexes and regenerate the compact corpus:
+The compact groups live in an unlisted, revision-pinned [GitHub Gist](https://gist.github.com/omercnet/652af12e2640979ba7fb5dc5adddde42). The Paseo daemon fetches only the selected group, verifies its SHA-256 digest, and caches it for the session. Opening a size and difficulty for the first time therefore requires network access to `gist.githubusercontent.com`.
+
+The importer validates every public index and source chunk, then writes the 40 upload payloads and a manifest to `/tmp/queens-curated-gist` by default:
 
 ```bash
 npm run import:puzzles

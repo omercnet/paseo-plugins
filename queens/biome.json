@@ -1,13 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
   "files": {
-    "includes": [
-      "**",
-      "!!node_modules",
-      "!!coverage",
-      "!!paseo-plugin.d.ts",
-      "!!server/curated-data.ts"
-    ]
+    "includes": ["**", "!!node_modules", "!!coverage", "!!paseo-plugin.d.ts"]
   },
   "formatter": {
     "enabled": true,

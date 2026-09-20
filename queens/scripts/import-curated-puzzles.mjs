@@ -1,4 +1,5 @@
-import { writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const BASE_URL = "https://queensultimate.com/puzzles";
@@ -167,34 +168,26 @@ for (const size of SIZES) {
   if (seen.size !== puzzles.size) throw new Error(`Unindexed puzzles for ${size}`);
 }
 
-const lines = [
-  'import type { PuzzleDifficulty } from "../shared/puzzle-catalog";',
-  "",
-  "/**",
-  " * Generated from the public Queens Ultimate puzzle corpus.",
-  " * Source indexes: https://queensultimate.com/puzzles/random-index/{size}x{size}-{difficulty}.json",
-  " * Source chunks: https://queensultimate.com/puzzles/puzzles-{size}x{size}-Q1-{start}-{end}.txt",
-  " * Do not edit by hand.",
-  " */",
-  "export type CuratedPuzzleGroup = {",
-  "  readonly size: number;",
-  "  readonly difficulty: PuzzleDifficulty;",
-  "  readonly count: number;",
-  "  readonly recordBytes: number;",
-  "  readonly data: string;",
-  "};",
-  "",
-  "export const CURATED_PUZZLE_DATA: Readonly<Record<string, CuratedPuzzleGroup>> = {",
-];
+const outputDirectory = path.resolve(process.argv[2] ?? "/tmp/queens-curated-gist");
+await rm(outputDirectory, { recursive: true, force: true });
+await mkdir(outputDirectory, { recursive: true });
+const manifest = {};
 for (const [key, group] of Object.entries(groups)) {
-  lines.push(`  ${JSON.stringify(key)}: {`);
-  lines.push(`    size: ${group.size},`);
-  lines.push(`    difficulty: ${JSON.stringify(group.difficulty)},`);
-  lines.push(`    count: ${group.count},`);
-  lines.push(`    recordBytes: ${group.recordBytes},`);
-  lines.push(`    data: ${JSON.stringify(group.data)},`);
-  lines.push("  },");
+  const fileName = `${key}.b64`;
+  await writeFile(path.join(outputDirectory, fileName), `${group.data}\n`);
+  manifest[key] = {
+    size: group.size,
+    difficulty: group.difficulty,
+    count: group.count,
+    recordBytes: group.recordBytes,
+    sha256: createHash("sha256").update(group.data).digest("hex"),
+    fileName,
+  };
 }
-lines.push("};", "");
-await writeFile(path.join(process.cwd(), "server", "curated-data.ts"), lines.join("\n"));
-console.log(`Stored ${total} curated puzzles from ${jobs.length} source chunks.`);
+await writeFile(
+  path.join(outputDirectory, "manifest.json"),
+  `${JSON.stringify(manifest, null, 2)}\n`,
+);
+console.log(
+  `Stored ${total} curated puzzles from ${jobs.length} source chunks in ${outputDirectory}.`,
+);
