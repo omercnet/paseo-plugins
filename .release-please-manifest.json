@@ -9,5 +9,6 @@
   "paseo-shared-browser": "0.4.2",
   "paseo-gas-city": "0.2.0",
   "context-mode": "0.0.0",
-  "pr-radar": "0.4.1"
+  "pr-radar": "0.4.1",
+  "queens": "0.1.0"
 }

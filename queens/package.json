@@ -1,0 +1,56 @@
+{
+  "name": "@omercnet/paseo-queens",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A cross-platform Queens logic puzzle for Paseo.",
+  "license": "MIT",
+  "author": "Omer Cohen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "queens"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/queens#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "npm@11.19.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "queens",
+    "logic-puzzle",
+    "game"
+  ],
+  "files": [
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "shared",
+    "server",
+    "paseo-plugin.json"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "import:puzzles": "node scripts/import-curated-puzzles.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@getpaseo/plugin": "0.9.0-beta.1",
+    "@types/node": "^24.5.2",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^7.0.0",
+    "vitest": "^5.0.0",
+    "zod": "^4.4.3"
+  }
+}

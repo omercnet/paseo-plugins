@@ -62,6 +62,11 @@
       "release-type": "node",
       "package-name": "pr-radar",
       "include-component-in-tag": true
+    },
+    "queens": {
+      "release-type": "node",
+      "package-name": "queens",
+      "include-component-in-tag": true
     }
   }
 }
