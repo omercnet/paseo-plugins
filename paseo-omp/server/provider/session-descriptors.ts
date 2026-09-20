@@ -749,8 +749,7 @@ export async function readOmpPersistedSubagentTranscript(
       pathStat.isSymbolicLink() ||
       stat.dev !== pathStat.dev ||
       stat.ino !== pathStat.ino ||
-      stat.size > MAX_CHILD_TRANSCRIPT_BYTES ||
-      canonicalChild !== requestedFile
+      stat.size > MAX_CHILD_TRANSCRIPT_BYTES
     ) {
       throw new Error("OMP child transcript failed ownership validation");
     }
