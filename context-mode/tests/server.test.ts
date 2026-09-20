@@ -31,7 +31,7 @@ afterEach(async () => {
 async function executable(source: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "paseo-context-mode-"));
   temporaryDirectories.push(directory);
-  const path = join(directory, process.platform === "win32" ? "context-mode.mjs" : "context-mode");
+  const path = join(directory, process.platform === "win32" ? "context-mode.cjs" : "context-mode");
   await writeFile(path, `#!/usr/bin/env node\n${source}\n`);
   if (process.platform !== "win32") await chmod(path, 0o755);
   return path;

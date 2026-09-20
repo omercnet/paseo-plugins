@@ -1,6 +1,6 @@
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, test } from "vitest";
 import { contextModeEnvironmentFor, createContextModeKnowledgeHandlers } from "../server/knowledge";
@@ -29,7 +29,7 @@ afterEach(async () => {
 async function executable(source: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "paseo-context-mode-knowledge-"));
   temporaryDirectories.push(directory);
-  const path = join(directory, process.platform === "win32" ? "context-mode.mjs" : "context-mode");
+  const path = join(directory, process.platform === "win32" ? "context-mode.cjs" : "context-mode");
   await writeFile(path, `#!/usr/bin/env node\n${source}\n`);
   if (process.platform !== "win32") await chmod(path, 0o755);
   return path;
@@ -190,7 +190,7 @@ describe("provider storage isolation", () => {
       }),
     ).toEqual({
       CONTEXT_MODE_PLATFORM: "opencode",
-      CONTEXT_MODE_DIR: join("/srv/context-data", "context-mode"),
+      CONTEXT_MODE_DIR: join(resolve("/srv/context-data"), "context-mode"),
     });
   });
 });
