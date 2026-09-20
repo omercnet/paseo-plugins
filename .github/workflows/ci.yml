@@ -220,7 +220,7 @@ jobs:
   shared-browser:
     needs: changes
     if: ${{ needs.changes.outputs.shared_browser_affected == 'true' }}
-    name: paseo-shared-browser (${{ matrix.os }})
+    name: paseo-shared-browser smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
