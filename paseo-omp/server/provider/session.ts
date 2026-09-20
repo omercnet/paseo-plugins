@@ -66,6 +66,19 @@ import {
 } from "./security";
 import type { OmpSessionDescriptor } from "./session-descriptors";
 import { validateNativeSessionId } from "./session-descriptors";
+import { isNativeTurnActivity, isPassiveUiMethod, isRuntimeConfigEvent } from "./session-events";
+import {
+  type ActiveTurn,
+  assistantTerminalOutcome,
+  classifyTerminalCandidate,
+  createActiveTurn,
+  historyTerminalOutcome,
+  nativeEntryId,
+  type PendingUser,
+  type TerminalCandidate,
+  terminalOutcome,
+  unknownTerminalOutcomeError,
+} from "./session-terminal";
 import { OmpSubsessionProjector } from "./subsessions";
 import {
   defaultOmpTimelineScheduler,
@@ -235,86 +248,6 @@ async function waitForReplay<T>(operation: Promise<T>, signal: AbortSignal): Pro
   }
 }
 
-type PendingUser = {
-  clientMessageId: string;
-  text: string;
-  accepted: boolean;
-  fallbackOnFinish: boolean;
-  bufferedEchoes: OmpMessage[];
-};
-type TerminalCorrelationEvidence = "fresh-native-user" | "current-assistant";
-
-type TerminalCorrelation = {
-  policy: "initial-turn" | "ordered-legacy" | "native-command";
-  evidence: Map<TerminalCorrelationEvidence, number>;
-};
-
-type TerminalCandidate = {
-  event: Extract<OmpRpcEvent, { type: "agent_end" }>;
-  arrivalSequence: number;
-  confidence:
-    | "keyed"
-    | "initial-turn"
-    | "ordered-legacy"
-    | "native-command"
-    | "interrupted"
-    | "ambiguous";
-};
-
-type ActiveTurn = {
-  turnId: string;
-  clientMessageId: string;
-  generation: number;
-  promptResultEmitted: boolean;
-  started: boolean;
-  terminal: boolean;
-  interrupted: boolean;
-  starting: boolean;
-  nativeActivity: boolean;
-  userEchoObserved: boolean;
-  localOnlyDisabled: boolean;
-  localOnlyEligible: boolean;
-  awaitingPermissionEvidence: boolean;
-  activitySequence: number;
-  acknowledged: boolean;
-  terminalCorrelation: TerminalCorrelation;
-  replayingBufferedEvents: boolean;
-  agentInvoked?: boolean;
-  nativeRequestId?: string;
-  promptAcceptedEventIndex?: number;
-  localOnlyTimer?: unknown;
-  usagePollTimer?: unknown;
-  usagePoll?: Promise<void>;
-  usageSampleFloor: number;
-  manualCompaction: boolean;
-  manualCompactionPending: boolean;
-  manualCompactionDeadlineTimer?: unknown;
-  agentEndPending: boolean;
-  agentEndRetryTimer?: unknown;
-  agentEndDeadlineTimer?: unknown;
-  agentEndCheck?: Promise<void>;
-  ambiguousTerminalTimer?: unknown;
-  terminalizing: boolean;
-  terminalization?: Promise<void>;
-  terminalOutcome?: TurnOutcome;
-  operationalTerminalStage?: "failed" | "unresolved";
-  terminalWake?: VoidDeferred;
-  steerReady: VoidDeferred;
-  steersInFlight: number;
-  deferredAgentEnd?: TerminalCandidate;
-  activeToolCallIds: Set<string>;
-  bufferedEvents: OmpRpcEvent[];
-  pendingUsers: PendingUser[];
-  userEchoes: OmpMessage[];
-  userCorrelationActive: boolean;
-  userLookups: Set<Promise<void>>;
-  completedMessageCount: number;
-  streamedMessageEntryIds: string[];
-  streamedMessageIdentityComplete: boolean;
-  lastCompletedAssistantOutcome?: AgentEndOutcome;
-  lastCompletedAssistantEntryId?: string;
-};
-
 type PendingAbort = {
   turn: ActiveTurn;
   generation: number;
@@ -362,18 +295,6 @@ function permissionFingerprint(request: OmpQuestionRequest): string {
   return createHash("sha256").update(JSON.stringify(request)).digest("base64url");
 }
 
-type VoidDeferred = {
-  promise: Promise<void>;
-  resolve(value?: void | PromiseLike<void>): void;
-  reject(reason?: unknown): void;
-};
-
-type TurnOutcome = {
-  state: "completed" | "failed" | "canceled";
-  error?: ProviderError;
-  usageSampled: boolean;
-};
-
 type ActiveCompaction = {
   id: string;
   trigger: "auto" | "manual";
@@ -408,258 +329,6 @@ async function settleSessionCleanup(promises: readonly Promise<void>[]): Promise
     throw new AggregateError(failures, "OMP session initialization cleanup failed");
   }
 }
-function nativeEntryId(message: OmpMessage): string | undefined {
-  return message.entryId;
-}
-
-type AgentEndOutcome = "completed" | "failed" | "canceled";
-type AssistantTerminalStatus = AgentEndOutcome | "unavailable";
-
-function assistantTerminalOutcome(
-  message: Extract<OmpMessage, { role: "assistant" }>,
-): AgentEndOutcome {
-  const stopReason = message.stopReason?.toLowerCase();
-  if (stopReason === "aborted" || stopReason === "canceled" || stopReason === "cancelled") {
-    return "canceled";
-  }
-  return stopReason === "error" || message.errorMessage ? "failed" : "completed";
-}
-
-function lastAssistantStatus(
-  messages: readonly OmpMessage[],
-  startIndex = 0,
-): AssistantTerminalStatus {
-  for (let index = messages.length - 1; index >= startIndex; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "assistant") continue;
-    return assistantTerminalOutcome(message);
-  }
-  return "unavailable";
-}
-
-function terminalOutcome(
-  event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  turn: Pick<ActiveTurn, "completedMessageCount" | "lastCompletedAssistantOutcome">,
-): AgentEndOutcome | undefined {
-  const messages = event.messages;
-  if (
-    messages !== undefined &&
-    (event.messageCount === undefined || messages.length >= event.messageCount)
-  ) {
-    const status = lastAssistantStatus(messages);
-    return status === "unavailable" ? "completed" : status;
-  }
-  if (event.messageCount === 0) return "completed";
-  if (
-    turn.lastCompletedAssistantOutcome !== undefined &&
-    (event.messageCount === undefined || turn.completedMessageCount >= event.messageCount)
-  ) {
-    return turn.lastCompletedAssistantOutcome;
-  }
-  return undefined;
-}
-
-function historyTerminalOutcome(
-  messages: readonly OmpMessage[],
-  declaredCount: number,
-  turn: Pick<
-    ActiveTurn,
-    | "streamedMessageEntryIds"
-    | "streamedMessageIdentityComplete"
-    | "lastCompletedAssistantOutcome"
-    | "lastCompletedAssistantEntryId"
-  >,
-  retainedMessages: readonly OmpMessage[],
-): AgentEndOutcome | undefined {
-  if (
-    messages.length < declaredCount ||
-    !turn.streamedMessageIdentityComplete ||
-    turn.streamedMessageEntryIds.length === 0
-  ) {
-    return undefined;
-  }
-  const startIndex = messages.length - declaredCount;
-  let historyIndex = startIndex;
-  for (const entryId of turn.streamedMessageEntryIds) {
-    while (historyIndex < messages.length) {
-      const historyMessage = messages[historyIndex];
-      if (historyMessage && nativeEntryId(historyMessage) === entryId) break;
-      historyIndex += 1;
-    }
-    if (historyIndex >= messages.length) return undefined;
-    const correlated = messages[historyIndex];
-    if (
-      entryId === turn.lastCompletedAssistantEntryId &&
-      (correlated?.role !== "assistant" ||
-        assistantTerminalOutcome(correlated) !== turn.lastCompletedAssistantOutcome)
-    )
-      return undefined;
-    historyIndex += 1;
-  }
-  historyIndex = startIndex;
-  for (const retained of retainedMessages) {
-    const entryId = nativeEntryId(retained);
-    if (!entryId) return undefined;
-    while (historyIndex < messages.length) {
-      const historyMessage = messages[historyIndex];
-      if (historyMessage && nativeEntryId(historyMessage) === entryId) break;
-      historyIndex += 1;
-    }
-    if (historyIndex >= messages.length) return undefined;
-    const correlated = messages[historyIndex];
-    if (!correlated || correlated.role !== retained.role) return undefined;
-    if (
-      retained.role === "assistant" &&
-      correlated.role === "assistant" &&
-      assistantTerminalOutcome(retained) !== assistantTerminalOutcome(correlated)
-    )
-      return undefined;
-    historyIndex += 1;
-  }
-  const status = lastAssistantStatus(messages, startIndex);
-  return status === "unavailable" ? undefined : status;
-}
-
-function unknownTerminalOutcomeError(
-  event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  turn: Pick<ActiveTurn, "completedMessageCount" | "lastCompletedAssistantOutcome">,
-): string {
-  const retainedMessages = event.messages?.length ?? 0;
-  const retainedStatus = event.messages ? lastAssistantStatus(event.messages) : "unavailable";
-  const lastStatus =
-    retainedStatus === "unavailable"
-      ? (turn.lastCompletedAssistantOutcome ?? "unavailable")
-      : retainedStatus;
-  return (
-    "OMP agent_end omitted terminal messages; outcome is unknown " +
-    `(declaredCount=${event.messageCount ?? "unavailable"}, ` +
-    `observedCount=${turn.completedMessageCount}, ` +
-    `retainedTerminalMessages=${retainedMessages}, lastAssistantStatus=${lastStatus})`
-  );
-}
-
-function isNativeTurnActivity(event: OmpRpcEvent): boolean {
-  if (
-    event.type === "agent_start" ||
-    event.type === "turn_start" ||
-    event.type === "turn_end" ||
-    event.type === "agent_end" ||
-    event.type === "auto_compaction_start" ||
-    event.type === "auto_compaction_end"
-  ) {
-    return true;
-  }
-  if (
-    event.type === "message_start" ||
-    event.type === "message_update" ||
-    event.type === "message_end"
-  ) {
-    return event.message.role === "assistant";
-  }
-  return event.type.startsWith("tool_execution_");
-}
-function isRuntimeConfigEvent(event: OmpRpcEvent): boolean {
-  return (
-    event.type === "model_changed" ||
-    event.type === "thinking_level_changed" ||
-    event.type === "retry_fallback_applied" ||
-    event.type === "retry_fallback_succeeded"
-  );
-}
-
-function isPassiveUiMethod(method: string): boolean {
-  return (
-    method === "cancel" ||
-    method === "notify" ||
-    method === "open_url" ||
-    method === "setStatus" ||
-    method === "setWidget" ||
-    method === "setTitle" ||
-    method === "set_editor_text"
-  );
-}
-function createActiveTurn(
-  clientMessageId: string,
-  text: string,
-  generation: number,
-  terminalPolicy: TerminalCorrelation["policy"],
-  manualCompaction = false,
-): ActiveTurn {
-  return {
-    turnId: randomUUID(),
-    clientMessageId,
-    agentInvoked: undefined,
-    generation,
-    promptResultEmitted: false,
-    started: false,
-    terminal: false,
-    awaitingPermissionEvidence: false,
-    interrupted: false,
-    starting: true,
-    nativeActivity: false,
-    userEchoObserved: false,
-    localOnlyDisabled: false,
-    localOnlyEligible: false,
-    usageSampleFloor: 0,
-    agentEndPending: false,
-    terminalizing: false,
-    manualCompactionPending: manualCompaction,
-    manualCompaction,
-    activitySequence: 0,
-    acknowledged: false,
-    terminalCorrelation: { policy: terminalPolicy, evidence: new Map() },
-    replayingBufferedEvents: false,
-    steersInFlight: 0,
-    activeToolCallIds: new Set(),
-    steerReady: Promise.withResolvers<void>(),
-    userCorrelationActive: false,
-    userLookups: new Set(),
-    userEchoes: [],
-    completedMessageCount: 0,
-    bufferedEvents: [],
-    streamedMessageEntryIds: [],
-    streamedMessageIdentityComplete: true,
-    pendingUsers: [
-      {
-        clientMessageId,
-        text,
-        accepted: true,
-        fallbackOnFinish: true,
-        bufferedEchoes: [],
-      },
-    ],
-  };
-}
-function classifyTerminalCandidate(
-  turn: ActiveTurn,
-  event: Extract<OmpRpcEvent, { type: "agent_end" }>,
-  arrivalSequence = turn.activitySequence,
-): TerminalCandidate {
-  if (event.requestId !== undefined) return { event, confidence: "keyed", arrivalSequence };
-  if (turn.agentInvoked === false) return { event, confidence: "ambiguous", arrivalSequence };
-  if (turn.terminalCorrelation.policy === "initial-turn") {
-    return { event, confidence: "initial-turn", arrivalSequence };
-  }
-  const assistantSequence = turn.terminalCorrelation.evidence.get("current-assistant");
-  if (
-    turn.terminalCorrelation.policy === "native-command" &&
-    assistantSequence !== undefined &&
-    assistantSequence <= arrivalSequence
-  ) {
-    return { event, confidence: "native-command", arrivalSequence };
-  }
-  const userSequence = turn.terminalCorrelation.evidence.get("fresh-native-user");
-  if (
-    userSequence !== undefined &&
-    assistantSequence !== undefined &&
-    userSequence < assistantSequence &&
-    assistantSequence <= arrivalSequence
-  ) {
-    return { event, confidence: "ordered-legacy", arrivalSequence };
-  }
-  return { event, confidence: "ambiguous", arrivalSequence };
-}
-
 export class OmpProviderSession {
   readonly id: string;
   readonly cwd: string;
