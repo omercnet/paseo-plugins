@@ -104,7 +104,7 @@ describe("external binary resolution", () => {
     });
   });
 
-  test("reports relative configured paths and unavailable fallbacks", async () => {
+  test("reports relative configured paths and PATH fallbacks", async () => {
     const relative = {
       ...ContextModeSettingsSchema.parse({}),
       binaryPath: "bin/context-mode",
@@ -115,14 +115,20 @@ describe("external binary resolution", () => {
       message: expect.stringContaining("not absolute"),
     });
 
-    const configured = ContextModeSettingsSchema.parse({ binaryPath: "/missing/context-mode" });
-    const missing = await resolveContextModeBinary(configured, {
-      env: { PATH: "" },
-      canExecute: async () => false,
-      bundledCliPath: () => null,
+    const found = await resolveContextModeBinary(
+      ContextModeSettingsSchema.parse({ binaryPath: "/missing/context-mode" }),
+      {
+        env: { PATH: "/first:/second" },
+        canExecute: async (path) => path === "/second/context-mode",
+      },
+    );
+
+    expect(found).toEqual({
+      state: "found",
+      path: "/second/context-mode",
+      source: "path",
+      launch: { program: "/second/context-mode", args: [] },
     });
-    expect(missing).toMatchObject({ state: "missing", code: "not-installed" });
-    if (missing.state === "missing") expect(missing.message).toContain("/missing/context-mode");
   });
 
   test.each(["", ".CMD", ".BAT"])(
@@ -435,16 +441,160 @@ describe("RPC behavior", () => {
     });
 
     const status = await handlers.status({ fresh: false });
+    const cachedStatus = await handlers.status({ fresh: false });
+    const refreshedStatus = await handlers.status({ fresh: true });
     const doctor = await handlers.doctor({ fresh: false });
-    const stats = await handlers.stats({ fresh: true });
-    const audit = await handlers.audit({ fresh: false });
+    const stats = await handlers.stats({ fresh: false });
+    const refreshedStats = await handlers.stats({ fresh: true });
 
+    expect(status).toEqual(cachedStatus);
     expect(status).toMatchObject({ state: "ready", supportsDoctor: true, supportsStats: true });
+    expect(refreshedStatus).toMatchObject({ state: "ready", version: "2.0.5" });
     expect(doctor).toMatchObject({ state: "ready", output: "doctor" });
     expect(stats).toMatchObject({ state: "ready", output: "stats" });
-    expect(audit.runtimeVersion).toBe("2.0.5");
-    expect(inspections).toBeGreaterThanOrEqual(1);
-    expect(calls).toEqual(["ctx_doctor", "ctx_stats"]);
+    expect(refreshedStats).toMatchObject({ state: "ready", output: "stats" });
+    expect(inspections).toBe(2);
+    expect(calls).toEqual(["ctx_doctor", "ctx_stats", "ctx_stats"]);
+  });
+
+  test("maps settings read failures to invalid settings reports", async () => {
+    const handlers = createContextModeHandlers(
+      {
+        read: async () => {
+          throw new Error("no settings");
+        },
+        subscribe: () => () => {},
+      } as never,
+      { now: () => new Date("2026-09-20T00:00:00.000Z") },
+    );
+
+    await expect(handlers.status({ fresh: false })).resolves.toMatchObject({
+      state: "unavailable",
+      code: "invalid-settings",
+      message: expect.stringContaining("Could not read Context Mode settings: no settings"),
+    });
+  });
+
+  test("returns invalid-settings when settings validation fails", async () => {
+    const handlers = createContextModeHandlers(
+      {
+        read: async () => ({
+          status: "invalid",
+          revision: "test",
+          error: "broken settings",
+        }),
+        subscribe: () => () => {},
+      } as never,
+      { now: () => new Date("2026-09-20T00:00:00.000Z") },
+    );
+
+    await expect(handlers.status({ fresh: false })).resolves.toMatchObject({
+      state: "unavailable",
+      code: "invalid-settings",
+      message: expect.stringContaining("broken settings"),
+    });
+  });
+
+  test("maps inspection failures to unavailable status reports", async () => {
+    const settings = ContextModeSettingsSchema.parse({});
+    const handlers = createContextModeHandlers(settingsHandle(settings), {
+      now: () => new Date("2026-09-20T00:00:00.000Z"),
+      resolveBinary: async () => ({
+        state: "found",
+        path: "/bin/context-mode",
+        source: "path",
+        launch: launch("/bin/context-mode"),
+      }),
+      inspect: async () => {
+        throw new Error("probe failed");
+      },
+    });
+
+    await expect(handlers.status({ fresh: false })).resolves.toMatchObject({
+      state: "unavailable",
+      code: "command-failed",
+      message: "probe failed",
+    });
+  });
+
+  test("caches brief status probes and keeps reports separate", async () => {
+    const settings = ContextModeSettingsSchema.parse({});
+    let inspections = 0;
+    const calls: string[] = [];
+    const handlers = createContextModeHandlers(settingsHandle(settings), {
+      now: () => new Date("2026-09-20T00:00:00.000Z"),
+      resolveBinary: async () => ({
+        state: "found",
+        path: "/bin/context-mode",
+        source: "path",
+        launch: launch("/bin/context-mode"),
+      }),
+      inspect: async () => {
+        inspections += 1;
+        return { version: "2.0.5", tools: ["ctx_doctor", "ctx_stats"] };
+      },
+      callTool: async (_launch, name) => {
+        calls.push(name);
+        return name === "ctx_doctor" ? "doctor" : "stats";
+      },
+    });
+
+    const status = await handlers.status({ fresh: false });
+    const cachedStatus = await handlers.status({ fresh: false });
+    const refreshedStatus = await handlers.status({ fresh: true });
+    const doctor = await handlers.doctor({ fresh: false });
+    const stats = await handlers.stats({ fresh: false });
+    const refreshedStats = await handlers.stats({ fresh: true });
+
+    expect(status).toEqual(cachedStatus);
+    expect(status).toMatchObject({ state: "ready", supportsDoctor: true, supportsStats: true });
+    expect(refreshedStatus).toMatchObject({ state: "ready", version: "2.0.5" });
+    expect(doctor).toMatchObject({ state: "ready", output: "doctor" });
+    expect(stats).toMatchObject({ state: "ready", output: "stats" });
+    expect(refreshedStats).toMatchObject({ state: "ready", output: "stats" });
+    expect(inspections).toBe(2);
+    expect(calls).toEqual(["ctx_doctor", "ctx_stats", "ctx_stats"]);
+  });
+
+  test("falls back to a null audit version when inspection fails", async () => {
+    const settings = ContextModeSettingsSchema.parse({});
+    const handlers = createContextModeHandlers(settingsHandle(settings), {
+      now: () => new Date("2026-09-20T00:00:00.000Z"),
+      resolveBinary: async () => ({
+        state: "found",
+        path: "/bin/context-mode",
+        source: "path",
+        launch: launch("/bin/context-mode"),
+      }),
+      inspect: async () => {
+        throw new Error("probe failed");
+      },
+    });
+
+    await expect(handlers.audit({ fresh: false })).resolves.toMatchObject({
+      runtimeVersion: null,
+      injectionEnabled: true,
+    });
+  });
+
+  test("returns an empty audit when the binary is unavailable", async () => {
+    const settings = ContextModeSettingsSchema.parse({});
+    const handlers = createContextModeHandlers(settingsHandle(settings), {
+      now: () => new Date("2026-09-20T00:00:00.000Z"),
+      resolveBinary: async () => ({
+        state: "missing",
+        code: "not-installed",
+        message: "Context Mode is not installed.",
+      }),
+    });
+
+    await expect(handlers.audit({ fresh: false })).resolves.toEqual({
+      runtimePath: "",
+      runtimeVersion: null,
+      injectionEnabled: false,
+      providers: [],
+      checkedAt: "2026-09-20T00:00:00.000Z",
+    });
   });
 
   test("maps bounded process failures to clean RPC errors", async () => {
