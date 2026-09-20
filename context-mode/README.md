@@ -2,6 +2,18 @@
 
 A Paseo sidebar and provider integration for [Context Mode](https://github.com/mksglu/context-mode). It bundles a pinned Context Mode runtime, shows health and savings, and activates Context Mode for supported Paseo agents without replacing existing provider-native integrations.
 
+## Screenshots
+
+These previews were captured from an isolated Paseo test daemon with Context Mode installed on a disposable home. The browser opened the real plugin surface on the daemon's Tailscale address, and both PNGs are 2× captures of the live data-backed UI.
+
+### Wide surface
+
+![Context Mode wide surface](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/context-mode/screenshot.png)
+
+### Compact surface
+
+![Context Mode compact surface](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/context-mode/screenshot-compact.png)
+
 ## Current scope
 
 - Bundles Context Mode as a runtime dependency; a separately installed global executable remains optional.
