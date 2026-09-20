@@ -42,7 +42,6 @@ export interface RefreshDependencies {
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 10_000;
 
-
 export async function executeGit(
   cwd: string,
   args: readonly string[],
@@ -79,41 +78,43 @@ export function createRepositoryRefreshCoordinator(
     if (existingRefresh) return existingRefresh;
 
     const previousRefresh = repositoryTails.get(cwd) ?? Promise.resolve();
-    const refresh = previousRefresh.catch(() => {}).then(async (): Promise<RepositoryRefreshResult> => {
-      await runGit(cwd, ["fetch", "--prune", "--quiet", remote], signal);
-      if (!localBranch) return { kind: "unchanged" };
+    const refresh = previousRefresh
+      .catch(() => {})
+      .then(async (): Promise<RepositoryRefreshResult> => {
+        await runGit(cwd, ["fetch", "--prune", "--quiet", remote], signal);
+        if (!localBranch) return { kind: "unchanged" };
 
-      const matchingRemoteBranch = `${remote}/${localBranch}`;
-      const freshBase =
-        upstream && (await remoteRefExists(runGit, cwd, upstream, signal))
-          ? upstream
-          : (await remoteRefExists(runGit, cwd, matchingRemoteBranch, signal))
-            ? matchingRemoteBranch
-            : null;
-      if (!freshBase) return { kind: "unchanged" };
+        const matchingRemoteBranch = `${remote}/${localBranch}`;
+        const freshBase =
+          upstream && (await remoteRefExists(runGit, cwd, upstream, signal))
+            ? upstream
+            : (await remoteRefExists(runGit, cwd, matchingRemoteBranch, signal))
+              ? matchingRemoteBranch
+              : null;
+        if (!freshBase) return { kind: "unchanged" };
 
-      const currentBranch = await optionalGit(
-        runGit,
-        cwd,
-        ["symbolic-ref", "--quiet", "--short", "HEAD"],
-        signal,
-      );
-      if (currentBranch !== localBranch) {
-        throw new Error(
-          `Cannot refresh local branch ${localBranch} in ${cwd}: the source checkout is on ${currentBranch ?? "a detached HEAD"}`,
+        const currentBranch = await optionalGit(
+          runGit,
+          cwd,
+          ["symbolic-ref", "--quiet", "--short", "HEAD"],
+          signal,
         );
-      }
+        if (currentBranch !== localBranch) {
+          throw new Error(
+            `Cannot refresh local branch ${localBranch} in ${cwd}: the source checkout is on ${currentBranch ?? "a detached HEAD"}`,
+          );
+        }
 
-      const status = await runGit(
-        cwd,
-        ["status", "--porcelain", "--untracked-files=normal"],
-        signal,
-      );
-      if (status) return { kind: "dirty" };
+        const status = await runGit(
+          cwd,
+          ["status", "--porcelain", "--untracked-files=normal"],
+          signal,
+        );
+        if (status) return { kind: "dirty" };
 
-      await runGit(cwd, ["merge", "--ff-only", "--quiet", freshBase], signal);
-      return { kind: "updated", freshBase };
-    });
+        await runGit(cwd, ["merge", "--ff-only", "--quiet", freshBase], signal);
+        return { kind: "updated", freshBase };
+      });
     const tail = refresh.then(
       () => {},
       () => {},
@@ -186,8 +187,7 @@ async function remoteRefExists(
 ): Promise<boolean> {
   const fullRef = ref.startsWith("refs/remotes/") ? ref : `refs/remotes/${ref}`;
   return (
-    (await optionalGit(runGit, cwd, ["show-ref", "--verify", "--quiet", fullRef], signal)) !==
-    null
+    (await optionalGit(runGit, cwd, ["show-ref", "--verify", "--quiet", fullRef], signal)) !== null
   );
 }
 
@@ -242,12 +242,7 @@ export async function refreshWorkspaceRequest(
       dependencies.signal,
     );
     if (currentBranch) {
-      localBranch = await localBranchDetails(
-        runGit,
-        cwd,
-        currentBranch,
-        dependencies.signal,
-      );
+      localBranch = await localBranchDetails(runGit, cwd, currentBranch, dependencies.signal);
     }
   }
 

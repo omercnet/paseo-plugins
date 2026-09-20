@@ -1,46 +1,46 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   type PluginClientContext,
   type PluginWorkspacePanelProps,
   useRpc,
 } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  type GestureResponderEvent,
   Image,
+  type LayoutChangeEvent,
   PanResponder,
   Pressable,
+  type StyleProp,
   StyleSheet,
   Text,
-  View,
-  type GestureResponderEvent,
-  type LayoutChangeEvent,
-  type StyleProp,
   type TextInputProps,
   type TextStyle,
+  View,
   type ViewStyle,
 } from "react-native";
 import {
-  DEVICE_PRESETS,
-  MAX_VIEWPORT,
-  MIN_VIEWPORT,
   acquireControlRpc,
   applyDevicePresetRpc,
   attachBrowserRpc,
+  type BrowserFrame,
+  type BrowserInputEvent,
+  type BrowserState,
   captureBrowserRpc,
+  DEVICE_PRESETS,
+  type DevicePresetId,
   detachBrowserRpc,
+  didBrowserRuntimeRestart,
+  isBrowserStateCurrent,
   listOpenBrowserWorkspacesRpc,
+  MAX_VIEWPORT,
+  MIN_VIEWPORT,
   navigateBrowserRpc,
   releaseControlRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
-  didBrowserRuntimeRestart,
-  isBrowserStateCurrent,
-  type BrowserFrame,
-  type BrowserInputEvent,
-  type BrowserState,
-  type DevicePresetId,
 } from "../shared/browser";
 
 const SPACE = {

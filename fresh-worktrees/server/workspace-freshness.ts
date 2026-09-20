@@ -1,7 +1,7 @@
 import type { RpcOutput } from "@getpaseo/plugin";
+import type { workspaceFreshness } from "../shared/workspace-freshness";
 import type { GitRunner, RepositoryRefresh } from "./fresh-worktrees";
 import { executeGit } from "./fresh-worktrees";
-import { workspaceFreshness } from "../shared/workspace-freshness";
 
 export interface WorkspaceFreshnessDependencies {
   signal: AbortSignal;

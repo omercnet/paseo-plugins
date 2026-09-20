@@ -26,33 +26,49 @@ export function discoverPlugins(root = process.cwd()) {
 
       const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
       const scripts = packageJson.scripts ?? {};
-      const coverage = typeof scripts["test:coverage"] === "string";
-      const testUnit = typeof scripts["test:unit"] === "string";
-      const descriptor = {
-        plugin,
-        kind: specializedPlugins.get(plugin) ?? "npm",
-        check: typeof scripts.check === "string",
-        lint: typeof scripts.lint === "string",
-        format_check: typeof scripts["format:check"] === "string",
-        typecheck: typeof scripts.typecheck === "string",
-        coverage,
-        test_unit: !coverage && testUnit,
-        test:
-          !coverage && !testUnit && typeof scripts.test === "string",
-        verify_package: typeof scripts["verify:package"] === "string",
+      const invalidScripts = [
+        typeof scripts.check === "string" && scripts.check.length > 0
+          ? undefined
+          : "script:check",
+        scripts.build === "node ../.github/scripts/build-plugin.mjs"
+          ? undefined
+          : "script:build",
+        typeof scripts.typecheck === "string" ? undefined : "script:typecheck",
+        scripts.test === "run-s test:ci:*" ? undefined : "script:test",
+        Object.keys(scripts).some((script) => script.startsWith("test:ci:"))
+          ? undefined
+          : "script:test:ci:*",
+      ].filter(Boolean);
+      const devDependencies = packageJson.devDependencies ?? {};
+      const requiredTools = {
+        "@biomejs/biome": null,
+        "@getpaseo/server": "0.9.0-beta.1",
+        "npm-run-all2": null,
       };
+      const missingTools = Object.entries(requiredTools)
+        .filter(([tool, version]) =>
+          version === null
+            ? typeof devDependencies[tool] !== "string"
+            : devDependencies[tool] !== version,
+        )
+        .map(([tool]) => tool);
 
-      if (
-        descriptor.kind === "npm" &&
-        (!descriptor.typecheck ||
-          !(descriptor.coverage || descriptor.test_unit || descriptor.test))
-      ) {
+      if (invalidScripts.length > 0 || missingTools.length > 0) {
+        const missing = [
+          ...invalidScripts,
+          ...missingTools.map((tool) => `devDependency:${tool}`),
+        ];
         throw new Error(
-          `${plugin} must define typecheck and a test, test:unit, or test:coverage script`,
+          `${plugin} is missing required CI entries: ${missing.join(", ")}`,
         );
       }
 
-      return [descriptor];
+      return [
+        {
+          plugin,
+          kind: specializedPlugins.get(plugin) ?? "npm",
+        },
+      ];
     })
     .sort(({ plugin: left }, { plugin: right }) => left.localeCompare(right));
 }
@@ -72,13 +88,11 @@ export function detectAffected(files, plugins = discoverPlugins()) {
   );
   const isAffected = ({ plugin }) => runAll || changedPluginNames.has(plugin);
   const affectedPlugins = plugins.filter(isAffected);
-  const npmPlugins = affectedPlugins
-    .filter(({ kind }) => kind === "npm")
-    .map(({ kind: _, ...plugin }) => plugin);
+  const pluginMatrix = affectedPlugins.map(({ plugin }) => plugin);
 
   return {
-    npmMatrix: { include: npmPlugins },
-    npmAffected: npmPlugins.length > 0,
+    pluginMatrix,
+    pluginsAffected: pluginMatrix.length > 0,
     ompAffected: affectedPlugins.some(({ kind }) => kind === "omp"),
     sharedBrowserAffected: affectedPlugins.some(
       ({ kind }) => kind === "shared-browser",
@@ -110,8 +124,8 @@ function changedFiles(baseSha, headSha, diffMode) {
 
 function writeOutputs(result, outputPath) {
   const outputs = {
-    npm_matrix: JSON.stringify(result.npmMatrix),
-    npm_affected: String(result.npmAffected),
+    plugin_matrix: JSON.stringify(result.pluginMatrix),
+    plugins_affected: String(result.pluginsAffected),
     omp_affected: String(result.ompAffected),
     shared_browser_affected: String(result.sharedBrowserAffected),
     workflow_affected: String(result.workflowAffected),

@@ -1,20 +1,20 @@
-import type { RpcInput } from "@getpaseo/plugin";
 import { randomBytes } from "node:crypto";
+import type { RpcInput } from "@getpaseo/plugin";
 import {
-  DEVICE_PRESETS,
+  type applyDevicePresetRpc,
+  type BrowserFrame,
+  type BrowserInputEvent,
+  type BrowserState,
   DEFAULT_VIEWPORT,
+  DEVICE_PRESETS,
+  type DevicePresetId,
   FRAME_MAX_BYTES,
   MAX_VIEWPORT,
   MIN_VIEWPORT,
   mapDisplayedPoint,
-  applyDevicePresetRpc,
-  navigateBrowserRpc,
-  resizeBrowserRpc,
-  sendBrowserInputRpc,
-  type BrowserFrame,
-  type BrowserInputEvent,
-  type BrowserState,
-  type DevicePresetId,
+  type navigateBrowserRpc,
+  type resizeBrowserRpc,
+  type sendBrowserInputRpc,
   type Viewport,
 } from "../shared/browser";
 import type { JsonValue } from "./runtime-protocol";

@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from "vitest"
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   createRepositoryRefreshCoordinator,
   refreshWorkspaceRequest,
@@ -21,7 +21,9 @@ function git(cwd: string, ...args: string[]): string {
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 

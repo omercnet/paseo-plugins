@@ -1,5 +1,5 @@
-import { describe, expect, test, vi } from "vitest";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { describe, expect, test, vi } from "vitest";
 import contribute from "../index.client";
 import { workspaceFreshness } from "../shared/workspace-freshness";
 

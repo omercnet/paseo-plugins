@@ -20,10 +20,7 @@ interface ReleasableSubscription {
 export default function contribute(client: PluginClientContext) {
   const buttons = new Map<string, PluginButtonRegistration>();
   const checks = new Map<string, Promise<void>>();
-  const workspaceLocations = new Map<
-    string,
-    { projectId: string; workspaceDirectory: string }
-  >();
+  const workspaceLocations = new Map<string, { projectId: string; workspaceDirectory: string }>();
   const projectRoots = new Map<string, string>();
   let stopped = false;
   let workspaceSubscription: ReleasableSubscription | undefined;

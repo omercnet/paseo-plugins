@@ -1,14 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
-import { randomUUID } from "node:crypto";
 import {
-  RUNTIME_PROTOCOL_VERSION,
-  RuntimeProtocolError,
-  isRuntimeResponse,
   type AgentBrowserOperation,
   type BridgeLease,
+  isRuntimeResponse,
   type JsonValue,
+  RUNTIME_PROTOCOL_VERSION,
   type RuntimeDescriptor,
+  RuntimeProtocolError,
   type RuntimeRequest,
   type RuntimeResponse,
   type RuntimeResult,

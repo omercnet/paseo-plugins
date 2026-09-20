@@ -1,7 +1,7 @@
-import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   bindAgentTicket,
   cleanupBrowserServer,

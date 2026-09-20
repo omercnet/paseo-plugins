@@ -1,18 +1,18 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
+import contribute from "../index.server";
 import {
-  MAX_VIEWPORT,
-  MIN_VIEWPORT,
+  type BrowserState,
   browserFrameSchema,
   browserInputEventSchema,
   browserStateSchema,
   didBrowserRuntimeRestart,
   isBrowserStateCurrent,
+  MAX_VIEWPORT,
+  MIN_VIEWPORT,
   mapDisplayedPoint,
   viewportSchema,
-  type BrowserState,
 } from "../shared/browser";
-import contribute from "../index.server";
 
 const browserMocks = vi.hoisted(() => ({
   bindAgentTicket: vi.fn(),
