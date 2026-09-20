@@ -370,6 +370,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   subagentsGate: Promise<void> | null = null;
   subagentsObserved: (() => void) | null = null;
   readonly subagentMessages = new Map<string, OmpSubagentMessagesResult>();
+  readonly subagentMessageRequests: Array<{ subagentId?: string; sessionFile?: string }> = [];
   availableCommandsObserved: (() => void) | null = null;
   readonly modelChanges: Array<{ provider: string; modelId: string }> = [];
   modelResponseGate: Promise<void> | null = null;
@@ -567,6 +568,7 @@ class FakeOmpSession implements OmpRuntimeSession {
   }
 
   getSubagentMessages(selector: { subagentId?: string; sessionFile?: string }) {
+    this.subagentMessageRequests.push(selector);
     const key = selector.subagentId ?? selector.sessionFile;
     const result = key ? this.subagentMessages.get(key) : undefined;
     if (!result) return Promise.reject(new Error("missing fake subagent transcript"));
@@ -786,6 +788,7 @@ class FakeOmpRuntime implements OmpRuntime {
   readonly persistedSubagentRequests: Array<{
     parentSessionFile: string;
     childTranscriptId: string;
+    sessionFile?: string;
   }> = [];
   readonly sessionListRequests: Array<{
     cwd?: string;
@@ -843,12 +846,14 @@ class FakeOmpRuntime implements OmpRuntime {
   async readPersistedSubagentTranscript(options: {
     parentSessionFile: string;
     childTranscriptId: string;
+    sessionFile?: string;
     cwd: string;
     signal?: AbortSignal;
   }) {
     this.persistedSubagentRequests.push({
       parentSessionFile: options.parentSessionFile,
       childTranscriptId: options.childTranscriptId,
+      ...(options.sessionFile ? { sessionFile: options.sessionFile } : {}),
     });
     const key = `${options.parentSessionFile}\0${options.childTranscriptId}`;
     this.persistedSubagentObserved?.(key);
@@ -2655,6 +2660,50 @@ describe("OMP direct provider", () => {
         }),
       ),
     );
+    await connection.close();
+  });
+
+  test("replays developer context without publishing a false user turn", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.persistedSessionMessages = {
+      sessionFile: "/sessions/root.jsonl",
+      nativeSessionId: NATIVE_SESSION_ID,
+      byteLength: 512,
+      messages: [
+        { role: "user", entryId: "user", content: "visible question" },
+        { role: "developer", entryId: "developer", content: "private harness context" },
+        { role: "assistant", entryId: "assistant", content: "visible answer" },
+      ],
+    };
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "developer-replay",
+      sessionId: "developer-replay-session",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "developer-replay",
+    );
+
+    const textItems = events.flatMap((event) =>
+      event.type === "timeline.item" &&
+      (event.item.type === "user_message" || event.item.type === "assistant_message")
+        ? [event.item.text]
+        : [],
+    );
+    expect(textItems).toEqual(["visible question", "visible answer"]);
+    expect(JSON.stringify(events)).not.toContain("private harness context");
     await connection.close();
   });
 
@@ -4600,7 +4649,7 @@ describe("OMP direct provider", () => {
   });
 
   test("publishes selected branch history from chunked OMP RPC before ready", async () => {
-    const largeText = "x".repeat(600_000);
+    const largeText = "x".repeat(1_200_000);
     let child: ProviderRpcChild;
     child = new ProviderRpcChild((command) => {
       if (command.type === "negotiate_protocol") {
@@ -4637,44 +4686,50 @@ describe("OMP direct provider", () => {
           success: true,
           data: { commands: [] },
         });
-      } else if (command.type === "get_messages") {
+      } else if (command.type === "get_messages_page") {
+        const firstPage = command.cursor === undefined;
         child.writeChunked(
           {
             type: "response",
             id: command.id,
             success: true,
             data: {
-              messages: [
-                { role: "user", id: "selected-user", content: "selected branch" },
-                {
-                  role: "assistant",
-                  responseId: "selected-assistant-1",
-                  content: [
-                    { type: "text", text: largeText },
+              messages: firstPage
+                ? [
+                    { role: "user", id: "selected-user", content: "selected branch" },
                     {
-                      type: "toolCall",
-                      id: "selected-tool",
-                      name: "read",
-                      arguments: { path: "selected.ts" },
+                      role: "assistant",
+                      responseId: "selected-assistant-1",
+                      content: [
+                        { type: "text", text: largeText },
+                        {
+                          type: "toolCall",
+                          id: "selected-tool",
+                          name: "read",
+                          arguments: { path: "selected.ts" },
+                        },
+                      ],
+                    },
+                  ]
+                : [
+                    {
+                      role: "toolResult",
+                      toolCallId: "selected-tool",
+                      toolName: "read",
+                      content: [{ type: "text", text: "selected result" }],
+                    },
+                    { role: "bashExecution", command: "pwd", output: "/repo\n", exitCode: 0 },
+                    {
+                      role: "assistant",
+                      responseId: "selected-assistant-2",
+                      content: largeText,
                     },
                   ],
-                },
-                {
-                  role: "toolResult",
-                  toolCallId: "selected-tool",
-                  toolName: "read",
-                  content: [{ type: "text", text: "selected result" }],
-                },
-                { role: "bashExecution", command: "pwd", output: "/repo\n", exitCode: 0 },
-                {
-                  role: "assistant",
-                  responseId: "selected-assistant-2",
-                  content: largeText,
-                },
-              ],
+              ...(firstPage ? { nextCursor: "selected-page-2" } : {}),
+              totalMessages: 5,
             },
           },
-          "selected-history",
+          firstPage ? "selected-history-1" : "selected-history-2",
         );
       }
     });
@@ -4797,7 +4852,7 @@ describe("OMP direct provider", () => {
           success: true,
           data: { commands: [] },
         });
-      } else if (command.type === "get_messages") {
+      } else if (command.type === "get_messages_page") {
         child.write({
           type: "response",
           id: command.id,
@@ -4809,6 +4864,7 @@ describe("OMP direct provider", () => {
               { role: "user", entryId: "transport-user-2", content: "second" },
               duplicate,
             ],
+            totalMessages: 4,
           },
         });
       } else if (command.type === "prompt") {
@@ -15868,12 +15924,12 @@ describe("OMP direct provider", () => {
                 sessionId: nativeSessionId,
               },
             });
-          } else if (type === "get_messages") {
+          } else if (type === "get_messages_page") {
             child.write({
               type: "response",
               id: command.id,
               success: true,
-              data: { messages: [] },
+              data: { messages: [], totalMessages: 0 },
             });
           } else if (type === "get_session_stats") {
             child.write({
@@ -17570,6 +17626,140 @@ describe("OMP direct provider", () => {
     }
     expect(parent.parentSessionId).toBe("nested-snapshot-root");
     expect(nested.parentSessionId).toBe(parent.sessionId);
+
+    await connection.close();
+  });
+  test("prefers direct snapshot transcripts and isolates an oversized sibling", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({
+      id: NATIVE_SESSION_ID,
+      cwd: "/repo",
+      transcriptFile: "/sessions/root.jsonl",
+    });
+    runtime.nextHistoryMessages = [];
+    runtime.nextSubagents = [
+      {
+        id: "direct-child",
+        index: 0,
+        agent: "direct",
+        status: "completed",
+        sessionFile: "/sessions/root/direct-child.jsonl",
+        lastUpdate: 1,
+      },
+      {
+        id: "oversized-child",
+        index: 1,
+        agent: "oversized",
+        status: "completed",
+        sessionFile: "/sessions/root/oversized-child.jsonl",
+        lastUpdate: 2,
+      },
+      {
+        id: "fallback-child",
+        index: 2,
+        agent: "fallback",
+        status: "completed",
+        sessionFile: "/sessions/root/fallback-child.jsonl",
+        lastUpdate: 3,
+      },
+    ];
+    runtime.persistedSubagentMessages.set("/sessions/root.jsonl\0direct-child", {
+      sessionFile: "/sessions/root/direct-child.jsonl",
+      nativeSessionId: "native_direct_child",
+      byteLength: 100,
+      messages: [{ role: "assistant", responseId: "direct-output", content: "direct output" }],
+    });
+    runtime.persistedSubagentMessages.set("/sessions/root.jsonl\0oversized-child", {
+      sessionFile: "/sessions/root/oversized-child.jsonl",
+      nativeSessionId: "native_oversized_child",
+      byteLength: 16 * 1024 * 1024,
+      messages: Array.from({ length: 3_100 }, (_, index) => ({
+        role: "assistant" as const,
+        responseId: `oversized-${index}`,
+        content: Array.from({ length: 64 }, () => ({ type: "text" as const, text: "x" })),
+      })),
+    });
+    runtime.nextSubagentMessages.set("fallback-child", {
+      sessionFile: "/sessions/root/fallback-child.jsonl",
+      fromByte: 0,
+      nextByte: 1,
+      reset: false,
+      messages: [{ role: "assistant", responseId: "fallback-output", content: "fallback output" }],
+    });
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.subsession",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "direct-child-replay",
+      sessionId: "direct-child-root",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "direct-child-replay",
+    );
+
+    expect(sessionAt(runtime).subagentMessageRequests).toEqual([{ subagentId: "fallback-child" }]);
+    expect(runtime.persistedSubagentRequests).toEqual([
+      {
+        parentSessionFile: "/sessions/root.jsonl",
+        childTranscriptId: "direct-child",
+        sessionFile: "/sessions/root/direct-child.jsonl",
+      },
+      {
+        parentSessionFile: "/sessions/root.jsonl",
+        childTranscriptId: "oversized-child",
+        sessionFile: "/sessions/root/oversized-child.jsonl",
+      },
+      {
+        parentSessionFile: "/sessions/root.jsonl",
+        childTranscriptId: "fallback-child",
+        sessionFile: "/sessions/root/fallback-child.jsonl",
+      },
+    ]);
+    const direct = events.find(
+      (event) => event.type === "session.opened" && event.title === "direct",
+    );
+    const oversized = events.find(
+      (event) => event.type === "session.opened" && event.title === "oversized",
+    );
+    const fallback = events.find(
+      (event) => event.type === "session.opened" && event.title === "fallback",
+    );
+    if (
+      direct?.type !== "session.opened" ||
+      oversized?.type !== "session.opened" ||
+      fallback?.type !== "session.opened"
+    ) {
+      throw new Error("Missing direct snapshot children");
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        sessionId: direct.sessionId,
+        item: expect.objectContaining({ type: "assistant_message", text: "direct output" }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline.item",
+        sessionId: fallback.sessionId,
+        item: expect.objectContaining({ type: "assistant_message", text: "fallback output" }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.turn",
+        sessionId: oversized.sessionId,
+        state: "failed",
+        error: { message: "OMP subagent history is unavailable or incomplete" },
+      }),
+    );
+    expect(events.some((event) => event.type === "request.failed")).toBe(false);
     await connection.close();
   });
 

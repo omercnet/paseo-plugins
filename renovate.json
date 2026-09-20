@@ -6,6 +6,11 @@
       "description": "Keep Paseo packages on the same release",
       "matchPackageNames": ["/^@getpaseo\\//"],
       "groupName": "Paseo"
+    },
+    {
+      "description": "Keep OMP SDK packages on the same release",
+      "matchPackageNames": ["/^@oh-my-pi\\//"],
+      "groupName": "OMP SDK"
     }
   ]
 }

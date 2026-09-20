@@ -1,7 +1,7 @@
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test, vi } from "vitest";
 import { createOmpConnection, type OmpConnectionDiagnostic } from "../server/provider/connection";
-import type { OmpRuntime } from "../server/provider/omp-rpc";
+import { OmpRpcResponseLimitError, type OmpRuntime } from "../server/provider/omp-rpc";
 
 async function failedOpen(
   error: unknown,
@@ -107,6 +107,24 @@ describe("connection failure diagnostics", () => {
       classification: "rpc-response-limit",
       stage: "rpc",
     });
+  });
+
+  test("reports only safe command and numeric bound metadata", async () => {
+    const diagnostics: OmpConnectionDiagnostic[] = [];
+    await failedOpen(
+      new OmpRpcResponseLimitError("get_messages_page", "nodes", 400_001, 400_000),
+      (entry) => diagnostics.push(entry),
+    );
+    expect(diagnostics[0]).toMatchObject({
+      errorClass: "Error",
+      classification: "rpc-response-limit",
+      stage: "rpc",
+      command: "get_messages_page",
+      bound: "nodes",
+      actual: 400_001,
+      limit: 400_000,
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain("payload");
   });
 
   test.each([

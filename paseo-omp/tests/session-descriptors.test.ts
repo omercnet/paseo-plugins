@@ -712,6 +712,43 @@ describe("OMP session descriptor discovery", () => {
     );
   });
 
+  test("reads an explicitly advertised nested child transcript within the parent tree", async () => {
+    const root = await temporaryRoot();
+    const sessionRoot = join(root, "sessions");
+    await writeSession(sessionRoot, "", SESSION_ID, "/repo");
+    const parentFile = join(sessionRoot, `2026-09-11T00-00-00-000Z_${SESSION_ID}.jsonl`);
+    const childDirectory = join(parentFile.slice(0, -".jsonl".length), "nested");
+    await mkdir(childDirectory, { recursive: true });
+    const childFile = join(childDirectory, "advertised.jsonl");
+    await writeFile(
+      childFile,
+      `${JSON.stringify({ type: "session", version: 3, id: OTHER_ID, cwd: "/repo" })}\n${JSON.stringify(
+        {
+          type: "message",
+          id: "assistant-entry",
+          message: { role: "assistant", content: "nested output" },
+        },
+      )}\n`,
+    );
+
+    await expect(
+      readOmpPersistedSubagentTranscript(parentFile, "advertised", "/repo", undefined, childFile),
+    ).resolves.toEqual({
+      sessionFile: await realpath(childFile),
+      nativeSessionId: OTHER_ID,
+      byteLength: expect.any(Number),
+      messages: [{ role: "assistant", content: "nested output", entryId: "assistant-entry" }],
+    });
+    const outside = join(root, "outside-child.jsonl");
+    await writeFile(
+      outside,
+      `${JSON.stringify({ type: "session", id: OTHER_ID, cwd: "/repo" })}\n`,
+    );
+    await expect(
+      readOmpPersistedSubagentTranscript(parentFile, "outside-child", "/repo", undefined, outside),
+    ).rejects.toThrow("failed ownership validation");
+  });
+
   test("sanitizes root and child transcript metadata with the RPC history budget", async () => {
     const root = await temporaryRoot();
     const cwd = root;

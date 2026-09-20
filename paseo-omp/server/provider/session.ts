@@ -1685,7 +1685,7 @@ export class OmpProviderSession {
           });
         }
       }
-      messages ??= await waitForReplay(this.runtime.getMessages(), replay.signal);
+      messages ??= await waitForReplay(this.runtime.getMessages(replay.signal), replay.signal);
       this.quarantineBranchEntries();
       for (const message of messages) {
         replay.signal.throwIfAborted();
@@ -3232,6 +3232,17 @@ export class OmpProviderSession {
         return;
       }
       this.handleRuntimeFailure();
+      return;
+    }
+    if (
+      event.type === "config_warnings_changed" ||
+      event.type === "advisor_cost_changed" ||
+      event.type === "ttsr_triggered"
+    ) {
+      return;
+    }
+    if (event.type === "irc_message") {
+      this.projector.projectPassive(event);
       return;
     }
     if (

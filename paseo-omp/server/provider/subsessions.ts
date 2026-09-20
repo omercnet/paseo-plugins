@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { basename, extname } from "node:path";
+import { basename, extname, isAbsolute } from "node:path";
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import type {
@@ -882,10 +882,32 @@ export class OmpSubsessionProjector {
       signal.throwIfAborted();
       if (this.sessionIdByNativeId.has(snapshot.id)) continue;
       try {
-        const history = await waitForReplay(
-          runtimeSession.getSubagentMessages({ subagentId: snapshot.id }),
-          signal,
-        );
+        let history: ReplayHistory;
+        if (snapshot.sessionFile && isAbsolute(snapshot.sessionFile) && this.rootSessionFile) {
+          try {
+            history = await waitForReplay(
+              runtime.readPersistedSubagentTranscript({
+                parentSessionFile: this.rootSessionFile,
+                childTranscriptId: snapshot.id,
+                sessionFile: snapshot.sessionFile,
+                cwd: this.cwd,
+                signal,
+              }),
+              signal,
+            );
+          } catch (error) {
+            if (signal.aborted) throw error;
+            history = await waitForReplay(
+              runtimeSession.getSubagentMessages({ subagentId: snapshot.id }),
+              signal,
+            );
+          }
+        } else {
+          history = await waitForReplay(
+            runtimeSession.getSubagentMessages({ subagentId: snapshot.id }),
+            signal,
+          );
+        }
         try {
           this.accountReplay(history.messages, budget, signal);
           collected.push({
@@ -899,7 +921,7 @@ export class OmpSubsessionProjector {
         }
       } catch (error) {
         if (signal.aborted) throw error;
-        collected.push({ snapshot });
+        collected.push({ snapshot, sessionFile: snapshot.sessionFile });
       }
     }
     collected.sort((left, right) => {

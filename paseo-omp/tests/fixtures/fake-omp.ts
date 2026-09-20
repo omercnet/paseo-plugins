@@ -495,6 +495,38 @@ reader.on("line", (line) => {
         contextUsage: { tokens: 1_234, contextWindow: currentModel.contextWindow, percent: 1 },
       });
       break;
+    case "get_messages_page": {
+      const offset =
+        typeof command.cursor === "string" && /^\d+$/u.test(command.cursor)
+          ? Number(command.cursor)
+          : 0;
+      const limit =
+        typeof command.limit === "number" && Number.isSafeInteger(command.limit)
+          ? Math.max(1, Math.min(256, command.limit))
+          : 100;
+      const messages = history.slice(offset, offset + limit);
+      const nextOffset = offset + messages.length;
+      const data = {
+        messages,
+        ...(nextOffset < history.length ? { nextCursor: String(nextOffset) } : {}),
+        totalMessages: history.length,
+      };
+      if (process.env.PASEO_OMP_FAKE_CHUNK_HISTORY === "1") {
+        sendChunked(
+          {
+            type: "response",
+            id: command.id,
+            command: command.type,
+            success: true,
+            data,
+          },
+          `history-page-${offset}`,
+        );
+      } else {
+        respond(command, data);
+      }
+      break;
+    }
     case "get_messages":
       if (process.env.PASEO_OMP_FAKE_CHUNK_HISTORY === "1") {
         sendChunked(

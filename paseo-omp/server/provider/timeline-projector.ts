@@ -6,7 +6,12 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { OMP_MCP_AUTH_TIMELINE_KIND } from "../../shared/mcp";
 import { isOmpImageMimeType, isValidImagePayload, type OmpImageMimeType } from "./image";
-import { OMP_MAX_CONTENT_PARTS, type OmpMessage, type OmpRpcEvent } from "./omp-rpc";
+import {
+  OMP_MAX_CONTENT_PARTS,
+  OMP_MESSAGE_REPLAY_POLICIES,
+  type OmpMessage,
+  type OmpRpcEvent,
+} from "./omp-rpc";
 import {
   boundedJsonBytes,
   type JsonValue,
@@ -134,6 +139,10 @@ function imageBlock(data: string, mimeType: string): StreamBlockSnapshot | undef
 }
 
 type OmpAssistantMessage = Extract<OmpMessage, { role: "assistant" }>;
+type OmpCustomDisplayMessage = Extract<
+  OmpMessage,
+  { role: "bashExecution" | "pythonExecution" | "custom" | "hookMessage" }
+>;
 
 function blockText(
   message: OmpAssistantMessage,
@@ -418,15 +427,34 @@ export class OmpTimelineProjector {
       }
     }
     if (
+      (event.type === "message_start" ||
+        event.type === "message_update" ||
+        event.type === "message_end") &&
+      OMP_MESSAGE_REPLAY_POLICIES[event.message.role] === "ignore"
+    ) {
+      return;
+    }
+    if (
       event.type === "todo_reminder" ||
       event.type === "todo_auto_clear" ||
+      event.type === "goal_updated" ||
+      event.type === "auto_retry_start" ||
+      event.type === "auto_retry_end" ||
+      event.type === "retry_fallback_applied" ||
+      event.type === "retry_fallback_succeeded" ||
       event.type === "notice" ||
       event.type === "extension_ui_request" ||
       event.type === "auto_compaction_start" ||
       event.type === "auto_compaction_end" ||
       event.type === "compaction_start" ||
       event.type === "compaction_end" ||
-      event.type === "advisor_yielded"
+      event.type === "advisor_yielded" ||
+      event.type === "config_warnings_changed" ||
+      event.type === "advisor_cost_changed" ||
+      event.type === "ttsr_triggered" ||
+      event.type === "irc_message" ||
+      event.type === "model_changed" ||
+      event.type === "thinking_level_changed"
     ) {
       this.projectPassive(event);
       return;
@@ -449,7 +477,12 @@ export class OmpTimelineProjector {
         this.scheduleFlush();
         return;
       case "message_end":
-        if (event.message.role === "custom" || event.message.role === "bashExecution") {
+        if (
+          event.message.role === "custom" ||
+          event.message.role === "hookMessage" ||
+          event.message.role === "bashExecution" ||
+          event.message.role === "pythonExecution"
+        ) {
           this.publishCustomMessage(event.message);
           return;
         }
@@ -499,12 +532,13 @@ export class OmpTimelineProjector {
         if (!snapshot.silent) this.publishTool(snapshot, "running");
         return;
       }
-      case "tool_execution_update": {
+      case "tool_execution_update":
+      case "tool_stream_update": {
         const previous = this.tools.get(event.toolCallId);
         if (!previous) return;
         if (previous.turnId !== turnId || previous.generation !== this.runtimeGeneration) return;
         const output = this.dataFilter.json(
-          event.partialResult,
+          event.type === "tool_execution_update" ? event.partialResult : event.update,
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
         );
@@ -598,6 +632,10 @@ export class OmpTimelineProjector {
     }
     if (event.type === "retry_fallback_applied" || event.type === "retry_fallback_succeeded") {
       this.publishRetryFallback(event);
+      return;
+    }
+    if (event.type === "irc_message") {
+      this.publishCustomMessage(event.message as OmpCustomDisplayMessage);
       return;
     }
     if (event.type === "notice") {
@@ -839,8 +877,9 @@ export class OmpTimelineProjector {
 
   projectReplayMessage(message: OmpMessage): void {
     if (this.closed) return;
-    const nativeIdentity = assistantIdentity(message);
     this.replaySequence += 1;
+    if (OMP_MESSAGE_REPLAY_POLICIES[message.role] === "ignore") return;
+
     if (message.role === "user") {
       this.replayToolCalls.clear();
       if (this.replayTurnId) this.finishTurn(this.replayTurnId);
@@ -861,7 +900,9 @@ export class OmpTimelineProjector {
       }
       return;
     }
+
     if (message.role === "assistant") {
+      const nativeIdentity = assistantIdentity(message);
       this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
       this.projectingReplay = true;
       try {
@@ -880,6 +921,7 @@ export class OmpTimelineProjector {
       if (nativeIdentity) this.rememberReplayOccurrence(nativeIdentity, message);
       return;
     }
+
     this.replayTurnId ??= `omp:replay-turn:${this.replaySequence}`;
     if (message.role === "toolResult") {
       const replayCall = this.replayToolCalls.get(message.toolCallId);
@@ -910,10 +952,18 @@ export class OmpTimelineProjector {
       );
       return;
     }
-    if (message.role === "bashExecution") {
+
+    if (
+      message.role === "bashExecution" ||
+      message.role === "pythonExecution" ||
+      message.role === "custom" ||
+      message.role === "hookMessage"
+    ) {
       this.publishCustomMessage(message);
-      this.finishTurn(this.replayTurnId);
-      this.replayTurnId = null;
+      if (message.role === "bashExecution" || message.role === "pythonExecution") {
+        this.finishTurn(this.replayTurnId);
+        this.replayTurnId = null;
+      }
     }
   }
 
@@ -1350,9 +1400,17 @@ export class OmpTimelineProjector {
     return undefined;
   }
 
-  private publishCustomMessage(message: OmpMessage): void {
-    if (message.display === false) return;
-    const rawType = message.customType ?? message.role;
+  private publishCustomMessage(message: OmpCustomDisplayMessage): void {
+    if (
+      (message.role === "custom" || message.role === "hookMessage") &&
+      message.display === false
+    ) {
+      return;
+    }
+    const rawType =
+      message.role === "custom" || message.role === "hookMessage"
+        ? (message.customType ?? message.role)
+        : message.role;
     const publicType = this.dataFilter.text(rawType, 256);
     const lowerType = rawType.toLowerCase();
     const details = jsonRecord(this.dataFilter.json(message.details ?? null));
@@ -1361,7 +1419,9 @@ export class OmpTimelineProjector {
     const id = nativeIdentity
       ? `omp:custom:${createHash("sha256").update(nativeIdentity).digest("base64url").slice(0, 12)}`
       : `omp:custom:${this.customSequence}`;
-    const contentParts = Array.isArray(message.content) ? message.content : [];
+    const messageContent =
+      message.role === "custom" || message.role === "hookMessage" ? message.content : undefined;
+    const contentParts = Array.isArray(messageContent) ? messageContent : [];
     const imageResult = nativeImageResult(
       {
         content:
@@ -1373,16 +1433,26 @@ export class OmpTimelineProjector {
       this.dataFilter,
     );
     const content =
-      typeof message.content === "string"
-        ? message.content
+      typeof messageContent === "string"
+        ? messageContent
         : contentParts
             .flatMap((part) => (part.type === "text" && part.text ? [part.text] : []))
             .join("\n\n");
-    if (message.role === "bashExecution" || /bash|shell|python/u.test(lowerType)) {
+    const execution = message.role === "bashExecution" || message.role === "pythonExecution";
+    if (execution || /bash|shell|python/u.test(lowerType)) {
+      const nativeCommand =
+        message.role === "bashExecution"
+          ? message.command
+          : message.role === "pythonExecution"
+            ? message.code
+            : undefined;
       const command = this.dataFilter.text(
-        message.command ?? firstString(details, "command", "input") ?? publicType,
+        nativeCommand ?? firstString(details, "command", "input") ?? publicType,
       );
-      const output = message.output ?? content;
+      const output = execution ? (message.output ?? content) : content;
+      const exitCode = execution ? message.exitCode : undefined;
+      const cancelled = execution ? message.cancelled : undefined;
+      const truncated = execution ? message.truncated : undefined;
       this.publish({
         type: "tool_call",
         id,
@@ -1393,21 +1463,21 @@ export class OmpTimelineProjector {
           command,
           ...(firstString(details, "cwd") ? { cwd: firstString(details, "cwd") } : {}),
           ...(output ? { output: this.dataFilter.text(output, MAX_STREAM_TEXT_LENGTH) } : {}),
-          ...(typeof message.exitCode === "number" || message.exitCode === null
-            ? { exitCode: message.exitCode }
+          ...(typeof exitCode === "number" || exitCode === null
+            ? { exitCode }
             : typeof details?.exitCode === "number"
               ? { exitCode: details.exitCode }
               : {}),
         },
-        ...(message.cancelled !== undefined || message.truncated !== undefined
+        ...(cancelled !== undefined || truncated !== undefined
           ? {
               metadata: {
-                ...(message.cancelled !== undefined ? { cancelled: message.cancelled } : {}),
-                ...(message.truncated !== undefined ? { truncated: message.truncated } : {}),
+                ...(cancelled !== undefined ? { cancelled } : {}),
+                ...(truncated !== undefined ? { truncated } : {}),
               },
             }
           : {}),
-        status: message.cancelled ? "canceled" : "completed",
+        status: cancelled ? "canceled" : "completed",
         error: null,
       });
       if (imageResult) this.publishImages(id, publicType, imageResult.image);

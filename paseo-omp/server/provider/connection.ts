@@ -16,7 +16,14 @@ import type {
 import { discoverOmpCatalog } from "./catalog";
 import { normalizeOmpCatalogOptions } from "./config-normalization";
 import type { OmpMcpConnector } from "./host-tools";
-import type { OmpRuntime } from "./omp-rpc";
+import {
+  OMP_RPC_BOUND_DIMENSIONS,
+  OMP_RPC_DIAGNOSTIC_COMMANDS,
+  type OmpRpcBoundDimension,
+  type OmpRpcDiagnosticCommand,
+  OmpRpcResponseLimitError,
+  type OmpRuntime,
+} from "./omp-rpc";
 import {
   boundedJsonBytes,
   isOmpCleanupFailure,
@@ -320,6 +327,10 @@ export interface OmpConnectionDiagnostic {
   code?: (typeof SYSTEM_ERROR_CODES)[number] | (typeof DATABASE_ERROR_CODES)[number];
   exitCode?: number;
   signal?: (typeof EXIT_SIGNALS)[number];
+  command?: OmpRpcDiagnosticCommand;
+  bound?: OmpRpcBoundDimension;
+  actual?: number;
+  limit?: number;
 }
 
 // Match complete, locally authored messages only. Never log an arbitrary message, error name,
@@ -428,6 +439,22 @@ function classifyFailure(
                 : "NonError",
     classification: "unexpected",
   };
+  if (error instanceof OmpRpcResponseLimitError) {
+    const command = OMP_RPC_DIAGNOSTIC_COMMANDS.find((value) => value === error.command);
+    const bound = OMP_RPC_BOUND_DIMENSIONS.find((value) => value === error.bound);
+    const actual =
+      Number.isSafeInteger(error.actual) && error.actual >= 0 ? error.actual : undefined;
+    const limit = Number.isSafeInteger(error.limit) && error.limit >= 0 ? error.limit : undefined;
+    return {
+      ...result,
+      classification: "rpc-response-limit",
+      stage: "rpc",
+      ...(command ? { command } : {}),
+      ...(bound ? { bound } : {}),
+      ...(actual !== undefined ? { actual } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+    };
+  }
   const message = error instanceof Error ? error.message : undefined;
   if (typeof message === "string") {
     const known = KNOWN_FAILURES.get(message);

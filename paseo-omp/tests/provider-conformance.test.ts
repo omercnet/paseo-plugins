@@ -941,9 +941,9 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
       expect(commands).toContainEqual(
         expect.objectContaining({ type: "branch", entryId: "user-root" }),
       );
-      expect(commands.filter((command) => command.type === "get_messages").length).toBeGreaterThan(
-        0,
-      );
+      expect(
+        commands.filter((command) => command.type === "get_messages_page").length,
+      ).toBeGreaterThan(0);
     } finally {
       await session?.close();
       await harness.close();

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { constants, type Dir } from "node:fs";
 import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { ompSessionDir } from "../paths";
 import { isValidImagePayload } from "./image";
 
@@ -510,16 +510,19 @@ interface PersistedTranscriptNode {
   message?: unknown;
 }
 
-function persistedTranscriptMessage(record: Record<string, unknown>, entryId: string): unknown {
+function persistedTranscriptMessage(record: Record<string, unknown>, entryId?: string): unknown {
   if (record.type === "message") {
     if (!record.message || typeof record.message !== "object" || Array.isArray(record.message))
       return;
-    return { ...(record.message as Record<string, unknown>), entryId };
+    return {
+      ...(record.message as Record<string, unknown>),
+      ...(entryId ? { entryId } : {}),
+    };
   }
   if (record.type !== "custom_message") return;
   return {
     role: "custom",
-    entryId,
+    ...(entryId ? { entryId } : {}),
     customType: record.customType,
     content: record.content,
     display: record.display,
@@ -680,6 +683,7 @@ export async function readOmpPersistedSubagentTranscript(
   childTranscriptId: string,
   cwd: string,
   signal?: AbortSignal,
+  childSessionFile?: string,
 ): Promise<OmpPersistedSubagentTranscript> {
   signal?.throwIfAborted();
   if (
@@ -687,7 +691,12 @@ export async function readOmpPersistedSubagentTranscript(
     !parentSessionFile.endsWith(".jsonl") ||
     parentSessionFile.includes("\0") ||
     !CHILD_TRANSCRIPT_ID.test(childTranscriptId) ||
-    basename(childTranscriptId) !== childTranscriptId
+    basename(childTranscriptId) !== childTranscriptId ||
+    (childSessionFile !== undefined &&
+      (!isAbsolute(childSessionFile) ||
+        !childSessionFile.endsWith(".jsonl") ||
+        childSessionFile.includes("\0") ||
+        basename(childSessionFile) !== `${childTranscriptId}.jsonl`))
   ) {
     throw new Error("Invalid OMP child transcript descriptor");
   }
@@ -707,34 +716,58 @@ export async function readOmpPersistedSubagentTranscript(
     await parentHandle.close().catch(() => undefined);
   }
   const canonicalParent = await realpath(parentSessionFile);
-  const parentExtension = extname(canonicalParent);
-  const expectedDirectory = canonicalParent.slice(0, -parentExtension.length);
+  const expectedDirectory = canonicalParent.slice(0, -".jsonl".length);
   const canonicalDirectory = await realpath(expectedDirectory).catch(() => undefined);
   if (!canonicalDirectory || canonicalDirectory !== expectedDirectory) {
     throw new Error("OMP child transcript directory is not canonically owned by its parent");
   }
-  const sessionFile = join(canonicalDirectory, `${childTranscriptId}.jsonl`);
+  const requestedFile = resolve(
+    childSessionFile ?? join(canonicalDirectory, `${childTranscriptId}.jsonl`),
+  );
+  const relativeChild = relative(canonicalDirectory, requestedFile);
+  if (!relativeChild || relativeChild.startsWith("..") || isAbsolute(relativeChild)) {
+    throw new Error("OMP child transcript failed ownership validation");
+  }
   let handle: FileHandle;
   try {
     handle = await open(
-      sessionFile,
+      requestedFile,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
     );
   } catch {
     throw new Error("OMP child transcript could not be opened");
   }
   try {
-    const [stat, canonicalChild] = await Promise.all([handle.stat(), realpath(sessionFile)]);
+    const [stat, pathStat, canonicalChild] = await Promise.all([
+      handle.stat(),
+      lstat(requestedFile),
+      realpath(requestedFile),
+    ]);
     if (
       !stat.isFile() ||
+      !pathStat.isFile() ||
+      pathStat.isSymbolicLink() ||
+      stat.dev !== pathStat.dev ||
+      stat.ino !== pathStat.ino ||
       stat.size > MAX_CHILD_TRANSCRIPT_BYTES ||
-      dirname(canonicalChild) !== canonicalDirectory ||
-      canonicalChild !== sessionFile
+      canonicalChild !== requestedFile
     ) {
       throw new Error("OMP child transcript failed ownership validation");
     }
-    const bytes = await handle.readFile();
-    signal?.throwIfAborted();
+    const canonicalRelativeChild = relative(canonicalDirectory, canonicalChild);
+    if (
+      !canonicalRelativeChild ||
+      canonicalRelativeChild.startsWith("..") ||
+      isAbsolute(canonicalRelativeChild)
+    ) {
+      throw new Error("OMP child transcript failed ownership validation");
+    }
+    const bytes = await readStableFile(
+      handle,
+      stat.size,
+      signal,
+      "OMP child transcript changed while reading",
+    );
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     const messages: unknown[] = [];
     let nativeSessionId: string | undefined;
@@ -752,15 +785,21 @@ export async function readOmpPersistedSubagentTranscript(
         nativeSessionId ??= candidateId;
         if (nativeSessionId !== candidateId)
           throw new Error("OMP child transcript identity changed");
-      } else if (record.type === "message" && record.message !== undefined) {
+      } else {
+        const entryId =
+          typeof record.id === "string" && CHILD_TRANSCRIPT_ID.test(record.id)
+            ? record.id
+            : undefined;
+        const message = persistedTranscriptMessage(record, entryId);
+        if (message === undefined) continue;
         if (messages.length >= MAX_CHILD_TRANSCRIPT_MESSAGES) {
           throw new Error("OMP child transcript exceeds message limits");
         }
-        messages.push(record.message);
+        messages.push(message);
       }
     }
     if (!nativeSessionId) throw new Error("OMP child transcript is missing session identity");
-    return { sessionFile, nativeSessionId, byteLength: bytes.byteLength, messages };
+    return { sessionFile: canonicalChild, nativeSessionId, byteLength: bytes.byteLength, messages };
   } catch (error) {
     if (error instanceof Error) throw error;
     throw new Error("OMP child transcript could not be decoded");

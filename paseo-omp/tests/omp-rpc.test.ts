@@ -173,6 +173,27 @@ describe("OMP RPC transport", () => {
           },
         });
       } else if (command.type === "get_state") {
+        writeChunked(
+          child,
+          {
+            type: "response",
+            id: command.id,
+            success: true,
+            data: {
+              model: null,
+              isStreaming: false,
+              isCompacting: false,
+              sessionId: "bounded-state",
+              systemPrompt: "secret prompt".repeat(200_000),
+              dumpTools: Array.from({ length: 10_000 }, (_, index) => ({
+                name: `tool-${index}`,
+                description: "x".repeat(256),
+              })),
+            },
+          },
+          "large-ignored-state",
+        );
+      } else if (command.type === "get_session_stats") {
         child.write({ type: "response", id: command.id, success: true, data: { nested: models } });
       }
     });
@@ -180,8 +201,13 @@ describe("OMP RPC transport", () => {
     child.write(READY_FRAME);
     const session = await opening;
     try {
-      expect(await session.getAvailableModels()).toHaveLength(53);
-      await expect(session.getState()).rejects.toThrow("response exceeded command limits");
+      await expect(session.getState()).resolves.toEqual({
+        model: null,
+        isStreaming: false,
+        isCompacting: false,
+        sessionId: "bounded-state",
+      });
+      await expect(session.getSessionStats()).rejects.toThrow("response exceeded command limits");
       oversized = true;
       await expect(session.getAvailableModels()).rejects.toThrow(
         "response exceeded command limits",
@@ -1341,6 +1367,59 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("accepts OMP 18.2 passive and streamed-tool events without protocol violations", async () => {
+    const child = new FakeRpcChild();
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const opening = runtimeFor(child, [], undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    }).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    const complete = Promise.withResolvers<void>();
+    session.onEvent((event) => {
+      events.push(event);
+      if (events.length === 6) complete.resolve();
+    });
+
+    child.write({ type: "config_warnings_changed" });
+    child.write({ type: "advisor_cost_changed" });
+    child.write({ type: "ttsr_triggered", rules: [{ id: "rule", content: "safe" }] });
+    child.write({
+      type: "irc_message",
+      message: { role: "custom", customType: "irc", content: "hello", display: true },
+    });
+    child.write({ type: "tool_execution_start", toolCallId: "call", toolName: "edit", args: {} });
+    child.write({
+      type: "tool_stream_update",
+      toolCallId: "call",
+      toolName: "edit",
+      update: { lines: 2 },
+    });
+    await complete.promise;
+
+    expect(events.map((event) => event.type)).toEqual([
+      "config_warnings_changed",
+      "advisor_cost_changed",
+      "ttsr_triggered",
+      "irc_message",
+      "tool_execution_start",
+      "tool_stream_update",
+    ]);
+    expect(diagnostics).toEqual([]);
+    await session.close();
+  });
+
   test("rejects incomplete ready metadata instead of guessing v1", async () => {
     const child = new FakeRpcChild();
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
@@ -1500,6 +1579,36 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("counts escaped JSON bytes in command response limits", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_session_stats") {
+        writeChunked(
+          child,
+          {
+            type: "response",
+            id: command.id,
+            success: true,
+            data: { escaped: "\u0001".repeat(360_000) },
+          },
+          "escaped-json-response",
+        );
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    await expect(session.getSessionStats()).rejects.toThrow("response exceeded command limits");
+    await session.close();
+  });
+
   test("reassembles bounded v2 chunk frames", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
@@ -1564,12 +1673,12 @@ describe("OMP RPC transport", () => {
         });
         return;
       }
-      if (command.type === "get_messages") {
+      if (command.type === "get_messages_page") {
         child.write({
           type: "response",
           id: command.id,
           success: true,
-          data: { messages: [{ role: "assistant", content }] },
+          data: { messages: [{ role: "assistant", content }], totalMessages: 1 },
         });
       }
     });
@@ -1580,6 +1689,45 @@ describe("OMP RPC transport", () => {
     const [assistant] = await session.getMessages();
     expect(assistant?.role).toBe("assistant");
     expect(assistant && "content" in assistant ? assistant.content : undefined).toHaveLength(65);
+    await session.close();
+  });
+  test("accepts every OMP 18.2 message role without reclassifying developer context", async () => {
+    const child = new FakeRpcChild();
+    const roles = [
+      { role: "assistant", content: [{ type: "text", text: "answer" }] },
+      { role: "user", content: "question" },
+      { role: "developer", content: "trusted harness context" },
+      { role: "toolResult", toolCallId: "call", toolName: "read", content: [] },
+      { role: "bashExecution", command: "pwd", output: "/repo", exitCode: 0 },
+      { role: "pythonExecution", code: "print(1)", output: "1", exitCode: 0 },
+      { role: "custom", customType: "note", content: "visible", display: true },
+      { role: "hookMessage", customType: "legacy", content: "visible", display: true },
+      { role: "branchSummary", summary: "branch", fromId: "root" },
+      { role: "compactionSummary", summary: "compact", tokensBefore: 100 },
+      { role: "fileMention", files: [{ path: "src/a.ts", content: "export {};" }] },
+    ];
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages_page") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { messages: roles, totalMessages: roles.length },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await expect(session.getMessages()).resolves.toMatchObject(roles);
     await session.close();
   });
 
@@ -1608,7 +1756,7 @@ describe("OMP RPC transport", () => {
         });
         return;
       }
-      if (command.type === "get_messages") {
+      if (command.type === "get_messages_page") {
         child.write({
           type: "response",
           id: command.id,
@@ -1618,6 +1766,7 @@ describe("OMP RPC transport", () => {
               ...toolResult,
               toolCallId: `call-${index}`,
             })),
+            totalMessages: 4,
           },
         });
       }
@@ -1707,12 +1856,12 @@ describe("OMP RPC transport", () => {
         });
         return;
       }
-      if (command.type === "get_messages") {
+      if (command.type === "get_messages_page") {
         child.write({
           type: "response",
           id: command.id,
           success: true,
-          data: { messages: [toolResult, assistant] },
+          data: { messages: [toolResult, assistant], totalMessages: 2 },
         });
       }
     });
@@ -1951,7 +2100,7 @@ describe("OMP RPC transport", () => {
         });
         return;
       }
-      if (command.type === "get_messages") {
+      if (command.type === "get_messages_page") {
         writeChunked(
           child,
           {
@@ -1971,6 +2120,7 @@ describe("OMP RPC transport", () => {
                 { role: "assistant", id: "history-assistant", content: text },
                 { role: "user", id: "history-user-2", content: text },
               ],
+              totalMessages: 5,
             },
           },
           "history-chunks",
@@ -2013,7 +2163,7 @@ describe("OMP RPC transport", () => {
           success: true,
           data: { protocolVersion: 2 },
         });
-      } else if (command.type === "get_messages") {
+      } else if (command.type === "get_messages_page") {
         writeChunked(
           child,
           {
@@ -2025,6 +2175,7 @@ describe("OMP RPC transport", () => {
                 { role: "assistant", id: "history-one", content: sevenMiB },
                 { role: "assistant", id: "history-two", content: sevenMiB },
               ],
+              totalMessages: 2,
             },
           },
           "large-history-response",
@@ -2040,6 +2191,318 @@ describe("OMP RPC transport", () => {
     expect(messages.map((message) => ("content" in message ? message.content : undefined))).toEqual(
       [sevenMiB, sevenMiB],
     );
+    await session.close();
+  });
+
+  test("replays histories larger than 2 MiB through bounded pages", async () => {
+    const child = new FakeRpcChild();
+    const text = "x".repeat(700_000);
+    const cursors: Array<string | undefined> = [];
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type !== "get_messages_page") return;
+      const cursor = typeof command.cursor === "string" ? command.cursor : undefined;
+      cursors.push(cursor);
+      const offset = cursor ? Number(cursor) : 0;
+      child.write({
+        type: "response",
+        id: command.id,
+        command: command.type,
+        success: true,
+        data: {
+          messages: [{ role: "assistant", responseId: `page-${offset}`, content: text }],
+          ...(offset < 3 ? { nextCursor: String(offset + 1) } : {}),
+          totalMessages: 4,
+        },
+      });
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const messages = await session.getMessages();
+    expect(messages).toHaveLength(4);
+    expect(
+      messages.every((message) => message.role === "assistant" && message.content === text),
+    ).toBe(true);
+    expect(cursors).toEqual([undefined, "1", "2", "3"]);
+    await session.close();
+  });
+
+  test("rejects non-progressing message pagination", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages_page") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { messages: [], nextCursor: "same", totalMessages: 1 },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await expect(session.getMessages()).rejects.toThrow("did not make progress");
+    await session.close();
+  });
+
+  test("rejects repeated message cursors", async () => {
+    const child = new FakeRpcChild();
+    let page = 0;
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages_page") {
+        page += 1;
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            messages: [{ role: "user", content: `page ${page}` }],
+            nextCursor: "repeated",
+            totalMessages: 3,
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await expect(session.getMessages()).rejects.toThrow("repeated a cursor");
+    expect(page).toBe(2);
+    await session.close();
+  });
+
+  test("accepts bounded opaque cursors with padding and punctuation", async () => {
+    const child = new FakeRpcChild();
+    const observed: Array<string | undefined> = [];
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages_page") {
+        const cursor = typeof command.cursor === "string" ? command.cursor : undefined;
+        observed.push(cursor);
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: cursor
+            ? { messages: [{ role: "assistant", content: "done" }], totalMessages: 2 }
+            : {
+                messages: [{ role: "user", content: "start" }],
+                nextCursor: "opaque+/==",
+                totalMessages: 2,
+              },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    await expect(session.getMessages()).resolves.toHaveLength(2);
+    expect(observed).toEqual([undefined, "opaque+/=="]);
+    await session.close();
+  });
+
+  test("rejects overlapping stable message identities across pages", async () => {
+    const child = new FakeRpcChild();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages_page") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            messages: [{ role: "assistant", responseId: "overlap", content: "same" }],
+            ...(command.cursor ? {} : { nextCursor: "second" }),
+            totalMessages: 2,
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    await expect(session.getMessages()).rejects.toThrow("repeated a message identity");
+    await session.close();
+  });
+
+  test("rejects excessive underfilled message pages", async () => {
+    const child = new FakeRpcChild();
+    let pageRequests = 0;
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages_page") {
+        pageRequests += 1;
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            messages: [{ role: "user", content: "x" }],
+            nextCursor: `page/${pageRequests}==`,
+            totalMessages: 513,
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    await expect(session.getMessages()).rejects.toThrow("response exceeded command limits");
+    expect(pageRequests).toBe(513);
+    await session.close();
+  });
+
+  test("falls back to legacy history only when the paging command is unsupported", async () => {
+    const child = new FakeRpcChild();
+    const commands: string[] = [];
+    observeCommands(child, (command) => {
+      if (typeof command.type === "string") commands.push(command.type);
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_messages_page") {
+        child.write({
+          type: "response",
+          command: "get_messages_page",
+          success: false,
+          error: "Unknown command: get_messages_page",
+        });
+      } else if (command.type === "get_messages") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { messages: [{ role: "user", content: "legacy" }] },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await expect(session.getMessages()).resolves.toEqual([{ role: "user", content: "legacy" }]);
+    expect(commands.slice(-2)).toEqual(["get_messages_page", "get_messages"]);
+    await session.close();
+  });
+
+  test("retries busy pages and restarts a stale snapshot without mixing histories", async () => {
+    const child = new FakeRpcChild();
+    let pageRequest = 0;
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+        return;
+      }
+      if (command.type !== "get_messages_page") return;
+      pageRequest += 1;
+      if (pageRequest === 1) {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: command.type,
+          success: false,
+          code: "session_busy",
+          error: "sanitized",
+        });
+      } else if (pageRequest === 2) {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            messages: [{ role: "user", content: "discarded snapshot" }],
+            nextCursor: "old",
+            totalMessages: 2,
+          },
+        });
+      } else if (pageRequest === 3) {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: command.type,
+          success: false,
+          code: "stale_cursor",
+          error: "sanitized",
+        });
+      } else {
+        const second = command.cursor === "fresh";
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: {
+            messages: [
+              { role: second ? "assistant" : "user", content: second ? "answer" : "fresh" },
+            ],
+            ...(!second ? { nextCursor: "fresh" } : {}),
+            totalMessages: 2,
+          },
+        });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    await expect(session.getMessages()).resolves.toEqual([
+      { role: "user", content: "fresh" },
+      { role: "assistant", content: "answer" },
+    ]);
+    expect(pageRequest).toBe(5);
     await session.close();
   });
 
@@ -2393,7 +2856,7 @@ describe("OMP RPC transport", () => {
           success: true,
           data: { protocolVersion: 2 },
         });
-      } else if (command.type === "get_messages") {
+      } else if (command.type === "get_messages_page") {
         historyRequested.resolve();
       }
     });

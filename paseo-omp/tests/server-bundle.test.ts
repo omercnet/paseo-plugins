@@ -92,6 +92,10 @@ describe("plugin server bundle", () => {
     expect(packageManifest.description).toBe(
       "Paseo integration for OMP, including its direct provider and workspace tooling.",
     );
+    expect(
+      await readFile(join(pluginRoot, "server", "provider", "omp-rpc.ts"), "utf8"),
+    ).not.toContain("@oh-my-pi/");
+    expect(packageManifest.files).not.toContain("tests");
     expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain(
       "Paseo `>=0.9.0-beta.1 <0.10.0`",
     );
@@ -133,6 +137,7 @@ describe("plugin server bundle", () => {
     await rm(join(pluginRoot, "server", "generated", "package-version.js"), { force: true });
     const { code, warnings } = await compileServerBundle(join(pluginRoot, "index.server.ts"));
     expect(warnings.map((warning) => warning.text)).toEqual([]);
+    expect(code).not.toContain("@oh-my-pi/");
     // biome-ignore lint/security/noGlobalEval: mirrors the daemon's plugin loader
     const factory = globalThis.eval(
       `(function(require) {\nconst module = { exports: {} };\nconst exports = module.exports;\n${code}\nreturn module.exports;\n})`,

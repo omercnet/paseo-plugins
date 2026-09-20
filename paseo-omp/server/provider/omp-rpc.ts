@@ -86,7 +86,105 @@ const MAX_RPC_ERROR_BYTES = 4_096;
 const MAX_RPC_ERROR_CODE_BYTES = 256;
 const PROMPT_SCHEDULING_FAILURE = "OMP prompt scheduling failed";
 const PROTOCOL_VIOLATION_COALESCE_MS = 10_000;
+const MAX_REPLAY_MESSAGES = 100_000;
+const MAX_REPLAY_BYTES = 64 * 1024 * 1024;
+const MAX_REPLAY_NODES = 400_000;
+const OMP_MESSAGE_PAGE_LIMIT = 256;
+const MAX_MESSAGE_PAGES = 512;
+const MAX_MESSAGE_PAGE_BUSY_RETRIES = 4;
+const MAX_MESSAGE_PAGE_STALE_RESTARTS = 2;
+const MESSAGE_PAGE_RETRY_BASE_MS = 50;
 
+export const OMP_MESSAGE_REPLAY_POLICIES = {
+  assistant: "render",
+  user: "render",
+  developer: "ignore",
+  toolResult: "render",
+  bashExecution: "normalize",
+  pythonExecution: "normalize",
+  custom: "normalize",
+  hookMessage: "normalize",
+  branchSummary: "ignore",
+  compactionSummary: "ignore",
+  fileMention: "ignore",
+} as const;
+
+export const OMP_SESSION_EVENT_POLICIES = {
+  agent_start: "lifecycle",
+  agent_end: "lifecycle",
+  turn_start: "lifecycle",
+  turn_end: "lifecycle",
+  message_start: "normalize",
+  message_update: "normalize",
+  message_end: "normalize",
+  tool_execution_start: "normalize",
+  tool_execution_update: "normalize",
+  tool_stream_update: "normalize",
+  tool_execution_end: "normalize",
+  auto_compaction_start: "normalize",
+  auto_compaction_end: "normalize",
+  auto_retry_start: "normalize",
+  auto_retry_end: "normalize",
+  retry_fallback_applied: "normalize",
+  retry_fallback_succeeded: "normalize",
+  model_changed: "normalize",
+  config_warnings_changed: "ignore",
+  advisor_cost_changed: "ignore",
+  advisor_yielded: "normalize",
+  ttsr_triggered: "ignore",
+  todo_reminder: "normalize",
+  todo_auto_clear: "normalize",
+  irc_message: "normalize",
+  notice: "normalize",
+  thinking_level_changed: "normalize",
+  goal_updated: "normalize",
+} as const;
+
+export const OMP_RPC_COMMAND_POLICIES = {
+  negotiate_protocol: "implemented",
+  prompt: "implemented",
+  steer: "implemented",
+  follow_up: "implemented",
+  abort: "implemented",
+  abort_and_prompt: "unsupported",
+  new_session: "unsupported",
+  get_state: "implemented",
+  set_fast_mode: "unsupported",
+  get_available_commands: "implemented",
+  set_todos: "unsupported",
+  set_host_tools: "implemented",
+  set_host_uri_schemes: "unsupported",
+  set_subagent_subscription: "implemented",
+  get_subagents: "implemented",
+  get_subagent_messages: "implemented",
+  set_model: "implemented",
+  cycle_model: "unsupported",
+  get_available_models: "implemented",
+  set_thinking_level: "implemented",
+  cycle_thinking_level: "unsupported",
+  set_steering_mode: "unsupported",
+  set_follow_up_mode: "unsupported",
+  set_interrupt_mode: "unsupported",
+  compact: "implemented",
+  set_auto_compaction: "implemented",
+  set_auto_retry: "unsupported",
+  abort_retry: "unsupported",
+  bash: "unsupported",
+  abort_bash: "unsupported",
+  get_session_stats: "implemented",
+  export_html: "unsupported",
+  switch_session: "unsupported",
+  branch: "implemented",
+  get_branch_messages: "implemented",
+  get_last_assistant_text: "unsupported",
+  set_session_name: "unsupported",
+  handoff: "implemented",
+  get_messages: "implemented",
+  get_messages_page: "implemented",
+  get_login_providers: "unsupported",
+  login: "unsupported",
+} as const;
+export const OMP_RPC_RESPONSE_POLICIES = OMP_RPC_COMMAND_POLICIES;
 export const OMP_PROTOCOL_VIOLATION_CATEGORIES = [
   "duplicate-ready",
   "frame-limit",
@@ -156,6 +254,7 @@ export const OMP_PROTOCOL_EVENT_TYPES = [
   "tool_execution_start",
   "tool_execution_update",
   "tool_execution_end",
+  "tool_stream_update",
   "compaction_start",
   "compaction_end",
   "subagent_lifecycle",
@@ -163,6 +262,10 @@ export const OMP_PROTOCOL_EVENT_TYPES = [
   "subagent_event",
   "todo_reminder",
   "model_changed",
+  "config_warnings_changed",
+  "advisor_cost_changed",
+  "ttsr_triggered",
+  "irc_message",
   "thinking_level_changed",
   "goal_updated",
   "auto_retry_start",
@@ -292,8 +395,11 @@ function eventSchemaClassification(
     case "message_update":
     case "message_end":
       return { reason: "message-event-schema", expected: "valid-message-event" };
+    case "irc_message":
+      return { reason: "message-event-schema", expected: "valid-message-event" };
     case "tool_execution_start":
     case "tool_execution_update":
+    case "tool_stream_update":
     case "tool_execution_end":
     case "host_tool_call":
     case "host_tool_cancel":
@@ -312,6 +418,9 @@ function eventSchemaClassification(
     case "available_commands_update":
     case "retry_fallback_applied":
     case "retry_fallback_succeeded":
+    case "config_warnings_changed":
+    case "advisor_cost_changed":
+    case "ttsr_triggered":
       return { reason: "configuration-event-schema", expected: "valid-configuration-event" };
     case "extension_ui_request":
       return { reason: "extension-ui-schema", expected: "valid-extension-ui-event" };
@@ -408,6 +517,13 @@ function boundedString(maxBytes: number, minBytes = 0) {
     return bytes >= minBytes && bytes <= maxBytes;
   });
 }
+function isSafeOpaqueCursor(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return false;
+  }
+  return true;
+}
 function boundedOptionalStringArray(maxItems: number, maxBytes: number) {
   return z.unknown().transform((value): string[] | undefined => {
     if (!Array.isArray(value)) return undefined;
@@ -465,7 +581,7 @@ function sanitizeLiveMessageDisplay(value: unknown): unknown {
     return content === message.content ? value : { ...message, content };
   }
   if (
-    message.role === "bashExecution" &&
+    (message.role === "bashExecution" || message.role === "pythonExecution") &&
     typeof message.output === "string" &&
     utf8Bytes(message.output) > MAX_IMAGE_DATA_LENGTH
   ) {
@@ -506,6 +622,178 @@ function isBoundedJson(
   return (
     boundedJsonBytes(value, maxBytes, maxItems, maxBytes, maxNodes) !== Number.POSITIVE_INFINITY
   );
+}
+const MAX_RESPONSE_DEPTH = 16;
+export const OMP_RPC_BOUND_DIMENSIONS = [
+  "bytes",
+  "items",
+  "nodes",
+  "depth",
+  "string-bytes",
+] as const;
+export type OmpRpcBoundDimension = (typeof OMP_RPC_BOUND_DIMENSIONS)[number];
+export const OMP_RPC_DIAGNOSTIC_COMMANDS = [
+  "negotiate_protocol",
+  "get_state",
+  "get_session_stats",
+  "get_available_models",
+  "get_available_commands",
+  "set_subagent_subscription",
+  "get_subagents",
+  "get_subagent_messages",
+  "prompt",
+  "compact",
+  "set_auto_compaction",
+  "set_model",
+  "set_thinking_level",
+  "handoff",
+  "get_branch_messages",
+  "branch",
+  "get_messages_page",
+  "get_messages",
+  "abort",
+  "set_host_tools",
+] as const;
+export type OmpRpcDiagnosticCommand = (typeof OMP_RPC_DIAGNOSTIC_COMMANDS)[number];
+type JsonBoundViolation = {
+  dimension: OmpRpcBoundDimension;
+  actual: number;
+  limit: number;
+};
+type JsonBoundInspection = { bytes: number; nodes: number; violation?: JsonBoundViolation };
+
+function rpcDiagnosticCommand(value: string): OmpRpcDiagnosticCommand | undefined {
+  return (OMP_RPC_DIAGNOSTIC_COMMANDS as readonly string[]).includes(value)
+    ? (value as OmpRpcDiagnosticCommand)
+    : undefined;
+}
+
+function encodedJsonStringBytes(value: string): number {
+  let bytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      bytes += 2;
+    } else if (code <= 0x1f) {
+      bytes +=
+        code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d ? 2 : 6;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const low = value.charCodeAt(index + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 6;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 6;
+    } else {
+      bytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
+    }
+  }
+  return bytes;
+}
+
+function inspectJsonBounds(
+  value: unknown,
+  maxBytes: number,
+  maxItems: number,
+  maxStringBytes: number,
+  maxNodes: number,
+): JsonBoundInspection {
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  let nodes = 0;
+  let bytes = 0;
+  const addBytes = (count: number): JsonBoundViolation | undefined => {
+    bytes += count;
+    return bytes > maxBytes ? { dimension: "bytes", actual: bytes, limit: maxBytes } : undefined;
+  };
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) break;
+    nodes += 1;
+    if (nodes > maxNodes)
+      return { bytes, nodes, violation: { dimension: "nodes", actual: nodes, limit: maxNodes } };
+    if (current.depth > MAX_RESPONSE_DEPTH) {
+      return {
+        bytes,
+        nodes,
+        violation: { dimension: "depth", actual: current.depth, limit: MAX_RESPONSE_DEPTH },
+      };
+    }
+    const item = current.value;
+    if (item === null) {
+      const violation = addBytes(4);
+      if (violation) return { bytes, nodes, violation };
+      continue;
+    }
+    if (typeof item === "boolean") {
+      const violation = addBytes(item ? 4 : 5);
+      if (violation) return { bytes, nodes, violation };
+      continue;
+    }
+    if (typeof item === "number") {
+      const violation = addBytes((JSON.stringify(item) ?? "null").length);
+      if (violation) return { bytes, nodes, violation };
+      continue;
+    }
+    if (typeof item === "string") {
+      const itemBytes = utf8Bytes(item);
+      if (itemBytes > maxStringBytes) {
+        return {
+          bytes,
+          nodes,
+          violation: { dimension: "string-bytes", actual: itemBytes, limit: maxStringBytes },
+        };
+      }
+      const violation = addBytes(encodedJsonStringBytes(item));
+      if (violation) return { bytes, nodes, violation };
+      continue;
+    }
+    if (typeof item !== "object") continue;
+    if (Array.isArray(item)) {
+      if (item.length > maxItems) {
+        return {
+          bytes,
+          nodes,
+          violation: { dimension: "items", actual: item.length, limit: maxItems },
+        };
+      }
+      const violation = addBytes(2 + Math.max(0, item.length - 1));
+      if (violation) return { bytes, nodes, violation };
+      for (let index = item.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: item[index], depth: current.depth + 1 });
+      }
+      continue;
+    }
+    const entries = Object.entries(item).filter(([, child]) => child !== undefined);
+    if (entries.length > maxItems) {
+      return {
+        bytes,
+        nodes,
+        violation: { dimension: "items", actual: entries.length, limit: maxItems },
+      };
+    }
+    let violation = addBytes(2 + Math.max(0, entries.length - 1) + entries.length);
+    if (violation) return { bytes, nodes, violation };
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const [key, child] = entries[index] as [string, unknown];
+      violation = addBytes(encodedJsonStringBytes(key));
+      if (violation) return { bytes, nodes, violation };
+      stack.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+  return { bytes, nodes };
+}
+
+function jsonBoundViolation(
+  value: unknown,
+  maxBytes: number,
+  maxItems: number,
+  maxStringBytes: number,
+  maxNodes: number,
+): JsonBoundViolation | undefined {
+  return inspectJsonBounds(value, maxBytes, maxItems, maxStringBytes, maxNodes).violation;
 }
 function optionalMetadataMetrics(value: unknown) {
   return boundedJsonMetrics(
@@ -706,52 +994,46 @@ const OmpMessageIdentityShape = {
   timestamp: z.number().finite().optional(),
   details: OmpOptionalMetadataSchema,
 };
-type OmpContentPart = z.infer<typeof OmpContentPartSchema>;
-type OmpMessageIdentity = {
-  id?: string;
-  entryId?: string;
-  responseId?: string;
-  images?: OmpContentPart[];
-  timestamp?: number;
-  details?: unknown;
-  display?: boolean;
-  customType?: string;
-  content?: unknown;
-  command?: string;
-  output?: string;
-  exitCode?: number | null;
-  cancelled?: boolean;
-  truncated?: boolean;
+const OmpOpaqueMessagePayloadSchema = z
+  .unknown()
+  .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192));
+const OmpExecutionOutputSchema = z.preprocess(
+  (value) =>
+    typeof value === "string" && utf8Bytes(value) > MAX_IMAGE_DATA_LENGTH
+      ? DISPLAY_TRUNCATION_MARKER
+      : value,
+  RAW_DISPLAY_TEXT.optional(),
+);
+const OmpExecutionMessageShape = {
+  output: OmpExecutionOutputSchema,
+  exitCode: z.number().int().nullable().optional(),
+  cancelled: z.boolean().optional(),
+  truncated: z.boolean().optional(),
+  excludeFromContext: z.boolean().optional(),
+  meta: OmpOptionalMetadataSchema,
 };
-export type OmpMessage = OmpMessageIdentity &
-  (
-    | {
-        role: "assistant";
-        content?: string | OmpContentPart[];
-        errorMessage?: string | null;
-        stopReason?: string;
-      }
-    | { role: "user"; content: string | OmpContentPart[] }
-    | {
-        role: "toolResult";
-        toolCallId: string;
-        toolName: string;
-        content: unknown;
-        details?: unknown;
-        isError?: boolean;
-      }
-    | {
-        role: "bashExecution";
-        command: string;
-        output?: string;
-        exitCode?: number | null;
-        cancelled?: boolean;
-        truncated?: boolean;
-      }
-    | { role: "custom"; customType?: string; content?: unknown; display?: boolean }
-  );
+const OmpCustomMessageShape = {
+  customType: NAME.optional(),
+  content: OmpDisplayContentSchema.optional(),
+  display: z.boolean().optional(),
+  attribution: OmpOpaqueMessagePayloadSchema.optional(),
+};
+const OmpFileMentionSchema = z
+  .object({
+    path: boundedString(MAX_PATH_LENGTH),
+    content: TEXT,
+    lineCount: z.number().int().nonnegative().safe().optional(),
+    byteSize: z.number().int().nonnegative().safe().optional(),
+    skippedReason: z.enum(["tooLarge", "binary"]).optional(),
+    image: OmpContentPartSchema.optional(),
+  })
+  .superRefine((file, context) => {
+    if (file.image && file.image.type !== "image") {
+      context.addIssue({ code: "custom", message: "invalid file mention image" });
+    }
+  });
 
-const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
+const OmpMessageSchema = z.discriminatedUnion("role", [
   z.object({
     role: z.literal("assistant"),
     content: OmpAssistantDisplayContentSchema.optional(),
@@ -765,41 +1047,69 @@ const OmpMessageSchema: z.ZodType<OmpMessage> = z.union([
     ...OmpMessageIdentityShape,
   }),
   z.object({
+    role: z.literal("developer"),
+    content: OmpDisplayContentSchema,
+    attribution: OmpOpaqueMessagePayloadSchema.optional(),
+    synthetic: z.boolean().optional(),
+    userInitiated: z.boolean().optional(),
+    providerPayload: OmpOpaqueMessagePayloadSchema.optional(),
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
     role: z.literal("toolResult"),
     toolCallId: IDENTIFIER,
     toolName: NAME,
-    content: z
-      .unknown()
-      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192)),
+    content: OmpOpaqueMessagePayloadSchema,
     isError: z.boolean().optional(),
+    attribution: OmpOpaqueMessagePayloadSchema.optional(),
+    prunedAt: z.number().finite().nonnegative().optional(),
+    providerMetadata: OmpOpaqueMessagePayloadSchema.optional(),
+    useless: z.boolean().optional(),
     ...OmpMessageIdentityShape,
   }),
   z.object({
     role: z.literal("bashExecution"),
     command: TEXT,
-    output: z.preprocess(
-      (value) =>
-        typeof value === "string" && utf8Bytes(value) > MAX_IMAGE_DATA_LENGTH
-          ? DISPLAY_TRUNCATION_MARKER
-          : value,
-      RAW_DISPLAY_TEXT.optional(),
-    ),
-    exitCode: z.number().int().nullable().optional(),
-    cancelled: z.boolean().optional(),
-    truncated: z.boolean().optional(),
+    ...OmpExecutionMessageShape,
     ...OmpMessageIdentityShape,
   }),
   z.object({
-    role: z.literal("custom"),
-    customType: NAME.optional(),
-    content: z
-      .unknown()
-      .refine((value) => isBoundedJson(value, MAX_SEMANTIC_FRAME_BYTES, 1_024, 8_192))
-      .optional(),
-    display: z.boolean().optional(),
+    role: z.literal("pythonExecution"),
+    code: TEXT,
+    ...OmpExecutionMessageShape,
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({ role: z.literal("custom"), ...OmpCustomMessageShape, ...OmpMessageIdentityShape }),
+  z.object({
+    role: z.literal("hookMessage"),
+    ...OmpCustomMessageShape,
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("branchSummary"),
+    summary: TEXT,
+    fromId: IDENTIFIER,
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("compactionSummary"),
+    summary: TEXT,
+    shortSummary: TEXT.optional(),
+    tokensBefore: z.number().finite().nonnegative(),
+    tokensAfter: z.number().finite().nonnegative().optional(),
+    method: NAME.optional(),
+    providerPayload: OmpOpaqueMessagePayloadSchema.optional(),
+    blocks: z.array(OmpContentPartSchema).max(OMP_MAX_CONTENT_PARTS).optional(),
+    warning: boundedString(64 * 1024).optional(),
+    ...OmpMessageIdentityShape,
+  }),
+  z.object({
+    role: z.literal("fileMention"),
+    files: z.array(OmpFileMentionSchema).max(MAX_ARRAY_ITEMS),
     ...OmpMessageIdentityShape,
   }),
 ]);
+export type OmpMessage = z.infer<typeof OmpMessageSchema>;
 
 const OmpAssistantMessageEventSchema = z
   .object({
@@ -948,6 +1258,7 @@ const OmpReadyFrameSchema = z.object({
 const OmpResponseFrameSchema = z.object({
   type: z.literal("response"),
   id: IDENTIFIER,
+  command: boundedString(64, 1).optional(),
   success: z.boolean(),
   data: z.unknown().optional(),
   error: boundedString(MAX_RPC_ERROR_BYTES).optional(),
@@ -1153,7 +1464,7 @@ const OmpCompactionEndSchema = z.object({
   errorMessage: boundedString(4_096).optional(),
   skipped: z.boolean().optional(),
 });
-const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
+const OmpCoreAgentEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent_start") }),
   z.object({
     type: z.literal("agent_end"),
@@ -1185,6 +1496,12 @@ const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
     partialResult: OmpToolResultPayloadSchema,
   }),
   z.object({
+    type: z.literal("tool_stream_update"),
+    toolCallId: IDENTIFIER,
+    toolName: NAME,
+    update: BoundedToolPayloadSchema,
+  }),
+  z.object({
     type: z.literal("tool_execution_end"),
     toolCallId: IDENTIFIER,
     toolName: NAME,
@@ -1210,6 +1527,99 @@ const OmpGoalModeStateSchema = z.object({
   reason: boundedString(4_096).optional(),
   goal: OmpGoalSchema.optional(),
 });
+const OmpTodoReminderEventSchema = z.object({
+  type: z.literal("todo_reminder"),
+  todos: z
+    .array(
+      z.object({
+        id: IDENTIFIER.optional(),
+        content: boundedString(16_384),
+        status: z.enum(["pending", "in_progress", "blocked", "completed", "abandoned"]),
+      }),
+    )
+    .max(MAX_TODOS),
+  attempt: z.number().int().nonnegative().safe().optional(),
+  maxAttempts: z.number().int().nonnegative().safe().optional(),
+});
+const OmpThinkingLevelChangedEventSchema = z.object({
+  type: z.literal("thinking_level_changed"),
+  thinkingLevel: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
+  configured: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
+  resolved: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
+});
+const OmpAutoRetryStartEventSchema = z.object({
+  type: z.literal("auto_retry_start"),
+  attempt: z.number().int().nonnegative().safe(),
+  maxAttempts: z.number().int().positive().safe(),
+  delayMs: z.number().int().nonnegative().safe(),
+  errorMessage: boundedString(64 * 1024),
+  errorId: z.number().int().safe().optional(),
+});
+const OmpAutoRetryEndEventSchema = z.object({
+  type: z.literal("auto_retry_end"),
+  success: z.boolean(),
+  attempt: z.number().int().nonnegative().safe(),
+  finalError: boundedString(64 * 1024).optional(),
+  retryErrors: BoundedToolPayloadSchema.optional(),
+  recoveredErrors: BoundedToolPayloadSchema.optional(),
+});
+const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
+  ...OmpCoreAgentEventSchema.options,
+  z.object({ type: z.literal("config_warnings_changed") }),
+  z.object({ type: z.literal("advisor_cost_changed") }),
+  z.object({ type: z.literal("advisor_yielded") }),
+  z.object({
+    type: z.literal("ttsr_triggered"),
+    rules: z.array(BoundedToolPayloadSchema).max(MAX_ARRAY_ITEMS),
+  }),
+  OmpTodoReminderEventSchema,
+  z.object({ type: z.literal("todo_auto_clear") }),
+  z.object({
+    type: z.literal("irc_message"),
+    message: OmpMessageSchema.refine((message) => message.role === "custom"),
+  }),
+  z.object({ type: z.literal("model_changed") }),
+  OmpThinkingLevelChangedEventSchema,
+  z.object({
+    type: z.literal("goal_updated"),
+    goal: OmpGoalSchema.nullable().optional(),
+    state: OmpGoalModeStateSchema.optional(),
+  }),
+  OmpAutoRetryStartEventSchema,
+  OmpAutoRetryEndEventSchema,
+  z.object({
+    type: z.literal("retry_fallback_applied"),
+    from: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
+    to: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
+    role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
+  }),
+  z.object({
+    type: z.literal("retry_fallback_succeeded"),
+    model: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
+    role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
+  }),
+  z.object({
+    type: z.literal("auto_compaction_start"),
+    reason: boundedString(4_096),
+    action: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
+  }),
+  z.object({
+    type: z.literal("auto_compaction_end"),
+    action: NAME.optional(),
+    result: OmpCompactionResultSchema.nullable().optional(),
+    aborted: z.boolean().optional(),
+    willRetry: z.boolean().optional(),
+    errorMessage: boundedString(64 * 1024).optional(),
+    skipped: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("notice"),
+    id: IDENTIFIER.optional(),
+    level: z.enum(["info", "warning", "error"]),
+    message: boundedString(64 * 1024),
+    source: boundedString(MAX_NAME_LENGTH).optional(),
+  }),
+]);
 const OmpSubagentStatusSchema = z.enum([
   "pending",
   "running",
@@ -1353,78 +1763,8 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
     payload: z.object({ id: IDENTIFIER, event: OmpAgentSessionEventSchema }),
   }),
   z.object({
-    type: z.literal("todo_reminder"),
-    todos: z
-      .array(
-        z.object({
-          id: IDENTIFIER.optional(),
-          content: boundedString(16_384),
-          status: z.enum(["pending", "in_progress", "blocked", "completed", "abandoned"]),
-        }),
-      )
-      .max(MAX_TODOS),
-  }),
-  z.object({ type: z.literal("model_changed") }),
-  z.object({
-    type: z.literal("thinking_level_changed"),
-    thinkingLevel: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES).optional(),
-  }),
-  z.object({
-    type: z.literal("goal_updated"),
-    goal: OmpGoalSchema.nullable().optional(),
-    state: OmpGoalModeStateSchema.optional(),
-  }),
-  z.object({
-    type: z.literal("auto_retry_start"),
-    attempt: z.number().int().nonnegative().safe(),
-    maxAttempts: z.number().int().positive().safe(),
-    delayMs: z.number().int().nonnegative().safe(),
-    errorMessage: boundedString(64 * 1024),
-    errorId: z.number().int().safe().optional(),
-  }),
-  z.object({
-    type: z.literal("auto_retry_end"),
-    success: z.boolean(),
-    attempt: z.number().int().nonnegative().safe(),
-    finalError: boundedString(64 * 1024).optional(),
-    recoveredErrors: BoundedToolPayloadSchema.optional(),
-  }),
-  z.object({
-    type: z.literal("retry_fallback_applied"),
-    from: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
-    to: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
-    role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
-  }),
-  z.object({
-    type: z.literal("retry_fallback_succeeded"),
-    model: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
-    role: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
-  }),
-  z.object({ type: z.literal("todo_auto_clear") }),
-  z.object({
-    type: z.literal("auto_compaction_start"),
-    reason: boundedString(4_096),
-    action: boundedString(MAX_CONFIG_EVENT_TEXT_BYTES),
-  }),
-  z.object({
-    type: z.literal("auto_compaction_end"),
-    action: NAME.optional(),
-    result: OmpCompactionResultSchema.nullable().optional(),
-    aborted: z.boolean().optional(),
-    willRetry: z.boolean().optional(),
-    errorMessage: boundedString(64 * 1024).optional(),
-    skipped: z.boolean().optional(),
-  }),
-  z.object({
     type: z.literal("available_commands_update"),
     commands: z.array(OmpAvailableCommandSchema).max(MAX_ARRAY_ITEMS),
-  }),
-  z.object({
-    type: z.literal("notice"),
-    id: IDENTIFIER.optional(),
-    level: z.enum(["info", "warning", "error"]),
-    message: boundedString(64 * 1024),
-    source: boundedString(MAX_NAME_LENGTH).optional(),
   }),
   z.object({ type: z.literal("command_output"), text: TEXT.optional() }),
   OmpExtensionUiRequestSchema,
@@ -1437,7 +1777,6 @@ const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
   OmpHostToolCancelSchema,
   OmpToolApprovalRequestSchema,
   OmpToolApprovalCancelSchema,
-  z.object({ type: z.literal("advisor_yielded") }),
 ]);
 type OptionalDetailsMapper = (value: unknown, taskResult?: boolean) => unknown;
 
@@ -1492,6 +1831,8 @@ function mapAgentEventDetails(
       return mapRecordField(frame, "result", map, frame.toolName === "task");
     case "agent_end":
       return mapRecordField(frame, "messages", (messages) => mapMessageList(messages, map));
+    case "irc_message":
+      return mapRecordField(frame, "message", map);
     default:
       return frame;
   }
@@ -1522,6 +1863,25 @@ function sanitizeHistoryResponseData(value: unknown): unknown {
   return mapRecordField(value as Record<string, unknown>, "messages", sanitizeMessageListMetadata);
 }
 
+function projectSessionStateResponseData(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const source = value as Record<string, unknown>;
+  const projected: Record<string, unknown> = {};
+  for (const key of [
+    "model",
+    "thinkingLevel",
+    "isStreaming",
+    "isCompacting",
+    "sessionId",
+    "autoCompactionEnabled",
+    "contextUsage",
+    "sessionFile",
+  ] as const) {
+    if (Object.hasOwn(source, key)) projected[key] = source[key];
+  }
+  return projected;
+}
+
 function runtimeFrameCollectionLimit(frame: Record<string, unknown>): number {
   const type = frame.type;
   if (
@@ -1547,7 +1907,12 @@ const OmpBranchMessagesResultSchema = z.object({
 });
 const OmpBranchResultSchema = z.object({ text: TEXT, cancelled: z.boolean() });
 const OmpMessagesResultSchema = z.object({
-  messages: z.array(OmpMessageSchema).max(100_000),
+  messages: z.array(OmpMessageSchema).max(MAX_REPLAY_MESSAGES),
+});
+const OmpMessagesPageResultSchema = z.object({
+  messages: z.array(OmpMessageSchema).max(OMP_MESSAGE_PAGE_LIMIT),
+  nextCursor: boundedString(2_048, 1).refine(isSafeOpaqueCursor).optional(),
+  totalMessages: z.number().int().nonnegative().max(MAX_REPLAY_MESSAGES),
 });
 const OmpSubagentsResultSchema = z.object({
   subagents: z
@@ -1573,7 +1938,7 @@ const OmpSubagentMessagesResultSchema = z.object({
   fromByte: z.number().int().nonnegative(),
   nextByte: z.number().int().nonnegative(),
   reset: z.boolean(),
-  messages: z.array(OmpMessageSchema).max(100_000),
+  messages: z.array(OmpMessageSchema).max(MAX_REPLAY_MESSAGES),
 });
 const ProtocolNegotiationResultSchema = z.object({
   protocolVersion: z.literal(2),
@@ -1691,7 +2056,7 @@ export interface OmpRuntimeSession {
   getBranchMessages(): Promise<Array<{ entryId: string; text: string }>>;
   branch(entryId: string): Promise<OmpBranchResult>;
   readonly canReplayHistory: boolean;
-  getMessages(): Promise<OmpMessage[]>;
+  getMessages(signal?: AbortSignal): Promise<OmpMessage[]>;
   abort(): Promise<void>;
   setHostTools(tools: readonly OmpHostToolDefinition[]): Promise<string[]>;
   sendHostToolResult(result: OmpHostToolResult): void;
@@ -1712,6 +2077,7 @@ export interface OmpRuntime {
   readPersistedSubagentTranscript(options: {
     parentSessionFile: string;
     childTranscriptId: string;
+    sessionFile?: string;
     cwd: string;
     signal?: AbortSignal;
   }): Promise<OmpPersistedSubagentMessages>;
@@ -1737,10 +2103,27 @@ export interface OmpRpcRuntimeOptions {
   ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
 }
 
+export type OmpRpcRequestRejectionCode = "session_busy" | "stale_cursor" | "unsupported_command";
+
 export class OmpRpcRequestRejectedError extends Error {
-  constructor() {
+  constructor(
+    readonly command?: OmpRpcDiagnosticCommand,
+    readonly code?: OmpRpcRequestRejectionCode,
+  ) {
     super("OMP RPC request failed");
     this.name = "OmpRpcRequestRejectedError";
+  }
+}
+
+export class OmpRpcResponseLimitError extends Error {
+  constructor(
+    readonly command: OmpRpcDiagnosticCommand | undefined,
+    readonly bound: OmpRpcBoundDimension,
+    readonly actual: number,
+    readonly limit: number,
+  ) {
+    super("OMP RPC response exceeded command limits");
+    this.name = "OmpRpcResponseLimitError";
   }
 }
 
@@ -2618,8 +3001,13 @@ class OmpRpcProcess {
       } else {
         this.appendLinePart(part);
         if (this.fatalError) return;
-        if (this.discardingLine) this.resetDiscardedLine();
-        else this.completeLine();
+        if (this.discardingLine) {
+          if (this.discardedLineBytes > MAX_SEMANTIC_FRAME_BYTES) {
+            this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
+            return;
+          }
+          this.resetDiscardedLine();
+        } else this.completeLine();
       }
       start = index + 1;
     }
@@ -2674,10 +3062,6 @@ class OmpRpcProcess {
     this.lineParts = [];
     this.lineBytes = 0;
     const payload = line.at(-1) === 13 ? line.subarray(0, -1) : line;
-    if (payload.byteLength > MAX_SEMANTIC_FRAME_BYTES) {
-      this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
-      return;
-    }
     let decoded: unknown;
     try {
       decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
@@ -2699,7 +3083,10 @@ class OmpRpcProcess {
       frame.byteLength > MAX_SEMANTIC_FRAME_BYTES &&
       ![...this.pending.values()].some(
         (pending) =>
-          pending.command === "get_messages" || pending.command === "get_subagent_messages",
+          pending.command === "get_messages" ||
+          pending.command === "get_messages_page" ||
+          pending.command === "get_subagent_messages" ||
+          pending.command === "get_state",
       )
     ) {
       this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
@@ -2805,12 +3192,16 @@ class OmpRpcProcess {
       const pending = typeof frame.id === "string" ? this.pending.get(frame.id) : undefined;
       if (
         frame.type === "response" &&
-        (pending?.command === "get_messages" || pending?.command === "get_subagent_messages")
+        (pending?.command === "get_messages" ||
+          pending?.command === "get_messages_page" ||
+          pending?.command === "get_subagent_messages" ||
+          pending?.command === "get_state")
       ) {
         this.receiveResponse(frame);
         return;
       }
     }
+    if (this.receiveUnsupportedCommandResponse(value)) return;
     if (rawByteLength > MAX_SEMANTIC_FRAME_BYTES) {
       this.fail(new Error("OMP RPC frame exceeds the semantic byte limit"));
       return;
@@ -2842,6 +3233,30 @@ class OmpRpcProcess {
       return false;
     }
     this.receiveResponse(frame);
+    return true;
+  }
+
+  private receiveUnsupportedCommandResponse(value: unknown): boolean {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const frame = value as Record<string, unknown>;
+    if (
+      frame.type !== "response" ||
+      frame.id !== undefined ||
+      frame.success !== false ||
+      typeof frame.command !== "string" ||
+      frame.error !== `Unknown command: ${frame.command}`
+    ) {
+      return false;
+    }
+    const matches = [...this.pending.entries()].filter(
+      ([, pending]) => pending.command === frame.command,
+    );
+    if (matches.length === 0) return false;
+    const [id, pending] = matches[0] ?? [];
+    if (!id || !pending) return false;
+    this.takePending(id)?.reject(
+      new OmpRpcRequestRejectedError(rpcDiagnosticCommand(pending.command), "unsupported_command"),
+    );
     return true;
   }
 
@@ -2877,10 +3292,14 @@ class OmpRpcProcess {
     }
     const isBranchHistory = pending.command === "get_branch_messages";
     const isHistory =
-      pending.command === "get_messages" || pending.command === "get_subagent_messages";
-    const responseData = isHistory
-      ? sanitizeHistoryResponseData(response.data.data)
-      : response.data.data;
+      pending.command === "get_messages" ||
+      pending.command === "get_messages_page" ||
+      pending.command === "get_subagent_messages";
+    const rawResponseData =
+      pending.command === "get_state"
+        ? projectSessionStateResponseData(response.data.data)
+        : response.data.data;
+    const responseData = isHistory ? sanitizeHistoryResponseData(rawResponseData) : rawResponseData;
     const boundedFrame =
       responseData === response.data.data ? frame : { ...frame, data: responseData };
     const responseItemLimit = isBranchHistory
@@ -2903,17 +3322,21 @@ class OmpRpcProcess {
         : pending.command === "get_available_models"
           ? 16_384
           : 2_048;
-    if (
-      boundedJsonBytes(
-        boundedFrame,
-        responseByteLimit,
-        responseItemLimit,
-        MAX_IMAGE_DATA_LENGTH,
-        responseNodeLimit,
-      ) === Number.POSITIVE_INFINITY
-    ) {
+    const violation = jsonBoundViolation(
+      boundedFrame,
+      responseByteLimit,
+      responseItemLimit,
+      MAX_IMAGE_DATA_LENGTH,
+      responseNodeLimit,
+    );
+    if (violation) {
       this.takePending(response.data.id)?.reject(
-        new Error("OMP RPC response exceeded command limits"),
+        new OmpRpcResponseLimitError(
+          rpcDiagnosticCommand(pending.command),
+          violation.dimension,
+          violation.actual,
+          violation.limit,
+        ),
       );
       return;
     }
@@ -2934,7 +3357,16 @@ class OmpRpcProcess {
         settled.reject(new Error("OMP RPC response is invalid"));
       }
     } else {
-      settled.reject(new OmpRpcRequestRejectedError());
+      const responseCode = response.data.code;
+      const code: OmpRpcRequestRejectionCode | undefined =
+        responseCode === "session_busy" ||
+        responseCode === "stale_cursor" ||
+        responseCode === "unsupported_command"
+          ? responseCode
+          : response.data.error === `Unknown command: ${pending.command}`
+            ? "unsupported_command"
+            : undefined;
+      settled.reject(new OmpRpcRequestRejectedError(rpcDiagnosticCommand(pending.command), code));
     }
   }
 
@@ -3189,7 +3621,7 @@ class OmpRpcProcess {
       this.activeToolCallIds.add(event.toolCallId);
       return true;
     }
-    if (event.type === "tool_execution_update") {
+    if (event.type === "tool_execution_update" || event.type === "tool_stream_update") {
       return this.activeToolCallIds.has(event.toolCallId);
     }
     if (event.type === "tool_execution_end") {
@@ -3400,6 +3832,7 @@ class OmpRpcSession implements OmpRuntimeSession {
     readonly inheritedRedactionValues: readonly string[],
     readonly supportsTypedToolApprovals: boolean,
   ) {}
+  private messagePagingSupport: "unknown" | "supported" | "unsupported" = "unknown";
 
   onEvent(listener: (event: OmpRpcEvent) => void): () => void {
     return this.process.onEvent(listener);
@@ -3411,6 +3844,195 @@ class OmpRpcSession implements OmpRuntimeSession {
 
   async getSessionStats(): Promise<OmpSessionStats> {
     return OmpSessionStatsSchema.parse(await this.process.request({ type: "get_session_stats" }));
+  }
+
+  async getMessages(signal?: AbortSignal): Promise<OmpMessage[]> {
+    if (!this.canReplayHistory) {
+      throw new Error("OMP history replay requires negotiated RPC protocol v2");
+    }
+    if (this.messagePagingSupport === "unsupported") {
+      const legacy = OmpMessagesResultSchema.parse(
+        await this.requestWithSignal({ type: "get_messages" }, signal),
+      );
+      return legacy.messages;
+    }
+    let staleRestarts = 0;
+    let busyRetries = 0;
+    while (true) {
+      const messages: OmpMessage[] = [];
+      const seenCursors = new Set<string>();
+      const seenMessageIdentities = new Set<string>();
+      let pageCount = 0;
+      let cursor: string | undefined;
+      let totalMessages: number | undefined;
+      let aggregateBytes = 0;
+      let aggregateNodes = 0;
+      try {
+        while (true) {
+          signal?.throwIfAborted();
+          let rawPage: unknown;
+          try {
+            rawPage = await this.requestWithSignal(
+              {
+                type: "get_messages_page",
+                ...(cursor ? { cursor } : {}),
+                limit: OMP_MESSAGE_PAGE_LIMIT,
+              },
+              signal,
+            );
+          } catch (error) {
+            if (
+              error instanceof OmpRpcRequestRejectedError &&
+              error.code === "unsupported_command"
+            ) {
+              this.messagePagingSupport = "unsupported";
+              const legacy = OmpMessagesResultSchema.parse(
+                await this.requestWithSignal({ type: "get_messages" }, signal),
+              );
+              return legacy.messages;
+            }
+            if (
+              error instanceof OmpRpcRequestRejectedError &&
+              error.code === "session_busy" &&
+              busyRetries < MAX_MESSAGE_PAGE_BUSY_RETRIES
+            ) {
+              const delayMs = MESSAGE_PAGE_RETRY_BASE_MS * 2 ** busyRetries;
+              busyRetries += 1;
+              await this.waitForReplayRetry(delayMs, signal);
+              continue;
+            }
+            throw error;
+          }
+          pageCount += 1;
+          if (pageCount > MAX_MESSAGE_PAGES) {
+            throw new OmpRpcResponseLimitError(
+              "get_messages_page",
+              "items",
+              pageCount,
+              MAX_MESSAGE_PAGES,
+            );
+          }
+          const page = OmpMessagesPageResultSchema.parse(rawPage);
+          this.messagePagingSupport = "supported";
+          if (totalMessages !== undefined && page.totalMessages !== totalMessages) {
+            throw new Error("OMP message pagination returned an inconsistent total");
+          }
+          totalMessages ??= page.totalMessages;
+          const nextMessageCount = messages.length + page.messages.length;
+          if (nextMessageCount > totalMessages || nextMessageCount > MAX_REPLAY_MESSAGES) {
+            throw new OmpRpcResponseLimitError(
+              "get_messages_page",
+              "items",
+              nextMessageCount,
+              Math.min(totalMessages, MAX_REPLAY_MESSAGES),
+            );
+          }
+          const pageIdentities = new Set<string>();
+          for (const message of page.messages) {
+            const identity = message.entryId ?? message.id ?? message.responseId;
+            if (!identity) continue;
+            if (seenMessageIdentities.has(identity)) {
+              throw new Error("OMP message pagination repeated a message identity");
+            }
+            pageIdentities.add(identity);
+          }
+          const inspection = inspectJsonBounds(
+            page.messages,
+            MAX_REPLAY_BYTES,
+            MAX_REPLAY_MESSAGES,
+            MAX_IMAGE_DATA_LENGTH,
+            MAX_REPLAY_NODES,
+          );
+          if (inspection.violation) {
+            throw new OmpRpcResponseLimitError(
+              "get_messages_page",
+              inspection.violation.dimension,
+              inspection.violation.actual,
+              inspection.violation.limit,
+            );
+          }
+          aggregateBytes += inspection.bytes;
+          aggregateNodes += inspection.nodes;
+          if (aggregateBytes > MAX_REPLAY_BYTES) {
+            throw new OmpRpcResponseLimitError(
+              "get_messages_page",
+              "bytes",
+              aggregateBytes,
+              MAX_REPLAY_BYTES,
+            );
+          }
+          if (aggregateNodes > MAX_REPLAY_NODES) {
+            throw new OmpRpcResponseLimitError(
+              "get_messages_page",
+              "nodes",
+              aggregateNodes,
+              MAX_REPLAY_NODES,
+            );
+          }
+          for (const identity of pageIdentities) seenMessageIdentities.add(identity);
+          messages.push(...page.messages);
+          const nextCursor = page.nextCursor;
+          if (!nextCursor) {
+            if (messages.length !== totalMessages) {
+              throw new Error("OMP message pagination ended before the advertised total");
+            }
+            return messages;
+          }
+          if (page.messages.length === 0 || messages.length >= totalMessages) {
+            throw new Error("OMP message pagination did not make progress");
+          }
+          if (seenCursors.has(nextCursor)) {
+            throw new Error("OMP message pagination repeated a cursor");
+          }
+          seenCursors.add(nextCursor);
+          cursor = nextCursor;
+        }
+      } catch (error) {
+        if (
+          error instanceof OmpRpcRequestRejectedError &&
+          error.code === "stale_cursor" &&
+          staleRestarts < MAX_MESSAGE_PAGE_STALE_RESTARTS
+        ) {
+          staleRestarts += 1;
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async requestWithSignal(
+    command: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    signal?.throwIfAborted();
+    const request = this.process.request(command);
+    if (!signal) return request;
+    const aborted = Promise.withResolvers<never>();
+    const onAbort = () => aborted.reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      return await Promise.race([request, aborted.promise]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      void request.catch(() => undefined);
+    }
+  }
+
+  private async waitForReplayRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (!signal) {
+      await waitMs(delayMs);
+      return;
+    }
+    const aborted = Promise.withResolvers<never>();
+    const onAbort = () => aborted.reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      await Promise.race([waitMs(delayMs), aborted.promise]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
   }
 
   async compact(customInstructions?: string): Promise<OmpCompactionResult> {
@@ -3506,16 +4128,6 @@ class OmpRpcSession implements OmpRuntimeSession {
     );
     if (!result.success) throw new Error("OMP RPC response is invalid");
     return result.data;
-  }
-
-  async getMessages(): Promise<OmpMessage[]> {
-    if (!this.canReplayHistory) {
-      throw new Error("OMP history replay requires negotiated RPC protocol v2");
-    }
-    const result = OmpMessagesResultSchema.parse(
-      await this.process.request({ type: "get_messages" }),
-    );
-    return result.messages;
   }
 
   async setHostTools(tools: readonly OmpHostToolDefinition[]): Promise<string[]> {
@@ -3627,13 +4239,14 @@ export class OmpRpcRuntime implements OmpRuntime {
       ...transcript,
       messages: z
         .array(OmpMessageSchema)
-        .max(100_000)
+        .max(MAX_REPLAY_MESSAGES)
         .parse(sanitizeMessageListMetadata(transcript.messages)),
     };
   }
   async readPersistedSubagentTranscript(options: {
     parentSessionFile: string;
     childTranscriptId: string;
+    sessionFile?: string;
     cwd: string;
     signal?: AbortSignal;
   }): Promise<OmpPersistedSubagentMessages> {
@@ -3642,12 +4255,13 @@ export class OmpRpcRuntime implements OmpRuntime {
       options.childTranscriptId,
       options.cwd,
       options.signal,
+      options.sessionFile,
     );
     return {
       ...transcript,
       messages: z
         .array(OmpMessageSchema)
-        .max(100_000)
+        .max(MAX_REPLAY_MESSAGES)
         .parse(sanitizeMessageListMetadata(transcript.messages)),
     };
   }
