@@ -20,6 +20,7 @@ const hostRequire = createRequire(new URL(pluginProviderModulePath, import.meta.
 const pino = hostRequire("pino") as (options: { enabled: boolean }) => object;
 const testReal = process.env.PASEO_OMP_REAL_E2E === "1" ? test : test.skip;
 const expectedOmpVersion = process.env.PASEO_OMP_VERSION ?? "18.1.15";
+const ompCommand = process.env.OMP_COMMAND ?? "omp";
 const roots: string[] = [];
 
 type HostRegistry = {
@@ -150,7 +151,7 @@ describe(`OMP ${expectedOmpVersion} real provider`, () => {
   testReal(
     `discovers the installed ${expectedOmpVersion} runtime through the core host boundary`,
     async () => {
-      const { stdout } = await executeFile("omp", ["--version"], { encoding: "utf8" });
+      const { stdout } = await executeFile(ompCommand, ["--version"], { encoding: "utf8" });
       expect(stdout.trim()).toBe(`omp/${expectedOmpVersion}`);
 
       const harness = await createHarness();

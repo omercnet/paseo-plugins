@@ -724,10 +724,6 @@ export async function readOmpPersistedSubagentTranscript(
   const requestedFile = resolve(
     childSessionFile ?? join(canonicalDirectory, `${childTranscriptId}.jsonl`),
   );
-  const relativeChild = relative(canonicalDirectory, requestedFile);
-  if (!relativeChild || relativeChild.startsWith("..") || isAbsolute(relativeChild)) {
-    throw new Error("OMP child transcript failed ownership validation");
-  }
   let handle: FileHandle;
   try {
     handle = await open(

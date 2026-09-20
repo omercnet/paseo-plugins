@@ -237,6 +237,7 @@ jobs:
           echo "$OMP_SHA256  $RUNNER_TEMP/omp-bin/omp" | sha256sum --check --strict
           chmod 0755 "$RUNNER_TEMP/omp-bin/omp"
           echo "$RUNNER_TEMP/omp-bin" >> "$GITHUB_PATH"
+          echo "OMP_COMMAND=$RUNNER_TEMP/omp-bin/omp" >> "$GITHUB_ENV"
           test "$("$RUNNER_TEMP/omp-bin/omp" --version)" = "omp/${{ matrix.version }}"
       - name: Run real OMP provider scenarios
         env:
