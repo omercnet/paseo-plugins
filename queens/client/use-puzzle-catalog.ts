@@ -1,5 +1,5 @@
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_BOARD_SIZE, DEFAULT_DIFFICULTY, gameSettings } from "../shared/game-settings";
 import { loadPuzzleDeck, type PuzzleDifficulty } from "../shared/puzzle-catalog";
 import { type CuratedPuzzleDeck, decodePuzzleDeck } from "./game/curated";
@@ -13,6 +13,7 @@ export type PuzzleCatalogState = {
   readonly deck: CuratedPuzzleDeck | null;
   readonly loading: boolean;
   readonly error: string | null;
+  readonly retry: () => void;
   readonly select: (size: number, difficulty: PuzzleDifficulty) => Promise<boolean>;
 };
 
@@ -46,26 +47,29 @@ export function usePuzzleCatalog(): PuzzleCatalogState {
     [loadDeck],
   );
 
-  useEffect(() => {
-    let active = true;
+  const requestRef = useRef(0);
+  const refresh = useCallback(async () => {
+    const request = ++requestRef.current;
     setLoading(true);
     setError(null);
-    void getDeck(size, difficulty).then(
-      (nextDeck) => {
-        if (!active) return;
-        setDeck(nextDeck);
-        setLoading(false);
-      },
-      (loadError: unknown) => {
-        if (!active) return;
-        setError(loadError instanceof Error ? loadError.message : "Puzzle deck failed to load.");
-        setLoading(false);
-      },
-    );
-    return () => {
-      active = false;
-    };
+    try {
+      const nextDeck = await getDeck(size, difficulty);
+      if (request !== requestRef.current) return;
+      setDeck(nextDeck);
+      setLoading(false);
+    } catch (loadError) {
+      if (request !== requestRef.current) return;
+      setError(loadError instanceof Error ? loadError.message : "Puzzle deck failed to load.");
+      setLoading(false);
+    }
   }, [difficulty, getDeck, size]);
+
+  useEffect(() => {
+    void refresh();
+    return () => {
+      requestRef.current += 1;
+    };
+  }, [refresh]);
 
   const select = useCallback(
     async (nextSize: number, nextDifficulty: PuzzleDifficulty) => {
@@ -98,5 +102,11 @@ export function usePuzzleCatalog(): PuzzleCatalogState {
     [getDeck, settings],
   );
 
-  return { size, difficulty, deck, loading, error, select };
+  const retry = useCallback(() => {
+    DECK_PROMISES.delete(`${size}-${difficulty}`);
+    setDeck(null);
+    void refresh();
+  }, [difficulty, refresh, size]);
+
+  return { size, difficulty, deck, loading, error, retry, select };
 }

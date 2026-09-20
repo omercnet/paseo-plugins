@@ -34,13 +34,15 @@
     "client",
     "shared",
     "server",
+    "scripts",
     "paseo-plugin.json"
   ],
   "scripts": {
     "check": "biome check .",
     "import:puzzles": "node scripts/import-curated-puzzles.mjs",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:package": "npm pack --dry-run"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",

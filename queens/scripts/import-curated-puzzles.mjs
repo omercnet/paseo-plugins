@@ -188,6 +188,44 @@ await writeFile(
   path.join(outputDirectory, "manifest.json"),
   `${JSON.stringify(manifest, null, 2)}\n`,
 );
+
+const gistId = process.env.QUEENS_GIST_ID;
+const gistRevision = process.env.QUEENS_GIST_REVISION;
+if ((gistId && !gistRevision) || (!gistId && gistRevision)) {
+  throw new Error("QUEENS_GIST_ID and QUEENS_GIST_REVISION must be supplied together.");
+}
+if (gistId && gistRevision) {
+  const gistOwner = process.env.QUEENS_GIST_OWNER ?? "omercnet";
+  const lines = [
+    'import type { PuzzleDifficulty } from "../shared/puzzle-catalog";',
+    "",
+    "/** Pinned, integrity-checked files in an unlisted GitHub Gist. */",
+    "export type RemotePuzzleGroup = {",
+    "  readonly size: number;",
+    "  readonly difficulty: PuzzleDifficulty;",
+    "  readonly count: number;",
+    "  readonly recordBytes: number;",
+    "  readonly sha256: string;",
+    "  readonly url: string;",
+    "};",
+    "",
+    "export const REMOTE_PUZZLE_GROUPS: Readonly<Record<string, RemotePuzzleGroup>> = {",
+  ];
+  for (const [key, entry] of Object.entries(manifest)) {
+    lines.push(`  ${JSON.stringify(key)}: {`);
+    lines.push(`    size: ${entry.size},`);
+    lines.push(`    difficulty: ${JSON.stringify(entry.difficulty)},`);
+    lines.push(`    count: ${entry.count},`);
+    lines.push(`    recordBytes: ${entry.recordBytes},`);
+    lines.push(`    sha256: ${JSON.stringify(entry.sha256)},`);
+    lines.push(
+      `    url: ${JSON.stringify(`https://gist.githubusercontent.com/${gistOwner}/${gistId}/raw/${gistRevision}/${entry.fileName}`)},`,
+    );
+    lines.push("  },");
+  }
+  lines.push("};", "");
+  await writeFile(path.join(process.cwd(), "server", "curated-manifest.ts"), lines.join("\n"));
+}
 console.log(
   `Stored ${total} curated puzzles from ${jobs.length} source chunks in ${outputDirectory}.`,
 );

@@ -39,6 +39,24 @@ export function QueensPopover(props: PluginButtonContentProps) {
         >
           {catalog.error ?? "Loading curated puzzles…"}
         </Text>
+        {catalog.error ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Retry puzzle download"
+            onPress={catalog.retry}
+            style={{
+              minHeight: 40,
+              justifyContent: "center",
+              paddingHorizontal: 16,
+              borderWidth: StyleSheet.hairlineWidth,
+              borderColor: props.theme.colors.border,
+              borderRadius: 8,
+              backgroundColor: props.theme.colors.surface2,
+            }}
+          >
+            <Text style={{ color: props.theme.colors.foreground, fontWeight: "700" }}>Retry</Text>
+          </Pressable>
+        ) : null}
       </View>
     );
   }

@@ -50,6 +50,14 @@ The importer validates every public index and source chunk, then writes the 40 u
 npm run import:puzzles
 ```
 
+After uploading those files to an unlisted Gist, regenerate the pinned runtime manifest with the immutable Gist revision:
+
+```bash
+QUEENS_GIST_ID=<gist-id> \
+QUEENS_GIST_REVISION=<revision-sha> \
+npm run import:puzzles
+```
+
 ## Install
 
 ### Paseo 0.9 beta
