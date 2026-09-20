@@ -1,0 +1,7 @@
+paseo-context-mode is an independent integration for Context Mode.
+
+Context Mode is developed by Mert Koseoglu and contributors at
+https://github.com/mksglu/context-mode and is distributed under the Elastic
+License 2.0. This package declares Context Mode as a runtime dependency and
+retains its license and notices. Context Mode remains a separate work subject
+to its Elastic License 2.0 terms.

@@ -1,0 +1,66 @@
+{
+  "name": "@omercnet/paseo-context-mode",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Provider-aware Context Mode health, savings, and MCP activation for Paseo.",
+  "license": "MIT",
+  "author": "Omer Cohen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "context-mode"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/context-mode#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "npm@11.19.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "context-mode",
+    "context-window",
+    "developer-tools"
+  ],
+  "files": [
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "server",
+    "shared",
+    "paseo-plugin.json"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.server.json"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@getpaseo/cli": "0.9.0-beta.1",
+    "@getpaseo/client": "0.9.0-beta.1",
+    "@getpaseo/plugin": "0.9.0-beta.1",
+    "@getpaseo/protocol": "0.9.0-beta.1",
+    "@tanstack/react-query": "^5.102.3",
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.2.18",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0",
+    "zod": "^4.4.3"
+  },
+  "dependencies": {
+    "context-mode": "1.0.169"
+  }
+}

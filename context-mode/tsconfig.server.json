@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "index.server.ts",
+    "server/**/*.ts",
+    "shared/**/*.ts",
+    "tests/actions.test.ts",
+    "tests/analytics.test.ts",
+    "tests/contracts.test.ts",
+    "tests/integration.test.ts",
+    "tests/knowledge.test.ts",
+    "tests/server.test.ts"
+  ]
+}

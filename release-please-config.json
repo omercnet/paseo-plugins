@@ -52,6 +52,12 @@
       "package-name": "paseo-gas-city",
       "include-component-in-tag": true
     },
+    "context-mode": {
+      "release-type": "node",
+      "package-name": "paseo-context-mode",
+      "initial-version": "0.1.0",
+      "include-component-in-tag": true
+    },
     "pr-radar": {
       "release-type": "node",
       "package-name": "pr-radar",

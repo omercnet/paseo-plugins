@@ -1,0 +1,5 @@
+{
+  "id": "context-mode",
+  "description": "Provider-aware Context Mode health, savings, and MCP activation for Paseo.",
+  "requirements": { "paseo": ">=0.9.0-beta.1 <0.10.0" }
+}
