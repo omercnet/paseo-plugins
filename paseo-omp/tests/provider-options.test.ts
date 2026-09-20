@@ -5,7 +5,7 @@ import {
   normalizeOmpSessionConfig,
   withCommittedOmpSelection,
 } from "../server/provider/config-normalization";
-import { buildOmpSpawnRequest } from "../server/provider/omp-rpc";
+import { buildOmpSpawnRequest } from "../server/provider/omp-rpc-environment";
 import { parseOmpProviderOptions } from "../server/provider/provider-options";
 import { createOmpProvider } from "../server/provider/registration";
 import {

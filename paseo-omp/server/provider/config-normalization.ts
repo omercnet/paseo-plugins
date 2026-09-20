@@ -1,5 +1,5 @@
 import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
-import type { OmpStartOptions } from "./omp-rpc";
+import type { OmpStartOptions } from "./omp-rpc-environment";
 
 type ProviderCatalogOptionsCompat = {
   scope: "global" | "workspace";

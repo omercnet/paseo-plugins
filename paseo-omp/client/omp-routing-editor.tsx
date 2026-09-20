@@ -8,7 +8,7 @@ import {
   type OmpSetting,
   parseOmpStructuredSettingValue,
 } from "../shared/omp-settings";
-import type { OmpConfigStyles } from "./omp-config-surface";
+import type { OmpConfigStyles } from "./omp-config-styles";
 import { OmpModelPicker } from "./omp-model-picker";
 import {
   aliasChoices,

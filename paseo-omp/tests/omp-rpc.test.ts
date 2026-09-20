@@ -5,15 +5,16 @@ import { PassThrough } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, test } from "vitest";
 import {
-  buildOmpSpawnRequest,
   type OmpProtocolViolationDiagnostic,
   type OmpRpcEvent,
   OmpRpcRequestRejectedError,
   OmpRpcRuntime,
-  type OmpSpawnRequest,
+} from "../server/provider/omp-rpc";
+import { buildOmpSpawnRequest, type OmpSpawnRequest } from "../server/provider/omp-rpc-environment";
+import {
   terminatePosixProcessTree,
   terminateSpawnedProcessTree,
-} from "../server/provider/omp-rpc";
+} from "../server/provider/omp-rpc-process";
 
 const READY_FRAME = {
   type: "ready",

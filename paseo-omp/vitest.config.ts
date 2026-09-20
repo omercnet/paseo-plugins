@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     testTimeout: 30_000,
-    fileParallelism: false,
+    fileParallelism: true,
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],

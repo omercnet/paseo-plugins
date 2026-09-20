@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { deserializeMessage, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import { terminateSpawnedProcessTree } from "./omp-rpc";
+import { terminateSpawnedProcessTree } from "./omp-rpc-process";
 import { OmpCleanupFailure } from "./security";
 
 const MAX_MCP_TRANSPORT_FRAME_BYTES = 1024 * 1024;

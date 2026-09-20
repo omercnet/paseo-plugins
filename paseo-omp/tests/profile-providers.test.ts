@@ -7,12 +7,8 @@ import type {
   ProviderInput,
 } from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, test } from "vitest";
-import {
-  buildOmpSpawnRequest,
-  type OmpRuntime,
-  type OmpRuntimeSession,
-  type OmpStartOptions,
-} from "../server/provider/omp-rpc";
+import type { OmpRuntime, OmpRuntimeSession } from "../server/provider/omp-rpc";
+import { buildOmpSpawnRequest, type OmpStartOptions } from "../server/provider/omp-rpc-environment";
 import {
   createProfileOmpProvider,
   discoverOmpProfiles,
