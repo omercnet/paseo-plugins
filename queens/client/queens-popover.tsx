@@ -144,6 +144,10 @@ function QueensPopoverGame({
       ? theme.colors.statusDanger
       : theme.colors.foregroundMuted;
   const puzzleNumber = state.activePuzzleIndex + 1;
+  const selectPuzzle = (index: number) => {
+    const clampedIndex = Math.min(Math.max(index, 0), state.puzzles.length - 1);
+    session.dispatch({ type: "select-puzzle", index: clampedIndex, now: Date.now() });
+  };
 
   return (
     <View style={styles.root}>
@@ -227,19 +231,19 @@ function QueensPopoverGame({
         canUndo={progress.history.length > 0}
         canHint={!progress.solved}
         canReset={hasProgress}
-        canGoPrevious={false}
-        canGoNext={false}
+        canGoPrevious={state.activePuzzleIndex > 0}
+        canGoNext={state.activePuzzleIndex < state.puzzles.length - 1}
         saving={session.saving}
         disabled={session.saving}
         dense
-        showNavigation={false}
+        showNavigation
         showSavingStatus={false}
         theme={theme}
         onUndo={() => session.dispatch({ type: "undo", now: Date.now() })}
         onHint={() => session.dispatch({ type: "hint", now: Date.now() })}
         onReset={() => session.dispatch({ type: "reset", now: Date.now() })}
-        onPrevious={IGNORE_GESTURE}
-        onNext={IGNORE_GESTURE}
+        onPrevious={() => selectPuzzle(state.activePuzzleIndex - 1)}
+        onNext={() => selectPuzzle(state.activePuzzleIndex + 1)}
       />
     </View>
   );
