@@ -1,5 +1,5 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { zipSync } from "fflate";
 
 const packageJson = JSON.parse(
@@ -37,7 +37,7 @@ const root = "paseo-gas-city";
 const files: Record<string, Uint8Array> = {};
 
 for (const path of releaseFiles) {
-  files[join(root, path)] = await readFile(path);
+  files[posix.join(root, path)] = await readFile(path);
 }
 
 await mkdir("dist", { recursive: true });

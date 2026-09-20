@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   createIntegrationAudit,
@@ -23,12 +24,12 @@ describe("provider-aware Context Mode activation", () => {
       pathExists: async () => false,
       fileContains: async (path, marker) => {
         probes.push([path, marker]);
-        return path === "/home/test/.claude/settings.json" && marker === "context-mode";
+        return path === join("/home/test", ".claude", "settings.json") && marker === "context-mode";
       },
     });
 
     expect(result).toBe(request);
-    expect(probes).toEqual([["/home/test/.claude/settings.json", "context-mode"]]);
+    expect(probes).toEqual([[join("/home/test", ".claude", "settings.json"), "context-mode"]]);
   });
 
   test("injects the bundled MCP fallback while preserving existing MCP and request environment", async () => {
@@ -43,7 +44,7 @@ describe("provider-aware Context Mode activation", () => {
     };
     const result = await injectContextModeOnCreate(request, settings, launch, {
       home: "/home/test",
-      pathExists: async (path) => path === "/home/test/.cursor/context-mode",
+      pathExists: async (path) => path === join("/home/test", ".cursor", "context-mode"),
       fileContains: async () => false,
     });
 
@@ -56,7 +57,7 @@ describe("provider-aware Context Mode activation", () => {
         args: ["/plugin/node_modules/context-mode/cli.bundle.mjs"],
         env: {
           CONTEXT_MODE_PLATFORM: "cursor",
-          CONTEXT_MODE_DIR: "/home/test/.cursor/context-mode",
+          CONTEXT_MODE_DIR: join("/home/test", ".cursor", "context-mode"),
         },
       },
     });
@@ -101,7 +102,7 @@ describe("provider-aware Context Mode activation", () => {
     };
     const result = await injectContextModeOnCreate(request, settings, launch, {
       home: "/home/test",
-      pathExists: async (path) => path === "/home/test/.omp/context-mode",
+      pathExists: async (path) => path === join("/home/test", ".omp", "context-mode"),
       fileContains: async () => false,
     });
 
@@ -109,7 +110,7 @@ describe("provider-aware Context Mode activation", () => {
       "context-mode": {
         env: {
           CONTEXT_MODE_PLATFORM: "omp",
-          CONTEXT_MODE_DIR: "/home/test/.omp/context-mode",
+          CONTEXT_MODE_DIR: join("/home/test", ".omp", "context-mode"),
         },
       },
     });
@@ -168,7 +169,7 @@ describe("provider-aware Context Mode activation", () => {
     };
     const result = await injectContextModeOnCreate(request, settings, launch, {
       home: "/home/test",
-      pathExists: async (path) => path === "/srv/codex-profile/context-mode",
+      pathExists: async (path) => path === join("/srv/codex-profile", "context-mode"),
       fileContains: async () => false,
     });
 
@@ -176,7 +177,7 @@ describe("provider-aware Context Mode activation", () => {
       "context-mode": {
         env: {
           CONTEXT_MODE_PLATFORM: "codex",
-          CONTEXT_MODE_DIR: "/srv/codex-profile/context-mode",
+          CONTEXT_MODE_DIR: join("/srv/codex-profile", "context-mode"),
         },
       },
     });
@@ -189,9 +190,9 @@ describe("provider-aware Context Mode activation", () => {
       { path: launch.args[0], version: "1.0.169" },
       {
         home: "/home/test",
-        pathExists: async (path) => path === "/home/test/.omp/context-mode",
+        pathExists: async (path) => path === join("/home/test", ".omp", "context-mode"),
         fileContains: async (path, marker) =>
-          path === "/home/test/.omp/agent/mcp.json" && marker === "context-mode",
+          path === join("/home/test", ".omp", "agent", "mcp.json") && marker === "context-mode",
         now: () => new Date("2026-09-20T00:00:00.000Z"),
       },
     );
