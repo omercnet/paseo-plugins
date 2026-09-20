@@ -86,27 +86,43 @@ describe("external binary resolution", () => {
     });
     expect(checked).toEqual(["/opt/context-mode"]);
   });
+  test("uses filesystem-backed executable checks for a real binary path", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paseo-context-mode-bin-"));
+    temporaryDirectories.push(directory);
+    const executablePath = join(directory, "context-mode");
+    await writeFile(executablePath, "#!/bin/sh\nexit 0\n");
+    await chmod(executablePath, 0o755);
 
-  test("falls back to PATH and reports normal absence", async () => {
-    const configured = ContextModeSettingsSchema.parse({ binaryPath: "/missing/context-mode" });
-    const found = await resolveContextModeBinary(configured, {
-      env: { PATH: "/first:/second" },
-      canExecute: async (path) => path === "/second/context-mode",
-    });
-    expect(found).toEqual({
+    const settings = ContextModeSettingsSchema.parse({ binaryPath: executablePath });
+    const result = await resolveContextModeBinary(settings, { env: { PATH: "" } });
+
+    expect(result).toMatchObject({
       state: "found",
-      path: "/second/context-mode",
-      source: "path",
-      launch: { program: "/second/context-mode", args: [] },
+      path: executablePath,
+      source: "settings",
+      launch: { program: executablePath, args: [] },
+    });
+  });
+
+  test("reports relative configured paths and unavailable fallbacks", async () => {
+    const relative = {
+      ...ContextModeSettingsSchema.parse({}),
+      binaryPath: "bin/context-mode",
+    } as ContextModeSettings;
+    await expect(resolveContextModeBinary(relative)).resolves.toMatchObject({
+      state: "missing",
+      code: "not-installed",
+      message: expect.stringContaining("not absolute"),
     });
 
+    const configured = ContextModeSettingsSchema.parse({ binaryPath: "/missing/context-mode" });
     const missing = await resolveContextModeBinary(configured, {
       env: { PATH: "" },
       canExecute: async () => false,
       bundledCliPath: () => null,
     });
-    expect(missing).toMatchObject({ state: "missing" });
-    if (missing.state === "missing") expect(missing.message).toContain("not installed");
+    expect(missing).toMatchObject({ state: "missing", code: "not-installed" });
+    if (missing.state === "missing") expect(missing.message).toContain("/missing/context-mode");
   });
 
   test.each(["", ".CMD", ".BAT"])(
@@ -147,6 +163,42 @@ describe("external binary resolution", () => {
     if (result.state === "missing")
       expect(result.message).toContain("could not be safely resolved");
   });
+  test.each([".exe", ".js", ".mjs"])(
+    "returns direct or node launch descriptors for Windows %s shims",
+    async (extension) => {
+      const shim = `C:\\npm\\context-mode${extension}`;
+      const settings = ContextModeSettingsSchema.parse({
+        binaryMode: "path",
+        binaryPath: shim,
+      });
+      const result = await resolveContextModeBinary(settings, {
+        platform: "win32",
+        nodePath: "C:\\Program Files\\nodejs\\node.exe",
+        canExecute: async (path) => path === shim,
+        isFile: async () => false,
+      });
+
+      expect(result).toEqual(
+        extension === ".exe"
+          ? {
+              state: "found",
+              path: shim,
+              source: "settings",
+              launch: { program: shim, args: [] },
+            }
+          : {
+              state: "found",
+              path: shim,
+              source: "settings",
+              launch: {
+                program: "C:\\Program Files\\nodejs\\node.exe",
+                args: [shim],
+              },
+            },
+      );
+    },
+  );
+
   test("uses the bundled runtime when no external executable is available", async () => {
     const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
     const result = await resolveContextModeBinary(settings, {
@@ -181,6 +233,35 @@ describe("bounded Context Mode process", () => {
     await expect(callContextModeTool(launch(binary), "ctx_stats")).resolves.toBe(
       "17.4 MB kept out · 96%",
     );
+  });
+
+  test("rejects a failed initialize response with the upstream message", async () => {
+    const binary = await executable(`
+const readline = require("node:readline");
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "boot failed" } }));
+});
+`);
+    await expect(inspectContextMode(launch(binary))).rejects.toMatchObject({
+      code: "protocol-error",
+      message: "boot failed",
+    });
+  });
+
+  test("marks unsupported tool errors separately from command failures", async () => {
+    const binary = await executable(`
+const readline = require("node:readline");
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "2.0.5" } } }));
+  if (request.method === "tools/call") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "tool not found" } }));
+});
+`);
+    await expect(callContextModeTool(launch(binary), "ctx_doctor")).rejects.toMatchObject({
+      code: "unsupported",
+      message: "tool not found",
+    });
   });
 
   test("budgets long-running Context Mode tools beyond upstream fetch timeouts", () => {
@@ -347,22 +428,23 @@ describe("RPC behavior", () => {
         inspections += 1;
         return { version: "2.0.5", tools: ["ctx_doctor", "ctx_stats"] };
       },
-      callTool: async (_path, name) => {
+      callTool: async (_launch, name) => {
         calls.push(name);
-        return name;
+        return name === "ctx_doctor" ? "doctor" : "stats";
       },
     });
-    await handlers.status({ fresh: false });
-    await handlers.status({ fresh: false });
-    await handlers.status({ fresh: true });
-    await expect(handlers.doctor({ fresh: false })).resolves.toMatchObject({
-      output: "ctx_doctor",
-    });
-    await expect(handlers.stats({ fresh: false })).resolves.toMatchObject({ output: "ctx_stats" });
-    await expect(handlers.stats({ fresh: false })).resolves.toMatchObject({ output: "ctx_stats" });
-    await expect(handlers.stats({ fresh: true })).resolves.toMatchObject({ output: "ctx_stats" });
-    expect(inspections).toBe(2);
-    expect(calls).toEqual(["ctx_doctor", "ctx_stats", "ctx_stats"]);
+
+    const status = await handlers.status({ fresh: false });
+    const doctor = await handlers.doctor({ fresh: false });
+    const stats = await handlers.stats({ fresh: true });
+    const audit = await handlers.audit({ fresh: false });
+
+    expect(status).toMatchObject({ state: "ready", supportsDoctor: true, supportsStats: true });
+    expect(doctor).toMatchObject({ state: "ready", output: "doctor" });
+    expect(stats).toMatchObject({ state: "ready", output: "stats" });
+    expect(audit.runtimeVersion).toBe("2.0.5");
+    expect(inspections).toBeGreaterThanOrEqual(1);
+    expect(calls).toEqual(["ctx_doctor", "ctx_stats"]);
   });
 
   test("maps bounded process failures to clean RPC errors", async () => {

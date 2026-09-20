@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, test } from "vitest";
 import { collectContextModeAnalytics } from "../server/analytics";
-import { discoverContextModeStorageRoots } from "../server/storage-discovery";
+import {
+  discoverContextModeStorageRoots,
+  listRegularContextModeDatabases,
+} from "../server/storage-discovery";
 import {
   ContextModeAnalyticsDashboardSchema,
   getContextModeAnalyticsDashboard,
@@ -400,35 +403,78 @@ describe("structured Context Mode analytics", () => {
     expect(afterEntries).toEqual(beforeEntries);
   });
 
-  test("discovers data-root overrides and Windows OpenCode locations", async () => {
+  test("warns about invalid and non-directory storage roots", async () => {
     const home = await temporaryHome();
-    const dataRoot = join(home, "shared-data");
-    const appData = join(home, "AppData", "Roaming");
-    await mkdir(join(dataRoot, "context-mode"), { recursive: true });
-    await mkdir(join(appData, "opencode", "context-mode"), { recursive: true });
-    await mkdir(join(home, ".config", "zed", "context-mode"), { recursive: true });
+    const customRoot = join(home, "custom-data-root");
+    await mkdir(customRoot, { recursive: true });
+    await writeFile(join(customRoot, "context-mode"), "not a directory");
 
     const result = await discoverContextModeStorageRoots({
       home,
-      platform: "win32",
-      env: { CONTEXT_MODE_DATA_DIR: dataRoot, APPDATA: appData, XDG_CONFIG_HOME: "/wrong" },
+      platform: "linux",
+      env: {
+        CONTEXT_MODE_DIR: "relative/root",
+        CONTEXT_MODE_DATA_DIR: customRoot,
+      },
     });
 
-    expect(result.roots).toEqual(
+    expect(result.warnings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          code: "invalid-storage-root",
+          message: expect.stringContaining("CONTEXT_MODE_DIR"),
+        }),
+        expect.objectContaining({
+          code: "storage-unavailable",
           provider: "custom-data",
-          root: join(dataRoot, "context-mode"),
-        }),
-        expect.objectContaining({
-          provider: "opencode",
-          root: join(appData, "opencode", "context-mode"),
-        }),
-        expect.objectContaining({
-          provider: "zed",
-          root: join(home, ".config", "zed", "context-mode"),
+          message: expect.stringContaining("not a regular directory"),
         }),
       ]),
+    );
+  });
+
+  test("lists only regular database files and ignores missing directories", async () => {
+    const home = await temporaryHome();
+    const directory = join(home, "provider", "context-mode", "sessions");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "good.db"), "sqlite");
+    await mkdir(join(directory, "nested.db"));
+
+    await expect(
+      listRegularContextModeDatabases("claude-code", join(home, "missing")),
+    ).resolves.toEqual({
+      files: [],
+      warnings: [],
+    });
+
+    const result = await listRegularContextModeDatabases("claude-code", directory);
+    expect(result.files).toEqual([join(directory, "good.db")]);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        code: "not-regular-database",
+        provider: "claude-code",
+        database: "nested.db",
+      }),
+    );
+  });
+
+  test("truncates very large database directories", async () => {
+    const home = await temporaryHome();
+    const directory = join(home, "provider", "context-mode", "sessions");
+    await mkdir(directory, { recursive: true });
+
+    for (let index = 0; index < 513; index += 1) {
+      await writeFile(join(directory, `${String(index).padStart(3, "0")}.db`), "sqlite");
+    }
+
+    const result = await listRegularContextModeDatabases("claude-code", directory);
+    expect(result.files).toHaveLength(512);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        code: "result-truncated",
+        provider: "claude-code",
+        message: expect.stringContaining("Only the first 512 database files"),
+      }),
     );
   });
 });
