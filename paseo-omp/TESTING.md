@@ -38,7 +38,7 @@ Classifications:
 | `contentIndex` ordering | **Equivalent** | Stable 0→1→0 updates, sparse-index rejection, and 64-block bounds are tested in `tests/provider-streaming.test.ts`. |
 | Tool lifecycle | **Equivalent** | Running/update/terminal snapshots, mapped shell/read/edit/write/search/fetch/subagent details, ID reuse defense, and terminal cleanup are covered. |
 | Todo lifecycle | **Equivalent** | Todo tool results and reminder/auto-clear events reduce to one stable `omp:todos` item; malformed inputs degrade safely. |
-| Compaction events | **Equivalent** | Manual and automatic operations retain IDs, distinguish retry/skipped/canceled/failed states, flush streams, and refresh usage. |
+| Compaction events | **Equivalent** | `server/provider/session-compaction.ts` owns manual and automatic compaction lifecycle state; operations retain IDs, distinguish retry/skipped/canceled/failed states, flush streams, and refresh usage. |
 | Custom messages | **Equivalent** | Displayable custom and bash-execution messages map to typed or fallback items; `display: false` remains hidden. |
 | Advisor messages | **Equivalent** | Advisor notes preserve severity/attribution in stable tool-call blocks; `advisor_yielded` emits completion notice. |
 | System notices | **Equivalent** | Native notices and safe passive UI notifications map to bounded notification items; hidden custom notices remain hidden. Negotiated MCP authorization URLs use a schema-validated plugin item, can route through the caller-scoped Paseo `browser_new_tab` tool, and retain a notification fallback. |
@@ -55,7 +55,7 @@ Classifications:
 | Thinking selection | **Equivalent** | Model-specific effort lists, defaults, runtime changes, invalid selections, and recovery are covered. |
 | Mode selection | **Equivalent** | `full`/`write`/`ask` map to `yolo`/`write`/`always-ask`; catalogs and opens expose interactive modes only when `permission` was negotiated, and live changes retain the bundled “new session” constraint. |
 | Retry fallback events | **Equivalent** | Fallback telemetry renders bounded status items and triggers committed model/thinking refresh without trusting event strings as state. |
-| Context and token usage | **Equivalent** | Periodic, post-compaction, fallback, terminal, timeout, and stale-generation samples publish `session.usage`. |
+| Context and token usage | **Equivalent** | `server/provider/session-usage.ts` owns sampling, polling, stale-generation rejection, and final deadlines; periodic, post-compaction, fallback, terminal, and timeout samples publish `session.usage`. |
 | Native host tools | **Equivalent** | Paseo's caller-scoped MCP endpoint is converted to OMP host tools with workspace identity, progress, cancellation, bounded results, and ownership cleanup. |
 | Configured MCP servers | **Equivalent** | stdio/http/SSE transports are opened by the plugin host process, namespaced, paginated, bounded, and passed through OMP's native host-tool API. The agent-scoped MCP composer control invokes OMP's native management commands without copying its discovery or credential state. |
 | Subagents | **Equivalent** | Live lifecycle/progress/events create provider-owned child sessions; subscription failure removes the negotiated capability. |

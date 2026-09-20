@@ -7,7 +7,6 @@ import type {
   ProviderPermissionResponse,
   ProviderSessionConfig,
   ProviderToolCallDetail,
-  ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import type {
   OmpOperationalFailure,
@@ -40,7 +39,6 @@ import type {
   OmpModel,
   OmpRpcEvent,
   OmpSessionState,
-  OmpSessionStats,
   OmpToolApprovalCancel,
   OmpToolApprovalRequest,
 } from "./omp-rpc-protocol";
@@ -64,6 +62,7 @@ import {
   OmpPublicError,
   utf8Bytes,
 } from "./security";
+import { OmpSessionCompaction } from "./session-compaction";
 import type { OmpSessionDescriptor } from "./session-descriptors";
 import { validateNativeSessionId } from "./session-descriptors";
 import { isNativeTurnActivity, isPassiveUiMethod, isRuntimeConfigEvent } from "./session-events";
@@ -79,6 +78,7 @@ import {
   terminalOutcome,
   unknownTerminalOutcomeError,
 } from "./session-terminal";
+import { OmpSessionUsage } from "./session-usage";
 import { OmpSubsessionProjector } from "./subsessions";
 import {
   defaultOmpTimelineScheduler,
@@ -295,16 +295,6 @@ function permissionFingerprint(request: OmpQuestionRequest): string {
   return createHash("sha256").update(JSON.stringify(request)).digest("base64url");
 }
 
-type ActiveCompaction = {
-  id: string;
-  trigger: "auto" | "manual";
-  turnId: string;
-  generation: number;
-  retrying: boolean;
-  action?: string;
-  preTokens?: number;
-};
-
 function providerError(error: unknown, fallback: string): { message: string } {
   return { message: isOmpPublicError(error) ? error.message : fallback };
 }
@@ -364,19 +354,8 @@ export class OmpProviderSession {
   private configRevision = 0;
   private recoveryUsesNativeConfig = false;
   private activeAbort: PendingAbort | null = null;
-  private usageEpoch = 0;
-  private usageSequence = 0;
-  private usageSample: {
-    turn: ActiveTurn;
-    generation: number;
-    runtime: OmpRuntimeSession;
-    epoch: number;
-    sequence: number;
-    promise: Promise<OmpSessionState | undefined>;
-  } | null = null;
-  private activeCompaction: ActiveCompaction | null = null;
-  private discardedCompactionEnds = 0;
-  private lastUsage: ProviderUsage | null = null;
+  private readonly usage: OmpSessionUsage;
+  private readonly compaction: OmpSessionCompaction;
   private revertInFlight = false;
   private runtimeTurnCompleted = false;
   private commandCatalog: OmpAvailableCommand[];
@@ -420,6 +399,26 @@ export class OmpProviderSession {
     this.id = id;
     this.cwd = config.cwd;
     this.scheduler = scheduler;
+    this.usage = new OmpSessionUsage(
+      id,
+      emit,
+      scheduler,
+      () => ({
+        closed: this.closed,
+        runtimeDead: this.runtimeDead !== null,
+        generation: this.generation,
+        runtime: this.runtime,
+        activeTurn: this.activeTurn,
+      }),
+      (turn) =>
+        !this.closed &&
+        !this.runtimeDead &&
+        !turn.terminal &&
+        !turn.terminalizing &&
+        !turn.agentEndPending &&
+        turn.generation === this.generation &&
+        this.activeTurn === turn,
+    );
     this.dataFilter = new OmpPublicDataSerializer(outputRedactionValues);
     this.nativeModelsByPublicId = nativeModelsByPublicId;
     this.commandCatalog = commandCatalog;
@@ -432,6 +431,13 @@ export class OmpProviderSession {
       capabilities.includes("session.revert.conversation"),
       capabilities.includes("timeline.plugin"),
       hostTools.labels,
+    );
+    this.compaction = new OmpSessionCompaction(
+      id,
+      emit,
+      this.projector,
+      this.dataFilter,
+      this.usage,
     );
     this.subsessions = capabilities.includes("session.subsession")
       ? new OmpSubsessionProjector(
@@ -771,289 +777,6 @@ export class OmpProviderSession {
         description:
           "OMP reported a thinking level that the active model does not advertise. Paseo omitted it from the session configuration.",
       },
-    });
-  }
-
-  private usageFrom(
-    state: OmpSessionState | undefined,
-    stats: OmpSessionStats | undefined,
-  ): ProviderUsage | undefined {
-    if (!state?.contextUsage && !stats) return undefined;
-    const stateContext = state?.contextUsage;
-    const statsContext = stats?.contextUsage;
-    const modelCapacity = state?.model?.contextWindow;
-    const inputTokens = stats?.tokens?.input;
-    const cachedInputTokens = stats?.tokens?.cacheRead;
-    const outputTokens = stats?.tokens?.output;
-    const totalCostUsd = stats?.cost;
-    const contextTokens =
-      typeof stateContext?.tokens === "number"
-        ? stateContext.tokens
-        : typeof statsContext?.tokens === "number"
-          ? statsContext.tokens
-          : undefined;
-    const contextWindow =
-      typeof stateContext?.contextWindow === "number" && stateContext.contextWindow > 0
-        ? stateContext.contextWindow
-        : typeof statsContext?.contextWindow === "number" && statsContext.contextWindow > 0
-          ? statsContext.contextWindow
-          : typeof modelCapacity === "number" && modelCapacity > 0
-            ? modelCapacity
-            : undefined;
-    const usage: ProviderUsage = {
-      ...(typeof inputTokens === "number" ? { inputTokens } : {}),
-      ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
-      ...(typeof outputTokens === "number" ? { outputTokens } : {}),
-      ...(typeof totalCostUsd === "number" ? { totalCostUsd } : {}),
-      ...(contextTokens !== undefined ? { contextWindowUsedTokens: contextTokens } : {}),
-      ...(contextWindow !== undefined ? { contextWindowMaxTokens: contextWindow } : {}),
-    };
-    return Object.keys(usage).length > 0 ? usage : undefined;
-  }
-
-  private ownsUsageSample(
-    turn: ActiveTurn,
-    generation: number,
-    runtime: OmpRuntimeSession,
-  ): boolean {
-    return (
-      !this.closed &&
-      !this.runtimeDead &&
-      !turn.terminal &&
-      generation === this.generation &&
-      runtime === this.runtime &&
-      this.activeTurn === turn
-    );
-  }
-
-  private publishUsageSnapshot(
-    turn: ActiveTurn,
-    minimumEpoch = this.usageEpoch,
-    minimumSequence = turn.usageSampleFloor,
-  ): Promise<OmpSessionState | undefined> {
-    const generation = turn.generation;
-    const runtime = this.runtime;
-    if (!this.ownsUsageSample(turn, generation, runtime)) return Promise.resolve(undefined);
-    const current = this.usageSample;
-    if (current) {
-      if (
-        current.turn === turn &&
-        current.generation === generation &&
-        current.runtime === runtime &&
-        current.epoch >= minimumEpoch &&
-        current.sequence >= minimumSequence
-      ) {
-        return current.promise;
-      }
-      return current.promise.then(() => {
-        if (!this.ownsUsageSample(turn, generation, runtime)) return undefined;
-        return this.publishUsageSnapshot(turn, minimumEpoch, minimumSequence);
-      });
-    }
-    const epoch = this.usageEpoch;
-    const sequence = ++this.usageSequence;
-    const promise = Promise.allSettled([runtime.getState(), runtime.getSessionStats()]).then(
-      ([stateResult, statsResult]) => {
-        if (
-          !this.ownsUsageSample(turn, generation, runtime) ||
-          epoch !== this.usageEpoch ||
-          epoch < minimumEpoch ||
-          sequence < turn.usageSampleFloor ||
-          sequence < minimumSequence
-        ) {
-          return undefined;
-        }
-        const state = stateResult.status === "fulfilled" ? stateResult.value : undefined;
-        const stats = statsResult.status === "fulfilled" ? statsResult.value : undefined;
-        const usage = this.usageFrom(state, stats);
-        if (usage) {
-          this.lastUsage = usage;
-          this.emit({ type: "session.usage", sessionId: this.id, turnId: turn.turnId, usage });
-        }
-        return state;
-      },
-    );
-    this.usageSample = { turn, generation, runtime, epoch, sequence, promise };
-    void promise.finally(() => {
-      if (this.usageSample?.promise === promise) this.usageSample = null;
-    });
-    return promise;
-  }
-
-  private async boundedUsageSnapshot(
-    turn: ActiveTurn,
-    timeoutMs: number,
-  ): Promise<OmpSessionState | undefined> {
-    const timeout = Promise.withResolvers<undefined>();
-    const timer = this.scheduler.set(() => timeout.resolve(undefined), timeoutMs);
-    try {
-      return await Promise.race([this.publishUsageSnapshot(turn), timeout.promise]);
-    } finally {
-      this.scheduler.clear(timer);
-    }
-  }
-
-  private async boundedTerminalState(
-    turn: ActiveTurn,
-    timeoutMs: number,
-  ): Promise<OmpSessionState | undefined> {
-    const generation = turn.generation;
-    const runtime = this.runtime;
-    const timeout = Promise.withResolvers<undefined>();
-    const timer = this.scheduler.set(() => timeout.resolve(undefined), timeoutMs);
-    try {
-      const state = await Promise.race([runtime.getState(), timeout.promise]);
-      return this.ownsUsageSample(turn, generation, runtime) ? state : undefined;
-    } catch {
-      return undefined;
-    } finally {
-      this.scheduler.clear(timer);
-    }
-  }
-
-  private isActiveTurn(turn: ActiveTurn): boolean {
-    return (
-      !this.closed &&
-      !this.runtimeDead &&
-      !turn.terminal &&
-      !turn.terminalizing &&
-      !turn.agentEndPending &&
-      turn.generation === this.generation &&
-      this.activeTurn === turn
-    );
-  }
-
-  private scheduleUsagePoll(turn: ActiveTurn, delayMs = USAGE_POLL_MS): void {
-    if (!this.isActiveTurn(turn) || turn.usagePollTimer !== undefined) return;
-    turn.usagePollTimer = this.scheduler.set(() => {
-      turn.usagePollTimer = undefined;
-      this.pollUsage(turn);
-    }, delayMs);
-  }
-
-  private pollUsage(turn: ActiveTurn): void {
-    if (!this.isActiveTurn(turn) || turn.usagePoll) return;
-    const poll = this.publishUsageSnapshot(turn).then(() => undefined);
-    turn.usagePoll = poll;
-    void poll.finally(() => {
-      if (turn.usagePoll === poll) turn.usagePoll = undefined;
-      this.scheduleUsagePoll(turn);
-    });
-  }
-
-  private stopUsagePoll(turn: ActiveTurn): void {
-    if (turn.usagePollTimer === undefined) return;
-    this.scheduler.clear(turn.usagePollTimer);
-    turn.usagePollTimer = undefined;
-  }
-
-  private startCompaction(turn: ActiveTurn, trigger: "auto" | "manual", action?: string): void {
-    if (this.discardedCompactionEnds > 0) {
-      this.discardedCompactionEnds += 1;
-      return;
-    }
-    const active = this.activeCompaction;
-    if (active && active.trigger === trigger && active.action === action) {
-      active.retrying = false;
-      return;
-    }
-    if (active) {
-      this.retireCompaction("OMP emitted overlapping compactions");
-      this.discardedCompactionEnds = 2;
-      return;
-    }
-    const operation: ActiveCompaction = {
-      id: randomUUID(),
-      trigger,
-      turnId: turn.turnId,
-      generation: turn.generation,
-      action,
-      retrying: false,
-      preTokens: this.lastUsage?.contextWindowUsedTokens,
-    };
-    this.activeCompaction = operation;
-    this.projector.flush(true);
-    this.emit({
-      type: "timeline.item",
-      sessionId: this.id,
-      item: {
-        id: operation.id,
-        type: "compaction",
-        status: "loading",
-        trigger,
-        ...(operation.preTokens !== undefined ? { preTokens: operation.preTokens } : {}),
-      },
-    });
-  }
-
-  private finishCompaction(
-    state: "completed" | "failed" | "canceled" | "skipped",
-    options: { tokensBefore?: number | null; message?: string } = {},
-  ): void {
-    const operation = this.activeCompaction;
-    if (!operation) return;
-    this.activeCompaction = null;
-    this.projector.flush(true);
-    if (state === "completed") {
-      this.usageEpoch += 1;
-      const staleSample = this.usageSample;
-      if (staleSample && staleSample.epoch < this.usageEpoch) {
-        this.usageSample = null;
-        staleSample.turn.usagePoll = undefined;
-      }
-      this.lastUsage = null;
-    }
-    if (state !== "completed") {
-      const defaultMessage =
-        state === "failed"
-          ? "OMP compaction failed"
-          : state === "canceled"
-            ? "OMP compaction canceled"
-            : "OMP compaction skipped";
-      this.emit({
-        type: "timeline.item",
-        sessionId: this.id,
-        item: {
-          id: operation.id,
-          type: "notification",
-          level: state === "failed" ? "error" : "info",
-          message: this.dataFilter.text(options.message ?? defaultMessage, 4_096),
-        },
-      });
-      return;
-    }
-    const tokensBefore = options.tokensBefore ?? operation.preTokens;
-    this.emit({
-      type: "timeline.item",
-      sessionId: this.id,
-      item: {
-        id: operation.id,
-        type: "compaction",
-        status: "completed",
-        trigger: operation.trigger,
-        ...(tokensBefore !== undefined ? { preTokens: tokensBefore } : {}),
-      },
-    });
-  }
-
-  private retireCompaction(message: string): void {
-    const operation = this.activeCompaction;
-    if (!operation) return;
-    this.activeCompaction = null;
-    this.emit({
-      type: "timeline.item",
-      sessionId: this.id,
-      item: {
-        id: operation.id,
-        type: "compaction",
-        status: "completed",
-        trigger: operation.trigger,
-      },
-    });
-    this.emit({
-      type: "timeline.item",
-      sessionId: this.id,
-      item: { id: `${operation.id}:error`, type: "error", message },
     });
   }
 
@@ -1449,8 +1172,8 @@ export class OmpProviderSession {
         turn.starting = false;
         turn.acknowledged = true;
         this.startTurn(turn, false);
-        this.startCompaction(turn, "manual");
-        this.pollUsage(turn);
+        this.compaction.start(turn, "manual");
+        this.usage.poll(turn);
         const bufferedEvents = turn.bufferedEvents.splice(0);
         turn.replayingBufferedEvents = true;
         for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
@@ -1541,7 +1264,7 @@ export class OmpProviderSession {
       else {
         turn.steerReady.resolve();
         turn.terminal = true;
-        this.finishCompaction("failed", { message: "OMP prompt failed" });
+        this.compaction.finish("failed", { message: "OMP prompt failed" });
         this.resolveTurnPermissions(turn.turnId);
         this.projector.finishTurn(turn.turnId);
         if (this.activeTurn === turn) this.activeTurn = null;
@@ -1714,7 +1437,7 @@ export class OmpProviderSession {
       const result = await compaction;
       turn.manualCompactionPending = false;
       if (this.closed || this.runtimeDead || turn.generation !== this.generation) return;
-      this.finishCompaction("completed", { tokensBefore: result.tokensBefore });
+      this.compaction.finish("completed", { tokensBefore: result.tokensBefore });
       await this.finishTurn(turn, turn.interrupted ? "canceled" : "completed");
     } catch (error) {
       if (this.closed || this.runtimeDead || turn.generation !== this.generation) return;
@@ -1722,7 +1445,7 @@ export class OmpProviderSession {
       const raw = providerError(error, "OMP compaction failed");
       const failure = { message: this.dataFilter.text(raw.message, 4_096) };
       const state = turn.interrupted ? "canceled" : "failed";
-      this.finishCompaction(state, { message: failure.message });
+      this.compaction.finish(state, { message: failure.message });
       await this.finishTurn(turn, state, state === "failed" ? failure : undefined, true, true);
     }
   }
@@ -2299,11 +2022,11 @@ export class OmpProviderSession {
       if (turn.started) await this.finishTurn(turn, "canceled", undefined, true, true);
       else {
         this.settleUnstartedTurn(turn);
-        this.finishCompaction("canceled");
+        this.compaction.finish("canceled");
       }
     }
     this.imageMaterializer.clear();
-    this.finishCompaction("canceled");
+    this.compaction.finish("canceled");
     this.resolveAllPermissions(true);
     this.closed = true;
     this.configRefreshAttempts = 0;
@@ -2463,7 +2186,7 @@ export class OmpProviderSession {
       }
       if (this.subsessions) await recovered.setSubagentSubscription("events");
       this.generation += 1;
-      this.lastUsage = null;
+      this.usage.clearLatest();
       this.runtimeDead = null;
       this.runtimeDisposal = null;
       unsubscribeBootstrap();
@@ -2810,43 +2533,13 @@ export class OmpProviderSession {
     if (event.type === "auto_compaction_start") {
       turn.nativeActivity = true;
       this.cancelLocalOnlyCompletion(turn);
-      this.startCompaction(turn, "auto", event.action);
+      this.compaction.start(turn, "auto", event.action);
       return;
     }
     if (event.type === "auto_compaction_end") {
-      if (this.discardedCompactionEnds > 0) {
-        this.discardedCompactionEnds -= 1;
-        return;
+      if (this.compaction.handleAutoEnd(turn, event)) {
+        this.usage.schedulePoll(turn, USAGE_REFRESH_MS);
       }
-      const operation = this.activeCompaction;
-      if (
-        operation?.trigger !== "auto" ||
-        operation.turnId !== turn.turnId ||
-        operation.generation !== turn.generation
-      ) {
-        return;
-      }
-      if (event.action !== undefined && operation.action !== event.action) {
-        this.retireCompaction("OMP emitted overlapping compactions");
-        this.discardedCompactionEnds = 1;
-        return;
-      }
-      if (event.willRetry) {
-        operation.retrying = true;
-        return;
-      }
-      const state = event.aborted
-        ? "canceled"
-        : event.errorMessage
-          ? "failed"
-          : event.skipped
-            ? "skipped"
-            : "completed";
-      this.finishCompaction(state, {
-        tokensBefore: event.result?.tokensBefore ?? event.result?.preTokens,
-        message: event.errorMessage,
-      });
-      this.scheduleUsagePoll(turn, USAGE_REFRESH_MS);
       return;
     }
     if (event.type === "agent_end" && turn.manualCompactionPending) return;
@@ -3993,7 +3686,7 @@ export class OmpProviderSession {
     await Promise.allSettled(turn.userLookups);
     this.refreshAmbiguousTerminal(turn);
     if (turn.terminal || this.activeTurn !== turn || turn.deferredAgentEnd !== candidate) return;
-    const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
+    const state = await this.usage.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
     if (turn.terminal || this.activeTurn !== turn || turn.deferredAgentEnd !== candidate) return;
     if (!state) {
       turn.operationalTerminalStage = "unresolved";
@@ -4023,10 +3716,7 @@ export class OmpProviderSession {
     ) {
       return;
     }
-    turn.usageSampleFloor = this.usageSequence + 1;
-    if (this.usageSample?.turn === turn && this.usageSample.sequence < turn.usageSampleFloor) {
-      this.usageSample = null;
-    }
+    this.usage.invalidateBeforeNextSample(turn);
     this.publishPendingUsers(turn);
     await this.finishTurn(turn, "completed", undefined, false, false, true);
   }
@@ -4055,7 +3745,7 @@ export class OmpProviderSession {
       this.beginTerminalization(turn, replacement);
       return;
     }
-    this.pollUsage(turn);
+    this.usage.poll(turn);
   }
 
   private beginTerminalization(turn: ActiveTurn, candidate: TerminalCandidate): void {
@@ -4069,11 +3759,8 @@ export class OmpProviderSession {
     }
     turn.terminalizing = true;
     this.cancelAmbiguousTerminal(turn);
-    turn.usageSampleFloor = this.usageSequence + 1;
-    if (this.usageSample?.turn === turn && this.usageSample.sequence < turn.usageSampleFloor) {
-      this.usageSample = null;
-    }
-    this.stopUsagePoll(turn);
+    this.usage.invalidateBeforeNextSample(turn);
+    this.usage.stopPoll(turn);
     turn.agentEndDeadlineTimer = this.scheduler.set(() => {
       turn.agentEndDeadlineTimer = undefined;
       if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
@@ -4165,14 +3852,14 @@ export class OmpProviderSession {
     ) {
       this.resetAgentEndProbe(turn);
       turn.deferredAgentEnd = candidate;
-      this.pollUsage(turn);
+      this.usage.poll(turn);
       return;
     }
     if (turn.interrupted) {
       await this.completeAgentEnd(turn, candidate.event);
       return;
     }
-    const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
+    const state = await this.usage.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
     if (!turn.interrupted && this.subsessions?.hasActiveChildren()) {
       this.resetAgentEndProbe(turn);
@@ -4185,7 +3872,7 @@ export class OmpProviderSession {
     ) {
       this.resetAgentEndProbe(turn);
       turn.deferredAgentEnd = candidate;
-      this.pollUsage(turn);
+      this.usage.poll(turn);
       return;
     }
     if (state) {
@@ -4227,7 +3914,7 @@ export class OmpProviderSession {
         !turn.interrupted &&
         this.activeTurn === turn
       ) {
-        const state = await this.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
+        const state = await this.usage.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
         if (
           turn.terminal ||
           this.activeTurn !== turn ||
@@ -4305,7 +3992,7 @@ export class OmpProviderSession {
     turn.steerReady.resolve();
     turn.starting = false;
     turn.terminal = true;
-    this.stopUsagePoll(turn);
+    this.usage.stopPoll(turn);
     this.cancelAmbiguousTerminal(turn);
     this.resolveTurnPermissions(turn.turnId);
     this.projector.finishTurn(turn.turnId);
@@ -4332,7 +4019,7 @@ export class OmpProviderSession {
     turn.starting = false;
     turn.steerReady.resolve();
     this.emit({ type: "session.turn", sessionId: this.id, turnId: turn.turnId, state: "started" });
-    if (pollUsage) this.pollUsage(turn);
+    if (pollUsage) this.usage.poll(turn);
   }
   private finishTurn(
     turn: ActiveTurn,
@@ -4362,7 +4049,7 @@ export class OmpProviderSession {
     turn.agentEndPending = false;
     this.cancelLocalOnlyCompletion(turn);
     this.cancelAmbiguousTerminal(turn);
-    this.stopUsagePoll(turn);
+    this.usage.stopPoll(turn);
     if (turn.manualCompactionDeadlineTimer !== undefined) {
       this.scheduler.clear(turn.manualCompactionDeadlineTimer);
       turn.manualCompactionDeadlineTimer = undefined;
@@ -4381,7 +4068,7 @@ export class OmpProviderSession {
     const terminalization = (async () => {
       if (!turn.terminalOutcome?.usageSampled && !this.closed && !this.runtimeDead) {
         await Promise.race([
-          this.boundedUsageSnapshot(turn, FINAL_USAGE_WAIT_MS),
+          this.usage.boundedSnapshot(turn, FINAL_USAGE_WAIT_MS),
           wake.promise.then(() => undefined),
         ]);
       }
@@ -4408,11 +4095,11 @@ export class OmpProviderSession {
       }
       this.imageMaterializer.clear();
       turn.terminal = true;
-      if (this.usageSample?.turn === turn) this.usageSample = null;
-      if (!preserveCompactions && this.activeCompaction) {
-        if (outcome.state === "canceled") this.finishCompaction("canceled");
+      this.usage.clearSample(turn);
+      if (!preserveCompactions && this.compaction.active) {
+        if (outcome.state === "canceled") this.compaction.finish("canceled");
         else {
-          this.finishCompaction("failed", {
+          this.compaction.finish("failed", {
             message: outcome.error?.message ?? "OMP compaction ended without a terminal result",
           });
         }
@@ -4449,15 +4136,14 @@ export class OmpProviderSession {
   ): void {
     this.imageMaterializer.clear();
     if (this.closed || this.runtimeDead) return;
-    this.discardedCompactionEnds = 0;
+    this.compaction.resetDiscardedEnds();
     this.resolveAllPermissions();
     this.recoveryUsesNativeConfig ||=
       this.configRefreshInFlight !== null || this.configRefreshDirty || this.configMutationInFlight;
     const turn = this.activeTurn;
-    if (turn) this.stopUsagePoll(turn);
-    this.usageSample = null;
-    this.finishCompaction(compactionState, { message });
-    this.lastUsage = null;
+    if (turn) this.usage.stopPoll(turn);
+    this.usage.reset();
+    this.compaction.finish(compactionState, { message });
     this.generation += 1;
     this.projector.resetRuntimeGeneration("OMP runtime ended during compaction");
     this.runtimeDead = message;
