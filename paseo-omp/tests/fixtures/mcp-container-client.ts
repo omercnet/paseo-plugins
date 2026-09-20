@@ -1,11 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { OmpHostToolsBridge } from "../../server/provider/host-tools";
+import type { OmpRuntimeSession } from "../../server/provider/omp-rpc";
 import type {
   OmpHostToolDefinition,
   OmpHostToolResult,
   OmpHostToolUpdate,
-  OmpRuntimeSession,
-} from "../../server/provider/omp-rpc";
+} from "../../server/provider/omp-rpc-protocol";
 
 const url = process.env.MCP_HOST_URL;
 const expectedHostCwd = process.env.EXPECTED_HOST_CWD;

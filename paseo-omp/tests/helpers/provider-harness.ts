@@ -13,6 +13,8 @@ import { expect } from "vitest";
 import type { OmpBrowserAuthorizationRegistry } from "../../server/mcp-browser";
 import type { OmpOperationalFailureReporter } from "../../server/operational-failure-diagnostics";
 import { ompModelId } from "../../server/provider/catalog";
+import type { OmpRuntime, OmpRuntimeSession } from "../../server/provider/omp-rpc";
+import type { OmpStartOptions } from "../../server/provider/omp-rpc-environment";
 import type {
   OmpAvailableCommand,
   OmpExtensionUiResponse,
@@ -25,13 +27,10 @@ import type {
   OmpPersistedSessionMessages,
   OmpPersistedSubagentMessages,
   OmpRpcEvent,
-  OmpRuntime,
-  OmpRuntimeSession,
   OmpSubagentMessagesResult,
   OmpSubagentSnapshot,
   OmpToolApprovalResponse,
-} from "../../server/provider/omp-rpc";
-import type { OmpStartOptions } from "../../server/provider/omp-rpc-environment";
+} from "../../server/provider/omp-rpc-protocol";
 import { createOmpProvider } from "../../server/provider/registration";
 import type { OmpTimelineScheduler } from "../../server/provider/timeline-projector";
 

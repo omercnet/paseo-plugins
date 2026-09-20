@@ -9,12 +9,12 @@ import {
   type OmpMcpTool,
   withOmpWorkspaceIdentity,
 } from "../server/provider/host-tools";
+import type { OmpRuntimeSession } from "../server/provider/omp-rpc";
 import type {
   OmpHostToolDefinition,
   OmpHostToolResult,
   OmpHostToolUpdate,
-  OmpRuntimeSession,
-} from "../server/provider/omp-rpc";
+} from "../server/provider/omp-rpc-protocol";
 import { OmpCleanupFailure } from "../server/provider/security";
 
 function sessionConfig(overrides: Partial<ProviderSessionConfig> = {}): ProviderSessionConfig {

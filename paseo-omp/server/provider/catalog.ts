@@ -6,7 +6,8 @@ import type {
   ProviderThinkingOption,
 } from "@getpaseo/plugin/server/provider";
 import type { NormalizedOmpStartOptions } from "./config-normalization";
-import type { OmpModel, OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
+import type { OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
+import type { OmpModel } from "./omp-rpc-protocol";
 import {
   configuredOutputRedactionValues,
   OmpCleanupFailure,

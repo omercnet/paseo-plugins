@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { OmpMessage } from "../server/provider/omp-rpc";
+import type { OmpMessage } from "../server/provider/omp-rpc-protocol";
 import {
   ALTERNATE_MODEL_PUBLIC_ID,
   createHarness,

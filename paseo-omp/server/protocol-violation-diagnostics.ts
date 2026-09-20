@@ -4,7 +4,7 @@ import {
   type OmpProtocolViolationCategory,
   type OmpProtocolViolationDiagnostic,
   type OmpProtocolViolationReason,
-} from "./provider/omp-rpc";
+} from "./provider/omp-rpc-protocol";
 
 export interface OmpProtocolViolationSummary {
   category: OmpProtocolViolationCategory;

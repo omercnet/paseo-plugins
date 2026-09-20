@@ -3,11 +3,8 @@ import { describe, expect, test } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import { ompModelId } from "../server/provider/catalog";
 import { OmpNativeSessionReservations } from "../server/provider/connection";
-import {
-  type OmpMessage,
-  type OmpModel,
-  OmpRpcRequestRejectedError,
-} from "../server/provider/omp-rpc";
+import type { OmpMessage, OmpModel } from "../server/provider/omp-rpc-protocol";
+import { OmpRpcRequestRejectedError } from "../server/provider/omp-rpc-transport";
 import { createOmpProvider } from "../server/provider/registration";
 import { OmpTimelineProjector } from "../server/provider/timeline-projector";
 import {

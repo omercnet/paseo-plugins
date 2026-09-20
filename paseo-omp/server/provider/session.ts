@@ -29,6 +29,8 @@ import {
 } from "./config-normalization";
 import { OmpHostToolsBridge, type OmpMcpConnector, validateOmpHostToolConfig } from "./host-tools";
 import { isOmpImageMimeType, OmpImageMaterializer } from "./image";
+import type { OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
+import { buildOmpSpawnRequest, type OmpStartOptions } from "./omp-rpc-environment";
 import type {
   OmpAvailableCommand,
   OmpBranchResult,
@@ -37,15 +39,12 @@ import type {
   OmpMessage,
   OmpModel,
   OmpRpcEvent,
-  OmpRuntime,
-  OmpRuntimeSession,
   OmpSessionState,
   OmpSessionStats,
   OmpToolApprovalCancel,
   OmpToolApprovalRequest,
-} from "./omp-rpc";
-import { OmpRpcRequestRejectedError } from "./omp-rpc";
-import { buildOmpSpawnRequest, type OmpStartOptions } from "./omp-rpc-environment";
+} from "./omp-rpc-protocol";
+import { OmpRpcRequestRejectedError } from "./omp-rpc-transport";
 import {
   inlinePromptFrameBytes,
   isSafeCommandName,

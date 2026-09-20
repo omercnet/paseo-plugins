@@ -1,6 +1,6 @@
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test } from "vitest";
-import type { OmpMessage } from "../server/provider/omp-rpc";
+import type { OmpMessage } from "../server/provider/omp-rpc-protocol";
 import { OmpSubsessionProjector } from "../server/provider/subsessions";
 import {
   createHarness,

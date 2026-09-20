@@ -1,7 +1,8 @@
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test, vi } from "vitest";
 import { createOmpConnection, type OmpConnectionDiagnostic } from "../server/provider/connection";
-import { OmpRpcResponseLimitError, type OmpRuntime } from "../server/provider/omp-rpc";
+import type { OmpRuntime } from "../server/provider/omp-rpc";
+import { OmpRpcResponseLimitError } from "../server/provider/omp-rpc-transport";
 
 async function failedOpen(
   error: unknown,

@@ -16,14 +16,14 @@ import type {
 import { discoverOmpCatalog } from "./catalog";
 import { normalizeOmpCatalogOptions } from "./config-normalization";
 import type { OmpMcpConnector } from "./host-tools";
+import type { OmpRuntime } from "./omp-rpc";
 import {
   OMP_RPC_BOUND_DIMENSIONS,
   OMP_RPC_DIAGNOSTIC_COMMANDS,
   type OmpRpcBoundDimension,
   type OmpRpcDiagnosticCommand,
-  OmpRpcResponseLimitError,
-  type OmpRuntime,
-} from "./omp-rpc";
+} from "./omp-rpc-protocol";
+import { OmpRpcResponseLimitError } from "./omp-rpc-transport";
 import {
   boundedJsonBytes,
   isOmpCleanupFailure,

@@ -11,7 +11,7 @@ import {
   OMP_MESSAGE_REPLAY_POLICIES,
   type OmpMessage,
   type OmpRpcEvent,
-} from "./omp-rpc";
+} from "./omp-rpc-protocol";
 import {
   boundedJsonBytes,
   type JsonValue,

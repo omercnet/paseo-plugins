@@ -13,7 +13,7 @@ import type {
   OMP_SESSION_EVENT_POLICIES,
   OmpMessage,
   OmpRpcEvent,
-} from "../server/provider/omp-rpc";
+} from "../server/provider/omp-rpc-protocol";
 
 type AssertExact<Left, Right> = [Left] extends [Right]
   ? [Right] extends [Left]

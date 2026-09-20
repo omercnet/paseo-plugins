@@ -15,7 +15,7 @@ import type {
   AgentStreamEvent,
 } from "../node_modules/@getpaseo/server/dist/server/server/agent/agent-sdk-types.js";
 import { ompModelId } from "../server/provider/catalog";
-import type { OmpModel } from "../server/provider/omp-rpc";
+import type { OmpModel } from "../server/provider/omp-rpc-protocol";
 import { createOmpProvider } from "../server/provider/registration";
 
 const pluginProviderModulePath = new URL(

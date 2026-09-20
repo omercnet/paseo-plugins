@@ -1,5 +1,5 @@
 import { describe, expect, onTestFinished, test } from "vitest";
-import type { OmpMessage } from "../server/provider/omp-rpc";
+import type { OmpMessage } from "../server/provider/omp-rpc-protocol";
 import {
   createHarness,
   establishTerminalOwnership,

@@ -2,14 +2,13 @@ import { createHash } from "node:crypto";
 import { basename, extname, isAbsolute } from "node:path";
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
+import type { OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
 import type {
   OmpAgentSessionEvent,
   OmpMessage,
-  OmpRuntime,
-  OmpRuntimeSession,
   OmpSubagentEvent,
   OmpSubagentSnapshot,
-} from "./omp-rpc";
+} from "./omp-rpc-protocol";
 import {
   BoundedStringSet,
   boundedJsonBytes,

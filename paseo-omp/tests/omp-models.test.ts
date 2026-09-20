@@ -2,8 +2,9 @@ import { homedir } from "node:os";
 import { describe, expect, test } from "vitest";
 import { resolveListOmpModels } from "../server/omp-models";
 import { withOmpStore } from "../server/paths";
-import type { OmpModel, OmpRuntime, OmpRuntimeSession } from "../server/provider/omp-rpc";
+import type { OmpRuntime, OmpRuntimeSession } from "../server/provider/omp-rpc";
 import type { OmpStartOptions } from "../server/provider/omp-rpc-environment";
+import type { OmpModel } from "../server/provider/omp-rpc-protocol";
 import { OmpCleanupFailure } from "../server/provider/security";
 import {
   listOmpModels,

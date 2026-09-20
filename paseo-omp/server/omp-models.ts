@@ -3,12 +3,8 @@ import { isAbsolute } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import type { listOmpModels, OmpModelCandidate, OmpModelListResult } from "../shared/omp-models";
 import { currentOmpEnvironment } from "./paths";
-import {
-  type OmpModel,
-  OmpRpcRuntime,
-  type OmpRuntime,
-  type OmpRuntimeSession,
-} from "./provider/omp-rpc";
+import { OmpRpcRuntime, type OmpRuntime, type OmpRuntimeSession } from "./provider/omp-rpc";
+import type { OmpModel } from "./provider/omp-rpc-protocol";
 import { OmpCleanupFailure, OmpPublicDataSerializer, OmpPublicError } from "./provider/security";
 
 function mapOmpModel(model: OmpModel, serializer: OmpPublicDataSerializer): OmpModelCandidate {

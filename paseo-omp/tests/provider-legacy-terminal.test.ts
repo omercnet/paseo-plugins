@@ -1,6 +1,6 @@
 import { describe, expect, onTestFinished, test } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
-import type { OmpMessage } from "../server/provider/omp-rpc";
+import type { OmpMessage } from "../server/provider/omp-rpc-protocol";
 import { createOmpProvider } from "../server/provider/registration";
 import { OmpCleanupFailure } from "../server/provider/security";
 import {

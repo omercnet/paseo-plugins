@@ -7,7 +7,8 @@ import type { OmpOperationalFailureReporter } from "../operational-failure-diagn
 import { probeOmpAvailability } from "../provider-diagnostics";
 import { createOmpConnection, OmpNativeSessionReservations } from "./connection";
 import type { OmpMcpConnector } from "./host-tools";
-import { type OmpProtocolViolationDiagnostic, OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
+import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
+import type { OmpProtocolViolationDiagnostic } from "./omp-rpc-protocol";
 import { parseOmpProviderOptions } from "./provider-options";
 import { boundedJsonBytes } from "./security";
 import { OmpProviderOptionsSchema } from "./settings";

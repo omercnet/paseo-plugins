@@ -14,14 +14,14 @@ import {
   type ConnectedMcpToolPage,
   connectMcpServer,
 } from "./mcp-transport";
+import type { OmpRuntimeSession } from "./omp-rpc";
 import {
   OMP_HOST_TOOL_FRAME_LIMIT_ERROR,
   type OmpHostToolCall,
   type OmpHostToolDefinition,
   type OmpHostToolResult,
-  type OmpRuntimeSession,
   parseOmpHostToolAgentResult,
-} from "./omp-rpc";
+} from "./omp-rpc-protocol";
 import {
   boundedJsonBytes,
   OmpCleanupFailure,

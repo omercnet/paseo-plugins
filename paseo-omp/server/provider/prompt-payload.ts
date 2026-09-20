@@ -1,7 +1,7 @@
 import type { ProviderContent, ProviderInput } from "@getpaseo/plugin/server/provider";
 import { getForgeDefinitionOrNeutral } from "@getpaseo/protocol/forge-manifest";
 import { isValidImagePayload } from "./image";
-import type { OmpImage } from "./omp-rpc";
+import type { OmpImage } from "./omp-rpc-protocol";
 import { OmpPublicError, utf8Bytes } from "./security";
 
 type SessionPromptInput = Extract<ProviderInput, { type: "session.prompt" }>;

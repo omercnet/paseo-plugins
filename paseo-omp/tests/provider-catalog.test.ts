@@ -2,7 +2,8 @@ import type { ProviderInput } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
-import { type OmpModel, OmpRpcRuntime } from "../server/provider/omp-rpc";
+import { OmpRpcRuntime } from "../server/provider/omp-rpc";
+import type { OmpModel } from "../server/provider/omp-rpc-protocol";
 import { createOmpProvider } from "../server/provider/registration";
 import {
   ALTERNATE_MODEL,
