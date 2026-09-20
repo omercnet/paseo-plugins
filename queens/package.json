@@ -38,7 +38,7 @@
     "paseo-plugin.json"
   ],
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check --error-on-warnings .",
     "import:puzzles": "node scripts/import-curated-puzzles.mjs",
     "test": "run-s test:ci:*",
     "typecheck": "tsc --noEmit",

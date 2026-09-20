@@ -40,7 +40,7 @@
   "scripts": {
     "test": "run-s test:ci:*",
     "typecheck": "tsc --noEmit",
-    "check": "biome check .",
+    "check": "biome check --error-on-warnings .",
     "check:write": "biome check --write .",
     "test:ci:unit": "vitest run",
     "build": "node ../.github/scripts/build-plugin.mjs"

@@ -12,8 +12,17 @@
     "enabled": true,
     "rules": {
       "preset": "recommended",
+      "complexity": {
+        "useOptionalChain": "off"
+      },
       "correctness": {
         "useExhaustiveDependencies": "off"
+      },
+      "style": {
+        "noNonNullAssertion": "off"
+      },
+      "suspicious": {
+        "noConfusingVoidType": "off"
       }
     }
   },

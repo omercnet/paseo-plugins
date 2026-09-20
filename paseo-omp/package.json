@@ -40,7 +40,7 @@
     "paseo-plugin.json"
   ],
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check --error-on-warnings .",
     "check:write": "biome check --write .",
     "test": "run-s test:ci:*",
     "test:coverage": "PASEO_OMP_COVERAGE=1 vitest run --coverage",

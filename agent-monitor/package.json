@@ -37,7 +37,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check --error-on-warnings .",
     "check:write": "biome check --write .",
     "test": "run-s test:ci:*",
     "package:release": "node scripts/package-release.ts",
