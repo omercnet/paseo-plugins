@@ -206,10 +206,6 @@ it("shares and persists a production agent-browser runtime across supervisor cli
     await expect(manager.detach(first.viewerToken)).resolves.toEqual({ detached: true });
     await expect(manager.detach(second.viewerToken)).resolves.toEqual({ detached: true });
     const resumed = await manager.attach("workspace-smoke", "Reattached client");
-    await vi.waitFor(async () => {
-      const resumedCapture = await manager.capture(resumed.viewerToken, "medium", null);
-      expect(resumedCapture.frame?.transport).toBe("cdp-screencast");
-    });
     const secondControl = await manager.acquireControl(resumed.viewerToken, false);
     const emulated = await manager.applyDevicePreset({
       viewerToken: resumed.viewerToken,
@@ -226,6 +222,10 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       action: { kind: "goto", url: `${origin}/set-cookie` },
     });
     await vi.waitFor(() => expect(lastUserAgent).toContain("Pixel 7"));
+    await vi.waitFor(async () => {
+      const resumedCapture = await manager.capture(resumed.viewerToken, "medium", null);
+      expect(resumedCapture.frame?.transport).toBe("cdp-screencast");
+    });
 
     manager.disconnect();
     manager = await createManager("smoke-bridge-two");
