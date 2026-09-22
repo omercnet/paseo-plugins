@@ -74,7 +74,6 @@ function QueensPopoverGame({
   theme,
   host,
   layout,
-  close,
   deck,
   catalog,
 }: PluginButtonContentProps & {
@@ -152,21 +151,11 @@ function QueensPopoverGame({
   return (
     <View style={styles.root}>
       {!layout.compact ? (
-        <View style={styles.header}>
-          <View style={styles.titleRow}>
-            <GameMark size={22} color={theme.colors.accent} />
-            <Text accessibilityRole="header" style={styles.title}>
-              Queens
-            </Text>
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close Queens"
-            onPress={close}
-            style={styles.doneButton}
-          >
-            <Text style={styles.doneText}>Done</Text>
-          </Pressable>
+        <View style={styles.titleRow}>
+          <GameMark size={22} color={theme.colors.accent} />
+          <Text accessibilityRole="header" style={styles.title}>
+            Queens
+          </Text>
         </View>
       ) : null}
 
@@ -252,17 +241,10 @@ function QueensPopoverGame({
 function createStyles(theme: PluginButtonContentProps["theme"], compact: boolean) {
   return StyleSheet.create({
     root: {
-      width: compact ? "100%" : 300,
+      width: compact ? "100%" : 392,
       alignSelf: "center",
       alignItems: "center",
       gap: compact ? 12 : 6,
-    },
-    header: {
-      width: "100%",
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 12,
     },
     titleRow: {
       flexDirection: "row",
