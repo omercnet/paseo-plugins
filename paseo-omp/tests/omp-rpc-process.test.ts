@@ -19,6 +19,8 @@ import {
   testOnWindows,
 } from "./helpers/omp-rpc-harness";
 
+const testOnPosix = process.platform === "win32" ? test.skip : test;
+
 describe("OMP RPC transport", () => {
   testOnWindows("terminates a live Windows process tree with taskkill", async () => {
     const leader = spawn(
@@ -253,8 +255,9 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
     expect(observed.filter((event) => event.type === "process_exit")).toHaveLength(1);
   });
 
-  test("starts process-tree cleanup before stdin shutdown can release the Windows tree root", async () => {
+  testOnWindows("keeps stdin open until Windows process-tree cleanup settles", async () => {
     const child = new FakeRpcChild();
+    const cleanup = Promise.withResolvers<boolean>();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
         child.write({
@@ -265,22 +268,48 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
         });
       }
     });
-    let stdinEndedAtCleanup: boolean | undefined;
     const runtime = new OmpRpcRuntime({
       spawnProcess: () => child.asChildProcess(),
-      terminateProcessTree: () => {
-        stdinEndedAtCleanup = child.stdin.writableEnded;
-        return Promise.resolve(true);
-      },
+      terminateProcessTree: async () => await cleanup.promise,
       environment: TEST_RUNTIME_ENV,
     });
     const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
 
-    await session.close();
+    const closing = session.close();
+    expect(child.stdin.writableEnded).toBe(false);
+    cleanup.resolve(true);
+    await closing;
+    expect(child.stdin.writableEnded).toBe(true);
+  });
 
-    expect(stdinEndedAtCleanup).toBe(false);
+  testOnPosix("ends stdin while POSIX process-tree cleanup is pending", async () => {
+    const child = new FakeRpcChild();
+    const cleanup = Promise.withResolvers<boolean>();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: async () => await cleanup.promise,
+      environment: TEST_RUNTIME_ENV,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const closing = session.close();
+    expect(child.stdin.writableEnded).toBe(true);
+    cleanup.resolve(true);
+    await closing;
   });
 
   test("surfaces unverified process-tree cleanup", async () => {
