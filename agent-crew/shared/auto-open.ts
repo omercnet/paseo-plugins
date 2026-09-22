@@ -1,9 +1,13 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
+export const MAX_AUTO_OPEN_CLAIM_BATCH = 1000;
+
 export const claimOpenedWorkspaces = defineRpc({
   name: "agent-crew.auto-open.claim",
-  input: z.object({ workspaceIds: z.array(z.string().min(1)).min(1).max(1000) }),
+  input: z.object({
+    workspaceIds: z.array(z.string().min(1)).min(1).max(MAX_AUTO_OPEN_CLAIM_BATCH),
+  }),
   output: z.object({ claimed: z.array(z.string()) }),
 });
 

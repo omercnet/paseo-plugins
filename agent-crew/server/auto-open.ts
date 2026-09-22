@@ -15,16 +15,18 @@ export function autoOpenDataFilePath(): string {
 }
 
 function parseWorkspaceIds(raw: string): Set<string> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return new Set();
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error("auto-open store must contain an array of workspace IDs");
   }
-  if (!Array.isArray(parsed)) return new Set();
-  return new Set(
-    parsed.filter((value): value is string => typeof value === "string" && value.length > 0),
-  );
+  const values = new Set<string>();
+  for (const value of parsed) {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error("auto-open store must contain only non-empty string workspace IDs");
+    }
+    values.add(value);
+  }
+  return values;
 }
 
 export function createFileAutoOpenStore(filePath: string = autoOpenDataFilePath()): AutoOpenStore {
@@ -37,7 +39,12 @@ export function createFileAutoOpenStore(filePath: string = autoOpenDataFilePath(
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
         throw error;
       }
-      return parseWorkspaceIds(raw);
+      try {
+        return parseWorkspaceIds(raw);
+      } catch (error) {
+        console.error("Agent Crew auto-open store load failed", { filePath, error });
+        throw error;
+      }
     },
     async persist(next) {
       await mkdir(dirname(filePath), { recursive: true });
