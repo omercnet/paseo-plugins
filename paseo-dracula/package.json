@@ -48,6 +48,7 @@
     "@getpaseo/protocol": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
+    "fflate": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
