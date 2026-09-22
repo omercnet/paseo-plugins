@@ -1,10 +1,7 @@
 {
-	"id": "shared-browser",
-	"requirements": {
-		"paseo": ">=0.8.0 <0.10.0"
-	},
-	"build": [
-		["node", "scripts/prepare-dependencies.mjs"],
-		["npm", "run", "prepare:runtime"]
-	]
+  "id": "shared-browser",
+  "requirements": {
+    "paseo": ">=0.8.0 <0.10.0"
+  },
+  "build": [["node", "scripts/prepare-dependencies.mjs"], ["npm", "run", "prepare:runtime"]]
 }

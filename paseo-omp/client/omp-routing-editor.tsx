@@ -99,7 +99,6 @@ function OrderedRoleEditor({
   return (
     <View style={styles.recordList}>
       {roles.map((role, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: ordered rows are edited by position and must keep input identity while their value changes.
         <View key={index} style={styles.recordRow}>
           <Text style={styles.recordKey}>{index + 1}</Text>
           <TextInput
@@ -172,7 +171,6 @@ function RecordRoutingEditor({
             ? rawValue
             : "";
         return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: record keys are editable, so row position preserves input identity.
           <View key={index} style={styles.recordRow}>
             <TextInput
               accessibilityLabel={`${formatOmpSettingLabel(setting.path)} ${keyLabel} ${index + 1}`}

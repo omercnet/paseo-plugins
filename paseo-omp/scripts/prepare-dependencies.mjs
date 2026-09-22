@@ -40,10 +40,14 @@ export function prepareDependencies(root = projectRoot, execute = execFileSync) 
   const catalog = loadRootCatalog(root);
   if (!catalog) return false;
   stageManifest(root, catalog, () => {
-    execute(process.platform === "win32" ? "npm.cmd" : "npm", ["install", "--omit=dev", "--ignore-scripts", "--no-package-lock", "--workspaces=false"], {
-      cwd: root,
-      stdio: "inherit",
-    });
+    execute(
+      process.platform === "win32" ? "npm.cmd" : "npm",
+      ["install", "--omit=dev", "--ignore-scripts", "--no-package-lock", "--workspaces=false"],
+      {
+        cwd: root,
+        stdio: "inherit",
+      },
+    );
   });
   return true;
 }
