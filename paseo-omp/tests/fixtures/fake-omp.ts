@@ -604,6 +604,7 @@ reader.on("line", (line) => {
       handlePrompt(command);
       break;
     case "steer":
+      respond(command);
       send({
         type: "message_end",
         message: { role: "user", content: command.message, entryId: "user-steer" },

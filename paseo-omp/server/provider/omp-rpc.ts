@@ -63,6 +63,7 @@ import {
   OmpThinkingLevelSchema,
   validateBoundedText,
 } from "./omp-rpc-values";
+import { buildOmpPromptRequest } from "./prompt-payload";
 import { OmpCleanupFailure, OmpPublicError } from "./security";
 import {
   listOmpSessionDescriptors,
@@ -497,7 +498,7 @@ class OmpRpcSession implements OmpRuntimeSession {
     const safeMessage = validateBoundedText(message, "prompt", MAX_TEXT_LENGTH);
     let acknowledgement: z.infer<typeof OmpPromptAckSchema> | undefined;
     const request = this.process.startRequest(
-      { type: "prompt", message: safeMessage, ...(images.length > 0 ? { images } : {}) },
+      buildOmpPromptRequest(safeMessage, images),
       undefined,
       (value) => {
         acknowledgement = OmpPromptAckSchema.parse(value) ?? {};
@@ -511,7 +512,7 @@ class OmpRpcSession implements OmpRuntimeSession {
 
   async steer(message: string, images: readonly OmpImage[] = []): Promise<void> {
     const safeMessage = validateBoundedText(message, "steer", MAX_TEXT_LENGTH);
-    await this.process.sendFrame({
+    await this.process.request({
       type: "steer",
       message: safeMessage,
       ...(images.length > 0 ? { images } : {}),
@@ -519,7 +520,7 @@ class OmpRpcSession implements OmpRuntimeSession {
   }
   async followUp(message: string, images: readonly OmpImage[] = []): Promise<void> {
     const safeMessage = validateBoundedText(message, "follow-up", MAX_TEXT_LENGTH);
-    await this.process.sendFrame({
+    await this.process.request({
       type: "follow_up",
       message: safeMessage,
       ...(images.length > 0 ? { images } : {}),

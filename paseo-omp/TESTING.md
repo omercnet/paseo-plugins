@@ -28,7 +28,7 @@ Classifications:
 | Persisted sessions | **Equivalent** | Versioned opaque plugin persistence, transcript reservation, replay, process recovery, and cleanup quarantine regressions are covered by the focused `tests/provider-persistence*.test.ts`, `tests/provider-reservations.test.ts`, `tests/provider-runtime-recovery.test.ts`, and `tests/provider-conformance.test.ts` suites. |
 | Ephemeral sessions | **Equivalent** | `persist: false` maps to `--no-session`; runtime loss fails visibly instead of inventing a resume handle. |
 | Internal sessions | **Protocol** and **Equivalent** | Metadata generation requests `persistSession: false`; the generic plugin host maps that to `config.persist: false`, then OMP receives `--no-session`. |
-| Text prompts | **Equivalent** | Bounded multipart text joins and native prompt lifecycle coverage in `tests/provider-prompts-config.test.ts`. |
+| Text prompts | **Equivalent** | Bounded multipart text joins and native prompt lifecycle coverage in `tests/provider-prompts-config.test.ts`. Idle prompts carry native `streamingBehavior: "followUp"`, so an OMP continuation that wins the admission race queues the user message instead of failing with `AgentBusyError`; transport and provider lifecycle regressions live in `tests/omp-rpc-protocol.test.ts` and `tests/provider-steering.test.ts`. Prompt frame sizing shares the serialized request shape and covers the exact inline-image boundary. |
 | Image prompts | **Equivalent** | Valid native image models receive image blocks; text-only models receive private content-addressed local files with an aggregate cap and turn/session/failure cleanup. The file path is valid because the direct provider and OMP child share the daemon host. |
 | Structured attachments | **Equivalent** | Forge change requests/issues, legacy GitHub forms, text, reviews, and uploaded files render to bounded OMP prompt text; regression in `tests/provider-prompts-config.test.ts`. |
 | Optimistic message correlation | **Equivalent** | Native entry lookup, repeated-text occurrence correlation, steering correlation, replay-boundary dedupe, and exactly-one `session.prompt_result` regressions. Bounded branch snapshots rebuild incomplete or evicted replay watermarks; duplicate IDs, surplus matching entries, unavailable snapshots, and count/byte overflow retain local user-message fallback instead of claiming an old entry. |
@@ -36,7 +36,7 @@ Classifications:
 | Streaming assistant text | **Equivalent** | `OmpTimelineProjector` publishes stable complete snapshots with frame coalescing and bounded retained bytes. |
 | Streaming reasoning | **Equivalent** | Indexed thinking blocks map to stable `reasoning` items and share stream bounds. |
 | `contentIndex` ordering | **Equivalent** | Stable 0→1→0 updates, sparse-index rejection, and 64-block bounds are tested in `tests/provider-streaming.test.ts`. |
-| Tool lifecycle | **Equivalent** | Running/update/terminal snapshots, mapped shell/read/edit/write/search/fetch/subagent details, ID reuse defense, and terminal cleanup are covered. |
+| Tool lifecycle | **Equivalent** | Running/update/terminal snapshots, mapped shell/read/edit/write/search/fetch/subagent details, ID reuse defense, terminal cleanup, and announced pre-execution `tool_stream_update` buffering are covered. Post-terminal execution updates remain rejected as upstream protocol violations. |
 | Todo lifecycle | **Equivalent** | Todo tool results and reminder/auto-clear events reduce to one stable `omp:todos` item; malformed inputs degrade safely. |
 | Compaction events | **Equivalent** | `server/provider/session-compaction.ts` owns manual and automatic compaction lifecycle state; operations retain IDs, distinguish retry/skipped/canceled/failed states, flush streams, and refresh usage. |
 | Custom messages | **Equivalent** | Displayable custom and bash-execution messages map to typed or fallback items; `display: false` remains hidden. |
@@ -48,8 +48,8 @@ Classifications:
 | Manual `/compact` | **Equivalent** | Uses native `compact`, exposes one loading/completed operation, keeps long requests alive, refreshes usage, and supports interruption. |
 | `/autocompact` | **Equivalent** | `on`, `off`, and state-backed `toggle` use native `set_auto_compaction`; invalid or unavailable state fails visibly. |
 | `/handoff` | **Equivalent** | Structured command calls native `handoff` with optional instructions and owns a provider turn until native assistant/tool/permission/terminal events settle. |
-| `/follow-up` | **Equivalent** | Structured command sends native `follow_up` and owns a provider turn rather than publishing an immediate synthetic completion. |
-| Native steering | **Equivalent** | `delivery: steer` and `/steer` use native steering, correlate one user row, preserve active-turn ownership, and reject stale/terminal targets. |
+| `/follow-up` | **Equivalent** | Structured command sends correlated native `follow_up`, requires its acknowledgement, and owns a provider turn rather than publishing an immediate synthetic completion. |
+| Native steering | **Equivalent** | `delivery: steer` and `/steer` use correlated native steering, require its acknowledgement, preserve one user row and active-turn ownership, and reject stale/terminal targets. |
 | Interrupt | **Equivalent** | Native abort, exactly-one terminal event, in-flight tool/child retirement, permission cleanup, and concurrent-close serialization are covered. |
 | Model selection | **Equivalent** | Catalog-backed opaque public IDs map to native provider/model IDs; committed state is re-read after open/configure/recovery. |
 | Thinking selection | **Equivalent** | Model-specific effort lists, defaults, runtime changes, invalid selections, and recovery are covered. |

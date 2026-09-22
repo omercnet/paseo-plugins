@@ -85,6 +85,58 @@ describe("OMP direct provider", () => {
       output && typeof output === "object" && !Array.isArray(output) ? output.content : null,
     ).toMatch(/^\0+<truncated>$/u);
   });
+  test("applies the latest pre-execution stream preview when the tool starts", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector(
+      "pre-start-tool-session",
+      (event) => events.push(event),
+      new ManualScheduler(),
+    );
+
+    projector.project(
+      {
+        type: "tool_stream_update",
+        toolCallId: "streamed-tool",
+        toolName: "custom",
+        update: { preview: "first" },
+      },
+      "pre-start-tool-turn",
+    );
+    projector.project(
+      {
+        type: "tool_stream_update",
+        toolCallId: "streamed-tool",
+        toolName: "custom",
+        update: { preview: "latest" },
+      },
+      "pre-start-tool-turn",
+    );
+    expect(events).toEqual([]);
+
+    projector.project(
+      {
+        type: "tool_execution_start",
+        toolCallId: "streamed-tool",
+        toolName: "custom",
+        args: { path: "file.txt" },
+      },
+      "pre-start-tool-turn",
+    );
+
+    expect(events).toContainEqual({
+      type: "timeline.item",
+      sessionId: "pre-start-tool-session",
+      item: expect.objectContaining({
+        type: "tool_call",
+        status: "running",
+        detail: {
+          type: "unknown",
+          input: { path: "file.txt" },
+          output: { preview: "latest" },
+        },
+      }),
+    });
+  });
 
   test("preserves structured values with sensitive-shaped keys", () => {
     const serializer = new OmpPublicDataSerializer();

@@ -14,6 +14,14 @@ export function isSafeCommandName(name: string): boolean {
 }
 
 export type OmpPromptPayload = { text: string; images: OmpImage[]; commandName?: string };
+export function buildOmpPromptRequest(message: string, images: readonly OmpImage[] = []) {
+  return {
+    type: "prompt" as const,
+    message,
+    streamingBehavior: "followUp" as const,
+    ...(images.length > 0 ? { images } : {}),
+  };
+}
 
 const REVIEW_LINE_MARKERS = { add: "+", remove: "-", context: " " } as const;
 
@@ -222,12 +230,10 @@ export function inlinePromptFrameBytes(
   delivery: "prompt" | "steer",
 ): number {
   const images = payload.images.map(({ type, mimeType }) => ({ type, data: "", mimeType }));
-  const frame = {
-    type: delivery,
-    message: payload.text,
-    ...(images.length > 0 ? { images } : {}),
-    ...(delivery === "prompt" ? { id: "" } : {}),
-  };
+  const frame =
+    delivery === "prompt"
+      ? { ...buildOmpPromptRequest(payload.text, images), id: "" }
+      : { type: "steer", message: payload.text, ...(images.length > 0 ? { images } : {}) };
   const requestIdBytes = delivery === "prompt" ? RPC_REQUEST_ID_BYTES : 0;
   return (
     utf8Bytes(JSON.stringify(frame)) +

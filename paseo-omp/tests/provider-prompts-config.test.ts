@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import type { ProviderContent } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test } from "vitest";
+import { inlinePromptFrameBytes } from "../server/provider/prompt-payload";
 import {
   ALTERNATE_MODEL,
   ALTERNATE_MODEL_PUBLIC_ID,
@@ -231,8 +232,12 @@ describe("OMP direct provider", () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
     const session = sessionAt(runtime);
-    session.maxInputFrameBytes = 1024 * 1024;
     const smallPng = "iVBORw0KGgo=";
+    const inlinePayload = {
+      text: "",
+      images: [{ type: "image" as const, data: smallPng, mimeType: "image/png" as const }],
+    };
+    session.maxInputFrameBytes = inlinePromptFrameBytes(inlinePayload, "prompt");
 
     await connection.send({
       type: "session.prompt",
@@ -255,10 +260,7 @@ describe("OMP direct provider", () => {
     ]);
     await finishTurn(events, session, turnIdFrom(inlineResult));
 
-    const largePng = Buffer.concat([
-      Buffer.from("89504e470d0a1a0a", "hex"),
-      Buffer.alloc(768 * 1024 - 8),
-    ]).toString("base64");
+    session.maxInputFrameBytes = inlinePromptFrameBytes(inlinePayload, "prompt") - 1;
     await connection.send({
       type: "session.prompt",
       sessionId: "session-1",
@@ -267,7 +269,7 @@ describe("OMP direct provider", () => {
         delivery: "auto",
         input: {
           type: "message",
-          content: [{ type: "image", data: largePng, mimeType: "image/png" }],
+          content: [{ type: "image", data: smallPng, mimeType: "image/png" }],
         },
       },
     });
