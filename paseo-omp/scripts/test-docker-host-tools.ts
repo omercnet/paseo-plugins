@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import {
   parseEvidence,
   pluginRoot,
@@ -10,6 +12,9 @@ const image = process.env.PASEO_OMP_DOCKER_IMAGE ?? "node:22.22.1-bookworm-slim"
 const callerAgentId = "docker-agent";
 const workspaceId = "docker-workspace";
 const ownerMarker = "host-daemon";
+const workspaceRoot = join(pluginRoot, "..");
+const containerPluginRoot = "/repo/paseo-omp";
+
 const server = await startHostMcpServer(ownerMarker);
 try {
   const output = await runCaptured([
@@ -19,9 +24,9 @@ try {
     "--add-host",
     "host.docker.internal:host-gateway",
     "-v",
-    `${pluginRoot}:/work`,
+    `${workspaceRoot}:/repo`,
     "-w",
-    "/work",
+    containerPluginRoot,
     "-e",
     `MCP_HOST_URL=http://host.docker.internal:${server.port}/mcp/agents?callerAgentId=${callerAgentId}`,
     "-e",
