@@ -917,8 +917,8 @@ export function sessionAt(runtime: FakeOmpRuntime, index = 0): FakeOmpSession {
   return session;
 }
 
-export async function createHarness(
-  runtime = new FakeOmpRuntime(),
+export async function createHarness<T extends OmpRuntime = FakeOmpRuntime>(
+  runtime: T = new FakeOmpRuntime() as unknown as T,
   scheduler = new ManualScheduler(),
   capabilities: readonly string[] = [
     "prompt.message",

@@ -80,6 +80,10 @@ type ToolSnapshot = {
   specializedRendered: boolean;
   silent: boolean;
 };
+type PendingToolStream = {
+  output: JsonValue;
+  retainedBytes: number;
+};
 
 export interface OmpTimelineScheduler {
   set(callback: () => void | Promise<void>, delayMs: number): unknown;
@@ -354,6 +358,8 @@ type CompactionSlot = {
 
 export class OmpTimelineProjector {
   private readonly tools = new Map<string, ToolSnapshot>();
+  private readonly pendingToolStreams = new Map<string, PendingToolStream>();
+  private pendingToolStreamBytes = 0;
   private stream: StreamSnapshot | null = null;
   private flushTimer: unknown;
   private currentTurnId: string | null = null;
@@ -493,6 +499,11 @@ export class OmpTimelineProjector {
         return;
       case "tool_execution_start": {
         this.flush(true);
+        const pendingStream = this.pendingToolStreams.get(event.toolCallId);
+        if (pendingStream) {
+          this.pendingToolStreams.delete(event.toolCallId);
+          this.pendingToolStreamBytes -= pendingStream.retainedBytes;
+        }
         if (this.toolIdentitySaturated || this.retiredToolCallIds.has(event.toolCallId)) return;
         const previous = this.tools.get(event.toolCallId);
         if (!previous && this.tools.size >= MAX_ACTIVE_TOOLS) return;
@@ -501,7 +512,17 @@ export class OmpTimelineProjector {
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
         );
-        const retainedBytes = boundedJsonBytes(input, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
+        const inputBytes = boundedJsonBytes(input, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
+        let output = pendingStream?.output ?? null;
+        let retainedBytes = inputBytes + (pendingStream?.retainedBytes ?? 0);
+        if (
+          pendingStream &&
+          this.activeToolBytes - (previous?.retainedBytes ?? 0) + retainedBytes >
+            MAX_ACTIVE_TOOL_BYTES
+        ) {
+          output = null;
+          retainedBytes = inputBytes;
+        }
         if (
           this.activeToolBytes - (previous?.retainedBytes ?? 0) + retainedBytes >
           MAX_ACTIVE_TOOL_BYTES
@@ -520,7 +541,7 @@ export class OmpTimelineProjector {
           nativeName: event.toolName,
           name: this.dataFilter.text(displayName, 256),
           input,
-          output: null,
+          output,
           retainedBytes,
           turnId,
           generation: this.runtimeGeneration,
@@ -534,15 +555,28 @@ export class OmpTimelineProjector {
       }
       case "tool_execution_update":
       case "tool_stream_update": {
-        const previous = this.tools.get(event.toolCallId);
-        if (!previous) return;
-        if (previous.turnId !== turnId || previous.generation !== this.runtimeGeneration) return;
         const output = this.dataFilter.json(
           event.type === "tool_execution_update" ? event.partialResult : event.update,
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
           MAX_PUBLIC_TOOL_PAYLOAD_BYTES,
         );
         const outputBytes = boundedJsonBytes(output, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
+        const previous = this.tools.get(event.toolCallId);
+        if (!previous) {
+          if (event.type !== "tool_stream_update") return;
+          const pending = this.pendingToolStreams.get(event.toolCallId);
+          if (!pending && this.pendingToolStreams.size >= MAX_ACTIVE_TOOLS) return;
+          if (
+            this.pendingToolStreamBytes - (pending?.retainedBytes ?? 0) + outputBytes >
+            MAX_ACTIVE_TOOL_BYTES
+          ) {
+            return;
+          }
+          this.pendingToolStreamBytes += outputBytes - (pending?.retainedBytes ?? 0);
+          this.pendingToolStreams.set(event.toolCallId, { output, retainedBytes: outputBytes });
+          return;
+        }
+        if (previous.turnId !== turnId || previous.generation !== this.runtimeGeneration) return;
         const inputBytes = boundedJsonBytes(previous.input, MAX_PUBLIC_TOOL_PAYLOAD_BYTES);
         const retainedBytes = inputBytes + outputBytes;
         if (this.activeToolBytes - previous.retainedBytes + retainedBytes > MAX_ACTIVE_TOOL_BYTES)
@@ -869,6 +903,7 @@ export class OmpTimelineProjector {
     this.activeToolBytes = 0;
     this.replayToolCalls.clear();
     this.tools.clear();
+    this.clearPendingToolStreams();
     this.commandText = "";
     this.commandPublishedText = "";
     this.revertEntryByToken.clear();
@@ -1136,6 +1171,7 @@ export class OmpTimelineProjector {
     this.clearFlushTimer();
     this.stream = null;
     this.tools.clear();
+    this.clearPendingToolStreams();
     this.replayToolCalls.clear();
     this.activeToolBytes = 0;
     this.replayCandidates.clear();
@@ -1176,6 +1212,11 @@ export class OmpTimelineProjector {
     }
     this.activeToolBytes = 0;
     this.tools.clear();
+    this.clearPendingToolStreams();
+  }
+  private clearPendingToolStreams(): void {
+    this.pendingToolStreams.clear();
+    this.pendingToolStreamBytes = 0;
   }
   private ensureTurn(turnId: string): void {
     if (this.currentTurnId === turnId) return;

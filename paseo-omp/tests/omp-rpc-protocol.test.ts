@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import type { OmpSpawnRequest } from "../server/provider/omp-rpc-environment";
-import type { OmpRpcEvent } from "../server/provider/omp-rpc-protocol";
+import type {
+  OmpProtocolViolationDiagnostic,
+  OmpRpcEvent,
+} from "../server/provider/omp-rpc-protocol";
 import {
   FakeRpcChild,
   NATIVE_TOOL_APPROVAL_FRAME_BYTES,
@@ -91,10 +94,11 @@ describe("OMP RPC transport", () => {
     }
   });
 
-  test("sends steering and out-of-band commands with native wire shapes", async () => {
+  test("sends prompt queueing, steering, and out-of-band commands with native wire shapes", async () => {
     const child = new FakeRpcChild();
     const launches: OmpSpawnRequest[] = [];
     const commands: Record<string, unknown>[] = [];
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
     observeCommands(child, (command) => {
       commands.push(command);
       if (command.type === "negotiate_protocol") {
@@ -106,7 +110,21 @@ describe("OMP RPC transport", () => {
           data: { protocolVersion: 2 },
         });
       }
-      if (command.type === "set_auto_compaction" || command.type === "handoff") {
+      if (command.type === "prompt") {
+        child.write({
+          type: "response",
+          id: command.id,
+          command: "prompt",
+          success: true,
+          data: { agentInvoked: true },
+        });
+      }
+      if (
+        command.type === "steer" ||
+        command.type === "follow_up" ||
+        command.type === "set_auto_compaction" ||
+        command.type === "handoff"
+      ) {
         child.write({
           type: "response",
           id: command.id,
@@ -116,7 +134,9 @@ describe("OMP RPC transport", () => {
         });
       }
     });
-    const runtime = runtimeFor(child, launches);
+    const runtime = runtimeFor(child, launches, undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    });
     const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
@@ -143,6 +163,11 @@ describe("OMP RPC transport", () => {
       isTerminal: true,
     });
 
+    await expect(session.prompt("queued work")).resolves.toEqual({
+      requestId: expect.any(String),
+      agentInvoked: true,
+    });
+
     await session.steer("focus");
     await session.followUp("verify");
     await session.setAutoCompaction(false);
@@ -157,16 +182,28 @@ describe("OMP RPC transport", () => {
       expect.objectContaining({ type: "negotiate_protocol", protocolVersion: 2 }),
     );
     expect(commands).toContainEqual({
+      type: "prompt",
+      message: "queued work",
+      streamingBehavior: "followUp",
+      id: expect.any(String),
+    });
+    expect(commands).toContainEqual({
       type: "steer",
       message: "focus",
+      id: expect.any(String),
     });
-    expect(commands).toContainEqual({ type: "follow_up", message: "verify" });
+    expect(commands).toContainEqual({
+      type: "follow_up",
+      message: "verify",
+      id: expect.any(String),
+    });
     expect(commands).toContainEqual(
       expect.objectContaining({ type: "set_auto_compaction", enabled: false }),
     );
     expect(commands).toContainEqual(
       expect.objectContaining({ type: "handoff", customInstructions: "implement now" }),
     );
+    expect(diagnostics).toEqual([]);
     await session.close();
   });
 

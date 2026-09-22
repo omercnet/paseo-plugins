@@ -159,6 +159,7 @@ export class OmpRpcProcess {
   private readonly terminateProcessTree: (pid: number) => Promise<ProcessTreeCleanup>;
   private readonly streamedBlocks = new Map<number, string>();
   private readonly activeToolCallIds = new Set<string>();
+  private readonly announcedToolCallIds = new Set<string>();
   private pendingWriteBytes = 0;
   private commandTextLength = 0;
   private lineParts: Buffer[] = [];
@@ -1112,6 +1113,7 @@ export class OmpRpcProcess {
     if (event.data.type === "turn_end") {
       this.commandTextLength = 0;
       this.activeToolCallIds.clear();
+      this.announcedToolCallIds.clear();
     }
   }
 
@@ -1133,6 +1135,7 @@ export class OmpRpcProcess {
       this.streamedBlocks.clear();
       this.commandTextLength = 0;
       this.activeToolCallIds.clear();
+      this.announcedToolCallIds.clear();
       return true;
     }
     if (event.type === "command_output") {
@@ -1151,12 +1154,19 @@ export class OmpRpcProcess {
       this.activeToolCallIds.add(event.toolCallId);
       return true;
     }
-    if (event.type === "tool_execution_update" || event.type === "tool_stream_update") {
+    if (event.type === "tool_stream_update") {
+      return (
+        this.activeToolCallIds.has(event.toolCallId) ||
+        this.announcedToolCallIds.has(event.toolCallId)
+      );
+    }
+    if (event.type === "tool_execution_update") {
       return this.activeToolCallIds.has(event.toolCallId);
     }
     if (event.type === "tool_execution_end") {
       if (!this.activeToolCallIds.has(event.toolCallId)) return false;
       this.activeToolCallIds.delete(event.toolCallId);
+      this.announcedToolCallIds.delete(event.toolCallId);
       return true;
     }
     if (
@@ -1174,6 +1184,14 @@ export class OmpRpcProcess {
       nextBlocks.set(0, content);
     } else if (Array.isArray(content)) {
       for (const [index, part] of content.entries()) {
+        if (
+          part.type === "toolCall" &&
+          typeof part.id === "string" &&
+          (this.announcedToolCallIds.has(part.id) ||
+            this.announcedToolCallIds.size < MAX_ACTIVE_TOOLS)
+        ) {
+          this.announcedToolCallIds.add(part.id);
+        }
         const text =
           part.type === "text" ? part.text : part.type === "thinking" ? part.thinking : undefined;
         if (text !== undefined) nextBlocks.set(index, text);
