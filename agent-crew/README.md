@@ -22,12 +22,12 @@ that no private organization names remained in the rendered page.
 
 ## Auto open
 
-When enabled in the plugin settings screen, Agent Crew opens the Explorer tab for each workspace once on that host.
+When enabled in the plugin settings screen, Agent Crew opens the Explorer tab once for each new workspace observed on that host.
 
 - Default: off.
-- Enabling starts watching the selected host's workspace directory and opens every currently unclaimed workspace, then any new workspaces once.
-- Disabling stops new opens. Re-enabling resumes for workspaces that have not already been opened on that host.
-- Workspace claims are remembered on the daemon so the same workspace does not reopen after reloads or reconnects.
+- Existing workspaces are not opened when the setting is enabled.
+- Disabling stops queued and future opens. Re-enabling resumes observation for workspaces created or updated afterward.
+- Workspace claims are remembered on the daemon so reconnects and reloads do not reopen a workspace.
 - A failed claim batch is retried once after two seconds, then dropped with a logged error.
 
 ## What it shows

@@ -8,7 +8,6 @@ import {
 
 const FLUSH_DELAY_MS = 400;
 const RETRY_DELAY_MS = 2000;
-const PAGE_LIMIT = 200;
 const SETTINGS_POLL_MS = 15_000;
 
 type ClaimJob = {
@@ -20,24 +19,6 @@ type AutoOpenManager = {
   setEnabled(enabled: boolean): void;
   dispose(): void;
 };
-
-async function listAllWorkspaceIds(paseo: PluginClientContext["paseo"]): Promise<string[]> {
-  const workspaceIds: string[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-  while (true) {
-    const result = await paseo.workspaces.list({
-      page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-    });
-    for (const workspace of result.entries) workspaceIds.push(workspace.id);
-    if (!result.pageInfo.hasMore) break;
-    const nextCursor = result.pageInfo.nextCursor ?? undefined;
-    if (!nextCursor || seenCursors.has(nextCursor)) break;
-    seenCursors.add(nextCursor);
-    cursor = nextCursor;
-  }
-  return workspaceIds;
-}
 
 function startAutoOpen(client: PluginClientContext): () => void {
   const pending = new Set<string>();
@@ -109,15 +90,6 @@ function startAutoOpen(client: PluginClientContext): () => void {
   const unsubscribeWorkspaces = client.paseo.workspaces.subscribe((update) => {
     if (update.kind === "upsert") enqueue(update.workspace.id);
   });
-
-  void listAllWorkspaceIds(client.paseo)
-    .then((workspaceIds) => {
-      if (closed) return;
-      for (const workspaceId of workspaceIds) enqueue(workspaceId);
-    })
-    .catch((error: unknown) => {
-      if (!closed) console.error("Agent Crew auto-open directory listing failed", error);
-    });
 
   return () => {
     closed = true;

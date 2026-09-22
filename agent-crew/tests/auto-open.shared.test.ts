@@ -265,24 +265,25 @@ describe("createAutoOpenManager", () => {
     manager.dispose();
   });
 
-  test("starts enabled from settings and seeds the explorer once", async () => {
+  test("starts enabled without seeding existing workspaces", async () => {
     vi.useFakeTimers();
     const harness = createMockClient({
       initialEnabled: true,
-      workspaceIds: ids(2001),
+      workspaceIds: ["existing-workspace"],
     });
     const manager = createAutoOpenManager(harness.client);
 
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(400);
 
     expect(harness.subscribeCalls).toBe(1);
-    expect(harness.listCalls).toBe(11);
-    expect(harness.claimCalls).toHaveLength(3);
-    expect(harness.claimCalls[0]).toHaveLength(MAX_AUTO_OPEN_CLAIM_BATCH);
-    expect(harness.claimCalls[1]).toHaveLength(MAX_AUTO_OPEN_CLAIM_BATCH);
-    expect(harness.claimCalls[2]).toEqual(["ws-2001"]);
-    expect(harness.client.openPanel).toHaveBeenCalledTimes(2001);
+    expect(harness.listCalls).toBe(0);
+    expect(harness.client.openPanel).not.toHaveBeenCalled();
+
+    harness.emitWorkspace("future-workspace");
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(harness.claimCalls).toEqual([["future-workspace"]]);
+    expect(harness.client.openPanel).toHaveBeenCalledTimes(1);
 
     manager.dispose();
   });
@@ -309,14 +310,12 @@ describe("createAutoOpenManager", () => {
   test("finishes an already-started chunk after disable and stops before the next chunk", async () => {
     vi.useFakeTimers();
     const claimDeferred = deferred<ClaimResult>();
-    const harness = createMockClient({
-      initialEnabled: true,
-      workspaceIds: ids(MAX_AUTO_OPEN_CLAIM_BATCH + 1),
-      claimDeferred,
-    });
+    const workspaceIds = ids(MAX_AUTO_OPEN_CLAIM_BATCH + 1);
+    const harness = createMockClient({ initialEnabled: true, claimDeferred });
     const manager = createAutoOpenManager(harness.client);
 
     await vi.advanceTimersByTimeAsync(0);
+    for (const workspaceId of workspaceIds) harness.emitWorkspace(workspaceId);
     await vi.advanceTimersByTimeAsync(400);
 
     expect(harness.claimCalls).toEqual([ids(MAX_AUTO_OPEN_CLAIM_BATCH)]);
@@ -359,9 +358,9 @@ describe("createAutoOpenManager", () => {
 
   test("retries chunk 2 and chunk 3 separately when each fails once", async () => {
     vi.useFakeTimers();
+    const workspaceIds = ids(2501);
     const harness = createMockClient({
       initialEnabled: true,
-      workspaceIds: ids(2501),
       claimResponder(workspaceIds, callIndex) {
         if (callIndex === 2 || callIndex === 4) {
           throw new Error(`chunk ${callIndex} failed`);
@@ -372,6 +371,7 @@ describe("createAutoOpenManager", () => {
     const manager = createAutoOpenManager(harness.client);
 
     await vi.advanceTimersByTimeAsync(0);
+    for (const workspaceId of workspaceIds) harness.emitWorkspace(workspaceId);
     await vi.advanceTimersByTimeAsync(400);
     await vi.advanceTimersByTimeAsync(2000);
     await vi.advanceTimersByTimeAsync(2000);

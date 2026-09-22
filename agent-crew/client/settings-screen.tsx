@@ -56,7 +56,7 @@ export function AgentCrewSettingsScreen({ onAutoOpenChange, theme }: AgentCrewSe
       <SettingsCard>
         <SettingsSwitch
           label="Open Agent Crew automatically"
-          hint="Open the Explorer panel once for each workspace this host has not opened before"
+          hint="Open the Explorer panel once for each new workspace observed while enabled"
           value={settings.values.autoOpenExplorer}
           disabled={settings.saving}
           onValueChange={async (autoOpenExplorer) => {
