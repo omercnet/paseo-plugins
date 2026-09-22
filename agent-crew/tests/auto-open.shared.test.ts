@@ -331,6 +331,32 @@ describe("createAutoOpenManager", () => {
     manager.dispose();
   });
 
+  test("does not start a second claim while one is in flight", async () => {
+    vi.useFakeTimers();
+    const claimDeferred = deferred<ClaimResult>();
+    const harness = createMockClient({ claimDeferred });
+    const manager = createAutoOpenManager(harness.client);
+
+    await vi.advanceTimersByTimeAsync(0);
+    manager.setEnabled(true);
+    harness.emitWorkspace("workspace-1");
+    await vi.advanceTimersByTimeAsync(400);
+
+    harness.emitWorkspace("workspace-2");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(harness.claimCalls).toEqual([["workspace-1"]]);
+
+    manager.setEnabled(false);
+    claimDeferred.resolve({ claimed: ["workspace-1"] });
+    await claimDeferred.promise;
+    await Promise.resolve();
+
+    expect(harness.claimCalls).toHaveLength(1);
+    expect(harness.client.openPanel).toHaveBeenCalledTimes(1);
+
+    manager.dispose();
+  });
+
   test("retries chunk 2 and chunk 3 separately when each fails once", async () => {
     vi.useFakeTimers();
     const harness = createMockClient({

@@ -11,10 +11,15 @@ const RETRY_DELAY_MS = 2000;
 const PAGE_LIMIT = 200;
 const SETTINGS_POLL_MS = 15_000;
 
-export interface AutoOpenManager {
+type ClaimJob = {
+  workspaceIds: string[];
+  retried: boolean;
+};
+
+type AutoOpenManager = {
   setEnabled(enabled: boolean): void;
   dispose(): void;
-}
+};
 
 async function listAllWorkspaceIds(paseo: PluginClientContext["paseo"]): Promise<string[]> {
   const workspaceIds: string[] = [];
@@ -34,53 +39,49 @@ async function listAllWorkspaceIds(paseo: PluginClientContext["paseo"]): Promise
   return workspaceIds;
 }
 
-export function startAutoOpen(client: PluginClientContext): () => void {
-  const seen = new Set<string>();
-  const failureCounts = new Map<string, number>();
-  let pending: string[] = [];
+function startAutoOpen(client: PluginClientContext): () => void {
+  const pending = new Set<string>();
+  const jobs: ClaimJob[] = [];
   let flushTimer: NodeJS.Timeout | undefined;
+  let pumping = false;
   let closed = false;
 
-  function scheduleFlush(delayMs: number, force = false) {
-    if (closed) return;
-    if (flushTimer && !force) return;
-    clearTimeout(flushTimer);
+  function schedule(delayMs: number) {
+    if (closed || pumping || flushTimer) return;
     flushTimer = setTimeout(() => {
       flushTimer = undefined;
-      void flush();
+      void pump();
     }, delayMs);
   }
 
   function enqueue(workspaceId: string) {
-    if (closed || seen.has(workspaceId)) return;
-    seen.add(workspaceId);
-    pending.push(workspaceId);
-    scheduleFlush(FLUSH_DELAY_MS);
+    if (closed) return;
+    pending.add(workspaceId);
+    schedule(FLUSH_DELAY_MS);
   }
 
-  function queueRetry(workspaceIds: readonly string[]): string[] {
-    const retryable: string[] = [];
-    for (const workspaceId of workspaceIds) {
-      const failures = failureCounts.get(workspaceId) ?? 0;
-      if (failures >= 1) continue;
-      failureCounts.set(workspaceId, failures + 1);
-      seen.delete(workspaceId);
-      retryable.push(workspaceId);
+  function drainPending() {
+    const workspaceIds = [...pending];
+    pending.clear();
+    for (let index = 0; index < workspaceIds.length; index += MAX_AUTO_OPEN_CLAIM_BATCH) {
+      jobs.push({
+        workspaceIds: workspaceIds.slice(index, index + MAX_AUTO_OPEN_CLAIM_BATCH),
+        retried: false,
+      });
     }
-    return retryable;
   }
 
-  async function flush() {
-    const batch = pending;
-    pending = [];
-    if (batch.length === 0 || closed) return;
-    let chunkIndex = 0;
-    let currentChunk: string[] = [];
-    try {
-      for (chunkIndex = 0; chunkIndex < batch.length; chunkIndex += MAX_AUTO_OPEN_CLAIM_BATCH) {
-        if (closed) return;
-        currentChunk = batch.slice(chunkIndex, chunkIndex + MAX_AUTO_OPEN_CLAIM_BATCH);
-        const { claimed } = await client.rpc(claimOpenedWorkspaces, { workspaceIds: currentChunk });
+  async function pump() {
+    if (closed || pumping) return;
+    pumping = true;
+    drainPending();
+    while (!closed && jobs.length > 0) {
+      const job = jobs.shift();
+      if (!job) break;
+      try {
+        const { claimed } = await client.rpc(claimOpenedWorkspaces, {
+          workspaceIds: job.workspaceIds,
+        });
         for (const workspaceId of claimed) {
           try {
             client.openPanel("crew", { workspaceId, location: "explorer" });
@@ -91,21 +92,22 @@ export function startAutoOpen(client: PluginClientContext): () => void {
             );
           }
         }
+      } catch (error) {
+        console.error("Agent Crew auto-open claim failed", error);
+        if (!job.retried) {
+          jobs.unshift({ ...job, retried: true });
+          pumping = false;
+          schedule(RETRY_DELAY_MS);
+          return;
+        }
       }
-    } catch (error) {
-      console.error("Agent Crew auto-open claim failed", error);
-      if (closed) return;
-      const failedChunk = queueRetry(currentChunk);
-      const remainder = batch.slice(chunkIndex + MAX_AUTO_OPEN_CLAIM_BATCH);
-      const spillover = pending;
-      pending = [...failedChunk, ...remainder, ...spillover];
-      if (pending.length > 0) scheduleFlush(RETRY_DELAY_MS, true);
     }
+    pumping = false;
+    if (!closed && pending.size > 0) schedule(FLUSH_DELAY_MS);
   }
 
   const unsubscribeWorkspaces = client.paseo.workspaces.subscribe((update) => {
-    if (update.kind !== "upsert") return;
-    enqueue(update.workspace.id);
+    if (update.kind === "upsert") enqueue(update.workspace.id);
   });
 
   void listAllWorkspaceIds(client.paseo)
@@ -114,12 +116,13 @@ export function startAutoOpen(client: PluginClientContext): () => void {
       for (const workspaceId of workspaceIds) enqueue(workspaceId);
     })
     .catch((error: unknown) => {
-      if (closed) return;
-      console.error("Agent Crew auto-open directory listing failed", error);
+      if (!closed) console.error("Agent Crew auto-open directory listing failed", error);
     });
 
   return () => {
     closed = true;
+    pending.clear();
+    jobs.length = 0;
     clearTimeout(flushTimer);
     unsubscribeWorkspaces();
   };
@@ -154,11 +157,7 @@ export function createAutoOpenManager(client: PluginClientContext): AutoOpenMana
         return;
       }
       const parsed = agentCrewSettingsSchema.safeParse(result.values);
-      if (!parsed.success) {
-        syncEnabled(DEFAULT_AUTO_OPEN_EXPLORER);
-        return;
-      }
-      syncEnabled(parsed.data.autoOpenExplorer);
+      syncEnabled(parsed.success ? parsed.data.autoOpenExplorer : DEFAULT_AUTO_OPEN_EXPLORER);
     } catch (error) {
       if (disposed || requestGeneration !== generation) return;
       console.error("Agent Crew auto-open settings read failed", error);
@@ -171,7 +170,7 @@ export function createAutoOpenManager(client: PluginClientContext): AutoOpenMana
   void refreshEnabled();
 
   return {
-    setEnabled(nextEnabled: boolean) {
+    setEnabled(nextEnabled) {
       generation += 1;
       syncEnabled(nextEnabled);
     },
