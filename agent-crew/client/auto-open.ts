@@ -8,6 +8,7 @@ import {
 
 const FLUSH_DELAY_MS = 400;
 const RETRY_DELAY_MS = 2000;
+const PAGE_LIMIT = 200;
 const SETTINGS_POLL_MS = 15_000;
 
 type ClaimJob = {
@@ -20,10 +21,31 @@ type AutoOpenManager = {
   dispose(): void;
 };
 
+async function listWorkspaceIds(paseo: PluginClientContext["paseo"]): Promise<Set<string>> {
+  const workspaceIds = new Set<string>();
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  while (true) {
+    const result = await paseo.workspaces.list({
+      page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
+    });
+    for (const workspace of result.entries) workspaceIds.add(workspace.id);
+    if (!result.pageInfo.hasMore) return workspaceIds;
+    const nextCursor = result.pageInfo.nextCursor ?? undefined;
+    if (!nextCursor || seenCursors.has(nextCursor)) return workspaceIds;
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+}
+
 function startAutoOpen(client: PluginClientContext): () => void {
   const pending = new Set<string>();
+  const buffered = new Set<string>();
   const jobs: ClaimJob[] = [];
+  let known: Set<string> | undefined;
   let flushTimer: NodeJS.Timeout | undefined;
+  let removeObserver: (() => void) | undefined;
+  let releaseSubscription: (() => Promise<void>) | undefined;
   let pumping = false;
   let closed = false;
 
@@ -39,6 +61,16 @@ function startAutoOpen(client: PluginClientContext): () => void {
     if (closed) return;
     pending.add(workspaceId);
     schedule(FLUSH_DELAY_MS);
+  }
+
+  function observe(workspaceId: string) {
+    if (!known) {
+      buffered.add(workspaceId);
+      return;
+    }
+    if (known.has(workspaceId)) return;
+    known.add(workspaceId);
+    enqueue(workspaceId);
   }
 
   function drainPending() {
@@ -87,16 +119,38 @@ function startAutoOpen(client: PluginClientContext): () => void {
     if (!closed && pending.size > 0) schedule(FLUSH_DELAY_MS);
   }
 
-  const unsubscribeWorkspaces = client.paseo.workspaces.subscribe((update) => {
-    if (update.kind === "upsert") enqueue(update.workspace.id);
-  });
+  void client.paseo.workspaces
+    .list({ subscribe: {} })
+    .then(({ subscription }) => {
+      if (closed) return subscription.release();
+      releaseSubscription = () => subscription.release();
+      removeObserver = subscription.subscribe({
+        snapshot() {},
+        update(message) {
+          if (message.type !== "workspace_update" || message.payload.kind !== "upsert") return;
+          observe(message.payload.workspace.id);
+        },
+      });
+      return listWorkspaceIds(client.paseo).then((workspaceIds) => {
+        if (closed) return;
+        known = workspaceIds;
+        for (const workspaceId of buffered) observe(workspaceId);
+        buffered.clear();
+      });
+    })
+    .catch((error: unknown) => {
+      if (!closed) console.error("Agent Crew auto-open observation failed", error);
+    });
 
   return () => {
     closed = true;
     pending.clear();
+    buffered.clear();
     jobs.length = 0;
     clearTimeout(flushTimer);
-    unsubscribeWorkspaces();
+    removeObserver?.();
+    void releaseSubscription?.();
+    releaseSubscription = undefined;
   };
 }
 

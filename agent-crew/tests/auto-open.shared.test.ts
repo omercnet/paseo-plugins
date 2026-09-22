@@ -62,9 +62,17 @@ function createMockClient(
     claimDeferred,
     claimResponder,
   } = options;
-  let subscriber: ((update: { kind: string; workspace: { id: string } }) => void) | undefined;
+  let observer:
+    | {
+        snapshot(snapshot: unknown): void;
+        update(message: {
+          type: "workspace_update";
+          payload: { kind: "upsert"; workspace: { id: string } };
+        }): void;
+      }
+    | undefined;
   let subscribeCalls = 0;
-  let unsubscribeCalls = 0;
+  let releaseCalls = 0;
   let listCalls = 0;
   const claimCalls: string[][] = [];
 
@@ -90,26 +98,46 @@ function createMockClient(
     openPanel: vi.fn(),
     paseo: {
       workspaces: {
-        list: vi.fn(async ({ page }: { page?: { limit?: number; cursor?: string } } = {}) => {
-          listCalls += 1;
-          const limit = page?.limit ?? workspaceIds.length;
-          const start = page?.cursor ? Number(page.cursor) : 0;
-          const entries = workspaceIds.slice(start, start + limit).map((id) => ({ id }));
-          const next = start + limit;
-          const hasMore = next < workspaceIds.length;
-          return {
-            entries,
-            pageInfo: { hasMore, nextCursor: hasMore ? String(next) : null },
-          };
-        }),
-        subscribe: vi.fn((callback: typeof subscriber) => {
-          subscriber = callback;
-          subscribeCalls += 1;
-          return () => {
-            unsubscribeCalls += 1;
-            subscriber = undefined;
-          };
-        }),
+        list: vi.fn(
+          async ({
+            page,
+            subscribe,
+          }: {
+            page?: { limit?: number; cursor?: string };
+            subscribe?: object;
+          } = {}) => {
+            listCalls += 1;
+            const limit = page?.limit ?? workspaceIds.length;
+            const start = page?.cursor ? Number(page.cursor) : 0;
+            const entries = workspaceIds.slice(start, start + limit).map((id) => ({ id }));
+            const next = start + limit;
+            const hasMore = next < workspaceIds.length;
+            const result = {
+              entries,
+              pageInfo: { hasMore, nextCursor: hasMore ? String(next) : null },
+            };
+            if (!subscribe) return result;
+            return {
+              ...result,
+              subscriptionId: "workspace-subscription",
+              subscription: {
+                subscriptionId: "workspace-subscription",
+                ready: Promise.resolve({ ...result, subscriptionId: "workspace-subscription" }),
+                subscribe(nextObserver: typeof observer) {
+                  observer = nextObserver;
+                  subscribeCalls += 1;
+                  return () => {
+                    observer = undefined;
+                  };
+                },
+                async release() {
+                  releaseCalls += 1;
+                  observer = undefined;
+                },
+              },
+            };
+          },
+        ),
       },
     },
   } as unknown as PluginClientContext;
@@ -117,13 +145,16 @@ function createMockClient(
   return {
     client,
     emitWorkspace(workspaceId: string) {
-      subscriber?.({ kind: "upsert", workspace: { id: workspaceId } });
+      observer?.update({
+        type: "workspace_update",
+        payload: { kind: "upsert", workspace: { id: workspaceId } },
+      });
     },
     get subscribeCalls() {
       return subscribeCalls;
     },
-    get unsubscribeCalls() {
-      return unsubscribeCalls;
+    get releaseCalls() {
+      return releaseCalls;
     },
     get listCalls() {
       return listCalls;
@@ -258,7 +289,7 @@ describe("createAutoOpenManager", () => {
 
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(harness.client.paseo.workspaces.subscribe).not.toHaveBeenCalled();
+    expect(harness.listCalls).toBe(0);
     expect(harness.client.rpc).toHaveBeenCalledWith(agentCrewSettingsRpc.read, {});
     expect(harness.client.openPanel).not.toHaveBeenCalled();
 
@@ -276,8 +307,12 @@ describe("createAutoOpenManager", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(harness.subscribeCalls).toBe(1);
-    expect(harness.listCalls).toBe(0);
+    expect(harness.listCalls).toBe(2);
     expect(harness.client.openPanel).not.toHaveBeenCalled();
+
+    harness.emitWorkspace("existing-workspace");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(harness.claimCalls).toEqual([]);
 
     harness.emitWorkspace("future-workspace");
     await vi.advanceTimersByTimeAsync(400);
@@ -296,12 +331,14 @@ describe("createAutoOpenManager", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     manager.setEnabled(true);
+    await vi.advanceTimersByTimeAsync(0);
     expect(harness.subscribeCalls).toBe(1);
 
     manager.setEnabled(false);
-    expect(harness.unsubscribeCalls).toBe(1);
+    expect(harness.releaseCalls).toBe(1);
 
     manager.setEnabled(true);
+    await vi.advanceTimersByTimeAsync(0);
     expect(harness.subscribeCalls).toBe(2);
 
     manager.dispose();
@@ -338,6 +375,7 @@ describe("createAutoOpenManager", () => {
 
     await vi.advanceTimersByTimeAsync(0);
     manager.setEnabled(true);
+    await vi.advanceTimersByTimeAsync(0);
     harness.emitWorkspace("workspace-1");
     await vi.advanceTimersByTimeAsync(400);
 
