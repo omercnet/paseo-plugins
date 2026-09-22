@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import contribute from "../index.server";
 import {
@@ -237,11 +238,11 @@ describe("agent MCP injection", () => {
 describe("runtime installation compatibility", () => {
   it("requires at least the Node major required by agent-browser", async () => {
     const pluginPackage = JSON.parse(
-      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+      await readFile(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
     ) as { engines?: { node?: string } };
     const agentBrowserPackage = JSON.parse(
       await readFile(
-        new URL("../node_modules/agent-browser/package.json", import.meta.url),
+        fileURLToPath(new URL("../node_modules/agent-browser/package.json", import.meta.url)),
         "utf8",
       ),
     ) as { engines?: { node?: string } };
