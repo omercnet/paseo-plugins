@@ -300,10 +300,8 @@ jobs:
         run: npm run prepare:runtime
       - name: Typecheck
         run: npm run typecheck
-      - name: Lint
-        run: npm run lint
-      - name: Check formatting
-        run: npm run format:check
+      - name: Check formatting and lint
+        run: npm run check
       - name: Unit tests
         run: npm run test:unit
       - name: Browser smoke test

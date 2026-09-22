@@ -53,6 +53,7 @@
 		"zod": "catalog:"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "catalog:",
 		"@getpaseo/plugin": "catalog:",
 		"@tanstack/react-query": "catalog:",
 		"@types/node": "catalog:",
