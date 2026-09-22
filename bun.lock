@@ -169,6 +169,7 @@
       "name": "@omercnet/paseo-shared-browser",
       "version": "0.4.2",
       "dependencies": {
+        "@getpaseo/plugin": "catalog:",
         "@modelcontextprotocol/sdk": "catalog:",
         "agent-browser": "0.37.1",
         "esbuild": "catalog:",
@@ -176,7 +177,6 @@
       },
       "devDependencies": {
         "@biomejs/biome": "catalog:",
-        "@getpaseo/plugin": "catalog:",
         "@tanstack/react-query": "catalog:",
         "@types/node": "catalog:",
         "@types/react": "catalog:",

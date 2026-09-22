@@ -22,8 +22,6 @@ function stageManifest(root, catalog, install) {
 	const source = readFileSync(manifestPath, "utf8");
 	const manifest = JSON.parse(source);
 
-	manifest.dependencies ??= {};
-	manifest.dependencies["@getpaseo/plugin"] = catalog["@getpaseo/plugin"];
 	for (const [name, spec] of Object.entries(manifest.dependencies)) {
 		if (spec !== "catalog:") continue;
 		if (typeof catalog[name] !== "string")
