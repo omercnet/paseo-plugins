@@ -1,4 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { startAutoOpen } from "./client/auto-open";
 import { AgentCrew } from "./client/main";
 
 export default function contribute(client: PluginClientContext) {
@@ -20,5 +21,5 @@ export default function contribute(client: PluginClientContext) {
       openPanel("crew", { location: "explorer" });
     },
   });
-  return () => {};
+  return startAutoOpen(client);
 }

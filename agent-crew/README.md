@@ -3,6 +3,9 @@
 See and control every managed Paseo agent working in a workspace. Agent Crew adds a
 workspace-context Explorer panel plus an `Open Agent Crew` Command Center item.
 
+This checkout is a local fork of `omercnet/paseo-plugins/agent-crew` with one addition:
+automatic Explorer tab opening, described below.
+
 It answers "which crews are active here, and which agent needs me now?" while preserving managed
 parent-child relationships across workspace boundaries.
 
@@ -19,6 +22,22 @@ that no private organization names remained in the rendered page.
 ### Safe action confirmation
 
 ![Agent Crew nudge confirmation](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/agent-crew/docs/images/agent-crew-action.png)
+
+## Auto open
+
+The fork opens the Agent Crew Explorer tab once per workspace, without manual action:
+
+- The client watches the workspace directory on the selected host through
+  `paseo.workspaces.subscribe()` plus a full paged `paseo.workspaces.list()` seed.
+- Each new workspace ID is claimed through the `agent-crew.auto-open.claim` RPC. The
+  daemon-side handler records claimed IDs in `$PASEO_HOME/plugin-data/agent-crew/auto-open.json`
+  (`~/.paseo` by default) with atomic writes, so a workspace is claimed at most once across
+  daemon restarts, plugin reloads, and reconnects.
+- Claimed workspaces get `client.openPanel("crew", { workspaceId, location: "explorer" })`.
+- Closing the tab stays closed: the claim is permanent, so the plugin never re-opens a
+  workspace the user closed. New workspaces, including agent-created worktrees, open on
+  first sight even if they were created while no client was connected.
+- A failed claim batch is retried once after two seconds, then dropped with a logged error.
 
 ## What it shows
 
@@ -94,7 +113,16 @@ Agent Crew intentionally stays inside the public Paseo plugin SDK.
 
 Paseo plugins are trusted, unsandboxed code. Review the source before installing it.
 
-From npm:
+This fork installs from the local checkout on the Paseo daemon host:
+
+```bash
+paseo plugin install /home/builder/workspace/paseo-plugins/agent-crew
+```
+
+Source changes load with `paseo plugin reload agent-crew`; `paseo plugin update` does not
+apply to directory sources.
+
+Upstream installation, from npm:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-agent-crew

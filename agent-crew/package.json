@@ -32,7 +32,10 @@
     "LICENSE",
     "README.md",
     "client",
+    "shared",
+    "server",
     "index.client.tsx",
+    "index.server.ts",
     "paseo-plugin.json"
   ],
   "scripts": {
