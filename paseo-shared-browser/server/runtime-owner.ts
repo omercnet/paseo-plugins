@@ -129,7 +129,7 @@ export async function createRuntimeOwner(): Promise<RuntimeOwner<OwnedRuntime>> 
       }
     },
     async stop(owned) {
-      await owned.runtime.shutdown(process.platform === "win32");
+      await owned.runtime.shutdown();
     },
   };
 }
