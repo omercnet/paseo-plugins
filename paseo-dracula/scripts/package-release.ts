@@ -24,9 +24,10 @@ const root = "paseo-dracula";
 const files: Record<string, Uint8Array> = {};
 
 for (const path of releaseFiles) {
-  files[posix.join(root, path)] = path === "package.json"
-    ? new TextEncoder().encode(JSON.stringify(resolvedPackageJson, null, 2) + "\n")
-    : await readFile(path);
+  files[posix.join(root, path)] =
+    path === "package.json"
+      ? new TextEncoder().encode(`${JSON.stringify(resolvedPackageJson, null, 2)}\n`)
+      : await readFile(path);
 }
 await mkdir("dist", { recursive: true });
 await rm(output, { force: true });
