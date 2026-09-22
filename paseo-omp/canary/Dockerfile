@@ -25,6 +25,10 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 RUN git config --system --add safe.directory /workspace/paseo-plugins
 COPY --from=plugin-build --chown=1000:1000 /opt/paseo-omp /opt/paseo-omp
+COPY --chown=1000:1000 paseo-omp/canary/protocol-violation-peer.mjs /opt/paseo-omp/canary/protocol-violation-peer.mjs
+COPY --chown=1000:1000 paseo-omp/canary/mcp-server.ts /opt/paseo-omp/canary/mcp-server.ts
+RUN test -f /opt/paseo-omp/canary/protocol-violation-peer.mjs \
+  && test -f /opt/paseo-omp/canary/mcp-server.ts
 COPY --chown=1000:1000 paseo-omp/canary/paseo.config.json /home/paseo/.paseo/config.json
 COPY --chown=1000:1000 paseo-omp/canary/models.yml /home/paseo/.omp/agent/models.yml
 COPY --chown=1000:1000 paseo-omp/canary/omp.config.yml /home/paseo/.omp/agent/config.yml
