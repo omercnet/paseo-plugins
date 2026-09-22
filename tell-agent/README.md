@@ -18,7 +18,7 @@ remained in the rendered page.
 
 ## Install
 
-### Paseo 0.9.0-beta.1 or later
+### Paseo 0.9.0 or later
 
 Install the npm package:
 
@@ -32,23 +32,7 @@ Update an npm installation by its plugin ID:
 paseo plugin update tell-agent
 ```
 
-Paseo 0.9's reviewed update flow shows the current and proposed revisions before asking for approval. Add `--check` to preview without applying or `--yes` to skip the approval prompt. npm installation and this reviewed update behavior are not available in Paseo 0.8.
-
-### Paseo 0.8.x
-
-The manifest remains compatible with Paseo 0.8. Install from the Git repository:
-
-```bash
-paseo plugin add omercnet/paseo-plugins:tell-agent
-```
-
-Or install a local checkout on the daemon host:
-
-```bash
-paseo plugin install /absolute/path/to/paseo-plugins/tell-agent
-```
-
-Use `paseo plugin update tell-agent` to refresh a Git installation. After changing a local checkout, use `paseo plugin reload tell-agent`.
+Paseo 0.9's reviewed update flow shows the current and proposed revisions before asking for approval. Add `--check` to preview without applying or `--yes` to skip the approval prompt.
 
 ## Use
 

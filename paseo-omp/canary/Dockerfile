@@ -1,10 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22.22.1-bookworm-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d AS plugin-build
-WORKDIR /src/paseo-omp
-COPY paseo-omp/package.json paseo-omp/package-lock.json ./
-RUN npm ci --ignore-scripts
-COPY paseo-omp/ ./
+FROM oven/bun:1.4.2-debian@sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73 AS plugin-build
+WORKDIR /src/paseo-plugins
+COPY package.json bun.lock .
+COPY paseo-omp ./paseo-omp
+WORKDIR /src/paseo-plugins/paseo-omp
+RUN tarball="$(mktemp /tmp/paseo-omp-XXXXXX.tgz)" && \
+  bun pm pack --ignore-scripts --filename "$tarball" && \
+  mkdir -p /opt/paseo-omp && \
+  tar -xzf "$tarball" -C /opt/paseo-omp --strip-components=1 && \
+  cd /opt/paseo-omp && \
+  bun install --production --ignore-scripts
 
 FROM ghcr.io/getpaseo/paseo:0.9.0-beta.1@sha256:f75a0eb3547ad3cc6bbdeaa7277d2d50eb4d06a9dd669d480371d7adf1c911b5
 
@@ -17,7 +23,7 @@ USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
-COPY --from=plugin-build --chown=1000:1000 /src/paseo-omp /opt/paseo-omp
+COPY --from=plugin-build --chown=1000:1000 /opt/paseo-omp /opt/paseo-omp
 COPY --chown=1000:1000 paseo-omp/canary/paseo.config.json /home/paseo/.paseo/config.json
 COPY --chown=1000:1000 paseo-omp/canary/models.yml /home/paseo/.omp/agent/models.yml
 COPY --chown=1000:1000 paseo-omp/canary/omp.config.yml /home/paseo/.omp/agent/config.yml
@@ -33,7 +39,3 @@ RUN case "${TARGETARCH}" in \
   && echo "${omp_sha}  /usr/local/bin/omp" | sha256sum --check --strict \
   && chmod 0755 /usr/local/bin/omp \
   && test "$(/usr/local/bin/omp --version)" = "omp/${OMP_VERSION}"
-
-ENV PASEO_WEB_UI_ENABLED=true
-ENV PASEO_LISTEN=0.0.0.0:6767
-ENV PASEO_RELAY_ENABLED=false

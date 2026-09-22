@@ -7,9 +7,8 @@ const specializedPlugins = new Map([
   ["paseo-omp", "omp"],
   ["paseo-shared-browser", "shared-browser"],
 ]);
-const ciPaths = [".github/workflows/ci.yml", ".github/scripts/"];
+const runAllPaths = ["package.json", "bun.lock", ".github/workflows/ci.yml", ".github/scripts/"];
 const workflowPaths = [".github/workflows/", ".github/actions/"];
-
 export function discoverPlugins(root = process.cwd()) {
   return readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
@@ -75,9 +74,7 @@ export function discoverPlugins(root = process.cwd()) {
 
 export function detectAffected(files, plugins = discoverPlugins()) {
   const runAll = files.some((file) =>
-    ciPaths.some((ciPath) =>
-      ciPath.endsWith("/") ? file.startsWith(ciPath) : file === ciPath,
-    ),
+    runAllPaths.some((path) => (path.endsWith("/") ? file.startsWith(path) : file === path)),
   );
   const workflowAffected = files.some((file) =>
     workflowPaths.some((workflowPath) => file.startsWith(workflowPath)),

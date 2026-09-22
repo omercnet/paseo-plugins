@@ -72,24 +72,10 @@ paseo plugin install npm:@omercnet/paseo-shared-browser
 paseo plugin ls
 ```
 
-Or install from Git:
-
-```bash
-paseo plugin add omercnet/paseo-plugins:paseo-shared-browser
-paseo plugin ls
-```
-
-Installation runs `npm ci --include=dev` and `npm run prepare:runtime` on the daemon host. The
-preparation step installs the pinned browser runtime and builds both `supervisor.cjs` and
+When Paseo acquires the npm package, it runs the `npm run prepare:runtime` build hook automatically. The
+hook installs the pinned browser runtime and builds both `supervisor.cjs` and
 `shared-browser-mcp.cjs` under
-`$PASEO_HOME/plugin-data/shared-browser/runtime`. For a local monorepo checkout:
-
-```bash
-cd paseo-plugins/paseo-shared-browser
-npm ci --include=dev
-npm run prepare:runtime
-paseo plugin install "$PWD"
-```
+`$PASEO_HOME/plugin-data/shared-browser/runtime`.
 
 The build requires Node.js 24 or newer and npm on the daemon host. On Linux x64, macOS, and
 Windows, runtime preparation installs and stages the platform's Chrome for Testing distribution. On
@@ -175,23 +161,21 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 ## Develop
 
 ```bash
-npm ci
-npm run typecheck
-npm run lint
-npm run format:check
-npm run test:unit
-npm run prepare:runtime
-paseo plugin install "$PWD"
-paseo plugin reload shared-browser
+bun install
+bun run typecheck
+bun run lint
+bun run format:check
+bun run test:unit
+bun run prepare:runtime
 ```
 
-`npm run test:smoke` launches the configured real Chromium runtime and exercises two viewers,
+`bun run test:smoke` launches the configured real Chromium runtime and exercises two viewers,
 control handoff, reconnect, stale-frame rejection, viewport changes, device emulation, profile
 persistence, and archive teardown.
 
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-Both the Paseo daemon and app must satisfy `^0.8.0 || ^0.9.0-beta.1`, which supports Paseo 0.8
-and the Paseo 0.9 beta line. The client surface uses React Native primitives and works in desktop,
-web, iOS, and Android Paseo clients.
+Both the Paseo daemon and app must satisfy `>=0.8.0 <0.10.0`, which supports Paseo 0.8
+and Paseo 0.9. The client surface uses React Native primitives and works in desktop, web, iOS,
+and Android Paseo clients.

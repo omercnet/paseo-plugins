@@ -153,6 +153,23 @@ test("workflow changes enable security analysis", () => {
   assert.deepEqual(result.changed, []);
 });
 
+test("root package manager changes select every discovered plugin", () => {
+  const plugins = discoverPlugins();
+
+  for (const file of ["package.json", "bun.lock"]) {
+    const result = detectAffected([file], plugins);
+
+    assert.equal(
+      result.npmMatrix.include.length,
+      plugins.filter(({ kind }) => kind === "npm").length,
+    );
+    assert.equal(result.ompAffected, true);
+    assert.equal(result.sharedBrowserAffected, true);
+    assert.equal(result.affected.length, plugins.length);
+    assert.deepEqual(result.changed, []);
+  }
+});
+
 test("CI implementation changes select every discovered plugin", () => {
   const plugins = discoverPlugins();
 

@@ -37,22 +37,22 @@ Context Mode currently couples sessions, stats, and indexed content under `CONTE
 Node.js 24 or later is required by this plugin. The bundled Context Mode runtime is installed with the plugin. Native provider integrations such as OMP's plugin remain recommended because generic MCP injection provides tools but cannot add provider-native lifecycle hooks.
 
 The plugin depends on the upstream `context-mode` npm package under the Elastic License 2.0. See [NOTICE](NOTICE).
-
 ## Install
 
-Plugins are trusted, unsandboxed code. Install only on a Paseo daemon you control.
+Install the published npm package on the daemon host:
 
 ```bash
-cd context-mode
-npm ci
-npm run typecheck
-paseo plugin install /absolute/path/to/context-mode --host 127.0.0.1:PORT
-paseo plugin ls --host 127.0.0.1:PORT
+paseo plugin install npm:@omercnet/paseo-context-mode
 ```
 
-Enable plugins for that host before installation. For development, start the daemon with an explicit isolated `--home`, then target its explicit `--host` for plugin lifecycle commands. Current Paseo rejects supplying `--home` and `--host` together because they are alternate target selectors.
+Update an npm installation to the latest published release:
 
-Open **Context Mode** in the sidebar, use the per-agent composer pill, or run **Open Context Mode** from the Command Center. Use **Settings → Plugins → Context Mode settings** to configure executable precedence, automatic activation, native-integration preference, and refresh interval.
+```bash
+paseo plugin update context-mode
+```
+
+The npm install and update flow requires Paseo 0.9.
+
 
 ## Commands and limits
 
@@ -63,10 +63,10 @@ Install and upgrade actions return separate program and argument fields. They ar
 ## Development
 
 ```bash
-npm ci
-npm run typecheck
-npm test
-npm run check
+bun install
+bun run typecheck
+bun run test
+bun run check
 ```
 
 ## Licensing and attribution

@@ -20,7 +20,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `>=0.9.0-beta.1 <0.10.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo 0.9 is required for the Help report's supported copy and external-link APIs, nested provider-subagent ancestry, spawning-tool links, npm-managed installation, and the complete client integration.
+Requirements: Paseo `>=0.9.0 <0.10.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo 0.9 is required for the Help report's supported copy and external-link APIs, nested provider-subagent ancestry, spawning-tool links, npm-managed installation, and the complete client integration.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
@@ -36,7 +36,7 @@ Open the **OMP** sidebar to review the provider-profile contract, choose which c
 - [Core-provider issue and parity audit](docs/core-provider-issue-audit.md)
 - [Alpha release checklist](docs/alpha-release-checklist.md)
 
-The plugin uses public Paseo 0.9 beta provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
+The plugin uses public Paseo 0.9 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
 
 ## Named OMP profiles
 
@@ -50,7 +50,7 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-This matrix inventories the complete capability set exported by the pinned `@getpaseo/plugin` 0.9.0-beta.1 provider SDK. It measures strict SDK surface coverage, not general product quality.
+This matrix inventories the complete capability set exported by the pinned `@getpaseo/plugin` 0.9.0 provider SDK. It measures strict SDK surface coverage, not general product quality.
 
 **Current capability completeness: 61.8%.** The provider advertises 11 of 17 capabilities (64.7%); ten are complete and `session.configure` is partial.
 
@@ -113,7 +113,7 @@ Existing agents whose provider is `omp` remain owned by the bundled provider. Ne
 
 OMP `18.1.15` is the oldest version tested end to end. The direct provider's hard compatibility gate is `rpc-ui` protocol v2: metadata-free legacy ready frames and v1-only runtimes are rejected before a provider session opens because they cannot support the advertised persistence and conversation-rewind capabilities. Typed tool approvals remain capability-gated and fall back as described above. For terminal completion, a matching `agent_end.requestId` is authoritative and mismatches are ignored before state changes. Released OMP 18.2.x builds that omit that field use an ordered fallback requiring a fresh correlated native user entry followed by current-turn assistant activity, an idle non-compacting runtime, and no conflicting permission, tool, steer, or child-session work. Ambiguous events while OMP is active are ignored; unresolved ambiguity after confirmed idle fails only the Paseo turn. This trades a bounded residual same-agent stale-event risk for compatibility with released OMP instead of terminating and lazily restarting the runtime after every later prompt. Paseo clients, including mobile clients inside reconnect grace, do not own or terminate the daemon-managed OMP session.
 
-Paseo 0.9.0-beta.1 is the verified canary target and minimum supported release. It preserves nested provider-subagent ancestry and spawning-tool links, and provides npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping. The required full Docker canary passes there with OMP 18.1.15 and 18.2.0.
+Paseo 0.9.0 is the minimum supported release. The verified controlled canary evidence remains on the 0.9.0-beta.1 image, where the full Docker canary passed with OMP 18.1.15 and 18.2.0. That canary preserved nested provider-subagent ancestry and spawning-tool links, and validated npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping.
 
 Install, update, disable, or remove `paseo-omp` independently of the bundled provider. Verify the provider snapshot contains `omp-plugin` after installation; a bundled `omp` entry may remain present and is not modified by this plugin.
 

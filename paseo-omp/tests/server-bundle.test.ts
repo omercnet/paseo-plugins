@@ -85,7 +85,7 @@ describe("plugin server bundle", () => {
     const manifest = JSON.parse(await readFile(join(pluginRoot, "paseo-plugin.json"), "utf8"));
     expect(manifest).toEqual({
       id: "paseo-omp",
-      requirements: { paseo: ">=0.9.0-beta.1 <0.10.0" },
+      requirements: { paseo: ">=0.9.0 <0.10.0" },
       build: [["node", "scripts/prepare-dependencies.mjs"]],
     });
     const packageManifest = JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8"));
@@ -97,7 +97,7 @@ describe("plugin server bundle", () => {
     ).not.toContain("@oh-my-pi/");
     expect(packageManifest.files).not.toContain("tests");
     expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain(
-      "Paseo `>=0.9.0-beta.1 <0.10.0`",
+      "Paseo `>=0.9.0 <0.10.0`",
     );
     const releaseConfig = JSON.parse(
       await readFile(join(pluginRoot, "..", "release-please-config.json"), "utf8"),
