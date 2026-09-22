@@ -23,6 +23,7 @@ USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
+RUN git config --system --add safe.directory /workspace/paseo-plugins
 COPY --from=plugin-build --chown=1000:1000 /opt/paseo-omp /opt/paseo-omp
 COPY --chown=1000:1000 paseo-omp/canary/paseo.config.json /home/paseo/.paseo/config.json
 COPY --chown=1000:1000 paseo-omp/canary/models.yml /home/paseo/.omp/agent/models.yml
