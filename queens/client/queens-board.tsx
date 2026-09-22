@@ -32,18 +32,44 @@ type BoardLayout = {
 
 type DragReplacement = "empty" | "excluded";
 
+type DragSelection = {
+  readonly indexes: ReadonlySet<number>;
+  readonly replacement: DragReplacement;
+};
+
 type DragGesture = {
   readonly startIndex: number;
-  readonly indexes: Set<number>;
-  readonly replacement: DragReplacement;
+  indexes: Set<number>;
+  replacement: DragReplacement;
   moved: boolean;
   cancelled: boolean;
 };
 
-type DragPreview = {
-  readonly indexes: ReadonlySet<number>;
-  readonly replacement: DragReplacement;
-};
+export function resolveDraggedCellState(
+  index: number,
+  persistedState: CellState,
+  dragSelection: DragSelection | null,
+): CellState {
+  if (persistedState === "marked" || dragSelection === null || !dragSelection.indexes.has(index)) {
+    return persistedState;
+  }
+
+  if (dragSelection.replacement === "empty") {
+    return persistedState === "excluded" ? "empty" : persistedState;
+  }
+
+  return persistedState === "empty" ? "excluded" : persistedState;
+}
+
+export function collectDragIndexes(
+  cells: readonly CellState[],
+  selection: DragSelection,
+): number[] {
+  return [...selection.indexes].filter((index) => {
+    const persistedState = cells[index] ?? "empty";
+    return resolveDraggedCellState(index, persistedState, selection) !== persistedState;
+  });
+}
 
 type PendingTap = {
   readonly releasedAt: number;
@@ -200,7 +226,7 @@ export function QueensBoard({
   const cellsRef = useRef(cells);
   const onSetCellsRef = useRef(onSetCells);
   const onGestureActiveChangeRef = useRef(onGestureActiveChange);
-  const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
+  const [dragPreview, setDragPreview] = useState<DragSelection | null>(null);
   cellsRef.current = cells;
   onSetCellsRef.current = onSetCells;
   onGestureActiveChangeRef.current = onGestureActiveChange;
@@ -291,6 +317,7 @@ export function QueensBoard({
     },
     [dragEnabled, puzzle.size],
   );
+
   const finishGesture = useCallback(() => {
     const gesture = gestureRef.current;
     gestureRef.current = null;
@@ -309,11 +336,9 @@ export function QueensBoard({
       pending?.cancel();
       pendingTapsRef.current.delete(index);
     }
-    const indexes =
-      gesture.replacement === "empty"
-        ? [...gesture.indexes].filter((index) => cellsRef.current[index] === "excluded")
-        : [...gesture.indexes];
-    onSetCellsRef.current(indexes, gesture.replacement);
+
+    const indexes = collectDragIndexes(cellsRef.current, gesture);
+    if (indexes.length > 0) onSetCellsRef.current(indexes, gesture.replacement);
   }, [handleTapRelease]);
 
   const cancelGesture = useCallback(() => {
@@ -330,13 +355,8 @@ export function QueensBoard({
             {coordinates.map((column) => {
               const index = row * puzzle.size + column;
               const persistedState = cells[index] ?? "empty";
-              let state = persistedState;
-              if (dragPreview?.indexes.has(index)) {
-                if (dragPreview.replacement === "excluded" || persistedState === "excluded") {
-                  state = dragPreview.replacement;
-                }
-              }
               const region = puzzle.regions[index] ?? 0;
+              const state = resolveDraggedCellState(index, persistedState, dragPreview);
               const conflicted = conflicts.has(index);
               const markColor = solved
                 ? theme.colors.statusSuccess
