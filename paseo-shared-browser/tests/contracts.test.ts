@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import contribute from "../index.server";
@@ -32,6 +33,7 @@ const browserMocks = vi.hoisted(() => ({
   issueAgentTicket: vi.fn().mockResolvedValue(undefined),
   revokeAgentBrowserAccess: vi.fn(),
 }));
+const testDirectory = dirname(fileURLToPath(import.meta.url));
 
 vi.mock("../server/browser", () => browserMocks);
 
@@ -238,11 +240,11 @@ describe("agent MCP injection", () => {
 describe("runtime installation compatibility", () => {
   it("requires at least the Node major required by agent-browser", async () => {
     const pluginPackage = JSON.parse(
-      await readFile(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+      await readFile(resolve(testDirectory, "..", "package.json"), "utf8"),
     ) as { engines?: { node?: string } };
     const agentBrowserPackage = JSON.parse(
       await readFile(
-        fileURLToPath(new URL("../node_modules/agent-browser/package.json", import.meta.url)),
+        resolve(testDirectory, "..", "node_modules", "agent-browser", "package.json"),
         "utf8",
       ),
     ) as { engines?: { node?: string } };
