@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { prepareDependencies, resolveDependencyRoot } from "./prepare-dependencies.mjs";
 

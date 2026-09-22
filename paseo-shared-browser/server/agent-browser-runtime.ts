@@ -3,14 +3,14 @@ import { chmod, mkdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
+  attachToTarget,
   CdpConnection,
-  CdpSession,
+  type CdpEvent,
+  type CdpSession,
+  type CdpTarget,
   CdpUnavailableError,
   CdpUnknownOutcomeError,
-  attachToTarget,
   listPageTargets,
-  type CdpEvent,
-  type CdpTarget,
 } from "./cdp";
 
 const execFileAsync = promisify(execFile);
@@ -164,9 +164,7 @@ function parseJsonOutput(stdout: string): unknown {
   for (const line of lines) {
     try {
       return JSON.parse(line);
-    } catch {
-      continue;
-    }
+    } catch {}
   }
   throw new AgentBrowserIncompatibleError("agent-browser returned invalid JSON");
 }
@@ -508,9 +506,7 @@ export class AgentBrowserRuntime {
 
   async mouseMove(x: number, y: number): Promise<void> {
     this.assertPoint(x, y);
-    await (
-      await this.requirePage()
-    ).send(
+    await (await this.requirePage()).send(
       "Input.dispatchMouseEvent",
       {
         type: "mouseMoved",
@@ -530,9 +526,7 @@ export class AgentBrowserRuntime {
     clickCount = 1,
   ): Promise<void> {
     this.assertPoint(x, y);
-    await (
-      await this.requirePage()
-    ).send(
+    await (await this.requirePage()).send(
       "Input.dispatchMouseEvent",
       {
         type: "mousePressed",
@@ -549,9 +543,7 @@ export class AgentBrowserRuntime {
 
   async mouseUp(x: number, y: number, button: MouseButton = "left", clickCount = 1): Promise<void> {
     this.assertPoint(x, y);
-    await (
-      await this.requirePage()
-    ).send(
+    await (await this.requirePage()).send(
       "Input.dispatchMouseEvent",
       {
         type: "mouseReleased",
@@ -568,9 +560,7 @@ export class AgentBrowserRuntime {
 
   async wheel(x: number, y: number, deltaX: number, deltaY: number): Promise<void> {
     this.assertPoint(x, y);
-    await (
-      await this.requirePage()
-    ).send(
+    await (await this.requirePage()).send(
       "Input.dispatchMouseEvent",
       {
         type: "mouseWheel",
@@ -590,9 +580,7 @@ export class AgentBrowserRuntime {
   }
 
   async keyDown(key: string, code = key): Promise<void> {
-    await (
-      await this.requirePage()
-    ).send(
+    await (await this.requirePage()).send(
       "Input.dispatchKeyEvent",
       {
         type: "keyDown",
@@ -606,9 +594,11 @@ export class AgentBrowserRuntime {
   }
 
   async keyUp(key: string, code = key): Promise<void> {
-    await (
-      await this.requirePage()
-    ).send("Input.dispatchKeyEvent", { type: "keyUp", key, code }, { mutation: true });
+    await (await this.requirePage()).send(
+      "Input.dispatchKeyEvent",
+      { type: "keyUp", key, code },
+      { mutation: true },
+    );
     this.heldKeys.delete(key);
   }
 
@@ -617,9 +607,7 @@ export class AgentBrowserRuntime {
     points: Array<{ x: number; y: number; id?: number }>,
   ): Promise<void> {
     for (const point of points) this.assertPoint(point.x, point.y);
-    await (
-      await this.requirePage()
-    ).send(
+    await (await this.requirePage()).send(
       "Input.dispatchTouchEvent",
       {
         type,

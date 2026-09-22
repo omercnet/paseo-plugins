@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { detectAffected, discoverPlugins } from "./detect-affected.mjs";
 
-test("discovers new plugins and derives their checks from package scripts", (t) => {
+test("discovers plugins implementing the common CI contract", (t) => {
   const root = mkdtempSync(join(tmpdir(), "paseo-plugins-"));
   t.after(() => rmSync(root, { force: true, recursive: true }));
   const pluginRoot = join(root, "new-plugin");
@@ -17,10 +17,15 @@ test("discovers new plugins and derives their checks from package scripts", (t) 
     JSON.stringify({
       scripts: {
         check: "biome check .",
+        build: "node ../.github/scripts/build-plugin.mjs",
         typecheck: "tsc --noEmit",
-        test: "vitest run",
-        "test:coverage": "vitest run --coverage",
-        "verify:package": "node verify.mjs",
+        test: "run-s test:ci:*",
+        "test:ci:unit": "vitest run",
+      },
+      devDependencies: {
+        "@biomejs/biome": "2.5.14",
+        "@getpaseo/server": "0.9.0-beta.1",
+        "npm-run-all2": "9.0.3",
       },
     }),
   );
@@ -29,30 +34,90 @@ test("discovers new plugins and derives their checks from package scripts", (t) 
     {
       plugin: "new-plugin",
       kind: "npm",
-      check: true,
-      lint: false,
-      format_check: false,
-      typecheck: true,
-      coverage: true,
-      test_unit: false,
-      test: false,
-      verify_package: true,
     },
   ]);
 });
 
-test("selects only changed npm plugins", () => {
+test("rejects plugins missing common CI entries", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "paseo-plugins-"));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const pluginRoot = join(root, "incomplete-plugin");
+  mkdirSync(pluginRoot);
+  writeFileSync(join(pluginRoot, "paseo-plugin.json"), '{"id":"incomplete-plugin"}');
+  writeFileSync(
+    join(pluginRoot, "package.json"),
+    JSON.stringify({ scripts: { test: "vitest run" } }),
+  );
+
+  assert.throws(
+    () => discoverPlugins(root),
+    /script:check, script:build, script:typecheck, script:test, script:test:ci:\*, devDependency:@biomejs\/biome, devDependency:@getpaseo\/server, devDependency:npm-run-all2/,
+  );
+});
+
+test("rejects a plugin using a different build command", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "paseo-plugins-"));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const pluginRoot = join(root, "wrong-build");
+  mkdirSync(pluginRoot);
+  writeFileSync(join(pluginRoot, "paseo-plugin.json"), '{"id":"wrong-build"}');
+  writeFileSync(
+    join(pluginRoot, "package.json"),
+    JSON.stringify({
+      scripts: {
+        check: "biome check .",
+        build: "npm pack --dry-run",
+        typecheck: "tsc --noEmit",
+        test: "run-s test:ci:*",
+        "test:ci:unit": "vitest run",
+      },
+      devDependencies: {
+        "@biomejs/biome": "2.5.14",
+        "@getpaseo/server": "0.9.0-beta.1",
+        "npm-run-all2": "9.0.3",
+      },
+    }),
+  );
+
+  assert.throws(() => discoverPlugins(root), /script:build/);
+});
+
+test("rejects a ranged host compiler dependency", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "paseo-plugins-"));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const pluginRoot = join(root, "ranged-compiler");
+  mkdirSync(pluginRoot);
+  writeFileSync(join(pluginRoot, "paseo-plugin.json"), '{"id":"ranged-compiler"}');
+  writeFileSync(
+    join(pluginRoot, "package.json"),
+    JSON.stringify({
+      scripts: {
+        check: "biome check .",
+        build: "node ../.github/scripts/build-plugin.mjs",
+        typecheck: "tsc --noEmit",
+        test: "run-s test:ci:*",
+        "test:ci:unit": "vitest run",
+      },
+      devDependencies: {
+        "@biomejs/biome": "2.5.14",
+        "@getpaseo/server": "^0.9.0-beta.1",
+        "npm-run-all2": "9.0.3",
+      },
+    }),
+  );
+
+  assert.throws(() => discoverPlugins(root), /devDependency:@getpaseo\/server/);
+});
+
+test("selects only changed plugins", () => {
   const result = detectAffected([
     "agent-monitor/server/index.ts",
     "paseo-beads/package.json",
   ]);
 
-  assert.deepEqual(
-    result.npmMatrix.include.map(({ plugin }) => plugin),
-    ["agent-monitor", "paseo-beads"],
-  );
+  assert.deepEqual(result.pluginMatrix, ["agent-monitor", "paseo-beads"]);
   assert.deepEqual(result.changed, ["agent-monitor", "paseo-beads"]);
-  assert.equal(result.npmAffected, true);
+  assert.equal(result.pluginsAffected, true);
   assert.equal(result.ompAffected, false);
   assert.equal(result.sharedBrowserAffected, false);
 });
@@ -64,16 +129,19 @@ test("selects platform-specific jobs independently", () => {
   ]);
 
   assert.equal(omp.ompAffected, true);
-  assert.equal(omp.npmAffected, false);
+  assert.equal(omp.pluginsAffected, true);
+  assert.deepEqual(omp.pluginMatrix, ["paseo-omp"]);
   assert.equal(sharedBrowser.sharedBrowserAffected, true);
-  assert.equal(sharedBrowser.npmAffected, false);
+  assert.equal(sharedBrowser.pluginsAffected, true);
+  assert.deepEqual(sharedBrowser.pluginMatrix, ["paseo-shared-browser"]);
 });
 
 test("ignores changes outside plugin and CI paths", () => {
   const result = detectAffected(["SECURITY.md"]);
 
   assert.deepEqual(result.affected, []);
-  assert.deepEqual(result.npmMatrix, { include: [] });
+  assert.deepEqual(result.pluginMatrix, []);
+  assert.equal(result.pluginsAffected, false);
   assert.equal(result.workflowAffected, false);
 });
 
@@ -94,10 +162,7 @@ test("CI implementation changes select every discovered plugin", () => {
   ]) {
     const result = detectAffected([file], plugins);
 
-    assert.equal(
-      result.npmMatrix.include.length,
-      plugins.filter(({ kind }) => kind === "npm").length,
-    );
+    assert.equal(result.pluginMatrix.length, plugins.length);
     assert.equal(result.ompAffected, true);
     assert.equal(result.sharedBrowserAffected, true);
     assert.equal(result.affected.length, plugins.length);

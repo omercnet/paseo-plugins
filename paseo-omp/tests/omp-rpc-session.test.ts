@@ -200,11 +200,7 @@ describe("OMP RPC transport", () => {
     child.write(READY_FRAME);
     const session = await opening;
     const events: OmpRpcEvent[] = [];
-    const complete = Promise.withResolvers<void>();
-    session.onEvent((event) => {
-      events.push(event);
-      if (events.length === 6) complete.resolve();
-    });
+    session.onEvent((event) => events.push(event));
 
     child.write({ type: "config_warnings_changed" });
     child.write({ type: "advisor_cost_changed" });
@@ -213,24 +209,73 @@ describe("OMP RPC transport", () => {
       type: "irc_message",
       message: { role: "custom", customType: "irc", content: "hello", display: true },
     });
-    child.write({ type: "tool_execution_start", toolCallId: "call", toolName: "edit", args: {} });
+    child.write({
+      type: "message_start",
+      message: {
+        role: "assistant",
+        responseId: "tool-call-message",
+        content: [{ type: "toolCall", id: "call", name: "edit", arguments: {} }],
+      },
+    });
     child.write({
       type: "tool_stream_update",
       toolCallId: "call",
       toolName: "edit",
       update: { lines: 2 },
     });
-    await complete.promise;
+    child.write({ type: "tool_execution_start", toolCallId: "call", toolName: "edit", args: {} });
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(events.map((event) => event.type)).toEqual([
       "config_warnings_changed",
       "advisor_cost_changed",
       "ttsr_triggered",
       "irc_message",
-      "tool_execution_start",
+      "message_start",
       "tool_stream_update",
+      "tool_execution_start",
     ]);
     expect(diagnostics).toEqual([]);
+    await session.close();
+  });
+  test("rejects an unannounced pre-execution tool stream", async () => {
+    const child = new FakeRpcChild();
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    const opening = runtimeFor(child, [], undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    }).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    session.onEvent((event) => events.push(event));
+
+    child.write({
+      type: "tool_stream_update",
+      toolCallId: "unknown-call",
+      toolName: "edit",
+      update: { lines: 2 },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events).toEqual([]);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        category: "invalid-event-state",
+        reason: "event-state-transition",
+        eventType: "tool_stream_update",
+      }),
+    ]);
     await session.close();
   });
 

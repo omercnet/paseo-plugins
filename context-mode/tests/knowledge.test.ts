@@ -1,6 +1,6 @@
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, test } from "vitest";
 import { contextModeEnvironmentFor, createContextModeKnowledgeHandlers } from "../server/knowledge";
@@ -29,10 +29,16 @@ afterEach(async () => {
 async function executable(source: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "paseo-context-mode-knowledge-"));
   temporaryDirectories.push(directory);
-  const path = join(directory, "context-mode");
+  const path = join(directory, process.platform === "win32" ? "context-mode.cjs" : "context-mode");
   await writeFile(path, `#!/usr/bin/env node\n${source}\n`);
-  await chmod(path, 0o755);
+  if (process.platform !== "win32") await chmod(path, 0o755);
   return path;
+}
+
+function launch(program: string) {
+  return process.platform === "win32"
+    ? { program: process.execPath, args: [program] }
+    : { program, args: [] };
 }
 
 function settingsHandle(
@@ -164,19 +170,19 @@ describe("provider storage isolation", () => {
   test("uses separate provider roots instead of a merged store", () => {
     expect(contextModeEnvironmentFor("claude", "/home/test", {})).toEqual({
       CONTEXT_MODE_PLATFORM: "claude-code",
-      CONTEXT_MODE_DIR: "/home/test/.claude/context-mode",
+      CONTEXT_MODE_DIR: join("/home/test", ".claude", "context-mode"),
     });
     expect(contextModeEnvironmentFor("omp-plugin", "/home/test", {})).toEqual({
       CONTEXT_MODE_PLATFORM: "omp",
-      CONTEXT_MODE_DIR: "/home/test/.omp/context-mode",
+      CONTEXT_MODE_DIR: join("/home/test", ".omp", "context-mode"),
     });
     expect(contextModeEnvironmentFor("cursor", "/home/test", {})).toEqual({
       CONTEXT_MODE_PLATFORM: "cursor",
-      CONTEXT_MODE_DIR: "/home/test/.cursor/context-mode",
+      CONTEXT_MODE_DIR: join("/home/test", ".cursor", "context-mode"),
     });
     expect(contextModeEnvironmentFor("codex", "/home/test", { CODEX_HOME: "/srv/codex" })).toEqual({
       CONTEXT_MODE_PLATFORM: "codex",
-      CONTEXT_MODE_DIR: "/srv/codex/context-mode",
+      CONTEXT_MODE_DIR: join("/srv/codex", "context-mode"),
     });
     expect(
       contextModeEnvironmentFor("opencode", "/home/test", {
@@ -184,7 +190,7 @@ describe("provider storage isolation", () => {
       }),
     ).toEqual({
       CONTEXT_MODE_PLATFORM: "opencode",
-      CONTEXT_MODE_DIR: "/srv/context-data/context-mode",
+      CONTEXT_MODE_DIR: join(resolve("/srv/context-data"), "context-mode"),
     });
   });
 });
@@ -329,7 +335,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.method === "tools/call") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: JSON.stringify(request.params) }] } }));
 });
 `);
-    const output = await callContextModeTool({ program: binary, args: [] }, "ctx_search", {
+    const output = await callContextModeTool(launch(binary), "ctx_search", {
       queries: ["alpha", "beta"],
       limit: 4,
     });

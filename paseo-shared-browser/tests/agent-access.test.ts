@@ -3,21 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CdpUnknownOutcomeError } from "../server/cdp";
-import type { BrowserState } from "../shared/browser";
 import {
-  RuntimeSupervisor,
-  resolveSupervisorPaths,
-  startSupervisorServer,
-  type RuntimeInstance,
-  type RuntimeOwner,
-} from "../server/supervisor";
-import {
-  RUNTIME_PROTOCOL_VERSION,
   type AgentBrowserOperation,
   type BridgeLease,
   type JsonValue,
+  RUNTIME_PROTOCOL_VERSION,
 } from "../server/runtime-protocol";
+import {
+  type RuntimeInstance,
+  type RuntimeOwner,
+  RuntimeSupervisor,
+  resolveSupervisorPaths,
+  startSupervisorServer,
+} from "../server/supervisor";
 import { AgentSupervisorClient, SupervisorClient } from "../server/supervisor-client";
+import type { BrowserState } from "../shared/browser";
 
 interface AgentRuntime extends RuntimeInstance {
   workspaceId: string;

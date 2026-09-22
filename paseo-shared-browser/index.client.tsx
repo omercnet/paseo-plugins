@@ -1,5 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { SharedBrowserPanel, contributeSharedBrowserClient } from "./client/browser";
+import { contributeSharedBrowserClient, SharedBrowserPanel } from "./client/browser";
 
 export default function contribute(client: PluginClientContext) {
   client.addWorkspacePanel({

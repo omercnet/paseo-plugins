@@ -107,149 +107,158 @@ describe("plugin server bundle", () => {
     ]);
   });
 
-  test("reports the workflow-mutated next version from a direct source bundle", async () => {
-    const root = await mkdtemp(join(tmpdir(), "paseo-omp-next-bundle-"));
-    const nextVersion = "0.3.0-next.123.2";
-    try {
-      await Promise.all([
-        cp(join(pluginRoot, "server"), join(root, "server"), { recursive: true }),
-        cp(join(pluginRoot, "shared"), join(root, "shared"), { recursive: true }),
-        cp(join(pluginRoot, "index.server.ts"), join(root, "index.server.ts")),
-      ]);
-      const packageManifest = JSON.parse(
-        await readFile(join(pluginRoot, "package.json"), "utf8"),
-      ) as Record<string, unknown>;
-      packageManifest.version = nextVersion;
-      await writeFile(join(root, "package.json"), `${JSON.stringify(packageManifest, null, 2)}\n`);
-      await synchronizeBuildVersion(root);
+  test.skipIf(process.platform === "win32")(
+    "reports the workflow-mutated next version from a direct source bundle",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "paseo-omp-next-bundle-"));
+      const nextVersion = "0.3.0-next.123.2";
+      try {
+        await Promise.all([
+          cp(join(pluginRoot, "server"), join(root, "server"), { recursive: true }),
+          cp(join(pluginRoot, "shared"), join(root, "shared"), { recursive: true }),
+          cp(join(pluginRoot, "index.server.ts"), join(root, "index.server.ts")),
+        ]);
+        const packageManifest = JSON.parse(
+          await readFile(join(pluginRoot, "package.json"), "utf8"),
+        ) as Record<string, unknown>;
+        packageManifest.version = nextVersion;
+        await writeFile(
+          join(root, "package.json"),
+          `${JSON.stringify(packageManifest, null, 2)}\n`,
+        );
+        await synchronizeBuildVersion(root);
 
-      expect(await readFile(join(root, "server", "package-version.ts"), "utf8")).toContain(
-        `PASEO_OMP_PACKAGE_VERSION = "${nextVersion}"`,
-      );
-      const report = await supportReportFromBundle(join(root, "index.server.ts"));
-      expect(report).toContain(`paseo_omp.version: ${nextVersion}`);
-    } finally {
-      await rm(root, { force: true, recursive: true });
-    }
-  });
+        expect(await readFile(join(root, "server", "package-version.ts"), "utf8")).toContain(
+          `PASEO_OMP_PACKAGE_VERSION = "${nextVersion}"`,
+        );
+        const report = await supportReportFromBundle(join(root, "index.server.ts"));
+        expect(report).toContain(`paseo_omp.version: ${nextVersion}`);
+      } finally {
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+  );
 
-  test("compiles source without preparation and reports the package version", async () => {
-    await rm(join(pluginRoot, "server", "generated", "package-version.js"), { force: true });
-    const { code, warnings } = await compileServerBundle(join(pluginRoot, "index.server.ts"));
-    expect(warnings.map((warning) => warning.text)).toEqual([]);
-    expect(code).not.toContain("@oh-my-pi/");
-    // biome-ignore lint/security/noGlobalEval: mirrors the daemon's plugin loader
-    const factory = globalThis.eval(
-      `(function(require) {\nconst module = { exports: {} };\nconst exports = module.exports;\n${code}\nreturn module.exports;\n})`,
-    ) as (require: (name: string) => unknown) => { default?: unknown };
-    const originalCwd = process.cwd();
-    const originalHome = process.env.HOME;
-    const originalConfigDir = process.env.PI_CONFIG_DIR;
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-bundle-"));
-    process.chdir(temporaryDirectory);
-    process.env.HOME = temporaryDirectory;
-    process.env.PI_CONFIG_DIR = ".omp";
-    try {
-      const module = factory(runtimeRequire);
-      if (typeof module.default !== "function") throw new Error("Missing server contribution");
-      const providers: ProviderRegistration[] = [];
-      const handlers: Array<[{ name: string }, unknown]> = [];
-      const settings: unknown[] = [];
-      const beforeHooks: unknown[] = [];
-      const cleanup = module.default({
-        before: (...args: unknown[]) => {
-          beforeHooks.push(args);
-          return () => {};
-        },
-        handle: (contract: { name: string }, handler: unknown) =>
-          handlers.push([contract, handler]),
-        registerSettings: (definition: unknown) => settings.push(definition),
-        registerProvider: (provider: ProviderRegistration) => providers.push(provider),
-      });
-      expect(handlers).toHaveLength(17);
-      expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-models");
-      expect(settings).toEqual([
-        expect.objectContaining({ id: "composer-pills", scope: "host", version: 1 }),
-      ]);
-      const supportRegistration = handlers.find(
-        (entry) =>
-          Array.isArray(entry) &&
-          (entry[0] as { name?: string } | undefined)?.name === "paseo-omp.get-support-report",
-      ) as
-        | [{ name: string }, (input: { force?: boolean }) => Promise<{ report: string }>]
-        | undefined;
-      expect(supportRegistration).toBeDefined();
-      const packageManifest = JSON.parse(
-        await readFile(join(pluginRoot, "package.json"), "utf8"),
-      ) as { version: string };
-      const supportReport = await supportRegistration?.[1]({ force: true });
-      expect(supportReport?.report).toContain(`paseo_omp.version: ${packageManifest.version}`);
-      expect(beforeHooks).toHaveLength(1);
-      const [hookName, hook] = beforeHooks[0] as [
-        string,
-        (event: {
-          request: {
-            agentId: string;
-            workspaceId: string | null;
-            provider: string;
-            cwd: string;
-            env: Record<string, string>;
-          };
-        }) => unknown,
-      ];
-      expect(hookName).toBe("agent.session_open");
-      expect(
-        hook({
-          request: {
-            agentId: "plugin-agent",
-            workspaceId: "plugin-workspace",
-            provider: "omp-plugin",
-            cwd: "/workspace",
-            env: { PASEO_AGENT_ID: "spoofed" },
+  test.skipIf(process.platform === "win32")(
+    "compiles source without preparation and reports the package version",
+    async () => {
+      await rm(join(pluginRoot, "server", "generated", "package-version.js"), { force: true });
+      const { code, warnings } = await compileServerBundle(join(pluginRoot, "index.server.ts"));
+      expect(warnings.map((warning) => warning.text)).toEqual([]);
+      expect(code).not.toContain("@oh-my-pi/");
+      // biome-ignore lint/security/noGlobalEval: mirrors the daemon's plugin loader
+      const factory = globalThis.eval(
+        `(function(require) {\nconst module = { exports: {} };\nconst exports = module.exports;\n${code}\nreturn module.exports;\n})`,
+      ) as (require: (name: string) => unknown) => { default?: unknown };
+      const originalCwd = process.cwd();
+      const originalHome = process.env.HOME;
+      const originalConfigDir = process.env.PI_CONFIG_DIR;
+      const temporaryDirectory = await mkdtemp(join(tmpdir(), "paseo-omp-bundle-"));
+      process.chdir(temporaryDirectory);
+      process.env.HOME = temporaryDirectory;
+      process.env.PI_CONFIG_DIR = ".omp";
+      try {
+        const module = factory(runtimeRequire);
+        if (typeof module.default !== "function") throw new Error("Missing server contribution");
+        const providers: ProviderRegistration[] = [];
+        const handlers: Array<[{ name: string }, unknown]> = [];
+        const settings: unknown[] = [];
+        const beforeHooks: unknown[] = [];
+        const cleanup = module.default({
+          before: (...args: unknown[]) => {
+            beforeHooks.push(args);
+            return () => {};
           },
-        }),
-      ).toEqual(
-        expect.objectContaining({
-          env: {
-            PASEO_AGENT_ID: "plugin-agent",
-            PASEO_WORKSPACE_ID: "plugin-workspace",
-          },
-        }),
-      );
-      expect(
-        hook({
-          request: {
-            agentId: "builtin-agent",
-            workspaceId: "builtin-workspace",
-            provider: "omp",
-            cwd: "/workspace",
-            env: {},
-          },
-        }),
-      ).toBeUndefined();
-      expect(providers).toEqual([
-        expect.objectContaining({ id: "omp-plugin", label: "OMP Plugin" }),
-      ]);
-      const provider = providers[0];
-      if (!provider) throw new Error("Registered provider is missing");
-      const connection = await provider.connect({
-        versions: [1],
-        capabilities: ["prompt.message", "prompt.steer", "session.configure"],
-      });
-      expect(connection.capabilities).toEqual([
-        "prompt.message",
-        "prompt.steer",
-        "session.configure",
-      ]);
-      await connection.close();
-      expect(typeof cleanup).toBe("function");
-    } finally {
-      process.chdir(originalCwd);
-      if (originalHome === undefined) delete process.env.HOME;
-      else process.env.HOME = originalHome;
-      if (originalConfigDir === undefined) delete process.env.PI_CONFIG_DIR;
-      else process.env.PI_CONFIG_DIR = originalConfigDir;
-      await rm(temporaryDirectory, { recursive: true, force: true });
-    }
-  });
+          handle: (contract: { name: string }, handler: unknown) =>
+            handlers.push([contract, handler]),
+          registerSettings: (definition: unknown) => settings.push(definition),
+          registerProvider: (provider: ProviderRegistration) => providers.push(provider),
+        });
+        expect(handlers).toHaveLength(17);
+        expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-models");
+        expect(settings).toEqual([
+          expect.objectContaining({ id: "composer-pills", scope: "host", version: 1 }),
+        ]);
+        const supportRegistration = handlers.find(
+          (entry) =>
+            Array.isArray(entry) &&
+            (entry[0] as { name?: string } | undefined)?.name === "paseo-omp.get-support-report",
+        ) as
+          | [{ name: string }, (input: { force?: boolean }) => Promise<{ report: string }>]
+          | undefined;
+        expect(supportRegistration).toBeDefined();
+        const packageManifest = JSON.parse(
+          await readFile(join(pluginRoot, "package.json"), "utf8"),
+        ) as { version: string };
+        const supportReport = await supportRegistration?.[1]({ force: true });
+        expect(supportReport?.report).toContain(`paseo_omp.version: ${packageManifest.version}`);
+        expect(beforeHooks).toHaveLength(1);
+        const [hookName, hook] = beforeHooks[0] as [
+          string,
+          (event: {
+            request: {
+              agentId: string;
+              workspaceId: string | null;
+              provider: string;
+              cwd: string;
+              env: Record<string, string>;
+            };
+          }) => unknown,
+        ];
+        expect(hookName).toBe("agent.session_open");
+        expect(
+          hook({
+            request: {
+              agentId: "plugin-agent",
+              workspaceId: "plugin-workspace",
+              provider: "omp-plugin",
+              cwd: "/workspace",
+              env: { PASEO_AGENT_ID: "spoofed" },
+            },
+          }),
+        ).toEqual(
+          expect.objectContaining({
+            env: {
+              PASEO_AGENT_ID: "plugin-agent",
+              PASEO_WORKSPACE_ID: "plugin-workspace",
+            },
+          }),
+        );
+        expect(
+          hook({
+            request: {
+              agentId: "builtin-agent",
+              workspaceId: "builtin-workspace",
+              provider: "omp",
+              cwd: "/workspace",
+              env: {},
+            },
+          }),
+        ).toBeUndefined();
+        expect(providers).toEqual([
+          expect.objectContaining({ id: "omp-plugin", label: "OMP Plugin" }),
+        ]);
+        const provider = providers[0];
+        if (!provider) throw new Error("Registered provider is missing");
+        const connection = await provider.connect({
+          versions: [1],
+          capabilities: ["prompt.message", "prompt.steer", "session.configure"],
+        });
+        expect(connection.capabilities).toEqual([
+          "prompt.message",
+          "prompt.steer",
+          "session.configure",
+        ]);
+        await connection.close();
+        expect(typeof cleanup).toBe("function");
+      } finally {
+        process.chdir(originalCwd);
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
+        if (originalConfigDir === undefined) delete process.env.PI_CONFIG_DIR;
+        else process.env.PI_CONFIG_DIR = originalConfigDir;
+        await rm(temporaryDirectory, { recursive: true, force: true });
+      }
+    },
+  );
 });

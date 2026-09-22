@@ -1,11 +1,11 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { JsonValue } from "./runtime-protocol";
-import { AgentSupervisorClient } from "./supervisor-client";
 import { resolveSupervisorPaths } from "./supervisor";
+import { AgentSupervisorClient } from "./supervisor-client";
 
 const TICKET_ENV = "PASEO_SHARED_BROWSER_TICKET";
 const MIN_VIEWPORT = { width: 320, height: 480 } as const;

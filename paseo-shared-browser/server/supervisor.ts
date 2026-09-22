@@ -7,15 +7,15 @@ import type { BrowserFrame, BrowserInputEvent, BrowserState, Viewport } from "..
 import { SessionManager } from "./browser-policy";
 import { CdpUnknownOutcomeError } from "./cdp";
 import {
+  type BridgeLease,
   DEFAULT_BRIDGE_HEARTBEAT_MS,
   DEFAULT_BRIDGE_TIMEOUT_MS,
   DEFAULT_ORPHAN_GRACE_MS,
-  RUNTIME_PROTOCOL_VERSION,
-  RuntimeProtocolError,
-  parseRuntimeRequest,
-  type BridgeLease,
   type JsonValue,
+  parseRuntimeRequest,
+  RUNTIME_PROTOCOL_VERSION,
   type RuntimeDescriptor,
+  RuntimeProtocolError,
   type RuntimeRequest,
   type RuntimeResponse,
   type RuntimeResult,

@@ -3,14 +3,14 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type JsonValue, RUNTIME_PROTOCOL_VERSION } from "../server/runtime-protocol";
 import {
+  type RuntimeInstance,
+  type RuntimeOwner,
   RuntimeSupervisor,
   resolveSupervisorPaths,
   startSupervisorServer,
-  type RuntimeInstance,
-  type RuntimeOwner,
 } from "../server/supervisor";
-import { RUNTIME_PROTOCOL_VERSION, type JsonValue } from "../server/runtime-protocol";
 
 type Deferred<T> = {
   promise: Promise<T>;

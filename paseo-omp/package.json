@@ -40,15 +40,17 @@
     "paseo-plugin.json"
   ],
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check --error-on-warnings .",
     "check:write": "biome check --write .",
-    "test": "vitest run",
+    "test": "run-s test:ci:*",
     "test:coverage": "PASEO_OMP_COVERAGE=1 vitest run --coverage",
     "test:integration:docker": "node --import tsx scripts/test-docker-host-tools.ts",
     "test:integration:wsl": "node --import tsx scripts/test-wsl-host-tools.ts",
     "test:integration:canary": "node --import tsx scripts/test-canary.ts",
     "test:integration:install": "node --import tsx scripts/test-package-install.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:ci:unit": "vitest run",
+    "build": "node ../.github/scripts/build-plugin.mjs"
   },
   "dependencies": {
     "@getpaseo/protocol": "0.9.0-beta.1",
@@ -56,16 +58,18 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.10",
+    "@biomejs/biome": "^2.5.14",
     "@getpaseo/cli": "0.9.0-beta.1",
     "@getpaseo/client": "0.9.0-beta.1",
     "@getpaseo/plugin": "0.9.0-beta.1",
+    "@getpaseo/server": "0.9.0-beta.1",
     "@oh-my-pi/pi-agent-core": "18.2.0",
     "@oh-my-pi/pi-coding-agent": "18.2.0",
     "@tanstack/react-query": "^5.102.3",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^5.0.0",
+    "npm-run-all2": "^9.0.3",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "tsx": "^4.20.6",

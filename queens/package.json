@@ -38,17 +38,22 @@
     "paseo-plugin.json"
   ],
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check --error-on-warnings .",
     "import:puzzles": "node scripts/import-curated-puzzles.mjs",
-    "test": "vitest run",
+    "test": "run-s test:ci:*",
     "typecheck": "tsc --noEmit",
-    "verify:package": "npm pack --dry-run"
+    "verify:package": "npm pack --dry-run",
+    "check:write": "biome check --write .",
+    "test:ci:unit": "vitest run",
+    "build": "node ../.github/scripts/build-plugin.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.10",
+    "@biomejs/biome": "^2.5.14",
     "@getpaseo/plugin": "0.9.0-beta.1",
+    "@getpaseo/server": "0.9.0-beta.1",
     "@types/node": "^24.5.2",
     "@types/react": "~19.2.0",
+    "npm-run-all2": "^9.0.3",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "typescript": "^7.0.0",

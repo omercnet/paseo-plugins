@@ -1,6 +1,7 @@
 import { AgentPermissionRequestPayloadSchema } from "@getpaseo/protocol/messages";
 import { describe, expect, test } from "vitest";
 import { createOmpProvider } from "../server/provider/registration";
+import { FakeRpcChild, observeCommands, READY_FRAME, runtimeFor } from "./helpers/omp-rpc-harness";
 import {
   createHarness,
   establishTerminalOwnership,
@@ -12,6 +13,7 @@ import {
   type HostSessionConfig,
   type HostTerminalEvent,
   ManualScheduler,
+  MODEL,
   MODEL_PUBLIC_ID,
   NATIVE_SESSION_ID,
   openSession,
@@ -96,6 +98,140 @@ describe("OMP direct provider", () => {
     await finishTurn(events, session, turnId);
     await connection.close();
   });
+  test("queues a new provider turn when native continuation remains streaming", async () => {
+    const child = new FakeRpcChild();
+    const promptCommands: Record<string, unknown>[] = [];
+    const promptIds: string[] = [];
+    let nativeStreaming = false;
+    observeCommands(child, (command) => {
+      const respond = (data: unknown = {}) =>
+        child.write({
+          type: "response",
+          id: command.id,
+          command: command.type,
+          success: true,
+          data,
+        });
+      if (command.type === "negotiate_protocol") {
+        respond({ protocolVersion: 2 });
+      } else if (command.type === "get_available_models") {
+        respond({ models: [MODEL] });
+      } else if (command.type === "get_available_commands") {
+        respond({ commands: [] });
+      } else if (command.type === "get_state") {
+        respond({
+          model: MODEL,
+          thinkingLevel: "medium",
+          isStreaming: nativeStreaming,
+          isCompacting: false,
+          sessionId: NATIVE_SESSION_ID,
+        });
+      } else if (command.type === "get_session_stats") {
+        respond();
+      } else if (command.type === "get_branch_messages") {
+        respond({ messages: [] });
+      } else if (command.type === "prompt") {
+        promptCommands.push(command);
+        promptIds.push(String(command.id));
+        respond({ agentInvoked: true });
+        if (nativeStreaming && command.streamingBehavior !== "followUp") {
+          queueMicrotask(() => {
+            child.write({
+              type: "response",
+              id: command.id,
+              command: "prompt",
+              success: false,
+              error: "Agent is already processing",
+              code: "session_busy",
+            });
+          });
+        }
+      }
+    });
+    const scheduler = new ManualScheduler();
+    const { connection, events } = await createHarness(runtimeFor(child), scheduler, [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    const opening = openSession(connection, events);
+    child.write(READY_FRAME);
+    await opening;
+
+    const firstTurnId = turnIdFrom(await startPrompt(connection, events, "race-first", "first"));
+    const firstAssistant = {
+      role: "assistant" as const,
+      responseId: "race-first-assistant",
+      content: "first complete",
+    };
+    child.write({ type: "message_end", message: firstAssistant });
+    child.write({
+      type: "agent_end",
+      requestId: promptIds[0],
+      messages: [firstAssistant],
+      isTerminal: true,
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === firstTurnId &&
+        event.state === "completed",
+    );
+    await Promise.resolve();
+
+    nativeStreaming = true;
+    const secondTurnId = turnIdFrom(await startPrompt(connection, events, "race-second", "second"));
+    await Promise.resolve();
+    expect(promptCommands[1]).toEqual(
+      expect.objectContaining({
+        type: "prompt",
+        message: "second",
+        streamingBehavior: "followUp",
+      }),
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.prompt_result" && event.clientMessageId === "race-second",
+      ),
+    ).toEqual([expect.objectContaining({ result: { type: "turn", turnId: secondTurnId } })]);
+    expect(events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+
+    child.write({
+      type: "agent_end",
+      requestId: promptIds[0],
+      messages: [firstAssistant],
+      isTerminal: true,
+    });
+    nativeStreaming = false;
+    child.write({ type: "message_end", message: { role: "user", content: "second" } });
+    const secondAssistant = {
+      role: "assistant" as const,
+      responseId: "race-second-assistant",
+      content: "second complete",
+    };
+    child.write({ type: "message_end", message: secondAssistant });
+    child.write({
+      type: "agent_end",
+      requestId: promptIds[1],
+      messages: [secondAssistant],
+      isTerminal: true,
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === secondTurnId &&
+        event.state === "completed",
+    );
+    expect(
+      events.filter((event) => event.type === "session.turn" && event.turnId === secondTurnId),
+    ).toEqual([
+      expect.objectContaining({ state: "started" }),
+      expect.objectContaining({ state: "completed" }),
+    ]);
+    expect(events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+    await connection.close();
+  });
+
   test("rejects a keyed stale terminal before a later prompt is issued", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);

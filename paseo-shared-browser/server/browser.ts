@@ -1,11 +1,11 @@
-import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
-import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
+import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import type {
   acquireControlRpc,
   applyDevicePresetRpc,
   attachBrowserRpc,
@@ -18,15 +18,15 @@ import {
   sendBrowserInputRpc,
 } from "../shared/browser";
 import type { JsonValue } from "./runtime-protocol";
-import { SupervisorClient } from "./supervisor-client";
 import { resolveSupervisorPaths } from "./supervisor";
+import { SupervisorClient } from "./supervisor-client";
 
-export { SessionManager, normalizeBrowserUrl } from "./browser-policy";
 export type {
   BrowserRuntimeClient,
   SessionManagerOptions,
   WorkspaceValidator,
 } from "./browser-policy";
+export { normalizeBrowserUrl, SessionManager } from "./browser-policy";
 
 type AttachInput = RpcInput<typeof attachBrowserRpc>;
 type AttachOutput = RpcOutput<typeof attachBrowserRpc>;

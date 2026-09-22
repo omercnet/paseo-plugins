@@ -1,6 +1,5 @@
-import { resolveDependencyRoot } from "./prepare-dependencies.mjs";
-import { build } from "esbuild";
 import { execFile } from "node:child_process";
+import { constants } from "node:fs";
 import {
   access,
   chmod,
@@ -13,11 +12,12 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { constants } from "node:fs";
 import { arch, homedir, platform, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { build } from "esbuild";
+import { resolveDependencyRoot } from "./prepare-dependencies.mjs";
 
 const execFileAsync = promisify(execFile);
 const expectedVersion = "0.37.1";

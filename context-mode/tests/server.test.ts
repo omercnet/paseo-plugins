@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -31,14 +31,16 @@ afterEach(async () => {
 async function executable(source: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "paseo-context-mode-"));
   temporaryDirectories.push(directory);
-  const path = join(directory, "context-mode");
+  const path = join(directory, process.platform === "win32" ? "context-mode.cjs" : "context-mode");
   await writeFile(path, `#!/usr/bin/env node\n${source}\n`);
-  await chmod(path, 0o755);
+  if (process.platform !== "win32") await chmod(path, 0o755);
   return path;
 }
 
 function launch(program: string) {
-  return { program, args: [] };
+  return process.platform === "win32"
+    ? { program: process.execPath, args: [program] }
+    : { program, args: [] };
 }
 
 function settingsHandle(
@@ -74,6 +76,7 @@ describe("external binary resolution", () => {
     const checked: string[] = [];
     const result = await resolveContextModeBinary(settings, {
       env: { PATH: "/usr/bin" },
+      platform: "linux",
       canExecute: async (path) => {
         checked.push(path);
         return path === "/opt/context-mode";
@@ -87,12 +90,7 @@ describe("external binary resolution", () => {
     expect(checked).toEqual(["/opt/context-mode"]);
   });
   test("uses filesystem-backed executable checks for a real binary path", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "paseo-context-mode-bin-"));
-    temporaryDirectories.push(directory);
-    const executablePath = join(directory, "context-mode");
-    await writeFile(executablePath, "#!/bin/sh\nexit 0\n");
-    await chmod(executablePath, 0o755);
-
+    const executablePath = await realpath(process.execPath);
     const settings = ContextModeSettingsSchema.parse({ binaryPath: executablePath });
     const result = await resolveContextModeBinary(settings, { env: { PATH: "" } });
 
@@ -119,6 +117,7 @@ describe("external binary resolution", () => {
       ContextModeSettingsSchema.parse({ binaryPath: "/missing/context-mode" }),
       {
         env: { PATH: "/first:/second" },
+        platform: "linux",
         canExecute: async (path) => path === "/second/context-mode",
       },
     );
