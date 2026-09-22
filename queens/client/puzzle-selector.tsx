@@ -134,10 +134,10 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean): Sel
       flexDirection: "row",
       flexWrap: "wrap",
       justifyContent: "center",
-      gap: compact ? 8 : 12,
+      gap: compact ? 6 : 12,
     },
     step: {
-      minWidth: compact ? 136 : 152,
+      minWidth: compact ? 132 : 152,
       minHeight: 44,
       flexDirection: "row",
       alignItems: "center",
@@ -161,7 +161,7 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean): Sel
       fontWeight: "500",
     },
     valueBlock: {
-      minWidth: compact ? 56 : 68,
+      minWidth: compact ? 52 : 68,
       flex: 1,
       alignItems: "center",
       gap: 1,

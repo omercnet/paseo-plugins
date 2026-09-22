@@ -150,15 +150,6 @@ function QueensPopoverGame({
 
   return (
     <View style={styles.root}>
-      {!layout.compact ? (
-        <View style={styles.titleRow}>
-          <GameMark size={22} color={theme.colors.accent} />
-          <Text accessibilityRole="header" style={styles.title}>
-            Queens
-          </Text>
-        </View>
-      ) : null}
-
       <View style={styles.metaRow}>
         <Text style={styles.metaText}>
           #{puzzleNumber}/{state.puzzles.length}
@@ -196,7 +187,7 @@ function QueensPopoverGame({
         <QueensBoard
           key={`${host.id}:${puzzle.id}:popover`}
           dragEnabled={!layout.compact}
-          maxSize={layout.compact ? 296 : 184}
+          maxSize={layout.compact ? 296 : 146}
           puzzle={puzzle}
           cells={progress.cells}
           conflicts={conflicts}
@@ -241,20 +232,10 @@ function QueensPopoverGame({
 function createStyles(theme: PluginButtonContentProps["theme"], compact: boolean) {
   return StyleSheet.create({
     root: {
-      width: compact ? "100%" : 392,
+      width: "100%",
       alignSelf: "center",
       alignItems: "center",
       gap: compact ? 12 : 6,
-    },
-    titleRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-    },
-    title: {
-      color: theme.colors.foreground,
-      fontSize: 18,
-      fontWeight: "800",
     },
     doneButton: {
       minHeight: 36,
@@ -289,7 +270,7 @@ function createStyles(theme: PluginButtonContentProps["theme"], compact: boolean
     },
     boardFrame: {
       width: "100%",
-      maxWidth: compact ? 296 : 184,
+      maxWidth: compact ? 296 : 146,
     },
     statusCard: {
       minHeight: 30,
