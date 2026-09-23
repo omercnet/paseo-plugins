@@ -93,6 +93,7 @@ export interface AgentBrowserRuntimeOptions {
   ipcDirectory: string;
   session: string;
   initialUrl?: string;
+  headed?: boolean;
   timeoutMs?: number;
 }
 
@@ -189,6 +190,7 @@ export class AgentBrowserRuntime {
   readonly ipcDirectory: string;
   readonly session: string;
   private readonly initialUrl: string;
+  private readonly headed: boolean;
   private readonly timeoutMs: number;
   private readonly environment: NodeJS.ProcessEnv;
   private connection: CdpConnection | null = null;
@@ -212,6 +214,7 @@ export class AgentBrowserRuntime {
       throw new AgentBrowserIncompatibleError("agent-browser session name is invalid");
     }
     this.session = options.session;
+    this.headed = options.headed ?? false;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.environment = runtimeEnvironment(this.ipcDirectory);
     this.initialUrl = options.initialUrl ?? "about:blank";
@@ -236,6 +239,7 @@ export class AgentBrowserRuntime {
       this.profilePath,
       "--executable-path",
       this.executablePath,
+      ...(this.headed ? ["--headed"] : []),
       ...(chromiumArguments ? ["--args", chromiumArguments] : []),
       "--json",
       "open",
