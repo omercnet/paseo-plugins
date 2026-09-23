@@ -11,12 +11,17 @@ interface OwnedRuntime {
   runtimeId: string;
   runtime: AgentBrowserRuntime;
 }
+interface RuntimeOwnerOptions {
+  initialUrl?: string;
+}
 
 function paseoHome(): string {
   return process.env.PASEO_HOME ?? join(homedir(), ".paseo");
 }
 
-export async function createRuntimeOwner(): Promise<RuntimeOwner<OwnedRuntime>> {
+export async function createRuntimeOwner(
+  options: RuntimeOwnerOptions = {},
+): Promise<RuntimeOwner<OwnedRuntime>> {
   const root = join(paseoHome(), "plugin-data", "shared-browser");
   const ipcDirectory =
     process.platform === "win32"
@@ -46,7 +51,7 @@ export async function createRuntimeOwner(): Promise<RuntimeOwner<OwnedRuntime>> 
         profilePath: join(root, "profiles", hash),
         ipcDirectory,
         session: `ws-${hash.slice(0, 16)}`,
-        initialUrl: DEFAULT_BROWSER_URL,
+        initialUrl: options.initialUrl ?? DEFAULT_BROWSER_URL,
       });
       await runtime.launch();
       return { runtimeId: randomUUID(), runtime };

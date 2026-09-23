@@ -108,7 +108,10 @@ it("shares and persists a production agent-browser runtime across supervisor cli
   process.env.PASEO_HOME = paseoHome;
 
   const paths = resolveSupervisorPaths(paseoHome);
-  const running = await startSupervisorServer(await createRuntimeOwner(), paths);
+  const running = await startSupervisorServer(
+    await createRuntimeOwner({ initialUrl: `${origin}/` }),
+    paths,
+  );
   const createManager = async (bridgeId: string) => {
     const manager = new SessionManager({
       client: new SupervisorClient({ bridgeId, paths }),
@@ -121,7 +124,7 @@ it("shares and persists a production agent-browser runtime across supervisor cli
   let manager = await createManager("smoke-bridge-one");
   try {
     const first = await manager.attach("workspace-smoke", "Desktop client");
-    expect(first.state.url).toBe("https://example.com/");
+    expect(first.state.url).toBe(`${origin}/`);
     const second = await manager.attach("workspace-smoke", "Mobile client");
     expect(second.state.sessionId).toBe(first.state.sessionId);
     expect(second.state.viewerCount).toBe(2);
