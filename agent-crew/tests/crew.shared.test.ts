@@ -216,49 +216,80 @@ describe("age", () => {
   });
 });
 
+type DirectoryObserver = {
+  snapshot(snapshot: unknown): void;
+  update(message: unknown): void;
+};
+
+function directoryObservation() {
+  let observer: DirectoryObserver | undefined;
+  const release = vi.fn(async () => {});
+  const removeObserver = vi.fn(() => {
+    observer = undefined;
+  });
+  const subscribe = vi.fn((nextObserver: DirectoryObserver) => {
+    observer = nextObserver;
+    observer.snapshot({});
+    return removeObserver;
+  });
+  const list = vi.fn(async () => ({ subscription: { release, subscribe } }));
+
+  return {
+    list,
+    release,
+    removeObserver,
+    subscribe,
+    update() {
+      observer?.update({});
+    },
+  };
+}
+
 describe("listenToCrewDirectory", () => {
-  test("uses existing host observations without replacing Paseo 0.8 directory state", () => {
-    const agentsList = vi.fn();
-    const workspacesList = vi.fn();
-    const unsubscribeAgents = vi.fn();
-    const unsubscribeWorkspaces = vi.fn();
+  test("requests owned observations and invalidates from snapshots and updates", async () => {
+    const agents = directoryObservation();
+    const workspaces = directoryObservation();
+    const invalidate = vi.fn();
     const paseo = {
-      agents: { list: agentsList, subscribe: vi.fn(() => unsubscribeAgents) },
-      workspaces: { list: workspacesList, subscribe: vi.fn(() => unsubscribeWorkspaces) },
+      agents: { list: agents.list },
+      workspaces: { list: workspaces.list },
     } as unknown as Parameters<typeof listenToCrewDirectory>[0];
 
-    const unsubscribe = listenToCrewDirectory(paseo, vi.fn());
+    const unsubscribe = listenToCrewDirectory(paseo, invalidate);
+    await vi.waitFor(() => {
+      expect(agents.subscribe).toHaveBeenCalledOnce();
+      expect(workspaces.subscribe).toHaveBeenCalledOnce();
+    });
 
-    expect(agentsList).not.toHaveBeenCalled();
-    expect(workspacesList).not.toHaveBeenCalled();
+    expect(agents.list).toHaveBeenCalledWith({ subscribe: {} });
+    expect(workspaces.list).toHaveBeenCalledWith({ subscribe: {} });
+    expect(invalidate).toHaveBeenCalledTimes(2);
+
+    agents.update();
+    workspaces.update();
+    expect(invalidate).toHaveBeenCalledTimes(4);
     unsubscribe();
-    expect(unsubscribeAgents).toHaveBeenCalledOnce();
-    expect(unsubscribeWorkspaces).toHaveBeenCalledOnce();
   });
 
-  test("forwards updates from host-owned Paseo 0.9 observations", () => {
+  test("removes observers and releases owned observations", async () => {
+    const agents = directoryObservation();
+    const workspaces = directoryObservation();
     const invalidate = vi.fn();
-    let onAgentUpdate: (() => void) | undefined;
-    let onWorkspaceUpdate: (() => void) | undefined;
     const paseo = {
-      agents: {
-        subscribe: vi.fn((listener: () => void) => {
-          onAgentUpdate = listener;
-          return vi.fn();
-        }),
-      },
-      workspaces: {
-        subscribe: vi.fn((listener: () => void) => {
-          onWorkspaceUpdate = listener;
-          return vi.fn();
-        }),
-      },
+      agents: { list: agents.list },
+      workspaces: { list: workspaces.list },
     } as unknown as Parameters<typeof listenToCrewDirectory>[0];
 
-    listenToCrewDirectory(paseo, invalidate);
-    onAgentUpdate?.();
-    onWorkspaceUpdate?.();
+    const unsubscribe = listenToCrewDirectory(paseo, invalidate);
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2));
+    unsubscribe();
 
+    agents.update();
+    workspaces.update();
     expect(invalidate).toHaveBeenCalledTimes(2);
+    expect(agents.removeObserver).toHaveBeenCalledOnce();
+    expect(workspaces.removeObserver).toHaveBeenCalledOnce();
+    expect(agents.release).toHaveBeenCalledOnce();
+    expect(workspaces.release).toHaveBeenCalledOnce();
   });
 });

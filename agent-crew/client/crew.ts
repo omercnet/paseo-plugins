@@ -6,11 +6,46 @@ export type AgentEntry = Awaited<ReturnType<PaseoApi["agents"]["list"]>>["entrie
 type AgentSnapshot = AgentEntry["agent"];
 
 export function listenToCrewDirectory(paseo: PaseoApi, invalidate: () => void): () => void {
-  const unsubscribeAgents = paseo.agents.subscribe(invalidate);
-  const unsubscribeWorkspaces = paseo.workspaces.subscribe(invalidate);
+  let closed = false;
+  let removeAgentObserver: (() => void) | undefined;
+  let removeWorkspaceObserver: (() => void) | undefined;
+  let releaseAgentSubscription: (() => Promise<void>) | undefined;
+  let releaseWorkspaceSubscription: (() => Promise<void>) | undefined;
+
+  void paseo.agents
+    .list({ subscribe: {} })
+    .then(({ subscription }) => {
+      if (closed) return subscription.release();
+      releaseAgentSubscription = () => subscription.release();
+      removeAgentObserver = subscription.subscribe({
+        snapshot: invalidate,
+        update: invalidate,
+      });
+    })
+    .catch((error: unknown) => {
+      if (!closed) console.error("Agent Crew agent observation failed", error);
+    });
+
+  void paseo.workspaces
+    .list({ subscribe: {} })
+    .then(({ subscription }) => {
+      if (closed) return subscription.release();
+      releaseWorkspaceSubscription = () => subscription.release();
+      removeWorkspaceObserver = subscription.subscribe({
+        snapshot: invalidate,
+        update: invalidate,
+      });
+    })
+    .catch((error: unknown) => {
+      if (!closed) console.error("Agent Crew workspace observation failed", error);
+    });
+
   return () => {
-    unsubscribeAgents();
-    unsubscribeWorkspaces();
+    closed = true;
+    removeAgentObserver?.();
+    removeWorkspaceObserver?.();
+    void releaseAgentSubscription?.();
+    void releaseWorkspaceSubscription?.();
   };
 }
 
