@@ -155,28 +155,50 @@ describe("MCP transport boundaries", () => {
     await expect(closing).rejects.toThrow("transport cleanup failed");
   });
 
-  test("starts stdio tree cleanup before stdin shutdown can release the Windows tree root", async () => {
+  test("keeps stdin open until Windows process-tree cleanup settles", async () => {
     const child = new FakeMcpChild();
-    let stdinEndedAtCleanup: boolean | undefined;
+    const treeCleanup = Promise.withResolvers<boolean>();
     const transport = new SupervisedStdioClientTransport(
       { command: "mcp-server", cwd: "C:\\workspace" },
       {
         platform: "win32",
         spawnProcess: () => child.asChildProcess(),
-        terminateProcessTree: async () => {
-          stdinEndedAtCleanup = child.stdin.writableEnded;
-          queueMicrotask(() => child.emit("exit", 0, null));
-          return true;
-        },
+        terminateProcessTree: async () => await treeCleanup.promise,
       },
     );
     const starting = transport.start();
     child.emit("spawn");
     await starting;
 
-    await transport.close();
+    const closing = transport.close();
+    expect(child.stdin.writableEnded).toBe(false);
+    treeCleanup.resolve(true);
+    await flushMicrotasks();
+    expect(child.stdin.writableEnded).toBe(true);
+    child.emit("exit", 0, null);
+    await closing;
+  });
 
-    expect(stdinEndedAtCleanup).toBe(false);
+  test("ends stdin while POSIX process-tree cleanup is pending", async () => {
+    const child = new FakeMcpChild();
+    const treeCleanup = Promise.withResolvers<boolean>();
+    const transport = new SupervisedStdioClientTransport(
+      { command: "mcp-server", cwd: "/workspace" },
+      {
+        platform: "linux",
+        spawnProcess: () => child.asChildProcess(),
+        terminateProcessTree: async () => await treeCleanup.promise,
+      },
+    );
+    const starting = transport.start();
+    child.emit("spawn");
+    await starting;
+
+    const closing = transport.close();
+    expect(child.stdin.writableEnded).toBe(true);
+    treeCleanup.resolve(true);
+    child.emit("exit", 0, null);
+    await closing;
   });
 
   test("fails cleanup when stdio process-tree termination is not verified", async () => {

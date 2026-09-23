@@ -225,7 +225,7 @@ export class SupervisedStdioClientTransport implements Transport {
       return;
     }
     const treeCleanup = this.startTreeCleanup();
-    if (!this.exited) {
+    if (this.platform !== "win32" && !this.exited) {
       try {
         child.stdin.end();
       } catch {
@@ -233,6 +233,13 @@ export class SupervisedStdioClientTransport implements Transport {
       }
     }
     const terminated = await treeCleanup;
+    if (this.platform === "win32" && terminated && !this.exited) {
+      try {
+        child.stdin.end();
+      } catch {
+        // Process-tree cleanup remains authoritative when the input channel is already closed.
+      }
+    }
     const exited =
       this.spawnFailedWithoutProcess ||
       this.exited ||

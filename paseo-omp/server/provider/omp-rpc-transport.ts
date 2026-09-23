@@ -475,7 +475,7 @@ export class OmpRpcProcess {
     this.clearChunk();
     this.failPending(new Error("OMP RPC process was closed"));
     const cleanupPromise = this.startTreeCleanup();
-    if (!this.exited) {
+    if (process.platform !== "win32" && !this.exited) {
       try {
         this.child.stdin.end();
       } catch {
@@ -484,6 +484,13 @@ export class OmpRpcProcess {
     }
     const cleanup = await cleanupPromise;
     if (cleanup !== "verified") throw new Error("OMP RPC process tree cleanup failed");
+    if (process.platform === "win32" && !this.exited) {
+      try {
+        this.child.stdin.end();
+      } catch {
+        // Process-tree cleanup remains authoritative when the input channel is already closed.
+      }
+    }
     if (
       !this.spawnFailedWithoutProcess &&
       !this.exited &&
