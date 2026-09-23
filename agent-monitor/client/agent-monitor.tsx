@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, Pressable, Text, TextInput, View } from "react-native";
 import { initialBucket, type MonitorSettings, monitorSettings } from "../shared/monitor-settings";
 import { DiffStat, type DiffStatStyles } from "./diff-stat";
+import { createDebouncedInvalidator, observeDirectoryInvalidation } from "./directory-observation";
 import {
   type AgentEntry,
   age,
@@ -223,22 +224,14 @@ function AgentMonitorRoster({
   }, []);
 
   useEffect(() => {
-    let debounce: ReturnType<typeof setTimeout> | undefined;
-    const invalidate = () => {
-      if (debounce) return;
-      debounce = setTimeout(() => {
-        debounce = undefined;
-        void queryClient.invalidateQueries({ queryKey });
-      }, REFRESH_DEBOUNCE_MS);
-    };
-    const unsubscribeAgents = paseo.agents.subscribe(invalidate);
-    const unsubscribeWorkspaces = paseo.workspaces.subscribe(invalidate);
-    const unsubscribeProjects = paseo.projects.subscribe(invalidate);
+    const invalidator = createDebouncedInvalidator(
+      () => void queryClient.invalidateQueries({ queryKey }),
+      REFRESH_DEBOUNCE_MS,
+    );
+    const stopObserving = observeDirectoryInvalidation(paseo, invalidator.invalidate);
     return () => {
-      clearTimeout(debounce);
-      unsubscribeAgents();
-      unsubscribeWorkspaces();
-      unsubscribeProjects();
+      invalidator.cancel();
+      stopObserving();
     };
   }, [paseo, queryClient, queryKey]);
 
