@@ -1,4 +1,4 @@
-import type { PaseoApi } from "@getpaseo/client";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type AgentDirectoryFollower,
@@ -32,15 +32,12 @@ function page(agents: Agent[], next?: string) {
   };
 }
 
-/**
- * A host whose directory is `pages()`, one array per page. `observing` makes it
- * a 0.9 client (observation from `list({ subscribe })`); otherwise a 0.8 one.
- * `gate` holds plain page reads until released, to land updates mid-paging.
+/** A host whose directory is `pages()`, one array per page. `gate` holds
+ * plain page reads until released, to land updates or failures mid-paging.
  */
-function fakeHost(options: { observing: boolean; pages: () => Agent[][] }) {
+function fakeHost(options: { pages: () => Agent[][] }) {
   const requests: ListRequest[] = [];
   const observers: Observer[] = [];
-  let listener: ((update: unknown) => void) | null = null;
   let released = 0;
   let gate: Promise<void> | null = null;
   const pageAt = (cursor?: string) => {
@@ -49,17 +46,15 @@ function fakeHost(options: { observing: boolean; pages: () => Agent[][] }) {
     return page(pages[index] ?? [], index + 1 < pages.length ? String(index + 1) : undefined);
   };
   const agents = {
-    subscribe(handler: (update: unknown) => void) {
-      listener = handler;
-      return () => {
-        listener = null;
-      };
+    subscribe() {
+      return () => undefined;
     },
     async list(request: ListRequest = {}) {
       requests.push(request);
       if (!request.subscribe) {
+        const result = pageAt(request.page?.cursor);
         if (gate) await gate;
-        return pageAt(request.page?.cursor);
+        return result;
       }
       return {
         ...pageAt(),
@@ -78,13 +73,10 @@ function fakeHost(options: { observing: boolean; pages: () => Agent[][] }) {
   };
   const observer = () => observers.at(-1);
   return {
-    paseo: (options.observing ? { observeEvents() {}, agents } : { agents }) as unknown as PaseoApi,
+    paseo: { agents } as unknown as PluginClientContext["paseo"],
     requests,
     get released() {
       return released;
-    },
-    get listening() {
-      return listener !== null;
     },
     hold() {
       let open = () => {};
@@ -98,7 +90,6 @@ function fakeHost(options: { observing: boolean; pages: () => Agent[][] }) {
     },
     update(payload: unknown) {
       observer()?.update({ type: "agent_update", payload });
-      listener?.(payload);
     },
     reconnect() {
       observer()?.snapshot(pageAt());
@@ -138,7 +129,7 @@ describe("followAgentDirectory on a 0.9 client", () => {
   });
 
   test("opens one observation and applies its snapshot and updates", async () => {
-    const host = fakeHost({ observing: true, pages: () => [[agent("a1"), agent("a2")]] });
+    const host = fakeHost({ pages: () => [[agent("a1"), agent("a2")]] });
     const seen = recorder();
     const stop = followAgentDirectory(host.paseo, seen.follower);
     await flush();
@@ -150,7 +141,6 @@ describe("followAgentDirectory on a 0.9 client", () => {
       page: { limit: 200 },
     });
     expect(host.requests[0]?.signal).toBeInstanceOf(AbortSignal);
-    expect(host.listening).toBe(false);
     expect(seen.snapshots).toEqual([{ ids: ["a1", "a2"], complete: true }]);
 
     host.update({ kind: "upsert", agent: agent("a3") });
@@ -168,7 +158,6 @@ describe("followAgentDirectory on a 0.9 client", () => {
 
   test("reads later pages plainly and lets updates that land meanwhile win", async () => {
     const host = fakeHost({
-      observing: true,
       pages: () => [[agent("a1")], [agent("a2"), agent("a3")]],
     });
     const release = host.hold();
@@ -185,13 +174,14 @@ describe("followAgentDirectory on a 0.9 client", () => {
 
     expect(host.requests[1]).toMatchObject({ page: { limit: 200, cursor: "1" } });
     expect(host.requests[1]?.subscribe).toBeUndefined();
+    expect(host.requests[1]?.signal).toBe(host.requests[0]?.signal);
     expect(seen.snapshots).toEqual([{ ids: ["a1", "a2", "a9"], complete: true }]);
     stop();
   });
 
   test("stops at the page cap and marks the snapshot incomplete", async () => {
     const pages = Array.from({ length: MAX_AGENT_PAGES + 2 }, (_, index) => [agent(`a${index}`)]);
-    const host = fakeHost({ observing: true, pages: () => pages });
+    const host = fakeHost({ pages: () => pages });
     const seen = recorder();
     const stop = followAgentDirectory(host.paseo, seen.follower);
     await flush();
@@ -205,7 +195,7 @@ describe("followAgentDirectory on a 0.9 client", () => {
 
   test("a reconnect snapshot supersedes paging still in flight", async () => {
     let pages = [[agent("a1")], [agent("a2")]];
-    const host = fakeHost({ observing: true, pages: () => pages });
+    const host = fakeHost({ pages: () => pages });
     const release = host.hold();
     const seen = recorder();
     const stop = followAgentDirectory(host.paseo, seen.follower);
@@ -221,9 +211,28 @@ describe("followAgentDirectory on a 0.9 client", () => {
     stop();
   });
 
+  test("drops a paging continuation after an observation failure", async () => {
+    let pages = [[agent("a1")], [agent("a2")]];
+    const host = fakeHost({ pages: () => pages });
+    const release = host.hold();
+    const seen = recorder();
+    const stop = followAgentDirectory(host.paseo, seen.follower);
+    await flush();
+
+    host.fail(new Error("connection lost"));
+    pages = [[agent("b1")]];
+    release();
+    await flush();
+    expect(seen.snapshots).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(seen.snapshots).toEqual([{ ids: ["b1"], complete: true }]);
+    stop();
+  });
+
   test("reopens a failed observation with backoff and leaves no timer behind", async () => {
     let pages = [[agent("a1")]];
-    const host = fakeHost({ observing: true, pages: () => pages });
+    const host = fakeHost({ pages: () => pages });
     const seen = recorder();
     const stop = followAgentDirectory(host.paseo, seen.follower);
     await flush();
@@ -239,24 +248,5 @@ describe("followAgentDirectory on a 0.9 client", () => {
     host.fail(new Error("again"));
     stop();
     expect(vi.getTimerCount()).toBe(0);
-  });
-});
-
-describe("followAgentDirectory on a 0.8 client", () => {
-  test("keeps the listener and one upsert-only read, and never subscribes", async () => {
-    const host = fakeHost({ observing: false, pages: () => [[agent("a1")]] });
-    const seen = recorder();
-    const stop = followAgentDirectory(host.paseo, seen.follower);
-    await vi.waitFor(() => expect(seen.snapshots).toHaveLength(1));
-
-    expect(host.requests.every((request) => request.subscribe === undefined)).toBe(true);
-    expect(host.listening).toBe(true);
-    expect(seen.snapshots).toEqual([{ ids: ["a1"], complete: false }]);
-
-    host.update({ kind: "upsert", agent: agent("a2") });
-    expect(seen.upserts).toEqual(["a2"]);
-
-    stop();
-    expect(host.listening).toBe(false);
   });
 });

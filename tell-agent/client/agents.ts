@@ -1,13 +1,20 @@
-import type {
-  PaseoAgent,
-  PaseoAgentListResult,
-  PaseoAgentUpdate,
-  PaseoApi,
-} from "@getpaseo/client";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 
 type PaseoApi = PluginClientContext["paseo"];
-export type AgentEntry = Awaited<ReturnType<PaseoApi["agents"]["list"]>>["entries"][number];
-type AgentSnapshot = AgentEntry["agent"];
+type PaseoAgentUpdate = Parameters<Parameters<PaseoApi["agents"]["subscribe"]>[0]>[0];
+type AgentSnapshot = Extract<PaseoAgentUpdate, { kind: "upsert" }>["agent"];
+export type AgentEntry = {
+  agent: AgentSnapshot;
+  project: {
+    projectName: string;
+    workspaceName?: string | null;
+    checkout: { isGit: boolean; currentBranch: string | null };
+  };
+};
+type PaseoAgentListResult = {
+  entries: AgentEntry[];
+  pageInfo: { hasMore: boolean; nextCursor: string | null };
+};
 
 export const AGENT_PAGE_LIMIT = 200;
 export const MAX_AGENT_PAGES = 10;
@@ -41,6 +48,7 @@ export async function loadAgents(paseo: PaseoApi): Promise<AgentDirectoryPage> {
 async function readRemainingPages(
   paseo: PaseoApi,
   first: PaseoAgentListResult,
+  signal: AbortSignal,
   current: () => boolean,
 ): Promise<AgentDirectoryPage | null> {
   const entries = [...first.entries];
@@ -50,6 +58,7 @@ async function readRemainingPages(
     const result = await paseo.agents.list({
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: AGENT_PAGE_LIMIT, cursor },
+      signal,
     });
     if (!current()) return null;
     entries.push(...result.entries);
@@ -69,24 +78,13 @@ export type AgentDirectoryFollower = {
 };
 
 /**
- * `observeEvents` shipped together with owned observations (0.9.0-beta.1). A
- * 0.8 client must not send `subscribe`: the daemon keeps one agents slot per
- * legacy connection, last query wins, so it would replace the app's own.
- */
-function ownsObservations(paseo: PaseoApi): boolean {
-  return typeof (paseo as { observeEvents?: unknown }).observeEvents === "function";
-}
-
-/**
  * Keeps `follower` in step with the host's agents until the returned cleanup.
  *
- * On 0.9, `agents.subscribe()` only hears observations the same API instance
- * opened, so this opens one with `list({ subscribe: {} })`. Its snapshot, the
- * first page, arrives first and again after every reconnect; later pages are
- * read plainly, and updates that land meanwhile win over what those pages say.
+ * `agents.subscribe()` only hears observations the same API instance opened,
+ * so this opens one with `list({ subscribe: {} })`. Its snapshot, the first
+ * page, arrives first and again after every reconnect; later pages are read
+ * plainly, and updates that land meanwhile win over what those pages say.
  * Paseo releases an observation that fails, so it is reopened with backoff.
- *
- * On 0.8 it listens and reads the directory once, as before.
  */
 export function followAgentDirectory(
   paseo: PaseoApi,
@@ -97,23 +95,6 @@ export function followAgentDirectory(
     if (update.kind === "remove") follower.remove(update.agentId);
     else follower.upsert(update.agent);
   };
-
-  if (!ownsObservations(paseo)) {
-    const unsubscribe = paseo.agents.subscribe((update) => {
-      if (!stopped) apply(update);
-    });
-    void loadAgents(paseo)
-      .then(({ entries }) => {
-        if (stopped) return;
-        const agents = entries.map((entry) => entry.agent);
-        follower.snapshot(agents, false);
-      })
-      .catch(() => undefined);
-    return () => {
-      stopped = true;
-      unsubscribe();
-    };
-  }
 
   const lifetime = new AbortController();
   let observation: { release(): Promise<void> } | null = null;
@@ -131,7 +112,7 @@ export function followAgentDirectory(
     landed = touched;
     let listed: AgentDirectoryPage | null;
     try {
-      listed = await readRemainingPages(paseo, first, isCurrent);
+      listed = await readRemainingPages(paseo, first, lifetime.signal, isCurrent);
     } catch {
       listed = { entries: [...first.entries], truncated: true };
     }
@@ -147,6 +128,8 @@ export function followAgentDirectory(
 
   const reopen = () => {
     observation = null;
+    generation += 1;
+    landed = null;
     if (stopped || reopenTimer !== null) return;
     reopenTimer = setTimeout(() => {
       reopenTimer = null;
@@ -164,7 +147,10 @@ export function followAgentDirectory(
         signal: lifetime.signal,
       })
       .then(({ subscription }) => {
-        if (stopped) return;
+        if (stopped) {
+          void subscription.release().catch(() => undefined);
+          return;
+        }
         observation = subscription;
         subscription.subscribe({
           snapshot: (first) => {
