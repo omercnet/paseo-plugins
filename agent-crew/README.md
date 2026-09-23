@@ -20,6 +20,16 @@ that no private organization names remained in the rendered page.
 
 ![Agent Crew nudge confirmation](https://raw.githubusercontent.com/omercnet/paseo-plugins/main/agent-crew/docs/images/agent-crew-action.png)
 
+## Auto open
+
+When enabled in the plugin settings screen, Agent Crew opens the Explorer tab once for each new workspace observed on that host.
+
+- Default: off.
+- Existing workspaces are not opened when the setting is enabled.
+- Disabling stops queued and future opens. Re-enabling resumes observation for workspaces created or updated afterward.
+- Workspace claims are remembered on the daemon so reconnects and reloads do not reopen a workspace.
+- A failed claim batch is retried once after two seconds, then dropped with a logged error.
+
 ## What it shows
 
 - Every non-archived managed agent in the current workspace, organized into orchestration trees.
