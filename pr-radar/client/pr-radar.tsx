@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { acknowledgeViewerScope, viewerScope } from "../shared/viewer-scope";
+import { observeDirectoryInvalidation } from "./directory-observation";
 import {
   type AgentEntry,
   agentActionFor,
@@ -136,23 +137,15 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
     return () => clearInterval(clock);
   }, []);
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const invalidate = () => {
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = undefined;
-        void queryClient.invalidateQueries({ queryKey });
-      }, EVENT_DEBOUNCE_MS);
-    };
-    const unsubscribeAgents = paseo.agents.subscribe(invalidate);
-    const unsubscribeWorkspaces = paseo.workspaces.subscribe(invalidate);
-    return () => {
-      clearTimeout(timer);
-      unsubscribeAgents();
-      unsubscribeWorkspaces();
-    };
-  }, [paseo, queryClient, queryKey]);
+  useEffect(
+    () =>
+      observeDirectoryInvalidation(
+        paseo,
+        () => void queryClient.invalidateQueries({ queryKey }),
+        EVENT_DEBOUNCE_MS,
+      ),
+    [paseo, queryClient, queryKey],
+  );
 
   const rawRows = data?.rows ?? [];
   const scopeUrls = useMemo(() => rawRows.map((row) => row.url), [rawRows]);

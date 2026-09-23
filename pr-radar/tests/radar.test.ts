@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { observeDirectoryInvalidation } from "../client/directory-observation";
 import {
   type AgentEntry,
   agentActionFor,
@@ -12,6 +13,7 @@ import {
   matchesRow,
   mergeInboxRows,
   openPullRequestUrl,
+  type PaseoApi,
   type PaseoWorkspace,
   type RadarAgent,
   type RadarRow,
@@ -139,6 +141,118 @@ function entry(workspaceId: string, overrides: Record<string, unknown> = {}): Ag
     },
   } as unknown as AgentEntry;
 }
+
+interface DirectoryObserver {
+  snapshot(): void;
+  update(message: unknown): void;
+}
+
+interface OwnedDirectorySubscription {
+  subscribe(next: DirectoryObserver): () => void;
+  release(): Promise<void>;
+}
+
+interface OwnedDirectoryObservation {
+  subscription: OwnedDirectorySubscription;
+  calls: { unsubscribes: number; releases: number };
+  snapshot(): void;
+  update(): void;
+}
+
+function ownedDirectoryObservation(): OwnedDirectoryObservation {
+  let observer: DirectoryObserver | undefined;
+  const calls = { unsubscribes: 0, releases: 0 };
+  return {
+    subscription: {
+      subscribe(next) {
+        observer = next;
+        return () => {
+          calls.unsubscribes += 1;
+          observer = undefined;
+        };
+      },
+      async release() {
+        calls.releases += 1;
+      },
+    },
+    calls,
+    snapshot() {
+      observer?.snapshot();
+    },
+    update() {
+      observer?.update({});
+    },
+  };
+}
+
+function paseoWithOwnedDirectoryObservations(
+  agents: OwnedDirectoryObservation,
+  workspaces: OwnedDirectoryObservation,
+): PaseoApi {
+  return {
+    agents: { list: vi.fn().mockResolvedValue({ subscription: agents.subscription }) },
+    workspaces: { list: vi.fn().mockResolvedValue({ subscription: workspaces.subscription }) },
+  } as unknown as PaseoApi;
+}
+
+const directoryEvents: ReadonlyArray<
+  [string, (agents: OwnedDirectoryObservation, workspaces: OwnedDirectoryObservation) => void]
+> = [
+  ["agent snapshot", (agents) => agents.snapshot()],
+  ["agent update", (agents) => agents.update()],
+  ["workspace snapshot", (_agents, workspaces) => workspaces.snapshot()],
+  ["workspace update", (_agents, workspaces) => workspaces.update()],
+];
+
+describe("directory invalidation observations", () => {
+  test.each(directoryEvents)(
+    "invalidates directory state after an owned %s",
+    async (_event, emit) => {
+      vi.useFakeTimers();
+      const agents = ownedDirectoryObservation();
+      const workspaces = ownedDirectoryObservation();
+      const paseo = paseoWithOwnedDirectoryObservations(agents, workspaces);
+      const invalidateDirectoryState = vi.fn();
+      const cleanup = observeDirectoryInvalidation(paseo, invalidateDirectoryState, 500);
+
+      try {
+        await Promise.resolve();
+        emit(agents, workspaces);
+        vi.advanceTimersByTime(500);
+
+        expect(invalidateDirectoryState).toHaveBeenCalledOnce();
+      } finally {
+        cleanup();
+        vi.useRealTimers();
+      }
+    },
+  );
+  test("cancels pending invalidation and releases owned observations on cleanup", async () => {
+    vi.useFakeTimers();
+    const agents = ownedDirectoryObservation();
+    const workspaces = ownedDirectoryObservation();
+    const paseo = paseoWithOwnedDirectoryObservations(agents, workspaces);
+    const invalidateDirectoryState = vi.fn();
+    const cleanup = observeDirectoryInvalidation(paseo, invalidateDirectoryState, 500);
+
+    try {
+      await Promise.resolve();
+      agents.snapshot();
+      cleanup();
+      agents.update();
+      workspaces.update();
+      vi.advanceTimersByTime(500);
+
+      expect(invalidateDirectoryState).not.toHaveBeenCalled();
+      expect(agents.calls.unsubscribes).toBe(1);
+      expect(workspaces.calls.unsubscribes).toBe(1);
+      expect(agents.calls.releases).toBe(1);
+      expect(workspaces.calls.releases).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("PR triage", () => {
   test("identifies only running and initializing agents as active", () => {
