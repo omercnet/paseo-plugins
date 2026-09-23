@@ -2,11 +2,11 @@
 
 Open the global **OMP** sidebar to browse and edit machine-wide state, or open the workspace **OMP** panel from the workspace tab or Explorer to manage project-scoped state. Scalar edits in the global surface use OMP's native `config set` and `config reset` commands. The same view provides bounded row editors for `modelRoles`, `retry.fallbackChains`, `cycleOrder`, `task.agentModelOverrides`, `task.agentServiceTierOverrides`, `task.agentPrewalk`, and `task.agentAdvisor` when OMP includes them in its native settings catalog. Workspace edits create validated overrides in `<workspace>/.omp/config.yml`; removing an override restores the effective global or default value. Other arrays and records, and all credentials, remain read-only.
 
-The **Plugin** tab documents the supported `omp-plugin` launch options, including names-only inherited environment configuration. Paseo's public plugin API does not expose the effective provider options for active launches, so the tab does not claim profile values are active. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
+The **Plugin** tab documents and manages host-wide inherited environment names, plus the supported `omp-plugin` profile launch options. Paseo's public plugin API does not expose the effective provider options for active launches, so the tab does not claim profile values are active. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
 
-## Optional provider profile overrides
+## Provider profile launch overrides
 
-Advanced launch overrides belong in an `omp-plugin` provider profile. The provider options schema is strict; unknown fields fail validation.
+Advanced profile-specific launch overrides belong in an `omp-plugin` provider profile. The provider options schema is strict; unknown fields fail validation.
 
 ```json
 {
@@ -28,7 +28,7 @@ Advanced launch overrides belong in an `omp-plugin` provider profile. The provid
 | --- | --- |
 | `command` | Complete OMP executable and argument prefix. |
 | `env` | Non-secret process overrides applied below the session launch environment. |
-| `inheritEnv` | Daemon environment variable names copied only when OMP starts. Values are never stored in the profile or displayed in the sidebar. |
+| `inheritEnv` | Additional daemon environment variable names copied only when OMP starts. Host-wide names are configured in **OMP → Plugin**; values are never stored in a profile or displayed in the sidebar. |
 | `outputRedaction` | `none` (default) preserves native output. `configured-values` performs best-effort literal replacement only for explicitly supplied configured credential values from profile/session credential environment fields and configured MCP headers or environment. |
 | `params.sessionDir` | Native OMP session directory supplied through `--session-dir`. Used consistently by discovery, import, resume, and launch. |
 | `params.rpcTimeoutMs` | Startup, request, catalog, and availability timeout, from 1 ms through 10 minutes. |
@@ -45,7 +45,7 @@ Paseo's generic provider profile fields remain available:
 | `disallowedTools` | Restricts only the known native OMP built-ins accepted by this plugin. It becomes an explicit OMP allow-list; unknown names fail closed rather than being ignored. It does not filter MCP host tools. |
 | `paseoTools` | Enables or restricts which caller-scoped Paseo orchestration tools the daemon includes before they reach OMP as MCP host tools. |
 
-These options cover every plugin-specific launch value. Values that belong to an individual agent, including model, mode, thinking level, title, system prompt, MCP servers, persistence, and cwd, remain standard Paseo session fields rather than duplicate plugin options.
+These options cover plugin-specific profile overrides. Host-wide inherited environment names are configured separately in **OMP → Plugin**. Values that belong to an individual agent, including model, mode, thinking level, title, system prompt, MCP servers, persistence, and cwd, remain standard Paseo session fields rather than duplicate plugin options.
 
 ## OMP-native plugins
 
@@ -68,7 +68,7 @@ Paseo's exact session `toolPolicy` preapproval grants are not equivalent to OMP'
 
 ## Credentials and environment
 
-The plugin is deny-by-default. It inherits only its fixed built-in allowlist of core provider authentication variables plus exact names that an operator selects with `providerOptions.inheritEnv`; it does not discover or inherit arbitrary credential-shaped names. Prefer OMP's native credential store or auth broker whenever possible.
+The plugin is deny-by-default. It inherits only its fixed built-in allowlist of core provider authentication variables, exact host-wide names an operator selects in **OMP → Plugin**, and additional exact profile names under `providerOptions.inheritEnv`; it does not discover or inherit arbitrary credential-shaped names. Prefer OMP's native credential store or auth broker whenever possible.
 
 For example:
 
@@ -76,7 +76,7 @@ For example:
 {
   "provider": "omp-plugin",
   "providerOptions": {
-    "inheritEnv": ["ACME_OMP_API_KEY"],
+    "inheritEnv": ["ACME_PROFILE_ONLY_TOKEN"],
     "outputRedaction": "configured-values",
     "env": {
       "ACME_OMP_REGION": "us-east-1"
@@ -85,7 +85,7 @@ For example:
 }
 ```
 
-`inheritEnv` accepts an array of at most 256 names matching `[A-Za-z_][A-Za-z0-9_]{0,127}`. Selecting a name is an operator trust decision: its daemon-owned value becomes available to the OMP child and anything OMP launches. The plugin resolves selected values from the Paseo daemon environment immediately before each catalog or session launch. Unselected variables remain absent. Explicit `providerOptions.env` and per-session `env` overlays win over inherited values with the same name.
+Host and profile `inheritEnv` values are combined and deduplicated, with host names first. `inheritEnv` accepts an array of at most 256 names after combining, each matching `[A-Za-z_][A-Za-z0-9_]{0,127}`. Selecting a name is an operator trust decision: its daemon-owned value becomes available to the OMP child and anything OMP launches. The plugin resolves selected values from the Paseo daemon environment immediately before each catalog or session launch. Unselected variables remain absent. Explicit `providerOptions.env` and per-session `env` overlays win over inherited values with the same name.
 
 Profiles, persistence, errors, and catalog cache identity contain only the configured `inheritEnv` names, never resolved values or secret-derived hashes. A selected variable that is present and not shadowed by explicit `env` must contain at least 4 UTF-8 bytes. The existing 64 KiB per-value and 1 MiB total environment bounds still apply; shadowed daemon values are neither validated nor counted.
 

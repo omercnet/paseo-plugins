@@ -9,6 +9,7 @@ type ProviderCatalogOptionsCompat = {
   settings?: Readonly<Record<string, unknown>>;
 };
 
+import { MAX_INHERITED_ENVIRONMENT_NAMES } from "../../shared/provider-launch-settings";
 import { parseOmpProviderOptions } from "./provider-options";
 import { OmpPublicError } from "./security";
 import { OmpModeSchema } from "./settings";
@@ -59,11 +60,24 @@ function allowedOmpTools(deniedTools: readonly string[] | undefined): string[] |
 
 export type NormalizedOmpStartOptions = Omit<OmpStartOptions, "environment" | "signal">;
 export type OmpRecoveryOptions = Omit<OmpStartOptions, "resumeSessionId" | "signal">;
+export function mergeOmpInheritedEnvironmentNames(
+  hostNames: readonly string[],
+  profileNames: readonly string[] | undefined,
+): string[] | undefined {
+  const names = [...new Set([...hostNames, ...(profileNames ?? [])])];
+  if (names.length > MAX_INHERITED_ENVIRONMENT_NAMES) {
+    throw new OmpPublicError("OMP inherited environment has too many entries");
+  }
+  return names.length > 0 ? names : undefined;
+}
+
 export function normalizeOmpCatalogOptions(
   options: ProviderCatalogOptionsCompat,
   cwd: string,
+  hostInheritEnv: readonly string[] = [],
 ): Omit<OmpStartOptions, "environment" | "signal"> {
   const providerOptions = parseOmpProviderOptions(options.providerOptions);
+  const inheritEnv = mergeOmpInheritedEnvironmentNames(hostInheritEnv, providerOptions.inheritEnv);
   const params = providerOptions.params ?? {};
   return {
     cwd,
@@ -71,7 +85,7 @@ export function normalizeOmpCatalogOptions(
     noSession: true,
     ...(providerOptions.command ? { command: providerOptions.command } : {}),
     ...(providerOptions.env ? { env: providerOptions.env } : {}),
-    ...(providerOptions.inheritEnv ? { inheritEnv: providerOptions.inheritEnv } : {}),
+    ...(inheritEnv ? { inheritEnv } : {}),
     outputRedaction: providerOptions.outputRedaction,
     ...(params.sessionDir ? { sessionDir: params.sessionDir } : {}),
     ...(params.rpcTimeoutMs
@@ -103,6 +117,7 @@ export function withCommittedOmpSelection(
 export function normalizeOmpSessionConfig(
   config: ProviderSessionConfig,
   permissionSupported = false,
+  hostInheritEnv: readonly string[] = [],
 ): NormalizedOmpStartOptions {
   if (Object.keys(config.settings).length > 0) {
     throw new OmpPublicError("OMP does not expose live provider settings");
@@ -122,11 +137,12 @@ export function normalizeOmpSessionConfig(
   const tools = allowedOmpTools(deniedTools);
   const params = options.params ?? {};
   const env = { ...options.env, ...config.env };
+  const inheritEnv = mergeOmpInheritedEnvironmentNames(hostInheritEnv, options.inheritEnv);
   return {
     cwd: config.cwd,
     ...(options.command ? { command: options.command } : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
-    ...(options.inheritEnv ? { inheritEnv: options.inheritEnv } : {}),
+    ...(inheritEnv ? { inheritEnv } : {}),
     outputRedaction: options.outputRedaction,
     mode: parsedMode.data,
     thinkingOption: config.thinkingOption,

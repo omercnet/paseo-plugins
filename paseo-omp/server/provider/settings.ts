@@ -1,11 +1,14 @@
 import { z } from "zod";
+import {
+  environmentNameSchema,
+  MAX_INHERITED_ENVIRONMENT_NAMES,
+} from "../../shared/provider-launch-settings";
 
 const MAX_COMMAND_PARTS = 64;
-const MAX_ENV_ENTRIES = 256;
-const MAX_TEXT_BYTES = 64 * 1024;
-const MAX_MODEL_SELECTOR_BYTES = 513;
 const MAX_PATH_BYTES = 4_096;
 const MAX_RPC_TIMEOUT_MS = 10 * 60 * 1_000;
+const MAX_TEXT_BYTES = 64 * 1024;
+const MAX_MODEL_SELECTOR_BYTES = 513;
 
 function boundedString(maxBytes: number) {
   return z
@@ -18,7 +21,7 @@ const CommandPartSchema = boundedString(MAX_PATH_BYTES).refine(
   (value) => !value.includes("\0") && !/[\r\n]/u.test(value),
   "command arguments cannot contain NUL or line breaks",
 );
-const EnvironmentNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/u);
+const EnvironmentNameSchema = environmentNameSchema;
 const EnvironmentValueSchema = z
   .string()
   .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_TEXT_BYTES && !value.includes("\0"));
@@ -63,7 +66,7 @@ export const OmpProviderOptionsSchema = z
       .optional(),
     inheritEnv: z
       .array(EnvironmentNameSchema)
-      .max(MAX_ENV_ENTRIES)
+      .max(MAX_INHERITED_ENVIRONMENT_NAMES)
       .describe("Daemon environment variable names copied at OMP spawn time")
       .optional(),
     outputRedaction: OmpOutputRedactionSchema.describe(

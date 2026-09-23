@@ -715,6 +715,7 @@ export function createOmpConnection(
   reportDiagnostic: (diagnostic: OmpConnectionDiagnostic) => void = (diagnostic) =>
     console.error("OMP provider failure", diagnostic),
   reportOperationalFailure: OmpOperationalFailureReporter = () => {},
+  resolveHostInheritEnv?: () => Promise<readonly string[]>,
 ): ProviderConnection {
   const errorDetails = (error: unknown, fallback: string): { message: string } => {
     if (isOmpPublicError(error)) return { message: error.message };
@@ -822,6 +823,7 @@ export function createOmpConnection(
               settings: configuredInput.settings,
             },
             input.cwd ?? homedir(),
+            (await resolveHostInheritEnv?.()) ?? [],
           );
           const catalog = await discoverOmpCatalog(
             runtime,
@@ -860,6 +862,7 @@ export function createOmpConnection(
               settings: configuredInput.settings,
             },
             input.cwd ?? homedir(),
+            (await resolveHostInheritEnv?.()) ?? [],
           );
           emit({
             type: "sessions",
@@ -968,6 +971,7 @@ export function createOmpConnection(
             mcpConnector,
             mcpInitializationTimeoutMs,
             reportOperationalFailure,
+            (await resolveHostInheritEnv?.()) ?? [],
           );
           const discoveredNativeSessionId = session.persistenceSessionId;
           if (discoveredNativeSessionId) nativeSessionId = discoveredNativeSessionId;

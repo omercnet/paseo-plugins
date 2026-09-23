@@ -63,6 +63,7 @@ import {
   summarizeProviderStatus,
   summarizeRpcUiSupport,
 } from "./provider-diagnostics-state";
+import { ProviderLaunchSettingsSection } from "./provider-launch-settings";
 import {
   refreshSupportReport,
   type SupportReportCopyState,
@@ -141,8 +142,10 @@ function ProviderSetupSection({ styles }: { styles: OmpConfigStyles }) {
   return (
     <SectionCard styles={styles} title="OMP Plugin">
       <Text style={styles.muted}>
-        Launch settings currently come from the active Paseo provider profile.
+        Host-wide inherited environment names apply to every OMP provider. Profile launch overrides
+        remain available for narrower exceptions.
       </Text>
+      <KeyValueRow styles={styles} label="Host policy" value="Inherited daemon environment names" />
       <KeyValueRow
         styles={styles}
         label="Per agent"
@@ -151,7 +154,7 @@ function ProviderSetupSection({ styles }: { styles: OmpConfigStyles }) {
       <KeyValueRow
         styles={styles}
         label="Provider profile"
-        value="Command, environment, session directory, RPC timeout, role models, and denied tools"
+        value="Command, additional environment, session directory, RPC timeout, role models, and denied tools"
       />
     </SectionCard>
   );
@@ -162,15 +165,15 @@ function PluginConfigurationSection({ styles }: { styles: OmpConfigStyles }) {
     <>
       <SectionCard styles={styles} title="OMP Plugin launch options">
         <Text style={styles.muted}>
-          Paseo does not expose the effective providerOptions for active launches through the plugin
-          API. Configure these values in the provider profile; this tab documents the supported
-          contract without claiming defaults are active.
+          Configure inherited daemon environment names below. Paseo does not expose effective
+          profile options for active launches, so this tab documents profile overrides without
+          claiming they are active.
         </Text>
         <KeyValueRow styles={styles} label="Command" value="Executable and argument prefix" />
         <KeyValueRow
           styles={styles}
           label="Inherited environment"
-          value="Daemon variable names copied at OMP spawn time"
+          value="Additional profile names copied at OMP spawn time"
         />
         <KeyValueRow
           styles={styles}
@@ -1125,7 +1128,12 @@ function OmpConfigContent({
         </>
       ) : null}
 
-      {view === "plugin" ? <PluginConfigurationSection styles={styles} /> : null}
+      {view === "plugin" ? (
+        <>
+          <PluginConfigurationSection styles={styles} />
+          {!cwd ? <ProviderLaunchSettingsSection theme={theme} /> : null}
+        </>
+      ) : null}
 
       {view === "plugins" ? (
         <OmpPluginManagerSection theme={theme} compact={layout.compact} cwd={cwd} store={store} />

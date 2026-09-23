@@ -24,6 +24,7 @@ import {
   discoverOmpProfilesSync,
 } from "./server/provider/profile-providers";
 import { createOmpProvider } from "./server/provider/registration";
+import { OmpPublicError } from "./server/provider/security";
 import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
 import { resolveListOmpQuotas } from "./server/quota";
 import { resolveListOmpSessions } from "./server/sessions";
@@ -43,6 +44,7 @@ import {
 import { listOmpSettings, updateOmpSettings } from "./shared/omp-settings";
 import { listOmpStores, type OmpStore } from "./shared/omp-store";
 import { getOmpProviderHealth } from "./shared/provider-diagnostics";
+import { providerLaunchSettings } from "./shared/provider-launch-settings";
 import { listOmpQuotas } from "./shared/quota";
 import { listOmpSessions } from "./shared/sessions";
 import { getOmpSupportReport } from "./shared/support-diagnostics";
@@ -53,6 +55,12 @@ function scoped<T extends { store?: OmpStore }, R>(handler: (input: T) => R) {
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(composerPillSettings);
+  const launchSettings = server.registerSettings(providerLaunchSettings);
+  const resolveHostInheritEnv = async (): Promise<readonly string[]> => {
+    const current = await launchSettings.read();
+    if (current.status === "ready") return current.values.inheritEnv;
+    throw new OmpPublicError("OMP host launch settings are unavailable");
+  };
   const browserAuthorizationRegistry = new OmpBrowserAuthorizationRegistry();
   const protocolViolations = new OmpProtocolViolationCollector();
   const operationalFailures = new OmpOperationalFailureCollector();
@@ -64,6 +72,7 @@ export default function contribute(server: PluginServerContext) {
         browserAuthorizationRegistry,
         reportProtocolViolation: protocolViolations.report,
         reportOperationalFailure: operationalFailures.report,
+        resolveHostInheritEnv,
       }),
     );
   }
@@ -97,6 +106,7 @@ export default function contribute(server: PluginServerContext) {
       browserAuthorizationRegistry,
       reportProtocolViolation: protocolViolations.report,
       reportOperationalFailure: operationalFailures.report,
+      resolveHostInheritEnv,
     }),
   );
   return () => {

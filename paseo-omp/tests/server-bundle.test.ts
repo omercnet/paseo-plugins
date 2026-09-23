@@ -178,6 +178,7 @@ describe("plugin server bundle", () => {
         expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-models");
         expect(settings).toEqual([
           expect.objectContaining({ id: "composer-pills", scope: "host", version: 1 }),
+          expect.objectContaining({ id: "provider-launch", scope: "host", version: 1 }),
         ]);
         const supportRegistration = handlers.find(
           (entry) =>
