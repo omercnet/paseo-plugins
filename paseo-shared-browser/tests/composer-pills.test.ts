@@ -137,6 +137,72 @@ describe("Shared Browser composer pills", () => {
     cleanup();
   });
 
+  it("replays live directory updates that arrive during page fetches", async () => {
+    let resolvePage: (value: AgentPage) => void = () => {
+      throw new Error("Delayed page resolver is unavailable");
+    };
+    const delayedPage = new Promise<AgentPage>((resolve) => {
+      resolvePage = resolve;
+    });
+    const harness = createHarness([delayedPage]);
+    const cleanup = harness.cleanup();
+    await settle();
+
+    harness
+      .observer()
+      ?.snapshot(page([{ id: "agent-one", workspaceId: "workspace-one" }], "next-page"));
+    await settle();
+    harness.observer()?.update({
+      type: "agent_update",
+      payload: { kind: "upsert", agent: { id: "agent-three", workspaceId: "workspace-one" } },
+    });
+    harness
+      .observer()
+      ?.update({ type: "agent_update", payload: { kind: "remove", agentId: "agent-one" } });
+    resolvePage(page([{ id: "agent-two", workspaceId: "workspace-two" }]));
+    await settle();
+
+    expect(harness.addComposerPill).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-two", workspaceId: "workspace-two" }),
+    );
+    expect(harness.addComposerPill).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-three", workspaceId: "workspace-one" }),
+    );
+    expect(harness.addComposerPill).not.toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-one" }),
+    );
+    cleanup();
+  });
+
+  it("ignores an older page after a newer owned snapshot restores", async () => {
+    let resolveOlderPage: (value: AgentPage) => void = () => {
+      throw new Error("Delayed page resolver is unavailable");
+    };
+    const olderPage = new Promise<AgentPage>((resolve) => {
+      resolveOlderPage = resolve;
+    });
+    const harness = createHarness([olderPage]);
+    const cleanup = harness.cleanup();
+    await settle();
+
+    harness
+      .observer()
+      ?.snapshot(page([{ id: "agent-one", workspaceId: "workspace-one" }], "older-page"));
+    await settle();
+    harness.observer()?.snapshot(page([{ id: "agent-two", workspaceId: "workspace-two" }]));
+    await settle();
+    resolveOlderPage(page([{ id: "agent-three", workspaceId: "workspace-one" }]));
+    await settle();
+
+    expect(harness.addComposerPill).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-two", workspaceId: "workspace-two" }),
+    );
+    expect(harness.addComposerPill).not.toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-three" }),
+    );
+    cleanup();
+  });
+
   it("ignores late directory work after cleanup", async () => {
     let resolvePage: (value: AgentPage) => void = () => {
       throw new Error("Delayed page resolver is unavailable");
