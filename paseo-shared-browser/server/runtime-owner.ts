@@ -13,6 +13,7 @@ interface OwnedRuntime {
 }
 interface RuntimeOwnerOptions {
   initialUrl?: string;
+  headed?: boolean;
 }
 
 function paseoHome(): string {
@@ -52,6 +53,7 @@ export async function createRuntimeOwner(
         ipcDirectory,
         session: `ws-${hash.slice(0, 16)}`,
         initialUrl: options.initialUrl ?? DEFAULT_BROWSER_URL,
+        headed: options.headed ?? false,
       });
       await runtime.launch();
       return { runtimeId: randomUUID(), runtime };

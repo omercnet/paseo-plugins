@@ -109,7 +109,11 @@ it("shares and persists a production agent-browser runtime across supervisor cli
 
   const paths = resolveSupervisorPaths(paseoHome);
   const running = await startSupervisorServer(
-    await createRuntimeOwner({ initialUrl: `${origin}/` }),
+    await createRuntimeOwner({
+      initialUrl: `${origin}/`,
+      // agent-browser 0.37.1's private desktop does not start on Windows Server CI.
+      headed: process.platform === "win32",
+    }),
     paths,
   );
   const createManager = async (bridgeId: string) => {
