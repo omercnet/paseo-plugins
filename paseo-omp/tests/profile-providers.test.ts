@@ -260,13 +260,19 @@ describe("fixed profile catalog and runtime", () => {
     },
   );
 
-  test("preserves trusted wrappers, profile role models and account fallback environment", async () => {
+  test("applies host environment names alongside profile options", async () => {
     const { environment } = await fixture();
     const fake = runtimeFixture();
     const connection = await connect(
       createProfileOmpProvider("work", {
-        environment: { ...environment, ANTHROPIC_API_KEY: "fixture-account-value" },
+        environment: {
+          ...environment,
+          ANTHROPIC_API_KEY: "fixture-account-value",
+          HOST_OMP_TOKEN: "host-token",
+          PROFILE_OMP_TOKEN: "profile-token",
+        },
         runtime: fake.runtime,
+        resolveHostInheritEnv: async () => ["HOST_OMP_TOKEN"],
       }),
     );
     const command = [
@@ -286,6 +292,7 @@ describe("fixed profile catalog and runtime", () => {
       requestId: "wrapper",
       providerOptions: {
         command,
+        inheritEnv: ["PROFILE_OMP_TOKEN"],
         params: { smolModel: "fixture/small", slowModel: "fixture/large" },
       },
     } as never);
@@ -294,6 +301,9 @@ describe("fixed profile catalog and runtime", () => {
     expect(buildOmpSpawnRequest(fake.starts[0]).env.ANTHROPIC_API_KEY).toBe(
       "fixture-account-value",
     );
+    const launchEnvironment = buildOmpSpawnRequest(fake.starts[0]).env;
+    expect(launchEnvironment.HOST_OMP_TOKEN).toBe("host-token");
+    expect(launchEnvironment.PROFILE_OMP_TOKEN).toBe("profile-token");
     await connection.close();
   });
 

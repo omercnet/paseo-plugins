@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { OmpBrowserAuthorizationRegistry } from "../mcp-browser";
 import type { OmpOperationalFailureReporter } from "../operational-failure-diagnostics";
 import { probeOmpAvailability } from "../provider-diagnostics";
+import { mergeOmpInheritedEnvironmentNames } from "./config-normalization";
 import { createOmpConnection, OmpNativeSessionReservations } from "./connection";
 import type { OmpMcpConnector } from "./host-tools";
 import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
@@ -74,6 +75,7 @@ export interface OmpProviderOptions {
     options: ProviderCatalogOptionsCompat,
     timeoutMs: number | undefined,
   ) => Promise<ProviderAvailabilityCompat>;
+  resolveHostInheritEnv?: () => Promise<readonly string[]>;
 }
 
 function stableJson(value: unknown): string {
@@ -104,6 +106,10 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
     providerOptionsSchema: OmpProviderOptionsSchema,
     async getCatalogCacheKey(catalogOptions) {
       const providerOptions = parseOmpProviderOptions(catalogOptions.providerOptions);
+      const inheritEnv = mergeOmpInheritedEnvironmentNames(
+        (await options.resolveHostInheritEnv?.()) ?? [],
+        providerOptions.inheritEnv,
+      );
       // Profile providers cannot safely hash explicit environment values because they may be
       // credentials. Disable sharing for that case; otherwise retain every normalized option
       // that can change discovery alongside the fixed, non-secret store identity.
@@ -112,7 +118,7 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         scope: catalogOptions.scope,
         ...(catalogOptions.scope === "workspace" ? { cwd: catalogOptions.cwd } : {}),
         ...(options.catalogIdentity ? { store: options.catalogIdentity } : {}),
-        providerOptions,
+        providerOptions: { ...providerOptions, ...(inheritEnv ? { inheritEnv } : {}) },
         settings: catalogOptions.settings ?? {},
         defaultCommand: (options.environment ?? process.env).OMP_COMMAND ?? "omp",
       };
@@ -167,6 +173,7 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
         options.browserAuthorizationRegistry,
         undefined,
         options.reportOperationalFailure,
+        options.resolveHostInheritEnv,
       );
     },
   };

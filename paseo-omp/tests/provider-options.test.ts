@@ -12,6 +12,7 @@ import {
   configuredOutputRedactionValues,
   OmpPublicDataSerializer,
 } from "../server/provider/security";
+import { providerLaunchSettingsSchema } from "../shared/provider-launch-settings";
 
 const TEST_ENV: NodeJS.ProcessEnv = {
   HOME: "/home/tester",
@@ -78,24 +79,28 @@ describe("OMP provider option normalization", () => {
     expect(normalized.requestTimeoutMs).toBe(12_345);
   });
 
-  test("forwards selected daemon environment names across catalog and session launches", () => {
+  test("merges host and profile environment names across catalog and session launches", () => {
+    const hostInheritEnv = ["CUSTOM_SETTING", "CUSTOM_API_KEY"];
     const providerOptions = {
-      inheritEnv: ["CUSTOM_API_KEY", "CUSTOM_SETTING", "OVERRIDE_ME"],
+      inheritEnv: ["CUSTOM_API_KEY", "OVERRIDE_ME"],
       env: { OVERRIDE_ME: "profile-value" },
     };
     const catalog = normalizeOmpCatalogOptions(
       { scope: "workspace", cwd: "/repo", providerOptions },
       "/repo",
+      hostInheritEnv,
     );
     const session = normalizeOmpSessionConfig(
       sessionConfig({
         providerOptions,
         env: { OVERRIDE_ME: "session-value" },
       }),
+      false,
+      hostInheritEnv,
     );
 
-    expect(catalog.inheritEnv).toEqual(providerOptions.inheritEnv);
-    expect(session.inheritEnv).toEqual(providerOptions.inheritEnv);
+    expect(catalog.inheritEnv).toEqual(["CUSTOM_SETTING", "CUSTOM_API_KEY", "OVERRIDE_ME"]);
+    expect(session.inheritEnv).toEqual(["CUSTOM_SETTING", "CUSTOM_API_KEY", "OVERRIDE_ME"]);
 
     const daemonEnvironment = {
       ...TEST_ENV,
@@ -115,23 +120,31 @@ describe("OMP provider option normalization", () => {
     expect(sessionRequest.env.UNSELECTED_VALUE).toBeUndefined();
   });
 
-  test("keys catalog caches by inherited names without resolving daemon values", async () => {
+  test("keys catalog caches by merged inherited names without resolving daemon values", async () => {
     const catalogOptions = {
       scope: "global" as const,
-      providerOptions: { inheritEnv: ["CUSTOM_API_KEY"] },
+      providerOptions: { inheritEnv: ["PROFILE_API_KEY"] },
     };
     const firstValueKey = await createOmpProvider({
-      environment: { ...TEST_ENV, CUSTOM_API_KEY: "first-secret" },
+      environment: { ...TEST_ENV, HOST_API_KEY: "first-secret", PROFILE_API_KEY: "profile-secret" },
+      resolveHostInheritEnv: async () => ["HOST_API_KEY"],
     }).getCatalogCacheKey?.(catalogOptions);
     const secondValueKey = await createOmpProvider({
-      environment: { ...TEST_ENV, CUSTOM_API_KEY: "second-secret" },
+      environment: {
+        ...TEST_ENV,
+        HOST_API_KEY: "second-secret",
+        PROFILE_API_KEY: "profile-secret",
+      },
+      resolveHostInheritEnv: async () => ["HOST_API_KEY"],
     }).getCatalogCacheKey?.(catalogOptions);
     const differentNameKey = await createOmpProvider({
-      environment: { ...TEST_ENV, OTHER_API_KEY: "first-secret" },
-    }).getCatalogCacheKey?.({
-      scope: "global",
-      providerOptions: { inheritEnv: ["OTHER_API_KEY"] },
-    });
+      environment: {
+        ...TEST_ENV,
+        OTHER_API_KEY: "first-secret",
+        PROFILE_API_KEY: "profile-secret",
+      },
+      resolveHostInheritEnv: async () => ["OTHER_API_KEY"],
+    }).getCatalogCacheKey?.(catalogOptions);
 
     expect(firstValueKey).toBeDefined();
     expect(firstValueKey).toBe(secondValueKey);
@@ -285,6 +298,14 @@ describe("OMP provider option normalization", () => {
         inheritEnv: Array.from({ length: 257 }, (_, index) => `CUSTOM_${index}`),
       }),
     ).toThrow("providerOptions.inheritEnv");
+    expect(() =>
+      normalizeOmpSessionConfig(
+        sessionConfig({ providerOptions: { inheritEnv: ["PROFILE_ENV"] } }),
+        false,
+        Array.from({ length: 256 }, (_, index) => `HOST_${index}`),
+      ),
+    ).toThrow("inherited environment has too many entries");
+    expect(() => providerLaunchSettingsSchema.parse({ inheritEnv: ["9INVALID"] })).toThrow();
     expect(() =>
       normalizeOmpSessionConfig(sessionConfig({ settings: { unsupported: true } })),
     ).toThrow("does not expose live provider settings");

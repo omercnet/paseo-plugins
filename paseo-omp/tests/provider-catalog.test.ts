@@ -63,8 +63,9 @@ describe("OMP direct provider", () => {
     const observed: Array<{ options: unknown; timeoutMs: number | undefined }> = [];
     const runtime = new FakeOmpRuntime();
     const provider = createOmpProvider({
-      environment: TEST_RUNTIME_ENV,
+      environment: { ...TEST_RUNTIME_ENV, HOST_OMP_TOKEN: "host-token" },
       runtime,
+      resolveHostInheritEnv: async () => ["HOST_OMP_TOKEN"],
       availabilityProbe: async (options, timeoutMs) => {
         observed.push({ options, timeoutMs });
         return { status: "available" };
@@ -73,7 +74,11 @@ describe("OMP direct provider", () => {
     const base = {
       scope: "workspace" as const,
       cwd: "/repo",
-      providerOptions: { command: ["/opt/omp-work"], params: { sessionDir: "/sessions/work" } },
+      providerOptions: {
+        command: ["/opt/omp-work"],
+        inheritEnv: ["PROFILE_OMP_TOKEN"],
+        params: { sessionDir: "/sessions/work" },
+      },
       settings: {},
     };
     await expect(provider.checkAvailability?.(base, { timeoutMs: 321 })).resolves.toEqual({
@@ -106,8 +111,47 @@ describe("OMP direct provider", () => {
     expect(runtime.starts[0]).toEqual(
       expect.objectContaining({
         command: ["/opt/omp-work"],
+        inheritEnv: ["HOST_OMP_TOKEN", "PROFILE_OMP_TOKEN"],
         sessionDir: "/sessions/work",
         noSession: true,
+      }),
+    );
+    await connection.close();
+  });
+
+  test("applies host environment names when opening direct provider sessions", async () => {
+    const runtime = new FakeOmpRuntime();
+    const connection = await createOmpProvider({
+      environment: {
+        ...TEST_RUNTIME_ENV,
+        HOST_SESSION_TOKEN: "host-session-token",
+        PROFILE_SESSION_TOKEN: "profile-session-token",
+      },
+      runtime,
+      resolveHostInheritEnv: async () => ["HOST_SESSION_TOKEN"],
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({
+      type: "session.open",
+      requestId: "host-session",
+      sessionId: "host-session",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {},
+        settings: {},
+        persist: false,
+        providerOptions: { inheritEnv: ["PROFILE_SESSION_TOKEN"] },
+      },
+      history: "skip",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "host-session",
+    );
+    expect(runtime.starts[0]).toEqual(
+      expect.objectContaining({
+        inheritEnv: ["HOST_SESSION_TOKEN", "PROFILE_SESSION_TOKEN"],
       }),
     );
     await connection.close();
