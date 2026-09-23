@@ -1,7 +1,8 @@
-import type { PaseoAgent, PaseoAgentListResult, PaseoApi } from "@getpaseo/client";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 
-export type AgentEntry = PaseoAgentListResult["entries"][number];
-type AgentSnapshot = PaseoAgent;
+type PaseoApi = PluginClientContext["paseo"];
+export type AgentEntry = Awaited<ReturnType<PaseoApi["agents"]["list"]>>["entries"][number];
+type AgentSnapshot = AgentEntry["agent"];
 
 export const AGENT_PAGE_LIMIT = 200;
 export const MAX_AGENT_PAGES = 10;
