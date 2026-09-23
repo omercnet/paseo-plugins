@@ -1,4 +1,8 @@
-import { type PluginSurfaceProps, usePaseo } from "@getpaseo/plugin/client";
+import {
+  type PluginClientContext,
+  type PluginSurfaceProps,
+  usePaseo,
+} from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -25,6 +29,82 @@ const EMPTY_CONFLICTS: ReadonlySet<number> = new Set();
 const AGENT_PAGE_LIMIT = 200;
 const AGENT_MAX_PAGES = 10;
 const AGENT_BACKSTOP_REFRESH_MS = 30_000;
+
+type PaseoApi = PluginClientContext["paseo"];
+type AgentDirectoryPage = {
+  readonly entries: readonly { readonly agent: { readonly status: string } }[];
+  readonly pageInfo: { readonly hasMore: boolean; readonly nextCursor?: string | null };
+};
+export function observeRunningAgentCount(
+  paseo: PaseoApi,
+  onCount: (count: number) => void,
+): () => void {
+  let mounted = true;
+  let request = 0;
+  let removeObserver: (() => void) | undefined;
+  let releaseObservation: (() => Promise<void>) | undefined;
+  const lifetime = new AbortController();
+
+  const refresh = async (firstPage?: AgentDirectoryPage) => {
+    const currentRequest = ++request;
+    let running = 0;
+    let cursor: string | undefined;
+    try {
+      for (let page = 0; page < AGENT_MAX_PAGES; page += 1) {
+        const result =
+          page === 0 && firstPage
+            ? firstPage
+            : await paseo.agents.list({
+                sort: [{ key: "updated_at", direction: "desc" }],
+                page: { limit: AGENT_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
+              });
+        for (const entry of result.entries) {
+          if (entry.agent.status === "running" || entry.agent.status === "initializing") {
+            running += 1;
+          }
+        }
+        cursor = result.pageInfo.hasMore ? (result.pageInfo.nextCursor ?? undefined) : undefined;
+        if (!cursor) break;
+      }
+      if (mounted && currentRequest === request) onCount(running);
+    } catch {
+      // Preserve the last known count when the host is temporarily unavailable.
+    }
+  };
+
+  void paseo.agents
+    .list({
+      sort: [{ key: "updated_at", direction: "desc" }],
+      page: { limit: AGENT_PAGE_LIMIT },
+      subscribe: {},
+      signal: lifetime.signal,
+    })
+    .then(({ subscription }) => {
+      if (!mounted) return subscription.release();
+      releaseObservation = () => subscription.release();
+      removeObserver = subscription.subscribe({
+        snapshot: (snapshot) => void refresh(snapshot),
+        update: (message) => {
+          if (message.type === "agent_update") void refresh();
+        },
+      });
+      return undefined;
+    })
+    .catch(() => undefined);
+
+  const backstop = setInterval(() => void refresh(), AGENT_BACKSTOP_REFRESH_MS);
+  return () => {
+    if (!mounted) return;
+    mounted = false;
+    clearInterval(backstop);
+    removeObserver?.();
+    lifetime.abort();
+    removeObserver = undefined;
+    const release = releaseObservation;
+    releaseObservation = undefined;
+    if (release) void release().catch(() => undefined);
+  };
+}
 
 export function PaseoQueensSurface(props: PluginSurfaceProps) {
   return <QueensGame key={props.host.id} {...props} />;
@@ -124,43 +204,7 @@ function QueensLoadedGame({
     return () => clearInterval(interval);
   }, [dispatch, timerRunning]);
 
-  useEffect(() => {
-    let mounted = true;
-    let request = 0;
-
-    const refresh = async () => {
-      const currentRequest = ++request;
-      let running = 0;
-      let cursor: string | undefined;
-      try {
-        for (let page = 0; page < AGENT_MAX_PAGES; page += 1) {
-          const result = await paseo.agents.list({
-            sort: [{ key: "updated_at", direction: "desc" }],
-            page: { limit: AGENT_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-          });
-          for (const entry of result.entries) {
-            if (entry.agent.status === "running" || entry.agent.status === "initializing") {
-              running += 1;
-            }
-          }
-          cursor = result.pageInfo.hasMore ? (result.pageInfo.nextCursor ?? undefined) : undefined;
-          if (!cursor) break;
-        }
-        if (mounted && currentRequest === request) setRunningAgentCount(running);
-      } catch {
-        // Preserve the last known count when the host is temporarily unavailable.
-      }
-    };
-
-    void refresh();
-    const unsubscribe = paseo.agents.subscribe(() => void refresh());
-    const backstop = setInterval(() => void refresh(), AGENT_BACKSTOP_REFRESH_MS);
-    return () => {
-      mounted = false;
-      clearInterval(backstop);
-      unsubscribe();
-    };
-  }, [paseo]);
+  useEffect(() => observeRunningAgentCount(paseo, setRunningAgentCount), [paseo]);
 
   useEffect(() => {
     const previous = previousRunningAgentCount.current;
