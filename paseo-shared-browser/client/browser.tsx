@@ -72,6 +72,7 @@ const CAPTURE_INTERVAL_READY = 250;
 const CAPTURE_INTERVAL_WAITING = 1_500;
 const MAX_VIEWER_LABEL_LENGTH = 64;
 const PILL_PRESENCE_POLL_MS = 2_000;
+const AGENT_DIRECTORY_PAGE_LIMIT = 200;
 const MAX_URL_LENGTH = 8_192;
 const MAX_TEXT_LENGTH = 4_000;
 const BYTES_PER_KIBIBYTE = 1_024;
@@ -803,18 +804,33 @@ function CanvasPlaceholder({
   );
 }
 
+interface AgentDirectoryPage {
+  entries: Array<{ agent: { id: string; workspaceId?: string | undefined } }>;
+  pageInfo: { hasMore: boolean; nextCursor: string | null };
+}
+
+type AgentDirectoryUpdate =
+  | { kind: "remove"; agentId: string }
+  | { kind: "upsert"; agent: { id: string; workspaceId?: string | undefined } };
+type AgentPlacement = { id: string; workspaceId: string };
+
 export function contributeSharedBrowserClient(client: PluginClientContext) {
-  const agents = new Map<string, { id: string; workspaceId: string }>();
+  const agents = new Map<string, AgentPlacement>();
   const pills = new Map<string, { workspaceId: string; remove: () => void }>();
+  const lifetime = new AbortController();
   let openWorkspaceIds = new Set<string>();
   let refreshing = false;
   let stopped = false;
+  let directoryGeneration = 0;
+  let pendingDirectory: { generation: number; updates: AgentDirectoryUpdate[] } | null = null;
+  let unsubscribeDirectory: (() => void) | null = null;
+  let releaseDirectory: (() => Promise<void>) | null = null;
 
   const removePill = (agentId: string) => {
     pills.get(agentId)?.remove();
     pills.delete(agentId);
   };
-  const syncPill = (agent: { id: string; workspaceId: string }) => {
+  const syncPill = (agent: AgentPlacement) => {
     const current = pills.get(agent.id);
     if (!openWorkspaceIds.has(agent.workspaceId)) {
       removePill(agent.id);
@@ -858,32 +874,94 @@ export function contributeSharedBrowserClient(client: PluginClientContext) {
       refreshing = false;
     }
   };
-
-  const unsubscribe = client.paseo.agents.subscribe((update) => {
+  const applyUpdate = (target: Map<string, AgentPlacement>, update: AgentDirectoryUpdate) => {
     if (update.kind === "remove") {
-      agents.delete(update.agentId);
+      target.delete(update.agentId);
+      return;
+    }
+    const { id, workspaceId } = update.agent;
+    if (workspaceId) target.set(id, { id, workspaceId });
+    else target.delete(id);
+  };
+  const applyLiveUpdate = (update: AgentDirectoryUpdate) => {
+    if (stopped) return;
+    pendingDirectory?.updates.push(update);
+    applyUpdate(agents, update);
+    if (update.kind === "remove") {
       removePill(update.agentId);
       return;
     }
     const { id, workspaceId } = update.agent;
     if (!workspaceId) {
-      agents.delete(id);
       removePill(id);
       return;
     }
-    const agent = { id, workspaceId };
-    agents.set(id, agent);
-    syncPill(agent);
+    syncPill({ id, workspaceId });
     void refreshPresence();
-  });
-  void client.paseo.agents
-    .list()
-    .then(async ({ entries }) => {
-      for (const { agent } of entries) {
-        if (agent.workspaceId)
-          agents.set(agent.id, { id: agent.id, workspaceId: agent.workspaceId });
+  };
+  const replaceAgents = (next: Map<string, AgentPlacement>) => {
+    for (const agentId of agents.keys()) {
+      if (!next.has(agentId)) removePill(agentId);
+    }
+    agents.clear();
+    for (const [agentId, agent] of next) agents.set(agentId, agent);
+    syncAllPills();
+  };
+  const followSnapshot = async (snapshot: AgentDirectoryPage) => {
+    if (stopped) return;
+    const generation = ++directoryGeneration;
+    const transaction = { generation, updates: [] as AgentDirectoryUpdate[] };
+    pendingDirectory = transaction;
+    const next = new Map<string, AgentPlacement>();
+    for (const { agent } of snapshot.entries) {
+      if (agent.workspaceId) next.set(agent.id, { id: agent.id, workspaceId: agent.workspaceId });
+    }
+
+    try {
+      let cursor = snapshot.pageInfo.hasMore ? snapshot.pageInfo.nextCursor : null;
+      while (cursor) {
+        const page = await client.paseo.agents.list({
+          scope: "active",
+          page: { limit: AGENT_DIRECTORY_PAGE_LIMIT, cursor },
+          signal: lifetime.signal,
+        });
+        if (stopped || pendingDirectory?.generation !== generation) return;
+        for (const { agent } of page.entries) {
+          if (agent.workspaceId)
+            next.set(agent.id, { id: agent.id, workspaceId: agent.workspaceId });
+        }
+        cursor = page.pageInfo.hasMore ? page.pageInfo.nextCursor : null;
       }
+      if (stopped || pendingDirectory?.generation !== generation) return;
+      for (const update of transaction.updates) applyUpdate(next, update);
+      pendingDirectory = null;
+      replaceAgents(next);
       await refreshPresence();
+    } catch {
+      if (!stopped && pendingDirectory?.generation === generation) pendingDirectory = null;
+    }
+  };
+
+  void client.paseo.agents
+    .list({
+      scope: "active",
+      page: { limit: AGENT_DIRECTORY_PAGE_LIMIT },
+      subscribe: {},
+      signal: lifetime.signal,
+    })
+    .then(({ subscription }) => {
+      if (stopped) {
+        void subscription.release().catch(() => undefined);
+        return undefined;
+      }
+      releaseDirectory = subscription.release;
+      unsubscribeDirectory = subscription.subscribe({
+        snapshot: (snapshot) => void followSnapshot(snapshot),
+        update: (message) => {
+          if (message.type === "agent_update") applyLiveUpdate(message.payload);
+        },
+      });
+      return undefined;
     })
     .catch(() => undefined);
   const presenceTimer = setInterval(() => void refreshPresence(), PILL_PRESENCE_POLL_MS);
@@ -891,8 +969,12 @@ export function contributeSharedBrowserClient(client: PluginClientContext) {
   return () => {
     if (stopped) return;
     stopped = true;
+    directoryGeneration += 1;
+    pendingDirectory = null;
     clearInterval(presenceTimer);
-    unsubscribe();
+    unsubscribeDirectory?.();
+    void releaseDirectory?.().catch(() => undefined);
+    lifetime.abort();
     for (const { remove } of pills.values()) remove();
     pills.clear();
     agents.clear();
