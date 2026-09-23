@@ -154,17 +154,18 @@ interface OwnedDirectorySubscription {
 
 interface OwnedDirectoryObservation {
   subscription: OwnedDirectorySubscription;
-  calls: { unsubscribes: number; releases: number };
+  calls: { subscribes: number; unsubscribes: number; releases: number };
   snapshot(): void;
   update(): void;
 }
 
 function ownedDirectoryObservation(): OwnedDirectoryObservation {
   let observer: DirectoryObserver | undefined;
-  const calls = { unsubscribes: 0, releases: 0 };
+  const calls = { subscribes: 0, unsubscribes: 0, releases: 0 };
   return {
     subscription: {
       subscribe(next) {
+        calls.subscribes += 1;
         observer = next;
         return () => {
           calls.unsubscribes += 1;
@@ -251,6 +252,31 @@ describe("directory invalidation observations", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test("releases owned observations that resolve after cleanup", async () => {
+    const agentResult = Promise.withResolvers<{ subscription: OwnedDirectorySubscription }>();
+    const workspaceResult = Promise.withResolvers<{ subscription: OwnedDirectorySubscription }>();
+    const agents = ownedDirectoryObservation();
+    const workspaces = ownedDirectoryObservation();
+    const paseo = {
+      agents: { list: vi.fn().mockReturnValue(agentResult.promise) },
+      workspaces: { list: vi.fn().mockReturnValue(workspaceResult.promise) },
+    } as unknown as PaseoApi;
+    const invalidateDirectoryState = vi.fn();
+    const cleanup = observeDirectoryInvalidation(paseo, invalidateDirectoryState, 500);
+
+    cleanup();
+    agentResult.resolve({ subscription: agents.subscription });
+    workspaceResult.resolve({ subscription: workspaces.subscription });
+    await Promise.all([agentResult.promise, workspaceResult.promise]);
+    await Promise.resolve();
+
+    expect(invalidateDirectoryState).not.toHaveBeenCalled();
+    expect(agents.calls.subscribes).toBe(0);
+    expect(workspaces.calls.subscribes).toBe(0);
+    expect(agents.calls.releases).toBe(1);
+    expect(workspaces.calls.releases).toBe(1);
   });
 });
 
