@@ -11,6 +11,7 @@ import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   AGENT_PAGE_LIMIT,
   type AgentEntry,
+  followAgentDirectory,
   loadAgents,
   MAX_AGENT_PAGES,
   placement,
@@ -328,20 +329,18 @@ export function contributeAgentMessaging(client: PluginClientContext) {
     pills.set(agent.id, { workspaceId: next.workspaceId, remove: pill.remove });
   }
 
-  const unsubscribe = client.paseo.agents.subscribe((update) => {
-    if (update.kind === "remove") {
-      removePill(update.agentId);
-      return;
-    }
-    syncAgent(update.agent);
-  });
-
-  void loadAgents(client.paseo)
-    .then(({ entries }) => {
+  const unsubscribe = followAgentDirectory(client.paseo, {
+    snapshot(agents, complete) {
       if (stopped) return;
-      for (const { agent } of entries) syncAgent(agent);
-    })
-    .catch(() => undefined);
+      if (complete) {
+        const listed = new Set(agents.map((agent) => agent.id));
+        for (const agentId of [...pills.keys()]) if (!listed.has(agentId)) removePill(agentId);
+      }
+      for (const agent of agents) syncAgent(agent);
+    },
+    upsert: syncAgent,
+    remove: removePill,
+  });
 
   const removeTellCommand = client.addSlashCommand({
     name: "tell",
