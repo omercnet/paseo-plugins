@@ -23,7 +23,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("profile aliases receive MCP controls and only their own cached quota results", async () => {
+test("owned agent directory updates reconcile new agent pills and cached quota results", async () => {
   vi.useFakeTimers();
   const agents = [
     { id: "alpha", provider: "omp-plugin-team-alpha", model: "omp:model:opaque-a" },
@@ -31,7 +31,7 @@ test("profile aliases receive MCP controls and only their own cached quota resul
     { id: "default", provider: "omp", model: "anthropic/claude-fable-5" },
     { id: "codex", provider: "codex", model: "gpt-5.6-sol" },
   ];
-  let onAgentsChanged = () => {};
+  let onDirectoryUpdate = () => {};
   const buttons: Array<{
     id: string;
     agentId: string;
@@ -67,15 +67,31 @@ test("profile aliases receive MCP controls and only their own cached quota resul
   const client = {
     paseo: {
       agents: {
-        list: async () => ({
-          entries: agents.map((agent) => ({
-            agent: { ...agent, cwd: "/same-workspace", workspaceId: "workspace", archivedAt: null },
-          })),
-          pageInfo: { hasMore: false },
-        }),
-        subscribe: (callback: () => void) => {
-          onAgentsChanged = callback;
-          return () => {};
+        list: async (options?: { subscribe?: object }) => {
+          const result = {
+            entries: agents.map((agent) => ({
+              agent: {
+                ...agent,
+                cwd: "/same-workspace",
+                workspaceId: "workspace",
+                archivedAt: null,
+              },
+            })),
+            pageInfo: { hasMore: false },
+          };
+          if (!options?.subscribe) return result;
+          return {
+            ...result,
+            subscriptionId: "agents",
+            subscription: {
+              ready: Promise.resolve({ ...result, subscriptionId: "agents" }),
+              subscribe: (observer: { update: () => void }) => {
+                onDirectoryUpdate = observer.update;
+                return () => {};
+              },
+              release: async () => {},
+            },
+          };
         },
       },
     },
@@ -93,6 +109,8 @@ test("profile aliases receive MCP controls and only their own cached quota resul
     },
   } as unknown as PluginClientContext;
   const dispose = contribute(client);
+  await Promise.resolve();
+  await Promise.resolve();
   try {
     await vi.advanceTimersByTimeAsync(300);
     expect(buttons.filter((button) => button.id === "mcp").map((button) => button.agentId)).toEqual(
@@ -121,8 +139,19 @@ test("profile aliases receive MCP controls and only their own cached quota resul
         .map(([, input]) => input.store?.profile),
     ).toEqual(["team-alpha", "team-beta", undefined]);
 
+    agents.push({
+      id: "new-agent",
+      provider: "omp-plugin-team-alpha",
+      model: "omp:model:opaque-new",
+    });
+    onDirectoryUpdate();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(buttons.filter((button) => button.id === "mcp").map((button) => button.agentId)).toEqual(
+      ["alpha", "team-beta", "new-agent"],
+    );
+
     agents[0].provider = "omp-plugin-team-beta";
-    onAgentsChanged();
+    onDirectoryUpdate();
     await vi.advanceTimersByTimeAsync(250);
     expect(quota("alpha").update).toHaveBeenLastCalledWith(
       expect.objectContaining({ label: "Quotas · 20%" }),

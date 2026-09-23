@@ -452,7 +452,25 @@ export default function contribute(client: PluginClientContext) {
     }, RECONCILE_DEBOUNCE_MS);
   }
 
-  const unsubscribeAgents = client.paseo.agents.subscribe(scheduleReconcile);
+  let unsubscribeAgentDirectory = () => {};
+  let releaseAgentDirectory: (() => Promise<void>) | undefined;
+  void client.paseo.agents
+    .list({ subscribe: {} })
+    .then(({ subscription }) => {
+      if (!subscription) return;
+      if (disposed) {
+        void subscription.release().catch(() => {});
+        return;
+      }
+      unsubscribeAgentDirectory = subscription.subscribe({
+        snapshot: scheduleReconcile,
+        update: scheduleReconcile,
+        error: () => {},
+      });
+      releaseAgentDirectory = () => subscription.release();
+      void subscription.ready.catch(() => {});
+    })
+    .catch(() => {});
   const hubPoll = setInterval(() => {
     void refreshHubStatus();
   }, STATUS_POLL_MS);
@@ -467,7 +485,8 @@ export default function contribute(client: PluginClientContext) {
   return () => {
     disposed = true;
     settingsGeneration += 1;
-    unsubscribeAgents();
+    unsubscribeAgentDirectory();
+    if (releaseAgentDirectory) void releaseAgentDirectory().catch(() => {});
     clearTimeout(reconcileTimer);
     clearInterval(hubPoll);
     clearInterval(quotaPoll);
