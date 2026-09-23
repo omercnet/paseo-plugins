@@ -110,26 +110,10 @@ From npm:
 paseo plugin install npm:@omercnet/paseo-agent-crew
 ```
 
-From GitHub:
-
-```bash
-paseo plugin add omercnet/paseo-plugins:agent-crew
-```
-
-Update a Git installation on either version, or an npm installation on Paseo 0.9, after reviewing
-the proposed revision:
+Update the installed npm package after reviewing the proposed revision:
 
 ```bash
 paseo plugin update agent-crew
-```
-
-From a local checkout on the Paseo daemon host, on Paseo 0.8 or 0.9:
-
-```bash
-git clone https://github.com/omercnet/paseo-plugins.git
-cd paseo-plugins/agent-crew
-npm ci
-paseo plugin install "$PWD"
 ```
 
 Open a workspace, choose **New tab** in Explorer, then select **Agent Crew**. The **Open Agent Crew**
@@ -138,18 +122,15 @@ Command Center action opens it directly.
 ## Develop
 
 ```bash
-npm ci
-npm run check
-npm test
-npm run test:coverage
-npm run typecheck
-paseo plugin install /absolute/path/to/paseo-agent-crew
-paseo plugin reload agent-crew
+bun install
+bun run check
+bun run test
+bun run test:coverage
+bun run typecheck
 ```
 
-The manifest supports Paseo 0.8.x and the 0.9 beta line with
-`^0.8.0 || ^0.9.0-beta.1`. The project pins `@getpaseo/cli`, `@getpaseo/client`,
-`@getpaseo/plugin`, and `@getpaseo/protocol` to `0.9.0-beta.1` for development. React 19.1 and
+The manifest supports Paseo `>=0.8.0 <0.10.0`. The project pins `@getpaseo/cli`, `@getpaseo/client`,
+`@getpaseo/plugin`, and `@getpaseo/protocol` to `0.9.0` for development. React 19.1 and
 React Native 0.81 match the host.
 
 Release Please maintains versions, changelog entries, component tags, and GitHub releases from

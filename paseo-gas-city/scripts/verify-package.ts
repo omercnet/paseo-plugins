@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { unzipSync } from "fflate";
 
 const packageRoot = join(import.meta.dirname, "..");
 const requiredFiles = [
@@ -29,7 +28,6 @@ const requiredFiles = [
   "package.json",
   "paseo-plugin.json",
 ] as const;
-const requiredReleaseFiles = [...requiredFiles, "package-lock.json"] as const;
 
 function normalized(path: string, root = "") {
   const portablePath = path.replaceAll("\\", "/");
@@ -85,20 +83,6 @@ function isForbiddenNpmFile(path: string) {
     isInDirectory(path, "node_modules") ||
     isPlaceholder(path) ||
     /^(?:tsconfig(?:\.[^/]+)?\.json|biome(?:\.[^/]+)?\.json)$/.test(path) ||
-    /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/.test(path)
-  );
-}
-
-function isForbiddenReleaseFile(path: string) {
-  return (
-    isNonRuntimeFile(path) ||
-    isInDirectory(path, "tests") ||
-    isInDirectory(path, "test") ||
-    isInDirectory(path, "scripts") ||
-    isInDirectory(path, "coverage") ||
-    isInDirectory(path, "dist") ||
-    isInDirectory(path, "node_modules") ||
-    isPlaceholder(path) ||
     /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/.test(path)
   );
 }
@@ -164,21 +148,7 @@ try {
   const packedFiles = npmPackFiles(packOutput);
   assertRequired("npm tarball", packedFiles);
   assertAbsent("npm tarball", packedFiles, isForbiddenNpmFile);
-
-  const releasePath = join(temporaryDirectory, "paseo-gas-city.zip");
-  await run([process.execPath, "scripts/package-release.ts", releasePath], "release zip build");
-
-  let releaseFiles: ReadonlySet<string>;
-  try {
-    const archive = unzipSync(await readFile(releasePath));
-    releaseFiles = new Set(Object.keys(archive).map((path) => normalized(path, "paseo-gas-city/")));
-  } catch (error) {
-    throw new Error(`release zip could not be inspected: ${String(error)}`);
-  }
-
-  assertRequired("release zip", releaseFiles, requiredReleaseFiles);
-  assertAbsent("release zip", releaseFiles, isForbiddenReleaseFile);
-  console.log("Verified npm tarball and release zip contents.");
+  console.log("Verified npm tarball contents.");
 } finally {
   await rm(temporaryDirectory, { recursive: true, force: true });
 }

@@ -19,7 +19,7 @@ Run this workflow from the `paseo-omp` directory.
 1. Install dependencies and typecheck before loading the plugin:
 
    ```sh
-   npm ci --ignore-scripts
+   bun install
    npm run typecheck
    ```
 

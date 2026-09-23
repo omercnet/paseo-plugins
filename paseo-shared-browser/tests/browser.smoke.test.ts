@@ -125,6 +125,7 @@ it("shares and persists a production agent-browser runtime across supervisor cli
     const second = await manager.attach("workspace-smoke", "Mobile client");
     expect(second.state.sessionId).toBe(first.state.sessionId);
     expect(second.state.viewerCount).toBe(2);
+    console.log("browser-smoke: attached");
 
     const firstControl = await manager.acquireControl(first.viewerToken, false);
     const navigated = await manager.navigate({
@@ -135,6 +136,7 @@ it("shares and persists a production agent-browser runtime across supervisor cli
     });
     expect(navigated.state.url).toBe(`${origin}/?delayed=1`);
     expect(navigated.state.title).toBe("Shared Browser Smoke");
+    console.log("browser-smoke: navigated");
 
     const firstCapture = await manager.capture(first.viewerToken, "medium", null);
     expect(firstCapture.frame?.byteLength).toBeLessThanOrEqual(800_000);
@@ -178,6 +180,7 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       },
     });
     await vi.waitFor(() => expect(clicked).toBe(1));
+    console.log("browser-smoke: input");
 
     const afterNavigation = await manager.navigate({
       viewerToken: first.viewerToken,
@@ -201,6 +204,7 @@ it("shares and persists a production agent-browser runtime across supervisor cli
         },
       }),
     ).rejects.toThrow("stale");
+    console.log("browser-smoke: stale-frame");
 
     await manager.releaseControl(first.viewerToken, firstControl.controlToken);
     await expect(manager.detach(first.viewerToken)).resolves.toEqual({ detached: true });
@@ -226,6 +230,7 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       const resumedCapture = await manager.capture(resumed.viewerToken, "medium", null);
       expect(resumedCapture.frame?.transport).toBe("cdp-screencast");
     });
+    console.log("browser-smoke: emulated");
 
     manager.disconnect();
     manager = await createManager("smoke-bridge-two");
@@ -240,11 +245,13 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       action: { kind: "goto", url: `${origin}/read-cookie` },
     });
     await vi.waitFor(() => expect(retainedCookie).toContain("shared-browser-profile=retained"));
+    console.log("browser-smoke: restored");
 
     await manager.archiveWorkspace("workspace-smoke");
     await expect(manager.capture(restored.viewerToken, "medium", null)).rejects.toThrow(
       "invalid or expired",
     );
+    console.log("browser-smoke: archived");
   } finally {
     manager.disconnect();
     await running.close();

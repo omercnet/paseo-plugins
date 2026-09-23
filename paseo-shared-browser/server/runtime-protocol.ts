@@ -41,7 +41,11 @@ export type AgentBrowserOperation =
 export type RuntimeRequest =
   | (AdminRequestBase & { method: "bridge.claim"; takeover?: boolean })
   | (AdminRequestBase & { method: "bridge.heartbeat"; epoch: number })
-  | (AdminRequestBase & { method: "workspace.ensure"; epoch: number; workspaceId: string })
+  | (AdminRequestBase & {
+      method: "workspace.ensure";
+      epoch: number;
+      workspaceId: string;
+    })
   | (AdminRequestBase & {
       method: "workspace.request";
       epoch: number;
@@ -49,14 +53,22 @@ export type RuntimeRequest =
       operation: string;
       input: JsonValue;
     })
-  | (AdminRequestBase & { method: "workspace.archive"; epoch: number; workspaceId: string })
+  | (AdminRequestBase & {
+      method: "workspace.archive";
+      epoch: number;
+      workspaceId: string;
+    })
   | (AdminRequestBase & {
       method: "browser.request";
       epoch: number;
       operation: string;
       input: JsonValue;
     })
-  | (AdminRequestBase & { method: "ticket.issue"; epoch: number; ticket: string })
+  | (AdminRequestBase & {
+      method: "ticket.issue";
+      epoch: number;
+      ticket: string;
+    })
   | (AdminRequestBase & {
       method: "ticket.bind";
       epoch: number;
@@ -64,7 +76,11 @@ export type RuntimeRequest =
       agentId: string;
       workspaceId: string;
     })
-  | (AdminRequestBase & { method: "agent.revoke"; epoch: number; agentId: string })
+  | (AdminRequestBase & {
+      method: "agent.revoke";
+      epoch: number;
+      agentId: string;
+    })
   | (RuntimeRequestBase & {
       method: "agent.request";
       ticket: string;
@@ -76,7 +92,11 @@ export type RuntimeResult = BridgeLease | RuntimeDescriptor | JsonValue | { arch
 
 export type RuntimeResponse =
   | { id: string; ok: true; result: RuntimeResult }
-  | { id: string; ok: false; error: { code: RuntimeErrorCode; message: string } };
+  | {
+      id: string;
+      ok: false;
+      error: { code: RuntimeErrorCode; message: string };
+    };
 
 export type RuntimeErrorCode =
   | "AUTHENTICATION_FAILED"
@@ -145,7 +165,14 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest {
     };
   const epoch = requireInteger(value, "epoch");
   if (method === "bridge.heartbeat")
-    return { id, version: RUNTIME_PROTOCOL_VERSION, method, token, bridgeId, epoch };
+    return {
+      id,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method,
+      token,
+      bridgeId,
+      epoch,
+    };
   if (method === "workspace.ensure" || method === "workspace.archive")
     return {
       id,

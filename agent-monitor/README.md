@@ -56,9 +56,9 @@ Interrupting a turn is not part of `PaseoApi`, so archive is the only lifecycle 
 
 ## Install
 
-Requires Paseo 0.8.x or the 0.9 release line starting with `0.9.0-beta.1`. The manifest declares
-`requirements.paseo` as `^0.8.0 || ^0.9.0-beta.1`, and the development SDK is pinned to
-`0.9.0-beta.1`.
+Requires Paseo 0.8.x or the 0.9 release line starting with `0.9.0`. The manifest declares
+`requirements.paseo` as `>=0.8.0 <0.10.0`, and the development SDK is pinned to
+`0.9.0`.
 
 Install the published package on the daemon host:
 
@@ -67,38 +67,21 @@ paseo plugin install npm:@omercnet/paseo-agent-monitor
 paseo plugin update agent-monitor
 ```
 
-Alternatively, install from Git. Git installs track the default branch and run no package manager;
-the plugin has no runtime dependencies:
-
-```bash
-paseo plugin add omercnet/paseo-plugins:agent-monitor
-```
-
-For an air-gapped host, clone or download the monorepo and install this directory:
-
-```bash
-cd paseo-plugins/agent-monitor
-npm ci
-paseo plugin install "$PWD"
-```
-
 ## Develop
 
 ```bash
-npm ci
-npm run check
-npm test
-npm run test:coverage
-npm run typecheck
-npx paseo plugin install "$PWD"
-npx paseo plugin reload agent-monitor
+bun install
+bun run check
+bun run test
+bun run test:coverage
+bun run typecheck
 ```
 
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The project supports Paseo 0.8.x and the 0.9 release line from `0.9.0-beta.1`, and pins
+The project supports Paseo 0.8.x and the 0.9 release line from `0.9.0`, and pins
 `@getpaseo/plugin`, `@getpaseo/client`, `@getpaseo/protocol`, and `@getpaseo/cli` to
-`0.9.0-beta.1`. Renovate groups `@getpaseo/*` updates so the SDKs move together.
+`0.9.0`. Renovate groups `@getpaseo/*` updates so the SDKs move together.
 
 React `19.1` and React Native `0.81` intentionally match the versions supplied by Paseo.

@@ -17,9 +17,8 @@ replaces the local host label and verifies that no private organization names re
 
 ## Install
 
-Paseo 0.9.0-beta.1 and later can install from npm and use Paseo's update command. Paseo 0.8.x
-users can install from Git or a local checkout. See [INSTALL.md](./INSTALL.md) for commands,
-activation, removal, and development installation.
+Paseo 0.9.0 and later can install from npm and use Paseo's update command. See
+[INSTALL.md](./INSTALL.md) for commands, activation, and removal.
 
 ## Themes
 
@@ -39,7 +38,7 @@ colors. For Alucard, use one of Paseo's light-capable syntax themes.
 
 ## Requirements and limits
 
-- Supports Paseo 0.8.x and Paseo 0.9.x starting with 0.9.0-beta.1.
+- Supports Paseo 0.8.x and Paseo 0.9.x starting with 0.9.0.
 - The plugin contains no daemon-side behavior and does not read or change application state.
 
 ## Palette mapping
@@ -69,13 +68,11 @@ official specification's 4.5:1 minimum.
 ## Develop
 
 ```bash
-npm ci
-npm run check
-npm run typecheck
-npm test
-npm run test:coverage
-npm run package:release
-paseo plugin install /absolute/path/to/paseo-dracula
+bun install
+bun run check
+bun run typecheck
+bun run test
+bun run test:coverage
 ```
 
 Release Please maintains versions, changelog entries, component tags, and GitHub releases from

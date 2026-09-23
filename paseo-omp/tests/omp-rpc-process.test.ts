@@ -19,6 +19,8 @@ import {
   testOnWindows,
 } from "./helpers/omp-rpc-harness";
 
+const testOnPosix = process.platform === "win32" ? test.skip : test;
+
 describe("OMP RPC transport", () => {
   testOnWindows("terminates a live Windows process tree with taskkill", async () => {
     const leader = spawn(
@@ -49,6 +51,111 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
       expect.objectContaining({ code: "ESRCH" }),
     );
   });
+
+  testOnWindows(
+    "keeps the Windows tree root alive until descendant cleanup completes",
+    async () => {
+      const script = `
+      const { spawn } = require("node:child_process");
+      const descendant = spawn(
+        process.execPath,
+        ["-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)"],
+        { stdio: "ignore", windowsHide: true },
+      );
+      descendant.unref();
+      process.stdout.write(JSON.stringify({
+        type: "ready",
+        protocolVersion: 1,
+        supportedProtocolVersions: [1, 2],
+        maxFrameBytes: 1048576,
+        maxReassembledFrameBytes: 67108864,
+      }) + "\\n");
+      let input = "";
+      process.stdin.on("data", chunk => {
+        input += String(chunk);
+        while (true) {
+          const newline = input.indexOf("\\n");
+          if (newline < 0) return;
+          const line = input.slice(0, newline);
+          input = input.slice(newline + 1);
+          if (!line) continue;
+          const command = JSON.parse(line);
+          if (command.type === "negotiate_protocol") {
+            process.stdout.write(JSON.stringify({
+              type: "response",
+              id: command.id,
+              command: "negotiate_protocol",
+              success: true,
+              data: { protocolVersion: 2 },
+            }) + "\\n");
+            continue;
+          }
+          if (command.type !== "get_state") continue;
+          process.stdout.write(JSON.stringify({
+            type: "notice",
+            level: "info",
+            message: String(descendant.pid),
+          }) + "\\n");
+          process.stdout.write(JSON.stringify({
+            type: "response",
+            id: command.id,
+            success: true,
+            data: {
+              model: null,
+              isStreaming: false,
+              isCompacting: false,
+              sessionId: "windows-tree",
+            },
+          }) + "\\n");
+        }
+      });
+      process.stdin.on("end", () => process.exit(0));
+    `;
+      let leader: ChildProcessWithoutNullStreams | undefined;
+      let descendantPid: number | undefined;
+      const runtime = new OmpRpcRuntime({
+        spawnProcess(request) {
+          leader = spawn(process.execPath, ["-e", script], {
+            cwd: request.cwd,
+            env: { ...process.env, ...request.env },
+            detached: request.detached,
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          return leader;
+        },
+        async terminateProcessTree(pid) {
+          const root = leader;
+          if (!root) return false;
+          // Model a taskkill launch that loses the tree root when EOF is sent concurrently.
+          await Promise.race([once(root, "exit"), sleep(250)]);
+          return await terminateSpawnedProcessTree(pid, "win32");
+        },
+        environment: TEST_RUNTIME_ENV,
+      });
+
+      try {
+        const session = await runtime.startSession({ cwd: process.cwd(), mode: "full" });
+        const descendantPidEvent = nextEvent((listener) => session.onEvent(listener));
+        await session.getState();
+        const notice = await descendantPidEvent;
+        if (notice.type !== "notice") throw new Error("Expected descendant PID notice");
+        descendantPid = Number(notice.message);
+        if (!Number.isSafeInteger(descendantPid) || descendantPid < 1) {
+          throw new Error("Windows process-tree fixture did not report a valid descendant PID");
+        }
+        const pid = descendantPid;
+        expect(() => process.kill(pid, 0)).not.toThrow();
+
+        await session.close();
+
+        expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      } finally {
+        if (leader?.pid) await terminateSpawnedProcessTree(leader.pid, "win32");
+        if (descendantPid) await terminateSpawnedProcessTree(descendantPid, "win32");
+      }
+    },
+  );
 
   test("terminates a surviving POSIX process group after its leader exited", async () => {
     const signals: Array<NodeJS.Signals | 0> = [];
@@ -148,8 +255,9 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
     expect(observed.filter((event) => event.type === "process_exit")).toHaveLength(1);
   });
 
-  test("starts process-tree cleanup before stdin shutdown can release the Windows tree root", async () => {
+  testOnWindows("keeps stdin open until Windows process-tree cleanup settles", async () => {
     const child = new FakeRpcChild();
+    const cleanup = Promise.withResolvers<boolean>();
     observeCommands(child, (command) => {
       if (command.type === "negotiate_protocol") {
         child.write({
@@ -160,22 +268,48 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
         });
       }
     });
-    let stdinEndedAtCleanup: boolean | undefined;
     const runtime = new OmpRpcRuntime({
       spawnProcess: () => child.asChildProcess(),
-      terminateProcessTree: () => {
-        stdinEndedAtCleanup = child.stdin.writableEnded;
-        return Promise.resolve(true);
-      },
+      terminateProcessTree: async () => await cleanup.promise,
       environment: TEST_RUNTIME_ENV,
     });
     const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
     const session = await opening;
 
-    await session.close();
+    const closing = session.close();
+    expect(child.stdin.writableEnded).toBe(false);
+    cleanup.resolve(true);
+    await closing;
+    expect(child.stdin.writableEnded).toBe(true);
+  });
 
-    expect(stdinEndedAtCleanup).toBe(false);
+  testOnPosix("ends stdin while POSIX process-tree cleanup is pending", async () => {
+    const child = new FakeRpcChild();
+    const cleanup = Promise.withResolvers<boolean>();
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      }
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: async () => await cleanup.promise,
+      environment: TEST_RUNTIME_ENV,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const closing = session.close();
+    expect(child.stdin.writableEnded).toBe(true);
+    cleanup.resolve(true);
+    await closing;
   });
 
   test("surfaces unverified process-tree cleanup", async () => {

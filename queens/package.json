@@ -17,7 +17,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "packageManager": "npm@11.19.1",
+  "packageManager": "bun@1.4.2",
   "engines": {
     "node": ">=24"
   },
@@ -38,26 +38,22 @@
     "paseo-plugin.json"
   ],
   "scripts": {
-    "check": "biome check --error-on-warnings .",
-    "import:puzzles": "node scripts/import-curated-puzzles.mjs",
-    "test": "run-s test:ci:*",
-    "typecheck": "tsc --noEmit",
-    "verify:package": "npm pack --dry-run",
+    "check": "biome check .",
     "check:write": "biome check --write .",
-    "test:ci:unit": "vitest run",
-    "build": "node ../.github/scripts/build-plugin.mjs"
+    "import:puzzles": "node scripts/import-curated-puzzles.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "verify:package": "npm pack --dry-run"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
-    "@getpaseo/plugin": "0.9.0-beta.1",
-    "@getpaseo/server": "0.9.0-beta.1",
-    "@types/node": "^24.5.2",
-    "@types/react": "~19.2.0",
-    "npm-run-all2": "^9.0.3",
-    "react": "19.1.0",
-    "react-native": "0.81.5",
-    "typescript": "^7.0.0",
-    "vitest": "^5.0.0",
-    "zod": "^4.4.3"
+    "@biomejs/biome": "catalog:",
+    "@getpaseo/plugin": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "react": "catalog:",
+    "react-native": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
   }
 }

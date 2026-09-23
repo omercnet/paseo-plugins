@@ -277,7 +277,11 @@ describe("freshness scheduling", () => {
         workspaceDirectory: "/repo/new-worktree",
       },
     });
-    firstFreshness.resolve({ kind: "behind", remoteRef: "origin/main", behindBy: 1 });
+    firstFreshness.resolve({
+      kind: "behind",
+      remoteRef: "origin/main",
+      behindBy: 1,
+    });
 
     await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(2));
     expect(rpc.mock.calls[1]?.[1]).toEqual({

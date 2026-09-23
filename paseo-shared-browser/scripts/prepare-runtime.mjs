@@ -12,12 +12,19 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { arch, homedir, platform, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
-import { resolveDependencyRoot } from "./prepare-dependencies.mjs";
+
+const require = createRequire(import.meta.url);
+
+function resolveDependencyRoot(packageName) {
+  const packageJsonPath = require.resolve(`${packageName}/package.json`);
+  return dirname(packageJsonPath);
+}
 
 const execFileAsync = promisify(execFile);
 const expectedVersion = "0.37.1";
@@ -54,7 +61,9 @@ async function requireExecutable(path, label) {
 }
 
 async function validateAgentBrowser(path) {
-  const { stdout } = await execFileAsync(path, ["--version"], { encoding: "utf8" });
+  const { stdout } = await execFileAsync(path, ["--version"], {
+    encoding: "utf8",
+  });
   const version = stdout.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/)?.[0];
   if (version !== expectedVersion) {
     throw new Error(`Expected agent-browser ${expectedVersion}, received ${version ?? "unknown"}`);
@@ -185,7 +194,10 @@ async function installChromium() {
   if (!releaseDir) throw new Error("agent-browser install did not produce a Chromium release");
   const chrome = installedChromiumExecutable(releaseDir);
   await requireExecutable(chrome, "Installed Chromium executable");
-  await cp(releaseDir, join(stagingRoot, "chromium"), { recursive: true, force: true });
+  await cp(releaseDir, join(stagingRoot, "chromium"), {
+    recursive: true,
+    force: true,
+  });
   if (hostPlatform === "darwin") {
     // chrome can't be a symlink to the .app's real binary here: macOS dyld
     // resolves @executable_path from the invoked path's own directory, so a

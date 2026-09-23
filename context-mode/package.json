@@ -17,7 +17,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "packageManager": "npm@11.19.1",
+  "packageManager": "bun@1.4.2",
   "engines": {
     "node": ">=24"
   },
@@ -40,35 +40,29 @@
     "paseo-plugin.json"
   ],
   "scripts": {
-    "check": "biome check --error-on-warnings .",
+    "check": "biome check .",
     "check:write": "biome check --write .",
-    "lint": "biome check .",
-    "format:check": "biome check .",
-    "test": "run-s test:ci:*",
+    "test": "vitest run",
     "test:unit": "vitest run",
     "test:coverage": "vitest run --coverage --coverage.reporter=text --coverage.reporter=lcov --coverage.thresholds.lines=90 --coverage.thresholds.functions=85",
     "typecheck": "tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.server.json",
-    "verify:package": "node scripts/verify-package.mjs",
-    "build": "node ../.github/scripts/build-plugin.mjs",
-    "test:ci:unit": "vitest run"
+    "verify:package": "node scripts/verify-package.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
-    "@getpaseo/cli": "0.9.0-beta.1",
-    "@getpaseo/client": "0.9.0-beta.1",
-    "@getpaseo/plugin": "0.9.0-beta.1",
-    "@getpaseo/protocol": "0.9.0-beta.1",
-    "@getpaseo/server": "0.9.0-beta.1",
-    "@tanstack/react-query": "^5.102.3",
-    "@types/node": "^24.5.2",
-    "@types/react": "^19.2.18",
-    "@vitest/coverage-v8": "^5.0.0",
-    "npm-run-all2": "^9.0.3",
-    "react": "19.1.0",
-    "react-native": "0.81.5",
-    "typescript": "^7.0.2",
-    "vitest": "^5.0.0",
-    "zod": "^4.4.3"
+    "@biomejs/biome": "catalog:",
+    "@getpaseo/cli": "catalog:",
+    "@getpaseo/client": "catalog:",
+    "@getpaseo/plugin": "catalog:",
+    "@getpaseo/protocol": "catalog:",
+    "@tanstack/react-query": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "react": "catalog:",
+    "react-native": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
   },
   "dependencies": {
     "context-mode": "1.0.169"

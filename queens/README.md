@@ -60,7 +60,7 @@ npm run import:puzzles
 
 ## Install
 
-### Paseo 0.9 beta
+### Paseo 0.9
 
 Install the published npm package on the daemon host:
 
@@ -75,20 +75,6 @@ paseo plugin update queens --check
 paseo plugin update queens
 ```
 
-### Paseo 0.8
-
-Install from this monorepo:
-
-```bash
-paseo plugin install omercnet/paseo-plugins:queens
-```
-
-Or install a local checkout by absolute path on the daemon host:
-
-```bash
-paseo plugin install /absolute/path/to/paseo-plugins/queens
-```
-
 Open **Queens** from the sidebar or Command Center. Open any agent session to use the composer mini-game.
 
 ## Develop
@@ -96,10 +82,10 @@ Open **Queens** from the sidebar or Command Center. Open any agent session to us
 Use an isolated Paseo home and explicit host. Never reload this development checkout against your default daemon.
 
 ```bash
-npm ci
-npm run check
-npm run typecheck
-npm test
+bun install
+bun run check
+bun run typecheck
+bun run test
 
 paseo daemon config set daemon.listen 127.0.0.1:6802 --home /tmp/queens-dev
 paseo daemon config set daemon.relay.enabled false --home /tmp/queens-dev
@@ -113,7 +99,7 @@ Release Please owns package versions, changelog generation, component tags, and 
 
 ## Requirements
 
-- Paseo `^0.8.0` or `^0.9.0-beta.1`
+- Paseo `>=0.8.0 <0.10.0`
 - Plugins enabled on the target daemon
 - React Native-compatible Paseo client on web, desktop, iOS, or Android
 

@@ -5,6 +5,7 @@ import { OmpCleanupFailure } from "../server/provider/security";
 import {
   createHarness,
   EventLog,
+  establishTerminalOwnership,
   FakeOmpRuntime,
   finishTurn,
   MODEL_PUBLIC_ID,
@@ -17,11 +18,10 @@ import {
 } from "./helpers/provider-harness";
 
 describe("OMP direct provider", () => {
-  test("interrupts and emits one terminal turn", async () => {
+  test("maps an intentional native abort to one cancellation and keeps the next turn healthy", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
-    const promptResult = await startPrompt(connection, events);
-    const turnId = turnIdFrom(promptResult);
+    const firstTurnId = turnIdFrom(await startPrompt(connection, events));
     const session = sessionAt(runtime);
 
     await connection.send({
@@ -32,17 +32,82 @@ describe("OMP direct provider", () => {
     await events.waitFor(
       (event) => event.type === "request.completed" && event.requestId === "interrupt-1",
     );
-    const terminal = await finishTurn(events, session, turnId);
-    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    establishTerminalOwnership(session);
+    session.emit({
+      type: "agent_end",
+      requestId: "rpc-prompt-1",
+      messages: [
+        {
+          role: "assistant",
+          content: "Interrupted by user",
+          stopReason: "aborted",
+          errorMessage: "Interrupted by user",
+        },
+      ],
+      isTerminal: true,
+    });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === firstTurnId && event.state !== "started",
+    );
 
-    expect(session.aborts).toBe(1);
     expect(terminal).toEqual(expect.objectContaining({ state: "canceled" }));
     expect(
       events.filter(
         (event) =>
-          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+          event.type === "session.turn" &&
+          event.turnId === firstTurnId &&
+          event.state !== "started",
       ),
     ).toHaveLength(1);
+
+    const laterTurnId = turnIdFrom(
+      await startPrompt(connection, events, "after-interrupt", "continue"),
+    );
+    await expect(finishTurn(events, session, laterTurnId)).resolves.toEqual(
+      expect.objectContaining({ state: "completed" }),
+    );
+    await connection.close();
+  });
+  test("keeps a genuine native failure failed and allows a later turn", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const failedTurnId = turnIdFrom(
+      await startPrompt(connection, events, "native-failure", "work"),
+    );
+    const session = sessionAt(runtime);
+
+    establishTerminalOwnership(session);
+    session.emit({
+      type: "agent_end",
+      requestId: "rpc-prompt-1",
+      messages: [
+        {
+          role: "assistant",
+          content: "rate limited",
+          stopReason: "error",
+          errorMessage: "rate limited",
+        },
+      ],
+      isTerminal: true,
+    });
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "session.turn" &&
+          event.turnId === failedTurnId &&
+          event.state !== "started",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ state: "failed", error: { message: "OMP assistant turn failed" } }),
+    );
+
+    const laterTurnId = turnIdFrom(
+      await startPrompt(connection, events, "after-native-failure", "continue"),
+    );
+    await expect(finishTurn(events, session, laterTurnId)).resolves.toEqual(
+      expect.objectContaining({ state: "completed" }),
+    );
     await connection.close();
   });
   test("does not start a later turn while an earlier abort is unsettled", async () => {
