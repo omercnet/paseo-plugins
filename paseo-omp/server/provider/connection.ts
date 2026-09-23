@@ -862,7 +862,6 @@ export function createOmpConnection(
               settings: configuredInput.settings,
             },
             input.cwd ?? homedir(),
-            (await resolveHostInheritEnv?.()) ?? [],
           );
           emit({
             type: "sessions",

@@ -5,7 +5,7 @@ import {
   SettingsInput,
   SettingsSection,
 } from "@getpaseo/plugin/client/ui";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import {
   providerLaunchSettings,
@@ -20,6 +20,9 @@ type ReadySettings = Extract<
 function ProviderLaunchSettingsControls({ settings }: { settings: ReadySettings }) {
   const savedNames = settings.values.inheritEnv.join(", ");
   const [rawNames, setRawNames] = useState(() => savedNames);
+  useEffect(() => {
+    setRawNames(savedNames);
+  }, [savedNames]);
   const inheritEnv = [
     ...new Set(
       rawNames

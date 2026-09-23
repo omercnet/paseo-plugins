@@ -62,6 +62,35 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("lists sessions without merging host environment names", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    const connection = await createOmpProvider({
+      environment: TEST_RUNTIME_ENV,
+      runtime,
+      resolveHostInheritEnv: async () =>
+        Array.from({ length: 256 }, (_, index) => `HOST_INHERITED_${index}`),
+    }).connect({ versions: [1], capabilities: ["session.list"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({
+      type: "sessions",
+      requestId: "host-bound-list",
+      cwd: "/repo",
+      providerOptions: { inheritEnv: ["PROFILE_INHERITED"] },
+    } as never);
+    await expect(
+      events.waitFor((event) => event.type === "sessions" && event.requestId === "host-bound-list"),
+    ).resolves.toEqual({
+      type: "sessions",
+      requestId: "host-bound-list",
+      sessions: [
+        { persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } }, cwd: "/repo" },
+      ],
+    });
+    await connection.close();
+  });
+
   test("makes replaying sessions closable and routes a ready-callback prompt", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
