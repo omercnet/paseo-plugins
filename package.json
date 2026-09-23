@@ -1,0 +1,41 @@
+{
+  "name": "@omercnet/paseo-plugins",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "bun@1.4.2",
+  "workspaces": [
+    "agent-crew",
+    "agent-monitor",
+    "context-mode",
+    "fresh-worktrees",
+    "paseo-beads",
+    "paseo-dracula",
+    "paseo-gas-city",
+    "paseo-omp",
+    "paseo-shared-browser",
+    "pr-radar",
+    "queens",
+    "tell-agent"
+  ],
+  "catalog": {
+    "@biomejs/biome": "^2.5.10",
+    "@getpaseo/cli": "0.9.0",
+    "@getpaseo/client": "0.9.0",
+    "@getpaseo/plugin": "0.9.0",
+    "@getpaseo/protocol": "0.9.0",
+    "@getpaseo/server": "0.9.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@tanstack/react-query": "^5.102.3",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.18",
+    "@vitest/coverage-v8": "^5.0.0",
+    "esbuild": "0.28.2",
+    "fflate": "^0.8.3",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0",
+    "pino": "10.3.1",
+    "zod": "4.4.3"
+  }
+}

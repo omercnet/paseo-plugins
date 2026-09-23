@@ -47,19 +47,12 @@ host.
 paseo plugin install npm:@omercnet/paseo-fresh-worktrees
 ```
 
-Or install from Git:
-
-```bash
-paseo plugin add omercnet/paseo-plugins:fresh-worktrees
-```
-
 The plugin requires Paseo `>=0.8.0`.
 
 ## Develop
 
 ```bash
-npm ci
-npm run typecheck
-npm test
-paseo plugin install "$PWD"
+bun install
+bun run typecheck
+bun run test
 ```

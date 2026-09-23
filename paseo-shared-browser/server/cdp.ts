@@ -102,7 +102,11 @@ export class CdpConnection extends EventEmitter {
   async send<T = unknown>(
     method: string,
     params: Record<string, unknown> = {},
-    options: { sessionId?: string; mutation?: boolean; timeoutMs?: number } = {},
+    options: {
+      sessionId?: string;
+      mutation?: boolean;
+      timeoutMs?: number;
+    } = {},
   ): Promise<T> {
     if (!this.isOpen) throw new CdpUnavailableError("CDP connection is closed");
     const id = this.nextId++;
@@ -173,7 +177,10 @@ export class CdpConnection extends EventEmitter {
         return;
       }
       if (message.method) {
-        const event: CdpEvent = { method: message.method, params: message.params ?? {} };
+        const event: CdpEvent = {
+          method: message.method,
+          params: message.params ?? {},
+        };
         if (message.sessionId) event.sessionId = message.sessionId;
         this.emit("event", event);
         this.emit(message.method, event.params, event.sessionId);
@@ -220,7 +227,10 @@ export class CdpSession extends EventEmitter {
     params: Record<string, unknown> = {},
     options: { mutation?: boolean; timeoutMs?: number } = {},
   ): Promise<T> {
-    return this.connection.send<T>(method, params, { ...options, sessionId: this.sessionId });
+    return this.connection.send<T>(method, params, {
+      ...options,
+      sessionId: this.sessionId,
+    });
   }
 
   detach(): Promise<void> {

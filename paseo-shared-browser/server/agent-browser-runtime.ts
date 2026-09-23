@@ -669,9 +669,10 @@ export class AgentBrowserRuntime {
     if (!force) {
       try {
         await this.invoke(["--session", this.session, "--json", "close"]);
-      } catch (error) {
+      } catch {
         this.stopping = false;
-        throw error;
+        await this.shutdown(true);
+        return;
       }
     } else {
       const pid = await this.daemonPid();

@@ -36,6 +36,9 @@ services:
       PASEO_PASSWORD: ${PASEO_CANARY_PASSWORD:?Set PASEO_CANARY_PASSWORD}
       PASEO_DICTATION_ENABLED: "false"
       PASEO_VOICE_MODE_ENABLED: "false"
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /workspace/paseo-plugins
     ports:
       - "${PASEO_CANARY_BIND:-127.0.0.1}:${PASEO_CANARY_PORT:-6768}:6767"
     healthcheck:

@@ -64,9 +64,12 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
       - name: Install package dependencies
-        working-directory: ${{ matrix.directory }}
-        run: npm ci --include=dev
+        run: bun install --frozen-lockfile
       - name: Set next version
         working-directory: ${{ matrix.directory }}
         env:
@@ -82,10 +85,13 @@ jobs:
         run: node scripts/sync-build-version.mjs
       - name: Preview npm package
         working-directory: ${{ matrix.directory }}
-        run: npm pack --dry-run
+        run: bun pm pack --dry-run --ignore-scripts
+      - name: Pack normalized npm artifact
+        working-directory: ${{ matrix.directory }}
+        run: bun pm pack --ignore-scripts --filename "$RUNNER_TEMP/package.tgz"
       - name: Publish next package
         working-directory: ${{ matrix.directory }}
-        run: npm publish --access public --provenance --tag next
+        run: npm publish "$RUNNER_TEMP/package.tgz" --access public --provenance --tag next
       - name: Verify next publication
         working-directory: ${{ matrix.directory }}
         run: |
@@ -129,21 +135,27 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
       - name: Install package dependencies
-        working-directory: ${{ matrix.directory }}
-        run: npm ci --include=dev
+        run: bun install --frozen-lockfile
       - name: Preview npm package
         working-directory: ${{ matrix.directory }}
-        run: npm pack --dry-run
+        run: bun pm pack --dry-run --ignore-scripts
+      - name: Pack normalized npm artifact
+        working-directory: ${{ matrix.directory }}
+        run: bun pm pack --ignore-scripts --filename "$RUNNER_TEMP/package.tgz"
       - name: Publish release package
         working-directory: ${{ matrix.directory }}
         run: |
           version="$(node -p "require('./package.json').version")"
           if [[ "$version" == *-* ]]; then
             channel="${version#*-}"
-            npm publish --access public --provenance --tag "${channel%%.*}"
+            npm publish "$RUNNER_TEMP/package.tgz" --access public --provenance --tag "${channel%%.*}"
           else
-            npm publish --access public --provenance --tag latest
+            npm publish "$RUNNER_TEMP/package.tgz" --access public --provenance --tag latest
           fi
       - name: Verify release publication
         working-directory: ${{ matrix.directory }}

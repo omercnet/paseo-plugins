@@ -17,7 +17,11 @@ class FakeSupervisorClient {
   connected = false;
   disconnected = false;
   readonly workspaces = new Map<string, FakeWorkspace>();
-  readonly operations: Array<{ workspaceId: string; operation: string; input: JsonValue }> = [];
+  readonly operations: Array<{
+    workspaceId: string;
+    operation: string;
+    input: JsonValue;
+  }> = [];
   archiveCalls: string[] = [];
   failOperation: string | null = null;
   ensureGate: Promise<void> | null = null;
@@ -25,7 +29,12 @@ class FakeSupervisorClient {
 
   async connect() {
     this.connected = true;
-    return { bridgeId: "fake", epoch: 1, expiresAt: 60_000, heartbeatIntervalMs: 10_000 };
+    return {
+      bridgeId: "fake",
+      epoch: 1,
+      expiresAt: 60_000,
+      heartbeatIntervalMs: 10_000,
+    };
   }
 
   async ensureWorkspace(workspaceId: string) {
@@ -81,7 +90,10 @@ class FakeSupervisorClient {
       case "key.up":
         return null;
       case "emulate":
-        workspace.viewport = { width: Number(data.width), height: Number(data.height) };
+        workspace.viewport = {
+          width: Number(data.width),
+          height: Number(data.height),
+        };
         workspace.userAgent = String(data.userAgent);
         return null;
       case "frame": {
@@ -274,10 +286,16 @@ describe("SessionManager control leases", () => {
       });
 
     await expect(
-      navigate({ ...current, navigationGeneration: current.navigationGeneration + 1 }),
+      navigate({
+        ...current,
+        navigationGeneration: current.navigationGeneration + 1,
+      }),
     ).rejects.toThrow("navigation state is stale");
     await expect(
-      navigate({ ...current, viewportGeneration: current.viewportGeneration + 1 }),
+      navigate({
+        ...current,
+        viewportGeneration: current.viewportGeneration + 1,
+      }),
     ).rejects.toThrow("viewport state is stale");
     await expect(navigate({ ...current, runtimeId: "different-runtime" })).rejects.toThrow(
       "runtime is stale",
@@ -326,7 +344,12 @@ describe("SessionManager control leases", () => {
     expect(result.state.devicePresetId).toBe("pixel-7");
     expect(result.state.userAgent).toContain("Pixel 7");
     const emulate = client.operations.filter(({ operation }) => operation === "emulate").at(-1);
-    expect(emulate?.input).toMatchObject({ mobile: true, touch: true, width: 412, height: 839 });
+    expect(emulate?.input).toMatchObject({
+      mobile: true,
+      touch: true,
+      width: 412,
+      height: 839,
+    });
   });
 
   it("archives and tears down the workspace runtime", async () => {

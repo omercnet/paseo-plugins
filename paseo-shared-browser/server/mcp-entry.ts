@@ -71,7 +71,9 @@ function asObject(value: JsonValue): Record<string, JsonValue> {
 }
 
 function textResult(value: JsonValue) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+  };
 }
 
 async function main(): Promise<void> {
@@ -83,7 +85,10 @@ async function main(): Promise<void> {
   });
   await client.open();
 
-  const server = new McpServer({ name: "paseo-shared-browser", version: "0.2.2" });
+  const server = new McpServer({
+    name: "paseo-shared-browser",
+    version: "0.2.2",
+  });
 
   server.registerTool(
     "shared_browser_status",
@@ -100,7 +105,9 @@ async function main(): Promise<void> {
     {
       description:
         "Capture the current shared browser frame and state. Capture before sending input.",
-      inputSchema: z.object({ quality: z.enum(["low", "medium", "high"]).default("medium") }),
+      inputSchema: z.object({
+        quality: z.enum(["low", "medium", "high"]).default("medium"),
+      }),
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ quality }) => {
@@ -113,7 +120,11 @@ async function main(): Promise<void> {
       if (frame && typeof frame === "object" && !Array.isArray(frame)) {
         const image = frame as Record<string, JsonValue>;
         if (typeof image.dataBase64 === "string" && typeof image.mimeType === "string")
-          content.push({ type: "image", data: image.dataBase64, mimeType: image.mimeType });
+          content.push({
+            type: "image",
+            data: image.dataBase64,
+            mimeType: image.mimeType,
+          });
       }
       return { content };
     },
@@ -125,7 +136,11 @@ async function main(): Promise<void> {
       description:
         "Acquire browser control if no human or other viewer currently holds it. Forced takeover is unavailable.",
       inputSchema: z.object({}),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
     },
     async () => textResult(await client.request("acquire-control", {})),
   );
@@ -135,7 +150,11 @@ async function main(): Promise<void> {
     {
       description: "Release this agent's browser control lease.",
       inputSchema: z.object({}),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
     },
     async () => textResult(await client.request("release-control", {})),
   );
@@ -145,16 +164,27 @@ async function main(): Promise<void> {
       description: "Navigate the shared browser using the agent's current observed state.",
       inputSchema: z.object({
         action: z.discriminatedUnion("kind", [
-          z.object({ kind: z.literal("goto"), url: z.string().trim().min(1).max(8_192) }),
+          z.object({
+            kind: z.literal("goto"),
+            url: z.string().trim().min(1).max(8_192),
+          }),
           z.object({ kind: z.literal("back") }),
           z.object({ kind: z.literal("forward") }),
           z.object({ kind: z.literal("reload") }),
         ]),
       }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
     },
     async ({ action }) =>
-      textResult(await client.request("navigate", { action: action as unknown as JsonValue })),
+      textResult(
+        await client.request("navigate", {
+          action: action as unknown as JsonValue,
+        }),
+      ),
   );
 
   server.registerTool(
@@ -163,7 +193,11 @@ async function main(): Promise<void> {
       description:
         "Send one input event using the exact frame returned by the latest capture. Stale frames are rejected.",
       inputSchema: z.object({ event: inputEventSchema }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
     },
     async ({ event }) =>
       textResult(await client.request("input", { event: event as unknown as JsonValue })),
@@ -177,10 +211,18 @@ async function main(): Promise<void> {
         width: z.number().int().min(MIN_VIEWPORT.width).max(MAX_VIEWPORT.width),
         height: z.number().int().min(MIN_VIEWPORT.height).max(MAX_VIEWPORT.height),
       }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
     },
     async (viewport) =>
-      textResult(await client.request("viewport", { viewport: viewport as unknown as JsonValue })),
+      textResult(
+        await client.request("viewport", {
+          viewport: viewport as unknown as JsonValue,
+        }),
+      ),
   );
 
   const transport = new StdioServerTransport();

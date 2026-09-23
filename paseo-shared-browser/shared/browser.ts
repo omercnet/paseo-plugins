@@ -206,7 +206,10 @@ export const navigateBrowserRpc = defineRpc({
     controlToken: opaqueTokenSchema,
     expected: expectedStateSchema,
     action: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("goto"), url: z.string().trim().min(1).max(8_192) }),
+      z.object({
+        kind: z.literal("goto"),
+        url: z.string().trim().min(1).max(8_192),
+      }),
       z.object({ kind: z.literal("back") }),
       z.object({ kind: z.literal("forward") }),
       z.object({ kind: z.literal("reload") }),
