@@ -1,12 +1,3 @@
-export type ExternalUrlOpener = (url: string) => Promise<void>;
-
-export function selectExternalUrlOpener(
-  paseoOpener: ExternalUrlOpener | undefined,
-  fallback: ExternalUrlOpener,
-): ExternalUrlOpener {
-  return paseoOpener ?? fallback;
-}
-
 export function validatedHttpUrl(value: string): string {
   let url: URL;
   try {

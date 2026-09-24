@@ -148,9 +148,9 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
   isolation boundary between local OS users.
 - `agent-browser` IPC metadata and workspace profile directories are owner-only on POSIX systems.
   The plugin rejects a non-loopback CDP endpoint.
-- Viewer and control tokens coordinate clients already paired to the same Paseo daemon. Paseo v0.8
-  plugin RPC callbacks expose no authenticated caller identity, so these human-viewer tokens are a
-  workflow safeguard, not an authorization boundary. The stdio MCP adapter separately uses an
+- Viewer and control tokens coordinate clients already paired to the same Paseo daemon. Plugin RPC
+  callbacks expose no authenticated caller identity, so these human-viewer tokens are a workflow
+  safeguard, not an authorization boundary. The stdio MCP adapter separately uses an
   opaque, workspace-bound credential.
 - Downloads, uploads, clipboard synchronization, media permissions, extensions, native passkeys,
   and platform authenticators are not exposed by this plugin.
@@ -176,6 +176,5 @@ persistence, and archive teardown.
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-Both the Paseo daemon and app must satisfy `>=0.8.0 <0.10.0`, which supports Paseo 0.8
-and Paseo 0.9. The client surface uses React Native primitives and works in desktop, web, iOS,
-and Android Paseo clients.
+Both the Paseo daemon and app must satisfy `^0.9.0`. The client surface uses React Native primitives
+and works in desktop, web, iOS, and Android Paseo clients.

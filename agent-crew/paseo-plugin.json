@@ -1,6 +1,5 @@
 {
   "id": "agent-crew",
-  "requirements": {
-    "paseo": ">=0.9.0 <0.10.0"
-  }
+  "description": "A Paseo Explorer panel for visualizing and controlling every managed agent crew in a workspace.",
+  "requirements": { "paseo": "^0.9.0" }
 }

@@ -45,10 +45,8 @@ Gas City settings are host-scoped and shared by every Paseo client connected to 
 - **Workspace mappings** override automatic longest-ancestor rig matching when a workspace is
   ambiguous or lives outside its rig path.
 
-Paseo 0.8 does not expose persisted settings to server handlers. On 0.8, server operations therefore
-use schema defaults only: the loopback endpoint, remote access and mutations disabled, the default
-event limit, and no workspace mappings. Customized Gas City settings require Paseo `0.9.0`
-or later.
+Gas City requires Paseo `^0.9.0`, whose server settings handle lets every daemon-side operation
+use the persisted configuration.
 
 Settings are a safety and routing configuration, not a credential vault. Put authentication and
 network access controls in front of Gas City itself.
@@ -66,7 +64,7 @@ host. Enabling a remote endpoint sends requests to that host from the Paseo daem
 
 ## Requirements and limitations
 
-- Paseo `^0.8.0` or `^0.9.0` with plugins enabled.
+- Paseo `^0.9.0` with plugins enabled.
 - A reachable Gas City v1.4.1 supervisor exposing its HTTP API.
 - HTTP or HTTPS endpoints only. Credentials, query strings, and fragments are rejected.
 - Automatic workspace mapping requires the workspace path to be inside exactly one discovered rig;
@@ -81,7 +79,7 @@ host. Enabling a remote endpoint sends requests to that host from the Paseo daem
 
 ## Install
 
-With Paseo `0.9.0`, install the npm package:
+With Paseo `^0.9.0`, install the npm package:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-gas-city

@@ -583,35 +583,21 @@ describe("agent actions", () => {
 describe("PR URL opening", () => {
   const url = "https://github.com/getpaseo/paseo/pull/42";
 
-  test("prefers Paseo's guarded external opener when available", async () => {
-    const guardedOpen = vi.fn(async () => {});
-    const fallbackOpen = vi.fn(async () => {});
+  test("uses Paseo's external opener for HTTPS pull requests", async () => {
+    const open = vi.fn(async () => {});
 
-    await openPullRequestUrl(url, guardedOpen, { openURL: fallbackOpen });
+    await openPullRequestUrl(url, open);
 
-    expect(guardedOpen).toHaveBeenCalledWith(url);
-    expect(fallbackOpen).not.toHaveBeenCalled();
+    expect(open).toHaveBeenCalledWith(url);
   });
 
-  test("falls back to the React Native opener on Paseo 0.8", async () => {
-    const fallbackOpen = vi.fn(async () => {});
-
-    await openPullRequestUrl(url, undefined, { openURL: fallbackOpen });
-
-    expect(fallbackOpen).toHaveBeenCalledWith(url);
-  });
-
-  test("rejects non-HTTPS URLs before either opener", async () => {
-    const guardedOpen = vi.fn(async () => {});
-    const fallbackOpen = vi.fn(async () => {});
+  test("rejects non-HTTPS URLs before opening", async () => {
+    const open = vi.fn(async () => {});
 
     await expect(
-      openPullRequestUrl("http://github.com/getpaseo/paseo/pull/42", guardedOpen, {
-        openURL: fallbackOpen,
-      }),
+      openPullRequestUrl("http://github.com/getpaseo/paseo/pull/42", open),
     ).rejects.toThrow("Only HTTPS pull request URLs are supported.");
-    expect(guardedOpen).not.toHaveBeenCalled();
-    expect(fallbackOpen).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
   });
 });
 

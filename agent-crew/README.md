@@ -129,7 +129,7 @@ bun run test:coverage
 bun run typecheck
 ```
 
-The manifest supports Paseo `>=0.8.0 <0.10.0`. The project pins `@getpaseo/cli`, `@getpaseo/client`,
+The manifest requires Paseo `^0.9.0`. The project pins `@getpaseo/cli`, `@getpaseo/client`,
 `@getpaseo/plugin`, and `@getpaseo/protocol` to `0.9.0` for development. React 19.1 and
 React Native 0.81 match the host.
 

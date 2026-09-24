@@ -20,7 +20,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `>=0.9.0 <0.10.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo 0.9 is required for the Help report's supported copy and external-link APIs, nested provider-subagent ancestry, spawning-tool links, npm-managed installation, and the complete client integration.
+Requirements: Paseo `^0.9.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo 0.9 is required for the Help report's supported copy and external-link APIs, nested provider-subagent ancestry, spawning-tool links, npm-managed installation, and the complete client integration.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
