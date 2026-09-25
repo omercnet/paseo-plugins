@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-context-mode",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Provider-aware Context Mode health, savings, and MCP activation for Paseo.",
   "license": "MIT",
