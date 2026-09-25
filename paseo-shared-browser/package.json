@@ -49,7 +49,7 @@
   "dependencies": {
     "@getpaseo/plugin": "catalog:",
     "@modelcontextprotocol/sdk": "catalog:",
-    "agent-browser": "0.37.1",
+    "agent-browser": "0.38.1",
     "esbuild": "catalog:",
     "zod": "catalog:"
   },
