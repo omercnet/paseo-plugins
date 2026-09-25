@@ -10,6 +10,23 @@
 - add an explicit pending-permission modal with Allow and Deny actions
 - pin Paseo plugin packages to `0.8.0-beta.1`
 
+## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v0.3.0...agent-crew-v1.0.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* require Paseo ^0.9.0 for all plugins ([#170](https://github.com/omercnet/paseo-plugins/issues/170))
+
+### Features
+
+* **agent-crew:** add opt-in Explorer auto-open ([#146](https://github.com/omercnet/paseo-plugins/issues/146)) ([@tensorcopy](https://github.com/tensorcopy)) ([b4e43a0](https://github.com/omercnet/paseo-plugins/commit/b4e43a00b86a29533d73b18f9bb100bcc46584b9))
+* require Paseo ^0.9.0 for all plugins ([#170](https://github.com/omercnet/paseo-plugins/issues/170)) ([04acfca](https://github.com/omercnet/paseo-plugins/commit/04acfcabcf8140edbd3a98681a72cabef7bb74ba))
+
+
+### Bug Fixes
+
+* **agent-crew:** observe owned directories ([#160](https://github.com/omercnet/paseo-plugins/issues/160)) ([a89e2e2](https://github.com/omercnet/paseo-plugins/commit/a89e2e2a0082dcd42d3d44585089206047c98918))
+
 ## [0.3.0](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v0.2.3...agent-crew-v0.3.0) (2026-09-18)
 
 
