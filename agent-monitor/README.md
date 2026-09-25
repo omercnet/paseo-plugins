@@ -5,6 +5,10 @@ Center item (`Open agent monitor`).
 
 Answers "which of my 38 agents needs me right now" without walking the workspace tree.
 
+## Demo
+
+https://github.com/user-attachments/assets/3c841799-ed98-4ec4-86a0-a7917e3894fc
+
 ## Screenshots
 
 Agent, project, and workspace names come from an isolated synthetic workspace. Both PNGs were

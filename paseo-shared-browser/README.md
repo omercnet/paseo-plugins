@@ -10,6 +10,10 @@ eligible workspace agent acts on the same running page, DOM, navigation state, a
 Many viewers can watch; human control remains server-authoritative and takes priority over agent
 input.
 
+## Demo
+
+https://github.com/user-attachments/assets/37d09fff-0750-440d-983d-426150b0724d
+
 ## Screenshots
 
 Both PNGs show the same isolated Chromium session from a dedicated Paseo test daemon. They were

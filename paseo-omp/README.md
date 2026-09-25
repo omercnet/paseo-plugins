@@ -4,6 +4,10 @@ Community OMP integration for Paseo. The plugin registers the distinct `omp-plug
 
 > **Alpha preview:** persistence and protocol contracts are tested, but upgrades may still require re-importing sessions created by an earlier preview.
 
+## Demo
+
+https://github.com/user-attachments/assets/6d7eff94-cd63-43e1-83ad-642b1b8f75b4
+
 ## Screenshots
 
 Both PNGs come from the plugin's isolated Paseo development daemon at 2× pixel density. Browser

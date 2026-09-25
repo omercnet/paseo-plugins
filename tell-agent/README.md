@@ -2,6 +2,10 @@
 
 Send a message from one Paseo agent to another agent or workspace on the same daemon host.
 
+## Demo
+
+https://github.com/user-attachments/assets/93e67f62-67c5-4367-87ce-39da0aba7ebb
+
 ## Screenshots
 
 Agent and workspace names are synthetic. Both PNGs were captured from an isolated Paseo test
