@@ -69,6 +69,42 @@ describe("OMP direct provider", () => {
     );
     await connection.close();
   });
+  test("settles Stop after the OMP runtime exits", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "runtime-exit-stop", "work"));
+    const session = sessionAt(runtime);
+
+    session.emit({ type: "process_exit", error: "OMP exited" });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+    await connection.send({
+      type: "session.interrupt",
+      requestId: "stop-after-runtime-exit",
+      sessionId: "session-1",
+    });
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "request.completed" && event.requestId === "stop-after-runtime-exit",
+      ),
+    ).resolves.toEqual(expect.objectContaining({ type: "request.completed" }));
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).toEqual([expect.objectContaining({ state: "failed" })]);
+    expect(
+      events.some(
+        (event) => event.type === "request.failed" && event.requestId === "stop-after-runtime-exit",
+      ),
+    ).toBe(false);
+    await connection.close();
+  });
   test("keeps a genuine native failure failed and allows a later turn", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
