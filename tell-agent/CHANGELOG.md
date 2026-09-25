@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v0.3.0...tell-agent-v1.0.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* require Paseo ^0.9.0 for all plugins ([#170](https://github.com/omercnet/paseo-plugins/issues/170))
+
+### Features
+
+* require Paseo ^0.9.0 for all plugins ([#170](https://github.com/omercnet/paseo-plugins/issues/170)) ([04acfca](https://github.com/omercnet/paseo-plugins/commit/04acfcabcf8140edbd3a98681a72cabef7bb74ba))
+
+
+### Bug Fixes
+
+* **tell-agent:** avoid unsupported client type import ([#153](https://github.com/omercnet/paseo-plugins/issues/153)) (@Nurshot) ([a8fc7b8](https://github.com/omercnet/paseo-plugins/commit/a8fc7b83321351170a086222c9ba5875ca381dee))
+* **tell-agent:** follow the agent directory so new sessions get a pill ([#158](https://github.com/omercnet/paseo-plugins/issues/158)) ([@qinkangdeid](https://github.com/qinkangdeid)) ([aadeaac](https://github.com/omercnet/paseo-plugins/commit/aadeaac194513009debc921265a7fb133897d51f))
+
 ## [0.3.0](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v0.2.0...tell-agent-v0.3.0) (2026-09-18)
 
 

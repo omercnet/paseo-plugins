@@ -8,7 +8,7 @@ const specializedPlugins = new Map([
   ["paseo-shared-browser", "shared-browser"],
 ]);
 const runAllPaths = ["package.json", "bun.lock", ".github/workflows/ci.yml", ".github/scripts/"];
-const workflowPaths = [".github/workflows/", ".github/actions/"];
+const workflowPaths = [".github/workflows/", ".github/actions/", ".github/scripts/"];
 export function discoverPlugins(root = process.cwd()) {
   return readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
