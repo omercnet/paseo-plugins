@@ -4,7 +4,7 @@ import type {
   PluginSettings,
 } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import contribute, { resolveRegisteredGasCitySettings } from "../index.server";
+import contribute from "../index.server";
 import { dispatchWork, GasCitySettingsSchema, type gasCitySettings } from "../shared";
 import { dispatchRequestFixture } from "./fixtures";
 
@@ -29,32 +29,17 @@ const handlerContext = { paseo: {} } as PluginHandlerContext;
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("server settings runtime compatibility", () => {
-  test("uses fail-closed schema defaults when Paseo 0.8 registerSettings returns void", async () => {
-    const settings = resolveRegisteredGasCitySettings(undefined);
-    await expect(settings.read()).resolves.toEqual({
-      status: "ready",
-      revision: "paseo-0.8-schema-defaults",
-      values: GasCitySettingsSchema.parse({}),
-    });
-
-    await expect(
-      registeredDispatch(undefined)({ request: dispatchRequestFixture }, handlerContext),
-    ).rejects.toThrow("interactive safety interlock");
-  });
-
-  test("preserves the Paseo 0.9 persisted settings handle", async () => {
+describe("server settings", () => {
+  test("uses the registered persisted settings handle", async () => {
     const values = GasCitySettingsSchema.parse({ mutationsEnabled: true });
     const unsubscribe = vi.fn();
     const registered = {
       read: vi.fn(async () => ({ status: "ready" as const, revision: "persisted", values })),
       subscribe: vi.fn(() => unsubscribe),
     } satisfies PluginSettings<typeof gasCitySettings.schema>;
-    const resolved = resolveRegisteredGasCitySettings(registered);
-    const listener = vi.fn();
 
-    expect(resolved).toBe(registered);
-    expect(resolved.subscribe(listener)).toBe(unsubscribe);
+    const listener = vi.fn();
+    expect(registered.subscribe(listener)).toBe(unsubscribe);
 
     const fetch = vi.fn(async () =>
       Response.json({ status: "slung", target: "alpha/reviewer", bead: "al-1", warnings: [] }),
@@ -88,7 +73,14 @@ test("does not register a native session provider for Gas City v1.4.1", () => {
 
   contribute({
     registerSettings() {
-      return resolveRegisteredGasCitySettings(undefined);
+      return {
+        read: async () => ({
+          status: "ready" as const,
+          revision: "test",
+          values: GasCitySettingsSchema.parse({}),
+        }),
+        subscribe: () => () => {},
+      };
     },
     handle() {},
     registerProvider() {

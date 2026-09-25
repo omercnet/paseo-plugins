@@ -4,7 +4,7 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its package 
 
 ## Requirements
 
-- Paseo daemon and apps: `>=0.9.0 <0.10.0`; the 0.9 floor provides the supported plugin copy and external-link APIs, nested provider-subagent ancestry, and spawning-tool links
+- Paseo daemon and apps: `^0.9.0`; the 0.9 floor provides the supported plugin copy and external-link APIs, nested provider-subagent ancestry, and spawning-tool links
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 

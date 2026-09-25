@@ -56,7 +56,7 @@ failures provide a retry action.
 
 ## Limits
 
-- Paseo 0.8.x or 0.9.x, starting with `0.9.0`, with plugins enabled is required.
+- Paseo `^0.9.0` with plugins enabled is required.
 - Beads `bd` 1.0 or newer must be available on the Paseo daemon's `PATH`.
 - A Beads project must be initialized in the workspace for issue data to appear.
 - CLI calls time out after 10 seconds and accept at most 8 MiB of output. Unexpected CLI details stay

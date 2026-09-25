@@ -1,16 +1,12 @@
-import * as PaseoClient from "@getpaseo/plugin/client";
-import { type PluginSurfaceProps, usePaseo, useRpc } from "@getpaseo/plugin/client";
+import {
+  openExternalUrl,
+  type PluginSurfaceProps,
+  usePaseo,
+  useRpc,
+} from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  FlatList,
-  Linking,
-  Pressable,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, FlatList, Pressable, Text, TextInput, View } from "react-native";
 import { acknowledgeViewerScope, viewerScope } from "../shared/viewer-scope";
 import { observeDirectoryInvalidation } from "./directory-observation";
 import {
@@ -41,11 +37,6 @@ const CLOCK_TICK_MS = 30_000;
 
 type SavedView = "security" | "updated" | "stale" | "automation";
 
-const openExternalUrlCandidate: unknown = Reflect.get(PaseoClient, "openExternalUrl");
-const guardedOpenExternalUrl =
-  typeof openExternalUrlCandidate === "function"
-    ? (openExternalUrlCandidate as (url: string) => Promise<void>)
-    : undefined;
 const SAVED_VIEW_TITLES: Record<SavedView, string> = {
   security: "Security",
   updated: "Updated",
@@ -516,7 +507,7 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
   const openPr = useCallback(async (row: RadarRow) => {
     setOpenError(null);
     try {
-      await openPullRequestUrl(row.url, guardedOpenExternalUrl, Linking);
+      await openPullRequestUrl(row.url, openExternalUrl);
     } catch {
       setOpenError(`Could not open ${row.repository}#${row.number ?? "PR"}.`);
     }

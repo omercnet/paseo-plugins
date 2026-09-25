@@ -314,19 +314,10 @@ export function buildAgentPrompt(row: RadarRow): string {
 
 type UrlOpener = (url: string) => Promise<unknown>;
 
-export async function openPullRequestUrl(
-  url: string,
-  guardedOpen: UrlOpener | undefined,
-  fallback: { openURL: UrlOpener },
-): Promise<void> {
+export async function openPullRequestUrl(url: string, open: UrlOpener): Promise<void> {
   const parsed = HttpsUrlSchema.safeParse(url);
   if (!parsed.success) throw new Error("Only HTTPS pull request URLs are supported.");
-
-  if (guardedOpen) {
-    await guardedOpen(parsed.data);
-    return;
-  }
-  await fallback.openURL(parsed.data);
+  await open(parsed.data);
 }
 
 export function buildRadarSnapshot(

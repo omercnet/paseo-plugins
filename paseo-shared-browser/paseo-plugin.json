@@ -1,7 +1,6 @@
 {
   "id": "shared-browser",
-  "requirements": {
-    "paseo": ">=0.9.0 <0.10.0"
-  },
+  "description": "One real Chromium session per Paseo workspace, shared live across every connected client.",
+  "requirements": { "paseo": "^0.9.0" },
   "build": [["node", "scripts/prepare-dependencies.mjs"], ["npm", "run", "prepare:runtime"]]
 }
