@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.0.0...paseo-omp-v1.0.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **paseo-omp:** require Paseo 0.9.2 provider fixes ([#177](https://github.com/omercnet/paseo-plugins/issues/177)) ([ddf9098](https://github.com/omercnet/paseo-plugins/commit/ddf9098f38397dec2105a666c295b0d919fe4092))
+
 ## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v0.4.0...paseo-omp-v1.0.0) (2026-09-25)
 
 
