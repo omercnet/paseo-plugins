@@ -77,12 +77,13 @@ test("ignores changes outside plugin and CI paths", () => {
   assert.equal(result.workflowAffected, false);
 });
 
-test("workflow changes enable security analysis", () => {
-  const result = detectAffected([".github/workflows/release-please.yml"]);
-
-  assert.equal(result.workflowAffected, true);
-  assert.deepEqual(result.affected, []);
-  assert.deepEqual(result.changed, []);
+test("workflow and script changes enable security analysis", () => {
+  for (const file of [
+    ".github/workflows/release-please.yml",
+    ".github/scripts/run-release-please.mjs",
+  ]) {
+    assert.equal(detectAffected([file]).workflowAffected, true);
+  }
 });
 
 test("root package manager changes select every discovered plugin", () => {
