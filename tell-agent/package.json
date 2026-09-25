@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-tell-agent",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Send messages to agents in other workspaces on the same Paseo host.",
   "license": "MIT",
