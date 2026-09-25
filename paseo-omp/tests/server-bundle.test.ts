@@ -81,13 +81,13 @@ async function supportReportFromBundle(entryPath: string): Promise<string> {
 }
 
 describe("plugin server bundle", () => {
-  test("declares the supported Paseo 0.9 manifest contract", async () => {
+  test("declares the supported Paseo 0.9.2 manifest contract", async () => {
     const manifest = JSON.parse(await readFile(join(pluginRoot, "paseo-plugin.json"), "utf8"));
     expect(manifest).toEqual({
       id: "paseo-omp",
       description:
         "Paseo integration for OMP, including its direct provider and workspace tooling.",
-      requirements: { paseo: "^0.9.0" },
+      requirements: { paseo: "^0.9.2" },
       build: [["node", "scripts/prepare-dependencies.mjs"]],
     });
     const packageManifest = JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8"));
@@ -98,7 +98,7 @@ describe("plugin server bundle", () => {
       await readFile(join(pluginRoot, "server", "provider", "omp-rpc.ts"), "utf8"),
     ).not.toContain("@oh-my-pi/");
     expect(packageManifest.files).not.toContain("tests");
-    expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain("Paseo `^0.9.0`");
+    expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain("Paseo `^0.9.2`");
     const releaseConfig = JSON.parse(
       await readFile(join(pluginRoot, "..", "release-please-config.json"), "utf8"),
     ) as { packages: Record<string, { "extra-files"?: unknown }> };
