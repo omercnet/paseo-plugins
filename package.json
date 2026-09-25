@@ -37,5 +37,8 @@
     "vitest": "^5.0.0",
     "pino": "10.3.1",
     "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "release-please": "17.6.0"
   }
 }

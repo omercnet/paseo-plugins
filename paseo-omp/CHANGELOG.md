@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v0.4.0...paseo-omp-v1.0.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* require Paseo ^0.9.0 for all plugins ([#170](https://github.com/omercnet/paseo-plugins/issues/170))
+
+### Features
+
+* **paseo-omp:** add host inherited environment settings ([#159](https://github.com/omercnet/paseo-plugins/issues/159)) ([b3c80d9](https://github.com/omercnet/paseo-plugins/commit/b3c80d991d1b72de872afdd32e2a531e01569b13))
+* require Paseo ^0.9.0 for all plugins ([#170](https://github.com/omercnet/paseo-plugins/issues/170)) ([04acfca](https://github.com/omercnet/paseo-plugins/commit/04acfcabcf8140edbd3a98681a72cabef7bb74ba))
+
+
+### Bug Fixes
+
+* **paseo-omp:** harden OMP session recovery ([#132](https://github.com/omercnet/paseo-plugins/issues/132)) ([d89a9fe](https://github.com/omercnet/paseo-plugins/commit/d89a9feab367deea2b4629593fac9c6b867884a4))
+* **paseo-omp:** observe owned agent directory ([#163](https://github.com/omercnet/paseo-plugins/issues/163)) ([e475dc7](https://github.com/omercnet/paseo-plugins/commit/e475dc7a4355d56b842eb751fc9e008725b4402f))
+* **paseo-omp:** preserve prompt and tool stream ordering ([#148](https://github.com/omercnet/paseo-plugins/issues/148)) ([b667e86](https://github.com/omercnet/paseo-plugins/commit/b667e86af45768ab7459aec4beb8e0b4ea52e312))
+* **paseo-omp:** preserve Windows process tree during cleanup ([#152](https://github.com/omercnet/paseo-plugins/issues/152)) ([e0a5483](https://github.com/omercnet/paseo-plugins/commit/e0a548323ab7e900eefddb4b33e7c3b3d6f1d582))
+
 ## [0.4.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v0.3.0...paseo-omp-v0.4.0) (2026-09-19)
 
 

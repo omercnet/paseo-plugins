@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-queens",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "A cross-platform Queens logic puzzle for Paseo.",
   "license": "MIT",
