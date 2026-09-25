@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.4.2...shared-browser-v1.0.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* require Paseo ^0.9.0 for all plugins ([#170](https://github.com/omercnet/paseo-plugins/issues/170))
+
+### Features
+
+* require Paseo ^0.9.0 for all plugins ([#170](https://github.com/omercnet/paseo-plugins/issues/170)) ([04acfca](https://github.com/omercnet/paseo-plugins/commit/04acfcabcf8140edbd3a98681a72cabef7bb74ba))
+
+
+### Bug Fixes
+
+* **shared-browser:** follow owned agent directory ([#164](https://github.com/omercnet/paseo-plugins/issues/164)) ([9892e6e](https://github.com/omercnet/paseo-plugins/commit/9892e6e28b71cf0b1db6d0f6048bba122eb0587d))
+
 ## [0.4.2](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v0.4.1...shared-browser-v0.4.2) (2026-09-19)
 
 
