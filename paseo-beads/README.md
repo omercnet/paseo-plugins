@@ -6,6 +6,10 @@ visible.
 
 It adds a workspace-scoped **Beads** Explorer panel and an **Open Beads** Command Center item.
 
+## Demo
+
+https://github.com/user-attachments/assets/f85e3c94-fbc1-49b6-9439-25bb7f66e9d7
+
 ## Screenshots
 
 Issue IDs, titles, assignees, labels, and details come from a temporary synthetic Beads project.

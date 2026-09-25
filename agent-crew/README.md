@@ -6,6 +6,10 @@ workspace-context Explorer panel plus an `Open Agent Crew` Command Center item.
 It answers "which crews are active here, and which agent needs me now?" while preserving managed
 parent-child relationships across workspace boundaries.
 
+## Demo
+
+https://github.com/user-attachments/assets/abed14b4-f30c-4db7-a48e-d5a380d330fe
+
 ## Screenshots
 
 Agent, workspace, and task details come from an isolated synthetic workspace. Both PNGs were

@@ -3,6 +3,10 @@
 A Paseo control plane for observing and operating Gas City supervisors. It adds a global Gas City
 surface and a workspace-scoped Factory panel.
 
+## Demo
+
+https://github.com/user-attachments/assets/f1e82351-f11e-440e-9875-7e266d0bbdb4
+
 ## Screenshots
 
 These PNGs use a temporary local Gas City v1.4.1 fixture and an isolated Paseo test daemon. Browser

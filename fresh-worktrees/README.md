@@ -6,6 +6,10 @@ branch-off workspace.
 The plugin runs the refresh inside the Paseo daemon and adds a workspace-header indicator when an
 active worktree falls behind the source checkout's remote base.
 
+## Demo
+
+https://github.com/user-attachments/assets/d0687b37-8292-459d-ad28-7960c193195a
+
 ## Screenshots
 
 The repository, remote, branch, and workspace are disposable local fixtures. Both PNGs come from

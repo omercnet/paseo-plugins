@@ -2,6 +2,10 @@
 
 A cross-platform Queens logic game for Paseo. Play from the global sidebar or open the compact composer mini-game while agents work in the background.
 
+## Demo
+
+https://github.com/user-attachments/assets/f6b55c27-9608-4d08-b91f-f7e3562f217f
+
 ## Screenshots
 
 These screenshots use synthetic workspace and agent names on an isolated Paseo daemon.

@@ -2,6 +2,10 @@
 
 > Dracula Classic and Alucard Classic app themes for Paseo.
 
+## Demo
+
+https://github.com/user-attachments/assets/1550750c-b921-44a4-8ba8-668f3fb27510
+
 ## Screenshots
 
 Both theme previews come from an isolated Paseo test daemon at 2× pixel density. Browser DevTools
