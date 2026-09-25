@@ -1,0 +1,100 @@
+name: OMP latest compatibility
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: omp-latest-compatibility
+  cancel-in-progress: false
+jobs:
+  omp-latest-canary:
+    name: paseo-omp latest OMP canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: paseo-omp
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies
+        working-directory: .
+        run: bun install --frozen-lockfile
+      - name: Install latest OMP typing packages without saving
+        run: bun add --no-save --dev @oh-my-pi/pi-agent-core@latest @oh-my-pi/pi-coding-agent@latest
+      - name: Check latest OMP SDK contract
+        id: sdk-contract
+        continue-on-error: true
+        run: npx --no-install tsc --noEmit -p tsconfig.tests.json
+      - name: Resolve latest OMP release
+        id: omp
+        run: |
+          release="$RUNNER_TEMP/omp-release.json"
+          curl --fail --location --retry 3 --max-time 300 \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/can1357/oh-my-pi/releases/latest \
+            --output "$release"
+          tag="$(node -e 'const release = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (typeof release.tag_name !== "string" || !/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(release.tag_name)) process.exit(1); process.stdout.write(release.tag_name);' "$release")"
+          version="${tag#v}"
+          install -d "$RUNNER_TEMP/omp-assets"
+          for arch in amd64 arm64; do
+            asset="omp-linux-$([ "$arch" = amd64 ] && printf x64 || printf arm64)"
+            curl --fail --location --retry 3 --max-time 300 \
+              "https://github.com/can1357/oh-my-pi/releases/download/${tag}/${asset}" \
+              --output "$RUNNER_TEMP/omp-assets/$asset"
+            sha256sum "$RUNNER_TEMP/omp-assets/$asset" >> "$RUNNER_TEMP/omp-assets/SHA256SUMS"
+          done
+          amd64="$(awk '/omp-linux-x64$/ { print $1 }' "$RUNNER_TEMP/omp-assets/SHA256SUMS")"
+          arm64="$(awk '/omp-linux-arm64$/ { print $1 }' "$RUNNER_TEMP/omp-assets/SHA256SUMS")"
+          test -n "$amd64" && test -n "$arm64"
+          {
+            echo "version=$version"
+            echo "amd64=$amd64"
+            echo "arm64=$arm64"
+          } >> "$GITHUB_OUTPUT"
+      - name: Run latest OMP provider canary
+        id: canary
+        continue-on-error: true
+        env:
+          PASEO_CANARY_OMP_VERSION: ${{ steps.omp.outputs.version }}
+          PASEO_CANARY_OMP_SHA256_AMD64: ${{ steps.omp.outputs.amd64 }}
+          PASEO_CANARY_OMP_SHA256_ARM64: ${{ steps.omp.outputs.arm64 }}
+        run: npm run test:integration:canary
+      - name: Record latest OMP compatibility result
+        if: ${{ always() }}
+        working-directory: .
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OMP_VERSION: ${{ steps.omp.outputs.version || 'unresolved' }}
+          SDK_OUTCOME: ${{ steps.sdk-contract.outcome }}
+          CANARY_OUTCOME: ${{ steps.canary.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="OMP latest compatibility ${OMP_VERSION}: sdk=${SDK_OUTCOME}, canary=${CANARY_OUTCOME}"
+          existing="$(gh api -X GET search/issues -f "q=repo:${GITHUB_REPOSITORY} is:issue in:title \"${title}\"" --jq '.items[] | .title + "\t" + (.number | tostring)' | node -e 'const title = process.argv[1]; const rows = require("node:fs").readFileSync(0, "utf8").trim().split("\n").filter(Boolean); for (const row of rows) { const [candidate, number] = row.split("\t"); if (candidate === title) { process.stdout.write(number); break; } }' "$title")"
+          if [ -n "$existing" ]; then
+            echo "Compatibility result already recorded in #$existing"
+            exit 0
+          fi
+          body="$(printf '%s\n' "## OMP latest compatibility result" "" "- OMP version: \`${OMP_VERSION}\`" "- Latest SDK contract: \`${SDK_OUTCOME}\`" "- Full Docker canary: \`${CANARY_OUTCOME}\`" "- Workflow run: ${RUN_URL}" "" "Automated nightly result. The issue title is an idempotency key for this exact version and outcome pair.")"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+      - name: Fail on latest OMP compatibility drift
+        if: ${{ steps.sdk-contract.outcome == 'failure' || steps.canary.outcome == 'failure' }}
+        run: exit 1
