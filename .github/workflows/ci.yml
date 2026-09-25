@@ -25,8 +25,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Test workflow scripts
-        run: node --test .github/scripts/*.test.mjs
+      - name: Test affected-plugin detection
+        run: node --test .github/scripts/detect-affected.test.mjs
       - name: Detect affected plugins
         id: affected
         env:
@@ -46,6 +46,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - name: Install workflow dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Test workflow scripts
+        run: node --test .github/scripts/*.test.mjs
       - name: Run Zizmor
         uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
