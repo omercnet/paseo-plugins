@@ -1,23 +1,13 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import {
-  access,
-  chmod,
-  cp,
-  lstat,
-  mkdir,
-  readdir,
-  rename,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { access, chmod, cp, lstat, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { arch, homedir, platform, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
+import { replaceRuntime } from "./replace-runtime.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -257,6 +247,6 @@ await applyPrivatePermissions(stagingRoot);
 if (hostPlatform !== "win32") {
   await validateChromium(await requireExecutable(chromiumEntry, "Staged Chromium executable"));
 }
-await rename(stagingRoot, runtimeRoot);
+await replaceRuntime(stagingRoot, runtimeRoot);
 
 console.log(`Prepared immutable Shared Browser runtime assets in ${runtimeRoot}`);

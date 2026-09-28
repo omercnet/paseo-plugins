@@ -1,4 +1,5 @@
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +69,24 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
+async function replaceRuntime(stagingRoot: string, runtimeRoot: string): Promise<void> {
+  const script = new URL("../scripts/replace-runtime.mjs", import.meta.url).href;
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `import { replaceRuntime } from ${JSON.stringify(script)}; await replaceRuntime(process.argv[1], process.argv[2]);`,
+        stagingRoot,
+        runtimeRoot,
+      ],
+      (error) => (error ? reject(error) : resolve()),
+    );
+    child.unref();
+  });
+}
+
 function createHarness(maxWorkspaces?: number) {
   const owner = new FakeOwner();
   const supervisor = new RuntimeSupervisor({
@@ -103,6 +122,42 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("runtime replacement", () => {
+  it("replaces a populated runtime directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "shared-browser-runtime-"));
+    const runtimeRoot = join(root, "runtime");
+    const stagingRoot = join(root, "staging");
+    try {
+      await mkdir(runtimeRoot);
+      await writeFile(join(runtimeRoot, "version"), "old");
+      await mkdir(stagingRoot);
+      await writeFile(join(stagingRoot, "version"), "new");
+
+      await replaceRuntime(stagingRoot, runtimeRoot);
+
+      await expect(readFile(join(runtimeRoot, "version"), "utf8")).resolves.toBe("new");
+      await expect(access(stagingRoot)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("restores the previous runtime when promotion fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "shared-browser-runtime-"));
+    const runtimeRoot = join(root, "runtime");
+    const stagingRoot = join(root, "missing-staging");
+    try {
+      await mkdir(runtimeRoot);
+      await writeFile(join(runtimeRoot, "version"), "old");
+
+      await expect(replaceRuntime(stagingRoot, runtimeRoot)).rejects.toThrow();
+
+      await expect(readFile(join(runtimeRoot, "version"), "utf8")).resolves.toBe("old");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 describe("detached runtime supervisor lifecycle", () => {
   it("keeps a workspace runtime alive when its plugin bridge disconnects", async () => {
     vi.useFakeTimers();
