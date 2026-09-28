@@ -2830,6 +2830,22 @@ export class OmpProviderSession {
     turn.ambiguousTerminalTimer = undefined;
   }
 
+  private async cancelIndeterminateTerminal(
+    turn: ActiveTurn,
+    message: string,
+    invalidateRuntime = false,
+  ): Promise<void> {
+    this.recordOperationalFailure({ category: "terminal-outcome", stage: "unresolved" });
+    this.projector.projectPassive({
+      type: "notice",
+      level: "warning",
+      message: "OMP ended before its final response could be confirmed. Partial output was kept.",
+    });
+    if (invalidateRuntime) this.invalidateRuntime(message);
+    this.subsessions?.terminalize("canceled");
+    await this.finishTurn(turn, "canceled", undefined, true, true);
+  }
+
   private async settleAmbiguousTerminal(
     turn: ActiveTurn,
     candidate: TerminalCandidate,
@@ -2848,16 +2864,19 @@ export class OmpProviderSession {
     const state = await this.usage.boundedTerminalState(turn, FINAL_USAGE_WAIT_MS);
     if (turn.terminal || this.activeTurn !== turn || turn.deferredAgentEnd !== candidate) return;
     if (!state) {
-      turn.operationalTerminalStage = "unresolved";
-      this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
+      await this.cancelIndeterminateTerminal(
+        turn,
+        "OMP agent_end state could not be confirmed",
+        true,
+      );
       return;
     }
     turn.deferredAgentEnd = undefined;
     if (state.isStreaming || state.isCompacting) return;
-    turn.operationalTerminalStage = "unresolved";
-    await this.finishTurn(turn, "failed", {
-      message: "OMP unkeyed agent_end could not be correlated to the current prompt",
-    });
+    await this.cancelIndeterminateTerminal(
+      turn,
+      "OMP unkeyed agent_end could not be correlated to the current prompt",
+    );
   }
 
   private async completeLocalOnlyTurn(turn: ActiveTurn): Promise<void> {
@@ -2929,8 +2948,11 @@ export class OmpProviderSession {
       ) {
         void this.completeAgentEnd(turn, candidate.event);
       } else {
-        turn.operationalTerminalStage = "unresolved";
-        this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
+        void this.cancelIndeterminateTerminal(
+          turn,
+          "OMP agent_end state could not be confirmed",
+          true,
+        );
       }
     }, AGENT_END_SETTLE_MS);
     this.finishFromAgentEnd(turn, candidate);
@@ -3043,8 +3065,11 @@ export class OmpProviderSession {
       return;
     }
     if (turn.userEchoObserved) {
-      turn.operationalTerminalStage = "unresolved";
-      this.handleRuntimeFailure("OMP agent_end state could not be confirmed");
+      await this.cancelIndeterminateTerminal(
+        turn,
+        "OMP agent_end state could not be confirmed",
+        true,
+      );
       return;
     }
     if (turn.agentEndRetryTimer === undefined) {

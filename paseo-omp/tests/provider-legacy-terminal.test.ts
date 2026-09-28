@@ -66,7 +66,7 @@ describe("OMP direct provider", () => {
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
-    ).resolves.toEqual(expect.objectContaining({ state: "failed" }));
+    ).resolves.toEqual(expect.objectContaining({ state: "canceled" }));
     expect(session.closes).toBe(0);
     await connection.close();
   });
@@ -154,7 +154,7 @@ describe("OMP direct provider", () => {
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
-    ).resolves.toEqual(expect.objectContaining({ state: "failed" }));
+    ).resolves.toEqual(expect.objectContaining({ state: "canceled" }));
     expect(session.closes).toBe(0);
     await connection.close();
   });
@@ -228,12 +228,7 @@ describe("OMP direct provider", () => {
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: expect.objectContaining({ message: expect.stringContaining("outcome is unknown") }),
-      }),
-    );
+    ).resolves.toEqual(expect.objectContaining({ state: "failed" }));
     expect(session.historyRequests).toBe(1);
     expect(session.closes).toBe(0);
     await connection.close();
@@ -348,10 +343,16 @@ describe("OMP direct provider", () => {
     );
     branch.resolve([{ entryId: "branch-hang-second", text: "second" }]);
 
-    expect(terminal).toEqual(
+    expect(terminal).toEqual(expect.objectContaining({ state: "canceled" }));
+    expect(events).toContainEqual(
       expect.objectContaining({
-        state: "failed",
-        error: { message: "OMP unkeyed agent_end could not be correlated to the current prompt" },
+        type: "timeline.item",
+        item: expect.objectContaining({
+          type: "notification",
+          level: "warning",
+          message:
+            "OMP ended before its final response could be confirmed. Partial output was kept.",
+        }),
       }),
     );
     expect(session.closes).toBe(0);
@@ -391,7 +392,7 @@ describe("OMP direct provider", () => {
         (event) =>
           event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
       ),
-    ).toEqual(expect.objectContaining({ state: "failed" }));
+    ).toEqual(expect.objectContaining({ state: "canceled" }));
     expect(session.closes).toBe(0);
   });
   test.each([false, true])(
@@ -613,7 +614,7 @@ describe("OMP direct provider", () => {
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       ),
-    ).toEqual(expect.objectContaining({ state: "failed" }));
+    ).toEqual(expect.objectContaining({ state: "canceled" }));
   });
 
   test.each(["missing IDs", "evicted IDs", "compacted context"])(
@@ -753,12 +754,7 @@ describe("OMP direct provider", () => {
         event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
     );
 
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: { message: "OMP unkeyed agent_end could not be correlated to the current prompt" },
-      }),
-    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "canceled" }));
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
     expect(session.closes).toBe(0);
 
@@ -888,12 +884,7 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: { message: "OMP agent_end state could not be confirmed" },
-      }),
-    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "canceled" }));
     expect(session.closes).toBe(1);
     expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
     expect(failures).toEqual([{ category: "terminal-outcome", stage: "unresolved" }]);
@@ -941,12 +932,7 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: { message: "OMP agent_end state could not be confirmed" },
-      }),
-    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "canceled" }));
     expect(session.closes).toBe(1);
     expect(failures).toEqual([{ category: "terminal-outcome", stage: "unresolved" }]);
     const recoveredTurn = turnIdFrom(

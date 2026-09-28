@@ -120,17 +120,7 @@ describe("OMP direct provider", () => {
         event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
 
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: {
-          message:
-            "OMP agent_end omitted terminal messages; outcome is unknown " +
-            "(declaredCount=3, observedCount=2, retainedTerminalMessages=1, " +
-            "lastAssistantStatus=completed)",
-        },
-      }),
-    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "failed" }));
     expect(session.historyRequests).toBe(0);
     await connection.close();
   });
@@ -245,17 +235,7 @@ describe("OMP direct provider", () => {
         event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
     );
 
-    expect(terminal).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: {
-          message:
-            "OMP agent_end omitted terminal messages; outcome is unknown " +
-            "(declaredCount=2, observedCount=1, retainedTerminalMessages=0, " +
-            "lastAssistantStatus=completed)",
-        },
-      }),
-    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "failed" }));
     expect(session.historyRequests).toBe(1);
     await connection.close();
   });

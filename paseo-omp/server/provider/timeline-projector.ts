@@ -1099,13 +1099,16 @@ export class OmpTimelineProjector {
     for (const contentIndex of indexes) {
       const block = stream.blocks.get(contentIndex);
       if (!block) continue;
-      const publicText =
+      let publicText =
         block.kind === "image"
           ? block.text
           : truncateUtf8(
               this.dataFilter.text(block.text, MAX_REDACTED_STREAM_TEXT_LENGTH),
               remainingTextBytes,
             );
+      if (block.kind === "assistant_message") {
+        publicText = publicText.replace(/\n*\[System Error\] Provider connection closed\s*$/, "");
+      }
       if (block.kind !== "image") {
         remainingTextBytes = Math.max(0, remainingTextBytes - utf8Bytes(publicText));
       }

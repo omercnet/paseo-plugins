@@ -1058,6 +1058,48 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("removes OMP's terminal system-error marker from assistant output", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "provider-close", "work"));
+    const session = sessionAt(runtime);
+    const partial = "Partial answer";
+    const failed = {
+      role: "assistant" as const,
+      responseId: "provider-close-response",
+      content: `${partial}\n\n[System Error] Provider connection closed`,
+      stopReason: "error",
+      errorMessage: "Provider connection closed",
+    };
+
+    session.emit({
+      type: "message_start",
+      message: { ...failed, content: partial },
+    });
+    await scheduler.flush();
+    session.emit({ type: "message_end", message: failed });
+    establishTerminalOwnership(session);
+    session.emit({
+      type: "agent_end",
+      requestId: `rpc-prompt-${session.promptCount}`,
+      messages: [failed],
+      isTerminal: true,
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "failed",
+    );
+
+    expect(
+      events
+        .filter(
+          (event) => event.type === "timeline.item" && event.item.type === "assistant_message",
+        )
+        .at(-1),
+    ).toEqual(expect.objectContaining({ item: expect.objectContaining({ text: partial }) }));
+    await connection.close();
+  });
+
   test("bounds aggregate text reasoning and image stream output", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);

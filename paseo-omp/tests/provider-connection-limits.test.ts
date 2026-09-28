@@ -513,7 +513,7 @@ describe("OMP direct provider", () => {
       (event) =>
         event.type === "session.turn" &&
         event.turnId === oversizedEnvelopeTurn &&
-        event.state === "failed",
+        event.state === "canceled",
     );
     expect(
       events.filter(
@@ -522,7 +522,7 @@ describe("OMP direct provider", () => {
           event.turnId === oversizedEnvelopeTurn &&
           event.state !== "started",
       ),
-    ).toEqual([expect.objectContaining({ state: "failed" })]);
+    ).toEqual([expect.objectContaining({ state: "canceled" })]);
     for (const [index, messages] of ["bad", null].entries()) {
       const malformedTurn = turnIdFrom(
         await startPrompt(connection, events, `malformed-terminal-${index}`, "continue"),
