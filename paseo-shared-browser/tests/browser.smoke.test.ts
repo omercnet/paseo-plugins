@@ -1,10 +1,11 @@
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { SessionManager } from "../server/browser";
 import { createRuntimeOwner } from "../server/runtime-owner";
+import { resolveBrowserRuntimeRoot } from "../server/runtime-path";
 import { resolveSupervisorPaths, startSupervisorServer } from "../server/supervisor";
 import { SupervisorClient } from "../server/supervisor-client";
 import type { BrowserFrame, BrowserState } from "../shared/browser";
@@ -31,13 +32,19 @@ function target(frame: BrowserFrame) {
 }
 
 it("shares and persists a production agent-browser runtime across supervisor clients", async () => {
-  const binaryPath = process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
-  const executablePath = process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE;
-  if (!binaryPath || !executablePath) {
-    throw new Error(
-      "Browser smoke prerequisites missing: set PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY and PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE",
+  const preparedHome = process.env.PASEO_HOME ?? join(homedir(), ".paseo");
+  const runtimeRoot = resolveBrowserRuntimeRoot(preparedHome);
+  const binaryPath =
+    process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY ??
+    join(
+      runtimeRoot,
+      "node_modules",
+      ".bin",
+      process.platform === "win32" ? "agent-browser.exe" : "agent-browser",
     );
-  }
+  const executablePath =
+    process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE ??
+    join(runtimeRoot, "chromium", process.platform === "win32" ? "chrome.exe" : "chrome");
   await Promise.all([
     access(binaryPath).catch(() => {
       throw new Error(`Browser smoke agent-browser binary is not accessible: ${binaryPath}`);
@@ -105,6 +112,10 @@ it("shares and persists a production agent-browser runtime across supervisor cli
   const paseoHome = await mkdtemp(join(tmpdir(), "shared-browser-smoke-"));
   roots.push(paseoHome);
   const previousPaseoHome = process.env.PASEO_HOME;
+  const previousAgentBrowserBinary = process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
+  const previousChromiumExecutable = process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE;
+  process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY = binaryPath;
+  process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE = executablePath;
   process.env.PASEO_HOME = paseoHome;
 
   const paths = resolveSupervisorPaths(paseoHome);
@@ -264,6 +275,12 @@ it("shares and persists a production agent-browser runtime across supervisor cli
     await running.close();
     if (previousPaseoHome === undefined) delete process.env.PASEO_HOME;
     else process.env.PASEO_HOME = previousPaseoHome;
+    if (previousAgentBrowserBinary === undefined)
+      delete process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
+    else process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY = previousAgentBrowserBinary;
+    if (previousChromiumExecutable === undefined)
+      delete process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE;
+    else process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE = previousChromiumExecutable;
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );

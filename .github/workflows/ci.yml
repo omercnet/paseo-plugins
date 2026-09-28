@@ -320,8 +320,6 @@ jobs:
       - name: Browser smoke test
         env:
           PASEO_HOME: ${{ runner.temp }}/paseo-home
-          PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY: ${{ runner.temp }}/paseo-home/plugin-data/shared-browser/runtime/node_modules/.bin/${{ matrix.agent_browser }}
-          PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE: ${{ runner.temp }}/paseo-home/plugin-data/shared-browser/runtime/chromium/${{ matrix.chromium }}
           PASEO_SHARED_BROWSER_CHROMIUM_ARGS: ${{ matrix.chromium_args }}
         run: npm run test:smoke
 
