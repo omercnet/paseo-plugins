@@ -168,14 +168,18 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
   }
 
   if (
-    hasTool(tools, "hub") &&
+    hasTool(tools, "yield") &&
     prompt.includes("CANARY_NESTED_CHILD") &&
-    toolResultIds.has("call_canary_nested_child") &&
-    !toolResultIds.has("call_canary_nested_wait")
+    toolResultIds.has("call_canary_nested_child")
   ) {
-    return toolCallResponse(base, "call_canary_nested_wait", "hub", {
-      i: "Waiting for nested canary leaf",
-      op: "wait",
+    return toolCallResponse(base, "call_canary_nested_child_yield", "yield", {
+      data: { result: "CANARY_NESTED_CHILD_OK" },
+    });
+  }
+
+  if (!hasToolResult && hasTool(tools, "yield") && prompt.includes("CANARY_NESTED_LEAF")) {
+    return toolCallResponse(base, "call_canary_nested_leaf_yield", "yield", {
+      data: { result: "CANARY_NESTED_LEAF_OK" },
     });
   }
 
@@ -189,6 +193,12 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
           task: "# Target\nNo files.\n# Change\nReturn CANARY_CHILD_OK.\n# Acceptance\nThe response contains CANARY_CHILD_OK.",
         },
       ],
+    });
+  }
+
+  if (!hasToolResult && hasTool(tools, "yield") && prompt.includes("CANARY_SUBAGENT")) {
+    return toolCallResponse(base, "call_canary_child_yield", "yield", {
+      data: { result: "CANARY_CHILD_OK" },
     });
   }
 
