@@ -39,6 +39,6 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "release-please": "17.6.0"
+    "release-please": "17.11.2"
   }
 }
