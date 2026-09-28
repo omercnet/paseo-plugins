@@ -395,6 +395,7 @@ export class OmpTimelineProjector {
   private commandText = "";
   private commandPublishedText = "";
   private closed = false;
+  private lastTodoSignature: string | null = null;
 
   private readonly dataFilter: OmpPublicDataSerializer;
   private browserAuthorizationIssuer: ((url: string) => string | undefined) | null = null;
@@ -639,21 +640,17 @@ export class OmpTimelineProjector {
     if (this.closed) return;
     if (event.type === "todo_reminder" || event.type === "todo_auto_clear") {
       const todos = event.type === "todo_reminder" ? event.todos : [];
-      this.publish({
-        type: "todo",
-        id: "omp:todos",
-        items: todos.slice(0, MAX_TODOS).map((todo, index) => ({
-          id: todoPublicId(todo.id, index),
-          text: this.dataFilter.text(todo.content, 16_384),
-          completed: todo.status === "completed" || todo.status === "abandoned",
-          status:
-            todo.status === "completed" || todo.status === "abandoned"
-              ? "completed"
-              : todo.status === "blocked"
-                ? "pending"
-                : todo.status,
-        })),
-      });
+      const items = todos.slice(0, MAX_TODOS).map((todo, index) => ({
+        id: todoPublicId(todo.id, index),
+        text: this.dataFilter.text(todo.content, 16_384),
+        completed: todo.status === "completed" || todo.status === "abandoned",
+        status: (todo.status === "completed" || todo.status === "abandoned"
+          ? "completed"
+          : todo.status === "blocked"
+            ? "pending"
+            : todo.status) as "pending" | "in_progress" | "completed",
+      }));
+      this.publishTodos(items);
       return;
     }
     if (event.type === "goal_updated") {
@@ -1616,8 +1613,15 @@ export class OmpTimelineProjector {
         });
       }
     }
-    this.publish({ type: "todo", id: "omp:todos", items });
+    this.publishTodos(items);
     return true;
+  }
+
+  private publishTodos(items: Array<{ id: string; text: string; completed: boolean; status: "pending" | "in_progress" | "completed"; activeForm?: string }>): void {
+    const signature = JSON.stringify(items);
+    if (signature === this.lastTodoSignature) return;
+    this.lastTodoSignature = signature;
+    this.publish({ type: "todo", id: "omp:todos", items });
   }
 
   private toolDetail(snapshot: ToolSnapshot): ProviderToolCallDetail {

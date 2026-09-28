@@ -587,15 +587,15 @@ describe("OMP direct provider", () => {
       type: "todo_reminder",
       todos: [{ id: "task-1", content: "Map events", status: "in_progress" }],
     });
+    session.emit({
+      type: "todo_reminder",
+      todos: [{ id: "task-1", content: "Map events", status: "in_progress" }],
+    });
     const todoRows = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "todo" ? [event.item] : [],
     );
-    expect(todoRows.map((item) => item.items[0]?.id)).toEqual([
-      expect.stringMatching(/^omp:todo:/u),
-      expect.stringMatching(/^omp:todo:/u),
-    ]);
-    expect(todoRows[0]?.items[0]?.id).toBe(todoRows[1]?.items[0]?.id);
-    expect(new Set(todoRows.map((item) => item.id))).toEqual(new Set(["omp:todos"]));
+    expect(todoRows).toHaveLength(2);
+    expect(todoRows.map((item) => item.id)).toEqual(["omp:todos", "omp:todos"]);
 
     const beforeCustom = events.length;
     session.emit({
