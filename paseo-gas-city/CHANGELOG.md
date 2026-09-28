@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-gas-city-v1.0.0...paseo-gas-city-v1.0.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **plugins:** prepare for Paseo 0.10 beta ([#186](https://github.com/omercnet/paseo-plugins/issues/186)) ([0294fd0](https://github.com/omercnet/paseo-plugins/commit/0294fd0fd7ad5101e724d4196a49ac27783b5483))
+
 ## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-gas-city-v0.2.0...paseo-gas-city-v1.0.0) (2026-09-25)
 
 
