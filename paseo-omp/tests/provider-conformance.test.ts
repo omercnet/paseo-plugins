@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
+import type { ProviderEvent, ProviderRegistration } from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, test } from "vitest";
 import type {
   AgentClient,
@@ -321,6 +321,76 @@ const RECOVERY_TEST =
   "recovers after subprocess death and lets registry replacement retire active sessions";
 
 describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegistry", () => {
+  test("Paseo 0.9.2 contains an early provider failure and serves a follow-up request", async () => {
+    let publish: ((event: ProviderEvent) => void) | undefined;
+    const registration: ProviderRegistration = {
+      id: "containment-fixture",
+      label: "Containment fixture",
+      async connect() {
+        return {
+          version: 1,
+          capabilities: [],
+          async send(input) {
+            if (input.type === "session.open") {
+              publish?.({
+                type: "request.failed",
+                requestId: input.requestId,
+                error: { message: "early provider failure" },
+              });
+            } else if (input.type === "catalog") {
+              publish?.({
+                type: "catalog",
+                requestId: input.requestId,
+                catalog: { models: [], modes: [] },
+              });
+            }
+            await sleep(0);
+          },
+          onEvent(listener) {
+            publish = listener;
+            return () => {
+              publish = undefined;
+            };
+          },
+          async close() {},
+        };
+      },
+    };
+    const adapter = (await import(pluginProviderModulePath)) as unknown as {
+      PluginAgentClientRegistry: HostRegistryConstructor;
+    };
+    const registry = new adapter.PluginAgentClientRegistry(pino({ enabled: false }));
+    registry.replace([registration]);
+    const client = registry.clients()[registration.id];
+    if (!client) throw new Error("containment fixture client is missing");
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await expect(
+        client.createSession({
+          provider: registration.id,
+          cwd: "/repo",
+          model: "fixture-model",
+          modeId: "full",
+          featureValues: {},
+          providerOptions: {},
+        }),
+      ).rejects.toThrow("early provider failure");
+      await sleep(0);
+      await expect(
+        client.fetchCatalog({ scope: "workspace", cwd: "/repo", force: false }),
+      ).resolves.toEqual({
+        models: [],
+        modes: [],
+      });
+      await sleep(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      await registry.shutdown();
+    }
+  });
   test("exposes catalog, profile identity, strict options, and availability", async () => {
     const harness = await createHarness();
     try {
