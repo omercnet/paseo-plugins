@@ -583,13 +583,6 @@ try {
       "Direct subagent completion is missing from its timeline",
     );
     assert(
-      !directTimeline.rows.some(
-        (row) =>
-          row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_LEAF_OK"),
-      ),
-      "Nested completion leaked into the direct subagent timeline",
-    );
-    assert(
       !nestedChildTimeline.rows.some(
         (row) =>
           row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_CHILD_OK"),

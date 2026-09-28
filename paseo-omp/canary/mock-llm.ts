@@ -117,16 +117,28 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
     });
   }
 
-  if (!hasToolResult && hasTool(tools, "hub") && prompt.includes("CANARY_HUB_START")) {
-    return toolCallResponse(base, "call_canary_hub", "hub", {
-      i: "Starting canary sleeper",
-      op: "start",
-      name: `canary-sleeper-${Date.now()}`,
-      application: "sleep",
-      args: ["3600"],
-      cwd: "/workspace/paseo-plugins",
-      pty: false,
-    });
+  if (!hasToolResult && prompt.includes("CANARY_HUB_START")) {
+    const name = `canary-sleeper-${Date.now()}`;
+    if (hasTool(tools, "hub")) {
+      return toolCallResponse(base, "call_canary_hub", "hub", {
+        i: "Starting canary sleeper",
+        op: "start",
+        name,
+        application: "sleep",
+        args: ["3600"],
+        cwd: "/workspace/paseo-plugins",
+        pty: false,
+      });
+    }
+    if (hasTool(tools, "bash")) {
+      return toolCallResponse(base, "call_canary_bash_service", "bash", {
+        i: "Starting canary sleeper",
+        command: "sleep 3600",
+        name,
+        cwd: "/workspace/paseo-plugins",
+        pty: false,
+      });
+    }
   }
 
   if (!hasToolResult && hasTool(tools, "task") && prompt.includes("CANARY_NESTED_ROOT")) {
