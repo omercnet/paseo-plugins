@@ -1617,7 +1617,15 @@ export class OmpTimelineProjector {
     return true;
   }
 
-  private publishTodos(items: Array<{ id: string; text: string; completed: boolean; status: "pending" | "in_progress" | "completed"; activeForm?: string }>): void {
+  private publishTodos(
+    items: Array<{
+      id: string;
+      text: string;
+      completed: boolean;
+      status: "pending" | "in_progress" | "completed";
+      activeForm?: string;
+    }>,
+  ): void {
     const signature = JSON.stringify(items);
     if (signature === this.lastTodoSignature) return;
     this.lastTodoSignature = signature;

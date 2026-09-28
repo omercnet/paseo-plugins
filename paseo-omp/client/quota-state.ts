@@ -148,3 +148,13 @@ export function quotaRecordedLabel(recordedAtMs: number, nowMs: number = Date.no
   if (hours < 24) return `Recorded ${hours}h ago`;
   return `Recorded ${Math.floor(hours / 24)}d ago`;
 }
+
+export function quotaDetailLabel(quota: OmpQuota, nowMs: number = Date.now()): string {
+  return [
+    quota.windowLabel,
+    quotaResetLabel(quota.resetsAt, nowMs),
+    quotaRecordedLabel(quota.recordedAt, nowMs),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}

@@ -8,12 +8,11 @@ import { listOmpQuotas } from "../shared/quota";
 import { ompStoreKey } from "./omp-store-state";
 import {
   type QuotaProviderGroup,
+  quotaDetailLabel,
   quotaProviderFromSession,
   quotaProviderGroups,
   quotaProviderIconName,
   quotaProviderLabel,
-  quotaRecordedLabel,
-  quotaResetLabel,
   quotaSeverityFromFraction,
 } from "./quota-state";
 
@@ -140,11 +139,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                   <View style={styles.track}>
                     <View style={{ height: "100%", width: `${pct}%`, backgroundColor: color }} />
                   </View>
-                  <Text style={styles.detail}>
-                    [quota.windowLabel, quotaResetLabel(quota.resetsAt), quotaRecordedLabel(quota.recordedAt)]
-                      .filter(Boolean)
-                      .join(" · ")
-                  </Text>
+                  <Text style={styles.detail}>{quotaDetailLabel(quota)}</Text>
                 </View>
               );
             })}
