@@ -1,6 +1,6 @@
 # Core OMP provider issue audit
 
-This audit compares reports in `getpaseo/paseo` with the community `omp-plugin` provider. It was refreshed on 2026-09-23 from GitHub issue titles and bodies containing `OMP`, `oh-my-pi`, or `rpc-ui`, OMP-related pull requests, and materially equivalent Pi/RPC reports. GitHub Discussions were also inspected; detached-child Stop semantics are tracked in [Discussion #5256](https://github.com/getpaseo/paseo/discussions/5256).
+This audit compares reports in `getpaseo/paseo` with the community `omp-plugin` provider. It was refreshed on 2026-09-28 against the `v0.10.0-beta.1` release, its release notes, and each plugin-facing pull request since `v0.9.0`. GitHub Discussions were also inspected; detached-child Stop semantics are tracked in [Discussion #5256](https://github.com/getpaseo/paseo/discussions/5256).
 
 Issue and pull-request pairs are consolidated by root cause. A closed upstream issue does not prove the plugin implements the behavior, and an open upstream issue does not imply the plugin is affected.
 
@@ -48,6 +48,8 @@ Status meanings:
 | [#1657](https://github.com/getpaseo/paseo/issues/1657), [#1730](https://github.com/getpaseo/paseo/issues/1730), [#2226](https://github.com/getpaseo/paseo/issues/2226), [#4142](https://github.com/getpaseo/paseo/issues/4142), [PR #4008](https://github.com/getpaseo/paseo/pull/4008), [PR #4143](https://github.com/getpaseo/paseo/pull/4143) | **Verified** | Availability and ready probes use bounded configurable timeouts and distinguish missing, unrunnable, incompatible, and available binaries. |
 | [#1446](https://github.com/getpaseo/paseo/issues/1446), [#2456](https://github.com/getpaseo/paseo/issues/2456) | **Mitigated / host-owned** | Plugin discovery and cache identity are bounded. Provider snapshot scheduling and stale host snapshots remain Paseo behavior. |
 | [#2610](https://github.com/getpaseo/paseo/issues/2610) | **Mitigated / host-owned** | OMP input frames, replay, and retained state are bounded; final daemon-to-client WebSocket buffering is owned by Paseo. |
+
+| [PR #5253](https://github.com/getpaseo/paseo/pull/5253), [PR #5231](https://github.com/getpaseo/paseo/pull/5231), [PR #5298](https://github.com/getpaseo/paseo/pull/5298) | **Host-owned, verified compatible** | Daemon shutdown now closes provider sessions before stopping plugins, reload waits for a close already in flight, and early `request.failed` events no longer crash the daemon. The plugin already serializes persistent opens, reports request failures, and awaits session cleanup; its full typecheck passes against the published 0.10 beta SDK. |
 
 ## Models, modes, commands, and usage
 

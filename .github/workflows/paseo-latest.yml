@@ -1,4 +1,4 @@
-name: Paseo latest compatibility
+name: Paseo SDK compatibility
 
 on:
   schedule:
@@ -10,14 +10,18 @@ permissions:
   issues: write
 
 concurrency:
-  group: paseo-latest-compatibility
+  group: paseo-sdk-compatibility
   cancel-in-progress: false
 
 jobs:
-  paseo-latest:
-    name: paseo-omp latest Paseo SDK
+  paseo-sdk:
+    name: paseo-omp Paseo SDK (${{ matrix.channel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [latest, beta]
     defaults:
       run:
         working-directory: paseo-omp
@@ -37,31 +41,32 @@ jobs:
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
-      - name: Install latest Paseo SDK packages without saving
+      - name: Install selected Paseo SDK packages without saving
         id: sdk-install
         continue-on-error: true
-        run: bun add --no-save --dev @getpaseo/cli@latest @getpaseo/client@latest @getpaseo/plugin@latest @getpaseo/protocol@latest @getpaseo/server@latest
+        run: bun add --no-save --dev @getpaseo/cli@${{ matrix.channel }} @getpaseo/client@${{ matrix.channel }} @getpaseo/plugin@${{ matrix.channel }} @getpaseo/protocol@${{ matrix.channel }} @getpaseo/server@${{ matrix.channel }}
       - name: Read installed Paseo SDK version
         id: paseo
         if: ${{ steps.sdk-install.outcome == 'success' }}
         run: |
           version="$(node -p 'JSON.parse(require("node:fs").readFileSync("node_modules/@getpaseo/plugin/package.json", "utf8")).version')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Check latest Paseo SDK contract
+      - name: Check selected Paseo SDK contract
         id: typecheck
         if: ${{ steps.sdk-install.outcome == 'success' }}
         continue-on-error: true
         run: npm run typecheck
-      - name: Test latest Paseo SDK compatibility
+      - name: Test selected Paseo SDK compatibility
         id: test
         if: ${{ steps.sdk-install.outcome == 'success' }}
         continue-on-error: true
         run: npm test
-      - name: Record latest Paseo compatibility result
+      - name: Record Paseo SDK compatibility result
         if: ${{ always() }}
         working-directory: .
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PASEO_CHANNEL: ${{ matrix.channel }}
           PASEO_VERSION: ${{ steps.paseo.outputs.version || 'unresolved' }}
           INSTALL_OUTCOME: ${{ steps.sdk-install.outcome }}
           TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
@@ -69,14 +74,14 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          title="Paseo latest compatibility ${PASEO_VERSION}: install=${INSTALL_OUTCOME}, typecheck=${TYPECHECK_OUTCOME}, test=${TEST_OUTCOME}"
+          title="Paseo ${PASEO_CHANNEL} compatibility ${PASEO_VERSION}: install=${INSTALL_OUTCOME}, typecheck=${TYPECHECK_OUTCOME}, test=${TEST_OUTCOME}"
           existing="$(gh api -X GET search/issues -f "q=repo:${GITHUB_REPOSITORY} is:issue in:title \"${title}\"" --jq '.items[] | .title + "\t" + (.number | tostring)' | node -e 'const title = process.argv[1]; const rows = require("node:fs").readFileSync(0, "utf8").trim().split("\n").filter(Boolean); for (const row of rows) { const [candidate, number] = row.split("\t"); if (candidate === title) { process.stdout.write(number); break; } }' "$title")"
           if [ -n "$existing" ]; then
             echo "Compatibility result already recorded in #$existing"
             exit 0
           fi
-          body="$(printf '%s\n' "## Paseo latest compatibility result" "" "- Paseo SDK version: \`${PASEO_VERSION}\`" "- SDK installation: \`${INSTALL_OUTCOME}\`" "- Typecheck: \`${TYPECHECK_OUTCOME}\`" "- Full unit suite: \`${TEST_OUTCOME}\`" "- Workflow run: ${RUN_URL}" "" "Automated nightly result. The issue title is an idempotency key for this exact version and outcome tuple.")"
+          body="$(printf '%s\n' "## Paseo SDK compatibility result" "" "- SDK channel: \`${PASEO_CHANNEL}\`" "- Paseo SDK version: \`${PASEO_VERSION}\`" "- SDK installation: \`${INSTALL_OUTCOME}\`" "- Typecheck: \`${TYPECHECK_OUTCOME}\`" "- Full unit suite: \`${TEST_OUTCOME}\`" "- Workflow run: ${RUN_URL}" "" "Automated nightly result. The issue title is an idempotency key for this exact channel, version, and outcome tuple.")"
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
-      - name: Fail on latest Paseo compatibility drift
+      - name: Fail on Paseo SDK compatibility drift
         if: ${{ steps.sdk-install.outcome == 'failure' || steps.typecheck.outcome == 'failure' || steps.test.outcome == 'failure' }}
         run: exit 1
