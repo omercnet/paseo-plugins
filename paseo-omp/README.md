@@ -133,7 +133,7 @@ Unexpected or internal launch failures use fixed fallback messages rather than s
 
 The repeatable Docker canary and every validation command are documented in [TESTING.md](TESTING.md). It covers discovery, modes, text, images, tools, MCP, permissions, steering, interruption, persistence, host-wide and scoped session listing, import, resume, subagents, Hub, usage, plugin RPCs, and conversation rewind.
 
-Use `canary-mock/Deterministic Canary` for assertions. The optional local Ollama model is exploratory and nondeterministic.
+Use `Deterministic Canary` for picker-label assertions. The optional local Ollama model is exploratory and nondeterministic.
 
 ## Support
 

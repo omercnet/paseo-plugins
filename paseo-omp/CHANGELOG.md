@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.0.2...paseo-omp-v1.0.3) (2026-09-28)
+
+
+### Bug Fixes
+
+* **paseo-omp:** support OMP 18.4 contracts ([#214](https://github.com/omercnet/paseo-plugins/issues/214)) ([48a635f](https://github.com/omercnet/paseo-plugins/commit/48a635f78b5eb614b503408488702b7e2846201e))
+
 ## [1.0.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.0.1...paseo-omp-v1.0.2) (2026-09-28)
 
 

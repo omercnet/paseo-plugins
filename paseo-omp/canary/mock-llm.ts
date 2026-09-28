@@ -117,16 +117,28 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
     });
   }
 
-  if (!hasToolResult && hasTool(tools, "hub") && prompt.includes("CANARY_HUB_START")) {
-    return toolCallResponse(base, "call_canary_hub", "hub", {
-      i: "Starting canary sleeper",
-      op: "start",
-      name: `canary-sleeper-${Date.now()}`,
-      application: "sleep",
-      args: ["3600"],
-      cwd: "/workspace/paseo-plugins",
-      pty: false,
-    });
+  if (!hasToolResult && prompt.includes("CANARY_HUB_START")) {
+    const name = `canary-sleeper-${Date.now()}`;
+    if (hasTool(tools, "hub")) {
+      return toolCallResponse(base, "call_canary_hub", "hub", {
+        i: "Starting canary sleeper",
+        op: "start",
+        name,
+        application: "sleep",
+        args: ["3600"],
+        cwd: "/workspace/paseo-plugins",
+        pty: false,
+      });
+    }
+    if (hasTool(tools, "bash")) {
+      return toolCallResponse(base, "call_canary_bash_service", "bash", {
+        i: "Starting canary sleeper",
+        command: "sleep 3600",
+        name,
+        cwd: "/workspace/paseo-plugins",
+        pty: false,
+      });
+    }
   }
 
   if (!hasToolResult && hasTool(tools, "task") && prompt.includes("CANARY_NESTED_ROOT")) {
@@ -156,14 +168,18 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
   }
 
   if (
-    hasTool(tools, "hub") &&
+    hasTool(tools, "yield") &&
     prompt.includes("CANARY_NESTED_CHILD") &&
-    toolResultIds.has("call_canary_nested_child") &&
-    !toolResultIds.has("call_canary_nested_wait")
+    toolResultIds.has("call_canary_nested_child")
   ) {
-    return toolCallResponse(base, "call_canary_nested_wait", "hub", {
-      i: "Waiting for nested canary leaf",
-      op: "wait",
+    return toolCallResponse(base, "call_canary_nested_child_yield", "yield", {
+      data: { result: "CANARY_NESTED_CHILD_OK" },
+    });
+  }
+
+  if (!hasToolResult && hasTool(tools, "yield") && prompt.includes("CANARY_NESTED_LEAF")) {
+    return toolCallResponse(base, "call_canary_nested_leaf_yield", "yield", {
+      data: { result: "CANARY_NESTED_LEAF_OK" },
     });
   }
 
@@ -177,6 +193,12 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
           task: "# Target\nNo files.\n# Change\nReturn CANARY_CHILD_OK.\n# Acceptance\nThe response contains CANARY_CHILD_OK.",
         },
       ],
+    });
+  }
+
+  if (!hasToolResult && hasTool(tools, "yield") && prompt.includes("CANARY_SUBAGENT")) {
+    return toolCallResponse(base, "call_canary_child_yield", "yield", {
+      data: { result: "CANARY_CHILD_OK" },
     });
   }
 

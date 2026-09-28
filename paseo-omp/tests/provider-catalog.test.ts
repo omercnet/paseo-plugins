@@ -1100,7 +1100,7 @@ describe("OMP direct provider", () => {
       (event) => event.type === "request.completed" && event.requestId === "malicious-model-select",
     );
     expect(catalog.catalog.models[0]).toMatchObject({
-      label: "API_KEY=provider-secret/Authorization: Basic model-secret",
+      label: "Authorization: Basic model-secret",
       description: "API_KEY=provider-secret//home/private/model",
       metadata: {
         provider: "API_KEY=provider-secret",
@@ -1108,7 +1108,7 @@ describe("OMP direct provider", () => {
       },
     });
     expect(catalog.catalog.models[1]).toMatchObject({
-      label: "a/B\u0007name",
+      label: "B\u0007name",
       description: "a/b/c",
       metadata: { provider: "a", modelId: "b/c" },
     });
@@ -1152,7 +1152,7 @@ describe("OMP direct provider", () => {
     expect(catalog).toEqual(
       expect.objectContaining({
         catalog: expect.objectContaining({
-          models: [expect.objectContaining({ label: "provider/<redacted>" })],
+          models: [expect.objectContaining({ label: "<redacted>" })],
         }),
       }),
     );

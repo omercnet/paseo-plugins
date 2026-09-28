@@ -11,7 +11,7 @@ import {
 } from "./helpers/provider-harness";
 
 describe("OMP direct provider", () => {
-  test("coalesces streams, preserves tool snapshots, and resets IDs between turns", async () => {
+  test("coalesces streams, ignores late tool updates, and resets IDs between turns", async () => {
     const { connection, events, runtime, scheduler } = await createHarness();
     await openSession(connection, events);
     const firstResult = await startPrompt(connection, events, "client-1", "hello");
@@ -88,6 +88,12 @@ describe("OMP direct provider", () => {
       toolCallId: "tool-1",
       toolName: "read",
       result: { output: "complete" },
+    });
+    session.emit({
+      type: "tool_execution_update",
+      toolCallId: "tool-1",
+      toolName: "read",
+      partialResult: { output: "stale" },
     });
     session.emit({
       type: "message_start",

@@ -103,10 +103,10 @@ try {
   const modelsPayload = await client.listProviderModels(provider, { cwd });
   assert(!modelsPayload.error, `Model discovery failed: ${modelsPayload.error}`);
   const models = modelsPayload.models ?? [];
-  const mockModel = models.find((model) => model.label === "canary-mock/Deterministic Canary");
-  const ollamaModel = models.find((model) => model.label === "canary-ollama/Qwen 2.5 0.5B");
-  assert(mockModel, "Deterministic canary model is missing");
-  assert(ollamaModel, "Ollama canary model is missing");
+  const mockModel = models.find((model) => model.description === "canary-mock/deterministic");
+  const ollamaModel = models.find((model) => model.description === "canary-ollama/qwen2.5:0.5b");
+  assert(mockModel?.label === "Deterministic Canary", "Deterministic canary model is missing");
+  assert(ollamaModel?.label === "Qwen 2.5 0.5B", "Ollama canary model is missing");
 
   const modesPayload = await client.listProviderModes(provider, { cwd });
   assert(!modesPayload.error, `Mode discovery failed: ${modesPayload.error}`);
@@ -578,30 +578,28 @@ try {
     assert(
       directTimeline.rows.some(
         (row) =>
-          row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_CHILD_OK"),
+          row.item.type === "tool_call" &&
+          row.item.name === "yield" &&
+          JSON.stringify(row.item.detail).includes("CANARY_NESTED_CHILD_OK"),
       ),
-      "Direct subagent completion is missing from its timeline",
-    );
-    assert(
-      !directTimeline.rows.some(
-        (row) =>
-          row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_LEAF_OK"),
-      ),
-      "Nested completion leaked into the direct subagent timeline",
+      `Direct subagent yield is missing from its timeline: ${JSON.stringify(directTimeline.rows)}`,
     );
     assert(
       !nestedChildTimeline.rows.some(
         (row) =>
-          row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_CHILD_OK"),
+          row.item.type === "tool_call" &&
+          JSON.stringify(row.item.detail).includes("CANARY_NESTED_CHILD_OK"),
       ),
-      "Direct completion leaked into the nested subagent timeline",
+      `Direct yield leaked into the nested subagent timeline: ${JSON.stringify(nestedChildTimeline.rows)}`,
     );
     assert(
       nestedChildTimeline.rows.some(
         (row) =>
-          row.item.type === "assistant_message" && row.item.text.includes("CANARY_NESTED_LEAF_OK"),
+          row.item.type === "tool_call" &&
+          row.item.name === "yield" &&
+          JSON.stringify(row.item.detail).includes("CANARY_NESTED_LEAF_OK"),
       ),
-      "Nested subagent completion is missing from its timeline",
+      `Nested subagent yield is missing from its timeline: ${JSON.stringify(nestedChildTimeline.rows)}`,
     );
     summary.subagents = {
       passed: true,

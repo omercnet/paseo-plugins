@@ -37,9 +37,11 @@ type _SessionEventSchemaCoverage = AssertTrue<
 type _RpcSessionEventSchemaCoverage = AssertTrue<
   RpcSessionEventFrame["type"] extends OmpRpcEvent["type"] ? true : false
 >;
+// Policy tables may intentionally cover commands added after the pinned runtime; every command in
+// the installed SDK must still be classified.
 type _RpcCommandPolicyCoverage = AssertTrue<
-  AssertExact<RpcCommand["type"], keyof typeof OMP_RPC_COMMAND_POLICIES>
+  RpcCommand["type"] extends keyof typeof OMP_RPC_COMMAND_POLICIES ? true : false
 >;
 type _RpcResponsePolicyCoverage = AssertTrue<
-  AssertExact<UpstreamSuccessCommand, keyof typeof OMP_RPC_RESPONSE_POLICIES>
+  UpstreamSuccessCommand extends keyof typeof OMP_RPC_RESPONSE_POLICIES ? true : false
 >;
