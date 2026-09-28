@@ -596,6 +596,22 @@ describe("OMP direct provider", () => {
     );
     expect(todoRows).toHaveLength(1);
     expect(todoRows[0]?.id).toBe("omp:todos");
+    session.emit({
+      type: "todo_reminder",
+      todos: [{ id: "task-1", content: "Map events", status: "pending" }],
+    });
+    session.emit({
+      type: "todo_reminder",
+      todos: [{ id: "task-1", content: "Map events", status: "in_progress" }],
+    });
+    const updatedTodoRows = events.flatMap((event) =>
+      event.type === "timeline.item" && event.item.type === "todo" ? [event.item] : [],
+    );
+    expect(updatedTodoRows.map((item) => item.items[0]?.status)).toEqual([
+      "in_progress",
+      "pending",
+      "in_progress",
+    ]);
 
     const beforeCustom = events.length;
     session.emit({

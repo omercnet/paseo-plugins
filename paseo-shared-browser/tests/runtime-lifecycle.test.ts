@@ -4,6 +4,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveBrowserRuntimeRoot } from "../server/runtime-path";
 import { type JsonValue, RUNTIME_PROTOCOL_VERSION } from "../server/runtime-protocol";
 import {
   type RuntimeInstance,
@@ -123,38 +124,42 @@ afterEach(() => {
 });
 
 describe("runtime replacement", () => {
-  it("replaces a populated runtime directory", async () => {
-    const root = await mkdtemp(join(tmpdir(), "shared-browser-runtime-"));
+  it("atomically activates staged assets without moving the live runtime", async () => {
+    const home = await mkdtemp(join(tmpdir(), "shared-browser-runtime-"));
+    const root = join(home, "plugin-data", "shared-browser");
     const runtimeRoot = join(root, "runtime");
-    const stagingRoot = join(root, "staging");
+    const stagingRoot = join(root, ".runtime-123e4567-e89b-42d3-a456-426614174000");
     try {
-      await mkdir(runtimeRoot);
+      await mkdir(runtimeRoot, { recursive: true });
       await writeFile(join(runtimeRoot, "version"), "old");
       await mkdir(stagingRoot);
       await writeFile(join(stagingRoot, "version"), "new");
 
       await replaceRuntime(stagingRoot, runtimeRoot);
 
-      await expect(readFile(join(runtimeRoot, "version"), "utf8")).resolves.toBe("new");
-      await expect(access(stagingRoot)).rejects.toThrow();
+      expect(resolveBrowserRuntimeRoot(home)).toBe(stagingRoot);
+      await expect(readFile(join(stagingRoot, "version"), "utf8")).resolves.toBe("new");
+      await expect(readFile(join(runtimeRoot, "version"), "utf8")).resolves.toBe("old");
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
     }
   });
 
-  it("restores the previous runtime when promotion fails", async () => {
-    const root = await mkdtemp(join(tmpdir(), "shared-browser-runtime-"));
+  it("keeps the live runtime selected when staged assets are missing", async () => {
+    const home = await mkdtemp(join(tmpdir(), "shared-browser-runtime-"));
+    const root = join(home, "plugin-data", "shared-browser");
     const runtimeRoot = join(root, "runtime");
-    const stagingRoot = join(root, "missing-staging");
+    const stagingRoot = join(root, ".runtime-123e4567-e89b-42d3-a456-426614174000");
     try {
-      await mkdir(runtimeRoot);
+      await mkdir(runtimeRoot, { recursive: true });
       await writeFile(join(runtimeRoot, "version"), "old");
 
       await expect(replaceRuntime(stagingRoot, runtimeRoot)).rejects.toThrow();
 
+      expect(resolveBrowserRuntimeRoot(home)).toBe(runtimeRoot);
       await expect(readFile(join(runtimeRoot, "version"), "utf8")).resolves.toBe("old");
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
     }
   });
 });

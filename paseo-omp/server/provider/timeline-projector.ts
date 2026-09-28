@@ -395,7 +395,11 @@ export class OmpTimelineProjector {
   private commandText = "";
   private commandPublishedText = "";
   private closed = false;
-  private lastTodoItems: ReadonlyArray<{ text: string; completed: boolean }> | null = null;
+  private lastTodoItems: ReadonlyArray<{
+    text: string;
+    completed: boolean;
+    status: "pending" | "in_progress" | "completed";
+  }> | null = null;
 
   private readonly dataFilter: OmpPublicDataSerializer;
   private browserAuthorizationIssuer: ((url: string) => string | undefined) | null = null;
@@ -1632,7 +1636,9 @@ export class OmpTimelineProjector {
       previous.every((previousItem, index) => {
         const nextItem = items[index];
         return (
-          nextItem?.text === previousItem.text && nextItem.completed === previousItem.completed
+          nextItem?.text === previousItem.text &&
+          nextItem.completed === previousItem.completed &&
+          nextItem.status === previousItem.status
         );
       })
     ) {

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, cp, lstat, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -24,7 +25,7 @@ const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const paseoHome = process.env.PASEO_HOME || join(homedir(), ".paseo");
 const pluginDataRoot = join(paseoHome, "plugin-data", "shared-browser");
 const runtimeRoot = join(pluginDataRoot, "runtime");
-const stagingRoot = join(pluginDataRoot, `.runtime-${process.pid}`);
+const stagingRoot = join(pluginDataRoot, `.runtime-${randomUUID()}`);
 const runtimeModules = join(stagingRoot, "node_modules");
 const packagedAgentBrowser = resolveDependencyRoot("agent-browser");
 const runtimeEntry = join(
@@ -249,4 +250,4 @@ if (hostPlatform !== "win32") {
 }
 await replaceRuntime(stagingRoot, runtimeRoot);
 
-console.log(`Prepared immutable Shared Browser runtime assets in ${runtimeRoot}`);
+console.log(`Prepared immutable Shared Browser runtime assets in ${stagingRoot}`);

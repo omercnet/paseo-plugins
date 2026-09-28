@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AgentBrowserRuntime, type BrowserViewport } from "./agent-browser-runtime";
+import { resolveBrowserRuntimeRoot } from "./runtime-path";
 import type { JsonValue } from "./runtime-protocol";
 import type { RuntimeOwner } from "./supervisor";
 
@@ -23,7 +24,9 @@ function paseoHome(): string {
 export async function createRuntimeOwner(
   options: RuntimeOwnerOptions = {},
 ): Promise<RuntimeOwner<OwnedRuntime>> {
-  const root = join(paseoHome(), "plugin-data", "shared-browser");
+  const home = paseoHome();
+  const root = join(home, "plugin-data", "shared-browser");
+  const runtimeRoot = resolveBrowserRuntimeRoot(home);
   const ipcDirectory =
     process.platform === "win32"
       ? join(root, "ipc")
@@ -34,15 +37,14 @@ export async function createRuntimeOwner(
   const binaryPath =
     process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY ??
     join(
-      root,
-      "runtime",
+      runtimeRoot,
       "node_modules",
       ".bin",
       process.platform === "win32" ? "agent-browser.exe" : "agent-browser",
     );
   const executablePath =
     process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE ??
-    join(root, "runtime", "chromium", process.platform === "win32" ? "chrome.exe" : "chrome");
+    join(runtimeRoot, "chromium", process.platform === "win32" ? "chrome.exe" : "chrome");
   return {
     async create(workspaceId) {
       const hash = createHash("sha256").update(workspaceId).digest("hex");

@@ -1,25 +1,15 @@
-import { rename, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { access, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 export async function replaceRuntime(stagingRoot, runtimeRoot) {
-  const previousRuntimeRoot = join(runtimeRoot, "..", `.runtime-previous-${process.pid}`);
-  await rm(previousRuntimeRoot, { recursive: true, force: true });
-  let replacedExistingRuntime = false;
+  await access(stagingRoot);
+  const pluginDataRoot = dirname(runtimeRoot);
+  const pointer = join(pluginDataRoot, "runtime-current");
+  const pendingPointer = join(pluginDataRoot, `.runtime-current-${process.pid}`);
+  await writeFile(pendingPointer, `${basename(stagingRoot)}\n`, { mode: 0o600 });
   try {
-    await rename(runtimeRoot, previousRuntimeRoot);
-    replacedExistingRuntime = true;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  try {
-    await rename(stagingRoot, runtimeRoot);
-  } catch (error) {
-    if (replacedExistingRuntime) await rename(previousRuntimeRoot, runtimeRoot);
-    throw error;
-  }
-  if (replacedExistingRuntime) {
-    await rm(previousRuntimeRoot, { recursive: true, force: true }).catch((error) => {
-      console.warn(`Could not remove previous Shared Browser runtime: ${error}`);
-    });
+    await rename(pendingPointer, pointer);
+  } finally {
+    await rm(pendingPointer, { force: true });
   }
 }

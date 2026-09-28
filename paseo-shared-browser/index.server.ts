@@ -19,6 +19,7 @@ import {
   issueAgentTicket,
   revokeAgentBrowserAccess,
 } from "./server/browser";
+import { resolveBrowserRuntimeRoot } from "./server/runtime-path";
 import {
   acquireControlRpc,
   applyDevicePresetRpc,
@@ -62,7 +63,7 @@ function paseoHome(): string {
 }
 
 function mcpBundlePath(): string {
-  return join(paseoHome(), "plugin-data", "shared-browser", "runtime", "shared-browser-mcp.cjs");
+  return join(resolveBrowserRuntimeRoot(paseoHome()), "shared-browser-mcp.cjs");
 }
 
 export default function contribute(server: PluginServerContext) {

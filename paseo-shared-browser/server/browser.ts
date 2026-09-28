@@ -17,6 +17,7 @@ import type {
   resizeBrowserRpc,
   sendBrowserInputRpc,
 } from "../shared/browser";
+import { resolveBrowserRuntimeRoot } from "./runtime-path";
 import type { JsonValue } from "./runtime-protocol";
 import { resolveSupervisorPaths } from "./supervisor";
 import { SupervisorClient } from "./supervisor-client";
@@ -156,13 +157,7 @@ let productionStart: Promise<RemoteBrowserManager> | null = null;
 let productionStopped = false;
 
 async function launchSupervisor(): Promise<void> {
-  const supervisorPath = join(
-    paseoHome(),
-    "plugin-data",
-    "shared-browser",
-    "runtime",
-    "supervisor.cjs",
-  );
+  const supervisorPath = join(resolveBrowserRuntimeRoot(paseoHome()), "supervisor.cjs");
   try {
     await access(supervisorPath);
   } catch {

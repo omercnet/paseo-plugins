@@ -77,9 +77,9 @@ paseo plugin ls
 ```
 
 When Paseo acquires the npm package, it runs the `npm run prepare:runtime` build hook automatically. The
-hook installs the pinned browser runtime and builds both `supervisor.cjs` and
-`shared-browser-mcp.cjs` under
-`$PASEO_HOME/plugin-data/shared-browser/runtime`.
+hook installs the pinned browser runtime, builds both `supervisor.cjs` and `shared-browser-mcp.cjs`
+under a versioned directory in `$PASEO_HOME/plugin-data/shared-browser`, then atomically updates the
+`runtime-current` pointer. Existing processes keep using their immutable runtime during an update.
 
 The build requires Node.js 24 or newer and npm on the daemon host. On Linux x64, macOS, and
 Windows, runtime preparation installs and stages the platform's Chrome for Testing distribution. On
@@ -125,8 +125,8 @@ The plugin recognizes only these deployment overrides:
 | Variable                                    | Meaning                                                                                                                                                                                                                                                               |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `PASEO_HOME`                                | Paseo data root. Defaults to `~/.paseo`; browser runtime, supervisor IPC, and profiles live below `plugin-data/shared-browser`.                                                                                                                                       |
-| `PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY` | Absolute path to the pinned `agent-browser` executable. Defaults to `$PASEO_HOME/plugin-data/shared-browser/runtime/node_modules/.bin/agent-browser` (`agent-browser.exe` on Windows).                                                                                |
-| `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE`  | Absolute path to Chromium. Defaults to `$PASEO_HOME/plugin-data/shared-browser/runtime/chromium/chrome` (`chrome.exe` on Windows). On Linux ARM64, installation automatically links `/usr/bin/chromium`; use this override for another compatible, non-Snap location. |
+| `PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY` | Absolute path to the pinned `agent-browser` executable. Defaults to the active runtime's `node_modules/.bin/agent-browser` (`agent-browser.exe` on Windows). |
+| `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE`  | Absolute path to Chromium. Defaults to the active runtime's `chromium/chrome` (`chrome.exe` on Windows). On Linux ARM64, installation automatically links `/usr/bin/chromium`; use this override for another compatible, non-Snap location. |
 | `PASEO_SHARED_BROWSER_CHROMIUM_ARGS`        | Optional Chromium arguments passed through the managed runtime. Intended for host requirements such as `--no-sandbox` in an already-isolated CI runner; do not disable the browser sandbox on a general-purpose host.                                                 |
 
 User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
