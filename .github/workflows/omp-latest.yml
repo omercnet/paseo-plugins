@@ -41,7 +41,7 @@ jobs:
       - name: Check latest OMP SDK contract
         id: sdk-contract
         continue-on-error: true
-        run: npx --no-install tsc --noEmit -p tsconfig.tests.json
+        run: bunx --no-install tsc --noEmit -p tsconfig.tests.json
       - name: Resolve latest OMP release
         id: omp
         run: |
