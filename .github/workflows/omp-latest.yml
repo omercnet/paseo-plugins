@@ -76,8 +76,8 @@ jobs:
           PASEO_CANARY_OMP_SHA256_AMD64: ${{ steps.omp.outputs.amd64 }}
           PASEO_CANARY_OMP_SHA256_ARM64: ${{ steps.omp.outputs.arm64 }}
         run: npm run test:integration:canary
-      - name: Record latest OMP compatibility result
-        if: ${{ always() }}
+      - name: Open latest OMP compatibility failure issue
+        if: ${{ always() && (steps.sdk-contract.outcome != 'success' || steps.canary.outcome != 'success') }}
         working-directory: .
         env:
           GITHUB_TOKEN: ${{ github.token }}
