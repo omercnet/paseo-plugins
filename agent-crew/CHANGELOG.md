@@ -10,6 +10,13 @@
 - add an explicit pending-permission modal with Allow and Deny actions
 - pin Paseo plugin packages to `0.8.0-beta.1`
 
+## [1.0.1](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v1.0.0...agent-crew-v1.0.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **plugins:** prepare for Paseo 0.10 beta ([#186](https://github.com/omercnet/paseo-plugins/issues/186)) ([0294fd0](https://github.com/omercnet/paseo-plugins/commit/0294fd0fd7ad5101e724d4196a49ac27783b5483))
+
 ## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v0.3.0...agent-crew-v1.0.0) (2026-09-25)
 
 
