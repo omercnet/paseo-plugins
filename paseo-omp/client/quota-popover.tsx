@@ -12,6 +12,7 @@ import {
   quotaProviderGroups,
   quotaProviderIconName,
   quotaProviderLabel,
+  quotaRecordedLabel,
   quotaResetLabel,
   quotaSeverityFromFraction,
 } from "./quota-state";
@@ -117,7 +118,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                 color={severityColor(group.severity)}
               />
               <Text style={styles.groupLabel}>{quotaProviderLabel(group.provider)}</Text>
-              {current ? <Text style={styles.badge}>CURRENT</Text> : null}
+              <Text style={styles.badge}>{current ? "CURRENT" : "RECORDED"}</Text>
             </View>
             {group.quotas.map((quota) => {
               const severity = quotaSeverityFromFraction(quota.usedFraction);
@@ -140,9 +141,9 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                     <View style={{ height: "100%", width: `${pct}%`, backgroundColor: color }} />
                   </View>
                   <Text style={styles.detail}>
-                    {[quota.windowLabel, quotaResetLabel(quota.resetsAt)]
+                    [quota.windowLabel, quotaResetLabel(quota.resetsAt), quotaRecordedLabel(quota.recordedAt)]
                       .filter(Boolean)
-                      .join(" · ")}
+                      .join(" · ")
                   </Text>
                 </View>
               );

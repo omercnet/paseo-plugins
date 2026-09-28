@@ -7,6 +7,7 @@ import {
   quotaProviderFromSession,
   quotaProviderGroups,
   quotaProviderIconName,
+  quotaRecordedLabel,
   quotaResetLabel,
   quotaSeverityForProvider,
   quotaSummaryForProvider,
@@ -77,6 +78,14 @@ describe("session-specific quota selection", () => {
 
     const currentFirst = quotaProviderGroups(quotas, "anthropic");
     expect(currentFirst.map((group) => group.provider)).toEqual(["anthropic", "cursor"]);
+  });
+});
+
+describe("quota timestamps", () => {
+  test("labels recorded quota snapshots", () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    expect(quotaRecordedLabel(now, now)).toBe("Recorded just now");
+    expect(quotaRecordedLabel(now - 2 * 3_600_000, now)).toBe("Recorded 2h ago");
   });
 });
 
