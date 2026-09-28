@@ -109,7 +109,7 @@ export function mapOmpModels(
     const name = model.name ? serializer.text(model.name, 256) : modelId;
     return {
       id,
-      label: `${name}`,
+      label: name,
       description: `${provider}/${modelId}`,
       ...(typeof model.contextWindow === "number"
         ? { contextWindowMaxTokens: model.contextWindow }

@@ -192,7 +192,7 @@ describe(`OMP ${expectedOmpVersion} real provider`, () => {
           force: true,
         });
         const model = catalog.models.find(
-          (candidate) => candidate.label === "Conformance Model",
+          (candidate) => candidate.description === "paseo-ci/conformance-model",
         );
         if (!model) throw new Error("OMP did not load the hermetic CI model");
         session = await harness.client.createSession(
@@ -264,7 +264,7 @@ describe(`OMP ${expectedOmpVersion} real provider`, () => {
           force: true,
         });
         const model = catalog.models.find(
-          (candidate) => candidate.label === "Conformance Model",
+          (candidate) => candidate.description === "paseo-ci/conformance-model",
         );
         if (!model) throw new Error("OMP did not load the hermetic CI model");
         session = await harness.client.createSession(

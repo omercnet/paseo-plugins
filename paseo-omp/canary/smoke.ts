@@ -103,10 +103,10 @@ try {
   const modelsPayload = await client.listProviderModels(provider, { cwd });
   assert(!modelsPayload.error, `Model discovery failed: ${modelsPayload.error}`);
   const models = modelsPayload.models ?? [];
-  const mockModel = models.find((model) => model.label === "canary-mock/Deterministic Canary");
-  const ollamaModel = models.find((model) => model.label === "canary-ollama/Qwen 2.5 0.5B");
-  assert(mockModel, "Deterministic canary model is missing");
-  assert(ollamaModel, "Ollama canary model is missing");
+  const mockModel = models.find((model) => model.description === "canary-mock/deterministic");
+  const ollamaModel = models.find((model) => model.description === "canary-ollama/qwen2.5:0.5b");
+  assert(mockModel?.label === "Deterministic Canary", "Deterministic canary model is missing");
+  assert(ollamaModel?.label === "Qwen 2.5 0.5B", "Ollama canary model is missing");
 
   const modesPayload = await client.listProviderModes(provider, { cwd });
   assert(!modesPayload.error, `Mode discovery failed: ${modesPayload.error}`);
