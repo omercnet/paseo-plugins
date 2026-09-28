@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.0.1...paseo-omp-v1.0.2) (2026-09-28)
+
+
+### Bug Fixes
+
+* address Astra review findings ([#207](https://github.com/omercnet/paseo-plugins/issues/207)) ([04a2ac5](https://github.com/omercnet/paseo-plugins/commit/04a2ac5eeef51c0be3f6308fe39c155e237ceda9))
+* resolve shared browser and OMP regressions ([#200](https://github.com/omercnet/paseo-plugins/issues/200)) ([fbf59bb](https://github.com/omercnet/paseo-plugins/commit/fbf59bb98d0740ba27c4eba7856d3d9079bf4bc4))
+
 ## [1.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.0.0...paseo-omp-v1.0.1) (2026-09-28)
 
 
