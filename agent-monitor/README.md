@@ -60,7 +60,7 @@ Interrupting a turn is not part of `PaseoApi`, so archive is the only lifecycle 
 
 ## Install
 
-Requires Paseo `^0.9.0`. The development SDK is pinned to `0.9.0`.
+Requires Paseo `^0.9.0 || ^0.10.0-beta.1`. Development uses the stable 0.9 SDK line.
 
 Install the published package on the daemon host:
 
@@ -82,8 +82,8 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The project requires Paseo `^0.9.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
-`@getpaseo/protocol`, and `@getpaseo/cli` to `0.9.0`. Renovate groups `@getpaseo/*` updates
-so the SDKs move together.
+The project supports Paseo `^0.9.0 || ^0.10.0-beta.1` and pins `@getpaseo/plugin`, `@getpaseo/client`,
+`@getpaseo/protocol`, and `@getpaseo/cli` to the stable 0.9 SDK line. Renovate groups `@getpaseo/*`
+updates so the SDKs move together.
 
 React `19.1` and React Native `0.81` intentionally match the versions supplied by Paseo.

@@ -21,7 +21,7 @@ replaces the local host label and verifies that no private organization names re
 
 ## Install
 
-Paseo 0.9.0 and later can install from npm and use Paseo's update command. See
+Paseo 0.9.0 and 0.10.0-beta.1 can install from npm and use Paseo's update command. See
 [INSTALL.md](./INSTALL.md) for commands, activation, and removal.
 
 ## Themes
@@ -42,7 +42,7 @@ colors. For Alucard, use one of Paseo's light-capable syntax themes.
 
 ## Requirements and limits
 
-- Requires Paseo `^0.9.0`.
+- Requires Paseo `^0.9.0 || ^0.10.0-beta.1`.
 - The plugin contains no daemon-side behavior and does not read or change application state.
 
 ## Palette mapping

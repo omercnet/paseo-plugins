@@ -1,5 +1,5 @@
 {
   "id": "pr-radar",
   "description": "A viewer-aware delivery queue for pull requests linked to Paseo workspaces.",
-  "requirements": { "paseo": "^0.9.0" }
+  "requirements": { "paseo": "^0.9.0 || ^0.10.0-beta.1" }
 }

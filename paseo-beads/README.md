@@ -60,7 +60,7 @@ failures provide a retry action.
 
 ## Limits
 
-- Paseo `^0.9.0` with plugins enabled is required.
+- Paseo `^0.9.0 || ^0.10.0-beta.1` with plugins enabled is required.
 - Beads `bd` 1.0 or newer must be available on the Paseo daemon's `PATH`.
 - A Beads project must be initialized in the workspace for issue data to appear.
 - CLI calls time out after 10 seconds and accept at most 8 MiB of output. Unexpected CLI details stay
@@ -86,7 +86,7 @@ From npm:
 paseo plugin install npm:@omercnet/paseo-beads
 ```
 
-With Paseo 0.9.0 or newer, update the installed npm package with:
+With Paseo 0.9.0 or 0.10.0-beta.1, update the installed npm package with:
 
 ```bash
 paseo plugin update paseo-beads
