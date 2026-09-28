@@ -255,4 +255,12 @@ describe("runtime installation compatibility", () => {
     expect(Number.isInteger(agentBrowserMajor)).toBe(true);
     expect(pluginMajor).toBeGreaterThanOrEqual(agentBrowserMajor);
   });
+
+  it("packages every runtime preparation module", async () => {
+    const pluginPackage = JSON.parse(
+      await readFile(resolve(testDirectory, "..", "package.json"), "utf8"),
+    ) as { files?: string[] };
+
+    expect(pluginPackage.files).toContain("scripts/replace-runtime.mjs");
+  });
 });

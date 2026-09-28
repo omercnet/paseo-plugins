@@ -29,6 +29,7 @@
     "client",
     "scripts/prepare-dependencies.mjs",
     "scripts/prepare-runtime.mjs",
+    "scripts/replace-runtime.mjs",
     "server",
     "shared",
     "paseo-plugin.json"
