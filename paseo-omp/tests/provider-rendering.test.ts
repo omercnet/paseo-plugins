@@ -594,8 +594,8 @@ describe("OMP direct provider", () => {
     const todoRows = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.type === "todo" ? [event.item] : [],
     );
-    expect(todoRows).toHaveLength(2);
-    expect(todoRows.map((item) => item.id)).toEqual(["omp:todos", "omp:todos"]);
+    expect(todoRows).toHaveLength(1);
+    expect(todoRows[0]?.id).toBe("omp:todos");
 
     const beforeCustom = events.length;
     session.emit({

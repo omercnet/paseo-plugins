@@ -395,7 +395,7 @@ export class OmpTimelineProjector {
   private commandText = "";
   private commandPublishedText = "";
   private closed = false;
-  private lastTodoSignature: string | null = null;
+  private lastTodoItems: ReadonlyArray<{ text: string; completed: boolean }> | null = null;
 
   private readonly dataFilter: OmpPublicDataSerializer;
   private browserAuthorizationIssuer: ((url: string) => string | undefined) | null = null;
@@ -1626,9 +1626,19 @@ export class OmpTimelineProjector {
       activeForm?: string;
     }>,
   ): void {
-    const signature = JSON.stringify(items);
-    if (signature === this.lastTodoSignature) return;
-    this.lastTodoSignature = signature;
+    const previous = this.lastTodoItems;
+    if (
+      previous?.length === items.length &&
+      previous.every((previousItem, index) => {
+        const nextItem = items[index];
+        return (
+          nextItem?.text === previousItem.text && nextItem.completed === previousItem.completed
+        );
+      })
+    ) {
+      return;
+    }
+    this.lastTodoItems = items;
     this.publish({ type: "todo", id: "omp:todos", items });
   }
 
