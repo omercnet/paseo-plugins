@@ -31,7 +31,7 @@
     "shared",
     "paseo-plugin.json"
   ],
-  "version": "2.0.0",
+  "version": "2.0.1",
   "type": "module",
   "packageManager": "bun@1.4.2",
   "engines": {
