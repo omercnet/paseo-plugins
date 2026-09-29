@@ -10,8 +10,10 @@ const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
 const MAX_DESCRIPTOR_SUFFIX_BYTES = 64 * 1024;
 const MAX_PROMPT_PREVIEW_CHARS = 160;
 const MAX_DIRECTORY_DEPTH = 8;
-const MAX_SCAN_DIRECTORIES = 1_024;
-const MAX_SCAN_FILES = 10_000;
+// Count caps only bound memory; the byte and time budgets bound scan work. OMP keeps one
+// directory per workspace, so these must exceed real session trees or lookups silently miss.
+const MAX_SCAN_DIRECTORIES = 65_536;
+const MAX_SCAN_FILES = 262_144;
 const MAX_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_SCAN_MS = 1_000;
 const SCAN_YIELD_INTERVAL = 128;
