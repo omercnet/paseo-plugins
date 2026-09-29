@@ -54,7 +54,7 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-This matrix inventories the complete capability set exported by the pinned `@getpaseo/plugin` 0.9.2 provider SDK. Paseo 0.10.1 preserves that public provider surface; compatibility is checked nightly against both SDK channels. It measures strict SDK surface coverage, not general product quality.
+This matrix inventories the complete capability set exported by the pinned `@getpaseo/plugin` 0.10.1 provider SDK, whose public provider surface is unchanged since 0.9.0; compatibility is checked nightly against the 0.9 and latest SDK channels. It measures strict SDK surface coverage, not general product quality.
 
 **Current capability completeness: 61.8%.** The provider advertises 11 of 17 capabilities (64.7%); ten are complete and `session.configure` is partial.
 
