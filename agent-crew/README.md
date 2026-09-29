@@ -1,7 +1,8 @@
 # Agent Crew
 
 See and control every managed Paseo agent working in a workspace. Agent Crew adds a
-workspace-context Explorer panel plus an `Open Agent Crew` Command Center item.
+workspace-context Explorer panel, a header button in every workspace, and an `Open Agent Crew`
+Command Center item.
 
 It answers "which crews are active here, and which agent needs me now?" while preserving managed
 parent-child relationships across workspace boundaries.
@@ -120,8 +121,9 @@ Update the installed npm package after reviewing the proposed revision:
 paseo plugin update agent-crew
 ```
 
-Open a workspace, choose **New tab** in Explorer, then select **Agent Crew**. The **Open Agent Crew**
-Command Center action opens it directly.
+Every workspace header carries an **Open Agent Crew** button that opens the panel in that
+workspace's Explorer. You can also choose **New tab** in Explorer and select **Agent Crew**, or use the
+**Open Agent Crew** Command Center action.
 
 ## Develop
 

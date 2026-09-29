@@ -1,5 +1,6 @@
 import type { PluginClientContext, PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { createAutoOpenManager } from "./client/auto-open";
+import { CREW_PANEL_ID, registerCrewHeaderButtons } from "./client/header-button";
 import { AgentCrew } from "./client/main";
 import { AgentCrewSettingsScreen } from "./client/settings-screen";
 import { agentCrewSettings } from "./shared/settings";
@@ -18,7 +19,7 @@ export default function contribute(client: PluginClientContext) {
     Component: SettingsSurface,
   });
   const removeWorkspacePanel = client.addWorkspacePanel({
-    id: "crew",
+    id: CREW_PANEL_ID,
     title: "Agent Crew",
     icon: "Network",
     context: "workspace",
@@ -32,11 +33,13 @@ export default function contribute(client: PluginClientContext) {
     keywords: ["agents", "subagents", "orchestration", "delegation", "workers", "workspace"],
     context: "workspace",
     onSelect({ openPanel }) {
-      openPanel("crew", { location: "explorer" });
+      openPanel(CREW_PANEL_ID, { location: "explorer" });
     },
   });
+  const removeHeaderButtons = registerCrewHeaderButtons(client);
 
   return () => {
+    removeHeaderButtons();
     removeOpenCrew();
     removeWorkspacePanel();
     removeSettings();
