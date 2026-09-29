@@ -819,18 +819,20 @@ describe("OMP session descriptor discovery", () => {
 
   test("finds sessions beyond the first thousand workspace directories", async () => {
     const sessionRoot = await temporaryRoot();
-    const ids = Array.from({ length: 1_200 }, (_, index) => `native_workspace_${index}`);
-    await Promise.all(ids.map((id) => writeSession(sessionRoot, `-workspace-${id}`, id, `/${id}`)));
+    // Session directories are spread evenly among empty ones, so any directory order leaves
+    // some of them past the old 1,024-directory cap.
+    const directories = Array.from({ length: 1_200 }, (_, index) => `-workspace-${index}`);
+    const ids = directories.filter((_, index) => index % 6 === 0).map((dir) => `native${dir}`);
+    await Promise.all(directories.map((dir) => mkdir(join(sessionRoot, dir))));
+    await Promise.all(
+      ids.map((id) => writeSession(sessionRoot, id.slice("native".length), id, "/repo")),
+    );
 
-    const unresolved: string[] = [];
-    for (const id of ids.filter((_, index) => index % 25 === 0)) {
-      const found = await listOmpSessionDescriptors(
-        { sessionId: id, cwd: `/${id}`, limit: 2 },
-        { OMP_SESSION_DIR: sessionRoot },
-      );
-      if (found.length !== 1) unresolved.push(id);
-    }
-    expect(unresolved).toEqual([]);
+    const found = await listOmpSessionDescriptors(
+      { cwd: "/repo", limit: 500 },
+      { OMP_SESSION_DIR: sessionRoot },
+    );
+    expect(found.map(({ id }) => id).sort()).toEqual(ids.sort());
   });
 
   test("rejects invalid scoped listing", async () => {
