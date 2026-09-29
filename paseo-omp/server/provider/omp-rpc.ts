@@ -159,6 +159,13 @@ export interface OmpRpcRuntimeOptions {
   ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
 }
 
+// OMP accepts an empty message when images carry the prompt.
+function promptText(message: string, images: readonly OmpImage[], field: string): string {
+  return message === "" && images.length > 0
+    ? message
+    : validateBoundedText(message, field, MAX_TEXT_LENGTH);
+}
+
 class OmpRpcSession implements OmpRuntimeSession {
   get maxHostToolFrameBytes(): number {
     return this.process.outboundFrameLimit;
@@ -495,7 +502,7 @@ class OmpRpcSession implements OmpRuntimeSession {
     onAccepted?: () => void,
     onRequested?: (requestId: string) => void,
   ): Promise<{ requestId: string; agentInvoked?: boolean }> {
-    const safeMessage = validateBoundedText(message, "prompt", MAX_TEXT_LENGTH);
+    const safeMessage = promptText(message, images, "prompt");
     let acknowledgement: z.infer<typeof OmpPromptAckSchema> | undefined;
     const request = this.process.startRequest(
       buildOmpPromptRequest(safeMessage, images),
@@ -511,7 +518,7 @@ class OmpRpcSession implements OmpRuntimeSession {
   }
 
   async steer(message: string, images: readonly OmpImage[] = []): Promise<void> {
-    const safeMessage = validateBoundedText(message, "steer", MAX_TEXT_LENGTH);
+    const safeMessage = promptText(message, images, "steer");
     await this.process.request({
       type: "steer",
       message: safeMessage,
@@ -519,7 +526,7 @@ class OmpRpcSession implements OmpRuntimeSession {
     });
   }
   async followUp(message: string, images: readonly OmpImage[] = []): Promise<void> {
-    const safeMessage = validateBoundedText(message, "follow-up", MAX_TEXT_LENGTH);
+    const safeMessage = promptText(message, images, "follow-up");
     await this.process.request({
       type: "follow_up",
       message: safeMessage,

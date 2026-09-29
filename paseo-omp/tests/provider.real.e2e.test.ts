@@ -302,4 +302,48 @@ describe(`OMP ${expectedOmpVersion} real provider`, () => {
     },
     180_000,
   );
+
+  testReal(
+    "runs a caption-less pasted image through the real OMP transport",
+    async () => {
+      const harness = await createHarness();
+      let session: AgentSession | undefined;
+      try {
+        const catalog = await harness.client.fetchCatalog({
+          scope: "workspace",
+          cwd: harness.cwd,
+          force: true,
+        });
+        const model = catalog.models.find(
+          (candidate) => candidate.description === "paseo-ci/conformance-model",
+        );
+        if (!model) throw new Error("OMP did not load the hermetic CI model");
+        session = await harness.client.createSession(
+          {
+            provider: "omp-plugin",
+            cwd: harness.cwd,
+            model: model.id,
+            modeId: "full",
+            thinkingOptionId: model.defaultThinkingOptionId,
+            featureValues: {},
+          },
+          undefined,
+          { persistSession: false },
+        );
+        const pixel =
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        const result = await session.run([{ type: "image", data: pixel, mimeType: "image/png" }], {
+          clientMessageId: "real-omp-caption-less-image",
+        });
+
+        expect(result.finalText).toBe("REAL_OMP_DONE");
+        expect(JSON.stringify(harness.requests[0])).toContain("image_url");
+      } finally {
+        await session?.close();
+        await harness.registry.shutdown();
+        harness.modelServer.stop(true);
+      }
+    },
+    180_000,
+  );
 });

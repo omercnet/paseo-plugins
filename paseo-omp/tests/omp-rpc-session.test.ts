@@ -88,6 +88,38 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("sends caption-less image prompts and still rejects empty text-only prompts", async () => {
+    const child = new FakeRpcChild();
+    const commands: Record<string, unknown>[] = [];
+    observeCommands(child, (command) => {
+      commands.push(command);
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        ...(command.type === "negotiate_protocol" ? { data: { protocolVersion: 2 } } : {}),
+      });
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const images = [{ type: "image" as const, data: "iVBORw0KGgo=", mimeType: "image/png" }];
+
+    await session.prompt("", images);
+    await session.steer("", images);
+    await session.followUp("", images);
+    expect(commands.slice(1)).toEqual([
+      expect.objectContaining({ type: "prompt", message: "", images }),
+      expect.objectContaining({ type: "steer", message: "", images }),
+      expect.objectContaining({ type: "follow_up", message: "", images }),
+    ]);
+
+    await expect(session.prompt("")).rejects.toThrow("Invalid OMP prompt");
+    await expect(session.steer("")).rejects.toThrow("Invalid OMP steer");
+    expect(commands).toHaveLength(4);
+    await session.close();
+  });
+
   test("accepts image stream events and blocked todos without breaking later frames", async () => {
     const child = new FakeRpcChild();
     observeCommands(child, (command) => {
