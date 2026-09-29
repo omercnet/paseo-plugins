@@ -51,7 +51,7 @@ host.
 paseo plugin install npm:@omercnet/paseo-fresh-worktrees
 ```
 
-The plugin requires Paseo `^0.9.0 || ^0.10.0-beta.1`.
+The plugin requires Paseo `^0.9.0 || ^0.10.0`.
 
 ## Develop
 

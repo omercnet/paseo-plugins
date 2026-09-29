@@ -60,7 +60,7 @@ Interrupting a turn is not part of `PaseoApi`, so archive is the only lifecycle 
 
 ## Install
 
-Requires Paseo `^0.9.0 || ^0.10.0-beta.1`. Development uses the stable 0.9 SDK line.
+Requires Paseo `^0.9.0 || ^0.10.0`. Development uses the stable 0.9 SDK line.
 
 Install the published package on the daemon host:
 
@@ -82,7 +82,7 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The project supports Paseo `^0.9.0 || ^0.10.0-beta.1` and pins `@getpaseo/plugin`, `@getpaseo/client`,
+The project supports Paseo `^0.9.0 || ^0.10.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
 `@getpaseo/protocol`, and `@getpaseo/cli` to the stable 0.9 SDK line. Renovate groups `@getpaseo/*`
 updates so the SDKs move together.
 

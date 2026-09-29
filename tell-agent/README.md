@@ -22,7 +22,7 @@ remained in the rendered page.
 
 ## Install
 
-### Paseo 0.9.0 or 0.10.0-beta.1
+### Paseo 0.9.0 or 0.10.1
 
 Install the npm package:
 
@@ -36,7 +36,7 @@ Update an npm installation by its plugin ID:
 paseo plugin update tell-agent
 ```
 
-Paseo 0.9 and 0.10 beta use the reviewed update flow to show the current and proposed revisions before asking for approval. Add `--check` to preview without applying or `--yes` to skip the approval prompt.
+Paseo 0.9 and 0.10 use the reviewed update flow to show the current and proposed revisions before asking for approval. Add `--check` to preview without applying or `--yes` to skip the approval prompt.
 
 ## Use
 

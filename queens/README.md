@@ -64,7 +64,7 @@ npm run import:puzzles
 
 ## Install
 
-### Paseo 0.9 and 0.10 beta
+### Paseo 0.9 and 0.10
 
 Install the published npm package on the daemon host:
 
@@ -103,7 +103,7 @@ Release Please owns package versions, changelog generation, component tags, and 
 
 ## Requirements
 
-- Paseo `^0.9.0 || ^0.10.0-beta.1`
+- Paseo `^0.9.0 || ^0.10.0`
 - Plugins enabled on the target daemon
 - React Native-compatible Paseo client on web, desktop, iOS, or Android
 

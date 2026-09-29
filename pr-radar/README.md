@@ -34,9 +34,9 @@ Paseo supplies normalized workspace pull request status. A daemon-side plugin ha
 
 ## Install
 
-### Paseo 0.9 and 0.10 beta
+### Paseo 0.9 and 0.10
 
-Paseo 0.9 and 0.10.0-beta.1 support npm plugin sources. Install the published package on the daemon host:
+Paseo 0.9 and 0.10.1 support npm plugin sources. Install the published package on the daemon host:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-pr-radar
@@ -48,7 +48,7 @@ Update an npm installation to the latest published release:
 paseo plugin update pr-radar
 ```
 
-The npm install and update flow requires Paseo 0.9 or 0.10.0-beta.1.
+The npm install and update flow requires Paseo 0.9 or 0.10.1.
 
 
 The daemon must have plugins enabled and `gh` authenticated for GitHub viewer-aware triage.
@@ -66,7 +66,7 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The manifest supports Paseo `^0.9.0 || ^0.10.0-beta.1`. Development uses the stable 0.9 CLI, client, plugin SDK,
+The manifest supports Paseo `^0.9.0 || ^0.10.0`. Development uses the stable 0.9 CLI, client, plugin SDK,
 and protocol packages together. Host-owned navigation opens linked agents and workspaces without private routes or
 page reloads on web, desktop, iOS, and Android. React `19.1` and React Native `0.81` match the versions supplied by
 the plugin host.

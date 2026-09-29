@@ -1,5 +1,5 @@
 {
   "id": "fresh-worktrees",
   "description": "Fast-forwards clean local base branches before Paseo creates branch-off worktrees.",
-  "requirements": { "paseo": "^0.9.0 || ^0.10.0-beta.1" }
+  "requirements": { "paseo": "^0.9.0 || ^0.10.0" }
 }
