@@ -33,6 +33,8 @@ export interface OmpStartOptions {
   requestTimeoutMs?: number;
   /** Resume this exact native OMP session; never use this to start a new conversation. */
   resumeSessionId?: string;
+  /** Authorized transcript of `resumeSessionId`; when set, OMP resumes this file directly. */
+  resumeSessionFile?: string;
   noSession?: boolean;
   signal?: AbortSignal;
 }
@@ -340,7 +342,12 @@ export function buildOmpSpawnRequest(
       validateBoundedText(options.sessionDir, "session directory", MAX_PATH_LENGTH),
     );
   }
-  if (options.resumeSessionId !== undefined) {
+  if (options.resumeSessionFile !== undefined) {
+    // OMP opens an absolute .jsonl directly, skipping its id lookup and global fallback.
+    const file = validateBoundedText(options.resumeSessionFile, "session file", MAX_PATH_LENGTH);
+    if (!isAbsolute(file) || !file.endsWith(".jsonl")) throw new Error("Invalid OMP session file");
+    args.push("--resume", file);
+  } else if (options.resumeSessionId !== undefined) {
     args.push("--resume", validateNativeSessionId(options.resumeSessionId));
   }
   if (options.noSession) args.push("--no-session");

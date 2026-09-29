@@ -173,6 +173,22 @@ describe("OMP RPC transport", () => {
     );
   });
 
+  test("resumes an authorized transcript by path instead of an id lookup", () => {
+    const resume = (resumeSessionFile?: string) =>
+      buildOmpSpawnRequest(
+        { cwd: "/repo", mode: "full", resumeSessionId: "native-42", resumeSessionFile },
+        TEST_RUNTIME_ENV,
+      ).args;
+    const byPath = resume("/sessions/-repo-/2026_native-42.jsonl");
+    expect(byPath[byPath.indexOf("--resume") + 1]).toBe("/sessions/-repo-/2026_native-42.jsonl");
+    expect(byPath).not.toContain("native-42");
+    const byId = resume(undefined);
+    expect(byId[byId.indexOf("--resume") + 1]).toBe("native-42");
+    for (const invalid of ["sessions/native-42.jsonl", "/sessions/native-42", "native-42"]) {
+      expect(() => resume(invalid)).toThrow("Invalid OMP session file");
+    }
+  });
+
   test("inherits only selected daemon values and skips shadowed daemon values", () => {
     const request = buildOmpSpawnRequest(
       {

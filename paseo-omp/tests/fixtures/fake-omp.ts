@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const PRIMARY_SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";
@@ -38,8 +38,11 @@ if (args.includes("--help")) {
 }
 
 const resumeIndex = args.indexOf("--resume");
-let sessionId =
-  resumeIndex >= 0 ? (args[resumeIndex + 1] ?? PRIMARY_SESSION_ID) : PRIMARY_SESSION_ID;
+const resumeTarget = resumeIndex >= 0 ? args[resumeIndex + 1] : undefined;
+// Like OMP, a .jsonl target is opened as a file and identified by its header.
+let sessionId = resumeTarget?.endsWith(".jsonl")
+  ? (JSON.parse(readFileSync(resumeTarget, "utf8").split("\n", 1)[0] ?? "{}").id as string)
+  : (resumeTarget ?? PRIMARY_SESSION_ID);
 const modelIndex = args.indexOf("--model");
 const configuredModel = modelIndex >= 0 ? args[modelIndex + 1] : undefined;
 let currentModel =

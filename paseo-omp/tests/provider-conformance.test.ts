@@ -883,7 +883,7 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
 
   test("lists, imports, replays, resumes, and preserves opaque persistence", async () => {
     const harness = await createHarness({ chunkHistory: true });
-    await writePersistedSession(harness);
+    const transcriptFile = await writePersistedSession(harness);
     let imported: AgentSession | undefined;
     let resumed: AgentSession | undefined;
     try {
@@ -928,7 +928,8 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
       const starts = (await readLog(harness.logPath)).filter(
         (entry): entry is Extract<FakeLogEntry, { kind: "start" }> => entry.kind === "start",
       );
-      expect(starts.at(-1)?.argv).toEqual(expect.arrayContaining(["--resume", PRIMARY_SESSION_ID]));
+      const argv = starts.at(-1)?.argv ?? [];
+      expect(argv[argv.indexOf("--resume") + 1]).toBe(transcriptFile);
     } finally {
       await resumed?.close();
       await imported?.close();

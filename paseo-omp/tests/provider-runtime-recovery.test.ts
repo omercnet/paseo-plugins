@@ -41,6 +41,44 @@ describe("OMP direct provider", () => {
     );
     await connection.close();
   });
+  test("resumes and recovers from the authorized transcript file", async () => {
+    const runtime = new FakeOmpRuntime();
+    const transcriptFile = "/sessions/-repo-/authorized.jsonl";
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo", transcriptFile });
+    runtime.persistedSessionMessages = {
+      sessionFile: transcriptFile,
+      nativeSessionId: NATIVE_SESSION_ID,
+      byteLength: 64,
+      messages: [{ role: "user", entryId: "user-1", content: "prompt" }],
+    };
+    const { connection, events } = await createHarness(runtime, undefined, [
+      "prompt.message",
+      "session.persistence",
+    ]);
+    await connection.send({
+      type: "session.open",
+      requestId: "open-by-file",
+      sessionId: "resumed-file",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "open-by-file",
+    );
+    sessionAt(runtime).emit({ type: "process_exit", error: "OMP exited between turns" });
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, "after-exit", "continue", "resumed-file"),
+    );
+    expect(runtime.starts.map((start) => start.resumeSessionFile)).toEqual([
+      transcriptFile,
+      transcriptFile,
+    ]);
+    expect(await finishTurn(events, sessionAt(runtime, 1), turnId)).toEqual(
+      expect.objectContaining({ state: "completed" }),
+    );
+    await connection.close();
+  });
   test("recovers with the native model and thinking selected at open", async () => {
     const runtime = new FakeOmpRuntime();
     runtime.nextModel = ALTERNATE_MODEL;

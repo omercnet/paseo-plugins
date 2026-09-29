@@ -490,7 +490,13 @@ export class OmpProviderSession {
       ...normalizedConfig,
       // Thinking is authorized only after this runtime reports its exact model catalog.
       thinkingOption: undefined,
-      ...(resumeSessionId ? { systemPrompt: undefined, resumeSessionId } : {}),
+      ...(resumeSessionId
+        ? {
+            systemPrompt: undefined,
+            resumeSessionId,
+            resumeSessionFile: persistedDescriptor?.transcriptFile,
+          }
+        : {}),
       signal,
       environment,
     };
@@ -1990,7 +1996,9 @@ export class OmpProviderSession {
       recovered = await this.runtimeFactory.startSession({
         ...this.recoveryOptions,
         ...(recoverFromNativeConfig ? { model: undefined, thinkingOption: undefined } : {}),
-        ...(expectedSessionId ? { resumeSessionId: expectedSessionId } : {}),
+        ...(expectedSessionId
+          ? { resumeSessionId: expectedSessionId, resumeSessionFile: this.nativeSessionFile }
+          : {}),
         signal: this.lifetime.signal,
       });
     } catch (error) {
