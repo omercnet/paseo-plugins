@@ -9,6 +9,7 @@ import {
   terminateSpawnedProcessTree,
 } from "../server/provider/omp-rpc-process";
 import type { OmpRpcEvent } from "../server/provider/omp-rpc-protocol";
+import { isOmpCleanupFailure } from "../server/provider/security";
 import {
   FakeRpcChild,
   nextEvent,
@@ -355,6 +356,39 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
     child.write(READY_FRAME);
     const session = await opening;
     await expect(session.close()).rejects.toThrow("cleanup failed");
+  });
+  test("settles unverified process-tree cleanup once a retry verifies exit", async () => {
+    const child = new FakeRpcChild();
+    child.stdin.removeAllListeners("finish");
+    let cleanupCalls = 0;
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => {
+        cleanupCalls += 1;
+        if (cleanupCalls === 1) return Promise.resolve(false);
+        child.close(null, "SIGKILL");
+        return Promise.resolve(true);
+      },
+      environment: TEST_RUNTIME_ENV,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const failure: unknown = await session.close().catch((error: unknown) => error);
+    expect(isOmpCleanupFailure(failure)).toBe(true);
+    if (!isOmpCleanupFailure(failure)) return;
+    await expect(failure.cleanup).resolves.toBeUndefined();
+    expect(cleanupCalls).toBe(2);
   });
 
   test("never reports cleanup success without invoking process-tree termination", async () => {

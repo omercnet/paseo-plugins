@@ -1,3 +1,4 @@
+import { setTimeout as nextMacrotask } from "node:timers/promises";
 import { describe, expect, test } from "vitest";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
@@ -528,6 +529,72 @@ describe("OMP direct provider", () => {
     }
     expect(starts).toBe(1);
     await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
+  });
+
+  test("lifts the startup cleanup quarantine once process-tree cleanup verifies on retry", async () => {
+    const children: ProviderRpcChild[] = [];
+    let terminations = 0;
+    const retryVerified = Promise.withResolvers<void>();
+    const runtime = new OmpRpcRuntime({
+      spawnProcess() {
+        const child = new ProviderRpcChild(() => {});
+        children.push(child);
+        queueMicrotask(() => child.write({ type: "ready", protocolVersion: 1 }));
+        return child.asChildProcess();
+      },
+      terminateProcessTree() {
+        terminations += 1;
+        if (terminations === 1) return Promise.resolve(false);
+        for (const child of children) child.close();
+        retryVerified.resolve();
+        return Promise.resolve(true);
+      },
+      environment: TEST_RUNTIME_ENV,
+    });
+    const connection = await createOmpProvider({ runtime, environment: TEST_RUNTIME_ENV }).connect({
+      versions: [1],
+      capabilities: ["prompt.message"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    const open = async (requestId: string) => {
+      await connection.send({
+        type: "session.open",
+        requestId,
+        sessionId: `retry-cleanup-${requestId}`,
+        config: {
+          cwd: "/repo",
+          env: { TEST_ENV: "test-value" },
+          mcpServers: {},
+          model: MODEL_PUBLIC_ID,
+          mode: "full",
+          settings: {},
+          persist: false,
+        },
+        history: "skip",
+      });
+      return await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === requestId,
+      );
+    };
+    await open("unverified-startup");
+    expect(await open("quarantined-reopen")).toEqual(
+      expect.objectContaining({
+        error: { message: "OMP native session cleanup quarantine is active" },
+      }),
+    );
+    expect(children).toHaveLength(1);
+
+    await retryVerified.promise;
+    await nextMacrotask(0);
+    const released = await open("released-reopen");
+    expect(released).not.toEqual(
+      expect.objectContaining({
+        error: { message: "OMP native session cleanup quarantine is active" },
+      }),
+    );
+    expect(children).toHaveLength(2);
+    await connection.close();
   });
 
   test("does not tombstone confirmed spawn failures before process ownership", async () => {

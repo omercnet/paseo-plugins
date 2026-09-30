@@ -12,6 +12,7 @@ import {
   type ProcessTreeCleanup,
   stopWindowsTree,
   terminatePosixProcessTree,
+  waitMs,
 } from "./omp-rpc-process";
 import {
   createOptionalMetadataSanitizer,
@@ -56,7 +57,10 @@ import {
   sanitizeHistoryResponseData,
   sanitizeLiveDisplayFrame,
 } from "./omp-rpc-protocol";
-import { boundedJsonBytes, OmpPublicError, utf8Bytes } from "./security";
+import { boundedJsonBytes, OmpCleanupFailure, OmpPublicError, utf8Bytes } from "./security";
+
+// Unverified close keeps the native session quarantined; these retries let a slow exit clear it.
+const TREE_CLEANUP_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000];
 
 type TimerHandle = number | NodeJS.Timeout;
 type SpawnProcess = (request: OmpSpawnRequest) => ChildProcessWithoutNullStreams;
@@ -483,7 +487,12 @@ export class OmpRpcProcess {
       }
     }
     const cleanup = await cleanupPromise;
-    if (cleanup !== "verified") throw new Error("OMP RPC process tree cleanup failed");
+    if (cleanup !== "verified") {
+      throw new OmpCleanupFailure(
+        "OMP RPC process tree cleanup failed",
+        this.reverifyTreeCleanup(),
+      );
+    }
     if (process.platform === "win32" && !this.exited) {
       try {
         this.child.stdin.end();
@@ -496,8 +505,28 @@ export class OmpRpcProcess {
       !this.exited &&
       !(await this.waitForExit(PROCESS_STOP_TIMEOUT_MS))
     ) {
-      throw new Error("OMP RPC process did not close after tree cleanup");
+      throw new OmpCleanupFailure(
+        "OMP RPC process did not close after tree cleanup",
+        this.reverifyTreeCleanup(),
+      );
     }
+  }
+
+  private async reverifyTreeCleanup(): Promise<void> {
+    const pid = this.child.pid;
+    if (pid !== undefined) {
+      for (const delayMs of TREE_CLEANUP_RETRY_DELAYS_MS) {
+        await waitMs(delayMs);
+        const outcome = await this.terminateProcessTree(pid).catch(() => "failed");
+        if (
+          outcome === "verified" &&
+          (this.exited || (await this.waitForExit(PROCESS_STOP_TIMEOUT_MS)))
+        ) {
+          return;
+        }
+      }
+    }
+    throw new Error("OMP RPC process tree cleanup is unverified");
   }
 
   private startTreeCleanup(): Promise<ProcessTreeCleanup> {
