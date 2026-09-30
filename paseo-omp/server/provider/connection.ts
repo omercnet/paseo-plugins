@@ -594,7 +594,9 @@ export class OmpNativeSessionReservations {
         () => {
           if (release()) onReleased?.();
         },
-        () => undefined,
+        () => {
+          release();
+        },
       );
     }
   }
