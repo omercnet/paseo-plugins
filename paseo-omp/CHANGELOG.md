@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.0.3...paseo-omp-v1.1.0) (2026-10-01)
+
+
+### Features
+
+* **paseo-omp:** use plain model name as catalog label ([#216](https://github.com/omercnet/paseo-plugins/issues/216)) ([@mcowger](https://github.com/mcowger)) ([13214de](https://github.com/omercnet/paseo-plugins/commit/13214dee7a99e06feb9ffbfc50cd50d67297ac37))
+* **plugins:** support Paseo 0.10.1 ([#221](https://github.com/omercnet/paseo-plugins/issues/221)) ([9d71ea0](https://github.com/omercnet/paseo-plugins/commit/9d71ea09eaa9ed67429813ed3e2de2567c14c825))
+
+
+### Bug Fixes
+
+* **paseo-omp:** accept image prompts without a caption ([#236](https://github.com/omercnet/paseo-plugins/issues/236)) ([693ad2e](https://github.com/omercnet/paseo-plugins/commit/693ad2ebe055c9988f2523a51bf276e83fb5c60c))
+* **paseo-omp:** complete canary subagents with yield ([#219](https://github.com/omercnet/paseo-plugins/issues/219)) ([32ec05b](https://github.com/omercnet/paseo-plugins/commit/32ec05b66d3abc648d29582fe99a7242debded85))
+* **paseo-omp:** handle indeterminate terminal errors ([#220](https://github.com/omercnet/paseo-plugins/issues/220)) ([9040d9e](https://github.com/omercnet/paseo-plugins/commit/9040d9ea3b42dc1e1b096b1cd877567d14543c83))
+* **paseo-omp:** identify local Mnemopi memory in all states ([#244](https://github.com/omercnet/paseo-plugins/issues/244)) (@Trevor-Mengel) ([c47517f](https://github.com/omercnet/paseo-plugins/commit/c47517fce00646508a3540a56b38d26e34945ef4))
+* **paseo-omp:** re-verify unverified OMP process cleanup to lift quarantine ([#241](https://github.com/omercnet/paseo-plugins/issues/241)) ([4e0771f](https://github.com/omercnet/paseo-plugins/commit/4e0771fbaefc29a0b9213698e9d66cd521baf1b3))
+* **paseo-omp:** resolve sessions in large OMP session trees ([#222](https://github.com/omercnet/paseo-plugins/issues/222)) ([f9d75f3](https://github.com/omercnet/paseo-plugins/commit/f9d75f36e1c82d6425eebed6fdf986b0b9fd5433))
+* **paseo-omp:** resume OMP from the authorized transcript file ([#235](https://github.com/omercnet/paseo-plugins/issues/235)) ([7856333](https://github.com/omercnet/paseo-plugins/commit/7856333fae2cf946019db40017b4fe600497b57a))
+
 ## [1.0.3](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.0.2...paseo-omp-v1.0.3) (2026-09-28)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-beads",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "type": "module",
   "description": "A dependency-aware Beads work queue for each Paseo workspace.",
   "license": "MIT",

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/omercnet/paseo-plugins/compare/queens-v2.0.0...queens-v2.1.0) (2026-10-01)
+
+
+### Features
+
+* **plugins:** support Paseo 0.10.1 ([#221](https://github.com/omercnet/paseo-plugins/issues/221)) ([9d71ea0](https://github.com/omercnet/paseo-plugins/commit/9d71ea09eaa9ed67429813ed3e2de2567c14c825))
+
 ## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/queens-v1.0.1...queens-v2.0.0) (2026-09-28)
 
 
