@@ -41,11 +41,6 @@
       "include-component-in-tag": true,
       "extra-files": [{ "type": "generic", "path": "server/package-version.ts" }]
     },
-    "paseo-dracula": {
-      "release-type": "node",
-      "package-name": "paseo-dracula",
-      "include-component-in-tag": true
-    },
     "paseo-shared-browser": {
       "release-type": "node",
       "package-name": "shared-browser",

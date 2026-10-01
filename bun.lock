@@ -110,21 +110,6 @@
         "zod": "catalog:",
       },
     },
-    "paseo-dracula": {
-      "name": "@omercnet/paseo-dracula",
-      "version": "1.0.1",
-      "devDependencies": {
-        "@biomejs/biome": "catalog:",
-        "@getpaseo/client": "catalog:",
-        "@getpaseo/plugin": "catalog:",
-        "@getpaseo/protocol": "catalog:",
-        "@types/node": "catalog:",
-        "@vitest/coverage-v8": "catalog:",
-        "fflate": "catalog:",
-        "typescript": "catalog:",
-        "vitest": "catalog:",
-      },
-    },
     "paseo-gas-city": {
       "name": "@omercnet/paseo-gas-city",
       "version": "1.0.1",
@@ -688,8 +673,6 @@
     "@omercnet/paseo-beads": ["@omercnet/paseo-beads@workspace:paseo-beads"],
 
     "@omercnet/paseo-context-mode": ["@omercnet/paseo-context-mode@workspace:context-mode"],
-
-    "@omercnet/paseo-dracula": ["@omercnet/paseo-dracula@workspace:paseo-dracula"],
 
     "@omercnet/paseo-fresh-worktrees": ["@omercnet/paseo-fresh-worktrees@workspace:fresh-worktrees"],
 
