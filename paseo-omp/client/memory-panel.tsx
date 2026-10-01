@@ -23,7 +23,7 @@ export function OmpMemoryPanel({ theme, layout, workspaceId }: PluginWorkspacePa
   const styles = useMemo(
     () => ({
       root: {
-        flex: 1,
+        flexGrow: 1,
         gap: layout.compact ? 10 : 14,
         padding: layout.compact ? 16 : 24,
         backgroundColor: theme.colors.surface0,

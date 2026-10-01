@@ -70,7 +70,7 @@ export function useConfigStyles(
   return useMemo(
     () => ({
       root: {
-        flex: 1,
+        flexGrow: 1,
         gap: compact ? 10 : 14,
         padding: compact ? 16 : 24,
         backgroundColor: theme.colors.surface0,

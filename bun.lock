@@ -10,7 +10,7 @@
     },
     "agent-crew": {
       "name": "@omercnet/paseo-agent-crew",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/cli": "catalog:",
@@ -31,7 +31,7 @@
     },
     "agent-monitor": {
       "name": "@omercnet/paseo-agent-monitor",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/cli": "catalog:",
@@ -53,7 +53,7 @@
     },
     "context-mode": {
       "name": "@omercnet/paseo-context-mode",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "dependencies": {
         "context-mode": "1.0.169",
       },
@@ -76,7 +76,7 @@
     },
     "fresh-worktrees": {
       "name": "@omercnet/paseo-fresh-worktrees",
-      "version": "2.0.1",
+      "version": "2.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/client": "catalog:",
@@ -91,7 +91,7 @@
     },
     "paseo-beads": {
       "name": "@omercnet/paseo-beads",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/cli": "catalog:",
@@ -112,7 +112,7 @@
     },
     "paseo-dracula": {
       "name": "@omercnet/paseo-dracula",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/client": "catalog:",
@@ -127,7 +127,7 @@
     },
     "paseo-gas-city": {
       "name": "@omercnet/paseo-gas-city",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/cli": "catalog:",
@@ -148,7 +148,7 @@
     },
     "paseo-omp": {
       "name": "@omercnet/paseo-omp",
-      "version": "1.0.3",
+      "version": "1.1.0",
       "dependencies": {
         "@getpaseo/protocol": "catalog:",
         "@modelcontextprotocol/sdk": "catalog:",
@@ -178,7 +178,7 @@
     },
     "paseo-shared-browser": {
       "name": "@omercnet/paseo-shared-browser",
-      "version": "1.0.2",
+      "version": "1.1.0",
       "dependencies": {
         "@getpaseo/plugin": "catalog:",
         "@modelcontextprotocol/sdk": "catalog:",
@@ -199,7 +199,7 @@
     },
     "pr-radar": {
       "name": "@omercnet/paseo-pr-radar",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/cli": "catalog:",
@@ -220,7 +220,7 @@
     },
     "queens": {
       "name": "@omercnet/paseo-queens",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/plugin": "catalog:",
@@ -235,7 +235,7 @@
     },
     "tell-agent": {
       "name": "@omercnet/paseo-tell-agent",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/client": "catalog:",
