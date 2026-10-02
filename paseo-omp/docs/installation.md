@@ -4,7 +4,7 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its package 
 
 ## Requirements
 
-- Paseo daemon and apps: `^0.9.2 || ^0.10.0`; the 0.9.2 floor includes the plugin-provider request, reload-cleanup, and daemon-shutdown fixes required for reliable OMP provider operation, and 0.10.1 is verified against the public plugin contracts
+- Paseo daemon and apps: `^0.9.2 || ^0.10.0 || ^0.11.0`; the 0.9.2 floor includes the plugin-provider request, reload-cleanup, and daemon-shutdown fixes required for reliable OMP provider operation, and 0.10.1 is verified against the public plugin contracts
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 

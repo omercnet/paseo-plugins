@@ -24,7 +24,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `^0.9.2 || ^0.10.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo 0.9.2 is required for reliable plugin-provider request failure containment, reload cleanup, and daemon shutdown ordering; 0.10.1 is verified against the same public plugin contracts.
+Requirements: Paseo `^0.9.2 || ^0.10.0 || ^0.11.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo 0.9.2 is required for reliable plugin-provider request failure containment, reload cleanup, and daemon shutdown ordering; 0.10.1 is verified against the same public plugin contracts.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>

@@ -42,7 +42,7 @@ colors. For Alucard, use one of Paseo's light-capable syntax themes.
 
 ## Requirements and limits
 
-- Requires Paseo `^0.9.0 || ^0.10.0`.
+- Requires Paseo `^0.9.0 || ^0.10.0 || ^0.11.0`.
 - The plugin contains no daemon-side behavior and does not read or change application state.
 
 ## Palette mapping

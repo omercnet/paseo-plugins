@@ -103,7 +103,7 @@ Release Please owns package versions, changelog generation, component tags, and 
 
 ## Requirements
 
-- Paseo `^0.9.0 || ^0.10.0`
+- Paseo `^0.9.0 || ^0.10.0 || ^0.11.0`
 - Plugins enabled on the target daemon
 - React Native-compatible Paseo client on web, desktop, iOS, or Android
 

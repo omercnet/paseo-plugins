@@ -180,5 +180,5 @@ persistence, and archive teardown.
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-Both the Paseo daemon and app must satisfy `^0.9.0 || ^0.10.0`. The client surface uses React Native primitives
+Both the Paseo daemon and app must satisfy `^0.9.0 || ^0.10.0 || ^0.11.0`. The client surface uses React Native primitives
 and works in desktop, web, iOS, and Android Paseo clients.
