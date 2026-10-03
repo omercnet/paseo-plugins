@@ -29,6 +29,8 @@ import {
   type BrowserInputEvent,
   type BrowserState,
   captureBrowserRpc,
+  containedRect,
+  createImageSizeLoader,
   DEVICE_PRESETS,
   type DevicePresetId,
   detachBrowserRpc,
@@ -41,6 +43,7 @@ import {
   releaseControlRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
+  toViewportPoint,
 } from "../shared/browser";
 
 const SPACE = {
@@ -88,12 +91,7 @@ interface Size {
   height: number;
 }
 
-interface DisplayRect extends Size {
-  x: number;
-  y: number;
-}
-
-interface DisplayPoint extends Size {
+interface DisplayPoint {
   x: number;
   y: number;
 }
@@ -114,21 +112,6 @@ const SPECIAL_KEYS: readonly { key: SpecialKey; label: string }[] = [
   { key: "PageDown", label: "Page down" },
   { key: "Space", label: "Space" },
 ];
-
-function containedRect(container: Size, image: Size): DisplayRect | null {
-  if (container.width <= 0 || container.height <= 0 || image.width <= 0 || image.height <= 0) {
-    return null;
-  }
-  const scale = Math.min(container.width / image.width, container.height / image.height);
-  const width = image.width * scale;
-  const height = image.height * scale;
-  return {
-    x: (container.width - width) / 2,
-    y: (container.height - height) / 2,
-    width,
-    height,
-  };
-}
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -1253,16 +1236,34 @@ export function SharedBrowserPanel({
   const currentFrame = frame && state && isFrameCurrent(frame, state) ? frame : null;
   const canSendInput = canControl && Boolean(currentFrame) && !inputMutation.isPending;
 
-  const displayRect = useMemo(
-    () =>
-      currentFrame
-        ? containedRect(containerSize, { width: currentFrame.width, height: currentFrame.height })
-        : null,
-    [containerSize, currentFrame],
-  );
   const frameUri = useMemo(
     () => (currentFrame ? `data:${currentFrame.mimeType};base64,${currentFrame.dataBase64}` : null),
     [currentFrame],
+  );
+  const [imageSize, setImageSize] = useState<{ uri: string; size: Size } | null>(null);
+  const loadImageSize = useMemo(
+    () =>
+      createImageSizeLoader(
+        (uri, success, failure) => Image.getSize(uri, success, failure),
+        (uri, size) => setImageSize(size ? { uri, size } : null),
+      ),
+    [],
+  );
+  useEffect(() => {
+    if (frameUri) loadImageSize(frameUri);
+  }, [frameUri, loadImageSize]);
+  // The bitmap can disagree with the frame metadata; its own aspect ratio decides the rectangle.
+  const displayRect = useMemo(
+    () =>
+      currentFrame
+        ? containedRect(
+            containerSize,
+            imageSize?.uri === frameUri
+              ? imageSize.size
+              : { width: currentFrame.width, height: currentFrame.height },
+          )
+        : null,
+    [containerSize, currentFrame, frameUri, imageSize],
   );
 
   const controlContext = useCallback(() => {
@@ -1329,7 +1330,7 @@ export function SharedBrowserPanel({
       if (!displayRect) return null;
       const x = Math.min(displayRect.width, Math.max(0, event.nativeEvent.locationX));
       const y = Math.min(displayRect.height, Math.max(0, event.nativeEvent.locationY));
-      return { x, y, width: displayRect.width, height: displayRect.height };
+      return { x, y };
     },
     [displayRect],
   );
@@ -1338,17 +1339,18 @@ export function SharedBrowserPanel({
     (event: GestureResponderEvent) => {
       const start = dragStartRef.current;
       const end = pointFromEvent(event);
+      const viewport = stateRef.current?.viewport;
       dragStartRef.current = null;
-      if (!start || !end) return;
+      if (!start || !end || !displayRect || !viewport) return;
+      const toViewport = (point: DisplayPoint) => toViewportPoint(point, displayRect, viewport);
       lastPointRef.current = { x: end.x, y: end.y };
       const distance = Math.hypot(end.x - start.x, end.y - start.y);
       if (distance >= DRAG_THRESHOLD) {
         if (swipeMode === "scroll") {
-          const current = stateRef.current;
-          const scale = current ? current.viewport.width / end.width : 1;
+          const scale = viewport.width / displayRect.width;
           sendEvent({
             kind: "scroll",
-            point: { ...start, width: end.width, height: end.height },
+            point: toViewport(start),
             deltaX: clampScrollDelta((start.x - end.x) * scale),
             deltaY: clampScrollDelta((start.y - end.y) * scale),
           });
@@ -1356,20 +1358,20 @@ export function SharedBrowserPanel({
         }
         sendEvent({
           kind: "drag",
-          start: { ...start, width: end.width, height: end.height },
-          end,
+          start: toViewport(start),
+          end: toViewport(end),
           button: interactionMode === "right" ? "right" : "left",
         });
         return;
       }
       sendEvent({
         kind: "click",
-        point: end,
+        point: toViewport(end),
         button: interactionMode === "right" ? "right" : "left",
         clickCount: interactionMode === "double" ? 2 : 1,
       });
     },
-    [interactionMode, pointFromEvent, sendEvent, swipeMode],
+    [displayRect, interactionMode, pointFromEvent, sendEvent, swipeMode],
   );
 
   const panResponder = useMemo(
@@ -1474,13 +1476,14 @@ export function SharedBrowserPanel({
 
   const scroll = useCallback(
     (deltaX: number, deltaY: number) => {
-      if (!displayRect) return;
+      const viewport = stateRef.current?.viewport;
+      if (!displayRect || !viewport) return;
       const previous = lastPointRef.current;
       const x = previous && previous.x <= displayRect.width ? previous.x : displayRect.width / 2;
       const y = previous && previous.y <= displayRect.height ? previous.y : displayRect.height / 2;
       sendEvent({
         kind: "scroll",
-        point: { x, y, width: displayRect.width, height: displayRect.height },
+        point: toViewportPoint({ x, y }, displayRect, viewport),
         deltaX,
         deltaY,
       });

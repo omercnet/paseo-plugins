@@ -365,3 +365,70 @@ export function mapDisplayedPoint(
     y: Math.min(viewport.height - 1, Math.max(0, (point.y / point.height) * viewport.height)),
   };
 }
+
+export interface FrameSize {
+  width: number;
+  height: number;
+}
+
+export interface FrameRect extends FrameSize {
+  x: number;
+  y: number;
+}
+
+export function containedRect(container: FrameSize, image: FrameSize): FrameRect | null {
+  if (container.width <= 0 || container.height <= 0 || image.width <= 0 || image.height <= 0) {
+    return null;
+  }
+  const scale = Math.min(container.width / image.width, container.height / image.height);
+  const width = image.width * scale;
+  const height = image.height * scale;
+  return {
+    x: (container.width - width) / 2,
+    y: (container.height - height) / 2,
+    width,
+    height,
+  };
+}
+
+/** Converts a point in the displayed image to the canonical viewport, scaling both axes by viewport.width / rect.width. */
+export function toViewportPoint(
+  point: MappedPoint,
+  rect: FrameSize,
+  viewport: Viewport,
+): MappedPoint & FrameSize {
+  const scale = viewport.width / rect.width;
+  return {
+    x: point.x * scale,
+    y: Math.min(viewport.height, point.y * scale),
+    width: viewport.width,
+    height: viewport.height,
+  };
+}
+
+type GetImageSize = (
+  uri: string,
+  success: (width: number, height: number) => void,
+  failure: () => void,
+) => void;
+
+/** Looks up the intrinsic size once per distinct URI and drops results superseded by a newer URI. */
+export function createImageSizeLoader(
+  getSize: GetImageSize,
+  onSize: (uri: string, size: FrameSize | null) => void,
+): (uri: string) => void {
+  let current: string | null = null;
+  return (uri) => {
+    if (uri === current) return;
+    current = uri;
+    getSize(
+      uri,
+      (width, height) => {
+        if (current === uri) onSize(uri, { width, height });
+      },
+      () => {
+        if (current === uri) onSize(uri, null);
+      },
+    );
+  };
+}
