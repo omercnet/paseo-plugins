@@ -32,6 +32,10 @@ DevTools before capture. Both PNGs come from an isolated Paseo test daemon at 2Ã
 
 Paseo supplies normalized workspace pull request status. A daemon-side plugin handler uses the authenticated `gh` CLI to distinguish authored pull requests from review requests. If viewer lookup fails, PR Radar falls back conservatively and does not claim that a row needs the user.
 
+## Paseo 0.11
+
+On 0.11 the sidebar row shows a "needs you" count; pressing the count opens a popover of those pull requests. Pressing one opens PR Radar focused on it (`param.pr`), and the needs-you link filters the queue (`param.filter`), so both survive reload and can be linked. A trailing `+` marks a count that may be incomplete: viewer lookup failed, a pagination or inbox cap was hit, or workspace status was unavailable. Paseo 0.9 and 0.10 keep the static surface and sidebar row.
+
 ## Install
 
 ### Paseo 0.9 and 0.10

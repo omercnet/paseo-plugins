@@ -1,38 +1,24 @@
-import {
-  openExternalUrl,
-  type PluginSurfaceProps,
-  usePaseo,
-  useRpc,
-} from "@getpaseo/plugin/client";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { openExternalUrl, type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, Text, TextInput, View } from "react-native";
-import { acknowledgeViewerScope, viewerScope } from "../shared/viewer-scope";
-import { observeDirectoryInvalidation } from "./directory-observation";
+import { acknowledgeViewerScope } from "../shared/viewer-scope";
 import {
-  type AgentEntry,
   agentActionFor,
-  applyViewerScope,
   BUCKET_TITLES,
   BUCKETS,
   buildAgentPrompt,
-  buildRadarSnapshot,
   checkSummary,
   formatAge,
   hasActiveAgent,
   matchesRow,
-  mergeInboxRows,
   openPullRequestUrl,
-  type PaseoApi,
-  type PaseoWorkspace,
   type RadarBucket,
   type RadarRow,
 } from "./radar";
+import { parseRadarParams, type RadarFilter } from "./screen-state";
+import { useRadar } from "./use-radar";
 
-const PAGE_LIMIT = 200;
-const MAX_PAGES = 10;
-const BACKSTOP_REFRESH_MS = 60_000;
-const EVENT_DEBOUNCE_MS = 500;
 const CLOCK_TICK_MS = 30_000;
 
 type SavedView = "security" | "updated" | "stale" | "automation";
@@ -45,35 +31,6 @@ const SAVED_VIEW_TITLES: Record<SavedView, string> = {
 };
 
 const STALE_AFTER_MS = 3 * 24 * 60 * 60 * 1_000;
-
-async function loadAgents(paseo: PaseoApi): Promise<AgentEntry[]> {
-  const entries: AgentEntry[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const result = await paseo.agents.list({
-      sort: [{ key: "updated_at", direction: "desc" }],
-      page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-    });
-    entries.push(...result.entries);
-    cursor = result.pageInfo.hasMore ? (result.pageInfo.nextCursor ?? undefined) : undefined;
-    if (!cursor) break;
-  }
-  return entries;
-}
-
-async function loadWorkspaces(paseo: PaseoApi): Promise<PaseoWorkspace[]> {
-  const workspaces: PaseoWorkspace[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const result = await paseo.workspaces.list({
-      page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-    });
-    workspaces.push(...result.entries);
-    cursor = result.pageInfo.hasMore ? (result.pageInfo.nextCursor ?? undefined) : undefined;
-    if (!cursor) break;
-  }
-  return workspaces;
-}
 
 function bucketColor(bucket: RadarBucket, colors: PluginSurfaceProps["theme"]["colors"]): string {
   if (bucket === "needs-you") return colors.statusDanger;
@@ -93,15 +50,32 @@ function agentState(row: RadarRow): string {
   return `${agent.title} · ${agent.status}${extra}`;
 }
 
-export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps) {
-  const paseo = usePaseo();
+export function PrRadar({
+  theme,
+  layout,
+  host,
+  navigation,
+  params = {},
+  onFilter,
+  live = true,
+}: PluginSurfaceProps & {
+  params?: Record<string, string>;
+  onFilter?: (filter: RadarFilter | null) => void;
+  live?: boolean;
+}) {
   const queryClient = useQueryClient();
-  const queryKey = useMemo(() => ["pr-radar", host.id], [host.id]);
-  const resolveViewerScope = useRpc(viewerScope);
   const acknowledgeUpdates = useRpc(acknowledgeViewerScope);
-  const [selected, setSelected] = useState<RadarBucket | null>(null);
-  const [activeOnly, setActiveOnly] = useState(false);
-  const [savedView, setSavedView] = useState<SavedView | null>(null);
+  const parsed = parseRadarParams(params);
+  const [localFilter, setLocalFilter] = useState<RadarFilter | null>(null);
+  const filter = onFilter ? parsed.filter : localFilter;
+  const setFilter = (value: RadarFilter | null) =>
+    onFilter ? onFilter(value) : setLocalFilter(value);
+  const selected = BUCKETS.includes(filter as RadarBucket) ? (filter as RadarBucket) : null;
+  const activeOnly = filter === "active";
+  const savedView =
+    filter && ["security", "updated", "stale", "automation"].includes(filter)
+      ? (filter as SavedView)
+      : null;
   const [windowDays, setWindowDays] = useState(30);
   const [search, setSearch] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -109,64 +83,25 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
   const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   const {
+    paseo,
+    queryKey,
     data,
     error,
     isPending,
-    isFetching: isDirectoryFetching,
     refetch,
-  } = useQuery({
-    queryKey,
-    queryFn: async () => {
-      const [workspaces, agents] = await Promise.all([loadWorkspaces(paseo), loadAgents(paseo)]);
-      return buildRadarSnapshot(workspaces, agents);
-    },
-    refetchInterval: BACKSTOP_REFRESH_MS,
-  });
+    rawRows,
+    rows,
+    viewerData,
+    viewerError,
+    isFetching,
+    refetchViewer,
+  } = useRadar(host.id, windowDays, live);
 
   useEffect(() => {
     const clock = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
     return () => clearInterval(clock);
   }, []);
 
-  useEffect(
-    () =>
-      observeDirectoryInvalidation(
-        paseo,
-        () => void queryClient.invalidateQueries({ queryKey }),
-        EVENT_DEBOUNCE_MS,
-      ),
-    [paseo, queryClient, queryKey],
-  );
-
-  const rawRows = data?.rows ?? [];
-  const scopeUrls = useMemo(() => rawRows.map((row) => row.url), [rawRows]);
-  const {
-    data: viewerData,
-    error: viewerQueryError,
-    isFetching: isViewerFetching,
-    refetch: refetchViewer,
-  } = useQuery({
-    queryKey: ["pr-radar-viewer-scope", host.id, scopeUrls, windowDays],
-    queryFn: () => resolveViewerScope({ urls: scopeUrls, windowDays }),
-    staleTime: 5 * 60_000,
-    refetchInterval: 5 * 60_000,
-  });
-  const mergedRows = useMemo(
-    () => (data ? mergeInboxRows(data, viewerData?.inboxItems ?? []) : []),
-    [data, viewerData],
-  );
-  const rows = useMemo(
-    () => applyViewerScope(mergedRows, viewerData ?? null),
-    [mergedRows, viewerData],
-  );
-  const isFetching = isDirectoryFetching || isViewerFetching;
-  const viewerError =
-    viewerData?.error ??
-    (viewerQueryError instanceof Error
-      ? viewerQueryError.message
-      : viewerQueryError
-        ? "error"
-        : null);
   const acknowledgeMutation = useMutation({
     mutationFn: () => acknowledgeUpdates({ windowDays }),
     onSuccess: async () => {
@@ -282,13 +217,14 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
             Boolean(row.activityAt && now - Date.parse(row.activityAt) >= STALE_AFTER_MS)) ||
           (savedView === "automation" && row.authorKind === "bot");
         return (
+          (!parsed.pr || row.id === parsed.pr) &&
           (!selected || row.bucket === selected) &&
           (!activeOnly || hasActiveAgent(row.agents)) &&
           matchesSavedView &&
           matchesRow(row, search)
         );
       }),
-    [activeOnly, now, rows, savedView, search, selected],
+    [activeOnly, now, rows, savedView, search, selected, parsed.pr],
   );
 
   const styles = useMemo(() => {
@@ -680,6 +616,17 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
       </View>
       <Text style={styles.heroTitle}>Know what moves next.</Text>
       <Text style={styles.heroDetail}>{totalCopy}</Text>
+      {parsed.pr ? <Text style={styles.heroDetail}>Focused PR: {parsed.pr}</Text> : null}
+      {data?.truncated ? (
+        <Text style={styles.warningText}>
+          Directory pagination limit reached; results are partial.
+        </Text>
+      ) : null}
+      {rawRows.length > 200 ? (
+        <Text style={styles.warningText}>
+          Viewer lookup is limited to 200 linked pull requests.
+        </Text>
+      ) : null}
       <View accessibilityRole="summary" style={styles.summary}>
         {summaryMetrics.map(({ label, value }) => (
           <View key={label} style={styles.metric}>
@@ -692,11 +639,7 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
         <Pressable
           accessibilityRole="tab"
           accessibilityState={{ selected: selected === null && !activeOnly && !savedView }}
-          onPress={() => {
-            setSelected(null);
-            setActiveOnly(false);
-            setSavedView(null);
-          }}
+          onPress={() => setFilter(null)}
           style={[styles.chip, selected === null && !activeOnly && !savedView && styles.chipActive]}
         >
           <Text
@@ -713,11 +656,7 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
             accessibilityRole="tab"
             accessibilityState={{ selected: selected === bucket }}
             key={bucket}
-            onPress={() => {
-              setSelected(bucket);
-              setActiveOnly(false);
-              setSavedView(null);
-            }}
+            onPress={() => setFilter(bucket)}
             style={[styles.chip, selected === bucket && styles.chipActive]}
           >
             <Text style={[styles.chipText, selected === bucket && styles.chipTextActive]}>
@@ -728,11 +667,7 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
         <Pressable
           accessibilityRole="tab"
           accessibilityState={{ selected: activeOnly }}
-          onPress={() => {
-            setSelected(null);
-            setActiveOnly(true);
-            setSavedView(null);
-          }}
+          onPress={() => setFilter("active")}
           style={[styles.chip, activeOnly && styles.chipActive]}
         >
           <Text style={[styles.chipText, activeOnly && styles.chipTextActive]}>
@@ -744,11 +679,7 @@ export function PrRadar({ theme, layout, host, navigation }: PluginSurfaceProps)
             accessibilityRole="tab"
             accessibilityState={{ selected: savedView === view }}
             key={view}
-            onPress={() => {
-              setSelected(null);
-              setActiveOnly(false);
-              setSavedView(view);
-            }}
+            onPress={() => setFilter(view)}
             style={[styles.chip, savedView === view && styles.chipActive]}
           >
             <Text style={[styles.chipText, savedView === view && styles.chipTextActive]}>
