@@ -45,6 +45,7 @@ import {
   sendBrowserInputRpc,
   toViewportPoint,
 } from "../shared/browser";
+import { FrameLifecycle } from "./frame-lifecycle";
 
 const SPACE = {
   xxs: 2,
@@ -989,14 +990,15 @@ export function SharedBrowserPanel({
   const mountedRef = useRef(false);
   const activeViewerTokenRef = useRef<string | null>(null);
   const stateRef = useRef<BrowserState | null>(null);
-  const frameRef = useRef<BrowserFrame | null>(null);
+  const lifecycleRef = useRef(new FrameLifecycle());
+  const lifecycle = lifecycleRef.current;
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
-  const mutationEpochRef = useRef(0);
   const captureInFlightRef = useRef(false);
 
   const [state, setState] = useState<BrowserState | null>(null);
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
+  const [inputBusy, setInputBusy] = useState(false);
   const [controlToken, setControlToken] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
@@ -1024,7 +1026,7 @@ export function SharedBrowserPanel({
   const acceptState = useCallback((next: BrowserState) => {
     const previous = stateRef.current;
     if (previous && !isBrowserStateCurrent(previous, next)) return false;
-    const currentFrame = frameRef.current;
+    const currentFrame = lifecycle.frame;
     if (previous && didBrowserRuntimeRestart(previous, next)) {
       setRuntimeNotice(
         "Browser restarted. The preserved viewer connection now targets the new runtime.",
@@ -1032,7 +1034,7 @@ export function SharedBrowserPanel({
       setControlToken(null);
     }
     if (currentFrame && !isFrameCurrent(currentFrame, next)) {
-      frameRef.current = null;
+      lifecycle.drop();
       setFrame(null);
       lastPointRef.current = null;
     }
@@ -1074,9 +1076,10 @@ export function SharedBrowserPanel({
 
   useEffect(() => {
     stateRef.current = null;
-    frameRef.current = null;
+    lifecycle.reset();
     setState(null);
     setFrame(null);
+    setInputBusy(false);
     setControlToken(null);
     setOperationError(null);
     setRuntimeNotice(null);
@@ -1086,8 +1089,8 @@ export function SharedBrowserPanel({
     queryKey: ["shared-browser", "capture", viewerToken],
     queryFn: async () => {
       if (!viewerToken) throw new Error("The browser viewer is not attached.");
-      const mutationEpoch = mutationEpochRef.current;
-      const knownFrame = frameRef.current;
+      const mutationEpoch = lifecycle.epoch;
+      const knownFrame = lifecycle.frame;
       captureInFlightRef.current = true;
       try {
         const result = await captureBrowser({
@@ -1113,17 +1116,14 @@ export function SharedBrowserPanel({
 
   useEffect(() => {
     const result = captureQuery.data;
-    if (
-      !result ||
-      result.mutationEpoch !== mutationEpochRef.current ||
-      !acceptState(result.state)
-    ) {
+    if (!result || !lifecycle.isCurrent(result.mutationEpoch) || !acceptState(result.state)) {
       return;
     }
     if (result.frame && isFrameCurrent(result.frame, result.state)) {
-      frameRef.current = result.frame;
+      lifecycle.accept(result.mutationEpoch, result.frame);
       setImageError(false);
-      setFrame(result.frame);
+      setFrame(lifecycle.visible);
+      setInputBusy(lifecycle.busy);
     }
   }, [acceptState, captureQuery.data]);
 
@@ -1212,6 +1212,9 @@ export function SharedBrowserPanel({
     onSuccess: (result) => mutationSucceeded(result.state),
     onError: mutationFailed,
   });
+  const settleInput = () => {
+    lifecycle.settle();
+  };
   const inputMutation = useMutation({
     mutationFn: sendBrowserInput,
     retry: false,
@@ -1220,9 +1223,13 @@ export function SharedBrowserPanel({
         const sentText = variables.event.text;
         setTypeDraft((current) => (current === sentText ? "" : current));
       }
+      settleInput();
       mutationSucceeded(result.state);
     },
-    onError: mutationFailed,
+    onError: (error) => {
+      settleInput();
+      mutationFailed(error);
+    },
   });
 
   const anyMutationPending =
@@ -1234,7 +1241,8 @@ export function SharedBrowserPanel({
     inputMutation.isPending;
   const canControl = Boolean(viewerToken && controlToken && state?.controller === "self");
   const currentFrame = frame && state && isFrameCurrent(frame, state) ? frame : null;
-  const canSendInput = canControl && Boolean(currentFrame) && !inputMutation.isPending;
+  const canSendInput =
+    canControl && Boolean(currentFrame) && !inputMutation.isPending && !inputBusy;
 
   const frameUri = useMemo(
     () => (currentFrame ? `data:${currentFrame.mimeType};base64,${currentFrame.dataBase64}` : null),
@@ -1284,7 +1292,7 @@ export function SharedBrowserPanel({
   const inputContext = useCallback(() => {
     const context = controlContext();
     const current = stateRef.current;
-    const targetFrame = frameRef.current;
+    const targetFrame = lifecycle.frame;
     if (!context || !current || !targetFrame || !isFrameCurrent(targetFrame, current)) return null;
     return {
       ...context,
@@ -1317,12 +1325,13 @@ export function SharedBrowserPanel({
 
   const sendEvent = useCallback(
     (event: BrowserInputEvent) => {
+      if (lifecycle.busy) return;
       const context = requireInputContext();
-      if (!context || inputMutation.isPending) return;
-      mutationEpochRef.current += 1;
+      if (!context || !lifecycle.begin()) return;
+      setInputBusy(true);
       inputMutation.mutate({ ...context, event });
     },
-    [inputMutation, requireInputContext],
+    [inputMutation, lifecycle, requireInputContext],
   );
 
   const pointFromEvent = useCallback(
@@ -1402,7 +1411,7 @@ export function SharedBrowserPanel({
   const takeControl = useCallback(
     (takeover: boolean) => {
       if (!viewerToken || acquireMutation.isPending) return;
-      mutationEpochRef.current += 1;
+      lifecycle.bump();
       acquireMutation.mutate({ viewerToken, takeover });
     },
     [acquireMutation, viewerToken],
@@ -1417,7 +1426,7 @@ export function SharedBrowserPanel({
     ) {
       return;
     }
-    mutationEpochRef.current += 1;
+    lifecycle.bump();
     releaseMutation.mutate({ viewerToken: viewer, controlToken });
   }, [controlToken, releaseMutation]);
 
@@ -1431,11 +1440,11 @@ export function SharedBrowserPanel({
           setOperationError("Enter an address to navigate.");
           return;
         }
-        mutationEpochRef.current += 1;
+        lifecycle.bump();
         navigateMutation.mutate({ ...context, action: { kind: "goto", url: nextUrl } });
         return;
       }
-      mutationEpochRef.current += 1;
+      lifecycle.bump();
       navigateMutation.mutate({ ...context, action: { kind: action } });
     },
     [navigateMutation, requireControlContext],
@@ -1459,7 +1468,7 @@ export function SharedBrowserPanel({
       );
       return;
     }
-    mutationEpochRef.current += 1;
+    lifecycle.bump();
     resizeMutation.mutate({ ...context, viewport: { width, height } });
   }, [requireControlContext, resizeMutation, viewportHeight, viewportWidth]);
 
@@ -1467,7 +1476,7 @@ export function SharedBrowserPanel({
     (presetId: DevicePresetId) => {
       const context = requireControlContext();
       if (!context || deviceMutation.isPending) return;
-      mutationEpochRef.current += 1;
+      lifecycle.bump();
       setDevicePickerOpen(false);
       deviceMutation.mutate({ ...context, presetId });
     },
@@ -1498,7 +1507,7 @@ export function SharedBrowserPanel({
 
   const reconnect = useCallback(() => {
     if (attachQuery.isFetching) return;
-    mutationEpochRef.current += 1;
+    lifecycle.bump();
     setReconnecting(true);
     setControlToken(null);
     setOperationError(null);
@@ -1703,7 +1712,7 @@ export function SharedBrowserPanel({
                 }
                 accessibilityRole="image"
                 onError={() => {
-                  frameRef.current = null;
+                  lifecycle.frame = null;
                   setImageError(true);
                   void captureQuery.refetch({ cancelRefetch: false });
                 }}
