@@ -28,6 +28,7 @@
     "index.client.ts",
     "index.server.ts",
     "server",
+    "client",
     "shared",
     "paseo-plugin.json"
   ],
@@ -41,7 +42,7 @@
     "check": "biome check .",
     "check:write": "biome check --write .",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
@@ -50,6 +51,7 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "react": "catalog:",
+    "react-native": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "zod": "catalog:"

@@ -84,6 +84,7 @@
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "react": "catalog:",
+        "react-native": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
         "zod": "catalog:",

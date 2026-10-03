@@ -42,6 +42,14 @@ checkout emits a warning and skips the local branch update, allowing workspace c
 from the existing local base. Failed fetches and non-fast-forward updates do the same.
 Concurrent requests for the same target share one refresh, and updates are serialized per repository.
 
+### Sidebar footer (Paseo 0.11+)
+
+On Paseo 0.11 and later a "Behind source branch" footer row shows how many workspaces are behind
+their source branch. Its popover lists them and offers **Refresh all**, which fetches and rechecks
+every listed workspace. It does not merge or fast-forward workspace branches. "Behind" compares the
+workspace `HEAD` with the remote-tracking ref of the source checkout's current branch, which is not
+necessarily the workspace's recorded base. Paseo 0.9 and 0.10 hosts get no footer row.
+
 ## Install
 
 Paseo plugins are trusted, unsandboxed code. Review the source before installing it on the daemon

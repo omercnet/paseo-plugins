@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "index.client.ts",
+    "client/**/*.ts",
+    "client/**/*.tsx",
+    "shared/**/*.ts",
+    "tests/index.client.test.ts",
+    "tests/workspace-summary.test.ts"
+  ]
+}

@@ -3,6 +3,8 @@ import type {
   PluginButtonRegistration,
   PluginClientContext,
 } from "@getpaseo/plugin/client";
+import { registerWorkspaceFooter } from "./client/workspace-footer";
+import { createWorkspaceSummary } from "./client/workspace-summary";
 import { workspaceFreshness } from "./shared/workspace-freshness";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
@@ -26,6 +28,8 @@ export default function contribute(client: PluginClientContext) {
   let workspaceSubscription: ReleasableSubscription | undefined;
   let releaseSubscriptionPromise: Promise<void> | undefined;
   let initializationFailed = false;
+  const summary = createWorkspaceSummary(scheduleFreshnessCheck);
+  const removeFooter = registerWorkspaceFooter(client, summary);
 
   function releaseWorkspaceSubscription(): Promise<void> {
     if (releaseSubscriptionPromise) return releaseSubscriptionPromise;
@@ -39,6 +43,7 @@ export default function contribute(client: PluginClientContext) {
   function removeIndicator(workspaceId: string) {
     buttons.get(workspaceId)?.remove();
     buttons.delete(workspaceId);
+    summary.remove(workspaceId);
   }
 
   async function checkFreshness(workspaceId: string) {
@@ -62,9 +67,15 @@ export default function contribute(client: PluginClientContext) {
       return;
     }
 
+    summary.set({
+      id: workspaceId,
+      directory: location.workspaceDirectory,
+      remoteRef: freshness.remoteRef,
+      behindBy: freshness.behindBy,
+    });
     const commits = freshness.behindBy === 1 ? "commit" : "commits";
     const button: PluginButton = {
-      title: `Worktree is ${freshness.behindBy} ${commits} behind ${freshness.remoteRef}. Select to recheck.`,
+      title: `Worktree is ${freshness.behindBy} ${commits} behind its source branch (${freshness.remoteRef}). Select to recheck.`,
       icon: "GitPullRequest",
       label: `Behind · ${freshness.behindBy}`,
       behavior: {
@@ -116,6 +127,7 @@ export default function contribute(client: PluginClientContext) {
       workspaceDirectory: workspace.workspaceDirectory,
     };
     workspaceLocations.set(workspace.id, location);
+    removeIndicator(workspace.id);
 
     const existing = checks.get(workspace.id);
     if (existing) {
@@ -176,6 +188,8 @@ export default function contribute(client: PluginClientContext) {
     stopped = true;
     clearInterval(interval);
     unsubscribe();
+    removeFooter?.();
+    summary.clear();
     for (const button of buttons.values()) button.remove();
     buttons.clear();
     workspaceLocations.clear();

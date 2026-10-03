@@ -6,10 +6,16 @@
     "lib": ["ES2024"],
     "types": ["node"],
     "strict": true,
+    "jsx": "react-jsx",
     "skipLibCheck": true,
     "noEmit": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true
   },
-  "include": ["**/*.ts"]
+  "include": [
+    "index.server.ts",
+    "server/**/*.ts",
+    "shared/**/*.ts",
+    "tests/fresh-worktrees.test.ts"
+  ]
 }
