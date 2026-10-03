@@ -1,5 +1,6 @@
 export interface StaleWorkspace {
   id: string;
+  projectRootPath: string;
   directory: string;
   remoteRef: string;
   behindBy: number;
@@ -32,9 +33,13 @@ export function describeRefresh(report: RefreshReport): string {
   if (report.unchanged) parts.push(`${report.unchanged} source already up to date.`);
   return parts.join(" ");
 }
-export function createWorkspaceSummary(
-  refresh: (id: string) => Promise<RefreshOutcome>,
-): WorkspaceSummary {
+
+export interface RefreshActions {
+  refreshRoot(projectRootPath: string): Promise<RefreshOutcome>;
+  recheck(workspaceId: string): Promise<void>;
+}
+
+export function createWorkspaceSummary({ refreshRoot, recheck }: RefreshActions): WorkspaceSummary {
   let entries: readonly StaleWorkspace[] = [];
   const listeners = new Set<() => void>();
   function publish(next: readonly StaleWorkspace[]) {
@@ -61,7 +66,10 @@ export function createWorkspaceSummary(
       publish([]);
     },
     async refreshAll() {
-      const results = await Promise.allSettled(entries.map(({ id }) => refresh(id)));
+      const byRoot = new Map<string, string[]>();
+      for (const { id, projectRootPath } of entries) {
+        byRoot.set(projectRootPath, [...(byRoot.get(projectRootPath) ?? []), id]);
+      }
       const report: RefreshReport = {
         updated: 0,
         unchanged: 0,
@@ -69,10 +77,16 @@ export function createWorkspaceSummary(
         unavailable: 0,
         failed: 0,
       };
-      for (const result of results) {
-        if (result.status === "rejected") report.failed++;
-        else report[result.value]++;
-      }
+      await Promise.all(
+        [...byRoot].map(async ([projectRootPath, ids]) => {
+          try {
+            report[await refreshRoot(projectRootPath)]++;
+          } catch {
+            report.failed++;
+          }
+          await Promise.allSettled(ids.map(recheck));
+        }),
+      );
       return report;
     },
   };

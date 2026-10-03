@@ -158,6 +158,21 @@ describe("worktree refresh", () => {
     expect(git(diverged.source, "rev-parse", "main")).toBe(divergedHead);
   });
 
+  test("refresh-source reports unavailable without an upstream or on a detached HEAD", async () => {
+    const deps = {
+      signal: new AbortController().signal,
+      refreshRepository: createRepositoryRefreshCoordinator(),
+    };
+    const noUpstream = await createStaleRepository();
+    git(noUpstream.source, "branch", "--unset-upstream");
+    expect(await refreshSourceBranch(noUpstream.source, deps)).toEqual({ kind: "unavailable" });
+    expect(git(noUpstream.source, "rev-parse", "main")).toBe(noUpstream.staleLocalHead);
+
+    const detached = await createStaleRepository();
+    git(detached.source, "checkout", "--detach");
+    expect(await refreshSourceBranch(detached.source, deps)).toEqual({ kind: "unavailable" });
+  });
+
   test("leaves explicit checkout requests alone", async () => {
     const request: WorkspaceCreateRequest = {
       source: {

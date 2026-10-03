@@ -6,6 +6,7 @@
     "client/**/*.tsx",
     "shared/**/*.ts",
     "tests/index.client.test.ts",
-    "tests/workspace-summary.test.ts"
+    "tests/workspace-summary.test.ts",
+    "tests/workspace-footer.test.ts"
   ]
 }

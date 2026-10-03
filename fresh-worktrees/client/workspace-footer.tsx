@@ -10,7 +10,7 @@ import { Pressable, Text, View } from "react-native";
 import { describeRefresh, type WorkspaceSummary } from "./workspace-summary";
 
 export function registerWorkspaceFooter(client: PluginClientContext, summary: WorkspaceSummary) {
-  if (typeof client.addSidebarFooterItem !== "function" || typeof SidebarRow !== "function") return;
+  if (typeof client.addSidebarFooterItem !== "function" || !SidebarRow) return;
 
   function Popover({ theme, layout }: PluginPopoverProps) {
     const entries = useSyncExternalStore(summary.subscribe, summary.getSnapshot);
@@ -38,7 +38,8 @@ export function registerWorkspaceFooter(client: PluginClientContext, summary: Wo
           Behind its source branch
         </Text>
         <Text style={{ color: theme.colors.foregroundMuted }}>
-          Refresh all fast-forwards each clean source branch to its upstream, then rechecks.
+          Refresh all fast-forwards each clean source checkout to its upstream, then rechecks.
+          Worktree branches are not updated, so they can stay listed.
         </Text>
         <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ gap: 12 }}>
           {entries.map((entry) => (

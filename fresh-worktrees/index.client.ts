@@ -4,7 +4,7 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import { registerWorkspaceFooter } from "./client/workspace-footer";
-import { createWorkspaceSummary, type RefreshOutcome } from "./client/workspace-summary";
+import { createWorkspaceSummary } from "./client/workspace-summary";
 import { refreshSourceBranch, workspaceFreshness } from "./shared/workspace-freshness";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
@@ -28,7 +28,16 @@ export default function contribute(client: PluginClientContext) {
   let workspaceSubscription: ReleasableSubscription | undefined;
   let releaseSubscriptionPromise: Promise<void> | undefined;
   let initializationFailed = false;
-  const summary = createWorkspaceSummary(refreshWorkspace);
+  const summary = createWorkspaceSummary({
+    async refreshRoot(projectRootPath) {
+      return (await client.rpc(refreshSourceBranch, { projectRootPath })).kind;
+    },
+    async recheck(workspaceId) {
+      // A check already in flight may have read the pre-fast-forward state.
+      await checks.get(workspaceId)?.catch(() => {});
+      await scheduleFreshnessCheck(workspaceId);
+    },
+  });
   const removeFooter = registerWorkspaceFooter(client, summary);
 
   function releaseWorkspaceSubscription(): Promise<void> {
@@ -56,15 +65,6 @@ export default function contribute(client: PluginClientContext) {
     return projectRootPath;
   }
 
-  async function refreshWorkspace(workspaceId: string): Promise<RefreshOutcome> {
-    const location = workspaceLocations.get(workspaceId);
-    const projectRootPath = location && (await projectRootFor(location));
-    if (!projectRootPath) return "unavailable";
-    const { kind } = await client.rpc(refreshSourceBranch, { projectRootPath });
-    await scheduleFreshnessCheck(workspaceId);
-    return kind;
-  }
-
   async function checkFreshness(workspaceId: string) {
     const location = workspaceLocations.get(workspaceId);
     if (!location) return;
@@ -83,6 +83,7 @@ export default function contribute(client: PluginClientContext) {
 
     summary.set({
       id: workspaceId,
+      projectRootPath,
       directory: location.workspaceDirectory,
       remoteRef: freshness.remoteRef,
       behindBy: freshness.behindBy,

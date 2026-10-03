@@ -1,10 +1,27 @@
-import { expect, test } from "vitest";
-import { createWorkspaceSummary, describeRefresh } from "../client/workspace-summary";
+import { expect, test, vi } from "vitest";
+import {
+  createWorkspaceSummary,
+  describeRefresh,
+  type RefreshOutcome,
+} from "../client/workspace-summary";
 
-const entry = { id: "one", directory: "/repo/one", remoteRef: "origin/main", behindBy: 3 };
+const entry = {
+  id: "one",
+  projectRootPath: "/repo",
+  directory: "/repo/one",
+  remoteRef: "origin/main",
+  behindBy: 3,
+};
+
+function summaryWith(
+  refreshRoot: (root: string) => Promise<RefreshOutcome> = async () => "unchanged",
+  recheck: (id: string) => Promise<void> = async () => {},
+) {
+  return createWorkspaceSummary({ refreshRoot, recheck });
+}
 
 test("counts workspaces, replacing results and removing current or deleted workspaces", () => {
-  const summary = createWorkspaceSummary(async () => "unchanged");
+  const summary = summaryWith();
   summary.set(entry);
   summary.set({ ...entry, behindBy: 5 });
   summary.set({ ...entry, id: "two" });
@@ -16,22 +33,49 @@ test("counts workspaces, replacing results and removing current or deleted works
   expect(summary.getSnapshot()).toEqual([]);
 });
 
-test("refresh-all refreshes every listed workspace and tallies outcomes, counting rejections as failed", async () => {
-  const outcomes = { one: "updated", two: "dirty" } as const;
-  const summary = createWorkspaceSummary(async (id) => {
-    if (id === "three") throw new Error("offline");
-    return outcomes[id as keyof typeof outcomes];
+test("refresh-all refreshes each source checkout once, then rechecks every workspace after it", async () => {
+  const calls: string[] = [];
+  const refreshRoot = vi.fn(async (root: string) => {
+    calls.push(`refresh ${root}`);
+    return "updated" as const;
+  });
+  const summary = summaryWith(refreshRoot, async (id) => {
+    calls.push(`recheck ${id}`);
   });
   summary.set(entry);
   summary.set({ ...entry, id: "two" });
-  summary.set({ ...entry, id: "three" });
+  summary.set({ ...entry, id: "three", projectRootPath: "/other" });
+
+  const report = await summary.refreshAll();
+
+  expect(refreshRoot).toHaveBeenCalledTimes(2);
+  expect(report).toEqual({ updated: 2, unchanged: 0, dirty: 0, unavailable: 0, failed: 0 });
+  for (const [root, ids] of [
+    ["/repo", ["one", "two"]],
+    ["/other", ["three"]],
+  ] as const) {
+    const refreshed = calls.indexOf(`refresh ${root}`);
+    for (const id of ids) expect(calls.indexOf(`recheck ${id}`)).toBeGreaterThan(refreshed);
+  }
+});
+
+test("a failed source refresh is counted and the workspaces are still rechecked", async () => {
+  const recheck = vi.fn(async () => {});
+  const summary = summaryWith(async (root) => {
+    if (root === "/repo") throw new Error("offline");
+    return "dirty";
+  }, recheck);
+  summary.set(entry);
+  summary.set({ ...entry, id: "two", projectRootPath: "/other" });
+
   expect(await summary.refreshAll()).toEqual({
-    updated: 1,
+    updated: 0,
     unchanged: 0,
     dirty: 1,
     unavailable: 0,
     failed: 1,
   });
+  expect(recheck).toHaveBeenCalledTimes(2);
 });
 
 test("describes refresh results, naming skipped dirty checkouts", () => {
