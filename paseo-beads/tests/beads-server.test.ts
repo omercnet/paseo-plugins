@@ -114,7 +114,13 @@ describe("workspace Beads snapshot", () => {
     );
 
     expect(requestedWorkspaceIds).toEqual(["workspace-1"]);
-    expect(result).toMatchObject({ state: "ready", issues: [], truncated: false, message: null });
+    expect(result).toMatchObject({
+      state: "ready",
+      issues: [],
+      truncated: false,
+      message: null,
+      databaseId: null,
+    });
     expect(calls).toEqual([
       {
         command: "bd",
@@ -153,7 +159,86 @@ describe("workspace Beads snapshot", () => {
           maxBuffer: 8 * 1024 * 1024,
         },
       },
+      {
+        command: "bd",
+        args: ["--readonly", "-C", "/authoritative/workspace", "where", "--json"],
+        options: {
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 8 * 1024 * 1024,
+        },
+      },
     ]);
+  });
+
+  test("names the database through bd where without exposing its path", async () => {
+    const location = {
+      database_path: "/repos/orbit/.beads/embeddeddolt",
+      path: "/repos/orbit/.beads",
+      prefix: "orbit",
+      schema_version: 1,
+    };
+    const snapshotFor = async (directory: string, reported: Record<string, unknown>) => {
+      const { runner } = recordingRunner((call) =>
+        commandArgs(call)[0] === "where" ? reported : [],
+      );
+      return handleGetWorkspaceBeads(
+        { workspaceId: "workspace-1" },
+        workspaceContext(directory),
+        runner,
+      );
+    };
+
+    // A checkout and its git worktree resolve to one database; another project has its own.
+    const checkout = await snapshotFor("/repos/orbit", location);
+    const worktree = await snapshotFor("/worktrees/orbit-feature", location);
+    const other = await snapshotFor("/repos/lumen", {
+      ...location,
+      database_path: "/repos/lumen/.beads/embeddeddolt",
+    });
+
+    expect(checkout.databaseId).toMatch(/^[0-9a-f]{16}$/);
+    expect(worktree.databaseId).toBe(checkout.databaseId);
+    expect(other.databaseId).not.toBe(checkout.databaseId);
+    expect(JSON.stringify(checkout)).not.toContain("/repos/orbit");
+  });
+
+  test("falls back to the .beads path when bd where reports no database path", async () => {
+    const { runner } = recordingRunner((call) =>
+      commandArgs(call)[0] === "where" ? { path: "/repos/orbit/.beads" } : [],
+    );
+
+    const result = await handleGetWorkspaceBeads(
+      { workspaceId: "workspace-1" },
+      workspaceContext("/repos/orbit"),
+      runner,
+    );
+
+    expect(result.databaseId).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  test("leaves the database unnamed when bd where fails, without failing the snapshot", async () => {
+    const { runner } = recordingRunner((call) => {
+      if (commandArgs(call)[0] === "where") {
+        throw commandError("unknown command", { stderr: 'unknown command "where" for "bd"' });
+      }
+      return [rawIssue("issue-1")];
+    });
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const result = await handleGetWorkspaceBeads(
+        { workspaceId: "workspace-1" },
+        workspaceContext("/workspace"),
+        runner,
+      );
+
+      expect(result).toMatchObject({ state: "ready", databaseId: null });
+      expect(result.issues.map(({ id }) => id)).toEqual(["issue-1"]);
+      expect(errorLog).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   test("unwraps JSON envelopes and leaves objects without data on the raw-payload path", async () => {
@@ -355,6 +440,7 @@ describe("workspace Beads snapshot", () => {
       issues: [],
       truncated: false,
       message: "The bd CLI is not available on this Paseo host.",
+      databaseId: null,
     });
     await expect(
       handleGetWorkspaceBead({ workspaceId: "workspace-1", issueId: "issue-1" }, context, runner),
@@ -374,6 +460,7 @@ describe("workspace Beads snapshot", () => {
       issues: [],
       truncated: false,
       message: "Beads is not initialized for this workspace.",
+      databaseId: null,
     });
     await expect(
       handleGetWorkspaceBead({ workspaceId: "workspace-1", issueId: "issue-1" }, context, runner),

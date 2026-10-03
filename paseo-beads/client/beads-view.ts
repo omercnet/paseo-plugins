@@ -188,9 +188,9 @@ export interface ReadyBeadsSummary {
 }
 
 /**
- * Worktrees read their checkout's Beads database, and Paseo can register a worktree as a project
- * of its own, so one issue can arrive from several workspaces. An issue is identified by its ID
- * and title: it counts once and is listed under the first workspace that reported it.
+ * Workspaces that share a Beads database, such as git worktrees, report the same `databaseId`, so
+ * an issue counts once and is listed under the first workspace that reported it. Titles are
+ * display data, not identity. A snapshot that cannot name its database counts as having its own.
  */
 export function summarizeReadyBeads(
   entries: readonly { workspace: ReadyBeadsWorkspace; snapshot: BeadsSnapshot | null }[],
@@ -204,8 +204,9 @@ export function summarizeReadyBeads(
   for (const { workspace, snapshot } of entries) {
     if (!snapshot) failed += 1;
     else if (snapshot.state === "bd_unavailable") unavailable += 1;
+    const database = snapshot?.databaseId ?? workspace.id;
     for (const bead of snapshot?.issues ?? []) {
-      const key = JSON.stringify([bead.id, bead.title]);
+      const key = JSON.stringify([database, bead.id]);
       if (beadLaneFor(bead) !== "ready" || seen.has(key)) continue;
       seen.add(key);
       ready.push({ workspace, bead });
@@ -239,6 +240,11 @@ export function describeReadyBeads(
   if (refreshError) notices.push(`Refresh failed, showing the last result. ${refreshError}`);
   if (failed > 0) {
     notices.push(`${failed === 1 ? "1 workspace" : `${failed} workspaces`} could not be read.`);
+  }
+  if (unavailable > 0 && count > 0) {
+    notices.push(
+      `The bd CLI was unavailable for ${unavailable === 1 ? "1 workspace" : `${unavailable} workspaces`}, so the count may be incomplete.`,
+    );
   }
 
   let empty: string | null = null;

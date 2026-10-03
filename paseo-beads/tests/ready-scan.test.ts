@@ -1,57 +1,16 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { beadsSnapshotQueryKey } from "../client/beads-view";
-import { type ListedWorkspace, pickBeadsWorkspaces, scanReadyBeads } from "../client/ready-scan";
+import { beadsSnapshotQueryKey, type ReadyBeadsWorkspace } from "../client/beads-view";
+import { scanReadyBeads } from "../client/ready-scan";
 import type { BeadsSnapshot } from "../shared/beads";
 import { bead, snapshot } from "./fixtures";
 
 const HOST = "host-1";
+const MINUTE = 60_000;
 
-function workspace(
-  id: string,
-  projectId: string,
-  workspaceKind = "local_checkout",
-): ListedWorkspace {
-  return { id, projectId, workspaceKind, projectDisplayName: projectId, name: id };
+function workspace(id: string): ReadyBeadsWorkspace {
+  return { id, projectDisplayName: "project", name: id };
 }
-
-function workspaceIds(workspaces: readonly ListedWorkspace[]): string[] {
-  return workspaces.map(({ id }) => id);
-}
-
-describe("pickBeadsWorkspaces", () => {
-  test("reads each checkout and skips the worktrees that share its database", () => {
-    const listed = [
-      workspace("wt-1", "p1", "worktree"),
-      workspace("main", "p1"),
-      workspace("wt-2", "p1", "worktree"),
-      workspace("notes", "p2", "directory"),
-    ];
-
-    expect(workspaceIds(pickBeadsWorkspaces(listed))).toEqual(["main", "notes"]);
-  });
-
-  test("reads only the first worktree of a project that lists no checkout", () => {
-    const listed = [
-      workspace("wt-1", "p1", "worktree"),
-      workspace("wt-2", "p1", "worktree"),
-      workspace("wt-3", "p2", "worktree"),
-      workspace("wt-4", "p1", "worktree"),
-    ];
-
-    expect(workspaceIds(pickBeadsWorkspaces(listed))).toEqual(["wt-1", "wt-3"]);
-  });
-
-  test("reads every checkout of a project, because separate clones keep separate databases", () => {
-    const listed = [
-      workspace("clone-a", "p1"),
-      workspace("clone-b", "p1", "checkout"),
-      workspace("wt", "p1", "worktree"),
-    ];
-
-    expect(workspaceIds(pickBeadsWorkspaces(listed))).toEqual(["clone-a", "clone-b"]);
-  });
-});
 
 describe("scanReadyBeads", () => {
   const clients: QueryClient[] = [];
@@ -76,13 +35,39 @@ describe("scanReadyBeads", () => {
     return { queryClient, loadSnapshot };
   }
 
-  function readIds(loadSnapshot: ReturnType<typeof setup>["loadSnapshot"]): string[] {
+  /** What an earlier scan, or the panel, read `agoMs` earlier and left in the cache. */
+  function remember(
+    queryClient: QueryClient,
+    workspaceId: string,
+    remembered: BeadsSnapshot,
+    agoMs: number,
+  ) {
+    queryClient.setQueryData(beadsSnapshotQueryKey(HOST, workspaceId), remembered, {
+      updatedAt: Date.now() - agoMs,
+    });
+  }
+
+  function scan(
+    { queryClient, loadSnapshot }: ReturnType<typeof setup>,
+    workspaceIds: string[],
+    signal: AbortSignal = new AbortController().signal,
+  ) {
+    return scanReadyBeads({
+      hostId: HOST,
+      signal,
+      queryClient,
+      loadSnapshot,
+      listWorkspaces: async () => workspaceIds.map(workspace),
+    });
+  }
+
+  function readIds({ loadSnapshot }: ReturnType<typeof setup>): string[] {
     return loadSnapshot.mock.calls.map(([{ workspaceId }]) => workspaceId);
   }
 
   test("stops starting workspace reads once its query is cancelled", async () => {
     const controller = new AbortController();
-    const { queryClient, loadSnapshot } = setup(
+    const env = setup(
       {
         a: snapshot([bead("a-1")]),
         b: snapshot([bead("b-1")]),
@@ -95,67 +80,88 @@ describe("scanReadyBeads", () => {
       },
     );
 
-    const scan = scanReadyBeads({
-      hostId: HOST,
-      signal: controller.signal,
-      queryClient,
-      loadSnapshot,
-      listWorkspaces: async () => ["a", "b", "c", "d"].map((id) => workspace(id, id)),
-    });
-
-    await expect(scan).rejects.toThrow();
-    expect(readIds(loadSnapshot)).toEqual(["a", "b"]);
+    await expect(scan(env, ["a", "b", "c", "d"], controller.signal)).rejects.toThrow();
+    expect(readIds(env)).toEqual(["a", "b"]);
   });
 
   test("counts an unreadable workspace as failed and still reads the rest", async () => {
-    const { queryClient, loadSnapshot } = setup({
-      a: new Error("Workspace not found."),
-      b: snapshot([bead("b-1")]),
-    });
+    const env = setup({ a: new Error("Workspace not found."), b: snapshot([bead("b-1")]) });
 
-    const summary = await scanReadyBeads({
-      hostId: HOST,
-      signal: new AbortController().signal,
-      queryClient,
-      loadSnapshot,
-      listWorkspaces: async () => [workspace("a", "p1"), workspace("b", "p2")],
-    });
+    const summary = await scan(env, ["a", "b"]);
 
     expect(summary).toMatchObject({ count: 1, failed: 1, unavailable: 0 });
   });
 
   test("reuses a snapshot the panel cached moments ago instead of rerunning bd", async () => {
-    const { queryClient, loadSnapshot } = setup({ b: snapshot([bead("b-1")]) });
-    queryClient.setQueryData(beadsSnapshotQueryKey(HOST, "a"), snapshot([bead("a-1")]));
+    const env = setup({ b: snapshot([bead("b-1")]) });
+    remember(env.queryClient, "a", snapshot([bead("a-1")]), 1_000);
 
-    const summary = await scanReadyBeads({
-      hostId: HOST,
-      signal: new AbortController().signal,
-      queryClient,
-      loadSnapshot,
-      listWorkspaces: async () => [workspace("a", "p1"), workspace("b", "p2")],
-    });
+    const summary = await scan(env, ["a", "b"]);
 
-    expect(readIds(loadSnapshot)).toEqual(["b"]);
+    expect(readIds(env)).toEqual(["b"]);
     expect(summary.count).toBe(2);
   });
 
-  test("reads a project's worktrees through its checkout alone", async () => {
-    const { queryClient, loadSnapshot } = setup({ main: snapshot([bead("a-1")]) });
-
-    const summary = await scanReadyBeads({
-      hostId: HOST,
-      signal: new AbortController().signal,
-      queryClient,
-      loadSnapshot,
-      listWorkspaces: async () => [
-        workspace("wt-1", "p1", "worktree"),
-        workspace("main", "p1"),
-        workspace("wt-2", "p1", "worktree"),
-      ],
+  test("reads every workspace the first time and counts a shared database once", async () => {
+    const shared = snapshot([bead("a-1"), bead("a-2")], { databaseId: "db-x" });
+    const env = setup({
+      main: shared,
+      "wt-1": shared,
+      other: snapshot([bead("b-1")], { databaseId: "db-y" }),
     });
 
-    expect(readIds(loadSnapshot)).toEqual(["main"]);
+    const summary = await scan(env, ["main", "wt-1", "other"]);
+
+    expect(readIds(env)).toEqual(["main", "wt-1", "other"]);
+    expect(summary.count).toBe(3);
+  });
+
+  test("afterwards reads each database once, through its first listed workspace", async () => {
+    const shared = snapshot([bead("a-1"), bead("a-2")], { databaseId: "db-x" });
+    const other = snapshot([bead("b-1")], { databaseId: "db-y" });
+    const env = setup({ "wt-1": shared, other });
+    for (const id of ["wt-1", "main", "wt-2"]) remember(env.queryClient, id, shared, MINUTE);
+    remember(env.queryClient, "other", other, MINUTE);
+
+    const summary = await scan(env, ["wt-1", "main", "wt-2", "other"]);
+
+    expect(readIds(env)).toEqual(["wt-1", "other"]);
+    expect(summary).toMatchObject({ count: 3, failed: 0 });
+  });
+
+  test("still reads a worktree when the first reader of its database failed", async () => {
+    const shared = snapshot([bead("a-1")], { databaseId: "db-x" });
+    const env = setup({ main: new Error("Request timed out."), wt: shared });
+    remember(env.queryClient, "main", shared, MINUTE);
+    remember(env.queryClient, "wt", shared, MINUTE);
+
+    const summary = await scan(env, ["main", "wt"]);
+
+    expect(readIds(env)).toEqual(["main", "wt"]);
+    expect(summary).toMatchObject({ count: 1, failed: 1 });
+  });
+
+  test("does not skip a worktree because a directory beside it has no Beads", async () => {
+    const env = setup({
+      notes: snapshot([], { state: "not_initialized" }),
+      wt: snapshot([bead("a-1")], { databaseId: "db-x" }),
+    });
+
+    const summary = await scan(env, ["notes", "wt"]);
+
+    expect(readIds(env)).toEqual(["notes", "wt"]);
     expect(summary.count).toBe(1);
+  });
+
+  test("rechecks a workspace without Beads only after a few minutes", async () => {
+    const none = snapshot([], { state: "not_initialized" });
+    const env = setup({ old: none });
+    remember(env.queryClient, "recent", none, MINUTE);
+    remember(env.queryClient, "old", none, 6 * MINUTE);
+
+    const summary = await scan(env, ["recent", "old"]);
+
+    expect(readIds(env)).toEqual(["old"]);
+    expect(summary).toMatchObject({ count: 0, failed: 0 });
   });
 });

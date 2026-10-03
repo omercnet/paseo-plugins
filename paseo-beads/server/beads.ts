@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
@@ -18,11 +19,16 @@ const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_DIAGNOSTIC_CHARS = 512;
+const MAX_PATH_CHARS = 4_096;
 
 const rawIdentifierSchema = z.string().max(BEADS_LIMITS.identifier);
 const rawTitleSchema = z.string().max(BEADS_LIMITS.title);
 const rawStatusOrTypeSchema = z.string().max(BEADS_LIMITS.statusOrType);
 const rawTimestampSchema = z.string().max(BEADS_LIMITS.timestamp).datetime();
+const RawDatabaseLocationSchema = z.object({
+  database_path: z.string().min(1).max(MAX_PATH_CHARS).optional(),
+  path: z.string().min(1).max(MAX_PATH_CHARS).optional(),
+});
 
 const RawBeadSummarySchema = z.object({
   id: rawIdentifierSchema,
@@ -141,6 +147,24 @@ async function loadReadyIds(
   return new Set(RawReadyIssueListSchema.parse(result).map(({ id }) => id));
 }
 
+/**
+ * Names the database `bd` resolves for a directory, so workspaces that share one (git worktrees,
+ * redirects) can be counted once. The ID is a digest, so no path leaves the daemon. Best effort:
+ * an older `bd` or a failing `bd where` leaves it null, and the list and ready queries still decide
+ * the snapshot's state.
+ */
+async function loadDatabaseId(directory: string, runner: BdCommandRunner): Promise<string | null> {
+  try {
+    const location = RawDatabaseLocationSchema.parse(
+      await runBd(directory, ["where", "--json"], runner),
+    );
+    const database = location.database_path ?? location.path;
+    return database ? createHash("sha256").update(database).digest("hex").slice(0, 16) : null;
+  } catch {
+    return null;
+  }
+}
+
 function errorText(error: unknown): string {
   if (!(error instanceof Error)) {
     return typeof error === "string"
@@ -249,6 +273,7 @@ function unavailableSnapshot(state: "not_initialized" | "bd_unavailable") {
     issues: [],
     truncated: false,
     refreshedAt: new Date().toISOString(),
+    databaseId: null,
     message:
       state === "bd_unavailable"
         ? "The bd CLI is not available on this Paseo host."
@@ -264,13 +289,14 @@ export async function handleGetWorkspaceBeads(
   const directory = await resolveWorkspaceDirectory(workspaceId, context);
 
   try {
-    const [listJson, readyIds] = await Promise.all([
+    const [listJson, readyIds, databaseId] = await Promise.all([
       runBd(
         directory,
         ["list", "--json", "--sort", "priority", "--limit", String(BEADS_LIMITS.rawIssueList)],
         runner,
       ),
       loadReadyIds(directory, runner),
+      loadDatabaseId(directory, runner),
     ]);
     const listed = RawIssueListSchema.parse(listJson);
     const truncated = listed.length > BEADS_LIMITS.issueList;
@@ -282,6 +308,7 @@ export async function handleGetWorkspaceBeads(
       truncated,
       refreshedAt: new Date().toISOString(),
       message: null,
+      databaseId,
     });
   } catch (error) {
     if (isBdUnavailable(error)) return unavailableSnapshot("bd_unavailable");

@@ -22,7 +22,10 @@ export function bead(id: string, overrides: Partial<BeadSummary> = {}): BeadSumm
 
 export function snapshot(
   issues: BeadSummary[],
-  state: BeadsSnapshot["state"] = "ready",
+  {
+    state = "ready",
+    databaseId = null,
+  }: { state?: BeadsSnapshot["state"]; databaseId?: string | null } = {},
 ): BeadsSnapshot {
   return {
     state,
@@ -30,5 +33,6 @@ export function snapshot(
     truncated: false,
     refreshedAt: "2026-09-01T12:00:00.000Z",
     message: null,
+    databaseId,
   };
 }

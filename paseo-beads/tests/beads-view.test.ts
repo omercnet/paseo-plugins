@@ -225,18 +225,16 @@ describe("ready beads summary", () => {
     expect(grouped(summary)).toEqual([["main", ["ready"]]]);
   });
 
-  test("counts an issue once however many workspaces and projects read its database", () => {
+  test("counts an issue once however many workspaces read its database", () => {
     const summary = summarizeReadyBeads(
       [
-        { workspace: workspace("feature"), snapshot: snapshot([bead("a-1", { priority: 1 })]) },
+        {
+          workspace: workspace("feature"),
+          snapshot: snapshot([bead("a-1", { priority: 1 })], { databaseId: "db-a" }),
+        },
         {
           workspace: workspace("main"),
-          snapshot: snapshot([bead("a-1", { priority: 1 }), bead("a-2")]),
-        },
-        // A worktree opened as a project of its own still reads the same database.
-        {
-          workspace: workspace("opened-worktree", "project-b"),
-          snapshot: snapshot([bead("a-1", { priority: 1 })]),
+          snapshot: snapshot([bead("a-1", { priority: 1 }), bead("a-2")], { databaseId: "db-a" }),
         },
       ],
       10,
@@ -249,17 +247,47 @@ describe("ready beads summary", () => {
     ]);
   });
 
-  test("keeps different issues that happen to share an ID", () => {
+  test("does not take a rename between two reads of one database for a second issue", () => {
+    const summary = summarizeReadyBeads(
+      [
+        {
+          workspace: workspace("feature"),
+          snapshot: snapshot([bead("a-1", { title: "Fix login" })], { databaseId: "db-a" }),
+        },
+        {
+          workspace: workspace("main"),
+          snapshot: snapshot([bead("a-1", { title: "Fix sign-in" })], { databaseId: "db-a" }),
+        },
+      ],
+      10,
+    );
+
+    expect(summary.count).toBe(1);
+  });
+
+  test("keeps issues from different databases that share an ID and a title", () => {
     const summary = summarizeReadyBeads(
       [
         {
           workspace: workspace("web"),
-          snapshot: snapshot([bead("app-1", { title: "Fix login" })]),
+          snapshot: snapshot([bead("app-1")], { databaseId: "db-web" }),
         },
         {
-          workspace: workspace("api", "project-b"),
-          snapshot: snapshot([bead("app-1", { title: "Add rate limits" })]),
+          workspace: workspace("api"),
+          snapshot: snapshot([bead("app-1")], { databaseId: "db-api" }),
         },
+      ],
+      10,
+    );
+
+    expect(summary.count).toBe(2);
+  });
+
+  test("treats a snapshot that cannot name its database as having one of its own", () => {
+    const summary = summarizeReadyBeads(
+      [
+        { workspace: workspace("one"), snapshot: snapshot([bead("a-1")]) },
+        { workspace: workspace("two"), snapshot: snapshot([bead("a-1")]) },
       ],
       10,
     );
@@ -270,8 +298,8 @@ describe("ready beads summary", () => {
   test("skips workspaces without Beads and tells unreadable ones from unavailable bd", () => {
     const summary = summarizeReadyBeads(
       [
-        { workspace: workspace("plain"), snapshot: snapshot([], "not_initialized") },
-        { workspace: workspace("no-bd"), snapshot: snapshot([], "bd_unavailable") },
+        { workspace: workspace("plain"), snapshot: snapshot([], { state: "not_initialized" }) },
+        { workspace: workspace("no-bd"), snapshot: snapshot([], { state: "bd_unavailable" }) },
         { workspace: workspace("broken"), snapshot: null },
         { workspace: workspace("beads", "project-b"), snapshot: snapshot([bead("b-1")]) },
       ],
@@ -341,6 +369,19 @@ describe("ready beads notes", () => {
       "Refresh failed, showing the last result. Request timed out.",
     ]);
     expect(withNone.empty).not.toContain("any workspace");
+  });
+
+  test("warns when bd was unavailable for some workspaces while others have ready beads", () => {
+    const one = describeReadyBeads(summary({ count: 2, unavailable: 1 }), null);
+    const many = describeReadyBeads(summary({ count: 2, unavailable: 3 }), null);
+
+    expect(one.empty).toBeNull();
+    expect(one.notices).toEqual([
+      "The bd CLI was unavailable for 1 workspace, so the count may be incomplete.",
+    ]);
+    expect(many.notices).toEqual([
+      "The bd CLI was unavailable for 3 workspaces, so the count may be incomplete.",
+    ]);
   });
 
   test("adds no caveats to a clean result", () => {

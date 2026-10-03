@@ -62,6 +62,11 @@ export const BeadsSnapshotSchema = z.object({
   truncated: z.boolean(),
   refreshedAt: timestampSchema,
   message: z.string().max(BEADS_LIMITS.publicMessage).nullable(),
+  /**
+   * Opaque ID of the Beads database behind the snapshot. Workspaces that share one database, such
+   * as git worktrees, report the same ID. Null or absent when `bd` could not say.
+   */
+  databaseId: identifierSchema.nullish(),
 });
 
 export type BeadSummary = z.infer<typeof BeadSummarySchema>;
