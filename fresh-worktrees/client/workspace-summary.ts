@@ -11,10 +11,30 @@ export interface WorkspaceSummary {
   set(entry: StaleWorkspace): void;
   remove(id: string): void;
   clear(): void;
-  refreshAll(): Promise<void>;
+  refreshAll(): Promise<RefreshReport>;
 }
 
-export function createWorkspaceSummary(check: (id: string) => Promise<void>): WorkspaceSummary {
+export type RefreshOutcome = "updated" | "unchanged" | "dirty" | "unavailable";
+export interface RefreshReport {
+  updated: number;
+  unchanged: number;
+  dirty: number;
+  unavailable: number;
+  failed: number;
+}
+
+export function describeRefresh(report: RefreshReport): string {
+  const parts: string[] = [];
+  if (report.updated) parts.push(`Fast-forwarded ${report.updated}.`);
+  if (report.dirty) parts.push(`${report.dirty} skipped: source checkout has uncommitted changes.`);
+  if (report.unavailable) parts.push(`${report.unavailable} could not be refreshed.`);
+  if (report.failed) parts.push(`${report.failed} failed.`);
+  if (report.unchanged) parts.push(`${report.unchanged} source already up to date.`);
+  return parts.join(" ");
+}
+export function createWorkspaceSummary(
+  refresh: (id: string) => Promise<RefreshOutcome>,
+): WorkspaceSummary {
   let entries: readonly StaleWorkspace[] = [];
   const listeners = new Set<() => void>();
   function publish(next: readonly StaleWorkspace[]) {
@@ -41,9 +61,19 @@ export function createWorkspaceSummary(check: (id: string) => Promise<void>): Wo
       publish([]);
     },
     async refreshAll() {
-      const results = await Promise.allSettled(entries.map(({ id }) => check(id)));
-      const failures = results.filter((result) => result.status === "rejected");
-      if (failures.length) throw new Error(`Could not refresh ${failures.length} workspace(s).`);
+      const results = await Promise.allSettled(entries.map(({ id }) => refresh(id)));
+      const report: RefreshReport = {
+        updated: 0,
+        unchanged: 0,
+        dirty: 0,
+        unavailable: 0,
+        failed: 0,
+      };
+      for (const result of results) {
+        if (result.status === "rejected") report.failed++;
+        else report[result.value]++;
+      }
+      return report;
     },
   };
 }

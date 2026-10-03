@@ -8,7 +8,7 @@ import {
   refreshWorkspaceRequest,
   type WorkspaceCreateRequest,
 } from "../server/fresh-worktrees";
-import { inspectWorkspaceFreshness } from "../server/workspace-freshness";
+import { inspectWorkspaceFreshness, refreshSourceBranch } from "../server/workspace-freshness";
 
 const temporaryDirectories: string[] = [];
 
@@ -132,6 +132,30 @@ describe("worktree refresh", () => {
         refreshRepository: createRepositoryRefreshCoordinator(),
       }),
     ).toEqual({ kind: "behind", remoteRef: "origin/main", behindBy: 1 });
+  });
+
+  test("refresh-source fast-forwards a clean checkout and never touches a dirty or diverged one", async () => {
+    const deps = {
+      signal: new AbortController().signal,
+      refreshRepository: createRepositoryRefreshCoordinator(),
+    };
+    const clean = await createStaleRepository();
+    expect(await refreshSourceBranch(clean.source, deps)).toEqual({ kind: "updated" });
+    expect(git(clean.source, "rev-parse", "main")).toBe(clean.currentRemoteHead);
+    expect(await refreshSourceBranch(clean.source, deps)).toEqual({ kind: "unchanged" });
+
+    const dirty = await createStaleRepository();
+    await writeFile(join(dirty.source, "local.txt"), "uncommitted\n");
+    expect(await refreshSourceBranch(dirty.source, deps)).toEqual({ kind: "dirty" });
+    expect(git(dirty.source, "rev-parse", "main")).toBe(dirty.staleLocalHead);
+
+    const diverged = await createStaleRepository();
+    await writeFile(join(diverged.source, "local.txt"), "local commit\n");
+    git(diverged.source, "add", "local.txt");
+    git(diverged.source, "commit", "-m", "local divergence");
+    const divergedHead = git(diverged.source, "rev-parse", "main");
+    expect(await refreshSourceBranch(diverged.source, deps)).toEqual({ kind: "unavailable" });
+    expect(git(diverged.source, "rev-parse", "main")).toBe(divergedHead);
   });
 
   test("leaves explicit checkout requests alone", async () => {

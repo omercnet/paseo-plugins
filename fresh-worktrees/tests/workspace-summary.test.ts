@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
-import { createWorkspaceSummary } from "../client/workspace-summary";
+import { createWorkspaceSummary, describeRefresh } from "../client/workspace-summary";
 
 const entry = { id: "one", directory: "/repo/one", remoteRef: "origin/main", behindBy: 3 };
 
 test("counts workspaces, replacing results and removing current or deleted workspaces", () => {
-  const summary = createWorkspaceSummary(async () => {});
+  const summary = createWorkspaceSummary(async () => "unchanged");
   summary.set(entry);
   summary.set({ ...entry, behindBy: 5 });
   summary.set({ ...entry, id: "two" });
@@ -16,26 +16,29 @@ test("counts workspaces, replacing results and removing current or deleted works
   expect(summary.getSnapshot()).toEqual([]);
 });
 
-test("refreshes the stale snapshot even when checks change the count", async () => {
-  const refreshed: string[] = [];
+test("refresh-all refreshes every listed workspace and tallies outcomes, counting rejections as failed", async () => {
+  const outcomes = { one: "updated", two: "dirty" } as const;
   const summary = createWorkspaceSummary(async (id) => {
-    refreshed.push(id);
-    summary.remove(id);
+    if (id === "three") throw new Error("offline");
+    return outcomes[id as keyof typeof outcomes];
   });
   summary.set(entry);
   summary.set({ ...entry, id: "two" });
-  await summary.refreshAll();
-  expect(refreshed).toEqual(["one", "two"]);
-  expect(summary.getSnapshot()).toEqual([]);
+  summary.set({ ...entry, id: "three" });
+  expect(await summary.refreshAll()).toEqual({
+    updated: 1,
+    unchanged: 0,
+    dirty: 1,
+    unavailable: 0,
+    failed: 1,
+  });
 });
 
-test("refresh-all attempts every workspace and preserves failed results for retry", async () => {
-  const summary = createWorkspaceSummary(async (id) => {
-    if (id === "one") throw new Error("offline");
-    summary.remove(id);
-  });
-  summary.set(entry);
-  summary.set({ ...entry, id: "two" });
-  await expect(summary.refreshAll()).rejects.toThrow("Could not refresh 1 workspace(s).");
-  expect(summary.getSnapshot().map(({ id }) => id)).toEqual(["one"]);
+test("describes refresh results, naming skipped dirty checkouts", () => {
+  expect(describeRefresh({ updated: 1, unchanged: 0, dirty: 2, unavailable: 0, failed: 0 })).toBe(
+    "Fast-forwarded 1. 2 skipped: source checkout has uncommitted changes.",
+  );
+  expect(describeRefresh({ updated: 0, unchanged: 2, dirty: 0, unavailable: 0, failed: 0 })).toBe(
+    "2 source already up to date.",
+  );
 });

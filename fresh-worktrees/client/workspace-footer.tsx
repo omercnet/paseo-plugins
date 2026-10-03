@@ -7,7 +7,7 @@ import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
-import type { WorkspaceSummary } from "./workspace-summary";
+import { describeRefresh, type WorkspaceSummary } from "./workspace-summary";
 
 export function registerWorkspaceFooter(client: PluginClientContext, summary: WorkspaceSummary) {
   if (typeof client.addSidebarFooterItem !== "function" || typeof SidebarRow !== "function") return;
@@ -15,14 +15,12 @@ export function registerWorkspaceFooter(client: PluginClientContext, summary: Wo
   function Popover({ theme, layout }: PluginPopoverProps) {
     const entries = useSyncExternalStore(summary.subscribe, summary.getSnapshot);
     const [pending, setPending] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [message, setMessage] = useState<string | null>(null);
     async function refreshAll() {
       setPending(true);
-      setError(null);
+      setMessage(null);
       try {
-        await summary.refreshAll();
-      } catch (error) {
-        setError(error instanceof Error ? error.message : String(error));
+        setMessage(describeRefresh(await summary.refreshAll()));
       } finally {
         setPending(false);
       }
@@ -40,7 +38,7 @@ export function registerWorkspaceFooter(client: PluginClientContext, summary: Wo
           Behind its source branch
         </Text>
         <Text style={{ color: theme.colors.foregroundMuted }}>
-          Refresh fetches and rechecks. It does not merge workspace branches.
+          Refresh all fast-forwards each clean source branch to its upstream, then rechecks.
         </Text>
         <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ gap: 12 }}>
           {entries.map((entry) => (
@@ -58,7 +56,7 @@ export function registerWorkspaceFooter(client: PluginClientContext, summary: Wo
             </Text>
           )}
         </ScrollView>
-        {error && <Text style={{ color: theme.colors.statusDanger }}>{error}</Text>}
+        {message && <Text style={{ color: theme.colors.foregroundMuted }}>{message}</Text>}
         <Pressable
           accessibilityRole="button"
           disabled={pending || !entries.length}

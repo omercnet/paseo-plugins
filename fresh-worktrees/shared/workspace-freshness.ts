@@ -17,3 +17,11 @@ export const workspaceFreshness = defineRpc({
     z.object({ kind: z.literal("unavailable") }),
   ]),
 });
+
+export const refreshSourceBranch = defineRpc({
+  name: "fresh-worktrees.refresh-source-branch",
+  input: z.object({ projectRootPath: z.string().min(1) }),
+  output: z.object({
+    kind: z.enum(["updated", "unchanged", "dirty", "unavailable"]),
+  }),
+});

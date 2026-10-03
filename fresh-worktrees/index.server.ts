@@ -3,14 +3,24 @@ import {
   createRepositoryRefreshCoordinator,
   refreshWorkspaceRequest,
 } from "./server/fresh-worktrees";
-import { inspectWorkspaceFreshness } from "./server/workspace-freshness";
-import { workspaceFreshness } from "./shared/workspace-freshness";
+import { inspectWorkspaceFreshness, refreshSourceBranch } from "./server/workspace-freshness";
+import {
+  refreshSourceBranch as refreshSourceBranchContract,
+  workspaceFreshness,
+} from "./shared/workspace-freshness";
 
 export default function contribute(server: PluginServerContext) {
   const refreshRepository = createRepositoryRefreshCoordinator();
 
   server.handle(workspaceFreshness, ({ projectRootPath, workspaceDirectory }) =>
     inspectWorkspaceFreshness(projectRootPath, workspaceDirectory, {
+      signal: new AbortController().signal,
+      refreshRepository,
+    }),
+  );
+
+  server.handle(refreshSourceBranchContract, ({ projectRootPath }) =>
+    refreshSourceBranch(projectRootPath, {
       signal: new AbortController().signal,
       refreshRepository,
     }),

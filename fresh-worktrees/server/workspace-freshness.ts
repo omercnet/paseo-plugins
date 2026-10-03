@@ -1,5 +1,8 @@
 import type { RpcOutput } from "@getpaseo/plugin";
-import type { workspaceFreshness } from "../shared/workspace-freshness";
+import type {
+  refreshSourceBranch as refreshSourceBranchContract,
+  workspaceFreshness,
+} from "../shared/workspace-freshness";
 import type { GitRunner, RepositoryRefresh } from "./fresh-worktrees";
 import { executeGit } from "./fresh-worktrees";
 
@@ -73,4 +76,50 @@ export async function inspectWorkspaceFreshness(
     return { kind: "current", remoteRef };
   }
   return { kind: "behind", remoteRef, behindBy };
+}
+
+export async function refreshSourceBranch(
+  projectRootPath: string,
+  dependencies: WorkspaceFreshnessDependencies,
+): Promise<RpcOutput<typeof refreshSourceBranchContract>> {
+  const runGit = dependencies.runGit ?? executeGit;
+  const { signal } = dependencies;
+  const branch = await optionalGit(
+    runGit,
+    projectRootPath,
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    signal,
+  );
+  if (!branch) return { kind: "unavailable" };
+  const remote = await optionalGit(
+    runGit,
+    projectRootPath,
+    ["config", "--get", `branch.${branch}.remote`],
+    signal,
+  );
+  const mergeRef = await optionalGit(
+    runGit,
+    projectRootPath,
+    ["config", "--get", `branch.${branch}.merge`],
+    signal,
+  );
+  if (!remote || remote === "." || !mergeRef?.startsWith("refs/heads/")) {
+    return { kind: "unavailable" };
+  }
+  const headBefore = await optionalGit(runGit, projectRootPath, ["rev-parse", "HEAD"], signal);
+  try {
+    const result = await dependencies.refreshRepository(
+      projectRootPath,
+      remote,
+      branch,
+      `${remote}/${mergeRef.slice("refs/heads/".length)}`,
+      signal,
+    );
+    if (result.kind !== "updated") return { kind: result.kind };
+    const headAfter = await optionalGit(runGit, projectRootPath, ["rev-parse", "HEAD"], signal);
+    return { kind: headAfter === headBefore ? "unchanged" : "updated" };
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return { kind: "unavailable" };
+  }
 }

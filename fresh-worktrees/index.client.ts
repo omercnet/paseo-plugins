@@ -4,8 +4,8 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import { registerWorkspaceFooter } from "./client/workspace-footer";
-import { createWorkspaceSummary } from "./client/workspace-summary";
-import { workspaceFreshness } from "./shared/workspace-freshness";
+import { createWorkspaceSummary, type RefreshOutcome } from "./client/workspace-summary";
+import { refreshSourceBranch, workspaceFreshness } from "./shared/workspace-freshness";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 
@@ -28,7 +28,7 @@ export default function contribute(client: PluginClientContext) {
   let workspaceSubscription: ReleasableSubscription | undefined;
   let releaseSubscriptionPromise: Promise<void> | undefined;
   let initializationFailed = false;
-  const summary = createWorkspaceSummary(scheduleFreshnessCheck);
+  const summary = createWorkspaceSummary(refreshWorkspace);
   const removeFooter = registerWorkspaceFooter(client, summary);
 
   function releaseWorkspaceSubscription(): Promise<void> {
@@ -46,15 +46,29 @@ export default function contribute(client: PluginClientContext) {
     summary.remove(workspaceId);
   }
 
-  async function checkFreshness(workspaceId: string) {
-    const location = workspaceLocations.get(workspaceId);
-    if (!location) return;
+  async function projectRootFor(location: { projectId: string }) {
     let projectRootPath = projectRoots.get(location.projectId);
     if (!projectRootPath) {
       const { projects } = await client.paseo.projects.list();
       for (const project of projects) projectRoots.set(project.projectId, project.projectRootPath);
       projectRootPath = projectRoots.get(location.projectId);
     }
+    return projectRootPath;
+  }
+
+  async function refreshWorkspace(workspaceId: string): Promise<RefreshOutcome> {
+    const location = workspaceLocations.get(workspaceId);
+    const projectRootPath = location && (await projectRootFor(location));
+    if (!projectRootPath) return "unavailable";
+    const { kind } = await client.rpc(refreshSourceBranch, { projectRootPath });
+    await scheduleFreshnessCheck(workspaceId);
+    return kind;
+  }
+
+  async function checkFreshness(workspaceId: string) {
+    const location = workspaceLocations.get(workspaceId);
+    if (!location) return;
+    const projectRootPath = await projectRootFor(location);
     if (!projectRootPath) return;
 
     const freshness = await client.rpc(workspaceFreshness, {
