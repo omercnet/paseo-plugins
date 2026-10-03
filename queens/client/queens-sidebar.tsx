@@ -11,13 +11,10 @@ export function QueensSidebar({ theme, currentScreen, openScreen }: PluginSideba
     <SidebarRow
       icon="Crown"
       active={currentScreen?.screenId === "queens"}
-      onPress={() => {
-        if (typeof openScreen === "function")
-          openScreen({ screenId: "queens", params: progress?.params });
-      }}
+      onPress={() => openScreen({ screenId: "queens", params: progress?.params })}
       trailing={
         <Text
-          accessibilityLiveRegion="polite"
+          numberOfLines={1}
           style={{
             fontSize: 11,
             color: progress?.solved ? theme.colors.statusSuccess : theme.colors.foregroundMuted,

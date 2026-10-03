@@ -2,7 +2,7 @@ import type { GameSettings } from "../shared/game-settings";
 import { PuzzleDifficultySchema, PuzzleSizeSchema } from "../shared/puzzle-catalog";
 
 export function parsePuzzleParam(value?: string) {
-  const match = value?.match(/^queens-(\d+)x\1-(beginner|easy|medium|hard)-(\d+)$/);
+  const match = value?.match(/^queens-([1-9]\d*)x\1-(beginner|easy|medium|hard)-(0|[1-9]\d*)$/);
   if (!match) return null;
   const size = PuzzleSizeSchema.safeParse(Number(match[1]));
   const difficulty = PuzzleDifficultySchema.safeParse(match[2]);

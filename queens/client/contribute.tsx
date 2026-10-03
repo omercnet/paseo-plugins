@@ -36,7 +36,7 @@ export function registerPaseoQueensClient(client: PluginClientContext) {
       keywords: ["queens", "logic", "puzzle", "game"],
       context: "global",
       onSelect({ openScreen, openSurface }) {
-        if (screens && typeof openScreen === "function") openScreen({ screenId: "queens" });
+        if (screens) openScreen({ screenId: "queens" });
         else openSurface("queens");
       },
     }),

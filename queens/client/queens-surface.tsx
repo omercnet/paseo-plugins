@@ -136,19 +136,30 @@ function QueensGame(props: PluginSurfaceProps & { puzzleParam?: string }) {
     setOpening(true);
     setLinkError(false);
     void catalog.select(requested.size, requested.difficulty, requested.id).then((saved) => {
-      setLinkError(!saved);
+      if (saved) return;
+      setLinkError(true);
       setOpening(false);
     });
   };
+  const openSaved = () => {
+    setLinkError(false);
+    setOpening(false);
+  };
+  const deckKey = catalog.deck?.key;
   useEffect(() => {
-    if (selected.current || settings.status !== "ready") return;
-    selected.current = true;
-    if (!requested || settings.values.currentPuzzleId === requested.id) {
+    if (!opening || settings.status === "loading") return;
+    if (!requested || settings.status !== "ready") {
       setOpening(false);
       return;
     }
+    if (settings.values.currentPuzzleId === requested.id) {
+      if (deckKey === `${requested.size}-${requested.difficulty}`) setOpening(false);
+      return;
+    }
+    if (selected.current) return;
+    selected.current = true;
     openPuzzle();
-  }, [catalog.select, requested, settings]);
+  }, [opening, requested, settings, deckKey]);
   if (!catalog.deck || opening || linkError) {
     return (
       <View
@@ -170,27 +181,39 @@ function QueensGame(props: PluginSurfaceProps & { puzzleParam?: string }) {
               : props.theme.colors.foregroundMuted,
           }}
         >
-          {catalog.error ??
-            (linkError ? "The linked puzzle could not be opened." : "Loading curated puzzles…")}
+          {linkError
+            ? "The linked puzzle could not be opened."
+            : (catalog.error ?? "Loading curated puzzles…")}
         </Text>
-        {catalog.error || linkError ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Retry puzzle download"
-            onPress={linkError ? openPuzzle : catalog.retry}
-            style={{
-              minHeight: 40,
-              justifyContent: "center",
-              paddingHorizontal: 16,
-              borderWidth: StyleSheet.hairlineWidth,
-              borderColor: props.theme.colors.border,
-              borderRadius: 8,
-              backgroundColor: props.theme.colors.surface2,
-            }}
-          >
-            <Text style={{ color: props.theme.colors.foreground, fontWeight: "700" }}>Retry</Text>
-          </Pressable>
-        ) : null}
+        {catalog.error || linkError
+          ? (linkError
+              ? [
+                  ["Try again", openPuzzle],
+                  ["Open saved puzzle", openSaved],
+                ]
+              : [["Retry", catalog.retry]]
+            ).map(([label, onPress]) => (
+              <Pressable
+                key={label as string}
+                accessibilityRole="button"
+                accessibilityLabel={label as string}
+                onPress={onPress as () => void}
+                style={{
+                  minHeight: 40,
+                  justifyContent: "center",
+                  paddingHorizontal: 16,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: props.theme.colors.border,
+                  borderRadius: 8,
+                  backgroundColor: props.theme.colors.surface2,
+                }}
+              >
+                <Text style={{ color: props.theme.colors.foreground, fontWeight: "700" }}>
+                  {label as string}
+                </Text>
+              </Pressable>
+            ))
+          : null}
       </View>
     );
   }

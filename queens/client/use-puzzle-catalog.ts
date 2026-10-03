@@ -96,6 +96,7 @@ export function usePuzzleCatalog(): PuzzleCatalogState {
           settings.revision,
         );
         if (!saved) throw new Error("Puzzle selection was not saved.");
+        if (nextSize === size && nextDifficulty === difficulty) setLoading(false);
         return true;
       } catch (selectionError) {
         setError(
@@ -105,7 +106,7 @@ export function usePuzzleCatalog(): PuzzleCatalogState {
         return false;
       }
     },
-    [getDeck, settings],
+    [difficulty, getDeck, settings, size],
   );
 
   const retry = useCallback(() => {

@@ -27,11 +27,13 @@ describe("Queens screen navigation", () => {
     "queens-6x6-unknown-1",
     "queens-6x6-easy-65536",
     "queens-6x6-easy-1/other",
+    "queens-06x06-easy-1",
+    "queens-6x6-easy-01",
   ])("rejects invalid puzzle param %s without inventing a title", (puzzle) => {
     expect(parsePuzzleParam(puzzle)).toBeNull();
     expect(queensScreenTitle(puzzle === undefined ? {} : { puzzle })).toBe("Queens");
   });
-  test("counts distinct recorded completions without treating a reset attempt as solved", () => {
+  test("counts distinct recorded completions and reports solved only for a completed current attempt", () => {
     const settings = {
       ...DEFAULT_GAME_SETTINGS,
       currentPuzzleId: "queens-6x6-easy-1",
