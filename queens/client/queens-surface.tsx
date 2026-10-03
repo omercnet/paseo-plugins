@@ -1,7 +1,9 @@
 import {
   type PluginClientContext,
+  type PluginScreenProps,
   type PluginSurfaceProps,
   usePaseo,
+  useSettings,
 } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -15,6 +17,7 @@ import {
   View,
   type ViewStyle,
 } from "react-native";
+import { gameSettings } from "../shared/game-settings";
 import { CompletionFeedback } from "./completion-feedback";
 import { findConflicts } from "./game";
 import type { CuratedPuzzleDeck } from "./game/curated";
@@ -22,6 +25,7 @@ import { GameControls } from "./game-controls";
 import { GameMark } from "./game-mark";
 import { PuzzleSelector } from "./puzzle-selector";
 import { QueensBoard } from "./queens-board";
+import { parsePuzzleParam } from "./screen-navigation";
 import { usePersistedGame } from "./use-persisted-game";
 import { type PuzzleCatalogState, usePuzzleCatalog } from "./use-puzzle-catalog";
 
@@ -110,9 +114,42 @@ export function PaseoQueensSurface(props: PluginSurfaceProps) {
   return <QueensGame key={props.host.id} {...props} />;
 }
 
-function QueensGame(props: PluginSurfaceProps) {
+export function PaseoQueensScreen(props: PluginScreenProps) {
+  return (
+    <QueensGame
+      key={`${props.host.id}:${props.params.puzzle ?? ""}`}
+      {...props}
+      puzzleParam={props.params.puzzle}
+    />
+  );
+}
+
+function QueensGame(props: PluginSurfaceProps & { puzzleParam?: string }) {
   const catalog = usePuzzleCatalog();
-  if (!catalog.deck) {
+  const settings = useSettings(gameSettings);
+  const requested = parsePuzzleParam(props.puzzleParam);
+  const [opening, setOpening] = useState(requested !== null);
+  const [linkError, setLinkError] = useState(false);
+  const selected = useRef(false);
+  const openPuzzle = () => {
+    if (!requested) return;
+    setOpening(true);
+    setLinkError(false);
+    void catalog.select(requested.size, requested.difficulty, requested.id).then((saved) => {
+      setLinkError(!saved);
+      setOpening(false);
+    });
+  };
+  useEffect(() => {
+    if (selected.current || settings.status !== "ready") return;
+    selected.current = true;
+    if (!requested || settings.values.currentPuzzleId === requested.id) {
+      setOpening(false);
+      return;
+    }
+    openPuzzle();
+  }, [catalog.select, requested, settings]);
+  if (!catalog.deck || opening || linkError) {
     return (
       <View
         style={{
@@ -133,13 +170,14 @@ function QueensGame(props: PluginSurfaceProps) {
               : props.theme.colors.foregroundMuted,
           }}
         >
-          {catalog.error ?? "Loading curated puzzles…"}
+          {catalog.error ??
+            (linkError ? "The linked puzzle could not be opened." : "Loading curated puzzles…")}
         </Text>
-        {catalog.error ? (
+        {catalog.error || linkError ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Retry puzzle download"
-            onPress={catalog.retry}
+            onPress={linkError ? openPuzzle : catalog.retry}
             style={{
               minHeight: 40,
               justifyContent: "center",

@@ -1,27 +1,43 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { registerQueensComposerPills } from "./composer-pill";
-import { PaseoQueensSurface } from "./queens-surface";
+import { QueensSidebar } from "./queens-sidebar";
+import { PaseoQueensScreen, PaseoQueensSurface } from "./queens-surface";
+import { queensScreenTitle, supportsQueensScreens } from "./screen-navigation";
 import { disposePersistedGames } from "./use-persisted-game";
 
 export function registerPaseoQueensClient(client: PluginClientContext) {
+  const screens = supportsQueensScreens(client, SidebarRow);
   const cleanups = [
     disposePersistedGames,
-    client.addSurface("queens", PaseoQueensSurface),
+    ...(screens
+      ? [
+          client.addScreen({
+            id: "queens",
+            title: queensScreenTitle,
+            Component: PaseoQueensScreen,
+          }),
+          client.addSidebarHeaderItem({ id: "queens", title: "Queens", Component: QueensSidebar }),
+        ]
+      : [
+          client.addSurface("queens", PaseoQueensSurface),
+          client.addSidebarItem({
+            id: "queens",
+            title: "Queens",
+            icon: "Crown",
+            surface: "queens",
+          }),
+        ]),
     registerQueensComposerPills(client),
-    client.addSidebarItem({
-      id: "queens",
-      title: "Queens",
-      icon: "Crown",
-      surface: "queens",
-    }),
     client.addCommandCenterItem({
       id: "open-queens",
       title: "Open Queens",
       icon: "Crown",
       keywords: ["queens", "logic", "puzzle", "game"],
       context: "global",
-      onSelect({ openSurface }) {
-        openSurface("queens");
+      onSelect({ openScreen, openSurface }) {
+        if (screens && typeof openScreen === "function") openScreen({ screenId: "queens" });
+        else openSurface("queens");
       },
     }),
   ];
