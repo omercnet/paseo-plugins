@@ -183,6 +183,26 @@ function findString(value: unknown, keys: readonly string[]): string | null {
   return null;
 }
 
+export function jpegDimensions(base64: string): { width: number; height: number } | null {
+  const bytes = Buffer.from(base64, "base64");
+  let offset = 2;
+  while (bytes[0] === 0xff && bytes[1] === 0xd8 && offset + 9 <= bytes.length) {
+    if (bytes[offset] !== 0xff) return null;
+    const marker = bytes[offset + 1];
+    // SOFn carries the frame size; DHT (c4), JPG (c8) and DAC (cc) share the range but do not.
+    if (
+      marker !== undefined &&
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      ![0xc4, 0xc8, 0xcc].includes(marker)
+    )
+      return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) };
+    if (marker === 0xda) return null;
+    offset += 2 + bytes.readUInt16BE(offset + 2);
+  }
+  return null;
+}
+
 export class AgentBrowserRuntime {
   readonly binaryPath: string;
   readonly executablePath: string;
@@ -318,7 +338,7 @@ export class AgentBrowserRuntime {
     await this.requireConnection().send("Target.activateTarget", { targetId }, { mutation: true });
     this.page = await attachToTarget(this.requireConnection(), targetId);
     this.targetId = targetId;
-    await this.bindPageEvents(this.page);
+    await this.preparePage(this.page);
     if (this.screencastActive) await this.startScreencastSession(this.page);
   }
 
@@ -425,34 +445,7 @@ export class AgentBrowserRuntime {
   async emulate(device: DeviceEmulation): Promise<void> {
     this.assertViewport(device);
     await this.withInvalidatedScreencast(async (page) => {
-      await page.send(
-        "Emulation.setDeviceMetricsOverride",
-        {
-          width: device.width,
-          height: device.height,
-          deviceScaleFactor: device.deviceScaleFactor,
-          mobile: device.mobile,
-          screenWidth: device.screenWidth ?? device.width,
-          screenHeight: device.screenHeight ?? device.height,
-          screenOrientation: {
-            type: device.width > device.height ? "landscapePrimary" : "portraitPrimary",
-            angle: device.width > device.height ? 90 : 0,
-          },
-        },
-        { mutation: true },
-      );
-      await page.send(
-        "Emulation.setTouchEmulationEnabled",
-        { enabled: device.touch, maxTouchPoints: device.touch ? 5 : 1 },
-        { mutation: true },
-      );
-      if (device.userAgent) {
-        await page.send(
-          "Emulation.setUserAgentOverride",
-          { userAgent: device.userAgent, platform: device.platform ?? "" },
-          { mutation: true },
-        );
-      }
+      await this.applyEmulation(page, device);
       this.viewport = { ...device };
     });
   }
@@ -483,7 +476,17 @@ export class AgentBrowserRuntime {
       throw new RangeError("maxBytes must be positive");
     const streamed = this.screencastFrame ?? (await this.waitForFrame(waitMs));
     if (streamed && streamed.byteLength <= maxBytes) return streamed;
-    const page = await this.requirePage();
+    let frame = await this.screenshot(await this.requirePage(), maxBytes, quality);
+    if (!this.sizeMismatch(frame)) return frame;
+    // The browser stopped honouring the cached viewport. Re-apply it once; never loop.
+    await this.emulate(this.requireViewport());
+    frame = await this.screenshot(await this.requirePage(), maxBytes, quality);
+    const mismatch = this.sizeMismatch(frame);
+    if (mismatch) throw new Error(`Browser returned a ${mismatch} after viewport resync`);
+    return frame;
+  }
+
+  private async screenshot(page: CdpSession, maxBytes: number, quality: number) {
     for (const candidate of [quality, 50, 35, 20, 10, 1]) {
       const boundedQuality = Math.max(1, Math.min(100, Math.round(candidate)));
       const result = await page.send<{ data: string }>("Page.captureScreenshot", {
@@ -502,10 +505,23 @@ export class AgentBrowserRuntime {
           height: viewport.height,
           transport: "screenshot",
           capturedAt: new Date().toISOString(),
-        };
+        } satisfies RuntimeFrame;
       }
     }
     throw new Error(`JPEG screenshot exceeds ${maxBytes} bytes at minimum quality`);
+  }
+
+  private sizeMismatch(frame: RuntimeFrame): string | null {
+    const { width, height, deviceScaleFactor: scale } = this.requireViewport();
+    const size = jpegDimensions(frame.dataBase64);
+    // Chromium rounds fractional device pixels, so allow one pixel of slack.
+    if (
+      size &&
+      Math.abs(size.width - width * scale) <= 1 &&
+      Math.abs(size.height - height * scale) <= 1
+    )
+      return null;
+    return `${size ? `${size.width}x${size.height}` : "unreadable"} JPEG for a ${width}x${height} viewport at ${scale}x`;
   }
 
   async mouseMove(x: number, y: number): Promise<void> {
@@ -786,13 +802,46 @@ export class AgentBrowserRuntime {
     return this.viewport;
   }
 
-  private async bindPageEvents(page: CdpSession): Promise<void> {
+  private async preparePage(page: CdpSession): Promise<void> {
     page.on("Page.screencastFrame", this.onScreencastFrame);
     page.on("event", (event: CdpEvent) => {
       if (event.method === "Inspector.targetCrashed") this.invalidateScreencastFrame();
     });
     await Promise.all([page.send("Page.enable"), page.send("Runtime.enable")]);
     await this.navigationHistory(page);
+    // Emulation is scoped to the CDP session, so every fresh attach starts without it.
+    if (this.viewport) await this.applyEmulation(page, this.viewport);
+  }
+
+  private async applyEmulation(page: CdpSession, device: DeviceEmulation): Promise<void> {
+    await page.send(
+      "Emulation.setDeviceMetricsOverride",
+      {
+        width: device.width,
+        height: device.height,
+        deviceScaleFactor: device.deviceScaleFactor,
+        mobile: device.mobile,
+        screenWidth: device.screenWidth ?? device.width,
+        screenHeight: device.screenHeight ?? device.height,
+        screenOrientation: {
+          type: device.width > device.height ? "landscapePrimary" : "portraitPrimary",
+          angle: device.width > device.height ? 90 : 0,
+        },
+      },
+      { mutation: true },
+    );
+    await page.send(
+      "Emulation.setTouchEmulationEnabled",
+      { enabled: device.touch, maxTouchPoints: device.touch ? 5 : 1 },
+      { mutation: true },
+    );
+    if (device.userAgent) {
+      await page.send(
+        "Emulation.setUserAgentOverride",
+        { userAgent: device.userAgent, platform: device.platform ?? "" },
+        { mutation: true },
+      );
+    }
   }
 
   private async startScreencastSession(page: CdpSession): Promise<void> {
@@ -837,7 +886,7 @@ export class AgentBrowserRuntime {
       { mutation: true },
     );
     const replacement = await attachToTarget(connection, target.targetId);
-    await this.bindPageEvents(replacement);
+    await this.preparePage(replacement);
     if (this.page === previous) {
       this.page = replacement;
       this.targetId = target.targetId;
