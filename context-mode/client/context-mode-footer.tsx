@@ -4,6 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Text } from "react-native";
 import { contextModeSettings, getContextModeStatus } from "../shared";
 
+// The footer stays mounted all session; poll slowly because each status miss spawns the binary.
+const FOOTER_REFRESH_MS = 60_000;
+
 export function ContextModeFooter({
   theme,
   host,
@@ -15,11 +18,13 @@ export function ContextModeFooter({
   const status = useQuery({
     queryKey: ["context-mode", host.id, "status"],
     queryFn: () => loadStatus({ fresh: false }),
-    refetchInterval: settings.status === "ready" ? settings.values.refreshIntervalMs : 15_000,
+    refetchInterval: FOOTER_REFRESH_MS,
+    staleTime: FOOTER_REFRESH_MS,
     enabled: settings.status === "ready",
   });
   const failing =
     settings.status === "error" ||
+    settings.status === "invalid" ||
     Boolean(status.error) ||
     (status.data && status.data.state !== "ready");
   const healthy = settings.status === "ready" && !failing && status.data?.state === "ready";

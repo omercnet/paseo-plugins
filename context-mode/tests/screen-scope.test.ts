@@ -83,4 +83,10 @@ describe("screen scope", () => {
       await resolveKnowledgeScope(paseo as never, { section: "knowledge", workspaceId: "w" }),
     ).toMatchObject({ provider: null, projectPath: "/workspace" });
   });
+  test("a workspace-only link to a missing workspace requires explicit selection", async () => {
+    const paseo = { workspaces: { ref: () => ({ refresh: async () => null }) } };
+    await expect(
+      resolveKnowledgeScope(paseo as never, { section: "knowledge", workspaceId: "gone" }),
+    ).rejects.toThrow("Workspace not found");
+  });
 });

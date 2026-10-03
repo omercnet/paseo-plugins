@@ -24,17 +24,25 @@ export function ScopedKnowledgeSection({
     return (
       <Text style={{ color: props.theme.colors.foregroundMuted }}>Resolving Knowledge scope…</Text>
     );
-  return (
-    <View>
-      {scope.error ? (
+  if (scope.error)
+    return (
+      <View>
         <Text accessibilityRole="alert" style={{ color: props.theme.colors.statusDanger }}>
           {scope.error.message}
         </Text>
-      ) : null}
-      <KnowledgeSection
-        {...props}
-        initialScope={scope.data ?? { provider: null, projectPath: "" }}
-      />
-    </View>
+        <KnowledgeSection
+          key="scope-error"
+          {...props}
+          initialScope={{ provider: null, projectPath: "" }}
+        />
+      </View>
+    );
+  // Remount only when the resolved destination changes so stale form state never survives it.
+  return (
+    <KnowledgeSection
+      key={JSON.stringify([scope.data.provider, scope.data.projectPath])}
+      {...props}
+      initialScope={scope.data}
+    />
   );
 }

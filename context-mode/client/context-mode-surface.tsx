@@ -280,7 +280,7 @@ export function ContextModeSurface({
         />
       </View>
       <View style={[styles.tabPanel, activeTab === "knowledge" ? null : styles.tabPanelHidden]}>
-        {screenParams.agentId || screenParams.workspaceId ? (
+        {activeTab !== "knowledge" ? null : screenParams.agentId || screenParams.workspaceId ? (
           <ScopedKnowledgeSection
             key={JSON.stringify([host.id, screenParams.agentId, screenParams.workspaceId])}
             params={screenParams}
