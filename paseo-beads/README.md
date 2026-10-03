@@ -72,13 +72,13 @@ whenever its popover opens. A snapshot an open panel read in the last 10 seconds
 of rerunning `bd`. Workspaces that share a database, such as git worktrees, report the same
 `databaseId`, so an issue counts once however many workspaces read it and is listed under the first
 workspace that reported it. The first scan reads every workspace to learn which ones share a
-database. Later scans read each database once and skip its other workspaces, which is safe only
-while a workspace is known to read a database that the scan has already read, so a workspace is
-remembered for 10 minutes. Workspaces without Beads count as zero and are rechecked every 5
-minutes. When `bd` is unavailable, or a workspace cannot be read, the popover says so instead of
-reporting an empty host, and a failed refresh is shown next to the last result. Once nothing shows
-the count, for example when the host disconnects, a scan that is still running starts no further
-workspace reads.
+database. Later scans read each database once and skip its other workspaces. A workspace is skipped
+only while a successful read in the last 10 minutes vouches that it reads a database the scan has
+already read, so a failed or older read puts it back in the scan. Workspaces without Beads count as
+zero and are rechecked every 5 minutes. When `bd` is unavailable, or a workspace cannot be read,
+the popover says so instead of reporting an empty host, and a failed refresh is shown next to the
+last result. Once nothing shows the count, for example when the host disconnects, a scan that is
+still running starts no further workspace reads.
 
 ## Limits
 

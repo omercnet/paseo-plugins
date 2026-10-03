@@ -141,6 +141,55 @@ describe("scanReadyBeads", () => {
     expect(summary).toMatchObject({ count: 1, failed: 1 });
   });
 
+  describe("a remembered database", () => {
+    const shared = snapshot([bead("a-1")], { databaseId: "db-x" });
+    const moved = snapshot([bead("b-1")], { databaseId: "db-y" });
+
+    /** `main` reads db-x; `wt` used to read db-x and now reads db-y. */
+    function setupMovedWorktree(wtAgoMs: number) {
+      const env = setup({ main: shared, wt: moved });
+      remember(env.queryClient, "main", shared, MINUTE);
+      remember(env.queryClient, "wt", shared, wtAgoMs);
+      return env;
+    }
+
+    test("is not trusted once it is older than ten minutes", async () => {
+      const env = setupMovedWorktree(11 * MINUTE);
+
+      const summary = await scan(env, ["main", "wt"]);
+
+      expect(readIds(env)).toEqual(["main", "wt"]);
+      expect(summary.count).toBe(2);
+    });
+
+    test("is not trusted when the latest read failed, even though the query keeps its data", async () => {
+      const env = setupMovedWorktree(MINUTE);
+      // An open panel keeps polling wt, so the query is never dropped; every refresh now fails.
+      await env.queryClient
+        .fetchQuery({
+          queryKey: beadsSnapshotQueryKey(HOST, "wt"),
+          queryFn: () => Promise.reject(new Error("Request timed out.")),
+          staleTime: 0,
+        })
+        .catch(() => {});
+
+      const summary = await scan(env, ["main", "wt"]);
+
+      expect(readIds(env)).toEqual(["main", "wt"]);
+      expect(summary.count).toBe(2);
+    });
+
+    test("is not trusted once its query was invalidated", async () => {
+      const env = setupMovedWorktree(MINUTE);
+      await env.queryClient.invalidateQueries({ queryKey: beadsSnapshotQueryKey(HOST, "wt") });
+
+      const summary = await scan(env, ["main", "wt"]);
+
+      expect(readIds(env)).toEqual(["main", "wt"]);
+      expect(summary.count).toBe(2);
+    });
+  });
+
   test("does not skip a worktree because a directory beside it has no Beads", async () => {
     const env = setup({
       notes: snapshot([], { state: "not_initialized" }),
