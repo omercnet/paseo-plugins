@@ -6,6 +6,13 @@
 
 * Migrate the plugin to Paseo 0.8 runtime entries and require Paseo ^0.8.0.
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-dracula-v1.1.0...paseo-dracula-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-dracula-v1.0.1...paseo-dracula-v1.1.0) (2026-10-01)
 
 

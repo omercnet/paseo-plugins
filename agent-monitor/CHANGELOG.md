@@ -10,6 +10,14 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v1.1.0...agent-monitor-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **agent-monitor:** live sidebar row, attention popover and monitor screen params ([#256](https://github.com/omercnet/paseo-plugins/issues/256)) ([b6b8123](https://github.com/omercnet/paseo-plugins/commit/b6b8123bc985a6b7e1659099d1a8eb2fd7de5b90))
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v1.0.1...agent-monitor-v1.1.0) (2026-10-01)
 
 

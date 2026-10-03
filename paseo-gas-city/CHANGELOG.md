@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-gas-city-v1.1.0...paseo-gas-city-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **gas-city:** sidebar health row, city popover and per-city screens on Paseo 0.11 ([#252](https://github.com/omercnet/paseo-plugins/issues/252)) ([f87fc12](https://github.com/omercnet/paseo-plugins/commit/f87fc12ffbb39e41c2ea4185cf706f3be99f1092))
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-gas-city-v1.0.1...paseo-gas-city-v1.1.0) (2026-10-01)
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v1.1.0...tell-agent-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+* **tell-agent:** steer the source agent's active turn by default ([#259](https://github.com/omercnet/paseo-plugins/issues/259)) ([4aaf478](https://github.com/omercnet/paseo-plugins/commit/4aaf4781128ae9b829f15bdcb9d12ce01f1a7a64))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v1.0.1...tell-agent-v1.1.0) (2026-10-01)
 
 

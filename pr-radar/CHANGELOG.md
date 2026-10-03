@@ -6,6 +6,14 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v1.1.0...pr-radar-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+* **pr-radar:** needs-you sidebar row, popover and linkable screen on Paseo 0.11 ([#253](https://github.com/omercnet/paseo-plugins/issues/253)) ([aab9f00](https://github.com/omercnet/paseo-plugins/commit/aab9f00d736100881afcf8aed7b01bfef3c1d307))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v1.0.1...pr-radar-v1.1.0) (2026-10-01)
 
 

@@ -8,6 +8,14 @@
 * Warn and skip the local branch update when the source checkout is dirty instead of blocking workspace creation.
 * Show a workspace-header indicator when a worktree is behind the source branch's remote-tracking ref.
 
+## [2.2.0](https://github.com/omercnet/paseo-plugins/compare/fresh-worktrees-v2.1.0...fresh-worktrees-v2.2.0) (2026-10-03)
+
+
+### Features
+
+* **fresh-worktrees:** add sidebar footer with stale workspace count and refresh all ([#254](https://github.com/omercnet/paseo-plugins/issues/254)) ([ec6b461](https://github.com/omercnet/paseo-plugins/commit/ec6b46171f606105b7d8e09aec1ff07d3cef35a4))
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+
 ## [2.1.0](https://github.com/omercnet/paseo-plugins/compare/fresh-worktrees-v2.0.1...fresh-worktrees-v2.1.0) (2026-10-01)
 
 

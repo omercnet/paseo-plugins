@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v1.1.0...paseo-context-mode-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **context-mode:** Paseo 0.11 screen, scoped Knowledge pill and sidebar health row ([#255](https://github.com/omercnet/paseo-plugins/issues/255)) ([3607735](https://github.com/omercnet/paseo-plugins/commit/36077351f942405451995d31e7b853c5100b59f7))
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v1.0.1...paseo-context-mode-v1.1.0) (2026-10-01)
 
 

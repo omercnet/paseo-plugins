@@ -1,14 +1,14 @@
 {
-  "agent-crew": "1.1.0",
-  "tell-agent": "1.1.0",
-  "agent-monitor": "1.1.0",
-  "fresh-worktrees": "2.1.0",
-  "paseo-beads": "1.1.0",
-  "paseo-omp": "1.1.0",
-  "paseo-dracula": "1.1.0",
-  "paseo-shared-browser": "1.1.0",
-  "paseo-gas-city": "1.1.0",
-  "context-mode": "1.1.0",
-  "pr-radar": "1.1.0",
-  "queens": "2.1.0"
+  "agent-crew": "1.2.0",
+  "tell-agent": "1.2.0",
+  "agent-monitor": "1.2.0",
+  "fresh-worktrees": "2.2.0",
+  "paseo-beads": "1.2.0",
+  "paseo-omp": "1.2.0",
+  "paseo-dracula": "1.2.0",
+  "paseo-shared-browser": "1.2.0",
+  "paseo-gas-city": "1.2.0",
+  "context-mode": "1.2.0",
+  "pr-radar": "1.2.0",
+  "queens": "2.2.0"
 }

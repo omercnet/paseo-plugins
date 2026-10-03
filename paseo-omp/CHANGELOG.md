@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.1.0...paseo-omp-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **paseo-omp:** adopt Paseo 0.11 screens and hub sidebar row ([#262](https://github.com/omercnet/paseo-plugins/issues/262)) ([557e726](https://github.com/omercnet/paseo-plugins/commit/557e726d8000ef353b1d99664f93cd6d61bf93ad))
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+
+
+### Bug Fixes
+
+* allow scrolling in Settings UI on mobile/compact views ([#245](https://github.com/omercnet/paseo-plugins/issues/245)) ([5f38b18](https://github.com/omercnet/paseo-plugins/commit/5f38b18ebdfe541d450a327e4fda5e9ebcd38cda))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.0.3...paseo-omp-v1.1.0) (2026-10-01)
 
 

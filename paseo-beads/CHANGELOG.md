@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v1.1.0...paseo-beads-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **paseo-beads:** ready beads sidebar row, popover and linkable bead screen on Paseo 0.11 ([#260](https://github.com/omercnet/paseo-plugins/issues/260)) ([104f416](https://github.com/omercnet/paseo-plugins/commit/104f4168d0a9c4f931f3e9f30b1a551b10ee5342))
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v1.0.1...paseo-beads-v1.1.0) (2026-10-01)
 
 

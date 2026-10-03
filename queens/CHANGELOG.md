@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.0](https://github.com/omercnet/paseo-plugins/compare/queens-v2.1.0...queens-v2.2.0) (2026-10-03)
+
+
+### Features
+
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+* **queens:** open puzzles as linkable screens with sidebar progress ([#257](https://github.com/omercnet/paseo-plugins/issues/257)) ([43a8332](https://github.com/omercnet/paseo-plugins/commit/43a8332c34facc44cce984924f01e9db740352bb))
+
 ## [2.1.0](https://github.com/omercnet/paseo-plugins/compare/queens-v2.0.0...queens-v2.1.0) (2026-10-01)
 
 

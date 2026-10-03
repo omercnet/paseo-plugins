@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v1.1.0...shared-browser-v1.2.0) (2026-10-03)
+
+
+### Features
+
+* **paseo-shared-browser:** inject MCP into OMP on Paseo 0.11 and add sidebar footer row ([#258](https://github.com/omercnet/paseo-plugins/issues/258)) ([09593b9](https://github.com/omercnet/paseo-plugins/commit/09593b9afb30627b9714ced00deb0168e2781f58))
+* **plugins:** declare Paseo 0.11 compatibility ([#248](https://github.com/omercnet/paseo-plugins/issues/248)) ([f983a8b](https://github.com/omercnet/paseo-plugins/commit/f983a8bf2025f009c178c15183d6cfac0b2024dd))
+
+
+### Bug Fixes
+
+* **paseo-shared-browser:** ignore pre-settlement frames after input ([#264](https://github.com/omercnet/paseo-plugins/issues/264)) ([2ca1674](https://github.com/omercnet/paseo-plugins/commit/2ca16748862fbe220a1caf62a165240632e42f89))
+* **paseo-shared-browser:** map pointer input to actual frame dimensions ([#263](https://github.com/omercnet/paseo-plugins/issues/263)) ([7e5aa5b](https://github.com/omercnet/paseo-plugins/commit/7e5aa5b764edd019e055b41d7bd7eedfe5c7f65e))
+* **paseo-shared-browser:** resync viewport when fallback frame size disagrees ([#266](https://github.com/omercnet/paseo-plugins/issues/266)) ([842155f](https://github.com/omercnet/paseo-plugins/commit/842155ff7a3d80d61525a0f0f8afb979a65b79fa))
+
 ## [1.1.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v1.0.2...shared-browser-v1.1.0) (2026-10-01)
 
 
