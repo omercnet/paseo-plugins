@@ -45,8 +45,9 @@ Concurrent requests for the same target share one refresh, and updates are seria
 ### Sidebar footer (Paseo 0.11+)
 
 On Paseo 0.11 and later a "Behind source branch" footer row shows how many workspaces are behind
-their source branch. Its popover lists them and offers **Refresh all**, which fetches and rechecks
-every listed workspace. It does not merge or fast-forward workspace branches. "Behind" compares the
+their source branch. Its popover lists them and offers **Refresh all**, which fast-forwards each
+clean source checkout to its upstream (never a dirty or diverged one, which are skipped and
+reported), then rechecks every listed workspace. Worktree branches are not touched. "Behind" compares the
 workspace `HEAD` with the remote-tracking ref of the source checkout's current branch, which is not
 necessarily the workspace's recorded base. Paseo 0.9 and 0.10 hosts get no footer row.
 
