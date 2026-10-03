@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import {
   type AgentEntry,
   age,
+  attentionCount,
+  attentionItems,
   bucketOf,
   buildRoster,
   childCounts,
@@ -11,6 +13,7 @@ import {
   type MonitorDirectory,
   matches,
   PARENT_AGENT_ID_LABEL,
+  parseBucketParam,
   placement,
   shouldCollapseWorkspace,
   stateLabel,
@@ -494,5 +497,48 @@ describe("row presentation", () => {
     expect(matches(item, "feature")).toBe(true);
     expect(matches(item, "MODEL-X".toLowerCase())).toBe(true);
     expect(matches(item, "missing")).toBe(false);
+  });
+});
+
+describe("attention summary", () => {
+  test("lists only agents the dashboard buckets as attention, longest waiting first", () => {
+    const items = attentionItems([
+      entry({ id: "a", title: "idle one" }),
+      entry({
+        id: "b",
+        requiresAttention: true,
+        attentionReason: "finished",
+        attentionTimestamp: "2026-08-25T10:30:00.000Z",
+      }),
+      entry({ id: "c", status: "error", updatedAt: "2026-08-25T10:00:00.000Z" }),
+      entry({ id: "d", status: "closed", requiresAttention: true }),
+      entry({ id: "e", status: "running", pendingPermissions: [permission] }),
+    ]);
+    expect(items.map((item) => item.id)).toEqual(["c", "b", "e"]);
+    expect(items.every((item) => item.since > 0)).toBe(true);
+  });
+
+  test("withholds the count while loading or after a failed refresh", () => {
+    const items = attentionItems([entry({ id: "b", requiresAttention: true })]);
+    expect(attentionCount({ items: undefined, truncated: false, failed: false })).toBeNull();
+    expect(attentionCount({ items, truncated: false, failed: true })).toBeNull();
+    expect(attentionCount({ items, truncated: false, failed: false })).toEqual({
+      count: 1,
+      lowerBound: false,
+    });
+  });
+
+  test("marks a truncated roster as a lower bound", () => {
+    expect(attentionCount({ items: [], truncated: true, failed: false })).toEqual({
+      count: 0,
+      lowerBound: true,
+    });
+  });
+
+  test("parses the bucket param, treating unknown values as absent", () => {
+    expect(parseBucketParam("attention")).toBe("attention");
+    expect(parseBucketParam("all")).toBeNull();
+    expect(parseBucketParam("bogus")).toBeUndefined();
+    expect(parseBucketParam(undefined)).toBeUndefined();
   });
 });

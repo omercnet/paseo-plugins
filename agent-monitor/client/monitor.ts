@@ -87,6 +87,44 @@ export function bucketOf(agent: AgentSnapshot): Bucket {
   return "idle";
 }
 
+/**
+ * The screen's `bucket` param: a bucket id, or "all" for no filter. Anything else (missing,
+ * stale link, typo) is `undefined` so the caller falls back to the user's default bucket.
+ */
+export function parseBucketParam(value: string | undefined): Bucket | null | undefined {
+  if (value === "all") return null;
+  return BUCKETS.find((bucket) => bucket === value);
+}
+
+/** The lean row the sidebar popover needs. Its fields change only when the row visibly changes. */
+export type AttentionItem = { id: string; title: string; state: string; since: number };
+
+/** Agents in the attention bucket, longest-waiting first. Uses the same `bucketOf` as the screen. */
+export function attentionItems(entries: readonly AgentEntry[]): AttentionItem[] {
+  return entries
+    .filter((entry) => bucketOf(entry.agent) === "attention")
+    .map((entry) => ({
+      id: entry.agent.id,
+      title: title(entry),
+      state: stateLabel(entry.agent),
+      since: waitingSince(entry.agent),
+    }))
+    .sort((left, right) => left.since - right.since);
+}
+
+/**
+ * The count to show, or null when it cannot be trusted: still loading, or the last refresh failed
+ * so the cached roster may be stale. A truncated roster is a lower bound.
+ */
+export function attentionCount(state: {
+  items: readonly AttentionItem[] | undefined;
+  truncated: boolean;
+  failed: boolean;
+}): { count: number; lowerBound: boolean } | null {
+  if (!state.items || state.failed) return null;
+  return { count: state.items.length, lowerBound: state.truncated };
+}
+
 export function stateLabel(agent: AgentSnapshot): string {
   const permissionCount = agent.pendingPermissions.length;
   if (permissionCount > 0) {

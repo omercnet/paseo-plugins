@@ -1,11 +1,10 @@
 import { type PluginSurfaceProps, usePaseo, useSettings } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, Pressable, Text, TextInput, View } from "react-native";
 import { initialBucket, type MonitorSettings, monitorSettings } from "../shared/monitor-settings";
 import { DiffStat, type DiffStatStyles } from "./diff-stat";
-import { createDebouncedInvalidator, observeDirectoryInvalidation } from "./directory-observation";
 import {
   type AgentEntry,
   age,
@@ -15,13 +14,11 @@ import {
   bucketOf,
   buildRoster,
   childCounts,
-  indexProjects,
   type MonitorDirectory,
   matches,
   PARENT_AGENT_ID_LABEL,
-  type PaseoApi,
-  type PaseoWorkspace,
   type ProjectGroup,
+  parseBucketParam,
   placement,
   shouldCollapseWorkspace,
   stateLabel,
@@ -30,78 +27,20 @@ import {
   type WorkspaceSummary,
   waitingSince,
 } from "./monitor";
+import { useMonitorQuery } from "./monitor-data";
 import { settingsAreReady } from "./settings-state";
 
-const PAGE_LIMIT = 200;
-const MAX_PAGES = 10;
-const REFRESH_DEBOUNCE_MS = 750;
-const BACKSTOP_REFETCH_MS = 30_000;
 const CLOCK_INTERVAL_MS = 15_000;
-
-type MonitorData = { entries: AgentEntry[]; directory: MonitorDirectory };
 
 const EMPTY_DIRECTORY: MonitorDirectory = { workspaces: new Map(), projects: new Map() };
 
-async function loadAgents(paseo: PaseoApi): Promise<AgentEntry[]> {
-  const entries: AgentEntry[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const result = await paseo.agents.list({
-      sort: [{ key: "updated_at", direction: "desc" }],
-      page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-    });
-    entries.push(...result.entries);
-    cursor = result.pageInfo.hasMore ? (result.pageInfo.nextCursor ?? undefined) : undefined;
-    if (!cursor) break;
-  }
-  return entries;
-}
-
-async function loadWorkspaces(paseo: PaseoApi): Promise<PaseoWorkspace[]> {
-  const workspaces: PaseoWorkspace[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const result = await paseo.workspaces.list({
-      page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-    });
-    workspaces.push(...result.entries);
-    cursor = result.pageInfo.hasMore ? (result.pageInfo.nextCursor ?? undefined) : undefined;
-    if (!cursor) break;
-  }
-  return workspaces;
-}
-
-async function loadDirectory(paseo: PaseoApi): Promise<MonitorData> {
-  const [entries, workspaces, registry] = await Promise.all([
-    loadAgents(paseo),
-    loadWorkspaces(paseo),
-    paseo.projects.list(),
-  ]);
-  const workspaceSummaries = new Map<string, WorkspaceSummary>();
-  for (const workspace of workspaces) {
-    workspaceSummaries.set(workspace.id, {
-      id: workspace.id,
-      navigationId: workspace.id,
-      name: workspace.name,
-      projectId: workspace.projectId,
-      projectName: workspace.projectDisplayName,
-      pinned: workspace.pinnedAt != null,
-      labels: workspace.labels ?? [],
-      additions: workspace.diffStat?.additions ?? 0,
-      deletions: workspace.diffStat?.deletions ?? 0,
-    });
-  }
-  const projects = indexProjects(
-    registry.projects.map((project) => ({
-      id: project.projectId,
-      key: project.projectKey,
-      name: project.projectCustomName?.trim() || project.projectDisplayName,
-    })),
-  );
-  return { entries, directory: { workspaces: workspaceSummaries, projects } };
-}
-
-type AgentMonitorProps = PluginSurfaceProps & { onOpenSettings(): void };
+type AgentMonitorProps = PluginSurfaceProps & {
+  onOpenSettings(): void;
+  /** The screen's `bucket` param. Omitted on hosts without screens, where the filter is local. */
+  bucketParam?: string;
+  /** Moves the filter into the screen URL. Omitted on hosts without screens. */
+  onSelectBucket?(bucket: Bucket | null): void;
+};
 
 export function AgentMonitor(props: AgentMonitorProps) {
   const settingsState = useSettings(monitorSettings);
@@ -201,18 +140,23 @@ function AgentMonitorRoster({
   host,
   navigation,
   onOpenSettings,
+  bucketParam,
+  onSelectBucket,
   settings,
 }: AgentMonitorProps & { settings: MonitorSettings }) {
   const paseo = usePaseo();
   const queryClient = useQueryClient();
   const queryKey = useMemo(() => ["agent-monitor", "agents", host.id], [host.id]);
-  const { data, error, isPending, isFetching, refetch } = useQuery({
-    queryKey,
-    queryFn: () => loadDirectory(paseo),
-    refetchInterval: BACKSTOP_REFETCH_MS,
-  });
+  const { data, error, isPending, isFetching, refetch } = useMonitorQuery(host.id);
 
-  const [selected, setSelected] = useState<Bucket | null>(() => initialBucket(settings));
+  const [localSelected, setLocalSelected] = useState<Bucket | null>(() => initialBucket(settings));
+  const fromParam = parseBucketParam(bucketParam);
+  const selected = onSelectBucket
+    ? fromParam === undefined
+      ? initialBucket(settings)
+      : fromParam
+    : localSelected;
+  const setSelected = onSelectBucket ?? setLocalSelected;
   const [needle, setNeedle] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [sweepArmed, setSweepArmed] = useState(false);
@@ -222,18 +166,6 @@ function AgentMonitorRoster({
     const clock = setInterval(() => setNow(Date.now()), CLOCK_INTERVAL_MS);
     return () => clearInterval(clock);
   }, []);
-
-  useEffect(() => {
-    const invalidator = createDebouncedInvalidator(
-      () => void queryClient.invalidateQueries({ queryKey }),
-      REFRESH_DEBOUNCE_MS,
-    );
-    const stopObserving = observeDirectoryInvalidation(paseo, invalidator.invalidate);
-    return () => {
-      invalidator.cancel();
-      stopObserving();
-    };
-  }, [paseo, queryClient, queryKey]);
 
   const archive = useMutation({
     mutationFn: async (agentIds: readonly string[]) => {
