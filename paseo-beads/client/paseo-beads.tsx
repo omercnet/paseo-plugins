@@ -1,4 +1,9 @@
-import { type PluginWorkspacePanelProps, useRpc, useWorkspace } from "@getpaseo/plugin/client";
+import {
+  type PluginScreenProps,
+  type PluginWorkspacePanelProps,
+  useRpc,
+  useWorkspace,
+} from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
@@ -30,16 +35,18 @@ import {
   type BeadLane,
   type BeadSection,
   type BeadsFilter,
+  beadsSnapshotQueryKey,
   buildBeadSections,
   buildBeadsView,
   issueAccessibilityLabel,
+  parseBeadScreenParams,
 } from "./beads-view";
 import { focusWebElement } from "./web";
 
 const REFRESH_INTERVAL_MS = 10_000;
 const BACK_BUTTON_NATIVE_ID = "paseo-beads-back";
 const ISSUE_ROW_NATIVE_ID_PREFIX = "paseo-beads-issue-";
-const ID_FONT_FAMILY = Platform.select({ ios: "Menlo", default: "monospace" });
+export const ID_FONT_FAMILY = Platform.select({ ios: "Menlo", default: "monospace" });
 
 const FILTERS: readonly { id: BeadsFilter; title: string }[] = [
   { id: "all", title: "All" },
@@ -47,7 +54,7 @@ const FILTERS: readonly { id: BeadsFilter; title: string }[] = [
   { id: "assigned", title: "Assigned" },
 ];
 
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An unexpected error occurred.";
 }
 
@@ -69,7 +76,7 @@ function laneColor(lane: BeadLane, colors: PluginWorkspacePanelProps["theme"]["c
   return colors.foregroundMuted;
 }
 
-function priorityColor(
+export function priorityColor(
   priority: number,
   colors: PluginWorkspacePanelProps["theme"]["colors"],
 ): string {
@@ -214,13 +221,13 @@ function DetailPane({
   styles,
   theme,
 }: {
-  backButtonRef: RefObject<View | null>;
+  backButtonRef?: RefObject<View | null>;
   detail: BeadDetail | null | undefined;
   detailError: unknown;
   isDetailFetching: boolean;
   isDetailPending: boolean;
   missing: boolean;
-  onBack(): void;
+  onBack?(): void;
   onRetry(): void;
   selectedId: string | null;
   showBack: boolean;
@@ -434,6 +441,45 @@ export function PaseoBeads(props: PluginWorkspacePanelProps) {
   return <WorkspaceBeads key={props.workspaceId} {...props} />;
 }
 
+export function BeadScreen({ theme, layout, host, params }: PluginScreenProps) {
+  const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
+  const target = parseBeadScreenParams(params);
+  const loadDetail = useRpc(getWorkspaceBead);
+  const { data, error, isFetching, isPending, refetch } = useQuery({
+    queryKey: ["paseo-beads", "detail", host.id, target?.workspaceId, target?.issueId],
+    queryFn: () => loadDetail(target as NonNullable<typeof target>),
+    enabled: target !== null,
+    refetchInterval: REFRESH_INTERVAL_MS,
+  });
+
+  return (
+    <View style={styles.screen}>
+      {target ? (
+        <DetailPane
+          detail={data?.detail}
+          detailError={error}
+          isDetailFetching={isFetching}
+          isDetailPending={isPending}
+          missing={data?.detail === null}
+          onRetry={() => void refetch()}
+          selectedId={target.issueId}
+          showBack={false}
+          styles={styles}
+          theme={theme}
+        />
+      ) : (
+        <StateCard
+          body="This link needs a workspace ID and a bead ID."
+          icon="AlertTriangle"
+          styles={styles}
+          theme={theme}
+          title="Invalid bead link"
+        />
+      )}
+    </View>
+  );
+}
+
 function WorkspaceBeads({ theme, layout, host, workspaceId }: PluginWorkspacePanelProps) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
   const workspaceTitle = useWorkspace(workspaceId, ({ name, title }) => title?.trim() || name);
@@ -449,7 +495,7 @@ function WorkspaceBeads({ theme, layout, host, workspaceId }: PluginWorkspacePan
   const listScrollOffsetRef = useRef(0);
 
   const snapshotKey = useMemo(
-    () => ["paseo-beads", "snapshot", host.id, workspaceId] as const,
+    () => beadsSnapshotQueryKey(host.id, workspaceId),
     [host.id, workspaceId],
   );
   const {

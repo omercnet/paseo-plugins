@@ -1,4 +1,4 @@
-import type { BeadSummary } from "../shared/beads";
+import { type BeadSummary, type BeadsSnapshot, getWorkspaceBead } from "../shared/beads";
 
 export const BEAD_LANES = ["ready", "in_progress", "blocked", "other"] as const;
 
@@ -152,4 +152,69 @@ export function buildBeadsView(
   for (const lane of BEAD_LANES) lanes[lane].sort(compareBeads);
 
   return { lanes, counts };
+}
+
+export const BEAD_SCREEN_ID = "bead";
+
+/** Reads bead screen params (`{ workspace, bead }`) with the detail RPC's own input rules. */
+export function parseBeadScreenParams(params: Readonly<Record<string, string>>) {
+  const parsed = getWorkspaceBead.input.safeParse({
+    workspaceId: params.workspace,
+    issueId: params.bead,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/** Shared by the panel and the sidebar count, so either one reuses the other's snapshot. */
+export function beadsSnapshotQueryKey(hostId: string, workspaceId: string) {
+  return ["paseo-beads", "snapshot", hostId, workspaceId] as const;
+}
+
+export interface ReadyBeadsWorkspace {
+  id: string;
+  projectId: string;
+  projectDisplayName: string;
+  name: string;
+}
+
+export interface ReadyBeadsSummary {
+  /** Ready beads across every workspace that loaded. */
+  count: number;
+  /** The top ready beads, grouped under the workspace each one is listed for. */
+  groups: { workspace: ReadyBeadsWorkspace; beads: BeadSummary[] }[];
+  /** Workspaces whose snapshot failed to load. */
+  failed: number;
+}
+
+/**
+ * Worktrees read their checkout's Beads database, so several workspaces of one project report the
+ * same bead. It counts once and is listed under the first workspace that reported it.
+ */
+export function summarizeReadyBeads(
+  entries: readonly { workspace: ReadyBeadsWorkspace; snapshot: BeadsSnapshot | null }[],
+  limit: number,
+): ReadyBeadsSummary {
+  const seen = new Set<string>();
+  const ready: { workspace: ReadyBeadsWorkspace; bead: BeadSummary }[] = [];
+  let failed = 0;
+
+  for (const { workspace, snapshot } of entries) {
+    if (!snapshot) failed += 1;
+    for (const bead of snapshot?.issues ?? []) {
+      const key = JSON.stringify([workspace.projectId, bead.id]);
+      if (beadLaneFor(bead) !== "ready" || seen.has(key)) continue;
+      seen.add(key);
+      ready.push({ workspace, bead });
+    }
+  }
+  ready.sort((left, right) => compareBeads(left.bead, right.bead));
+
+  const groups = new Map<string, ReadyBeadsSummary["groups"][number]>();
+  for (const { workspace, bead } of ready.slice(0, limit)) {
+    const group = groups.get(workspace.id) ?? { workspace, beads: [] };
+    group.beads.push(bead);
+    groups.set(workspace.id, group);
+  }
+
+  return { count: ready.length, groups: [...groups.values()], failed };
 }

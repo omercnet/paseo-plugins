@@ -4,8 +4,12 @@ import {
   buildBeadSections,
   buildBeadsView,
   issueAccessibilityLabel,
+  parseBeadScreenParams,
+  type ReadyBeadsSummary,
+  type ReadyBeadsWorkspace,
+  summarizeReadyBeads,
 } from "../client/beads-view";
-import type { BeadSummary } from "../shared/beads";
+import type { BeadSummary, BeadsSnapshot } from "../shared/beads";
 
 function bead(id: string, overrides: Partial<BeadSummary> = {}): BeadSummary {
   return {
@@ -207,5 +211,129 @@ describe("issue accessibility labels", () => {
     expect(issueAccessibilityLabel(issue, "blocked")).toBe(
       "Open issue BD-44: Waiting for input. Priority P2. Blocked lane. Issue type task. Unassigned.",
     );
+  });
+});
+
+describe("ready beads summary", () => {
+  function workspace(id: string, projectId = "project-a"): ReadyBeadsWorkspace {
+    return { id, projectId, projectDisplayName: projectId, name: id };
+  }
+
+  function snapshot(issues: BeadSummary[], state: BeadsSnapshot["state"] = "ready"): BeadsSnapshot {
+    return {
+      state,
+      issues,
+      truncated: false,
+      refreshedAt: "2026-09-01T12:00:00.000Z",
+      message: null,
+    };
+  }
+
+  function grouped({ groups }: ReadyBeadsSummary) {
+    return groups.map((group) => [group.workspace.id, ids(group.beads)]);
+  }
+
+  test("counts only the ready frontier", () => {
+    const summary = summarizeReadyBeads(
+      [
+        {
+          workspace: workspace("main"),
+          snapshot: snapshot([
+            bead("ready"),
+            bead("claimed", { status: "in_progress" }),
+            bead("blocked", { isReady: false, isBlocked: true }),
+            bead("deferred", { status: "deferred", isReady: false }),
+          ]),
+        },
+      ],
+      10,
+    );
+
+    expect(summary.count).toBe(1);
+    expect(grouped(summary)).toEqual([["main", ["ready"]]]);
+  });
+
+  test("counts a bead shared by worktrees of one project once, under the first workspace", () => {
+    const summary = summarizeReadyBeads(
+      [
+        { workspace: workspace("feature"), snapshot: snapshot([bead("a-1", { priority: 1 })]) },
+        {
+          workspace: workspace("main"),
+          snapshot: snapshot([bead("a-1", { priority: 1 }), bead("a-2")]),
+        },
+        {
+          workspace: workspace("other", "project-b"),
+          snapshot: snapshot([bead("a-1", { priority: 1 })]),
+        },
+      ],
+      10,
+    );
+
+    expect(summary.count).toBe(3);
+    expect(grouped(summary)).toEqual([
+      ["feature", ["a-1"]],
+      ["other", ["a-1"]],
+      ["main", ["a-2"]],
+    ]);
+  });
+
+  test("skips workspaces without Beads and reports failed loads", () => {
+    const summary = summarizeReadyBeads(
+      [
+        { workspace: workspace("plain"), snapshot: snapshot([], "not_initialized") },
+        { workspace: workspace("no-bd"), snapshot: snapshot([], "bd_unavailable") },
+        { workspace: workspace("broken"), snapshot: null },
+        { workspace: workspace("beads", "project-b"), snapshot: snapshot([bead("b-1")]) },
+      ],
+      10,
+    );
+
+    expect(summary).toMatchObject({ count: 1, failed: 1 });
+    expect(grouped(summary)).toEqual([["beads", ["b-1"]]]);
+  });
+
+  test("lists the top ready beads by priority and still counts the rest", () => {
+    const summary = summarizeReadyBeads(
+      [
+        {
+          workspace: workspace("main"),
+          snapshot: snapshot([bead("a-low", { priority: 3 }), bead("a-high", { priority: 1 })]),
+        },
+        {
+          workspace: workspace("api", "project-b"),
+          snapshot: snapshot([bead("b-urgent", { priority: 0 })]),
+        },
+      ],
+      2,
+    );
+
+    expect(summary.count).toBe(3);
+    expect(grouped(summary)).toEqual([
+      ["api", ["b-urgent"]],
+      ["main", ["a-high"]],
+    ]);
+  });
+});
+
+describe("bead screen params", () => {
+  test("reads the workspace and bead IDs and ignores other params", () => {
+    expect(parseBeadScreenParams({ workspace: "ws-1", bead: "demo-d4f", tab: "notes" })).toEqual({
+      workspaceId: "ws-1",
+      issueId: "demo-d4f",
+    });
+  });
+
+  test("rejects links the detail RPC would refuse", () => {
+    const invalid: Record<string, string>[] = [
+      {},
+      { workspace: "ws-1" },
+      { bead: "demo-d4f" },
+      { workspace: "", bead: "demo-d4f" },
+      { workspace: "ws-1", bead: "" },
+      { workspace: "ws-1", bead: "--help" },
+      { workspace: "ws-1", bead: "x".repeat(257) },
+    ];
+
+    for (const params of invalid) expect(parseBeadScreenParams(params)).toBeNull();
   });
 });

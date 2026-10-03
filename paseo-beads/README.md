@@ -4,7 +4,8 @@ A dependency-aware Beads work queue for every Paseo workspace. Paseo Beads turns
 a read-only delivery view that makes the ready frontier, work in progress, and blockers immediately
 visible.
 
-It adds a workspace-scoped **Beads** Explorer panel and an **Open Beads** Command Center item.
+It adds a workspace-scoped **Beads** Explorer panel and an **Open Beads** Command Center item. On
+Paseo 0.11 and newer it also adds a **Ready beads** sidebar row and a linkable bead screen.
 
 ## Demo
 
@@ -36,6 +37,10 @@ verified the rendered page contained no private organization names.
   layouts.
 - A virtualized issue list, descriptive accessibility labels, and focus restoration when navigating
   between the compact list and detail view.
+- On Paseo 0.11 and newer, a **Ready beads** sidebar row with the number of ready beads across the
+  host's workspaces. Pressing it opens a popover (a bottom sheet in compact layouts) with the top 10
+  ready beads grouped by workspace. Pressing a bead opens its detail view as a screen whose URL
+  carries the workspace and bead IDs, so it can be linked and survives a reload.
 
 Within each lane, issues are ordered by priority, most recent update, then ID. In-progress and hooked
 issues enter **In progress** first; remaining blocked issues enter **Blocked**; ready issues enter
@@ -58,6 +63,12 @@ The list and selected detail poll every 10 seconds. **Refresh** requests the lis
 failed background refresh keeps the previous data visible with an inline error; initial and detail
 failures provide a retry action.
 
+The **Ready beads** row lists the host's workspaces through the Paseo SDK and calls the same list
+handler for each one, one workspace at a time, every 60 seconds and whenever its popover opens. A
+snapshot an open panel read in the last 10 seconds is reused instead of rerunning `bd`. Worktrees
+read their checkout's Beads database, so a bead that several workspaces of one project report counts
+once. Workspaces without Beads count as zero.
+
 ## Limits
 
 - Paseo `^0.9.0 || ^0.10.0 || ^0.11.0` with plugins enabled is required.
@@ -74,6 +85,10 @@ failures provide a retry action.
   project, request failures, and missing issue details.
 - This plugin is read-only and workspace-scoped. It uses the `bd` CLI exclusively and does not
   create, edit, close, or assign issues.
+- The **Ready beads** row and the bead screen need Paseo 0.11. On 0.9 and 0.10 they do not register,
+  and the panel and Command Center items work as before.
+- The **Ready beads** count covers the first 200 workspaces the host lists and, like the panel, the
+  first 500 issues of each workspace.
 
 ## Install
 
@@ -96,7 +111,8 @@ Paseo shows the installed and proposed revisions and asks for approval before ap
 update. Review the source changes before approving them.
 
 Open a workspace, choose **New tab** in Explorer, then select **Beads**. You can also run **Open
-Beads** from the Command Center while viewing a workspace or one of its agents.
+Beads** from the Command Center while viewing a workspace or one of its agents. On Paseo 0.11 and
+newer, press **Ready beads** in the sidebar for ready work across every workspace on the host.
 
 ## Develop
 
