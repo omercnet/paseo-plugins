@@ -1,7 +1,7 @@
 import { type PluginSurfaceProps, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import {
   type BinaryStatus,
@@ -14,9 +14,12 @@ import {
 import { ActionsSection } from "./actions-section";
 import { AnalyticsDashboard } from "./analytics-dashboard";
 import { KnowledgeSection } from "./knowledge-section";
+import { ScopedKnowledgeSection } from "./scoped-knowledge-section";
+import { parseScreenParams, type SurfaceTab } from "./screen-scope";
 
 interface ContextModeSurfaceProps extends PluginSurfaceProps {
   onOpenSettings(): void;
+  params?: Record<string, string>;
 }
 
 function statusLabel(status: BinaryStatus): string {
@@ -25,8 +28,6 @@ function statusLabel(status: BinaryStatus): string {
   if (status.code === "unsupported") return "Unsupported";
   return "Unavailable";
 }
-
-type SurfaceTab = "savings" | "knowledge" | "setup";
 
 const SURFACE_TABS: ReadonlyArray<{ id: SurfaceTab; label: string }> = [
   { id: "savings", label: "Savings" },
@@ -39,13 +40,19 @@ export function ContextModeSurface({
   host,
   layout,
   onOpenSettings,
+  params,
 }: ContextModeSurfaceProps) {
   const settings = useSettings(contextModeSettings);
   const loadStatus = useRpc(getContextModeStatus);
   const loadStats = useRpc(getContextModeStats);
   const loadIntegrationAudit = useRpc(getContextModeIntegrationAudit);
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<SurfaceTab>("savings");
+  const screenParams = parseScreenParams(params ?? {});
+  const [activeTab, setActiveTab] = useState<SurfaceTab>(screenParams.section);
+  useEffect(
+    () => setActiveTab(screenParams.section),
+    [screenParams.section, screenParams.agentId, screenParams.workspaceId],
+  );
   const readySettings = settings.status === "ready" ? settings : null;
   const refreshInterval = readySettings?.values.refreshIntervalMs ?? 15_000;
   const statusKey = ["context-mode", host.id, "status"] as const;
@@ -273,7 +280,17 @@ export function ContextModeSurface({
         />
       </View>
       <View style={[styles.tabPanel, activeTab === "knowledge" ? null : styles.tabPanelHidden]}>
-        <KnowledgeSection key={host.id} host={host} layout={layout} theme={theme} />
+        {screenParams.agentId || screenParams.workspaceId ? (
+          <ScopedKnowledgeSection
+            key={JSON.stringify([host.id, screenParams.agentId, screenParams.workspaceId])}
+            params={screenParams}
+            host={host}
+            layout={layout}
+            theme={theme}
+          />
+        ) : (
+          <KnowledgeSection key={host.id} host={host} layout={layout} theme={theme} />
+        )}
       </View>
       <View style={[styles.tabPanel, activeTab === "setup" ? null : styles.tabPanelHidden]}>
         <ActionsSection key={host.id} layout={layout} theme={theme} />

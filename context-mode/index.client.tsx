@@ -1,4 +1,10 @@
-import type { PluginClientContext, PluginSurfaceProps } from "@getpaseo/plugin/client";
+import type {
+  PluginClientContext,
+  PluginScreenProps,
+  PluginSurfaceProps,
+} from "@getpaseo/plugin/client";
+import { SidebarRow } from "@getpaseo/plugin/client/ui";
+import { ContextModeFooter } from "./client/context-mode-footer";
 import { contributeContextModeComposerPills } from "./client/context-mode-pill";
 import { ContextModeSurface } from "./client/context-mode-surface";
 import { ContextModeSettingsScreen } from "./client/settings-screen";
@@ -9,6 +15,12 @@ export default function contribute(client: PluginClientContext) {
       <ContextModeSurface {...props} onOpenSettings={() => client.openSettings("context-mode")} />
     );
   }
+  function Screen(props: PluginScreenProps) {
+    return (
+      <ContextModeSurface {...props} onOpenSettings={() => client.openSettings("context-mode")} />
+    );
+  }
+  const screens = typeof client.addScreen === "function" && typeof client.openScreen === "function";
 
   const cleanups = [
     contributeContextModeComposerPills(client),
@@ -18,21 +30,44 @@ export default function contribute(client: PluginClientContext) {
       icon: "Settings",
       Component: ContextModeSettingsScreen,
     }),
-    client.addSurface("context-mode", Surface),
-    client.addSidebarItem({
-      id: "context-mode",
-      title: "Context Mode",
-      icon: "Gauge",
-      surface: "context-mode",
-    }),
+    ...(screens
+      ? [
+          client.addScreen({ id: "context-mode", title: "Context Mode", Component: Screen }),
+          ...(typeof client.addSidebarFooterItem === "function" && typeof SidebarRow === "function"
+            ? [
+                client.addSidebarFooterItem({
+                  id: "context-mode",
+                  title: "Context Mode",
+                  Component: ContextModeFooter,
+                }),
+              ]
+            : [
+                client.addSidebarItem({
+                  id: "context-mode",
+                  title: "Context Mode",
+                  icon: "Gauge",
+                  surface: "context-mode",
+                }),
+              ]),
+        ]
+      : [
+          client.addSurface("context-mode", Surface),
+          client.addSidebarItem({
+            id: "context-mode",
+            title: "Context Mode",
+            icon: "Gauge",
+            surface: "context-mode",
+          }),
+        ]),
     client.addCommandCenterItem({
       id: "open-context-mode",
       title: "Open Context Mode",
       icon: "Gauge",
       keywords: ["context", "savings", "tokens", "knowledge", "search", "doctor", "health"],
       context: "global",
-      onSelect({ openSurface }) {
-        openSurface("context-mode");
+      onSelect({ openSurface, openScreen }) {
+        if (screens && typeof openScreen === "function") openScreen({ screenId: "context-mode" });
+        else openSurface("context-mode");
       },
     }),
   ];

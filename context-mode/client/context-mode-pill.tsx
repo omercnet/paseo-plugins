@@ -50,7 +50,14 @@ export function contributeContextModeComposerPills(client: PluginClientContext):
         behavior: {
           kind: "action",
           onPress() {
-            client.openSurface("context-mode");
+            if (typeof client.addScreen === "function" && typeof client.openScreen === "function") {
+              client.openScreen({
+                screenId: "context-mode",
+                params: { section: "knowledge", agentId: agent.id, workspaceId: agent.workspaceId },
+              });
+            } else {
+              client.openSurface("context-mode");
+            }
           },
         },
       },

@@ -20,6 +20,7 @@ import {
   purgeContextModeKnowledge,
   searchContextModeKnowledge,
 } from "../shared/knowledge";
+import type { KnowledgeScope } from "./screen-scope";
 
 const PROVIDERS = [
   { value: "claude", label: "Claude" },
@@ -35,7 +36,9 @@ const PROVIDERS = [
 const INSIGHT_URL = "https://context-mode.com/insight";
 type Provider = ContextModeProvider;
 type PurgeScope = "project" | "session";
-export type KnowledgeSectionProps = Pick<PluginSurfaceProps, "theme" | "layout" | "host">;
+export type KnowledgeSectionProps = Pick<PluginSurfaceProps, "theme" | "layout" | "host"> & {
+  initialScope?: KnowledgeScope;
+};
 
 interface KnowledgeStyles {
   section: ViewStyle;
@@ -235,7 +238,7 @@ function ResultPanel({
   );
 }
 
-export function KnowledgeSection({ theme, layout, host }: KnowledgeSectionProps) {
+export function KnowledgeSection({ theme, layout, host, initialScope }: KnowledgeSectionProps) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
   const searchKnowledge = useRpc(searchContextModeKnowledge);
   const indexPath = useRpc(indexContextModePath);
@@ -247,8 +250,10 @@ export function KnowledgeSection({ theme, layout, host }: KnowledgeSectionProps)
       queryKey: ["context-mode", host.id, "analytics-dashboard"],
     });
 
-  const [provider, setProvider] = useState<Provider | null>("claude");
-  const [projectPath, setProjectPath] = useState("");
+  const [provider, setProvider] = useState<Provider | null>(
+    initialScope ? initialScope.provider : "claude",
+  );
+  const [projectPath, setProjectPath] = useState(initialScope?.projectPath ?? "");
   const [query, setQuery] = useState("");
   const [searchSource, setSearchSource] = useState("");
   const [path, setPath] = useState("");
@@ -362,6 +367,7 @@ export function KnowledgeSection({ theme, layout, host }: KnowledgeSectionProps)
 
       <View style={styles.card}>
         <Text style={styles.fieldLabel}>Provider store</Text>
+        {initialScope?.note ? <Text style={styles.scopeNote}>{initialScope.note}</Text> : null}
         <View accessibilityRole="radiogroup" style={styles.choiceRow}>
           {PROVIDERS.map((option) => {
             const selected = provider === option.value;
