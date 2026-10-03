@@ -22,12 +22,14 @@ import {
   collapseCrewNodes,
   crewCounts,
   crewState,
+  type DeliveryChoice,
   formatAge,
   isWorking,
   listenToCrewDirectory,
   type PaseoApi,
   type PaseoWorkspace,
   parentAgentId,
+  sendOptions,
 } from "./crew";
 
 const PAGE_LIMIT = 200;
@@ -43,7 +45,7 @@ type CrewData = {
 };
 
 type CrewAction =
-  | { kind: "send"; agentId: string; text: string; interrupted: boolean }
+  | { kind: "send"; agentId: string; text: string; running: boolean; choice: DeliveryChoice }
   | { kind: "detach"; agentId: string }
   | { kind: "archive"; agentId: string };
 
@@ -94,6 +96,36 @@ async function loadCrewData(paseo: PaseoApi): Promise<CrewData> {
     truncated: agents.truncated,
     workspaceNames: new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
   };
+}
+
+/** Host-wide crew directory, refreshed by agent and workspace subscriptions plus a slow backstop. */
+export function useCrewDirectory(hostId: string) {
+  const paseo = usePaseo();
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(() => ["agent-crew", "directory", hostId], [hostId]);
+  const directory = useQuery({
+    queryKey,
+    queryFn: () => loadCrewData(paseo),
+    refetchInterval: BACKSTOP_REFRESH_MS,
+  });
+
+  useEffect(() => {
+    let debounce: ReturnType<typeof setTimeout> | undefined;
+    const invalidate = () => {
+      if (debounce) return;
+      debounce = setTimeout(() => {
+        debounce = undefined;
+        void queryClient.invalidateQueries({ queryKey });
+      }, REFRESH_DEBOUNCE_MS);
+    };
+    const unsubscribeDirectory = listenToCrewDirectory(paseo, invalidate);
+    return () => {
+      clearTimeout(debounce);
+      unsubscribeDirectory();
+    };
+  }, [paseo, queryClient, queryKey]);
+
+  return directory;
 }
 
 function ActionButton({
@@ -186,14 +218,8 @@ export function AgentCrew({
 }: PluginWorkspacePanelProps) {
   const paseo = usePaseo();
   const toast = useToast();
-  const queryClient = useQueryClient();
   const workspaceTitle = useWorkspace(workspaceId, ({ name, title }) => title?.trim() || name);
-  const queryKey = useMemo(() => ["agent-crew", "directory", host.id], [host.id]);
-  const { data, error, isPending, isFetching, refetch } = useQuery({
-    queryKey,
-    queryFn: () => loadCrewData(paseo),
-    refetchInterval: BACKSTOP_REFRESH_MS,
-  });
+  const { data, error, isPending, isFetching, refetch } = useCrewDirectory(host.id);
 
   const [selectedState, setSelectedState] = useState<CrewState | null>(null);
   const [query, setQuery] = useState("");
@@ -201,28 +227,13 @@ export function AgentCrew({
   const [dialog, setDialog] = useState<DialogState>(null);
   const [permissionDialog, setPermissionDialog] = useState<PermissionDialogState>(null);
   const [message, setMessage] = useState("");
+  const [delivery, setDelivery] = useState<DeliveryChoice>("interrupt");
   const [collapsedAgentIds, setCollapsedAgentIds] = useState<ReadonlySet<string>>(() => new Set());
 
   useEffect(() => {
     const clock = setInterval(() => setNow(Date.now()), CLOCK_INTERVAL_MS);
     return () => clearInterval(clock);
   }, []);
-
-  useEffect(() => {
-    let debounce: ReturnType<typeof setTimeout> | undefined;
-    const invalidate = () => {
-      if (debounce) return;
-      debounce = setTimeout(() => {
-        debounce = undefined;
-        void queryClient.invalidateQueries({ queryKey });
-      }, REFRESH_DEBOUNCE_MS);
-    };
-    const unsubscribeDirectory = listenToCrewDirectory(paseo, invalidate);
-    return () => {
-      clearTimeout(debounce);
-      unsubscribeDirectory();
-    };
-  }, [paseo, queryClient, queryKey]);
 
   const allNodes = useMemo(
     () =>
@@ -265,7 +276,7 @@ export function AgentCrew({
     mutationFn: async (input: CrewAction) => {
       const handle = paseo.agents.ref(input.agentId);
       if (input.kind === "send") {
-        await handle.send(input.text);
+        await handle.send(input.text, sendOptions(input.running, input.choice));
       } else if (input.kind === "detach") {
         await handle.detach();
       } else {
@@ -274,7 +285,12 @@ export function AgentCrew({
     },
     onSuccess: (_result, input) => {
       if (input.kind === "send") {
-        toast.show(input.interrupted ? "Agent redirected" : "Nudge sent", { variant: "success" });
+        const sent = !input.running
+          ? "Nudge sent"
+          : input.choice === "interrupt"
+            ? "Agent redirected"
+            : "Message sent";
+        toast.show(sent, { variant: "success" });
       } else if (input.kind === "detach") {
         toast.show("Subagent detached", { variant: "success" });
       } else {
@@ -287,7 +303,7 @@ export function AgentCrew({
       toast.error(mutationError instanceof Error ? mutationError.message : "Agent action failed");
     },
     onSettled: async () => {
-      await queryClient.invalidateQueries({ queryKey });
+      await refetch();
     },
   });
 
@@ -315,7 +331,7 @@ export function AgentCrew({
       }
     },
     onSettled: async () => {
-      await queryClient.invalidateQueries({ queryKey });
+      await refetch();
     },
   });
 
@@ -467,6 +483,18 @@ export function AgentCrew({
           backgroundColor: theme.colors.surface1,
           textAlignVertical: "top",
         },
+        deliveryRow: { flexDirection: "row", gap: 8 },
+        deliveryOption: {
+          flex: 1,
+          minHeight: 36,
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: 8,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: theme.colors.border,
+          backgroundColor: theme.colors.surface1,
+        },
+        deliveryOptionActive: { backgroundColor: theme.colors.accent },
         modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
         secondaryButton: {
           minHeight: 36,
@@ -528,6 +556,7 @@ export function AgentCrew({
   );
   function openDialog(kind: NonNullable<DialogState>["kind"], node: CrewNode) {
     setMessage("");
+    setDelivery("interrupt");
     setDialog({ kind, node });
   }
 
@@ -537,7 +566,13 @@ export function AgentCrew({
     if (dialog.kind === "message") {
       const text = message.trim();
       if (!text) return;
-      action.mutate({ kind: "send", agentId: agent.id, text, interrupted: isWorking(agent) });
+      action.mutate({
+        kind: "send",
+        agentId: agent.id,
+        text,
+        running: isWorking(agent),
+        choice: delivery,
+      });
       return;
     }
     action.mutate({ kind: dialog.kind, agentId: agent.id });
@@ -714,17 +749,26 @@ export function AgentCrew({
     if (dialog.kind === "message") {
       const state = crewState(dialog.node.entry.agent);
       const running = isWorking(dialog.node.entry.agent);
-      dialogTitle = running ? `Interrupt and redirect ${target}` : `Nudge ${target}`;
-      dialogCopy = running
-        ? "This agent is working. Sending a message stops its current turn and starts the new direction."
-        : state === "needs-input"
-          ? "This agent is waiting for a permission decision. Sending a message dismisses that request and starts the new direction."
-          : "Send a concise follow-up with the missing context or next step.";
-      confirmLabel = running
-        ? "Interrupt & redirect"
-        : state === "needs-input"
-          ? "Dismiss request & nudge"
-          : "Send nudge";
+      const steer = running && delivery === "steer";
+      dialogTitle = !running
+        ? `Nudge ${target}`
+        : steer
+          ? `Message ${target}`
+          : `Interrupt and redirect ${target}`;
+      dialogCopy = steer
+        ? "This agent is working. The message is delivered to the running turn if the provider supports steering; otherwise it replaces the turn."
+        : running
+          ? "This agent is working. Sending a message stops its current turn and starts the new direction."
+          : state === "needs-input"
+            ? "This agent is waiting for a permission decision. Sending a message dismisses that request and starts the new direction."
+            : "Send a concise follow-up with the missing context or next step.";
+      confirmLabel = steer
+        ? "Send (prefer steering)"
+        : running
+          ? "Interrupt & redirect"
+          : state === "needs-input"
+            ? "Dismiss request & nudge"
+            : "Send nudge";
     } else if (dialog.kind === "detach") {
       dialogTitle = `Detach ${target}?`;
       dialogCopy =
@@ -895,6 +939,36 @@ export function AgentCrew({
         <Modal.Content>
           <View style={panelStyles.modalBody}>
             <Text style={panelStyles.modalCopy}>{dialogCopy}</Text>
+            {dialog?.kind === "message" && isWorking(dialog.node.entry.agent) ? (
+              <View style={panelStyles.deliveryRow}>
+                {(
+                  [
+                    ["interrupt", "Interrupt"],
+                    ["steer", "Prefer steering"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <Pressable
+                    key={value}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: delivery === value }}
+                    disabled={action.isPending}
+                    onPress={() => setDelivery(value)}
+                    style={[
+                      panelStyles.deliveryOption,
+                      delivery === value && panelStyles.deliveryOptionActive,
+                    ]}
+                  >
+                    <Text
+                      style={
+                        delivery === value ? panelStyles.primaryButtonText : panelStyles.buttonText
+                      }
+                    >
+                      {label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
             {dialog?.kind === "message" ? (
               <TextInput
                 accessibilityLabel="Message to subagent"

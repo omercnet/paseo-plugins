@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import type { AgentEntry } from "../client/crew";
 import {
+  activeCrews,
   agentAgeTimestamp,
   buildCrewForest,
   collapseCrewNodes,
@@ -8,6 +9,7 @@ import {
   crewState,
   formatAge,
   listenToCrewDirectory,
+  sendOptions,
 } from "../client/crew";
 
 function entry(
@@ -291,5 +293,55 @@ describe("listenToCrewDirectory", () => {
     expect(workspaces.removeObserver).toHaveBeenCalledOnce();
     expect(agents.release).toHaveBeenCalledOnce();
     expect(workspaces.release).toHaveBeenCalledOnce();
+  });
+});
+
+describe("sendOptions", () => {
+  test("passes the chosen behavior only to a running turn", () => {
+    expect(sendOptions(true, "steer")).toEqual({ activeTurnBehavior: "steer" });
+    expect(sendOptions(true, "interrupt")).toEqual({ activeTurnBehavior: "interrupt" });
+    expect(sendOptions(false, "steer")).toBeUndefined();
+  });
+});
+
+describe("activeCrews", () => {
+  const summary = (entries: AgentEntry[]) =>
+    activeCrews(entries).map(({ workspaceId, lead, working, needsInput }) => [
+      workspaceId,
+      lead.agent.id,
+      working,
+      needsInput,
+    ]);
+
+  test("keeps crews with a working or waiting member and skips idle crews and solo agents", () => {
+    const ws = { workspaceId: "ws" };
+    expect(
+      summary([
+        entry("lead", null, ws),
+        entry("worker", "lead", { ...ws, status: "running" }),
+        entry("asker", "worker", { ...ws, pendingPermissions: [{}] }),
+        entry("idle-lead", null, ws),
+        entry("idle-child", "idle-lead", ws),
+        entry("solo", null, { ...ws, status: "running" }),
+        entry("archived-lead", null, { ...ws, archivedAt: "2026-09-02T00:00:00.000Z" }),
+        entry("archived-child", "archived-lead", {
+          ...ws,
+          status: "running",
+          archivedAt: "2026-09-02T00:00:00.000Z",
+        }),
+      ]),
+    ).toEqual([["ws", "lead", 1, 1]]);
+  });
+
+  test("lists a cross-workspace crew under each panel that shows it, counting members only", () => {
+    expect(
+      summary([
+        entry("lead", null, { workspaceId: "lead-ws", status: "running" }),
+        entry("worker", "lead", { workspaceId: "worker-ws", status: "running" }),
+      ]),
+    ).toEqual([
+      ["lead-ws", "lead", 2, 0],
+      ["worker-ws", "lead", 1, 0],
+    ]);
   });
 });

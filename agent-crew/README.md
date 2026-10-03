@@ -56,8 +56,10 @@ Each row exposes the operations available through the public Paseo SDK:
 - **Open** navigates to the selected agent.
 - **Expand or collapse** shows or hides a managed branch without changing agent state.
 - **Nudge** sends a follow-up to an idle or waiting agent.
-- **Interrupt and redirect** sends a new direction to a running agent. Paseo stops the active turn
-  before starting that direction, and the confirmation dialog says so explicitly.
+- **Interrupt and redirect** sends a new direction to a running agent. The dialog defaults to
+  **Interrupt**, which stops the active turn before starting that direction. **Prefer steering**
+  asks the provider to deliver the message into the running turn instead; a provider that cannot
+  steer replaces the turn. The choice resets to **Interrupt** each time the dialog opens.
 - **Detach** removes a managed child branch from its parent while allowing it to continue
   independently. Root agents and context-only ancestors do not expose this action.
 - **Archive** stops and removes the selected agent. Same-workspace descendants may be archived with
@@ -68,6 +70,18 @@ Each row exposes the operations available through the public Paseo SDK:
 
 Every mutating control uses a confirmation dialog. Successful actions show a toast; SDK errors are
 shown without hiding the failure.
+
+## Active crews sidebar row
+
+On Paseo 0.11 and later, an **Active crews** sidebar header row counts the crews that have a member
+working or waiting for input. Pressing it lists those crews with their workspace; choosing one opens
+that workspace's Agent Crew panel in the Explorer. The list is a popover on wide layouts and a
+bottom sheet on compact ones. Paseo's compact layout does not show Explorer panels, so there the
+jump lands on the workspace. Hide the row from Settings > Sidebar.
+
+The row reads the same directory query and subscriptions as the panel, so they stay active while
+the sidebar is mounted. Paseo 0.9 and 0.10 do not support sidebar items; the row is not registered
+there.
 
 ## How it reads state
 
@@ -99,8 +113,8 @@ Agent Crew intentionally stays inside the public Paseo plugin SDK.
 - Workspace-less top-level agents are outside every workspace crew; workspace-less descendants of
   visible members remain in that crew.
 - It does not add heartbeat controls, private cancellation calls, or direct daemon API access.
-- Sending to a running agent interrupts its active turn; there is no separate non-interrupting send
-  operation.
+- Steering is a preference. Paseo does not report whether a message steered the running turn or
+  replaced it, so the toast only says the message was sent.
 - If the daemon contains more than 2,000 agents, the panel warns that its directory snapshot may
   omit agents in this workspace or their descendants.
 

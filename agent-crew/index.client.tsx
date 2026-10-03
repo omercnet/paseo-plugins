@@ -2,6 +2,7 @@ import type { PluginClientContext, PluginSurfaceProps } from "@getpaseo/plugin/c
 import { createAutoOpenManager } from "./client/auto-open";
 import { AgentCrew } from "./client/main";
 import { AgentCrewSettingsScreen } from "./client/settings-screen";
+import { addActiveCrewsItem } from "./client/sidebar";
 import { agentCrewSettings } from "./shared/settings";
 
 export default function contribute(client: PluginClientContext) {
@@ -35,8 +36,10 @@ export default function contribute(client: PluginClientContext) {
       openPanel("crew", { location: "explorer" });
     },
   });
+  const removeActiveCrews = addActiveCrewsItem(client);
 
   return () => {
+    removeActiveCrews();
     removeOpenCrew();
     removeWorkspacePanel();
     removeSettings();

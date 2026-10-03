@@ -112,6 +112,13 @@ export function crewState(agent: AgentSnapshot): CrewState {
   return "idle";
 }
 
+export type DeliveryChoice = "steer" | "interrupt";
+
+/** Idle agents get a plain send; the choice only applies to a running turn. */
+export function sendOptions(running: boolean, choice: DeliveryChoice) {
+  return running ? { activeTurnBehavior: choice } : undefined;
+}
+
 export function isWorking(agent: AgentSnapshot): boolean {
   return agent.status === "running" || agent.status === "initializing";
 }
@@ -308,4 +315,37 @@ export function collapseCrewNodes(
     }
   }
   return visible;
+}
+
+export interface ActiveCrew {
+  workspaceId: string;
+  lead: AgentEntry;
+  working: number;
+  needsInput: number;
+}
+
+/** Crews each workspace's panel shows, kept only when a member is working or needs input. */
+export function activeCrews(entries: readonly AgentEntry[]): ActiveCrew[] {
+  const workspaceIds = new Set<string>();
+  for (const { agent } of entries) {
+    if (agent.workspaceId && !agent.archivedAt) workspaceIds.add(agent.workspaceId);
+  }
+  const crews: ActiveCrew[] = [];
+  for (const workspaceId of workspaceIds) {
+    let crew: ActiveCrew | undefined;
+    for (const node of buildCrewForest(entries, workspaceId)) {
+      if (node.depth === 0) {
+        crew =
+          node.descendantCount > 0
+            ? { workspaceId, lead: node.entry, working: 0, needsInput: 0 }
+            : undefined;
+        if (crew) crews.push(crew);
+      }
+      if (!crew || !node.member) continue;
+      const state = crewState(node.entry.agent);
+      if (state === "working") crew.working += 1;
+      if (state === "needs-input") crew.needsInput += 1;
+    }
+  }
+  return crews.filter((crew) => crew.working + crew.needsInput > 0);
 }
