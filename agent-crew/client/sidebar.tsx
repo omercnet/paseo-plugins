@@ -10,10 +10,8 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { activeCrews, agentTitle } from "./crew";
 import { useCrewDirectory } from "./main";
 
-/** Sidebar items arrived in Paseo 0.11; older hosts keep the Explorer panel as the entry point. */
-export function addActiveCrewsItem(client: PluginClientContext): () => void {
-  if (typeof client.addSidebarHeaderItem !== "function") return () => {};
-
+/** The Active crews sidebar row; its popover opens a crew's workspace Agent Crew panel. */
+export function createActiveCrewsItem(client: PluginClientContext) {
   function ActiveCrewsPopover({ theme, host, close }: PluginPopoverProps) {
     const toast = useToast();
     const { data, isPending } = useCrewDirectory(host.id);
@@ -85,9 +83,5 @@ export function addActiveCrewsItem(client: PluginClientContext): () => void {
     );
   }
 
-  return client.addSidebarHeaderItem({
-    id: "active-crews",
-    title: "Active crews",
-    Component: ActiveCrewsItem,
-  });
+  return ActiveCrewsItem;
 }
