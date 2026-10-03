@@ -11,6 +11,7 @@ import {
   type PaseoApi,
   type PaseoWorkspace,
 } from "./radar";
+import { radarWarnings, VIEWER_URL_LIMIT } from "./screen-state";
 
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 10;
@@ -48,7 +49,8 @@ async function loadWorkspaces(paseo: PaseoApi) {
   return { entries, truncated };
 }
 
-// On 0.11 the sidebar owns refreshes; screens and popovers only observe the cache.
+// `live` owns the refresh timers. The sidebar is live unless the screen is open (the screen is
+// then live); popovers only observe the cache.
 export function useRadar(hostId: string, windowDays = 30, live = true) {
   const paseo = usePaseo();
   const queryClient = useQueryClient();
@@ -75,14 +77,24 @@ export function useRadar(hostId: string, windowDays = 30, live = true) {
     );
   }, [live, paseo, queryClient, queryKey]);
   const rawRows = directory.data?.rows ?? [];
-  const scopeUrls = useMemo(() => rawRows.map((row) => row.url), [rawRows]);
+  // One deduped, ordered, capped list feeds both the query key and the request.
+  const scopeUrls = useMemo(
+    () => [...new Set(rawRows.map((row) => row.url))].sort().slice(0, VIEWER_URL_LIMIT),
+    [rawRows],
+  );
   const viewer = useQuery({
     queryKey: ["pr-radar-viewer-scope", hostId, scopeUrls, windowDays],
-    queryFn: () => resolveViewerScope({ urls: scopeUrls.slice(0, 200), windowDays }),
+    queryFn: () => resolveViewerScope({ urls: scopeUrls, windowDays }),
     enabled: Boolean(directory.data),
     staleTime: 5 * 60_000,
     refetchInterval: live ? 5 * 60_000 : false,
   });
+  useEffect(() => {
+    if (!live) return;
+    // Timers pause while not live; catch up on resume instead of waiting out the interval.
+    void queryClient.refetchQueries({ queryKey, stale: true });
+    void queryClient.refetchQueries({ queryKey: ["pr-radar-viewer-scope", hostId], stale: true });
+  }, [live, queryClient, queryKey, hostId]);
   const rows = useMemo(
     () =>
       applyViewerScope(
@@ -91,18 +103,14 @@ export function useRadar(hostId: string, windowDays = 30, live = true) {
       ),
     [directory.data, viewer.data],
   );
-  const warnings: string[] = [];
-  if (directory.error) warnings.push("Could not load the delivery queue.");
-  if (directory.data?.truncated)
-    warnings.push("Directory pagination limit reached; results are partial.");
-  if (directory.data?.warnings.length)
-    warnings.push("Some workspaces have unavailable pull request status.");
-  if (!viewer.data || viewer.error || viewer.data.error || !viewer.data.viewer) {
-    warnings.push("GitHub viewer identity is unavailable. Action buckets are conservative.");
-  }
-  if (scopeUrls.length > 200)
-    warnings.push("Viewer lookup is limited to 200 linked pull requests.");
-  if (viewer.data?.truncated) warnings.push("Results reached the 100-item inbox cap.");
+  const warnings = radarWarnings({
+    directoryError: Boolean(directory.error),
+    directoryTruncated: Boolean(directory.data?.truncated),
+    workspaceWarnings: directory.data?.warnings.length ?? 0,
+    viewerKnown: Boolean(viewer.data?.viewer) && !viewer.data?.error && !viewer.error,
+    viewerTruncated: Boolean(viewer.data?.truncated),
+    urlCount: new Set(rawRows.map((row) => row.url)).size,
+  });
   return {
     paseo,
     queryKey,

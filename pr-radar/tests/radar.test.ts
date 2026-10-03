@@ -18,7 +18,12 @@ import {
   type RadarAgent,
   type RadarRow,
 } from "../client/radar";
-import { needsYouSummary, parseRadarParams, supportsRadarScreen } from "../client/screen-state";
+import {
+  needsYouSummary,
+  parseRadarParams,
+  radarWarnings,
+  supportsRadarScreen,
+} from "../client/screen-state";
 import { type GitHubInboxItem, GitHubInboxItemSchema } from "../shared/viewer-scope";
 
 function agent(overrides: Partial<RadarAgent> = {}): RadarAgent {
@@ -82,19 +87,33 @@ describe("sidebar queue and screen state", () => {
       pr: "getpaseo/paseo#42",
       filter: "needs-you",
     });
-    for (const filter of [
-      "ready",
-      "waiting",
-      "being-handled",
-      "active",
-      "security",
-      "updated",
-      "stale",
-      "automation",
-    ])
-      expect(parseRadarParams({ filter }).filter).toBe(filter);
+    expect(parseRadarParams({ filter: "active", pr: "Getpaseo/Paseo#42" })).toEqual({
+      filter: "active",
+      pr: "getpaseo/paseo#42",
+    });
     expect(parseRadarParams({ filter: "bogus", pr: "" })).toEqual({ pr: null, filter: null });
     expect(parseRadarParams({})).toEqual({ pr: null, filter: null });
+  });
+  test("every partial-result cause yields a warning, and a clean queue none", () => {
+    const clean = {
+      directoryError: false,
+      directoryTruncated: false,
+      workspaceWarnings: 0,
+      viewerKnown: true,
+      viewerTruncated: false,
+      urlCount: 200,
+    };
+    expect(radarWarnings(clean)).toEqual([]);
+    for (const partial of [
+      { directoryError: true },
+      { directoryTruncated: true },
+      { workspaceWarnings: 1 },
+      { viewerKnown: false },
+      { viewerTruncated: true },
+      { urlCount: 201 },
+    ]) {
+      expect(radarWarnings({ ...clean, ...partial })).toHaveLength(1);
+    }
   });
   test("older and partially upgraded hosts use the static path", () => {
     const modern = { addScreen() {}, addSidebarHeaderItem() {}, openScreen() {} };

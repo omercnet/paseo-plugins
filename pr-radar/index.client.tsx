@@ -1,4 +1,4 @@
-import type { PluginClientContext, PluginScreenProps } from "@getpaseo/plugin/client";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { PrRadar } from "./client/pr-radar";
 import { supportsRadarScreen } from "./client/screen-state";
@@ -10,14 +10,7 @@ export default function contribute(client: PluginClientContext) {
     client.addScreen({
       id: "radar",
       title: "PR Radar",
-      Component: (props: PluginScreenProps) => (
-        <PrRadar
-          {...props}
-          onFilter={(filter) =>
-            client.openScreen({ screenId: "radar", params: filter ? { filter } : {} })
-          }
-        />
-      ),
+      Component: PrRadar,
     });
     client.addSidebarHeaderItem({ id: "radar", title: "PR Radar", Component: RadarSidebar });
   } else {

@@ -16,7 +16,13 @@ import {
   type RadarBucket,
   type RadarRow,
 } from "./radar";
-import { parseRadarParams, type RadarFilter } from "./screen-state";
+import {
+  DIRECTORY_PARTIAL,
+  LOOKUP_CAPPED,
+  parseRadarParams,
+  type RadarFilter,
+  VIEWER_URL_LIMIT,
+} from "./screen-state";
 import { useRadar } from "./use-radar";
 
 const CLOCK_TICK_MS = 30_000;
@@ -56,20 +62,17 @@ export function PrRadar({
   host,
   navigation,
   params = {},
-  onFilter,
-  live = true,
-}: PluginSurfaceProps & {
-  params?: Record<string, string>;
-  onFilter?: (filter: RadarFilter | null) => void;
-  live?: boolean;
-}) {
+}: PluginSurfaceProps & { params?: Record<string, string> }) {
   const queryClient = useQueryClient();
   const acknowledgeUpdates = useRpc(acknowledgeViewerScope);
   const parsed = parseRadarParams(params);
-  const [localFilter, setLocalFilter] = useState<RadarFilter | null>(null);
-  const filter = onFilter ? parsed.filter : localFilter;
-  const setFilter = (value: RadarFilter | null) =>
-    onFilter ? onFilter(value) : setLocalFilter(value);
+  const [filter, setFilterState] = useState<RadarFilter | null>(parsed.filter);
+  const [focusedPr, setFocusedPr] = useState<string | null>(parsed.pr);
+  // Chips are local state: openScreen would push a new screen per tap. A chip press also ends PR focus.
+  const setFilter = (value: RadarFilter | null) => {
+    setFilterState(value);
+    setFocusedPr(null);
+  };
   const selected = BUCKETS.includes(filter as RadarBucket) ? (filter as RadarBucket) : null;
   const activeOnly = filter === "active";
   const savedView =
@@ -95,7 +98,7 @@ export function PrRadar({
     viewerError,
     isFetching,
     refetchViewer,
-  } = useRadar(host.id, windowDays, live);
+  } = useRadar(host.id, windowDays);
 
   useEffect(() => {
     const clock = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
@@ -217,14 +220,14 @@ export function PrRadar({
             Boolean(row.activityAt && now - Date.parse(row.activityAt) >= STALE_AFTER_MS)) ||
           (savedView === "automation" && row.authorKind === "bot");
         return (
-          (!parsed.pr || row.id === parsed.pr) &&
+          (!focusedPr || row.id === focusedPr) &&
           (!selected || row.bucket === selected) &&
           (!activeOnly || hasActiveAgent(row.agents)) &&
           matchesSavedView &&
           matchesRow(row, search)
         );
       }),
-    [activeOnly, now, rows, savedView, search, selected, parsed.pr],
+    [activeOnly, now, rows, savedView, search, selected, focusedPr],
   );
 
   const styles = useMemo(() => {
@@ -578,15 +581,17 @@ export function PrRadar({
   };
 
   const totalCopy = `${rows.length} open ${rows.length === 1 ? "pull request" : "pull requests"}; ${rawRows.length} linked to ${data?.workspaceCount ?? 0} workspaces`;
-  const emptyCopy = search
-    ? "No pull requests match this search."
-    : activeOnly
-      ? "No pull requests have a running or initializing agent."
-      : savedView
-        ? `No pull requests match the ${SAVED_VIEW_TITLES[savedView].toLowerCase()} view.`
-        : selected
-          ? `No pull requests are ${BUCKET_TITLES[selected].toLowerCase()}.`
-          : "No open pull requests are visible to GitHub or linked to a Paseo workspace.";
+  const emptyCopy = focusedPr
+    ? "This pull request is not in the current queue."
+    : search
+      ? "No pull requests match this search."
+      : activeOnly
+        ? "No pull requests have a running or initializing agent."
+        : savedView
+          ? `No pull requests match the ${SAVED_VIEW_TITLES[savedView].toLowerCase()} view.`
+          : selected
+            ? `No pull requests are ${BUCKET_TITLES[selected].toLowerCase()}.`
+            : "No open pull requests are visible to GitHub or linked to a Paseo workspace.";
   const summaryMetrics = [
     { label: "Action now", value: counts["needs-you"] },
     { label: "Ready", value: counts.ready },
@@ -616,16 +621,10 @@ export function PrRadar({
       </View>
       <Text style={styles.heroTitle}>Know what moves next.</Text>
       <Text style={styles.heroDetail}>{totalCopy}</Text>
-      {parsed.pr ? <Text style={styles.heroDetail}>Focused PR: {parsed.pr}</Text> : null}
-      {data?.truncated ? (
-        <Text style={styles.warningText}>
-          Directory pagination limit reached; results are partial.
-        </Text>
-      ) : null}
-      {rawRows.length > 200 ? (
-        <Text style={styles.warningText}>
-          Viewer lookup is limited to 200 linked pull requests.
-        </Text>
+      {focusedPr ? <Text style={styles.heroDetail}>Focused PR: {focusedPr}</Text> : null}
+      {data?.truncated ? <Text style={styles.warningText}>{DIRECTORY_PARTIAL}</Text> : null}
+      {rawRows.length > VIEWER_URL_LIMIT ? (
+        <Text style={styles.warningText}>{LOOKUP_CAPPED}</Text>
       ) : null}
       <View accessibilityRole="summary" style={styles.summary}>
         {summaryMetrics.map(({ label, value }) => (
@@ -638,14 +637,19 @@ export function PrRadar({
       <View accessibilityRole="tablist" style={styles.chips}>
         <Pressable
           accessibilityRole="tab"
-          accessibilityState={{ selected: selected === null && !activeOnly && !savedView }}
+          accessibilityState={{
+            selected: selected === null && !activeOnly && !savedView && !focusedPr,
+          }}
           onPress={() => setFilter(null)}
-          style={[styles.chip, selected === null && !activeOnly && !savedView && styles.chipActive]}
+          style={[
+            styles.chip,
+            selected === null && !activeOnly && !savedView && !focusedPr && styles.chipActive,
+          ]}
         >
           <Text
             style={[
               styles.chipText,
-              selected === null && !activeOnly && !savedView && styles.chipTextActive,
+              selected === null && !activeOnly && !savedView && !focusedPr && styles.chipTextActive,
             ]}
           >
             All {rows.length}
