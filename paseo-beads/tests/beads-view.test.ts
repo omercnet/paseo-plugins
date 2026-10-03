@@ -3,33 +3,15 @@ import {
   type BeadsView,
   buildBeadSections,
   buildBeadsView,
+  describeReadyBeads,
   issueAccessibilityLabel,
   parseBeadScreenParams,
   type ReadyBeadsSummary,
   type ReadyBeadsWorkspace,
   summarizeReadyBeads,
 } from "../client/beads-view";
-import type { BeadSummary, BeadsSnapshot } from "../shared/beads";
-
-function bead(id: string, overrides: Partial<BeadSummary> = {}): BeadSummary {
-  return {
-    id,
-    title: `Issue ${id}`,
-    status: "open",
-    priority: 2,
-    issueType: "task",
-    assignee: null,
-    labels: [],
-    parent: null,
-    updatedAt: "2026-09-01T12:00:00.000Z",
-    dependencyCount: 0,
-    dependentCount: 0,
-    commentCount: 0,
-    isReady: true,
-    isBlocked: false,
-    ...overrides,
-  };
-}
+import type { BeadSummary } from "../shared/beads";
+import { bead, snapshot } from "./fixtures";
 
 function ids(issues: readonly BeadSummary[]): string[] {
   return issues.map((issue) => issue.id);
@@ -215,18 +197,8 @@ describe("issue accessibility labels", () => {
 });
 
 describe("ready beads summary", () => {
-  function workspace(id: string, projectId = "project-a"): ReadyBeadsWorkspace {
-    return { id, projectId, projectDisplayName: projectId, name: id };
-  }
-
-  function snapshot(issues: BeadSummary[], state: BeadsSnapshot["state"] = "ready"): BeadsSnapshot {
-    return {
-      state,
-      issues,
-      truncated: false,
-      refreshedAt: "2026-09-01T12:00:00.000Z",
-      message: null,
-    };
+  function workspace(id: string, project = "project-a"): ReadyBeadsWorkspace {
+    return { id, projectDisplayName: project, name: id };
   }
 
   function grouped({ groups }: ReadyBeadsSummary) {
@@ -253,7 +225,7 @@ describe("ready beads summary", () => {
     expect(grouped(summary)).toEqual([["main", ["ready"]]]);
   });
 
-  test("counts a bead shared by worktrees of one project once, under the first workspace", () => {
+  test("counts an issue once however many workspaces and projects read its database", () => {
     const summary = summarizeReadyBeads(
       [
         { workspace: workspace("feature"), snapshot: snapshot([bead("a-1", { priority: 1 })]) },
@@ -261,23 +233,41 @@ describe("ready beads summary", () => {
           workspace: workspace("main"),
           snapshot: snapshot([bead("a-1", { priority: 1 }), bead("a-2")]),
         },
+        // A worktree opened as a project of its own still reads the same database.
         {
-          workspace: workspace("other", "project-b"),
+          workspace: workspace("opened-worktree", "project-b"),
           snapshot: snapshot([bead("a-1", { priority: 1 })]),
         },
       ],
       10,
     );
 
-    expect(summary.count).toBe(3);
+    expect(summary.count).toBe(2);
     expect(grouped(summary)).toEqual([
       ["feature", ["a-1"]],
-      ["other", ["a-1"]],
       ["main", ["a-2"]],
     ]);
   });
 
-  test("skips workspaces without Beads and reports failed loads", () => {
+  test("keeps different issues that happen to share an ID", () => {
+    const summary = summarizeReadyBeads(
+      [
+        {
+          workspace: workspace("web"),
+          snapshot: snapshot([bead("app-1", { title: "Fix login" })]),
+        },
+        {
+          workspace: workspace("api", "project-b"),
+          snapshot: snapshot([bead("app-1", { title: "Add rate limits" })]),
+        },
+      ],
+      10,
+    );
+
+    expect(summary.count).toBe(2);
+  });
+
+  test("skips workspaces without Beads and tells unreadable ones from unavailable bd", () => {
     const summary = summarizeReadyBeads(
       [
         { workspace: workspace("plain"), snapshot: snapshot([], "not_initialized") },
@@ -288,7 +278,7 @@ describe("ready beads summary", () => {
       10,
     );
 
-    expect(summary).toMatchObject({ count: 1, failed: 1 });
+    expect(summary).toMatchObject({ count: 1, failed: 1, unavailable: 1 });
     expect(grouped(summary)).toEqual([["beads", ["b-1"]]]);
   });
 
@@ -312,6 +302,49 @@ describe("ready beads summary", () => {
       ["api", ["b-urgent"]],
       ["main", ["a-high"]],
     ]);
+  });
+});
+
+describe("ready beads notes", () => {
+  function summary(overrides: Partial<ReadyBeadsSummary>): ReadyBeadsSummary {
+    return { count: 0, groups: [], failed: 0, unavailable: 0, ...overrides };
+  }
+
+  test("claims an empty host only when every workspace was checked", () => {
+    const { empty, notices } = describeReadyBeads(summary({}), null);
+
+    expect(empty).toContain("No ready beads in any workspace");
+    expect(notices).toEqual([]);
+  });
+
+  test("blames the host, not the workspaces, when bd is unavailable", () => {
+    const { empty } = describeReadyBeads(summary({ unavailable: 3 }), null);
+
+    expect(empty).toContain("bd CLI is not available");
+  });
+
+  test("qualifies an empty result when workspaces could not be read", () => {
+    const one = describeReadyBeads(summary({ failed: 1 }), null);
+    const many = describeReadyBeads(summary({ failed: 2 }), null);
+
+    expect(one.empty).not.toContain("any workspace");
+    expect(one.notices).toEqual(["1 workspace could not be read."]);
+    expect(many.notices).toEqual(["2 workspaces could not be read."]);
+  });
+
+  test("reports a failed refresh next to the previous result", () => {
+    const withReady = describeReadyBeads(summary({ count: 3 }), "Request timed out.");
+    const withNone = describeReadyBeads(summary({}), "Request timed out.");
+
+    expect(withReady.empty).toBeNull();
+    expect(withReady.notices).toEqual([
+      "Refresh failed, showing the last result. Request timed out.",
+    ]);
+    expect(withNone.empty).not.toContain("any workspace");
+  });
+
+  test("adds no caveats to a clean result", () => {
+    expect(describeReadyBeads(summary({ count: 4 }), null)).toEqual({ empty: null, notices: [] });
   });
 });
 

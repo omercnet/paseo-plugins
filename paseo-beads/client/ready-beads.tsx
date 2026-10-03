@@ -8,19 +8,13 @@ import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import { type BeadsSnapshot, getWorkspaceBeads } from "../shared/beads";
-import {
-  BEAD_SCREEN_ID,
-  beadsSnapshotQueryKey,
-  type ReadyBeadsWorkspace,
-  summarizeReadyBeads,
-} from "./beads-view";
+import { getWorkspaceBeads } from "../shared/beads";
+import { BEAD_SCREEN_ID, describeReadyBeads } from "./beads-view";
 import { errorMessage, ID_FONT_FAMILY, priorityColor } from "./paseo-beads";
+import { READY_LIST_LIMIT, scanReadyBeads } from "./ready-scan";
 
-const READY_REFRESH_INTERVAL_MS = 60_000;
-/** The panel's polling interval: a snapshot an open panel just read is reused, not refetched. */
-const SNAPSHOT_FRESH_MS = 10_000;
-const READY_LIST_LIMIT = 10;
+/** The scan reads every project's Beads, so it runs rarely in the background and on popover open. */
+const READY_REFRESH_INTERVAL_MS = 120_000;
 
 function useReadyBeads(hostId: string, refetchOnMount: true | "always") {
   const paseo = usePaseo();
@@ -28,24 +22,14 @@ function useReadyBeads(hostId: string, refetchOnMount: true | "always") {
   const loadSnapshot = useRpc(getWorkspaceBeads);
   return useQuery({
     queryKey: ["paseo-beads", "ready", hostId],
-    async queryFn() {
-      const { entries } = await paseo.workspaces.list();
-      const loaded: { workspace: ReadyBeadsWorkspace; snapshot: BeadsSnapshot | null }[] = [];
-      // ponytail: first page (200 workspaces), one at a time to keep bd load flat. Add a small
-      // pool if counts lag on large hosts.
-      for (const { id, projectId, projectDisplayName, name } of entries) {
-        // fetchQuery, not query(): the host app's query-core (5.90) has no query().
-        const snapshot = await queryClient
-          .fetchQuery({
-            queryKey: beadsSnapshotQueryKey(hostId, id),
-            queryFn: () => loadSnapshot({ workspaceId: id }),
-            staleTime: SNAPSHOT_FRESH_MS,
-          })
-          .catch(() => null);
-        loaded.push({ workspace: { id, projectId, projectDisplayName, name }, snapshot });
-      }
-      return summarizeReadyBeads(loaded, READY_LIST_LIMIT);
-    },
+    queryFn: ({ signal }) =>
+      scanReadyBeads({
+        hostId,
+        signal,
+        queryClient,
+        loadSnapshot,
+        listWorkspaces: async () => (await paseo.workspaces.list()).entries,
+      }),
     staleTime: READY_REFRESH_INTERVAL_MS / 2,
     refetchInterval: READY_REFRESH_INTERVAL_MS,
     refetchOnMount,
@@ -89,11 +73,11 @@ function ReadyBeadsPopover({ theme, layout, host, openScreen }: PluginPopoverPro
     );
   }
 
+  const { empty, notices } = describeReadyBeads(data, error ? errorMessage(error) : null);
+
   return (
     <View style={styles.list}>
-      {data.count === 0 ? (
-        <Text style={styles.note}>No ready beads in any workspace on this host.</Text>
-      ) : null}
+      {empty ? <Text style={styles.note}>{empty}</Text> : null}
       {data.groups.map(({ workspace, beads }) => (
         <View key={workspace.id} style={styles.group}>
           <View style={styles.groupHeading}>
@@ -135,11 +119,11 @@ function ReadyBeadsPopover({ theme, layout, host, openScreen }: PluginPopoverPro
           Showing {READY_LIST_LIMIT} of {data.count} ready beads.
         </Text>
       ) : null}
-      {data.failed ? (
-        <Text style={styles.note}>
-          {data.failed === 1 ? "1 workspace" : `${data.failed} workspaces`} could not be read.
+      {notices.map((notice) => (
+        <Text key={notice} style={styles.note}>
+          {notice}
         </Text>
-      ) : null}
+      ))}
     </View>
   );
 }

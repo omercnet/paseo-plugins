@@ -172,7 +172,6 @@ export function beadsSnapshotQueryKey(hostId: string, workspaceId: string) {
 
 export interface ReadyBeadsWorkspace {
   id: string;
-  projectId: string;
   projectDisplayName: string;
   name: string;
 }
@@ -184,11 +183,14 @@ export interface ReadyBeadsSummary {
   groups: { workspace: ReadyBeadsWorkspace; beads: BeadSummary[] }[];
   /** Workspaces whose snapshot failed to load. */
   failed: number;
+  /** Workspaces on a host that cannot run `bd`. */
+  unavailable: number;
 }
 
 /**
- * Worktrees read their checkout's Beads database, so several workspaces of one project report the
- * same bead. It counts once and is listed under the first workspace that reported it.
+ * Worktrees read their checkout's Beads database, and Paseo can register a worktree as a project
+ * of its own, so one issue can arrive from several workspaces. An issue is identified by its ID
+ * and title: it counts once and is listed under the first workspace that reported it.
  */
 export function summarizeReadyBeads(
   entries: readonly { workspace: ReadyBeadsWorkspace; snapshot: BeadsSnapshot | null }[],
@@ -197,11 +199,13 @@ export function summarizeReadyBeads(
   const seen = new Set<string>();
   const ready: { workspace: ReadyBeadsWorkspace; bead: BeadSummary }[] = [];
   let failed = 0;
+  let unavailable = 0;
 
   for (const { workspace, snapshot } of entries) {
     if (!snapshot) failed += 1;
+    else if (snapshot.state === "bd_unavailable") unavailable += 1;
     for (const bead of snapshot?.issues ?? []) {
-      const key = JSON.stringify([workspace.projectId, bead.id]);
+      const key = JSON.stringify([bead.id, bead.title]);
       if (beadLaneFor(bead) !== "ready" || seen.has(key)) continue;
       seen.add(key);
       ready.push({ workspace, bead });
@@ -216,5 +220,33 @@ export function summarizeReadyBeads(
     groups.set(workspace.id, group);
   }
 
-  return { count: ready.length, groups: [...groups.values()], failed };
+  return { count: ready.length, groups: [...groups.values()], failed, unavailable };
+}
+
+export interface ReadyBeadsNotes {
+  /** Replaces the list when no ready bead was found; qualified when the result is incomplete. */
+  empty: string | null;
+  /** Caveats about the result, shown below it. */
+  notices: string[];
+}
+
+/** `refreshError` is the message of a failed refresh that left the previous result in place. */
+export function describeReadyBeads(
+  { count, failed, unavailable }: ReadyBeadsSummary,
+  refreshError: string | null,
+): ReadyBeadsNotes {
+  const notices: string[] = [];
+  if (refreshError) notices.push(`Refresh failed, showing the last result. ${refreshError}`);
+  if (failed > 0) {
+    notices.push(`${failed === 1 ? "1 workspace" : `${failed} workspaces`} could not be read.`);
+  }
+
+  let empty: string | null = null;
+  if (count === 0) {
+    if (unavailable > 0) empty = "The bd CLI is not available on this Paseo host.";
+    else if (failed > 0 || refreshError) {
+      empty = "No ready beads found in the workspaces that could be checked.";
+    } else empty = "No ready beads in any workspace on this host.";
+  }
+  return { empty, notices };
 }

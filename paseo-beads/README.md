@@ -64,10 +64,14 @@ failed background refresh keeps the previous data visible with an inline error; 
 failures provide a retry action.
 
 The **Ready beads** row lists the host's workspaces through the Paseo SDK and calls the same list
-handler for each one, one workspace at a time, every 60 seconds and whenever its popover opens. A
-snapshot an open panel read in the last 10 seconds is reused instead of rerunning `bd`. Worktrees
-read their checkout's Beads database, so a bead that several workspaces of one project report counts
-once. Workspaces without Beads count as zero.
+handler for each project, one workspace at a time, every 2 minutes and whenever its popover opens.
+A snapshot an open panel read in the last 10 seconds is reused instead of rerunning `bd`. Worktrees
+read their checkout's Beads database, so a project is read through each of its checkouts, or through
+its first worktree when it lists none. An issue reported more than once, with the same ID and title,
+counts once. Workspaces without Beads count as zero. When `bd` is unavailable, or a workspace cannot
+be read, the popover says so instead of reporting an empty host, and a failed refresh is shown next
+to the last result. Once nothing shows the count, for example when the host disconnects, a scan that
+is still running starts no further workspace reads.
 
 ## Limits
 
@@ -88,7 +92,8 @@ once. Workspaces without Beads count as zero.
 - The **Ready beads** row and the bead screen need Paseo 0.11. On 0.9 and 0.10 they do not register,
   and the panel and Command Center items work as before.
 - The **Ready beads** count covers the first 200 workspaces the host lists and, like the panel, the
-  first 500 issues of each workspace.
+  first 500 issues of each workspace. It can lag by up to two minutes; opening the popover refreshes
+  it.
 
 ## Install
 
