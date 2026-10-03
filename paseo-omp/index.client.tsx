@@ -37,8 +37,8 @@ import {
   configScreenTitle,
   configStoreFromParams,
   HUB_SIDEBAR_ITEM_ID,
+  loadHubSnapshot,
   supportsScreens,
-  workspaceDirectories,
 } from "./client/sidebar-compat";
 import {
   type ComposerPillSettings,
@@ -136,26 +136,26 @@ export function registerConfigAndHub(
   }
   const screens = client;
   function ConfigScreen(props: PluginSurfaceProps & { params: Record<string, string> }) {
+    const current = configStoreFromParams(props.params);
     return (
       <OmpConfigSurface
         {...props}
         onComposerPillSettingsChange={onComposerPillSettingsChange}
-        store={configStoreFromParams(props.params)}
-        onStoreChange={(store) =>
-          screens.openScreen({ screenId: CONFIG_SCREEN_ID, params: configParamsFromStore(store) })
-        }
+        store={current}
+        onStoreChange={(store) => {
+          // Re-selecting the current store must not push a duplicate screen onto history.
+          if (ompStoreKey(store) === ompStoreKey(current)) return;
+          screens.openScreen({ screenId: CONFIG_SCREEN_ID, params: configParamsFromStore(store) });
+        }}
       />
     );
   }
-  const { HubSidebarItem } = createHubSidebar(async () => {
-    const { entries } = await client.paseo.workspaces.list({ page: { limit: 200 } });
-    return Promise.all(
-      workspaceDirectories(entries).map(async (cwd) => ({
-        cwd,
-        processes: (await client.rpc(listHubProcesses, { cwd })).processes,
-      })),
-    );
-  });
+  const { HubSidebarItem } = createHubSidebar(() =>
+    loadHubSnapshot(
+      () => client.paseo.workspaces.list({ page: { limit: 200 } }),
+      async (cwd) => (await client.rpc(listHubProcesses, { cwd })).processes,
+    ),
+  );
   const removers = [
     screens.addScreen({ id: CONFIG_SCREEN_ID, title: configScreenTitle, Component: ConfigScreen }),
     screens.addSidebarHeaderItem({
@@ -233,6 +233,7 @@ export default function contribute(client: PluginClientContext) {
       openPanel("workspace", { location: "workspace" });
     },
   });
+  const usesScreens = supportsScreens(client);
   const removeConfigEntry = registerConfigAndHub(client, ConfigSurface, applyComposerPillSettings);
   const removeOpenConfig = client.addCommandCenterItem({
     id: "open-config",
@@ -241,8 +242,8 @@ export default function contribute(client: PluginClientContext) {
     keywords: ["omp", "config", "settings", "models", "providers", "composer", "pills"],
     context: "global",
     onSelect(capabilities) {
-      // 0.11+ opens the screen; 0.9/0.10 command capabilities only have openSurface.
-      if ("openScreen" in capabilities && typeof capabilities.openScreen === "function") {
+      // Branch on the same gate as registration: the screen exists only on the 0.11 path.
+      if (usesScreens && "openScreen" in capabilities) {
         capabilities.openScreen({ screenId: CONFIG_SCREEN_ID });
       } else capabilities.openSurface(CONFIG_SCREEN_ID);
     },

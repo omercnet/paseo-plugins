@@ -914,11 +914,14 @@ function OmpConfigContent({
   cwd,
   store,
   onStoreChange,
+  storeInHistory = false,
   onComposerPillSettingsChange,
 }: PluginSurfaceProps & {
   cwd?: string;
   store?: OmpStore;
   onStoreChange(store: OmpStore | undefined): void;
+  /** True when each store selection is a separate history entry (0.11 screen params). */
+  storeInHistory?: boolean;
   onComposerPillSettingsChange?: (settings: ComposerPillSettings) => void;
 }) {
   const loadConfig = useRpc(listOmpConfig);
@@ -1074,7 +1077,9 @@ function OmpConfigContent({
             disabled={pendingMutations > 0}
           />
           <Text style={styles.muted}>
-            Switching stores clears unapplied edits and pending confirmations.
+            {storeInHistory
+              ? "Each store opens as its own page; unapplied edits stay with the previous store, and Back returns to them."
+              : "Switching stores clears unapplied edits and pending confirmations."}
           </Text>
         </>
       ) : null}
@@ -1355,6 +1360,7 @@ function OmpStoreContent(
       {...props}
       store={store}
       onStoreChange={props.onStoreChange ?? setLocalStore}
+      storeInHistory={controlled}
     />
   );
 }

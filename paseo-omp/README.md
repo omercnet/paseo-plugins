@@ -95,7 +95,7 @@ Provider functionality outside the capability flags is tracked separately:
 | --- | ---: | --- |
 | Registration metadata and sanitized SVG icon | **100%** | Stable `omp-plugin` identity, label, description, and bundled icon. |
 | Strict `providerOptionsSchema` | **100%** | Command, literal environment, names-only profile inherited environment, output-redaction mode, session directory, RPC timeout, and role-model options are validated and normalized. Host-wide inherited names are separately persisted and merged at launch. |
-| Availability diagnostics | **100%** | The legacy `checkAvailability` hook uses bounded checks to distinguish missing, unrunnable, incompatible, and available OMP runtimes. |
+| Availability diagnostics | **50%** | The plugin implements a `checkAvailability` hook with bounded checks that distinguish missing, unrunnable, incompatible, and available OMP runtimes, but no released daemon calls it (no upstream reference at v0.10.2 or v0.11.0-beta.3). Hosts treat the provider as available when a connection opens, and launch failures surface at session start. |
 | Catalog cache identity | **100%** | Hash includes effective options, merged host/profile inherited-environment names, settings, scope, cwd, and default command, but never resolves or fingerprints inherited values. |
 | Models, modes, and thinking catalog | **100%** | Native catalog is mapped to opaque public model IDs with committed defaults and permission-gated modes. |
 | Connection `send` / `onEvent` / `close` lifecycle | **100%** | Request correlation, multi-session ownership, process recovery, teardown, and provider reload/removal are covered. |
@@ -107,7 +107,7 @@ Provider functionality outside the capability flags is tracked separately:
 | Usage reporting | **100%** | Periodic, post-compaction, fallback, terminal, timeout, and recovered-runtime samples publish `session.usage`. |
 | 0.11 provider `status()` | **0%** | Not registered. Its request carries only an optional daemon-resolved `launch`; the daemon supplies one only when a registration declares `command`, which would move launch ownership to the daemon. Without that, status cannot see per-agent `providerOptions.command`, so probing a guessed default could wrongly mark a valid custom-command provider unavailable. |
 | 0.11 screens and sidebar items | **100%** | The global config surface migrates to `addScreen({ id: "config" })`, preserving legacy links and encoding profile selection in screen params. The Hub status row uses `addSidebarHeaderItem` + `SidebarRow`, lists processes and tails logs in a reusable popover. Hosts without the 0.11 APIs retain the static config row/surface; the Hub row is 0.11-only. |
-| 0.11 usage source | **0%** | Not registered: `server/quota.ts` reads historical `usage_history`. The upstream Claude and Codex sources discover live OMP auth credentials and query live quota endpoints, so this plugin cannot report live quota they do not already cover. |
+| 0.11 usage source | **0%** | Not registered. `server/quota.ts` reads OMP's recorded `usage_history`, not live quota, so there is no live fetcher to register. Upstream Claude and Codex sources fetch live quota for the Anthropic and Codex OAuth credentials in the daemon's default or `OMP_PROFILE` store; other providers and named profiles remain covered only by this plugin's historical quota pill. |
 
 Tracking rules:
 

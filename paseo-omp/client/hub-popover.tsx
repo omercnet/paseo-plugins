@@ -44,19 +44,26 @@ export function HubPopover(props: PluginButtonContentProps) {
   return <HubProcessList theme={props.theme} layout={props.layout} cwd={cwd} />;
 }
 
-/** Process cards with a per-process log tail, for one workspace directory. */
+/**
+ * Process cards with a per-process log tail, for one workspace directory. Pass `processes` when
+ * the caller already polls them; the list then skips its own process query.
+ */
 export function HubProcessList({
   theme,
   layout,
   cwd,
-}: Pick<PluginHostProps, "theme" | "layout"> & { cwd: string }) {
+  processes: provided,
+}: Pick<PluginHostProps, "theme" | "layout"> & {
+  cwd: string;
+  processes?: readonly HubProcess[];
+}) {
   const loadProcesses = useRpc(listHubProcesses);
   const loadLog = useRpc(tailHubLog);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const processes = useQuery({
     queryKey: ["paseo-omp", "processes", cwd],
     queryFn: () => loadProcesses({ cwd }),
-    enabled: cwd.length > 0,
+    enabled: cwd.length > 0 && provided === undefined,
     refetchInterval: PROCESS_POLL_MS,
   });
   const log = useQuery({
@@ -93,9 +100,13 @@ export function HubProcessList({
     [layout.compact, theme],
   );
 
-  if (processes.isLoading) return <Text style={styles.muted}>Loading hub processes…</Text>;
-  if (processes.error) return <Text style={styles.error}>Could not read omp hub state.</Text>;
-  const items = processes.data?.processes ?? [];
+  if (!provided && processes.isLoading) {
+    return <Text style={styles.muted}>Loading hub processes…</Text>;
+  }
+  if (!provided && processes.error) {
+    return <Text style={styles.error}>Could not read omp hub state.</Text>;
+  }
+  const items = provided ?? processes.data?.processes ?? [];
   if (items.length === 0) return <Text style={styles.muted}>No hub-supervised processes.</Text>;
 
   return (

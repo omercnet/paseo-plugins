@@ -1,3 +1,4 @@
+import type { ReactElement } from "react";
 import { describe, expect, test, vi } from "vitest";
 import type { HubProcess } from "../shared/hub";
 
@@ -28,6 +29,9 @@ import {
   configParamsFromStore,
   configScreenTitle,
   configStoreFromParams,
+  type HubSnapshot,
+  hubTrailing,
+  loadHubSnapshot,
   summarizeHubWorkspaces,
   supportsScreens,
   workspaceDirectories,
@@ -133,7 +137,7 @@ describe("0.11 screens", () => {
     }
   });
 
-  test("hub loader lists processes for each distinct workspace directory", async () => {
+  test("hub loader polls each distinct workspace directory", async () => {
     const host = screenHost();
     host.paseo.workspaces.list.mockResolvedValue({
       entries: [
@@ -150,13 +154,43 @@ describe("0.11 screens", () => {
       () => null,
       () => {},
     );
-    await expect(hubLoaders.at(-1)?.()).resolves.toEqual([
-      { cwd: "/a", processes: [hubProcess("web", "running")] },
-      { cwd: "/b", processes: [] },
-    ]);
+    await expect(hubLoaders.at(-1)?.()).resolves.toEqual({
+      workspaces: [
+        { cwd: "/a", processes: [hubProcess("web", "running")] },
+        { cwd: "/b", processes: [] },
+      ],
+      truncated: false,
+      unreadable: 0,
+    });
     expect(host.rpc.mock.calls).toEqual([
       [listHubProcesses, { cwd: "/a" }],
       [listHubProcesses, { cwd: "/b" }],
+    ]);
+  });
+
+  test("store changes open the screen with params, except re-selecting the current store", () => {
+    const host = screenHost();
+    registerConfigAndHub(
+      host as unknown as Legacy,
+      () => null,
+      () => {},
+    );
+    const [{ Component }] = host.addScreen.mock.calls[0] as unknown as [
+      { Component: (props: { params: Record<string, string> }) => ReactElement },
+    ];
+    const element = Component({ params: { profile: "work" } });
+    const { store, onStoreChange } = element.props as {
+      store: unknown;
+      onStoreChange(store: { profile?: string } | undefined): void;
+    };
+    expect(store).toEqual({ profile: "work" });
+    onStoreChange({ profile: "work" });
+    expect(host.openScreen).not.toHaveBeenCalled();
+    onStoreChange({ profile: "home" });
+    onStoreChange(undefined);
+    expect(host.openScreen.mock.calls).toEqual([
+      [{ screenId: "config", params: { profile: "home" } }],
+      [{ screenId: "config", params: {} }],
     ]);
   });
 });
@@ -201,8 +235,101 @@ describe("hub sidebar summary", () => {
     expect(summarizeHubWorkspaces([])).toEqual({ running: 0, failed: 0, total: 0 });
   });
 
-  test("workspace directories are deduplicated and bounded", () => {
+  test("workspace directories are deduplicated and bounded, reporting truncation", () => {
+    expect(
+      workspaceDirectories([
+        { workspaceDirectory: "/a", projectRootPath: "/p" },
+        { projectRootPath: "/b" },
+        { workspaceDirectory: "/a", projectRootPath: "/p" },
+      ]),
+    ).toEqual({ directories: ["/a", "/b"], truncated: false });
     const entries = Array.from({ length: 5 }, (_, index) => ({ projectRootPath: `/p${index}` }));
-    expect(workspaceDirectories(entries, 3)).toEqual(["/p0", "/p1", "/p2"]);
+    expect(workspaceDirectories(entries, 3)).toEqual({
+      directories: ["/p0", "/p1", "/p2"],
+      truncated: true,
+    });
+    expect(workspaceDirectories(entries.slice(0, 3), 3).truncated).toBe(false);
+  });
+});
+
+describe("hub snapshot loading", () => {
+  const twoWorkspaces = async () => ({
+    entries: [{ projectRootPath: "/a" }, { projectRootPath: "/b" }],
+  });
+
+  test("one unreadable workspace does not hide the others", async () => {
+    const snapshot = await loadHubSnapshot(twoWorkspaces, async (cwd) => {
+      if (cwd === "/b") throw new Error("unreadable");
+      return [hubProcess("web", "running")];
+    });
+    expect(snapshot).toEqual({
+      workspaces: [{ cwd: "/a", processes: [hubProcess("web", "running")] }],
+      truncated: false,
+      unreadable: 1,
+    });
+  });
+
+  test("fails only when every workspace is unreadable", async () => {
+    await expect(
+      loadHubSnapshot(twoWorkspaces, async () => {
+        throw new Error("down");
+      }),
+    ).rejects.toThrow("OMP hub state is unreadable");
+    await expect(
+      loadHubSnapshot(
+        async () => ({ entries: [] }),
+        async () => [],
+      ),
+    ).resolves.toEqual({ workspaces: [], truncated: false, unreadable: 0 });
+  });
+
+  test("a further workspace page marks counts as a lower bound", async () => {
+    const snapshot = await loadHubSnapshot(
+      async () => ({ entries: [{ projectRootPath: "/a" }], pageInfo: { hasMore: true } }),
+      async () => [],
+    );
+    expect(snapshot.truncated).toBe(true);
+  });
+});
+
+describe("hub row trailing state", () => {
+  const snapshot = (processes: HubProcess[], extra: Partial<HubSnapshot> = {}): HubSnapshot => ({
+    workspaces: [{ cwd: "/a", processes }],
+    truncated: false,
+    unreadable: 0,
+    ...extra,
+  });
+
+  test("shows nothing without processes or problems", () => {
+    expect(hubTrailing(undefined, false)).toBeNull();
+    expect(hubTrailing(snapshot([]), false)).toBeNull();
+  });
+
+  test("shows running and failed counts", () => {
+    expect(
+      hubTrailing(snapshot([hubProcess("web", "running"), hubProcess("job", "failed")]), false),
+    ).toEqual({
+      running: "1 running",
+      failed: "1 failed",
+      unreadable: false,
+      accessibilityLabel: "1 running, 1 failed",
+    });
+  });
+
+  test("marks truncated counts and unreadable state", () => {
+    expect(
+      hubTrailing(
+        snapshot([hubProcess("web", "running")], { truncated: true, unreadable: 2 }),
+        false,
+      ),
+    ).toEqual({
+      running: "1+ running",
+      unreadable: true,
+      accessibilityLabel: "1+ running, some hub state unreadable",
+    });
+    expect(hubTrailing(undefined, true)).toEqual({
+      unreadable: true,
+      accessibilityLabel: "some hub state unreadable",
+    });
   });
 });

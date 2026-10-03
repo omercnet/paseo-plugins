@@ -6,13 +6,10 @@ import { useQuery } from "@tanstack/react-query";
 import type { ComponentType, ReactNode } from "react";
 import { Text, View } from "react-native";
 import { HubProcessList } from "./hub-popover";
-import {
-  CONFIG_SCREEN_ID,
-  type HubWorkspaceProcesses,
-  summarizeHubWorkspaces,
-} from "./sidebar-compat";
+import { CONFIG_SCREEN_ID, type HubSnapshot, hubTrailing } from "./sidebar-compat";
 
-const HUB_POLL_MS = 4_000;
+// The row is always mounted; a slower poll bounds per-client RPC fan-out across workspaces.
+const HUB_POLL_MS = 15_000;
 const HUB_SIDEBAR_QUERY_KEY = ["paseo-omp", "hub-sidebar"] as const;
 
 interface OpenScreenInput {
@@ -39,8 +36,9 @@ type SidebarRowComponent = ComponentType<{
 }>;
 
 const uiModule: object = pluginUi;
-// Presence check only: host components may be memo/forwardRef objects, not plain functions.
-// Unchecked cast: older SDK typings do not declare SidebarRow; only 0.11 code paths render this.
+// Present on every 0.11 host, the only hosts that render these items. The guard and cast keep
+// older-SDK typechecks (which lack SidebarRow) compiling; presence check only, because host
+// components may be memo/forwardRef objects rather than plain functions.
 const SidebarRow: SidebarRowComponent | undefined =
   "SidebarRow" in uiModule && uiModule.SidebarRow
     ? (uiModule.SidebarRow as SidebarRowComponent)
@@ -58,35 +56,46 @@ export function ConfigSidebarItem({ currentScreen, openScreen }: SidebarItemProp
   );
 }
 
-export function createHubSidebar(loadWorkspaces: () => Promise<HubWorkspaceProcesses[]>) {
-  const useHubWorkspaces = () =>
+export function createHubSidebar(loadSnapshot: () => Promise<HubSnapshot>) {
+  const useHubSnapshot = () =>
     useQuery({
       queryKey: HUB_SIDEBAR_QUERY_KEY,
-      queryFn: loadWorkspaces,
+      queryFn: loadSnapshot,
       refetchInterval: HUB_POLL_MS,
     });
 
   function HubSidebarPopover({ theme, layout }: PopoverProps) {
-    const workspaces = useHubWorkspaces();
+    const snapshot = useHubSnapshot();
     const muted = { color: theme.colors.foregroundMuted, fontSize: 13 };
-    if (workspaces.isLoading) return <Text style={muted}>Loading hub processes…</Text>;
-    if (workspaces.error) {
+    if (snapshot.isLoading) return <Text style={muted}>Loading hub processes…</Text>;
+    if (!snapshot.data) {
       return (
         <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>
           Could not read omp hub state.
         </Text>
       );
     }
-    const active = (workspaces.data ?? []).filter(({ processes }) => processes.length > 0);
-    if (active.length === 0) return <Text style={muted}>No hub-supervised processes.</Text>;
+    const active = snapshot.data.workspaces.filter(({ processes }) => processes.length > 0);
+    const notes = [
+      snapshot.data.unreadable > 0
+        ? `${snapshot.data.unreadable} workspace(s) could not be read.`
+        : undefined,
+      snapshot.data.truncated ? "Showing the first 50 workspaces." : undefined,
+    ].filter(Boolean);
     return (
       <View style={{ gap: layout.compact ? 12 : 14 }}>
-        {active.map(({ cwd }) => (
+        {notes.map((note) => (
+          <Text key={note} style={{ ...muted, fontSize: 12 }}>
+            {note}
+          </Text>
+        ))}
+        {active.length === 0 ? <Text style={muted}>No hub-supervised processes.</Text> : null}
+        {active.map(({ cwd, processes }) => (
           <View key={cwd} style={{ gap: 6 }}>
             <Text numberOfLines={1} style={{ ...muted, fontSize: 12 }}>
               {cwd}
             </Text>
-            <HubProcessList theme={theme} layout={layout} cwd={cwd} />
+            <HubProcessList theme={theme} layout={layout} cwd={cwd} processes={processes} />
           </View>
         ))}
       </View>
@@ -94,32 +103,24 @@ export function createHubSidebar(loadWorkspaces: () => Promise<HubWorkspaceProce
   }
 
   function HubSidebarItem({ theme, openPopover }: SidebarItemProps) {
-    const workspaces = useHubWorkspaces();
+    const snapshot = useHubSnapshot();
     if (!SidebarRow) return null;
-    const summary = summarizeHubWorkspaces(workspaces.data ?? []);
-    const unreadable = workspaces.error !== null;
-    const trailing =
-      unreadable || summary.total > 0 ? (
-        <View
-          accessibilityLabel={
-            unreadable
-              ? "Hub state unreadable"
-              : `${summary.running} running, ${summary.failed} failed`
-          }
-          style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
-        >
-          {summary.total > 0 ? (
-            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-              {`${summary.running} running`}
-            </Text>
-          ) : null}
-          {unreadable || summary.failed > 0 ? (
-            <Text style={{ color: theme.colors.statusDanger, fontSize: 12, fontWeight: "600" }}>
-              {unreadable ? "!" : `${summary.failed} failed`}
-            </Text>
-          ) : null}
-        </View>
-      ) : undefined;
+    const state = hubTrailing(snapshot.data, snapshot.error !== null);
+    const trailing = state ? (
+      <View
+        accessibilityLabel={state.accessibilityLabel}
+        style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+      >
+        {state.running ? (
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{state.running}</Text>
+        ) : null}
+        {state.failed || state.unreadable ? (
+          <Text style={{ color: theme.colors.statusDanger, fontSize: 12, fontWeight: "600" }}>
+            {[state.failed, state.unreadable ? "!" : undefined].filter(Boolean).join(" ")}
+          </Text>
+        ) : null}
+      </View>
+    ) : undefined;
     return (
       <SidebarRow
         icon="Activity"
