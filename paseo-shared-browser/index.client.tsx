@@ -1,5 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { contributeSharedBrowserClient, SharedBrowserPanel } from "./client/browser";
+import { contributeSharedBrowserSidebar } from "./client/sidebar";
 
 export default function contribute(client: PluginClientContext) {
   client.addWorkspacePanel({
@@ -31,5 +32,10 @@ export default function contribute(client: PluginClientContext) {
     },
   });
 
-  return contributeSharedBrowserClient(client);
+  const removeSidebar = contributeSharedBrowserSidebar(client);
+  const cleanup = contributeSharedBrowserClient(client);
+  return () => {
+    removeSidebar();
+    return cleanup();
+  };
 }

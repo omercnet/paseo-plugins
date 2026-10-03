@@ -93,15 +93,19 @@ Before upgrading the plugin on Windows, close active Shared Browser sessions and
 daemon; Windows does not allow the installer to replace runtime executables that are still running.
 
 Open a workspace, search the Command Center for **Open Shared Browser**, or tap the **Shared
-Browser** composer pill while a workspace session is open.
+Browser** composer pill while a workspace session is open. On Paseo 0.11 or newer, a **Shared
+Browser (n)** row in the sidebar footer appears while browser sessions are open; it lists them and
+jumps to the chosen workspace's browser panel.
 
 ## Agent MCP access
 
 The plugin automatically injects its stdio MCP adapter only when a new, non-internal agent is
 created with a provider that accepts external MCP servers. Agents that already exist, resumed
-sessions, imported sessions, and Paseo's internal agents are not modified. Paseo's OMP provider
-uses native host-tool injection and rejects external MCP servers, so OMP agents are left unchanged.
-Pi agents continue to receive the adapter, but they require Pi's optional MCP support to launch it.
+sessions, imported sessions, and Paseo's internal agents are not modified. Paseo's built-in OMP
+provider accepts session MCP servers from Paseo 0.11, so new OMP agents receive the adapter there.
+On Paseo 0.9 and 0.10 the built-in OMP adapter rejects external MCP servers, so OMP agents are left
+unchanged. Pi agents continue to receive the adapter, but they require Pi's optional MCP support to
+launch it.
 
 The injected MCP server exposes exactly these tools: `shared_browser_status`,
 `shared_browser_capture`, `shared_browser_acquire_control`, `shared_browser_release_control`,
