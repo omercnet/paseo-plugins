@@ -362,3 +362,19 @@ export function activeCrews(entries: readonly AgentEntry[]): ActiveCrew[] {
   }
   return crews.filter((crew) => crew.working + crew.needsInput > 0);
 }
+
+export type CrewPopoverNotice = "loading" | "error" | "empty";
+
+/**
+ * The note the Active crews popover shows, or null when its crew list speaks for itself. A failed
+ * load always wins, even over cached crews, so an outage never reads as "no crew is active".
+ */
+export function crewPopoverNotice(input: {
+  crewCount: number;
+  isPending: boolean;
+  error: unknown;
+}): CrewPopoverNotice | null {
+  if (input.error) return "error";
+  if (input.crewCount > 0) return null;
+  return input.isPending ? "loading" : "empty";
+}

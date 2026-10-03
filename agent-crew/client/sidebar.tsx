@@ -7,14 +7,14 @@ import { useToast } from "@getpaseo/plugin/client/react-native";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { activeCrews, agentTitle } from "./crew";
+import { activeCrews, agentTitle, crewPopoverNotice } from "./crew";
 import { useCrewDirectory } from "./main";
 
 /** The Active crews sidebar row; its popover opens a crew's workspace Agent Crew panel. */
 export function createActiveCrewsItem(client: PluginClientContext) {
   function ActiveCrewsPopover({ theme, host, close }: PluginPopoverProps) {
     const toast = useToast();
-    const { data, isPending } = useCrewDirectory(host.id);
+    const { data, error, isPending } = useCrewDirectory(host.id);
     const crews = useMemo(() => activeCrews(data?.entries ?? []), [data]);
     const styles = useMemo(
       () =>
@@ -23,18 +23,21 @@ export function createActiveCrewsItem(client: PluginClientContext) {
           pressed: { backgroundColor: theme.colors.surface2 },
           title: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" },
           detail: { color: theme.colors.foregroundMuted, fontSize: 12 },
+          error: { color: theme.colors.statusDanger, fontSize: 12, marginBottom: 6 },
         }),
       [theme],
     );
-    if (crews.length === 0) {
-      return (
-        <Text style={styles.detail}>
-          {isPending ? "Loading crews…" : "No crew is working or waiting for input."}
-        </Text>
-      );
+    const notice = crewPopoverNotice({ crewCount: crews.length, isPending, error });
+    let noticeText = "No crew is working or waiting for input.";
+    if (notice === "loading") noticeText = "Loading crews…";
+    if (notice === "error") {
+      noticeText = error instanceof Error ? error.message : "Could not load crews";
     }
     return (
       <View>
+        {notice ? (
+          <Text style={notice === "error" ? styles.error : styles.detail}>{noticeText}</Text>
+        ) : null}
         {crews.map((crew) => (
           <Pressable
             key={`${crew.workspaceId}:${crew.lead.agent.id}`}

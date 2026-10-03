@@ -8,6 +8,7 @@ import {
   buildCrewForest,
   collapseCrewNodes,
   crewCounts,
+  crewPopoverNotice,
   crewState,
   formatAge,
   listenToCrewDirectory,
@@ -359,5 +360,21 @@ describe("addSidebarHeaderItemIfSupported", () => {
     addSidebarHeaderItemIfSupported({ addSidebarHeaderItem }, item)();
     expect(addSidebarHeaderItem).toHaveBeenCalledWith(item);
     expect(removeItem).toHaveBeenCalledOnce();
+  });
+});
+
+describe("crewPopoverNotice", () => {
+  test("never lets a failed load read as an empty crew list", () => {
+    const error = new Error("daemon unreachable");
+    // A rejected directory load has no data and is not pending.
+    expect(crewPopoverNotice({ crewCount: 0, isPending: false, error })).toBe("error");
+    // A failed refresh over cached crews still surfaces the failure.
+    expect(crewPopoverNotice({ crewCount: 2, isPending: false, error })).toBe("error");
+  });
+
+  test("tells loading, empty and listed crews apart when nothing failed", () => {
+    expect(crewPopoverNotice({ crewCount: 0, isPending: true, error: null })).toBe("loading");
+    expect(crewPopoverNotice({ crewCount: 0, isPending: false, error: null })).toBe("empty");
+    expect(crewPopoverNotice({ crewCount: 1, isPending: false, error: null })).toBeNull();
   });
 });
