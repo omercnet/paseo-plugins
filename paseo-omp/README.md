@@ -54,9 +54,13 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-This matrix inventories the complete capability set exported by the pinned `@getpaseo/plugin` 0.10.1 provider SDK, whose public provider surface is unchanged since 0.9.0; compatibility is checked nightly against the 0.9, 0.10, and latest SDK channels. It measures strict SDK surface coverage, not general product quality.
+The capability inventory is pinned to `@getpaseo/plugin` 0.11.0-beta.3 (PR #251), with nightly
+compatibility checks against supported 0.9 and 0.10 hosts. Provider capability scoring still covers
+all 17 entries in the SDK's `PROVIDER_CAPABILITIES`; the separate provider/client SDK table below
+also tracks the 0.11 registration, screen, and sidebar APIs. This measures strict SDK surface
+coverage, not general product quality.
 
-**Current capability completeness: 61.8%.** The provider advertises 11 of 17 capabilities (64.7%); ten are complete and `session.configure` is partial.
+**Provider capability completeness: 61.8%.** The provider advertises 11 of 17 capabilities (64.7%); ten are complete and `session.configure` is partial.
 
 Scoring is deliberately mechanical so releases remain comparable:
 
@@ -91,7 +95,7 @@ Provider functionality outside the capability flags is tracked separately:
 | --- | ---: | --- |
 | Registration metadata and sanitized SVG icon | **100%** | Stable `omp-plugin` identity, label, description, and bundled icon. |
 | Strict `providerOptionsSchema` | **100%** | Command, literal environment, names-only profile inherited environment, output-redaction mode, session directory, RPC timeout, and role-model options are validated and normalized. Host-wide inherited names are separately persisted and merged at launch. |
-| Availability diagnostics | **100%** | Bounded checks distinguish missing, unrunnable, incompatible, and available OMP runtimes. |
+| Availability diagnostics | **100%** | The legacy `checkAvailability` hook uses bounded checks to distinguish missing, unrunnable, incompatible, and available OMP runtimes. |
 | Catalog cache identity | **100%** | Hash includes effective options, merged host/profile inherited-environment names, settings, scope, cwd, and default command, but never resolves or fingerprints inherited values. |
 | Models, modes, and thinking catalog | **100%** | Native catalog is mapped to opaque public model IDs with committed defaults and permission-gated modes. |
 | Connection `send` / `onEvent` / `close` lifecycle | **100%** | Request correlation, multi-session ownership, process recovery, teardown, and provider reload/removal are covered. |
@@ -101,6 +105,9 @@ Provider functionality outside the capability flags is tracked separately:
 | Commands and committed session state events | **100%** | Publishes `session.commands`, `session.opened`, `session.config`, `session.ready`, and request completion in protocol order. |
 | Built-in timeline snapshots | **100%** | Assistant, reasoning, tools, todos, notifications, errors, compaction, and friendly MCP labels use stable IDs and complete snapshots. OMP emits client-safe PNG/JPEG when possible; validated legacy WebP images render on capable clients with an explicit per-image fallback elsewhere. |
 | Usage reporting | **100%** | Periodic, post-compaction, fallback, terminal, timeout, and recovered-runtime samples publish `session.usage`. |
+| 0.11 provider `status()` | **0%** | Not registered. Its request carries only an optional daemon-resolved `launch`; the daemon supplies one only when a registration declares `command`, which would move launch ownership to the daemon. Without that, status cannot see per-agent `providerOptions.command`, so probing a guessed default could wrongly mark a valid custom-command provider unavailable. |
+| 0.11 screens and sidebar items | **100%** | The global config surface migrates to `addScreen({ id: "config" })`, preserving legacy links and encoding profile selection in screen params. The Hub status row uses `addSidebarHeaderItem` + `SidebarRow`, lists processes and tails logs in a reusable popover. Hosts without the 0.11 APIs retain the static config row/surface; the Hub row is 0.11-only. |
+| 0.11 usage source | **0%** | Not registered: `server/quota.ts` reads historical `usage_history`. The upstream Claude and Codex sources discover live OMP auth credentials and query live quota endpoints, so this plugin cannot report live quota they do not already cover. |
 
 Tracking rules:
 

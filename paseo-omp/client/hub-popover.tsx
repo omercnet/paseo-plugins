@@ -1,4 +1,9 @@
-import { type PluginButtonContentProps, useAgent, useRpc } from "@getpaseo/plugin/client";
+import {
+  type PluginButtonContentProps,
+  type PluginHostProps,
+  useAgent,
+  useRpc,
+} from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -34,9 +39,17 @@ function toneColor(
 }
 
 export function HubPopover(props: PluginButtonContentProps) {
-  const { theme, layout } = props;
   const agentId = props.context === "agent" ? props.agentId : "";
   const cwd = useAgent(agentId, (agent) => agent.cwd) ?? "";
+  return <HubProcessList theme={props.theme} layout={props.layout} cwd={cwd} />;
+}
+
+/** Process cards with a per-process log tail, for one workspace directory. */
+export function HubProcessList({
+  theme,
+  layout,
+  cwd,
+}: Pick<PluginHostProps, "theme" | "layout"> & { cwd: string }) {
   const loadProcesses = useRpc(listHubProcesses);
   const loadLog = useRpc(tailHubLog);
   const [selectedName, setSelectedName] = useState<string | null>(null);

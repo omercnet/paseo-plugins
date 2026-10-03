@@ -4,8 +4,10 @@ import type {
   PluginClientContext,
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
+import type { ComponentType } from "react";
 import { OmpIcon } from "./client/hub-icon";
 import { HubPopover } from "./client/hub-popover";
+import { ConfigSidebarItem, createHubSidebar } from "./client/hub-sidebar";
 import { summarizeHubProcesses } from "./client/hub-status";
 import { OmpMcpAuthorizationCard } from "./client/mcp-authorization";
 import { McpPopover } from "./client/mcp-popover";
@@ -29,6 +31,15 @@ import {
   quotaSummaryForProvider,
 } from "./client/quota-state";
 import { SessionsPopover } from "./client/sessions-popover";
+import {
+  CONFIG_SCREEN_ID,
+  configParamsFromStore,
+  configScreenTitle,
+  configStoreFromParams,
+  HUB_SIDEBAR_ITEM_ID,
+  supportsScreens,
+  workspaceDirectories,
+} from "./client/sidebar-compat";
 import {
   type ComposerPillSettings,
   composerPillSettings,
@@ -100,6 +111,69 @@ async function loadAgents(paseo: PaseoApi): Promise<AgentEntry[]> {
   return entries;
 }
 
+/**
+ * Paseo 0.11+: a param-addressable `config` screen (same id as the old sidebar item, so saved
+ * links resolve to it), a header row that opens it, and a Hub status row. 0.9/0.10: the original
+ * surface and static sidebar row, unchanged.
+ */
+export function registerConfigAndHub(
+  client: Pick<PluginClientContext, "addSurface" | "addSidebarItem" | "rpc" | "paseo">,
+  ConfigSurface: ComponentType<PluginSurfaceProps>,
+  onComposerPillSettingsChange: (settings: ComposerPillSettings) => void,
+): () => void {
+  if (!supportsScreens(client)) {
+    const removeSurface = client.addSurface(CONFIG_SCREEN_ID, ConfigSurface);
+    const removeItem = client.addSidebarItem({
+      id: CONFIG_SCREEN_ID,
+      title: "OMP",
+      icon: "Settings",
+      surface: CONFIG_SCREEN_ID,
+    });
+    return () => {
+      removeItem();
+      removeSurface();
+    };
+  }
+  const screens = client;
+  function ConfigScreen(props: PluginSurfaceProps & { params: Record<string, string> }) {
+    return (
+      <OmpConfigSurface
+        {...props}
+        onComposerPillSettingsChange={onComposerPillSettingsChange}
+        store={configStoreFromParams(props.params)}
+        onStoreChange={(store) =>
+          screens.openScreen({ screenId: CONFIG_SCREEN_ID, params: configParamsFromStore(store) })
+        }
+      />
+    );
+  }
+  const { HubSidebarItem } = createHubSidebar(async () => {
+    const { entries } = await client.paseo.workspaces.list({ page: { limit: 200 } });
+    return Promise.all(
+      workspaceDirectories(entries).map(async (cwd) => ({
+        cwd,
+        processes: (await client.rpc(listHubProcesses, { cwd })).processes,
+      })),
+    );
+  });
+  const removers = [
+    screens.addScreen({ id: CONFIG_SCREEN_ID, title: configScreenTitle, Component: ConfigScreen }),
+    screens.addSidebarHeaderItem({
+      id: CONFIG_SCREEN_ID,
+      title: "OMP",
+      Component: ConfigSidebarItem,
+    }),
+    screens.addSidebarHeaderItem({
+      id: HUB_SIDEBAR_ITEM_ID,
+      title: "OMP Hub",
+      Component: HubSidebarItem,
+    }),
+  ];
+  return () => {
+    for (const remove of removers.reverse()) remove();
+  };
+}
+
 export default function contribute(client: PluginClientContext) {
   const pills = new Map<string, PillEntry>();
   let preferences: ComposerPillSettings | undefined;
@@ -159,21 +233,18 @@ export default function contribute(client: PluginClientContext) {
       openPanel("workspace", { location: "workspace" });
     },
   });
-  const removeConfigSurface = client.addSurface("config", ConfigSurface);
-  const removeConfigSidebarItem = client.addSidebarItem({
-    id: "config",
-    title: "OMP",
-    icon: "Settings",
-    surface: "config",
-  });
+  const removeConfigEntry = registerConfigAndHub(client, ConfigSurface, applyComposerPillSettings);
   const removeOpenConfig = client.addCommandCenterItem({
     id: "open-config",
     title: "Open OMP",
     icon: "Settings",
     keywords: ["omp", "config", "settings", "models", "providers", "composer", "pills"],
     context: "global",
-    onSelect({ openSurface }) {
-      openSurface("config");
+    onSelect(capabilities) {
+      // 0.11+ opens the screen; 0.9/0.10 command capabilities only have openSurface.
+      if ("openScreen" in capabilities && typeof capabilities.openScreen === "function") {
+        capabilities.openScreen({ screenId: CONFIG_SCREEN_ID });
+      } else capabilities.openSurface(CONFIG_SCREEN_ID);
     },
   });
   const removeImageRenderer = client.addTimelineRenderer({
@@ -497,8 +568,7 @@ export default function contribute(client: PluginClientContext) {
     removeMcpAuthorizationRenderer();
     removeImageTransformer();
     removeOpenConfig();
-    removeConfigSidebarItem();
-    removeConfigSurface();
+    removeConfigEntry();
     removeOpenWorkspace();
     removeWorkspacePanel();
     removeOpenMemory();
