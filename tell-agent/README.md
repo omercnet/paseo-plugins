@@ -43,7 +43,7 @@ Paseo 0.9 and 0.10 use the reviewed update flow to show the current and proposed
 Run the slash command from an agent composer:
 
 ```text
-/tell <agent or workspace> :: <message>
+/tell [--interrupt] <agent or workspace> :: <message>
 ```
 
 For example:
@@ -57,6 +57,14 @@ The target can match an active agent's title or ID, or its project or workspace 
 `tell-agent` only searches agents connected to the same Paseo daemon host. It does not discover or contact agents on other hosts.
 
 The plugin asks the source agent to forward the message to the resolved target. The source agent remains responsible for executing that instruction; the plugin does not inject the text directly into the target session.
+
+If the source agent is busy, `/tell` and the Tell agent panel send that instruction with `activeTurnBehavior: "steer"`. Paseo tries to add it to the running turn instead of interrupting it, and the agent picks it up at its next step, which can be after its current tool call finishes. Steering is best effort: Paseo still replaces the turn when the provider cannot steer. Put `--interrupt` first to replace the source agent's current turn instead:
+
+```text
+/tell --interrupt Payments :: Stop and review the authentication change.
+```
+
+Either choice only applies to the source agent. Its later message to the target is a separate send and can still interrupt the target. Paseo 0.9 and later hosts accept both behaviors.
 
 ## Trust
 

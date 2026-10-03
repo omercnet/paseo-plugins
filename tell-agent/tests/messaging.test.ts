@@ -95,9 +95,21 @@ describe("tell command", () => {
     expect(parseTellArguments("Payments :: Review the auth change")).toEqual({
       target: "Payments",
       message: "Review the auth change",
+      interrupt: false,
     });
     expect(parseTellArguments("Payments Review the auth change")).toBeNull();
     expect(parseTellArguments("Payments ::   ")).toBeNull();
+  });
+
+  test("parses the --interrupt flag only as a leading token", () => {
+    expect(parseTellArguments("--interrupt Payments :: Stop now")).toEqual({
+      target: "Payments",
+      message: "Stop now",
+      interrupt: true,
+    });
+    expect(parseTellArguments("Payments :: --interrupt keep literal")?.interrupt).toBe(false);
+    expect(parseTellArguments("--interruptPayments :: x")?.target).toBe("--interruptPayments");
+    expect(parseTellArguments("--interrupt :: x")).toBeNull();
   });
 
   test("formats an instruction for the current agent", () => {

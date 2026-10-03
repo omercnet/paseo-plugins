@@ -29,9 +29,13 @@ describe("tell command keyboard flow", () => {
     expect(listed).toBe(false);
   });
 
-  test("prompts the source session instead of sending verbatim to the target", async () => {
+  test.each([
+    ["target-agent :: review this change", "steer"],
+    ["--interrupt target-agent :: review this change", "interrupt"],
+  ])("prompts the source session for %j with %s", async (args, activeTurnBehavior) => {
     const referencedAgents: string[] = [];
     const sentMessages: string[] = [];
+    const sentOptions: unknown[] = [];
     const target = {
       agent: {
         id: "target-agent",
@@ -47,7 +51,7 @@ describe("tell command keyboard flow", () => {
       },
     };
     const context = {
-      args: "target-agent :: review this change",
+      args,
       agent: { id: "source-agent" },
       openPanel() {},
       paseo: {
@@ -61,8 +65,9 @@ describe("tell command keyboard flow", () => {
           ref(agentId: string) {
             referencedAgents.push(agentId);
             return {
-              async send(message: string) {
+              async send(message: string, options?: unknown) {
                 sentMessages.push(message);
+                sentOptions.push(options);
               },
             };
           },
@@ -74,5 +79,6 @@ describe("tell command keyboard flow", () => {
 
     expect(referencedAgents).toEqual(["source-agent"]);
     expect(sentMessages).toEqual(["tell target-agent: review this change"]);
+    expect(sentOptions).toEqual([{ activeTurnBehavior }]);
   });
 });

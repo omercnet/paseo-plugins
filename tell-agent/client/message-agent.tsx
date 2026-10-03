@@ -18,7 +18,7 @@ import {
   stateLabel,
   title,
 } from "./agents";
-import { formatTellInstruction, messageTargets } from "./messaging";
+import { formatTellInstruction, messageTargets, sourceSendOptions } from "./messaging";
 import { handleTellCommand } from "./tell-command";
 
 const VISIBLE_TARGETS = 8;
@@ -55,7 +55,9 @@ function MessageAgentForm({ sourceAgentId, theme, host, close }: MessageAgentFor
   }, [targetId]);
   const send = useMutation({
     mutationFn: async ({ entry, text }: { entry: AgentEntry; text: string }) => {
-      await paseo.agents.ref(sourceAgentId).send(formatTellInstruction(entry.agent.id, text));
+      await paseo.agents
+        .ref(sourceAgentId)
+        .send(formatTellInstruction(entry.agent.id, text), sourceSendOptions());
       return entry;
     },
     onSuccess(entry) {
@@ -345,7 +347,7 @@ export function contributeAgentMessaging(client: PluginClientContext) {
   const removeTellCommand = client.addSlashCommand({
     name: "tell",
     description: "Open the agent picker or message another session",
-    argumentHint: "[agent or workspace :: message]",
+    argumentHint: "[--interrupt] [agent or workspace :: message]",
     context: "agent",
     onSubmit: handleTellCommand,
   });

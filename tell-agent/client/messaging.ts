@@ -1,6 +1,11 @@
 import { type AgentEntry, matches, title } from "./agents";
 
-export type TellArguments = { target: string; message: string };
+export type TellArguments = { target: string; message: string; interrupt: boolean };
+
+// Best effort: the host may still replace the active turn when the provider cannot steer.
+export function sourceSendOptions(interrupt = false) {
+  return { activeTurnBehavior: interrupt ? "interrupt" : "steer" } as const;
+}
 
 export type TargetResolution =
   | { kind: "match"; entry: AgentEntry }
@@ -51,11 +56,13 @@ export function resolveMessageTarget(
 }
 
 export function parseTellArguments(args: string): TellArguments | null {
-  const separator = args.indexOf("::");
+  const flag = /^\s*--interrupt(?=\s)/.exec(args);
+  const rest = flag ? args.slice(flag[0].length) : args;
+  const separator = rest.indexOf("::");
   if (separator < 1) return null;
-  const target = args.slice(0, separator).trim();
-  const message = args.slice(separator + 2).trim();
-  return target && message ? { target, message } : null;
+  const target = rest.slice(0, separator).trim();
+  const message = rest.slice(separator + 2).trim();
+  return target && message ? { target, message, interrupt: Boolean(flag) } : null;
 }
 
 export function formatTellInstruction(targetAgentId: string, message: string): string {
