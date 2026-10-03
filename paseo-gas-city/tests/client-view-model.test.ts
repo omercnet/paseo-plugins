@@ -2,19 +2,26 @@ import { describe, expect, test } from "vitest";
 import {
   buildDashboardSections,
   cityQueryRoot,
+  cityScreenParams,
+  cityScreenTitle,
   convoyProgress,
+  parseCityParam,
   parseSlingArguments,
   presentSection,
   refreshPresentation,
   selectAvailableCity,
   sessionAccessibilityLabel,
   sessionActionsFor,
+  supervisorHealth,
+  supportsScreens,
 } from "../client/view-model";
+import type { SupervisorDiscovery } from "../shared";
 import {
   attentionFixture,
   convoysFixture,
   eventsFixture,
   sessionsFixture,
+  supervisorDiscoveryFixture,
   workFixture,
 } from "./fixtures";
 
@@ -244,5 +251,84 @@ describe("Gas City dashboard view model", () => {
     expect(convoyProgress({ ...convoysFixture.items[0], totalWork: null })).toBe(
       "Progress unavailable",
     );
+  });
+});
+
+describe("Gas City sidebar health and screens", () => {
+  const available = supervisorDiscoveryFixture;
+  const down = {
+    ...available,
+    state: "unreachable",
+    supervisor: null,
+    cities: [],
+    diagnostics: [{ code: "unreachable", message: "connection refused", retryable: true }],
+  } satisfies SupervisorDiscovery;
+
+  test("reports healthy only for an available supervisor without diagnostics", () => {
+    expect(supervisorHealth({ data: available, error: null, pending: false })).toMatchObject({
+      tone: "healthy",
+      badge: "1/1",
+    });
+    expect(
+      supervisorHealth({
+        data: { ...available, diagnostics: down.diagnostics },
+        error: null,
+        pending: false,
+      }).tone,
+    ).toBe("warning");
+  });
+
+  test("never reports healthy for unreachable, unconfigured, errored, or missing data", () => {
+    expect(supervisorHealth({ data: down, error: null, pending: false })).toMatchObject({
+      tone: "unavailable",
+      badge: "offline",
+      summary: "connection refused",
+    });
+    expect(
+      supervisorHealth({
+        data: { ...down, state: "not-configured", diagnostics: [] },
+        error: null,
+        pending: false,
+      }).tone,
+    ).toBe("unconfigured");
+    expect(
+      supervisorHealth({ data: undefined, error: new Error("rpc failed"), pending: false }),
+    ).toMatchObject({ tone: "unavailable", summary: "rpc failed" });
+    expect(supervisorHealth({ data: undefined, error: null, pending: true }).tone).toBe("loading");
+    expect(supervisorHealth({ data: undefined, error: null, pending: false }).tone).toBe(
+      "unavailable",
+    );
+    expect(
+      supervisorHealth({
+        data: { ...available, supervisor: null },
+        error: null,
+        pending: false,
+      }).tone,
+    ).toBe("unavailable");
+  });
+
+  test("counts running cities from discovery", () => {
+    const data = {
+      ...available,
+      supervisor: { ...available.supervisor, cityCount: 3, runningCityCount: 2 },
+    };
+    expect(supervisorHealth({ data, error: null, pending: false })).toMatchObject({
+      badge: "2/3",
+      summary: "2 of 3 cities running.",
+    });
+  });
+
+  test("parses the city param and derives the screen title", () => {
+    expect(parseCityParam(cityScreenParams("alpha"))).toBe("alpha");
+    expect(parseCityParam({})).toBeNull();
+    expect(parseCityParam({ city: "  " })).toBeNull();
+    expect(cityScreenTitle({ city: "alpha" })).toBe("alpha · Gas City");
+    expect(cityScreenTitle({})).toBe("Gas City");
+  });
+
+  test("detects 0.11 screen support and falls back on older hosts", () => {
+    expect(supportsScreens({ addScreen() {}, addSidebarHeaderItem() {} })).toBe(true);
+    expect(supportsScreens({})).toBe(false);
+    expect(supportsScreens({ addScreen() {} })).toBe(false);
   });
 });

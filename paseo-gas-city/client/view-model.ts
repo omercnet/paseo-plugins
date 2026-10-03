@@ -4,6 +4,7 @@ import type {
   GasCityEvent,
   GasCitySession,
   GasCityWorkItem,
+  SupervisorDiscovery,
 } from "../shared";
 
 export type DashboardRow =
@@ -315,4 +316,86 @@ export function sessionAccessibilityLabel(session: GasCitySession): string {
 export function convoyProgress(convoy: GasCityConvoy): string {
   if (convoy.closedWork === null || convoy.totalWork === null) return "Progress unavailable";
   return `${convoy.closedWork} of ${convoy.totalWork} work items closed`;
+}
+
+export const CITY_SCREEN_ID = "city";
+
+export function cityScreenParams(city: string): Record<string, string> {
+  return { city };
+}
+
+export function parseCityParam(params: Record<string, string>): string | null {
+  const city = params.city?.trim();
+  return city ? city : null;
+}
+
+export function cityScreenTitle(params: Record<string, string>): string {
+  const city = parseCityParam(params);
+  return city ? `${city} · Gas City` : "Gas City";
+}
+
+export interface ScreenApi {
+  addScreen?: unknown;
+  addSidebarHeaderItem?: unknown;
+}
+
+/** True on Paseo 0.11+, where screens and sidebar header items exist. */
+export function supportsScreens(client: ScreenApi): boolean {
+  return (
+    typeof client.addScreen === "function" && typeof client.addSidebarHeaderItem === "function"
+  );
+}
+
+export type SupervisorTone = "loading" | "healthy" | "warning" | "unavailable" | "unconfigured";
+
+export interface SupervisorHealth {
+  tone: SupervisorTone;
+  /** Short text for the sidebar trailing slot. */
+  badge: string;
+  /** One-line explanation for the popover and accessibility labels. */
+  summary: string;
+}
+
+/** Health is "healthy" only when the supervisor answered with a usable summary and no diagnostics. */
+export function supervisorHealth(input: {
+  data: SupervisorDiscovery | undefined;
+  error: unknown;
+  pending: boolean;
+}): SupervisorHealth {
+  const { data, error, pending } = input;
+  if (!data) {
+    if (error) {
+      return {
+        tone: "unavailable",
+        badge: "error",
+        summary: error instanceof Error ? error.message : "Could not reach Gas City.",
+      };
+    }
+    return pending
+      ? { tone: "loading", badge: "...", summary: "Contacting the configured supervisor." }
+      : { tone: "unavailable", badge: "error", summary: "No supervisor data." };
+  }
+  const detail = data.diagnostics.map((item) => item.message).join(" ");
+  if (data.state === "not-configured") {
+    return {
+      tone: "unconfigured",
+      badge: "setup",
+      summary: detail || "Gas City is not configured.",
+    };
+  }
+  if (data.state !== "available" || !data.supervisor) {
+    return {
+      tone: "unavailable",
+      badge: "offline",
+      summary: detail || `Supervisor state: ${data.state}.`,
+    };
+  }
+  const { runningCityCount, cityCount } = data.supervisor;
+  return {
+    tone: data.diagnostics.length > 0 ? "warning" : "healthy",
+    badge: `${runningCityCount}/${cityCount}`,
+    summary:
+      detail ||
+      `${runningCityCount} of ${cityCount} ${cityCount === 1 ? "city" : "cities"} running.`,
+  };
 }

@@ -208,7 +208,7 @@ function ReadyGasCitySurface({
   );
 }
 
-function SurfaceState({
+export function SurfaceState({
   theme,
   title,
   body,
