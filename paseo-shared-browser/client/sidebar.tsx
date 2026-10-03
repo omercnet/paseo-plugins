@@ -53,16 +53,20 @@ function SessionRow({
       }),
     [theme, compact],
   );
-  const label = name ?? workspaceId;
+  // A workspace this client has not loaded cannot host the panel; openPanel would throw.
+  if (name === null) return null;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open Shared Browser for ${label}`}
+      accessibilityLabel={`Open Shared Browser for ${name}`}
       onPress={onPress}
-      style={styles.row}
+      style={({ pressed }) => [
+        styles.row,
+        pressed ? { backgroundColor: theme.colors.surface1 } : null,
+      ]}
     >
       <Text numberOfLines={1} style={styles.label}>
-        {label}
+        {name}
       </Text>
     </Pressable>
   );
