@@ -307,6 +307,12 @@ describe("Gas City sidebar health and screens", () => {
     ).toBe("unavailable");
   });
 
+  test("a failed refresh outranks cached success", () => {
+    expect(
+      supervisorHealth({ data: available, error: new Error("refresh failed"), pending: false }),
+    ).toMatchObject({ tone: "unavailable", badge: "error", summary: "refresh failed" });
+  });
+
   test("counts running cities from discovery", () => {
     const data = {
       ...available,

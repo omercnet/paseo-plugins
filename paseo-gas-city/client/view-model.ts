@@ -363,7 +363,8 @@ export function supervisorHealth(input: {
   pending: boolean;
 }): SupervisorHealth {
   const { data, error, pending } = input;
-  if (!data) {
+  // A failed refresh outranks cached data: never show "healthy" from a stale success.
+  if (error || !data) {
     if (error) {
       return {
         tone: "unavailable",

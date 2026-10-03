@@ -42,12 +42,14 @@ export function useDiscovery(hostId: string) {
     enabled: ready,
     refetchInterval: ready ? settings.values.refreshIntervalMs : false,
   });
+  // Invalid or unreadable settings must not fall back to any cached discovery.
+  const data = ready ? query.data : undefined;
   const health = supervisorHealth({
-    data: query.data,
-    error: query.error ?? (settings.status === "error" ? new Error(settings.error) : null),
-    pending: settings.status === "loading" || query.isPending,
+    data,
+    error: settings.status === "error" ? new Error(settings.error) : ready ? query.error : null,
+    pending: settings.status === "loading" || (ready && query.isPending),
   });
-  return { data: query.data, health, refetch: () => void query.refetch() };
+  return { data, health, refetch: () => void query.refetch() };
 }
 
 export function GasCitySidebarItem({
