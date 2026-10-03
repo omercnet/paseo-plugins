@@ -1,7 +1,11 @@
 import { usePaseo } from "@getpaseo/plugin/client";
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { focusManager, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
-import { createDebouncedInvalidator, observeDirectoryInvalidation } from "./directory-observation";
+import {
+  createDebouncedInvalidator,
+  observeDirectoryInvalidation,
+  retainShared,
+} from "./directory-observation";
 import {
   type AgentEntry,
   indexProjects,
@@ -86,50 +90,6 @@ async function loadDirectory(paseo: PaseoApi): Promise<MonitorData> {
   };
 }
 
-type Feed = { holders: number; stop(): void };
-const feeds = new WeakMap<QueryClient, Map<string, Feed>>();
-
-/**
- * Keeps one observation and one backstop timer alive per query client and host, however many
- * components (the screen, the sidebar row, the popover) read the data.
- */
-function retainFeed(
-  queryClient: QueryClient,
-  paseo: PaseoApi,
-  queryKey: readonly string[],
-): () => void {
-  const id = queryKey.join("/");
-  let byKey = feeds.get(queryClient);
-  if (!byKey) {
-    byKey = new Map();
-    feeds.set(queryClient, byKey);
-  }
-  let feed = byKey.get(id);
-  if (!feed) {
-    const invalidate = () => void queryClient.invalidateQueries({ queryKey });
-    const invalidator = createDebouncedInvalidator(invalidate, REFRESH_DEBOUNCE_MS);
-    const stopObserving = observeDirectoryInvalidation(paseo, invalidator.invalidate);
-    const backstop = setInterval(invalidate, BACKSTOP_REFETCH_MS);
-    feed = {
-      holders: 0,
-      stop() {
-        clearInterval(backstop);
-        invalidator.cancel();
-        stopObserving();
-      },
-    };
-    byKey.set(id, feed);
-  }
-  const held = feed;
-  held.holders += 1;
-  return () => {
-    held.holders -= 1;
-    if (held.holders > 0) return;
-    held.stop();
-    byKey.delete(id);
-  };
-}
-
 /** The monitor's directory query. `select` derives a view without a second request. */
 export function useMonitorQuery<Selected = MonitorData>(
   hostId: string,
@@ -138,6 +98,29 @@ export function useMonitorQuery<Selected = MonitorData>(
   const paseo = usePaseo();
   const queryClient = useQueryClient();
   const queryKey = useMemo(() => ["agent-monitor", "agents", hostId], [hostId]);
-  useEffect(() => retainFeed(queryClient, paseo, queryKey), [paseo, queryClient, queryKey]);
+  // One observation and backstop per connection and host, however many components read the data
+  // (the screen, the sidebar row, the popover). Keyed by the connection so a new one restarts it.
+  useEffect(
+    () =>
+      retainShared(paseo, queryKey.join("/"), () => {
+        // Hidden windows skip refreshes; React Query refetches the stale roster on refocus, which
+        // keeps the always-mounted sidebar row from polling a backgrounded app.
+        const invalidate = () => {
+          // cancelRefetch: false lets a slow in-flight load finish instead of restarting it each tick.
+          if (focusManager.isFocused()) {
+            void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+          }
+        };
+        const invalidator = createDebouncedInvalidator(invalidate, REFRESH_DEBOUNCE_MS);
+        const stopObserving = observeDirectoryInvalidation(paseo, invalidator.invalidate);
+        const backstop = setInterval(invalidate, BACKSTOP_REFETCH_MS);
+        return () => {
+          clearInterval(backstop);
+          invalidator.cancel();
+          stopObserving();
+        };
+      }),
+    [paseo, queryClient, queryKey],
+  );
   return useQuery({ queryKey, queryFn: () => loadDirectory(paseo), select });
 }

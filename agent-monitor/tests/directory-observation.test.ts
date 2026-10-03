@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import {
   createDebouncedInvalidator,
   observeDirectoryInvalidation,
+  retainShared,
 } from "../client/directory-observation";
 import type { PaseoApi } from "../client/monitor";
 
@@ -166,5 +167,43 @@ describe("debounced directory invalidation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("shared retention", () => {
+  test("starts once for concurrent holders and stops after the last release", () => {
+    const stop = vi.fn();
+    const start = vi.fn(() => stop);
+    const owner = {};
+    const screen = retainShared(owner, "host-a", start);
+    const sidebar = retainShared(owner, "host-a", start);
+    expect(start).toHaveBeenCalledTimes(1);
+    screen();
+    expect(stop).not.toHaveBeenCalled();
+    sidebar();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test("ignores a repeated release so it cannot stop another holder's work", () => {
+    const stop = vi.fn();
+    const owner = {};
+    const first = retainShared(owner, "host-a", () => stop);
+    const second = retainShared(owner, "host-a", () => stop);
+    first();
+    first();
+    expect(stop).not.toHaveBeenCalled();
+    second();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test("restarts after a full release and keeps owners and keys apart", () => {
+    const start = vi.fn(() => () => {});
+    const connection = {};
+    retainShared(connection, "host-a", start)();
+    retainShared(connection, "host-a", start);
+    expect(start).toHaveBeenCalledTimes(2);
+    retainShared({}, "host-a", start);
+    retainShared(connection, "host-b", start);
+    expect(start).toHaveBeenCalledTimes(4);
   });
 });

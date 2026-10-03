@@ -17,6 +17,39 @@ export function createDebouncedInvalidator(invalidate: () => void, delayMs: numb
   };
 }
 
+type SharedEntry = { holders: number; stop(): void };
+const sharedEntries = new WeakMap<object, Map<string, SharedEntry>>();
+
+/**
+ * Runs `start` once per owner and key however many holders retain it, and calls the cleanup it
+ * returns when the last holder releases. Each release is idempotent, so a repeated call cannot
+ * stop work another holder still uses.
+ */
+export function retainShared(owner: object, key: string, start: () => () => void): () => void {
+  let byKey = sharedEntries.get(owner);
+  if (!byKey) {
+    byKey = new Map();
+    sharedEntries.set(owner, byKey);
+  }
+  const entries = byKey;
+  let entry = entries.get(key);
+  if (!entry) {
+    entry = { holders: 0, stop: start() };
+    entries.set(key, entry);
+  }
+  const held = entry;
+  held.holders += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    held.holders -= 1;
+    if (held.holders > 0) return;
+    entries.delete(key);
+    held.stop();
+  };
+}
+
 export function observeDirectoryInvalidation(paseo: PaseoApi, invalidate: () => void): () => void {
   const subscriptions = new Set<{
     kind: "agent" | "workspace";

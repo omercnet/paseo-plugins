@@ -1,6 +1,6 @@
 import type { PluginPopoverProps, PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { type AttentionItem, age, attentionCount, attentionItems } from "./monitor";
 import { type MonitorData, useMonitorQuery } from "./monitor-data";
@@ -74,7 +74,11 @@ export function MonitorSidebarItem({
 
 function AttentionPopover({ host, theme, layout, openScreen }: PluginPopoverProps) {
   const { items, summary } = useAttention(host.id);
-  const now = Date.now();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const clock = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(clock);
+  }, []);
   const styles = useMemo(
     () => ({
       root: { gap: layout.compact ? 10 : 6 },
@@ -101,7 +105,9 @@ function AttentionPopover({ host, theme, layout, openScreen }: PluginPopoverProp
   if (summary) {
     heading =
       summary.count === 0
-        ? "No agents need attention"
+        ? summary.lowerBound
+          ? "None of the newest agents need attention; older ones were not checked"
+          : "No agents need attention"
         : `${summary.count}${summary.lowerBound ? "+" : ""} need attention`;
   } else if (items) {
     heading = "Attention list may be out of date";

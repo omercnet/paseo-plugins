@@ -1,7 +1,8 @@
 # agent-monitor
 
-One roster for every agent on a daemon. Sidebar surface (`Agent monitor`) plus a global Command
-Center item (`Open agent monitor`).
+One roster for every agent on a daemon: an `Agent monitor` screen in the sidebar plus a global
+Command Center item (`Open agent monitor`). On Paseo 0.11 the sidebar row also counts the agents
+that need attention.
 
 Answers "which of my 38 agents needs me right now" without walking the workspace tree.
 
@@ -45,6 +46,18 @@ no private organization names remained in the rendered page.
   collapsed) to open its workspace through Paseo's cross-platform navigation API.
 - Archive one agent, or sweep every closed agent (two taps).
 
+## Sidebar row (Paseo 0.11)
+
+- The row's badge counts the Attention bucket, using the same rule as the roster. It shows no
+  number while the roster loads or after a refresh fails, and `N+` once the agent list reaches the
+  2,000-agent page limit.
+- Press the badge for a popover of those agents, longest waiting first (up to eight), with
+  **Open monitor**, which opens the roster filtered to Attention.
+- The monitor screen accepts a `bucket` param (`attention`, `running`, `idle`, `closed`, or `all`)
+  as its initial filter, so a link such as `…/surface/monitor?param.bucket=attention` opens
+  filtered and keeps that filter on reload. Chips then filter in place without changing the URL.
+- Paseo 0.9 and 0.10 keep the static sidebar item that opens the monitor surface.
+
 ## How it reads state
 
 `usePaseo().agents.list()` pages the daemon agent directory, `usePaseo().workspaces.list()` reads
@@ -52,11 +65,16 @@ workspace pin state, project id, and diff stats (200 per page, up to 10 pages ea
 `usePaseo().projects.list()` supplies registered project names, including custom renames, so an
 agent whose workspace is beyond the paged workspace list still lands under its real project. Rows
 refresh from agent, workspace, and project subscription deltas, debounced 750ms, with a 30s
-backstop refetch. The plugin borrows the selected host's connection; it opens no socket of its own.
+backstop refetch. The screen, the sidebar row, and its popover share that query, subscription set,
+and backstop; on web and desktop, refreshes pause while the window is hidden and catch up when it returns. The plugin
+borrows the selected host's connection; it opens no socket of its own.
 
 ## Limits
 
 Interrupting a turn is not part of `PaseoApi`, so archive is the only lifecycle action here.
+
+The sidebar popover lists agents but cannot open them: Paseo 0.11 gives popovers no navigation.
+Open the monitor and select the agent there.
 
 ## Install
 

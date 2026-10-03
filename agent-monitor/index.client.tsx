@@ -4,14 +4,12 @@ import type {
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
 import { AgentMonitor } from "./client/agent-monitor";
-import type { Bucket } from "./client/monitor";
+import { supportsScreens } from "./client/capabilities";
 import { MonitorSettingsScreen } from "./client/settings-screen";
 import { MONITOR_SCREEN_ID, MonitorSidebarItem } from "./client/sidebar";
 
 export default function contribute(client: PluginClientContext) {
-  // 0.11 hosts have screens and live sidebar items; 0.9 and 0.10 only have surfaces.
-  const hasScreens =
-    typeof client.addScreen === "function" && typeof client.addSidebarHeaderItem === "function";
+  const hasScreens = supportsScreens(client);
   const removers: Array<() => void> = [];
 
   const removeSettings = client.addSettingsScreen({
@@ -22,8 +20,6 @@ export default function contribute(client: PluginClientContext) {
   });
 
   if (hasScreens) {
-    const selectBucket = (bucket: Bucket | null) =>
-      client.openScreen({ screenId: MONITOR_SCREEN_ID, params: { bucket: bucket ?? "all" } });
     // Registered under the deprecated sidebar item's id so saved links keep working.
     removers.push(
       client.addScreen({
@@ -33,7 +29,6 @@ export default function contribute(client: PluginClientContext) {
           <AgentMonitor
             {...props}
             bucketParam={props.params.bucket}
-            onSelectBucket={selectBucket}
             onOpenSettings={() => client.openSettings("monitor")}
           />
         ),

@@ -36,10 +36,12 @@ const EMPTY_DIRECTORY: MonitorDirectory = { workspaces: new Map(), projects: new
 
 type AgentMonitorProps = PluginSurfaceProps & {
   onOpenSettings(): void;
-  /** The screen's `bucket` param. Omitted on hosts without screens, where the filter is local. */
+  /**
+   * The screen's `bucket` param, which seeds the filter when the screen opens. Chips filter in
+   * place: the host's `openScreen` pushes a new screen per call, which would stack a roster per
+   * press and drop the search text. Omitted on hosts without screens.
+   */
   bucketParam?: string;
-  /** Moves the filter into the screen URL. Omitted on hosts without screens. */
-  onSelectBucket?(bucket: Bucket | null): void;
 };
 
 export function AgentMonitor(props: AgentMonitorProps) {
@@ -141,7 +143,6 @@ function AgentMonitorRoster({
   navigation,
   onOpenSettings,
   bucketParam,
-  onSelectBucket,
   settings,
 }: AgentMonitorProps & { settings: MonitorSettings }) {
   const paseo = usePaseo();
@@ -149,14 +150,10 @@ function AgentMonitorRoster({
   const queryKey = useMemo(() => ["agent-monitor", "agents", host.id], [host.id]);
   const { data, error, isPending, isFetching, refetch } = useMonitorQuery(host.id);
 
-  const [localSelected, setLocalSelected] = useState<Bucket | null>(() => initialBucket(settings));
-  const fromParam = parseBucketParam(bucketParam);
-  const selected = onSelectBucket
-    ? fromParam === undefined
-      ? initialBucket(settings)
-      : fromParam
-    : localSelected;
-  const setSelected = onSelectBucket ?? setLocalSelected;
+  const [selected, setSelected] = useState<Bucket | null>(() => {
+    const fromParam = parseBucketParam(bucketParam);
+    return fromParam === undefined ? initialBucket(settings) : fromParam;
+  });
   const [needle, setNeedle] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [sweepArmed, setSweepArmed] = useState(false);
