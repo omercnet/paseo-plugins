@@ -49,7 +49,7 @@ const THINKING_OPTIONS: readonly ProviderThinkingOption[] = [
   { id: "xhigh", label: "XHigh", description: "Extra-high reasoning" },
   { id: "max", label: "Max", description: "Maximum reasoning" },
 ];
-export const OMP_MAX_CATALOG_MODELS = 256;
+export const OMP_MAX_CATALOG_MODELS = 4096;
 
 export function selectOmpModels(
   models: readonly OmpModel[],

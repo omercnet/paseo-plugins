@@ -45,7 +45,7 @@ describe("OMP RPC transport", () => {
           success: true,
           data: {
             models: oversized
-              ? models.map((model) => ({ ...model, extra: Array(512).fill(0) }))
+              ? models.map((model) => ({ ...model, extra: Array(2_560).fill(0) }))
               : models,
           },
         });
@@ -89,6 +89,38 @@ describe("OMP RPC transport", () => {
       await expect(session.getAvailableModels()).rejects.toThrow(
         "response exceeded command limits",
       );
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("accepts a registry-scale model catalog that exceeds the former 16384-node budget", async () => {
+    const child = new FakeRpcChild();
+    const models = Array.from({ length: 1_500 }, (_, index) => ({
+      provider: `provider-${index % 40}`,
+      id: `model-${index}`,
+      reasoning: true,
+      thinking: { efforts: ["low", "medium", "high", "xhigh"], defaultLevel: "high" },
+      input: ["text", "image"],
+      contextWindow: 200_000,
+    }));
+    observeCommands(child, (command) => {
+      if (command.type === "negotiate_protocol") {
+        child.write({
+          type: "response",
+          id: command.id,
+          success: true,
+          data: { protocolVersion: 2 },
+        });
+      } else if (command.type === "get_available_models") {
+        child.write({ type: "response", id: command.id, success: true, data: { models } });
+      }
+    });
+    const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    try {
+      await expect(session.getAvailableModels()).resolves.toHaveLength(1_500);
     } finally {
       await session.close();
     }
