@@ -101,6 +101,9 @@ export function QuotaPopover(props: PluginButtonContentProps) {
   return (
     <View style={styles.root}>
       <Text style={styles.muted}>{storeLabel(store)}</Text>
+      <Text style={styles.muted}>
+        Last recorded usage from the local agent database, not read live from the provider.
+      </Text>
       {currentProvider && !hasCurrent ? (
         <Text style={styles.muted}>
           {`No recorded quota yet for ${quotaProviderLabel(currentProvider)} (this session's provider).`}
