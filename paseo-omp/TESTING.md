@@ -131,8 +131,10 @@ The plugin maintainer owns triage and adaptation. Escalate an isolated OMP imple
 
 `release-please.yml` creates GitHub releases and publishes every released plugin path to npm through trusted publishing. Stable versions use the `latest` distribution tag; prereleases use `next`. npm generates provenance from the GitHub Actions OIDC identity, and the workflow waits for registry propagation before succeeding.
 
-### Alpha release channel
+### Stable release channel
 
-`release-please-config.json` sets only `paseo-omp` to `prerelease: true` with `prerelease-type: alpha`. With the existing `initial-version: 0.1.0` and manifest version `0.0.0`, the first release PR is expected to prepare `0.1.0-alpha.1`, tag it as `paseo-omp-v0.1.0-alpha.1`, and mark the GitHub release as a prerelease. Other monorepo components keep their existing stable release behavior.
+The plugin is stable. Stable releases use npm's `latest` distribution tag and the `paseo-omp-v<version>` tag format. Follow the [release checklist](docs/release-checklist.md) for each release candidate.
 
-Do not manually edit `paseo-omp/package.json` or `.release-please-manifest.json` before that release PR; Release Please must update both atomically. After alpha validation, remove `prerelease` and `prerelease-type` from the `paseo-omp` package config and let Release Please prepare stable `0.1.0`. Never retag an alpha commit as stable.
+`release-please-config.json` sets no `versioning` strategy for `paseo-omp`, so Release Please uses conventional-commit bumps and produces stable versions; the repository GitHub releases are published as normal releases from `1.0.0` onward.
+
+Release Please owns package and manifest version updates. Do not edit those versions manually or retag a prerelease as stable.

@@ -18,7 +18,7 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 
 - Paseo: `^0.9.2 || ^0.10.0 || ^0.11.0` on both the daemon and every app loading the client entry. The 0.9.2 floor includes the plugin-provider request, reload-cleanup, and daemon-shutdown fixes required for reliable OMP provider operation; 0.10.1 is verified against the public plugin contracts.
 - OMP: `18.1.15` is the oldest supported release. The required full Docker canary passes with 18.1.15 and 18.2.0; the hard runtime contract remains `rpc-ui` protocol v2, not the version string alone.
-- Plugin release channel: alpha. Backward compatibility is best effort until stable `0.1.0`; every known migration requirement must be stated in the release notes.
+- Plugin release channel: stable. Every known migration requirement must be stated in the release notes; review them before upgrading.
 - Typed approvals: optional. When both peers negotiate `typedToolApprovals: 1`, the plugin uses typed tool permissions. Otherwise it retains the bounded generic extension-question flow.
 
 ## Known limitations

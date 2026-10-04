@@ -36,8 +36,6 @@
       "package-name": "paseo-omp",
       "component": "paseo-omp",
       "initial-version": "0.1.0",
-      "prerelease": true,
-      "prerelease-type": "alpha",
       "include-component-in-tag": true,
       "extra-files": [{ "type": "generic", "path": "server/package-version.ts" }]
     },

@@ -1,11 +1,11 @@
-# Alpha release checklist
+# Release checklist
 
-This checklist prepares `paseo-omp-v0.1.0-alpha.1`. It does not authorize publication. A maintainer must explicitly approve the tested package before any push, tag, GitHub release, or npm publication.
+This checklist prepares a `paseo-omp` release. It does not authorize publication. A maintainer must explicitly approve the tested package before any push, tag, GitHub release, or npm publication.
 
 ## Release identity
 
-- [ ] Release Please proposes `0.1.0-alpha.1` from manifest version `0.0.0`.
-- [ ] Package and tag names are `@omercnet/paseo-omp` and `paseo-omp-v0.1.0-alpha.1`.
+- [ ] Release Please proposes the expected next stable version from the previous release.
+- [ ] Package and tag names are `@omercnet/paseo-omp` and `paseo-omp-v<version>`.
 - [ ] Provider identity remains `omp-plugin`; bundled `omp` remains independent and enabled or disabled by the user.
 - [ ] Paseo requirement remains the reviewed range, currently `^0.9.2 || ^0.10.0 || ^0.11.0`.
 - [ ] Minimum tested OMP version, checksum, CI job, README, SUPPORT, and TESTING agree.
@@ -26,16 +26,16 @@ This checklist prepares `paseo-omp-v0.1.0-alpha.1`. It does not authorize public
 
 - [ ] Maintainer installs the exact `npm pack` candidate into the controlled official-Paseo Docker canary.
 - [ ] Maintainer verifies catalog, prompt, tools, configured MCP, permissions, steer, interrupt, import/resume, subagents, rewind, usage, Hub, and plugin surfaces.
-- [ ] Maintainer confirms the known limitations are acceptable for alpha.
+- [ ] Maintainer confirms the known limitations are acceptable for release.
 - [ ] Maintainer explicitly authorizes publication after testing. Silence or prior approval for development is not release authorization.
 
-## Alpha blocker
+## Release blocker
 
 - [x] `omp-audit.1`: incomplete or compacted `agent_end` frames recover success, failure, or native cancellation from complete streamed `message_end` evidence, or from bounded history whose entry IDs correlate with the streamed turn. Idle state is confirmed before and after retrieval, and concurrent interrupts remain authoritative. Missing, unavailable, non-correlatable, or conflicting terminal evidence fails closed with content-free count diagnostics.
 
-## Accepted alpha limitations
+## Accepted limitations
 
-These may remain only when called out in `SUPPORT.md`, `CHANGELOG.md`, and the GitHub prerelease notes:
+These may remain only when called out in `SUPPORT.md`, `CHANGELOG.md`, and the GitHub release notes:
 
 - Native Fast mode is not exposed.
 - No first-class plan mode; `/handoff` depends on native OMP prerequisites not reproduced by the deterministic canary.
@@ -46,15 +46,15 @@ These may remain only when called out in `SUPPORT.md`, `CHANGELOG.md`, and the G
 - The deterministic model does not implement OMP compaction summarization; protocol fixtures cover compaction behavior.
 - The tiny Ollama model is exploratory and is not a deterministic oracle.
 
-## Non-blocking post-alpha cleanup
+## Non-blocking cleanup
 
-- [ ] `omp-maintenance.1`: remove `ProviderRegistrationCompat`, both `ProviderCatalogOptionsCompat` declarations, and `parseProviderInputCompat` after the published `@getpaseo/plugin` types natively expose the registration hooks and request fields they bridge. The required upstream surface is `providerOptionsSchema`, `getCatalogCacheKey`, `checkAvailability`, catalog/session-list `providerOptions` plus `settings`, and session-open `deniedTools`. This is type/compatibility cleanup only; it must not change provider behavior and does not block alpha.
+- [ ] `omp-maintenance.1`: remove `ProviderRegistrationCompat`, both `ProviderCatalogOptionsCompat` declarations, and `parseProviderInputCompat` after the published `@getpaseo/plugin` types natively expose the registration hooks and request fields they bridge. The required upstream surface is `providerOptionsSchema`, `getCatalogCacheKey`, `checkAvailability`, catalog/session-list `providerOptions` plus `settings`, and session-open `deniedTools`. This is type/compatibility cleanup only; it must not change provider behavior and does not block a release.
 
 ## Release notes
 
-The prerelease notes must include:
+The release notes must include:
 
-1. Alpha support statement and compatibility range.
+1. Support statement, compatibility range, and any migration requirements.
 2. Permanent side-by-side `omp-plugin` identity.
 3. Provider SDK capability percentage and link to the README matrix.
 4. Link to the deduplicated [core-provider issue audit](core-provider-issue-audit.md).
@@ -65,4 +65,4 @@ The prerelease notes must include:
 
 ## Publication boundary
 
-Release Please may prepare metadata. Publication must use npm trusted publishing from the immutable release commit. Never retag an alpha commit as stable.
+Release Please may prepare metadata. Publication must use npm trusted publishing from the immutable release commit. Never retag a prerelease commit as stable.

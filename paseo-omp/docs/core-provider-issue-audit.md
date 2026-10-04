@@ -96,9 +96,9 @@ Status meanings:
 
 [#1176](https://github.com/getpaseo/paseo/issues/1176), [#1189](https://github.com/getpaseo/paseo/issues/1189), [PR #1177](https://github.com/getpaseo/paseo/pull/1177), [PR #1388](https://github.com/getpaseo/paseo/pull/1388), and [PR #2067](https://github.com/getpaseo/paseo/pull/2067) requested or introduced first-class OMP support. The plugin satisfies that product goal independently under `omp-plugin`; it does not replace or migrate bundled `omp` agents.
 
-## Release blockers and tracked gaps
+## Tracked gaps
 
-Before moving from alpha toward stable, track these separately:
+The plugin is stable. Track these remaining gaps separately from supported functionality:
 
 1. Decide whether native Fast mode can be represented honestly through the public provider SDK.
 2. Decide whether a first-class plan mode is possible; separately make `/handoff` reproducible in the controlled canary.

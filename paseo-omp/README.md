@@ -2,7 +2,7 @@
 
 Community OMP integration for Paseo. The plugin registers the distinct `omp-plugin` provider plus named profile providers and coexists with Paseo's bundled `omp` provider.
 
-> **Alpha preview:** persistence and protocol contracts are tested, but upgrades may still require re-importing sessions created by an earlier preview.
+> **Stable:** see [Support](SUPPORT.md) for supported versions and known limitations, and review release notes for any migration requirements before upgrading.
 
 ## Demo
 
@@ -38,7 +38,7 @@ Open the **OMP** sidebar to review the provider-profile contract, choose which c
 - [Compatibility, limitations, and support](SUPPORT.md)
 - [Test matrix and release verification](TESTING.md)
 - [Core-provider issue and parity audit](docs/core-provider-issue-audit.md)
-- [Alpha release checklist](docs/alpha-release-checklist.md)
+- [Release checklist](docs/release-checklist.md)
 
 The plugin uses public Paseo 0.9 and 0.10 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
 

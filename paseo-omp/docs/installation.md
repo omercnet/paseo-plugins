@@ -8,7 +8,7 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its package 
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 
-The first public build is an alpha. Alpha releases are compatibility previews and may require deleting and re-importing agents created by an earlier preview.
+The plugin is stable. Review the release notes for any migration requirements before upgrading; supported versions and known limitations are documented in [Support](../SUPPORT.md).
 
 ## Install or update from npm
 
