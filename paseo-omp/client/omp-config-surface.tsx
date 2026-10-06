@@ -195,6 +195,19 @@ function PluginConfigurationSection({ styles }: { styles: OmpConfigStyles }) {
     </>
   );
 }
+
+function ToolBoundaryCard({ styles }: { styles: OmpConfigStyles }) {
+  return (
+    <SectionCard styles={styles} title="Tool access boundary (fail-closed)">
+      <Text style={styles.muted}>
+        A session toolPolicy (exact preapproval grants) is rejected at startup. OMP set_host_tools
+        cannot preserve those grants exactly, and the plugin never broadens them. Use paseoTools to
+        scope which caller-scoped Paseo tools reach OMP as MCP host tools. Use disallowedTools only
+        for known native OMP built-ins: unknown names are rejected, and it never filters MCP tools.
+      </Text>
+    </SectionCard>
+  );
+}
 function toneColor(theme: PluginSurfaceProps["theme"], tone: BinaryHealthSummary["tone"]): string {
   if (tone === "ok") return theme.colors.statusSuccess;
   if (tone === "warning") return theme.colors.statusWarning;
@@ -1136,6 +1149,7 @@ function OmpConfigContent({
       {view === "plugin" ? (
         <>
           <PluginConfigurationSection styles={styles} />
+          <ToolBoundaryCard styles={styles} />
           {!cwd ? <ProviderLaunchSettingsSection theme={theme} /> : null}
         </>
       ) : null}
