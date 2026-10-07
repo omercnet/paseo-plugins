@@ -38,9 +38,7 @@ The sidebar row shows a "needs you" count; pressing the count opens a popover of
 
 ## Install
 
-### Paseo 0.9 and 0.10
-
-Paseo 0.9 and 0.10.1 support npm plugin sources. Install the published package on the daemon host:
+Install the published package on the daemon host:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-pr-radar
@@ -52,7 +50,7 @@ Update an npm installation to the latest published release:
 paseo plugin update pr-radar
 ```
 
-The npm install and update flow requires Paseo 0.9 or 0.10.1.
+The npm install and update flow requires Paseo `^0.11.0` with npm available on the daemon host.
 
 
 The daemon must have plugins enabled and `gh` authenticated for GitHub viewer-aware triage.
