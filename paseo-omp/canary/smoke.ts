@@ -70,7 +70,7 @@ async function allowPendingPermissions(
     const request = current.final?.pendingPermissions[0];
     assert(request, "Permission status did not include a pending request");
     const action = request.actions?.find((candidate) => candidate.behavior === "allow");
-    await client.respondToPermission(agentId, request.id, {
+    await client.respondToPermissionAndWait(agentId, request.id, {
       behavior: "allow",
       ...(action ? { selectedActionId: action.id } : {}),
     });
@@ -386,7 +386,7 @@ try {
     const deniedRequest = deniedResult.final?.pendingPermissions[0];
     assert(deniedRequest, "Deny scenario has no pending permission");
     const denyAction = deniedRequest.actions?.find((candidate) => candidate.behavior === "deny");
-    await client.respondToPermission(deniedAgent.id, deniedRequest.id, {
+    await client.respondToPermissionAndWait(deniedAgent.id, deniedRequest.id, {
       behavior: "deny",
       ...(denyAction ? { selectedActionId: denyAction.id } : {}),
     });
@@ -432,7 +432,7 @@ try {
     const request = canceledPermission.final?.pendingPermissions[0];
     assert(request, "Canceled permission status had no request");
     const denyAction = request.actions?.find((candidate) => candidate.behavior === "deny");
-    await client.respondToPermission(canceledPermissionAgent.id, request.id, {
+    await client.respondToPermissionAndWait(canceledPermissionAgent.id, request.id, {
       behavior: "deny",
       interrupt: true,
       ...(denyAction ? { selectedActionId: denyAction.id } : {}),
