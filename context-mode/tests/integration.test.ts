@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createIntegrationAudit,
   injectContextModeEnvironment,
@@ -11,6 +11,24 @@ const launch = {
   program: "/usr/bin/node",
   args: ["/plugin/node_modules/context-mode/cli.bundle.mjs"],
 };
+
+const AMBIENT_ENVIRONMENT = [
+  "CONTEXT_MODE_DIR",
+  "CONTEXT_MODE_DATA_DIR",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "COPILOT_HOME",
+  "XDG_CONFIG_HOME",
+  "PI_CODING_AGENT_DIR",
+];
+
+beforeEach(() => {
+  for (const name of AMBIENT_ENVIRONMENT) vi.stubEnv(name, undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("provider-aware Context Mode activation", () => {
   test("prefers a native registration found in the provider's authoritative config", async () => {
