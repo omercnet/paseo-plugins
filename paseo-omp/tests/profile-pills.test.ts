@@ -102,8 +102,9 @@ test("owned agent directory updates reconcile new agent pills and cached quota r
     rpc,
     addWorkspacePanel: registration,
     addCommandCenterItem: registration,
-    addSurface: registration,
-    addSidebarItem: registration,
+    addScreen: registration,
+    addSidebarHeaderItem: registration,
+    openScreen: vi.fn(),
     addTimelineRenderer: registration,
     addTimelineTransformer: registration,
     addComposerPill: (options: { id: string; agentId: string }) => {

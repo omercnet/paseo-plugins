@@ -27,17 +27,3 @@ export function queensProgress(settings: GameSettings) {
     params,
   };
 }
-
-export function supportsQueensScreens(
-  client: {
-    addScreen?: unknown;
-    addSidebarHeaderItem?: unknown;
-  },
-  sidebarRow: unknown,
-) {
-  return (
-    typeof client.addScreen === "function" &&
-    typeof client.addSidebarHeaderItem === "function" &&
-    typeof sidebarRow === "function"
-  );
-}

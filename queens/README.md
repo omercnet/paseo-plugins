@@ -25,10 +25,9 @@ These screenshots use synthetic workspace and agent names on an isolated Paseo d
 ## What it does
 
 - Provides a global **Queens** sidebar surface and Command Center entry.
-- On Paseo 0.11, opens a linkable screen with a `puzzle` parameter and a puzzle-specific title. The screen keeps the old `queens` sidebar ID, so saved links remain valid.
+- Opens a linkable screen with a `puzzle` parameter and a puzzle-specific title. The screen keeps the old `queens` sidebar ID, so saved links remain valid.
 - The 0.11 sidebar shows the current attempt's solved status and distinct unassisted puzzle completion records. Only the first 256 records are kept, so the count stops growing there. Resetting an attempt clears its solved status without removing completion records.
 - On web, press the Queens sidebar row and copy the screen URL to link the current puzzle; the screen keeps that title and URL while you play on, and a reload returns to the linked puzzle. A link such as `param.puzzle=queens-8x8-hard-13` selects its size, difficulty, and puzzle after reload. Missing or malformed parameters open the saved game; unavailable puzzle IDs show an error with Try again and Open saved puzzle.
-- Paseo 0.9 and 0.10 retain the static sidebar and surface through capability detection. The composer mini-game is unchanged.
 - Adds a **Queens** composer pill to every active agent.
 - Opens a playable anchored popover on wide layouts and a compact sheet on mobile.
 - Supports 5×5 through 14×14 boards at Beginner, Easy, Medium, and Hard levels.
@@ -68,7 +67,7 @@ npm run import:puzzles
 
 ## Install
 
-### Paseo 0.9, 0.10, and 0.11
+### Install
 
 Install the published npm package on the daemon host:
 
@@ -107,7 +106,7 @@ Release Please owns package versions, changelog generation, component tags, and 
 
 ## Requirements
 
-- Paseo `^0.9.0 || ^0.10.0 || ^0.11.0`
+- Paseo `^0.11.0`
 - Plugins enabled on the target daemon
 - React Native-compatible Paseo client on web, desktop, iOS, or Android
 

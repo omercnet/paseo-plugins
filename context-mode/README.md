@@ -34,7 +34,7 @@ These previews were captured from an isolated Paseo test daemon with Context Mod
 - Returns structured install and provider-specific upgrade argv for review; Paseo never executes those commands automatically.
 - On Paseo 0.11, registers the `context-mode` screen with URL-persisted `section`, `agentId`, and `workspaceId` params. Composer pills open Knowledge using the selected host's agent provider and working directory. URL params never carry paths or queries.
 - Custom or named providers that do not exactly match a Knowledge RPC provider require explicit provider selection. Missing agents or mismatched workspaces also require explicit scope selection.
-- Adds a live Healthy/Failing sidebar footer row on Paseo 0.11, reusing the screen's health data. Paseo 0.9/0.10 retain the static sidebar, Savings surface, and unscoped composer shortcut.
+- Adds a live Healthy/Failing sidebar footer row, reusing the screen's health data.
 
 Context Mode currently couples sessions, stats, and indexed content under `CONTEXT_MODE_DIR`. Until upstream supports separate session and content roots, this plugin keeps storage provider-scoped instead of risking cross-provider session contamination.
 

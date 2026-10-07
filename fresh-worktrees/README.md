@@ -49,7 +49,7 @@ their source branch. Its popover lists them and offers **Refresh all**, which fa
 clean source checkout to its upstream (never a dirty or diverged one, which are skipped and
 reported), then rechecks every listed workspace. Worktree branches are not touched. "Behind" compares the
 workspace `HEAD` with the remote-tracking ref of the source checkout's current branch, which is not
-necessarily the workspace's recorded base. Paseo 0.9 and 0.10 hosts get no footer row.
+necessarily the workspace's recorded base.
 
 ## Install
 
@@ -60,7 +60,7 @@ host.
 paseo plugin install npm:@omercnet/paseo-fresh-worktrees
 ```
 
-The plugin requires Paseo `^0.9.0 || ^0.10.0 || ^0.11.0`.
+The plugin requires Paseo `^0.11.0`.
 
 ## Develop
 

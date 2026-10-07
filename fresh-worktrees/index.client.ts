@@ -203,7 +203,7 @@ export default function contribute(client: PluginClientContext) {
     stopped = true;
     clearInterval(interval);
     unsubscribe();
-    removeFooter?.();
+    removeFooter();
     summary.clear();
     for (const button of buttons.values()) button.remove();
     buttons.clear();

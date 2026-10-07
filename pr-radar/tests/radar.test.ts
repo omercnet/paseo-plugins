@@ -18,12 +18,7 @@ import {
   type RadarAgent,
   type RadarRow,
 } from "../client/radar";
-import {
-  needsYouSummary,
-  parseRadarParams,
-  radarWarnings,
-  supportsRadarScreen,
-} from "../client/screen-state";
+import { needsYouSummary, parseRadarParams, radarWarnings } from "../client/screen-state";
 import { type GitHubInboxItem, GitHubInboxItemSchema } from "../shared/viewer-scope";
 
 function agent(overrides: Partial<RadarAgent> = {}): RadarAgent {
@@ -114,14 +109,6 @@ describe("sidebar queue and screen state", () => {
     ]) {
       expect(radarWarnings({ ...clean, ...partial })).toHaveLength(1);
     }
-  });
-  test("older and partially upgraded hosts use the static path", () => {
-    const modern = { addScreen() {}, addSidebarHeaderItem() {}, openScreen() {} };
-    expect(supportsRadarScreen(modern, () => null)).toBe(true);
-    expect(supportsRadarScreen({}, undefined)).toBe(false);
-    for (const capability of Object.keys(modern))
-      expect(supportsRadarScreen({ ...modern, [capability]: undefined }, () => null)).toBe(false);
-    expect(supportsRadarScreen(modern, undefined)).toBe(false);
   });
 });
 

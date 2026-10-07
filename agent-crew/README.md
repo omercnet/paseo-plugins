@@ -80,8 +80,7 @@ bottom sheet on compact ones. Paseo's compact layout does not show Explorer pane
 jump lands on the workspace. Hide the row from Settings > Sidebar.
 
 The row reads the same directory query and subscriptions as the panel, so they stay active while
-the sidebar is mounted. Paseo 0.9 and 0.10 do not support sidebar items; the row is not registered
-there.
+the sidebar is mounted.
 
 ## How it reads state
 
@@ -147,7 +146,7 @@ bun run test:coverage
 bun run typecheck
 ```
 
-The manifest supports Paseo `^0.9.0 || ^0.10.0 || ^0.11.0`. Development pins the stable 0.9 SDK line; nightly compatibility checks run the OMP provider against both the current stable and beta SDK channels. React 19.1 and React Native 0.81 match the host.
+The manifest supports Paseo `^0.11.0`. Development pins the stable 0.9 SDK line; nightly compatibility checks run the OMP provider against both the current stable and beta SDK channels. React 19.1 and React Native 0.81 match the host.
 
 Release Please maintains versions, changelog entries, component tags, and GitHub releases from
 Conventional Commits in the monorepo.

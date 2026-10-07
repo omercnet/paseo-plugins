@@ -1,9 +1,7 @@
-import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { describe, expect, test, vi } from "vitest";
 import type { AgentEntry } from "../client/crew";
 import {
   activeCrews,
-  addSidebarHeaderItemIfSupported,
   agentAgeTimestamp,
   buildCrewForest,
   collapseCrewNodes,
@@ -346,20 +344,6 @@ describe("activeCrews", () => {
       ["lead-ws", "lead", 2, 0],
       ["worker-ws", "lead", 1, 0],
     ]);
-  });
-});
-
-describe("addSidebarHeaderItemIfSupported", () => {
-  test("registers the sidebar row only on hosts with sidebar header items", () => {
-    const item = { id: "active-crews", title: "Active crews", Component: () => null };
-    const legacyHost = {} as Pick<PluginClientContext, "addSidebarHeaderItem">;
-    expect(() => addSidebarHeaderItemIfSupported(legacyHost, item)()).not.toThrow();
-
-    const removeItem = vi.fn();
-    const addSidebarHeaderItem = vi.fn(() => removeItem);
-    addSidebarHeaderItemIfSupported({ addSidebarHeaderItem }, item)();
-    expect(addSidebarHeaderItem).toHaveBeenCalledWith(item);
-    expect(removeItem).toHaveBeenCalledOnce();
   });
 });
 

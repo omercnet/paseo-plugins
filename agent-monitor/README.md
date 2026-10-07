@@ -56,7 +56,6 @@ no private organization names remained in the rendered page.
 - The monitor screen accepts a `bucket` param (`attention`, `running`, `idle`, `closed`, or `all`)
   as its initial filter, so a link such as `…/surface/monitor?param.bucket=attention` opens
   filtered and keeps that filter on reload. Chips then filter in place without changing the URL.
-- Paseo 0.9 and 0.10 keep the static sidebar item that opens the monitor surface.
 
 ## How it reads state
 
@@ -78,7 +77,7 @@ Open the monitor and select the agent there.
 
 ## Install
 
-Requires Paseo `^0.9.0 || ^0.10.0 || ^0.11.0`. Development uses the stable 0.9 SDK line.
+Requires Paseo `^0.11.0`. Development uses the stable 0.9 SDK line.
 
 Install the published package on the daemon host:
 
@@ -100,7 +99,7 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The project supports Paseo `^0.9.0 || ^0.10.0 || ^0.11.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
+The project supports Paseo `^0.11.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
 `@getpaseo/protocol`, and `@getpaseo/cli` to the stable 0.9 SDK line. Renovate groups `@getpaseo/*`
 updates so the SDKs move together.
 

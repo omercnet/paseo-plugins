@@ -12,7 +12,7 @@ RUN tarball="$(mktemp /tmp/paseo-omp-XXXXXX.tgz)" && \
   cd /opt/paseo-omp && \
   bun install --production --ignore-scripts
 
-FROM ghcr.io/getpaseo/paseo:0.9.2@sha256:d413ff361bc4018d559da3d517a6d5a9eaca721fbb1b71ae8df3dcf7a965c136
+FROM ghcr.io/getpaseo/paseo:0.11.0-beta.5@sha256:3de253a21d036505d7be571cd71a4f244c7d314410c0c67ba8563557a3191ee6
 
 ARG TARGETARCH
 ARG OMP_VERSION=18.1.15

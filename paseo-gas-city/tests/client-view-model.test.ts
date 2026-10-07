@@ -13,7 +13,6 @@ import {
   sessionAccessibilityLabel,
   sessionActionsFor,
   supervisorHealth,
-  supportsScreens,
 } from "../client/view-model";
 import type { SupervisorDiscovery } from "../shared";
 import {
@@ -330,11 +329,5 @@ describe("Gas City sidebar health and screens", () => {
     expect(parseCityParam({ city: "  " })).toBeNull();
     expect(cityScreenTitle({ city: "alpha" })).toBe("alpha · Gas City");
     expect(cityScreenTitle({})).toBe("Gas City");
-  });
-
-  test("detects 0.11 screen support and falls back on older hosts", () => {
-    expect(supportsScreens({ addScreen() {}, addSidebarHeaderItem() {} })).toBe(true);
-    expect(supportsScreens({})).toBe(false);
-    expect(supportsScreens({ addScreen() {} })).toBe(false);
   });
 });

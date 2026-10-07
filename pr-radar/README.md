@@ -34,7 +34,7 @@ Paseo supplies normalized workspace pull request status. A daemon-side plugin ha
 
 ## Paseo 0.11
 
-On 0.11 the sidebar row shows a "needs you" count; pressing the count opens a popover of those pull requests. Pressing one opens PR Radar focused on it (`param.pr`), and the needs-you link filters the queue (`param.filter`), so both survive reload and can be linked. A trailing `+` marks a count that may be incomplete: viewer lookup failed, a pagination or inbox cap was hit, or workspace status was unavailable. Paseo 0.9 and 0.10 keep the static surface and sidebar row.
+The sidebar row shows a "needs you" count; pressing the count opens a popover of those pull requests. Pressing one opens PR Radar focused on it (`param.pr`), and the needs-you link filters the queue (`param.filter`), so both survive reload and can be linked. A trailing `+` marks a count that may be incomplete: viewer lookup failed, a pagination or inbox cap was hit, or workspace status was unavailable. Paseo 0.9 and 0.10 keep the static surface and sidebar row.
 
 ## Install
 
@@ -70,7 +70,7 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The manifest supports Paseo `^0.9.0 || ^0.10.0 || ^0.11.0`. Development uses the stable 0.9 CLI, client, plugin SDK,
+The manifest supports Paseo `^0.11.0`. Development uses the stable 0.9 CLI, client, plugin SDK,
 and protocol packages together. Host-owned navigation opens linked agents and workspaces without private routes or
 page reloads on web, desktop, iOS, and Android. React `19.1` and React Native `0.81` match the versions supplied by
 the plugin host.
