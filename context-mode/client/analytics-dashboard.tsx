@@ -122,7 +122,7 @@ export function AnalyticsDashboard({
         backgroundColor: theme.colors.surface1,
       },
       eyebrow: {
-        color: theme.colors.accent,
+        color: theme.colors.foregroundMuted,
         fontSize: 11,
         fontWeight: "700" as const,
         letterSpacing: 0.7,
