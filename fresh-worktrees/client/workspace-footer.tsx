@@ -10,8 +10,6 @@ import { Pressable, Text, View } from "react-native";
 import { describeRefresh, type WorkspaceSummary } from "./workspace-summary";
 
 export function registerWorkspaceFooter(client: PluginClientContext, summary: WorkspaceSummary) {
-  if (typeof client.addSidebarFooterItem !== "function" || !SidebarRow) return;
-
   function Popover({ theme, layout }: PluginPopoverProps) {
     const entries = useSyncExternalStore(summary.subscribe, summary.getSnapshot);
     const [pending, setPending] = useState(false);

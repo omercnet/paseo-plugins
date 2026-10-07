@@ -5,29 +5,17 @@ import { FactoryPanel } from "./factory-panel";
 import { GasCitySurface } from "./gas-city-surface";
 import { GasCitySettingsScreen } from "./settings-screen";
 import { GasCitySidebarItem } from "./sidebar-item";
-import { CITY_SCREEN_ID, cityScreenTitle, supportsScreens } from "./view-model";
+import { CITY_SCREEN_ID, cityScreenTitle } from "./view-model";
 
-// Paseo 0.11+ registers screens and a sidebar row; 0.9/0.10 keep the static surface.
 // The main screen keeps the old sidebar item id so saved links keep working.
 function addNavigation(client: PluginClientContext) {
-  if (supportsScreens(client)) {
-    return [
-      client.addScreen({ id: "gas-city", title: "Gas City", Component: GasCitySurface }),
-      client.addScreen({ id: CITY_SCREEN_ID, title: cityScreenTitle, Component: CityScreen }),
-      client.addSidebarHeaderItem({
-        id: "gas-city",
-        title: "Gas City",
-        Component: GasCitySidebarItem,
-      }),
-    ];
-  }
   return [
-    client.addSurface("gas-city", GasCitySurface),
-    client.addSidebarItem({
+    client.addScreen({ id: "gas-city", title: "Gas City", Component: GasCitySurface }),
+    client.addScreen({ id: CITY_SCREEN_ID, title: cityScreenTitle, Component: CityScreen }),
+    client.addSidebarHeaderItem({
       id: "gas-city",
       title: "Gas City",
-      icon: "Factory",
-      surface: "gas-city",
+      Component: GasCitySidebarItem,
     }),
   ];
 }
@@ -55,9 +43,8 @@ export function registerGasCityClient(client: PluginClientContext) {
       icon: "Factory",
       keywords: ["gas city", "supervisor", "sessions", "convoys", "operator"],
       context: "global",
-      onSelect({ openSurface, openScreen }) {
-        if (typeof openScreen === "function") openScreen({ screenId: "gas-city" });
-        else openSurface("gas-city");
+      onSelect({ openScreen }) {
+        openScreen({ screenId: "gas-city" });
       },
     }),
     client.addCommandCenterItem({

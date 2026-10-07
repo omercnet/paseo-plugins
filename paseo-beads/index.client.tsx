@@ -32,25 +32,20 @@ export default function contribute(client: PluginClientContext) {
       openPanel("beads");
     },
   });
-  // Paseo 0.11 added screens and sidebar header items. 0.9 and 0.10 keep the panel and commands.
-  const removeReadyBeads =
-    typeof client.addScreen === "function" && typeof client.addSidebarHeaderItem === "function"
-      ? [
-          client.addScreen({
-            id: BEAD_SCREEN_ID,
-            title: (params) => parseBeadScreenParams(params)?.issueId ?? "Bead",
-            Component: BeadScreen,
-          }),
-          client.addSidebarHeaderItem({
-            id: "ready-beads",
-            title: "Ready beads",
-            Component: ReadyBeadsItem,
-          }),
-        ]
-      : [];
+  const removeScreen = client.addScreen({
+    id: BEAD_SCREEN_ID,
+    title: (params) => parseBeadScreenParams(params)?.issueId ?? "Bead",
+    Component: BeadScreen,
+  });
+  const removeReadyBeads = client.addSidebarHeaderItem({
+    id: "ready-beads",
+    title: "Ready beads",
+    Component: ReadyBeadsItem,
+  });
 
   return () => {
-    for (const remove of removeReadyBeads) remove();
+    removeReadyBeads();
+    removeScreen();
     removeAgentCommand();
     removeWorkspaceCommand();
     removePanel();

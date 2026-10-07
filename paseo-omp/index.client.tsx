@@ -4,7 +4,6 @@ import type {
   PluginClientContext,
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
-import type { ComponentType } from "react";
 import { OmpIcon } from "./client/hub-icon";
 import { HubPopover } from "./client/hub-popover";
 import { ConfigSidebarItem, createHubSidebar } from "./client/hub-sidebar";
@@ -38,7 +37,6 @@ import {
   configStoreFromParams,
   HUB_SIDEBAR_ITEM_ID,
   loadHubSnapshot,
-  supportsScreens,
 } from "./client/sidebar-compat";
 import {
   type ComposerPillSettings,
@@ -112,29 +110,16 @@ async function loadAgents(paseo: PaseoApi): Promise<AgentEntry[]> {
 }
 
 /**
- * Paseo 0.11+: a param-addressable `config` screen (same id as the old sidebar item, so saved
- * links resolve to it), a header row that opens it, and a Hub status row. 0.9/0.10: the original
- * surface and static sidebar row, unchanged.
+ * A param-addressable `config` screen (same id as the old sidebar item, so saved links resolve to
+ * it), a header row that opens it, and a Hub status row.
  */
 export function registerConfigAndHub(
-  client: Pick<PluginClientContext, "addSurface" | "addSidebarItem" | "rpc" | "paseo">,
-  ConfigSurface: ComponentType<PluginSurfaceProps>,
+  client: Pick<
+    PluginClientContext,
+    "addScreen" | "addSidebarHeaderItem" | "openScreen" | "rpc" | "paseo"
+  >,
   onComposerPillSettingsChange: (settings: ComposerPillSettings) => void,
 ): () => void {
-  if (!supportsScreens(client)) {
-    const removeSurface = client.addSurface(CONFIG_SCREEN_ID, ConfigSurface);
-    const removeItem = client.addSidebarItem({
-      id: CONFIG_SCREEN_ID,
-      title: "OMP",
-      icon: "Settings",
-      surface: CONFIG_SCREEN_ID,
-    });
-    return () => {
-      removeItem();
-      removeSurface();
-    };
-  }
-  const screens = client;
   function ConfigScreen(props: PluginSurfaceProps & { params: Record<string, string> }) {
     const current = configStoreFromParams(props.params);
     return (
@@ -145,7 +130,7 @@ export function registerConfigAndHub(
         onStoreChange={(store) => {
           // Re-selecting the current store must not push a duplicate screen onto history.
           if (ompStoreKey(store) === ompStoreKey(current)) return;
-          screens.openScreen({ screenId: CONFIG_SCREEN_ID, params: configParamsFromStore(store) });
+          client.openScreen({ screenId: CONFIG_SCREEN_ID, params: configParamsFromStore(store) });
         }}
       />
     );
@@ -157,13 +142,13 @@ export function registerConfigAndHub(
     ),
   );
   const removers = [
-    screens.addScreen({ id: CONFIG_SCREEN_ID, title: configScreenTitle, Component: ConfigScreen }),
-    screens.addSidebarHeaderItem({
+    client.addScreen({ id: CONFIG_SCREEN_ID, title: configScreenTitle, Component: ConfigScreen }),
+    client.addSidebarHeaderItem({
       id: CONFIG_SCREEN_ID,
       title: "OMP",
       Component: ConfigSidebarItem,
     }),
-    screens.addSidebarHeaderItem({
+    client.addSidebarHeaderItem({
       id: HUB_SIDEBAR_ITEM_ID,
       title: "OMP Hub",
       Component: HubSidebarItem,
@@ -191,10 +176,6 @@ export default function contribute(client: PluginClientContext) {
     preferences = next;
     settingsGeneration += 1;
     scheduleReconcile();
-  }
-
-  function ConfigSurface(props: PluginSurfaceProps) {
-    return <OmpConfigSurface {...props} onComposerPillSettingsChange={applyComposerPillSettings} />;
   }
 
   const removeMemoryPanel = client.addWorkspacePanel({
@@ -233,19 +214,15 @@ export default function contribute(client: PluginClientContext) {
       openPanel("workspace", { location: "workspace" });
     },
   });
-  const usesScreens = supportsScreens(client);
-  const removeConfigEntry = registerConfigAndHub(client, ConfigSurface, applyComposerPillSettings);
+  const removeConfigEntry = registerConfigAndHub(client, applyComposerPillSettings);
   const removeOpenConfig = client.addCommandCenterItem({
     id: "open-config",
     title: "Open OMP",
     icon: "Settings",
     keywords: ["omp", "config", "settings", "models", "providers", "composer", "pills"],
     context: "global",
-    onSelect(capabilities) {
-      // Branch on the same gate as registration: the screen exists only on the 0.11 path.
-      if (usesScreens && "openScreen" in capabilities) {
-        capabilities.openScreen({ screenId: CONFIG_SCREEN_ID });
-      } else capabilities.openSurface(CONFIG_SCREEN_ID);
+    onSelect({ openScreen }) {
+      openScreen({ screenId: CONFIG_SCREEN_ID });
     },
   });
   const removeImageRenderer = client.addTimelineRenderer({

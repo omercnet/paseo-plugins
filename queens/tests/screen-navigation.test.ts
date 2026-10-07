@@ -1,10 +1,5 @@
 import { describe, expect, test } from "vitest";
-import {
-  parsePuzzleParam,
-  queensProgress,
-  queensScreenTitle,
-  supportsQueensScreens,
-} from "../client/screen-navigation";
+import { parsePuzzleParam, queensProgress, queensScreenTitle } from "../client/screen-navigation";
 import { DEFAULT_GAME_SETTINGS } from "../shared/game-settings";
 
 describe("Queens screen navigation", () => {
@@ -65,17 +60,5 @@ describe("Queens screen navigation", () => {
       completed: 0,
       params: {},
     });
-  });
-  test("requires all new runtime capabilities before replacing legacy navigation", () => {
-    const method = () => {};
-    expect(supportsQueensScreens({ addScreen: method, addSidebarHeaderItem: method }, method)).toBe(
-      true,
-    );
-    expect(supportsQueensScreens({}, undefined)).toBe(false);
-    expect(supportsQueensScreens({ addScreen: method }, method)).toBe(false);
-    expect(supportsQueensScreens({ addSidebarHeaderItem: method }, method)).toBe(false);
-    expect(
-      supportsQueensScreens({ addScreen: method, addSidebarHeaderItem: method }, undefined),
-    ).toBe(false);
   });
 });

@@ -58,6 +58,7 @@ describe("freshness scheduling", () => {
       },
       rpc,
       addHeaderButton: vi.fn(),
+      addSidebarFooterItem: vi.fn(() => () => {}),
     } as unknown as PluginClientContext;
 
     const cleanup = contribute(client);
@@ -100,6 +101,7 @@ describe("freshness scheduling", () => {
       },
       rpc,
       addHeaderButton: vi.fn(),
+      addSidebarFooterItem: vi.fn(() => () => {}),
     } as unknown as PluginClientContext;
 
     const cleanup = contribute(client);
@@ -136,6 +138,7 @@ describe("freshness scheduling", () => {
       },
       rpc,
       addHeaderButton,
+      addSidebarFooterItem: vi.fn(() => () => {}),
     } as unknown as PluginClientContext;
 
     const cleanup = contribute(client);
@@ -172,6 +175,7 @@ describe("freshness scheduling", () => {
       },
       rpc: vi.fn(),
       addHeaderButton: vi.fn(),
+      addSidebarFooterItem: vi.fn(() => () => {}),
     } as unknown as PluginClientContext;
 
     const cleanup = contribute(client);
@@ -204,6 +208,7 @@ describe("freshness scheduling", () => {
       },
       rpc,
       addHeaderButton: vi.fn(),
+      addSidebarFooterItem: vi.fn(() => () => {}),
     } as unknown as PluginClientContext;
 
     const cleanup = contribute(client);
@@ -260,6 +265,7 @@ describe("freshness scheduling", () => {
       },
       rpc,
       addHeaderButton,
+      addSidebarFooterItem: vi.fn(() => () => {}),
     } as unknown as PluginClientContext;
 
     const cleanup = contribute(client);

@@ -82,7 +82,7 @@ still running starts no further workspace reads.
 
 ## Limits
 
-- Paseo `^0.9.0 || ^0.10.0 || ^0.11.0` with plugins enabled is required.
+- Paseo `^0.11.0` with plugins enabled is required.
 - Beads `bd` 1.0 or newer must be available on the Paseo daemon's `PATH`.
 - A Beads project must be initialized in the workspace for issue data to appear.
 - CLI calls time out after 10 seconds and accept at most 8 MiB of output. Unexpected CLI details stay
@@ -96,8 +96,7 @@ still running starts no further workspace reads.
   project, request failures, and missing issue details.
 - This plugin is read-only and workspace-scoped. It uses the `bd` CLI exclusively and does not
   create, edit, close, or assign issues.
-- The **Ready beads** row and the bead screen need Paseo 0.11. On 0.9 and 0.10 they do not register,
-  and the panel and Command Center items work as before.
+- The **Ready beads** row and the bead screen use the Paseo 0.11 screen and sidebar APIs.
 - The **Ready beads** count covers the first 200 workspaces the host lists and, like the panel, the
   first 500 issues of each workspace. It refreshes about every two minutes while the app is in the
   foreground, plus the time a scan takes, and when the popover opens, so it can be older after the

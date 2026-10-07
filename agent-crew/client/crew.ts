@@ -1,22 +1,9 @@
-import type {
-  PluginClientContext,
-  PluginSidebarItemContribution,
-  usePaseo,
-} from "@getpaseo/plugin/client";
+import type { usePaseo } from "@getpaseo/plugin/client";
 
 export type PaseoApi = ReturnType<typeof usePaseo>;
 export type PaseoWorkspace = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>["entries"][number];
 export type AgentEntry = Awaited<ReturnType<PaseoApi["agents"]["list"]>>["entries"][number];
 type AgentSnapshot = AgentEntry["agent"];
-
-/** Sidebar header items arrived in Paseo 0.11; on older hosts the item is not registered. */
-export function addSidebarHeaderItemIfSupported(
-  client: Pick<PluginClientContext, "addSidebarHeaderItem">,
-  item: PluginSidebarItemContribution,
-): () => void {
-  if (typeof client.addSidebarHeaderItem !== "function") return () => {};
-  return client.addSidebarHeaderItem(item);
-}
 
 export function listenToCrewDirectory(paseo: PaseoApi, invalidate: () => void): () => void {
   let closed = false;

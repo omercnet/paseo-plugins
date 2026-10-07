@@ -1,9 +1,6 @@
-import type { PluginHostProps } from "@getpaseo/plugin/client";
-// Namespace import: on 0.9/0.10 hosts this module lacks SidebarRow, which is only rendered from
-// 0.11-only sidebar items. Typed locally so older SDK typechecks still compile.
-import * as pluginUi from "@getpaseo/plugin/client/ui";
+import type { PluginPopoverProps, PluginSidebarItemProps } from "@getpaseo/plugin/client";
+import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
-import type { ComponentType, ReactNode } from "react";
 import { Text, View } from "react-native";
 import { HubProcessList } from "./hub-popover";
 import { CONFIG_SCREEN_ID, type HubSnapshot, hubTrailing } from "./sidebar-compat";
@@ -12,40 +9,7 @@ import { CONFIG_SCREEN_ID, type HubSnapshot, hubTrailing } from "./sidebar-compa
 const HUB_POLL_MS = 15_000;
 const HUB_SIDEBAR_QUERY_KEY = ["paseo-omp", "hub-sidebar"] as const;
 
-interface OpenScreenInput {
-  screenId: string;
-  params?: Record<string, string>;
-}
-type HostProps = Pick<PluginHostProps, "theme" | "layout">;
-interface PopoverProps extends HostProps {
-  close(): void;
-  openScreen(input: OpenScreenInput): void;
-}
-interface SidebarItemProps extends HostProps {
-  currentScreen: { screenId: string; params: Record<string, string> } | null;
-  openScreen(input: OpenScreenInput): void;
-  openPopover(Content: ComponentType<PopoverProps>): void;
-}
-type SidebarRowComponent = ComponentType<{
-  id?: string;
-  icon?: string | ComponentType<{ size: number; color: string }>;
-  label?: string;
-  onPress(): void;
-  active?: boolean;
-  trailing?: ReactNode;
-}>;
-
-const uiModule: object = pluginUi;
-// Present on every 0.11 host, the only hosts that render these items. The guard and cast keep
-// older-SDK typechecks (which lack SidebarRow) compiling; presence check only, because host
-// components may be memo/forwardRef objects rather than plain functions.
-const SidebarRow: SidebarRowComponent | undefined =
-  "SidebarRow" in uiModule && uiModule.SidebarRow
-    ? (uiModule.SidebarRow as SidebarRowComponent)
-    : undefined;
-
-export function ConfigSidebarItem({ currentScreen, openScreen }: SidebarItemProps) {
-  if (!SidebarRow) return null;
+export function ConfigSidebarItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
   return (
     <SidebarRow
       icon="Settings"
@@ -64,7 +28,7 @@ export function createHubSidebar(loadSnapshot: () => Promise<HubSnapshot>) {
       refetchInterval: HUB_POLL_MS,
     });
 
-  function HubSidebarPopover({ theme, layout }: PopoverProps) {
+  function HubSidebarPopover({ theme, layout }: PluginPopoverProps) {
     const snapshot = useHubSnapshot();
     const muted = { color: theme.colors.foregroundMuted, fontSize: 13 };
     if (snapshot.isLoading) return <Text style={muted}>Loading hub processes…</Text>;
@@ -102,9 +66,8 @@ export function createHubSidebar(loadSnapshot: () => Promise<HubSnapshot>) {
     );
   }
 
-  function HubSidebarItem({ theme, openPopover }: SidebarItemProps) {
+  function HubSidebarItem({ theme, openPopover }: PluginSidebarItemProps) {
     const snapshot = useHubSnapshot();
-    if (!SidebarRow) return null;
     const state = hubTrailing(snapshot.data, snapshot.error !== null);
     const trailing = state ? (
       <View
