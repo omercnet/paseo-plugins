@@ -7,7 +7,7 @@ import { ompAgentDir, ompCacheDir, ompDataDir, ompSessionDir, ompStateDir } from
 import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
 import type { OmpStartOptions } from "./omp-rpc-environment";
 import { parseOmpProviderOptions } from "./provider-options";
-import { createOmpProvider, type OmpProviderOptions } from "./registration";
+import { createOmpProvider, createOmpStatus, type OmpProviderOptions } from "./registration";
 import { OmpPublicError } from "./security";
 
 const MAX_PROFILES = 128;
@@ -229,6 +229,18 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
       sessionDir,
     );
   };
+  const checkAvailability = async (
+    input: Parameters<NonNullable<typeof provider.checkAvailability>>[0],
+    context?: Parameters<NonNullable<typeof provider.checkAvailability>>[1],
+  ) => {
+    const command = validateCatalog(input);
+    if (!provider.checkAvailability)
+      throw new OmpPublicError("OMP availability probe is unavailable");
+    return provider.checkAvailability(
+      { ...input, providerOptions: { ...input.providerOptions, command } },
+      context,
+    );
+  };
   return {
     ...provider,
     async getCatalogCacheKey(
@@ -237,18 +249,8 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
       validateCatalog(input);
       return provider.getCatalogCacheKey?.(input);
     },
-    async checkAvailability(
-      input: Parameters<NonNullable<typeof provider.checkAvailability>>[0],
-      context?: Parameters<NonNullable<typeof provider.checkAvailability>>[1],
-    ) {
-      const command = validateCatalog(input);
-      if (!provider.checkAvailability)
-        throw new OmpPublicError("OMP availability probe is unavailable");
-      return provider.checkAvailability(
-        { ...input, providerOptions: { ...input.providerOptions, command } },
-        context,
-      );
-    },
+    checkAvailability,
+    status: createOmpStatus(() => checkAvailability({ scope: "global" })),
     id,
     label: `OMP · ${profile}`,
   };

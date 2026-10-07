@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import type { ProviderRegistration } from "@getpaseo/plugin/server/provider";
+import type { ProviderRegistration, ProviderStatus } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import type { OmpBrowserAuthorizationRegistry } from "../mcp-browser";
 import type { OmpOperationalFailureReporter } from "../operational-failure-diagnostics";
@@ -40,6 +40,48 @@ type ProviderRegistrationCompat = Omit<
     context?: { timeoutMs?: number },
   ): Promise<ProviderAvailabilityCompat>;
 };
+
+const STATUS_CACHE_TTL_MS = 30_000;
+
+/**
+ * The 0.11 host calls `status` before every create, resume, and draft request and passes only
+ * the daemon-resolved launch, never per-agent `providerOptions`. Only a missing executable is
+ * definitive for the plugin-owned default launch; slow, failing, or unrecognized probes stay
+ * available with a diagnostic so load or a differently launched agent is never refused.
+ */
+function toProviderStatus(availability: ProviderAvailabilityCompat): ProviderStatus {
+  if (availability.status === "available") return { available: true };
+  if (availability.status === "missing") {
+    return {
+      available: false,
+      diagnostic: availability.diagnostic ?? "OMP executable was not found",
+    };
+  }
+  return {
+    available: true,
+    diagnostic: availability.diagnostic ?? `OMP launch probe reported ${availability.status}`,
+  };
+}
+
+/** Share one bounded probe across the host's frequent status calls; rejections are not cached. */
+export function createOmpStatus(
+  probe: () => Promise<ProviderAvailabilityCompat>,
+): () => Promise<ProviderStatus> {
+  let cached: { expiresAt: number; result: Promise<ProviderStatus> } | undefined;
+  return () => {
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.result;
+    const entry = {
+      expiresAt: now + STATUS_CACHE_TTL_MS,
+      result: probe().then(toProviderStatus),
+    };
+    cached = entry;
+    entry.result.catch(() => {
+      if (cached === entry) cached = undefined;
+    });
+    return entry.result;
+  };
+}
 
 const CAPABILITIES = [
   "prompt.message",
@@ -98,6 +140,26 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
       reportProtocolViolation: options.reportProtocolViolation,
     });
   const nativeReservations = new OmpNativeSessionReservations();
+  const checkAvailability: NonNullable<ProviderRegistrationCompat["checkAvailability"]> = async (
+    catalogOptions,
+    context,
+  ) => {
+    if (options.availabilityProbe) {
+      return await options.availabilityProbe(catalogOptions, context?.timeoutMs);
+    }
+    const providerOptions = parseOmpProviderOptions(catalogOptions.providerOptions);
+    const environment = { ...(options.environment ?? process.env), ...providerOptions.env };
+    const configuredCommand: readonly [string, ...string[]] = providerOptions.command?.[0]
+      ? [providerOptions.command[0], ...providerOptions.command.slice(1)]
+      : [environment.OMP_COMMAND || "omp"];
+    return await probeOmpAvailability({
+      command: configuredCommand,
+      cwd:
+        catalogOptions.scope === "workspace" && catalogOptions.cwd ? catalogOptions.cwd : homedir(),
+      environment,
+      timeoutMs: context?.timeoutMs,
+    });
+  };
   return {
     id: "omp-plugin",
     label: "OMP Plugin",
@@ -130,25 +192,8 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
       }
       return createHash("sha256").update(stableJson(identity)).digest("base64url");
     },
-    async checkAvailability(catalogOptions, context) {
-      if (options.availabilityProbe) {
-        return await options.availabilityProbe(catalogOptions, context?.timeoutMs);
-      }
-      const providerOptions = parseOmpProviderOptions(catalogOptions.providerOptions);
-      const environment = { ...(options.environment ?? process.env), ...providerOptions.env };
-      const configuredCommand: readonly [string, ...string[]] = providerOptions.command?.[0]
-        ? [providerOptions.command[0], ...providerOptions.command.slice(1)]
-        : [environment.OMP_COMMAND || "omp"];
-      return await probeOmpAvailability({
-        command: configuredCommand,
-        cwd:
-          catalogOptions.scope === "workspace" && catalogOptions.cwd
-            ? catalogOptions.cwd
-            : homedir(),
-        environment,
-        timeoutMs: context?.timeoutMs,
-      });
-    },
+    checkAvailability,
+    status: createOmpStatus(() => checkAvailability({ scope: "global" })),
     async connect(request) {
       if (boundedJsonBytes(request, 8 * 1024, 32, 256, 64) === Number.POSITIVE_INFINITY) {
         throw new Error("OMP provider received an oversized connection request");
