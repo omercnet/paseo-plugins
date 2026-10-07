@@ -372,6 +372,26 @@ describe("fixed profile catalog and runtime", () => {
     },
   );
 
+  test("profile status probes the profile-scoped default command", async () => {
+    const { environment } = await fixture();
+    const observed: unknown[] = [];
+    const provider = createProfileOmpProvider("work", {
+      environment: { ...environment, OMP_COMMAND: "/opt/omp" },
+      runtime: runtimeFixture().runtime,
+      availabilityProbe: async (options) => {
+        observed.push(options);
+        return { status: "missing", diagnostic: "OMP executable was not found" };
+      },
+    });
+    await expect(provider.status()).resolves.toEqual({
+      available: false,
+      diagnostic: "OMP executable was not found",
+    });
+    expect(observed).toEqual([
+      { scope: "global", providerOptions: { command: ["/opt/omp", "--profile", "work"] } },
+    ]);
+  });
+
   test("uses the same profile for session listing and persisted-session authorization", async () => {
     const { environment } = await fixture();
     const fake = runtimeFixture();

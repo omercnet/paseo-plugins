@@ -1,5 +1,5 @@
 import type { ProviderInput } from "@getpaseo/plugin/server/provider";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
@@ -117,6 +117,102 @@ describe("OMP direct provider", () => {
       }),
     );
     await connection.close();
+  });
+
+  test("ignores daemon launch data so spawns keep the plugin-owned command and environment", async () => {
+    const runtime = new FakeOmpRuntime();
+    const provider = createOmpProvider({ environment: TEST_RUNTIME_ENV, runtime });
+    // A daemon resolves `launch` from provider overrides plus its entire process environment; it
+    // must not replace the names-only inherited environment or per-agent command resolution.
+    const connection = await provider.connect({
+      launch: {
+        command: "/daemon/resolved/omp",
+        args: ["--daemon-arg"],
+        env: { DAEMON_ONLY_SECRET: "daemon-secret", PATH: "/daemon/path" },
+      },
+      versions: [1],
+      capabilities: ["permission"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({ type: "catalog", requestId: "launch-catalog", cwd: "/repo" });
+    await events.waitFor(
+      (event) => event.type === "catalog" && event.requestId === "launch-catalog",
+    );
+    expect(runtime.starts[0]).toEqual(expect.objectContaining({ environment: TEST_RUNTIME_ENV }));
+    const serialized = JSON.stringify(runtime.starts);
+    for (const leaked of [
+      "daemon-secret",
+      "/daemon/resolved/omp",
+      "--daemon-arg",
+      "/daemon/path",
+    ]) {
+      expect(serialized).not.toContain(leaked);
+    }
+    await connection.close();
+  });
+
+  describe("0.11 status", () => {
+    afterEach(() => vi.useRealTimers());
+
+    test("only a missing default executable makes the provider unavailable", async () => {
+      const statusFor = async (result: { status: string; diagnostic?: string }) =>
+        createOmpProvider({
+          runtime: new FakeOmpRuntime(),
+          availabilityProbe: async () => result as never,
+        }).status?.({});
+      await expect(statusFor({ status: "available" })).resolves.toEqual({ available: true });
+      await expect(statusFor({ status: "missing", diagnostic: "gone" })).resolves.toEqual({
+        available: false,
+        diagnostic: "gone",
+      });
+      // Slow, failing, or unrecognized probes are not proof that a differently launched agent fails.
+      await expect(statusFor({ status: "unrunnable", diagnostic: "timed out" })).resolves.toEqual({
+        available: true,
+        diagnostic: "timed out",
+      });
+      await expect(statusFor({ status: "incompatible", diagnostic: "no rpc-ui" })).resolves.toEqual(
+        { available: true, diagnostic: "no rpc-ui" },
+      );
+    });
+
+    test("probes the plugin-owned default launch and ignores the request launch", async () => {
+      const observed: unknown[] = [];
+      const provider = createOmpProvider({
+        runtime: new FakeOmpRuntime(),
+        availabilityProbe: async (options) => {
+          observed.push(options);
+          return { status: "available" };
+        },
+      });
+      await provider.status?.({
+        launch: { command: "/daemon/omp", args: ["--x"], env: { DAEMON_ONLY_SECRET: "s" } },
+      });
+      expect(observed).toEqual([{ scope: "global" }]);
+    });
+
+    test("shares one probe per interval and retries after a failed probe", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      let calls = 0;
+      let failNext = false;
+      const provider = createOmpProvider({
+        runtime: new FakeOmpRuntime(),
+        availabilityProbe: async () => {
+          calls += 1;
+          if (failNext) throw new Error("probe failed");
+          return { status: "available" };
+        },
+      });
+      await Promise.all([provider.status?.({}), provider.status?.({})]);
+      await provider.status?.({});
+      expect(calls).toBe(1);
+      vi.advanceTimersByTime(30_001);
+      failNext = true;
+      await expect(provider.status?.({})).rejects.toThrow("probe failed");
+      failNext = false;
+      await expect(provider.status?.({})).resolves.toEqual({ available: true });
+      expect(calls).toBe(3);
+    });
   });
 
   test("applies host environment names when opening direct provider sessions", async () => {

@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { ProviderEvent, ProviderRegistration } from "@getpaseo/plugin/server/provider";
+import type {
+  ProviderConnection,
+  ProviderEvent,
+  ProviderRegistration,
+} from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, test } from "vitest";
 import type {
   AgentClient,
@@ -212,7 +216,13 @@ function processIsAlive(pid: number): boolean {
 }
 
 async function createHarness(
-  options: { typedApprovals?: boolean; chunkHistory?: boolean; stubbornDescendant?: boolean } = {},
+  options: {
+    typedApprovals?: boolean;
+    chunkHistory?: boolean;
+    stubbornDescendant?: boolean;
+    /** False leaves no `omp` on PATH and no OMP_COMMAND, so only per-agent commands can launch. */
+    defaultCommand?: boolean;
+  } = {},
 ): Promise<Harness> {
   const root = await mkdtemp(join(tmpdir(), "paseo-omp-conformance-"));
   roots.push(root);
@@ -228,11 +238,13 @@ async function createHarness(
     { mode: 0o755 },
   );
   await chmod(wrapperPath, 0o755);
+  const emptyPath = join(root, "empty-bin");
+  await mkdir(emptyPath, { recursive: true });
   const registration = createOmpProvider({
     environment: {
       HOME: root,
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-      OMP_COMMAND: wrapperPath,
+      PATH: options.defaultCommand === false ? emptyPath : (process.env.PATH ?? "/usr/bin:/bin"),
+      ...(options.defaultCommand === false ? {} : { OMP_COMMAND: wrapperPath }),
       OMP_SESSION_DIR: sessionDir,
     },
     replayTimeoutMs: 5_000,
@@ -452,6 +464,91 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
       ).resolves.toMatchObject({ status: "available" });
     } finally {
       await harness.close();
+    }
+  });
+
+  test("reports provider status for the plugin-owned default launch through the host", async () => {
+    const available = await createHarness();
+    const missing = await createHarness({ defaultCommand: false });
+    try {
+      await expect(available.client.isAvailable()).resolves.toBe(true);
+      await expect(available.client.getDiagnostic?.()).resolves.toEqual({
+        diagnostic: "Provider is available",
+      });
+      // Creation already requires a ready catalogue, which spawns this same default launch, so
+      // a missing executable is reported as such instead of an opaque catalogue failure.
+      await expect(missing.client.isAvailable()).resolves.toBe(false);
+      await expect(missing.client.getDiagnostic?.()).resolves.toEqual({
+        diagnostic: "OMP executable was not found",
+      });
+    } finally {
+      await Promise.all([available.close(), missing.close()]);
+    }
+  });
+
+  test("host contract: status sees only launch and a declared command gates connect", async () => {
+    const connects: unknown[] = [];
+    const statusRequests: unknown[] = [];
+    const connection = (): ProviderConnection => ({
+      version: 1,
+      capabilities: [],
+      async send() {},
+      onEvent: () => () => {},
+      async close() {},
+    });
+    const declared: ProviderRegistration = {
+      id: "declared-command-fixture",
+      label: "Declared command fixture",
+      command: ["paseo-omp-missing-default-binary"],
+      async connect(request) {
+        connects.push(request);
+        return connection();
+      },
+    };
+    const statusOnly: ProviderRegistration = {
+      id: "status-only-fixture",
+      label: "Status only fixture",
+      async status(request) {
+        statusRequests.push(request);
+        return { available: true };
+      },
+      async connect() {
+        return connection();
+      },
+    };
+    const adapter = (await import(pluginProviderModulePath)) as unknown as {
+      PluginAgentClientRegistry: HostRegistryConstructor;
+    };
+    const registry = new adapter.PluginAgentClientRegistry(pino({ enabled: false }));
+    registry.replace([declared, statusOnly]);
+    try {
+      const gated = registry.clients()[declared.id];
+      const plain = registry.clients()[statusOnly.id];
+      if (!gated || !plain) throw new Error("fixture clients are missing");
+      // Declaring `command` makes the daemon resolve it: a missing default binary makes the
+      // provider unavailable and blocks connect even if a per-agent command would have worked.
+      await expect(gated.isAvailable()).resolves.toBe(false);
+      await expect(gated.getDiagnostic?.()).resolves.toEqual({
+        diagnostic: "paseo-omp-missing-default-binary not found on PATH",
+      });
+      await expect(
+        gated.createSession({
+          provider: declared.id,
+          cwd: "/repo",
+          model: "fixture-model",
+          modeId: "full",
+          featureValues: {},
+          providerOptions: { command: [process.execPath] },
+        }),
+      ).rejects.toThrow("not found on PATH");
+      expect(connects).toEqual([]);
+      // Without `command` the daemon supplies no launch, and `status` carries nothing else:
+      // per-agent providerOptions never reach it.
+      await expect(plain.isAvailable()).resolves.toBe(true);
+      expect(statusRequests).toEqual([{ launch: undefined }]);
+      expect(Object.keys(statusRequests[0] as object)).toEqual(["launch"]);
+    } finally {
+      await registry.shutdown();
     }
   });
 
