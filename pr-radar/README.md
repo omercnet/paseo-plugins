@@ -68,7 +68,7 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The manifest supports Paseo `^0.11.0`. Development uses the stable 0.9 CLI, client, plugin SDK,
-and protocol packages together. Host-owned navigation opens linked agents and workspaces without private routes or
+The manifest supports Paseo `^0.11.0`. Development uses the 0.11 CLI, client, plugin SDK,
+and protocol packages together from the workspace catalog. Host-owned navigation opens linked agents and workspaces without private routes or
 page reloads on web, desktop, iOS, and Android. React `19.1` and React Native `0.81` match the versions supplied by
 the plugin host.

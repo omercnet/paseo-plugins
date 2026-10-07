@@ -67,8 +67,6 @@ npm run import:puzzles
 
 ## Install
 
-### Install
-
 Install the published npm package on the daemon host:
 
 ```bash

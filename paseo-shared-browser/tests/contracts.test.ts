@@ -49,7 +49,7 @@ type AgentCreateRequest = {
 
 type AgentCreateHook = (input: { request: AgentCreateRequest }) => Promise<AgentCreateRequest>;
 
-function captureAgentCreateHook(host: "0.10" | "0.11" = "0.11"): AgentCreateHook {
+function captureAgentCreateHook(): AgentCreateHook {
   let hook: AgentCreateHook | undefined;
   contribute({
     handle: vi.fn(),
@@ -58,7 +58,6 @@ function captureAgentCreateHook(host: "0.10" | "0.11" = "0.11"): AgentCreateHook
       return () => {};
     }),
     on: vi.fn(),
-    ...(host === "0.11" ? { registerUsageSource: vi.fn() } : {}),
   } as never);
   if (!hook) throw new Error("agent.create hook was not registered");
   return hook;
@@ -214,19 +213,8 @@ describe("agent MCP injection", () => {
     browserMocks.issueAgentTicket.mockClear();
   });
 
-  it("leaves OMP agent creation untouched on 0.9/0.10 hosts, which reject external MCP servers", async () => {
-    const hook = captureAgentCreateHook("0.10");
-    const request: AgentCreateRequest = {
-      config: { provider: "omp", cwd: "/workspace" },
-      env: { EXISTING: "value" },
-    };
-
-    await expect(hook({ request })).resolves.toBe(request);
-    expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
-  });
-
-  it("injects the adapter for the built-in OMP provider on 0.11 hosts", async () => {
-    const hook = captureAgentCreateHook("0.11");
+  it("injects the adapter for the built-in OMP provider", async () => {
+    const hook = captureAgentCreateHook();
     const request: AgentCreateRequest = {
       config: { provider: "omp", cwd: "/workspace" },
       env: { EXISTING: "value" },
@@ -241,22 +229,14 @@ describe("agent MCP injection", () => {
     });
   });
 
-  it("never injects into internal agents, even on 0.11 hosts", async () => {
-    const hook = captureAgentCreateHook("0.11");
+  it("never injects into internal agents", async () => {
+    const hook = captureAgentCreateHook();
     const request: AgentCreateRequest = {
       config: { provider: "omp", cwd: "/workspace", internal: true },
     };
 
     await expect(hook({ request })).resolves.toBe(request);
     expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
-  });
-
-  it("keeps injecting other providers on 0.10 hosts", async () => {
-    const hook = captureAgentCreateHook("0.10");
-    const transformed = await hook({
-      request: { config: { provider: "claude", cwd: "/workspace" } },
-    });
-    expect(transformed.config.mcpServers).toHaveProperty("shared-browser");
   });
 
   it("injects the adapter for providers that accept external MCP servers", async () => {
