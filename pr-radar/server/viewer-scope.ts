@@ -11,11 +11,12 @@ const SEARCH_LIMIT = 100;
 const ENRICHMENT_BATCH_SIZE = 20;
 const COMMAND_TIMEOUT_MS = 15_000;
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+const SCOPE_SEARCH_LIMIT = 1000;
+
 function statePath(): string {
   const home = process.env.PASEO_HOME ?? join(homedir(), ".paseo");
   return join(home, "plugin-data", "pr-radar", "inbox-state.json");
 }
-const SCOPE_SEARCH_LIMIT = 1000;
 
 interface SearchRecord {
   id: string;
