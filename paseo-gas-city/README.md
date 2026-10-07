@@ -89,7 +89,7 @@ With Paseo `^0.11.0`, install the npm package:
 paseo plugin install npm:@omercnet/paseo-gas-city
 ```
 
-Paseo 0.9 and 0.10 npm updates are reviewed before they are applied. Check for a candidate, then run the
+npm updates are reviewed before they are applied. Check for a candidate, then run the
 interactive review:
 
 ```bash

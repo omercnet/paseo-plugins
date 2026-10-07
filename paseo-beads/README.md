@@ -116,7 +116,7 @@ From npm:
 paseo plugin install npm:@omercnet/paseo-beads
 ```
 
-With Paseo 0.9.0 or 0.10.1, update the installed npm package with:
+Update the installed npm package with:
 
 ```bash
 paseo plugin update paseo-beads
