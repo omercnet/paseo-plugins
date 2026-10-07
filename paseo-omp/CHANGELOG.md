@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.2.0...paseo-omp-v1.3.0) (2026-10-07)
+
+
+### Features
+
+* **paseo-omp:** explain tool access boundary and mark quotas as recorded usage ([#277](https://github.com/omercnet/paseo-plugins/issues/277)) ([a479d4a](https://github.com/omercnet/paseo-plugins/commit/a479d4ab7c15f91dd37c2f30c102c0ed4b063f68))
+
+
+### Bug Fixes
+
+* **paseo-omp:** await permission acknowledgement in canary smoke ([#289](https://github.com/omercnet/paseo-plugins/issues/289)) ([f503485](https://github.com/omercnet/paseo-plugins/commit/f5034853d13f0dc5aeec15e4959a35f801a8e3a1))
+* **paseo-omp:** raise catalog budgets for large OMP registries ([#276](https://github.com/omercnet/paseo-plugins/issues/276)) ([61abe50](https://github.com/omercnet/paseo-plugins/commit/61abe5099557afb4e1e94d1dfd9cae6639aba408))
+
 ## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.1.0...paseo-omp-v1.2.0) (2026-10-03)
 
 

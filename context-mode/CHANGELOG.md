@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v1.2.0...paseo-context-mode-v1.2.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **context-mode:** derive PaseoApi type from host plugin client ([#288](https://github.com/omercnet/paseo-plugins/issues/288)) ([5cb9797](https://github.com/omercnet/paseo-plugins/commit/5cb9797df720f341deb8a0a8542ef617f89dc102))
+* **ui:** raise context-mode eyebrow contrast and fix radar empty-queue copy ([#290](https://github.com/omercnet/paseo-plugins/issues/290)) ([ed16e30](https://github.com/omercnet/paseo-plugins/commit/ed16e30efe09aef0c4ebdee9b6d69d25e0e3cb2e))
+
 ## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v1.1.0...paseo-context-mode-v1.2.0) (2026-10-03)
 
 
