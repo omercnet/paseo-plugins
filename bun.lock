@@ -21,7 +21,6 @@
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "@vitest/coverage-v8": "catalog:",
-        "fflate": "catalog:",
         "react": "catalog:",
         "react-native": "catalog:",
         "typescript": "catalog:",
@@ -43,7 +42,6 @@
         "@types/react": "catalog:",
         "@vitest/coverage-v8": "catalog:",
         "esbuild": "catalog:",
-        "fflate": "catalog:",
         "react": "catalog:",
         "react-native": "catalog:",
         "typescript": "catalog:",
@@ -103,7 +101,6 @@
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "@vitest/coverage-v8": "catalog:",
-        "fflate": "catalog:",
         "react": "catalog:",
         "react-native": "catalog:",
         "typescript": "catalog:",
@@ -121,7 +118,6 @@
         "@getpaseo/protocol": "catalog:",
         "@types/node": "catalog:",
         "@vitest/coverage-v8": "catalog:",
-        "fflate": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
       },
@@ -139,7 +135,6 @@
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "@vitest/coverage-v8": "catalog:",
-        "fflate": "catalog:",
         "react": "catalog:",
         "react-native": "catalog:",
         "typescript": "catalog:",
@@ -211,7 +206,6 @@
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "@vitest/coverage-v8": "catalog:",
-        "fflate": "catalog:",
         "react": "catalog:",
         "react-native": "catalog:",
         "typescript": "catalog:",
@@ -265,7 +259,6 @@
     "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^5.0.0",
     "esbuild": "0.28.2",
-    "fflate": "^0.8.3",
     "pino": "10.3.1",
     "react": "19.1.0",
     "react-native": "0.81.5",
@@ -1226,7 +1219,6 @@
 
     "fdir": ["fdir@6.5.0", "", { "peerDependencies": { "picomatch": "^3 || ^4" }, "optionalPeers": ["picomatch"] }, "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg=="],
 
-    "fflate": ["fflate@0.8.3", "", {}, "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="],
 
     "figures": ["figures@3.2.0", "", { "dependencies": { "escape-string-regexp": "^1.0.5" } }, "sha512-yaduQFRKLXYOGgEn6AZau90j3ggSOyiqXU0F9JZfeXYhNa+Jk4X+s45A2zg5jns87GAFa34BBm2kXw4XpNcbdg=="],
 

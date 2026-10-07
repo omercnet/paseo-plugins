@@ -54,7 +54,6 @@
     "@types/react": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "esbuild": "catalog:",
-    "fflate": "catalog:",
     "react": "catalog:",
     "react-native": "catalog:",
     "typescript": "catalog:",
