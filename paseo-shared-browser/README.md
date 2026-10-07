@@ -93,7 +93,7 @@ Before upgrading the plugin on Windows, close active Shared Browser sessions and
 daemon; Windows does not allow the installer to replace runtime executables that are still running.
 
 Open a workspace, search the Command Center for **Open Shared Browser**, or tap the **Shared
-Browser** composer pill while a workspace session is open. On Paseo 0.11 or newer, a **Shared
+Browser** composer pill while a workspace session is open. A **Shared
 Browser (n)** row in the sidebar footer appears while browser sessions are open; it lists them and
 jumps to the chosen workspace's browser panel.
 

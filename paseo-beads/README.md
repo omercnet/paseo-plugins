@@ -4,8 +4,7 @@ A dependency-aware Beads work queue for every Paseo workspace. Paseo Beads turns
 a read-only delivery view that makes the ready frontier, work in progress, and blockers immediately
 visible.
 
-It adds a workspace-scoped **Beads** Explorer panel and an **Open Beads** Command Center item. On
-Paseo 0.11 and newer it also adds a **Ready beads** sidebar row and a linkable bead screen.
+It adds a workspace-scoped **Beads** Explorer panel and an **Open Beads** Command Center item. It also adds a **Ready beads** sidebar row and a linkable bead screen.
 
 ## Demo
 
@@ -37,7 +36,7 @@ verified the rendered page contained no private organization names.
   layouts.
 - A virtualized issue list, descriptive accessibility labels, and focus restoration when navigating
   between the compact list and detail view.
-- On Paseo 0.11 and newer, a **Ready beads** sidebar row with the number of ready beads across the
+- A **Ready beads** sidebar row with the number of ready beads across the
   host's workspaces. Pressing it opens a popover (a bottom sheet in compact layouts) with the top 10
   ready beads grouped by workspace. Pressing a bead opens its detail view as a screen whose URL
   carries the workspace and bead IDs, so it can be linked and survives a reload.
@@ -126,8 +125,7 @@ Paseo shows the installed and proposed revisions and asks for approval before ap
 update. Review the source changes before approving them.
 
 Open a workspace, choose **New tab** in Explorer, then select **Beads**. You can also run **Open
-Beads** from the Command Center while viewing a workspace or one of its agents. On Paseo 0.11 and
-newer, press **Ready beads** in the sidebar for ready work across every workspace on the host.
+Beads** from the Command Center while viewing a workspace or one of its agents. Press **Ready beads** in the sidebar for ready work across every workspace on the host.
 
 ## Develop
 

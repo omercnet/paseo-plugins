@@ -73,7 +73,7 @@ shown without hiding the failure.
 
 ## Active crews sidebar row
 
-On Paseo 0.11 and later, an **Active crews** sidebar header row counts the crews that have a member
+An **Active crews** sidebar header row counts the crews that have a member
 working or waiting for input. Pressing it lists those crews with their workspace; choosing one opens
 that workspace's Agent Crew panel in the Explorer. The list is a popover on wide layouts and a
 bottom sheet on compact ones. Paseo's compact layout does not show Explorer panels, so there the

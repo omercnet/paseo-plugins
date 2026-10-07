@@ -1,7 +1,7 @@
 # agent-monitor
 
 One roster for every agent on a daemon: an `Agent monitor` screen in the sidebar plus a global
-Command Center item (`Open agent monitor`). On Paseo 0.11 the sidebar row also counts the agents
+Command Center item (`Open agent monitor`). The sidebar row also counts the agents
 that need attention.
 
 Answers "which of my 38 agents needs me right now" without walking the workspace tree.
@@ -46,7 +46,7 @@ no private organization names remained in the rendered page.
   collapsed) to open its workspace through Paseo's cross-platform navigation API.
 - Archive one agent, or sweep every closed agent (two taps).
 
-## Sidebar row (Paseo 0.11)
+## Sidebar row
 
 - The row's badge counts the Attention bucket, using the same rule as the roster. It shows no
   number while the roster loads or after a refresh fails, and `N+` once the agent list reaches the

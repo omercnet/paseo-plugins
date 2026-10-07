@@ -32,7 +32,7 @@ These previews were captured from an isolated Paseo test daemon with Context Mod
 - Provides provider- and project-scoped knowledge search, local-path indexing, URL fetch/index, indexed-source visibility, and an Insight link.
 - Requires an explicit provider, project path, scope review, and second confirmation before purge. Purge remains delegated to Context Mode's own MCP contract.
 - Returns structured install and provider-specific upgrade argv for review; Paseo never executes those commands automatically.
-- On Paseo 0.11, registers the `context-mode` screen with URL-persisted `section`, `agentId`, and `workspaceId` params. Composer pills open Knowledge using the selected host's agent provider and working directory. URL params never carry paths or queries.
+- Registers the `context-mode` screen with URL-persisted `section`, `agentId`, and `workspaceId` params. Composer pills open Knowledge using the selected host's agent provider and working directory. URL params never carry paths or queries.
 - Custom or named providers that do not exactly match a Knowledge RPC provider require explicit provider selection. Missing agents or mismatched workspaces also require explicit scope selection.
 - Adds a live Healthy/Failing sidebar footer row, reusing the screen's health data.
 
