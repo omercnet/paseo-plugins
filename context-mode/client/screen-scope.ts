@@ -1,5 +1,7 @@
-import type { PaseoApi } from "@getpaseo/client";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { type ContextModeProvider, ContextModeProviderSchema } from "../shared/knowledge";
+
+type PaseoApi = PluginClientContext["paseo"];
 
 export type SurfaceTab = "savings" | "knowledge" | "setup";
 export type KnowledgeScope = {
