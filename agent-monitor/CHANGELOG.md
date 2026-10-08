@@ -10,6 +10,13 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [1.2.2](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v1.2.1...agent-monitor-v1.2.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **plugins:** ship OVERVIEW.md in published packages ([640f9a4](https://github.com/omercnet/paseo-plugins/commit/640f9a4d7bd6dbad226c4ee1ebaa199abfc62776))
+
 ## [1.2.1](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v1.2.0...agent-monitor-v1.2.1) (2026-10-07)
 
 
