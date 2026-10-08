@@ -390,7 +390,8 @@ export class OmpSubsessionProjector {
   }
   async replay(
     messages: readonly OmpMessage[],
-    runtimeSession: OmpRuntimeSession,
+    // Undefined replays the persisted journal only; history sessions have no live runtime to ask.
+    runtimeSession: OmpRuntimeSession | undefined,
     runtime: OmpRuntime,
     signal: AbortSignal,
   ): Promise<void> {
@@ -411,12 +412,14 @@ export class OmpSubsessionProjector {
         0,
       );
       let snapshots: OmpSubagentSnapshot[] = [];
-      try {
-        snapshots = await waitForReplay(runtimeSession.getSubagents(), signal);
-      } catch (error) {
-        if (signal.aborted) throw error;
+      if (runtimeSession) {
+        try {
+          snapshots = await waitForReplay(runtimeSession.getSubagents(), signal);
+        } catch (error) {
+          if (signal.aborted) throw error;
+        }
+        await this.replaySnapshots(snapshots, runtimeSession, runtime, visited, budget, signal);
       }
-      await this.replaySnapshots(snapshots, runtimeSession, runtime, visited, budget, signal);
       signal.throwIfAborted();
       this.reconcileSnapshots(snapshots);
       completed = true;
