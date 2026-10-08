@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.3.1...paseo-omp-v1.3.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **paseo-omp:** support Paseo 0.11.1 and archived history ([#296](https://github.com/omercnet/paseo-plugins/issues/296)) ([c89ea55](https://github.com/omercnet/paseo-plugins/commit/c89ea55d148c09250202506218fc940d37459ae2))
+
 ## [1.3.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.3.0...paseo-omp-v1.3.1) (2026-10-08)
 
 
