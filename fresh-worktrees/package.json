@@ -30,7 +30,8 @@
     "server",
     "client",
     "shared",
-    "paseo-plugin.json"
+    "paseo-plugin.json",
+    "OVERVIEW.md"
   ],
   "version": "2.2.0",
   "type": "module",

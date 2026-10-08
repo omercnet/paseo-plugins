@@ -32,7 +32,8 @@
     "scripts/replace-runtime.mjs",
     "server",
     "shared",
-    "paseo-plugin.json"
+    "paseo-plugin.json",
+    "OVERVIEW.md"
   ],
   "type": "module",
   "publishConfig": {

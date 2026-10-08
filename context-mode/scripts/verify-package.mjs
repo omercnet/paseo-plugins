@@ -6,6 +6,7 @@ const packageRoot = join(import.meta.dirname, "..");
 const topLevelFiles = [
   "LICENSE",
   "NOTICE",
+  "OVERVIEW.md",
   "README.md",
   "index.client.tsx",
   "index.server.ts",

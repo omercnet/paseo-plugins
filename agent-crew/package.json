@@ -36,7 +36,8 @@
     "server",
     "index.client.tsx",
     "index.server.ts",
-    "paseo-plugin.json"
+    "paseo-plugin.json",
+    "OVERVIEW.md"
   ],
   "scripts": {
     "check": "biome check .",
