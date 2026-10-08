@@ -204,6 +204,8 @@ describe("plugin server bundle", () => {
               workspaceId: string | null;
               provider: string;
               cwd: string;
+              reason?: string;
+              purpose?: string;
               env: Record<string, string>;
             };
           }) => unknown,
@@ -225,6 +227,46 @@ describe("plugin server bundle", () => {
               PASEO_AGENT_ID: "plugin-agent",
               PASEO_WORKSPACE_ID: "plugin-workspace",
             },
+          }),
+        );
+        // The same registered hook derives the history marker from the host's purpose only, and
+        // discards any caller-supplied value otherwise.
+        const identity = {
+          agentId: "plugin-agent",
+          workspaceId: "plugin-workspace",
+          provider: "omp-plugin",
+          cwd: "/workspace",
+        };
+        expect(
+          hook({
+            request: {
+              ...identity,
+              reason: "resume",
+              purpose: "history",
+              env: { PASEO_OMP_SESSION_PURPOSE: "spoofed" },
+            },
+          }),
+        ).toEqual(
+          expect.objectContaining({
+            env: {
+              PASEO_AGENT_ID: "plugin-agent",
+              PASEO_WORKSPACE_ID: "plugin-workspace",
+              PASEO_OMP_SESSION_PURPOSE: "history",
+            },
+          }),
+        );
+        expect(
+          hook({
+            request: {
+              ...identity,
+              reason: "resume",
+              purpose: "interactive",
+              env: { PASEO_OMP_SESSION_PURPOSE: "history" },
+            },
+          }),
+        ).toEqual(
+          expect.objectContaining({
+            env: { PASEO_AGENT_ID: "plugin-agent", PASEO_WORKSPACE_ID: "plugin-workspace" },
           }),
         );
         expect(

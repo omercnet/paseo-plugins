@@ -17,7 +17,7 @@ import { resolveListOmpSettings, resolveUpdateOmpSettings } from "./server/omp-s
 import { OmpOperationalFailureCollector } from "./server/operational-failure-diagnostics";
 import { withOmpStore } from "./server/paths";
 import { OmpProtocolViolationCollector } from "./server/protocol-violation-diagnostics";
-import { withOmpWorkspaceIdentity } from "./server/provider/host-tools";
+import { withOmpSessionOpenEnv } from "./server/provider/host-tools";
 import {
   createProfileOmpProvider,
   discoverOmpProfiles,
@@ -97,9 +97,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(openOmpMcpAuthorizationInPaseoBrowser, (input) =>
     resolveOpenOmpMcpAuthorizationInPaseoBrowser(input, browserAuthorizationRegistry),
   );
-  const removeIdentityHook = server.before("agent.session_open", ({ request }) => {
+  const removeSessionOpenHook = server.before("agent.session_open", ({ request }) => {
     if (request.provider !== "omp-plugin" && !request.provider.startsWith("omp-plugin-")) return;
-    return withOmpWorkspaceIdentity(request);
+    return withOmpSessionOpenEnv(request);
   });
   server.registerProvider(
     createOmpProvider({
@@ -111,6 +111,6 @@ export default function contribute(server: PluginServerContext) {
   );
   return () => {
     browserAuthorizationRegistry.clear();
-    removeIdentityHook();
+    removeSessionOpenHook();
   };
 }
