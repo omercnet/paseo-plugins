@@ -63,10 +63,16 @@ beforeEach(() => {
 });
 
 describe("shared browser sidebar footer row", () => {
-  it("registers nothing on hosts without addSidebarFooterItem", () => {
-    const addSidebarItem = vi.fn();
-    contributeSharedBrowserSidebar({ addSidebarItem } as never)();
-    expect(addSidebarItem).not.toHaveBeenCalled();
+  it("registers the footer row and returns its remover", () => {
+    const remove = vi.fn();
+    const addSidebarFooterItem = vi.fn((_item: { id: string }) => remove);
+    const cleanup = contributeSharedBrowserSidebar({ addSidebarFooterItem } as never);
+    expect(addSidebarFooterItem.mock.calls[0]?.[0]).toMatchObject({
+      id: "shared-browser-sessions",
+      title: "Shared Browser",
+    });
+    cleanup();
+    expect(remove).toHaveBeenCalledOnce();
   });
 
   it("hides the row while no browser session is open", () => {

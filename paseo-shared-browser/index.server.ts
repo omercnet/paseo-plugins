@@ -77,12 +77,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(resizeBrowserRpc, handleResizeBrowser);
   server.handle(applyDevicePresetRpc, handleApplyDevicePreset);
   server.handle(sendBrowserInputRpc, handleSendBrowserInput);
-  // OMP accepts session MCP servers from Paseo 0.11.0-beta.1, the release that added
-  // registerUsageSource; 0.9/0.10 reject agent creation when an OMP config carries MCP servers.
-  const ompAcceptsMcp = typeof server.registerUsageSource === "function";
   server.before("agent.create", async ({ request }) => {
     if (request.config.internal) return request;
-    if (request.config.provider === "omp" && !ompAcceptsMcp) return request;
     const ticket = randomBytes(32).toString("base64url");
     if (!(await issueTicketWithinDeadline(ticket))) return request;
     return {

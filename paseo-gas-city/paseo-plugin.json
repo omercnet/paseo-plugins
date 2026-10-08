@@ -1,5 +1,5 @@
 {
   "id": "gas-city",
   "description": "A Paseo control plane for observing and operating Gas City supervisors.",
-  "requirements": { "paseo": "^0.9.0 || ^0.10.0 || ^0.11.0" }
+  "requirements": { "paseo": "^0.11.0" }
 }

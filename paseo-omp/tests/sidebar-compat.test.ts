@@ -33,7 +33,6 @@ import {
   hubTrailing,
   loadHubSnapshot,
   summarizeHubWorkspaces,
-  supportsScreens,
   workspaceDirectories,
 } from "../client/sidebar-compat";
 import { registerConfigAndHub } from "../index.client";
@@ -58,69 +57,22 @@ function hubProcess(name: string, state: string, exitCode: number | null = null)
   };
 }
 
-function legacyHost() {
+function screenHost() {
   return {
-    addSurface: vi.fn(() => vi.fn()),
-    addSidebarItem: vi.fn(() => vi.fn()),
+    addScreen: vi.fn((_screen: { id: string }) => vi.fn()),
+    addSidebarHeaderItem: vi.fn((_item: { id: string }) => vi.fn()),
+    openScreen: vi.fn(),
     rpc: vi.fn(),
     paseo: { workspaces: { list: vi.fn() } },
   };
 }
 
-type Legacy = Parameters<typeof registerConfigAndHub>[0];
+type Host = Parameters<typeof registerConfigAndHub>[0];
 
-describe("0.9/0.10 fallback", () => {
-  test("keeps the static sidebar row and surface when screens are unavailable", () => {
-    const host = legacyHost();
-    const cleanup = registerConfigAndHub(
-      host as unknown as Legacy,
-      () => null,
-      () => {},
-    );
-    expect(host.addSurface).toHaveBeenCalledWith("config", expect.any(Function));
-    expect(host.addSidebarItem).toHaveBeenCalledWith({
-      id: "config",
-      title: "OMP",
-      icon: "Settings",
-      surface: "config",
-    });
-    cleanup();
-    expect(host.addSurface.mock.results[0].value).toHaveBeenCalledOnce();
-    expect(host.addSidebarItem.mock.results[0].value).toHaveBeenCalledOnce();
-  });
-
-  test("a partial 0.11 surface (no openScreen) still takes the legacy path", () => {
-    const host = { ...legacyHost(), addScreen: vi.fn(), addSidebarHeaderItem: vi.fn() };
-    expect(supportsScreens(host)).toBe(false);
-    registerConfigAndHub(
-      host as unknown as Legacy,
-      () => null,
-      () => {},
-    );
-    expect(host.addScreen).not.toHaveBeenCalled();
-    expect(host.addSurface).toHaveBeenCalledOnce();
-  });
-});
-
-describe("0.11 screens", () => {
-  function screenHost() {
-    return {
-      ...legacyHost(),
-      addScreen: vi.fn(() => vi.fn()),
-      addSidebarHeaderItem: vi.fn((_item: { id: string }) => vi.fn()),
-      openScreen: vi.fn(),
-    };
-  }
-
+describe("config and hub navigation", () => {
   test("registers the config screen under the legacy id plus config and hub rows", () => {
     const host = screenHost();
-    const cleanup = registerConfigAndHub(
-      host as unknown as Legacy,
-      () => null,
-      () => {},
-    );
-    expect(host.addSurface).not.toHaveBeenCalled();
-    expect(host.addSidebarItem).not.toHaveBeenCalled();
+    const cleanup = registerConfigAndHub(host as unknown as Host, () => {});
     expect(host.addScreen).toHaveBeenCalledWith(
       expect.objectContaining({ id: "config", title: configScreenTitle }),
     );
@@ -149,11 +101,7 @@ describe("0.11 screens", () => {
     host.rpc.mockImplementation(async (_contract, { cwd }) => ({
       processes: cwd === "/a" ? [hubProcess("web", "running")] : [],
     }));
-    registerConfigAndHub(
-      host as unknown as Legacy,
-      () => null,
-      () => {},
-    );
+    registerConfigAndHub(host as unknown as Host, () => {});
     await expect(hubLoaders.at(-1)?.()).resolves.toEqual({
       workspaces: [
         { cwd: "/a", processes: [hubProcess("web", "running")] },
@@ -170,11 +118,7 @@ describe("0.11 screens", () => {
 
   test("store changes open the screen with params, except re-selecting the current store", () => {
     const host = screenHost();
-    registerConfigAndHub(
-      host as unknown as Legacy,
-      () => null,
-      () => {},
-    );
+    registerConfigAndHub(host as unknown as Host, () => {});
     const [{ Component }] = host.addScreen.mock.calls[0] as unknown as [
       { Component: (props: { params: Record<string, string> }) => ReactElement },
     ];

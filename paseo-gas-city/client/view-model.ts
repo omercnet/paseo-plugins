@@ -334,18 +334,6 @@ export function cityScreenTitle(params: Record<string, string>): string {
   return city ? `${city} · Gas City` : "Gas City";
 }
 
-export interface ScreenApi {
-  addScreen?: unknown;
-  addSidebarHeaderItem?: unknown;
-}
-
-/** True on Paseo 0.11+, where screens and sidebar header items exist. */
-export function supportsScreens(client: ScreenApi): boolean {
-  return (
-    typeof client.addScreen === "function" && typeof client.addSidebarHeaderItem === "function"
-  );
-}
-
 export type SupervisorTone = "loading" | "healthy" | "warning" | "unavailable" | "unconfigured";
 
 export interface SupervisorHealth {

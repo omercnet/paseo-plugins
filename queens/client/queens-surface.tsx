@@ -110,10 +110,6 @@ export function observeRunningAgentCount(
   };
 }
 
-export function PaseoQueensSurface(props: PluginSurfaceProps) {
-  return <QueensGame key={props.host.id} {...props} />;
-}
-
 export function PaseoQueensScreen(props: PluginScreenProps) {
   return (
     <QueensGame
