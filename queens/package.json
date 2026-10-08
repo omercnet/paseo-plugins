@@ -35,7 +35,8 @@
     "shared",
     "server",
     "scripts",
-    "paseo-plugin.json"
+    "paseo-plugin.json",
+    "OVERVIEW.md"
   ],
   "scripts": {
     "check": "biome check .",

@@ -33,7 +33,8 @@
     "client",
     "paseo-plugin.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "OVERVIEW.md"
   ],
   "scripts": {
     "check": "biome check .",
