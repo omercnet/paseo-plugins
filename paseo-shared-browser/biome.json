@@ -1,7 +1,14 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
   "files": {
-    "includes": ["**", "!!node_modules", "!!coverage", "!!dist", "!!CHANGELOG.md"]
+    "includes": [
+      "**",
+      "!!node_modules",
+      "!!npm-shrinkwrap.json",
+      "!!coverage",
+      "!!dist",
+      "!!CHANGELOG.md"
+    ]
   },
   "formatter": {
     "enabled": true,

@@ -38,10 +38,11 @@
     "server",
     "shared",
     "paseo-plugin.json",
-    "OVERVIEW.md"
+    "OVERVIEW.md",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check . && node ../scripts/shrinkwrap.mjs --check .",
     "check:write": "biome check --write .",
     "test": "vitest run",
     "test:coverage": "PASEO_OMP_COVERAGE=1 vitest run --coverage",

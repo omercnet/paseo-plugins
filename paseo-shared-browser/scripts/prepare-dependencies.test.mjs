@@ -30,7 +30,7 @@ test("stages catalog dependencies for a Git checkout", (t) => {
   assert.deepEqual(calls, [
     [
       process.platform === "win32" ? "npm.cmd" : "npm",
-      ["install", "--omit=dev", "--ignore-scripts", "--no-package-lock", "--workspaces=false"],
+      ["ci", "--omit=dev", "--ignore-scripts", "--workspaces=false"],
       { cwd: root, stdio: "inherit" },
     ],
   ]);

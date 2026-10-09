@@ -1,7 +1,13 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
   "files": {
-    "includes": ["**", "!!node_modules", "!!coverage", "!!paseo-plugin.d.ts"]
+    "includes": [
+      "**",
+      "!!node_modules",
+      "!!npm-shrinkwrap.json",
+      "!!coverage",
+      "!!paseo-plugin.d.ts"
+    ]
   },
   "formatter": {
     "enabled": true,
