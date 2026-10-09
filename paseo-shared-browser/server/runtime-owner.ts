@@ -1,20 +1,35 @@
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { browserGestureKeySchema } from "../shared/browser";
 import { AgentBrowserRuntime, type BrowserViewport } from "./agent-browser-runtime";
 import { resolveBrowserRuntimeRoot } from "./runtime-path";
 import type { JsonValue } from "./runtime-protocol";
 import type { RuntimeOwner } from "./supervisor";
+import {
+  createPrivateVirtualDisplay,
+  PrivateDisplayError,
+  type PrivateVirtualDisplay,
+} from "./virtual-display";
 
 const DEFAULT_BROWSER_URL = "https://example.com/";
 
 interface OwnedRuntime {
   runtimeId: string;
   runtime: AgentBrowserRuntime;
+  display: PrivateVirtualDisplay | null;
+  /** Bounded, secret-free reason an opted-in private display is not in use. */
+  displayNotice: string | null;
 }
 interface RuntimeOwnerOptions {
   initialUrl?: string;
   headed?: boolean;
+  /**
+   * Trusted opt-in for a private Linux Xvfb display. When omitted, each runtime creation reads
+   * PASEO_SHARED_BROWSER_XVFB from this process's environment and enables it only for "1".
+   * Explicit false overrides the environment.
+   */
+  virtualDisplay?: boolean;
 }
 
 function paseoHome(): string {
@@ -48,26 +63,74 @@ export async function createRuntimeOwner(
   return {
     async create(workspaceId) {
       const hash = createHash("sha256").update(workspaceId).digest("hex");
-      const runtime = new AgentBrowserRuntime({
-        binaryPath,
-        executablePath,
-        profilePath: join(root, "profiles", hash),
-        ipcDirectory,
-        session: `ws-${hash.slice(0, 16)}`,
-        initialUrl: options.initialUrl ?? DEFAULT_BROWSER_URL,
-        headed: options.headed ?? false,
-      });
-      await runtime.launch();
-      return { runtimeId: randomUUID(), runtime };
+      // Explicit headed mode uses the caller's real display. Hidden Linux mode
+      // gets a private virtual mouse so native pointer media survive emulation.
+      let display: PrivateVirtualDisplay | null = null;
+      let displayNotice: string | null = null;
+      const wantsDisplay = options.virtualDisplay ?? process.env.PASEO_SHARED_BROWSER_XVFB === "1";
+      if (!options.headed && wantsDisplay) {
+        try {
+          display = await createPrivateVirtualDisplay();
+          if (!display) displayNotice = "Private display unavailable: Xvfb was not found.";
+        } catch (error) {
+          // The helper has finished cleanup and no Chromium was constructed yet.
+          displayNotice = `Private display unavailable: ${
+            error instanceof PrivateDisplayError ? error.message : "unexpected startup failure"
+          }.`;
+        }
+        if (displayNotice) {
+          // The detached supervisor discards stdio; the notice also reaches the viewer state.
+          console.warn(`[shared-browser] ${displayNotice} Using headless mode.`);
+        }
+      }
+      let runtime: AgentBrowserRuntime | null = null;
+      try {
+        runtime = new AgentBrowserRuntime({
+          binaryPath,
+          executablePath,
+          profilePath: join(root, "profiles", hash),
+          ipcDirectory,
+          session: `ws-${hash.slice(0, 16)}`,
+          initialUrl: options.initialUrl ?? DEFAULT_BROWSER_URL,
+          headed: display ? true : (options.headed ?? false),
+          ...(display ? { launchEnvironment: display.launchEnvironment } : {}),
+        });
+        await runtime.launch();
+        display?.assertAvailable();
+        return { runtimeId: randomUUID(), runtime, display, displayNotice };
+      } catch (error) {
+        let cleanupFailure: unknown = null;
+        try {
+          await runtime?.shutdown();
+        } catch (failure) {
+          cleanupFailure = failure;
+        } finally {
+          await display?.stop();
+        }
+        // An unconfirmed cleanup must not hide why creation failed.
+        if (cleanupFailure)
+          throw new AggregateError(
+            [error, cleanupFailure],
+            `Runtime creation failed (${error instanceof Error ? error.message : String(error)}) and its cleanup was not confirmed`,
+          );
+        throw error;
+      }
     },
     async request(owned, operation, input) {
+      owned.display?.assertAvailable();
       const data =
         input && typeof input === "object" && !Array.isArray(input)
           ? (input as Record<string, JsonValue>)
           : {};
+      const gestureId = typeof data.gestureId === "string" ? data.gestureId : undefined;
       switch (operation) {
-        case "identity":
-          return owned.runtime.identity() as unknown as JsonValue;
+        case "identity": {
+          const identity = await owned.runtime.identity();
+          return {
+            ...identity,
+            ...(owned.displayNotice ? { displayNotice: owned.displayNotice } : {}),
+          } as unknown as JsonValue;
+        }
         case "state":
           return owned.runtime.state() as unknown as JsonValue;
         case "navigate":
@@ -98,7 +161,7 @@ export async function createRuntimeOwner(
             Number(data.waitMs),
           )) as unknown as JsonValue;
         case "mouse.move":
-          await owned.runtime.mouseMove(Number(data.x), Number(data.y));
+          await owned.runtime.mouseMove(Number(data.x), Number(data.y), gestureId);
           return null;
         case "mouse.down":
           await owned.runtime.mouseDown(
@@ -106,6 +169,7 @@ export async function createRuntimeOwner(
             Number(data.y),
             String(data.button) as "left" | "middle" | "right",
             Number(data.clickCount),
+            gestureId,
           );
           return null;
         case "mouse.up":
@@ -114,6 +178,7 @@ export async function createRuntimeOwner(
             Number(data.y),
             String(data.button) as "left" | "middle" | "right",
             Number(data.clickCount),
+            gestureId,
           );
           return null;
         case "mouse.wheel":
@@ -122,23 +187,97 @@ export async function createRuntimeOwner(
             Number(data.y),
             Number(data.deltaX),
             Number(data.deltaY),
+            gestureId,
           );
           return null;
+        case "mouse.leave":
+          if (!gestureId) throw new Error("Gesture identity is required");
+          await owned.runtime.mouseLeave(gestureId);
+          return null;
+        case "input.begin":
+          if (!gestureId) throw new Error("Gesture identity is required");
+          await owned.runtime.beginLiveInput(gestureId);
+          return null;
+        case "input.check":
+          if (!gestureId) throw new Error("Gesture identity is required");
+          await owned.runtime.assertLiveInput(gestureId);
+          return null;
+        case "input.end":
+          if (!gestureId) throw new Error("Gesture identity is required");
+          await owned.runtime.endLiveInput(gestureId);
+          return null;
+        case "cursor":
+          if (!gestureId) throw new Error("Gesture identity is required");
+          return owned.runtime.cursorAt(Number(data.x), Number(data.y), gestureId);
+        case "touch": {
+          if (!gestureId || !Array.isArray(data.points) || data.points.length > 5)
+            throw new Error("Invalid touch input");
+          const points = data.points.map((value) => {
+            if (!value || typeof value !== "object" || Array.isArray(value))
+              throw new Error("Invalid touch point");
+            const id = value.id;
+            if (
+              typeof id !== "number" ||
+              typeof value.x !== "number" ||
+              typeof value.y !== "number"
+            )
+              throw new Error("Invalid touch point numbers");
+            if (!Number.isSafeInteger(id) || id < 0 || id > 2_147_483_647)
+              throw new Error("Invalid touch identifier");
+            return { x: Number(value.x), y: Number(value.y), id };
+          });
+          if (new Set(points.map((point) => point.id)).size !== points.length)
+            throw new Error("Duplicate touch identifiers");
+          const type = data.type;
+          if (type !== "start" && type !== "move" && type !== "end" && type !== "cancel")
+            throw new Error("Invalid touch phase");
+          if ((type === "end" || type === "cancel") !== (points.length === 0))
+            throw new Error("Invalid touch phase points");
+          const nativeType =
+            type === "start"
+              ? "touchStart"
+              : type === "move"
+                ? "touchMove"
+                : type === "end"
+                  ? "touchEnd"
+                  : "touchCancel";
+          await owned.runtime.touch(nativeType, points, gestureId);
+          return null;
+        }
+        case "input.key":
+          if (!gestureId) throw new Error("Gesture identity is required");
+          await owned.runtime.dispatchKey(browserGestureKeySchema.parse(data.event), gestureId);
+          return null;
+        case "input.text":
+          if (
+            !gestureId ||
+            typeof data.text !== "string" ||
+            data.text.length < 1 ||
+            data.text.length > 16_000
+          ) {
+            throw new Error("Invalid committed text input");
+          }
+          await owned.runtime.insertText(data.text, gestureId);
+          return null;
         case "text.insert":
-          await owned.runtime.insertText(String(data.text));
+          await owned.runtime.insertText(String(data.text), gestureId);
           return null;
         case "key.down":
-          await owned.runtime.keyDown(String(data.key));
+          await owned.runtime.keyDown(String(data.key), String(data.key), gestureId);
           return null;
         case "key.up":
-          await owned.runtime.keyUp(String(data.key));
+          await owned.runtime.keyUp(String(data.key), String(data.key), gestureId);
           return null;
         default:
           throw new Error(`Unknown browser runtime operation: ${operation}`);
       }
     },
     async stop(owned) {
-      await owned.runtime.shutdown();
+      try {
+        await owned.runtime.shutdown();
+      } finally {
+        await owned.display?.stop();
+      }
     },
   };
 }

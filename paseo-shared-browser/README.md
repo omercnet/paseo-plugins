@@ -38,7 +38,8 @@ organization names.
   `AGENT_BROWSER_IDLE_TIMEOUT_MS=0`, `AGENT_BROWSER_STREAM_PORT=0`, and
   `AGENT_BROWSER_NO_AUTO_DIALOG=1` itself.
 - Frames stream from Chromium through CDP `Page.startScreencast`, with a bounded screenshot fallback.
-  Remote input supports tap, double-tap, right-click, drag, swipe scrolling, text, and special keys.
+  Remote input supports mouse hover, wheel scrolling, continuous dragging, native touch pan/pinch,
+  tap, double-tap, right-click, text, and special keys.
 - Device presets for Desktop Chrome, iPhone 15 Pro, Pixel 7, and iPad Pro 11 change Chromium's
   viewport, device pixel ratio, touch behavior, platform, and user agent. A phone can view and
   control the shared browser, but the rendered browser remains Chromium. An iPhone preset is mobile
@@ -137,11 +138,90 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 
 ## Controls
 
-- Toolbar: back, forward, reload, address bar, and device emulation.
+- Toolbar: back, forward, reload, address bar, a combined monitor menu, mobile emulation toggle
+  and a vertical-dots browser actions menu. Icon controls expose their action name
+  as a hover tooltip on desktop/web and retain native accessibility labels.
+- Custom viewports support 320 to 2560 pixels wide and 480 to 2560 pixels high. Applying one
+  changes only the dimensions; the active profile's mobile mode, touch, user agent and capture
+  density are kept. Invalid sizes
+  show their error inside the device dialog; a successful Apply closes it.
+- Desktop presets also include 1280 × 800 (16:10) and 1280 × 1280 (1:1).
+- Pixel 7 (high resolution) keeps the same 412 × 839 phone layout and input coordinates,
+  with a sharper 824 × 1678 capture.
+- Desktop presets include 1920 × 1080 and 2560 × 1440 (16:9), 1920 × 1200 and
+  2560 × 1600 (16:10), and 1920 × 1920 and 2560 × 2560 (1:1).
+- Desktop choices use height names such as 720p, 1080p, 1200p and 1440p, with
+  dimensions shown alongside. Square choices name their width explicitly.
+  The 1440-wide choices are 1440 × 810, 1440 × 900 and 1440 × 1440.
+- The Resolution and quality menu groups desktop choices by 16:9, 16:10 and 1:1,
+  then mobile. Each group sorts by width. Filled stars mark favorites; the monitor
+  menu provides favorites in that same grouped order and access to the full
+  resolution and quality list.
+- Monitor and browser actions open compact anchored menus rather than dialogs. Menus stay
+  within the pane, scroll long lists, and dismiss with an outside press, Escape or native Back.
+- The monitor menu offers **Fit to panel** (default) and **Actual size (100%)**. Actual size
+  uses browser layout pixels, not the larger JPEG dimensions of sharper phone captures.
+  This choice affects only the current viewer, without resizing the shared browser.
+  Desktop local scrollbars reveal overflow while wheel events on a controlled frame go to
+  the remote page. Phone viewers can pan while observing; controlling sends swipes to the
+  page instead. Fitting images stay centered without empty scroll ranges; a scrollbar on
+  one axis does not force one on the other. Returning to Fit resets local offsets without
+  reloading the page or image.
+- Quality choices Low, Medium and High request JPEG quality 40, 65 and 85 respectively (Medium is the default).
+  Detailed large views use more bandwidth; frames reduce quality further only if they
+  exceed the 800 KB frame limit. Preferences persist on the connected Paseo host.
+- Captures refresh after input. A stalled screencast falls back to a fresh screenshot instead
+  of indefinitely showing an old image.
+- Captures use individual JPEG frames. The transport label identifies streamed
+  frames or screenshot fallback. Encoded video and source caching are separate
+  transport work.
+- Actual JPEG dimensions must match the selected capture resolution before a frame is accepted.
+  The fallback captures the complete visible viewport, preserves scroll position, and accounts
+  for device pixel ratio and capture scale so inputs still use the original layout coordinates.
+- The last decoded frame stays visible while its replacement loads, with native image fading
+  disabled. Input targets the displayed frame, and obsolete image callbacks cannot replace it.
 - Status row: session state, viewer count, controller, and lease expiry.
+- Returning after viewer expiry reattaches viewing once automatically while preserving the
+  page. Expired control is cleared; take control again to send input. Expected expiry is not
+  shown as an action failure; a failed reattachment still offers manual retry.
+- Clicking a link or submitting a form may navigate before its input reply arrives. A completed
+  input returns the new viewing state without a false failure or repeating the action.
+  Replaced controls, targets and uncertain sends remain rejected.
 - Human control: **Take control**, **Release**, and **Take over** for explicit handoff. Agent MCP
   calls have no forced-takeover operation.
-- Mobile: swipe scrolls by default; pointer and keyboard options open as bottom sheets.
+- With control, mouse movement forwards real hover effects and standard browser cursor changes.
+  Automatic cursors resolve selectable text to an I-beam while respecting explicit
+  cursor styles and non-selectable areas.
+  Wheel scrolling stays inside the browser canvas; held drags update before release. Leaving the
+  canvas clears remote hover, while dragging beyond its edges still releases the held button.
+- Native touch forwards active fingers continuously, including pan and pinch on desktop and mobile
+  presets. Physical mouse buttons and double clicks retain their natural actions; touch never
+  changes into a synthetic mouse gesture.
+  Losing control, changing page or resizing cancels held input; old contacts must lift before a
+  fresh touch can target the replacement page. No uncertain input is replayed after a failure.
+- Desktop viewports show native scrollbars. Dragging a scrollbar thumb scrolls the page
+  continuously before release. Wheel scrolling and touch panning remain available;
+  mobile emulation retains its normal mobile scrollbar behavior.
+- Click the controlled canvas to type directly on desktop and web. Shortcuts, repeat,
+  modifier clicks and committed composition text are forwarded; other Paseo inputs stay local.
+- The address-bar Browser menu contains a Send keys submenu and reconnect actions. On desktop,
+  keys open beside the menu; on compact screens, Back returns to the parent menu. Extra keys
+  are no longer shown below the canvas or in a separate dialog.
+- On native phones and compact web layouts, **Compose text** in the Browser menu opens a visible
+  local draft. **Done** inserts it once into the focused page field; it requires human control and
+  is dropped if control or the page changes. There is no live software-keyboard relay. Phone
+  keyboard behavior still needs physical-device testing.
+- While the Resolution and quality dialog or a toolbar menu is open, canvas input is not
+  forwarded and held gestures are cancelled.
+- Local plain-text paste is forwarded; remote copy/cut are not synchronized to the local clipboard.
+- The address-bar mobile toggle changes shared emulation while preserving the current display
+  dimensions and capture density. Choose a resolution explicitly to change the display.
+  Your device default applies the first time you take control, never while observing, and
+  also preserves the current display. Narrow desktop layouts do not count as phones.
+- The mobile address field keeps a full text line with compact padding. Read-only addresses
+  stay legible while observing; taking control is still required to edit or navigate.
+- Mode changes preserve the current page and unsaved fields. Sites that select layouts only
+  at page load may need an explicit Reload. There are no click, swipe or scroll mode controls.
 
 ## Security boundary
 
@@ -171,18 +251,62 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 ```bash
 bun install
 bun run typecheck
-bun run lint
-bun run format:check
+bun run check
 bun run test:unit
-bun run prepare:runtime
+PASEO_HOME="$(mktemp -d)" bun run prepare:runtime
 ```
 
-`bun run test:smoke` launches the configured real Chromium runtime and exercises two viewers,
+Treat the default Paseo daemon and profile as live user state. Use an isolated
+`PASEO_HOME` for runtime preparation and tests; do not run development lifecycle
+commands against the default daemon. Keep the prepared home available for smoke
+tests so they can resolve its runtime assets.
+
+`PASEO_HOME=<prepared-test-home> bun run test:smoke` launches the configured real Chromium runtime and exercises two viewers,
 control handoff, reconnect, stale-frame rejection, viewport changes, device emulation, profile
 persistence, and archive teardown.
 
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-Both the Paseo daemon and app must satisfy `^0.9.0 || ^0.10.0 || ^0.11.0`. The client surface uses React Native primitives
-and works in desktop, web, iOS, and Android Paseo clients.
+Both the Paseo daemon and app must satisfy the version range in `paseo-plugin.json`.
+The upstream 0.9, 0.10 and stable 0.11 ranges and the tested `0.11.0-beta.3` allowance
+are retained. The sidebar entry appears only on clients that expose its API.
+The client surface uses React Native primitives and works in desktop, web, iOS,
+and Android Paseo clients.
+
+A wheel capture can finish decoding after input revoked its frame token. The server
+returns a known non-admission receipt before creating a new channel; the canvas waits
+for another decoded frame before admitting that still-unsent gesture. Recovery allows
+up to three admission attempts within one four-second decoded-frame wait budget.
+Published input, unknown outcomes, expired leases, and replaced contexts are never retried.
+
+
+## Optional Linux desktop hover
+
+Hidden browsers are headless by default. To expose desktop pointer and hover
+behavior on Linux, opt in by setting `PASEO_SHARED_BROWSER_XVFB=1` (exactly `1`;
+any other value stays headless) in the environment of the Shared Browser
+supervisor process. The supervisor is a detached process that inherits the
+daemon environment when it is spawned, so changing the variable affects it only
+after that supervisor process restarts. Within a running supervisor the variable
+is read each time a workspace browser runtime is created; existing runtimes keep
+their mode. A trusted embedding can pass `virtualDisplay: true | false` to
+`createRuntimeOwner`; an explicit `false` overrides the variable.
+
+When opted in and `/usr/bin/Xvfb` exists, each hidden Linux browser uses its own
+private, authenticated display. No visible window opens and no TCP or pathname
+listener is created. The display is stopped with its browser. Headed mode and
+non-Linux platforms are unchanged. The plugin never installs Xvfb or changes host
+display settings.
+
+If the display cannot start, the browser falls back to headless and the viewer
+shows a short notice (for example "Private display unavailable: Xvfb was not
+found."). The notice never contains paths or credentials. If an opted-in display
+dies while running, requests fail and the viewer shows an error; use **Reconnect
+viewer** to replace the browser. Reconnect discards the old runtime and starts a
+new one, so the page reloads from its initial URL, and old viewer, control and
+input attachments are rejected. Nothing is replayed automatically.
+
+Known limitation: if the supervisor is killed with SIGKILL it cannot stop its
+child, so an orphaned Xvfb process and its private authority directory under the
+temporary directory can remain until removed manually.
