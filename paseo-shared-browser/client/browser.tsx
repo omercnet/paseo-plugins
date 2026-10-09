@@ -1,26 +1,22 @@
+/**
+ * Workspace browser panel orchestration: viewer/control ownership, current
+ * decoded receipts, media handoff and menu actions. Native/DOM forwarding and
+ * presentation models live in focused counterpart hooks; this module never
+ * replays published mutations or substitutes visible pixels for input authority.
+ */
+import { type PluginWorkspacePanelProps, useRpc } from "@getpaseo/plugin/client";
+import { Icon, Modal } from "@getpaseo/plugin/client/react-native";
+import { useQuery } from "@tanstack/react-query";
 import {
-  type PluginClientContext,
-  type PluginWorkspacePanelProps,
-  useRpc,
-} from "@getpaseo/plugin/client";
-import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  type GestureResponderEvent,
-  Image,
-  type LayoutChangeEvent,
-  PanResponder,
-  Pressable,
-  type StyleProp,
-  StyleSheet,
-  Text,
-  type TextInputProps,
-  type TextStyle,
-  View,
-  type ViewStyle,
-} from "react-native";
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { type LayoutChangeEvent, Text, View } from "react-native";
 import {
   acquireControlRpc,
   applyDevicePresetRpc,
@@ -28,73 +24,72 @@ import {
   type BrowserFrame,
   type BrowserInputEvent,
   type BrowserState,
+  beginBrowserGestureRpc,
   captureBrowserRpc,
-  containedRect,
-  createImageSizeLoader,
   DEVICE_PRESETS,
   type DevicePresetId,
   detachBrowserRpc,
   didBrowserRuntimeRestart,
+  endBrowserGestureRpc,
   isBrowserStateCurrent,
-  listOpenBrowserWorkspacesRpc,
   MAX_VIEWPORT,
   MIN_VIEWPORT,
   navigateBrowserRpc,
   releaseControlRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
-  toViewportPoint,
+  setCaptureDensityRpc,
+  updateBrowserGestureRpc,
 } from "../shared/browser";
-import { FrameLifecycle } from "./frame-lifecycle";
+import type { BrowserFrameAuthority } from "../shared/browser-video";
+import { groupResolutionPresets } from "../shared/resolution-menu";
+import { liveInputAllowed } from "./browser-canvas-input";
+import { type BrowserCanvasDisplayMode, getBrowserCanvasLayout } from "./browser-canvas-layout";
+import { BrowserCanvasViewport } from "./browser-canvas-viewport";
+import {
+  CanvasPlaceholder,
+  ChromeIconButton,
+  ControlButton,
+  ErrorNotice,
+  Field,
+} from "./browser-chrome";
+import { ComposeTextControls } from "./browser-compose-controls";
+import { type EmulationSelection, matchingResolutionPresetId } from "./browser-emulation-mode";
+import type { FrameCandidate } from "./browser-frame-buffer";
+import { BrowserFrameImage } from "./browser-frame-image";
+import { createStyles, DIMENSION, SPACE } from "./browser-panel-styles";
+import { BrowserResolutionPicker } from "./browser-resolution-picker";
+import {
+  BrowserMenuHeading,
+  BrowserMenuItem,
+  BrowserMenuSeparator,
+  BrowserToolbarMenu,
+} from "./browser-toolbar-menu";
+import { BrowserVideoSurface } from "./browser-video-surface";
+import { isExpiredBrowserViewerError } from "./browser-viewer-recovery";
+import { createFrameLifecycle } from "./frame-lifecycle";
+import { useBrowserCanvasInput } from "./use-browser-canvas-input";
+import { useBrowserCaptureDensity } from "./use-browser-capture-density";
+import { useBrowserEmulationMode } from "./use-browser-emulation-mode";
+import { useBrowserFrameBuffer } from "./use-browser-frame-buffer";
+import { useBrowserImageCapture } from "./use-browser-image-capture";
+import { useBrowserScopedMutation } from "./use-browser-scoped-mutation";
+import { useBrowserVideo } from "./use-browser-video";
+import { useBrowserViewerRecovery } from "./use-browser-viewer-recovery";
+import { useResolutionFavorites } from "./use-resolution-favorites";
 
-const SPACE = {
-  xxs: 2,
-  xs: 4,
-  sm: 8,
-  md: 12,
-  lg: 16,
-} as const;
-const RADIUS = { sm: 6, md: 8, lg: 10 } as const;
-const TYPE = { caption: 11, body: 13, title: 14 } as const;
-const DIMENSION = {
-  control: 34,
-  touch: 44,
-  pad: 60,
-  icon: 15,
-  addressCompact: 120,
-  addressRegular: 220,
-  canvasCompact: 220,
-  canvasRegular: 320,
-  helperMax: 420,
-  viewportField: 72,
-  typeField: 180,
-  screenRadius: 20,
-} as const;
-const DRAG_THRESHOLD = 6;
-const SCROLL_STEP = 520;
-const CAPTURE_INTERVAL_READY = 250;
-const CAPTURE_INTERVAL_WAITING = 1_500;
+// Preserve the existing contribution entry/test import while ownership lives in a focused module.
+export { contributeSharedBrowserClient } from "./browser-client-presence";
+
 const MAX_VIEWER_LABEL_LENGTH = 64;
-const PILL_PRESENCE_POLL_MS = 2_000;
-const AGENT_DIRECTORY_PAGE_LIMIT = 200;
 const MAX_URL_LENGTH = 8_192;
-const MAX_TEXT_LENGTH = 4_000;
 const BYTES_PER_KIBIBYTE = 1_024;
-const MAX_SCROLL_DELTA = 4_000;
 
-type Theme = PluginWorkspacePanelProps["theme"];
-type InteractionMode = "click" | "double" | "right";
-type SwipeMode = "scroll" | "drag";
 type SpecialKey = Extract<BrowserInputEvent, { kind: "key" }>["key"];
 
 interface Size {
   width: number;
   height: number;
-}
-
-interface DisplayPoint {
-  x: number;
-  y: number;
 }
 
 const SPECIAL_KEYS: readonly { key: SpecialKey; label: string }[] = [
@@ -137,833 +132,32 @@ function hasUnknownMutationOutcome(error: unknown): boolean {
   return dispatched && /(transport|connection|timeout)/.test(code || name.toLowerCase());
 }
 
-function isFrameCurrent(frame: BrowserFrame, state: BrowserState): boolean {
+/** A painted document may remain visible within the same source and geometry. */
+function isFrameDisplayCurrent(frame: BrowserFrameAuthority, state: BrowserState): boolean {
+  return Boolean(
+    frame.runtimeId &&
+      state.runtimeId &&
+      frame.captureEpoch !== undefined &&
+      state.bridgeEpoch !== undefined &&
+      frame.sessionId === state.sessionId &&
+      frame.runtimeId === state.runtimeId &&
+      frame.captureEpoch === state.bridgeEpoch &&
+      frame.viewportGeneration === state.viewportGeneration,
+  );
+}
+
+function isFrameCurrent(frame: BrowserFrameAuthority, state: BrowserState): boolean {
   return (
     frame.sessionId === state.sessionId &&
     (!frame.runtimeId || !state.runtimeId || frame.runtimeId === state.runtimeId) &&
+    (frame.captureEpoch === undefined ||
+      state.bridgeEpoch === undefined ||
+      frame.captureEpoch === state.bridgeEpoch) &&
     frame.navigationGeneration === state.navigationGeneration &&
     frame.viewportGeneration === state.viewportGeneration
   );
 }
 
-function clampScrollDelta(delta: number): number {
-  return Math.max(-MAX_SCROLL_DELTA, Math.min(MAX_SCROLL_DELTA, Math.round(delta)));
-}
-
-function createStyles(theme: Theme, compact: boolean) {
-  return StyleSheet.create({
-    screen: {
-      flex: 1,
-      minHeight: 0,
-      backgroundColor: theme.colors.surface0,
-    },
-    statusRow: {
-      minHeight: 30,
-      paddingHorizontal: SPACE.sm,
-      paddingVertical: SPACE.xxs,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: SPACE.sm,
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
-      backgroundColor: theme.colors.surface0,
-    },
-    statusSummary: {
-      minWidth: 0,
-      flex: 1,
-      flexDirection: "row",
-      alignItems: "center",
-      flexWrap: "wrap",
-      gap: SPACE.sm,
-    },
-    statusDot: {
-      width: SPACE.sm,
-      height: SPACE.sm,
-      borderRadius: RADIUS.sm,
-    },
-    statusText: {
-      color: theme.colors.foreground,
-      fontSize: TYPE.body,
-      fontWeight: "600",
-    },
-    mutedText: {
-      color: theme.colors.foregroundMuted,
-      fontSize: TYPE.caption,
-    },
-    controllerText: {
-      color: theme.colors.foregroundMuted,
-      fontSize: TYPE.caption,
-      flexShrink: 1,
-    },
-    actionRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.xs,
-    },
-    chrome: {
-      minHeight: 40,
-      paddingHorizontal: SPACE.sm,
-      paddingVertical: SPACE.xs,
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
-      backgroundColor: theme.colors.surface0,
-    },
-    addressRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.xs,
-    },
-    addressInput: {
-      flex: 1,
-      minWidth: compact ? DIMENSION.addressCompact : DIMENSION.addressRegular,
-    },
-    chromeAddressInput: {
-      height: 28,
-      borderRadius: RADIUS.md,
-      backgroundColor: theme.colors.surface1,
-    },
-    chromeIconButton: {
-      width: 28,
-      height: 28,
-      borderRadius: RADIUS.md,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    chromeIconButtonHovered: {
-      backgroundColor: theme.colors.surface2,
-    },
-    chromeIconButtonPressed: {
-      opacity: 0.72,
-    },
-    chromeIconButtonDisabled: {
-      opacity: 0.45,
-    },
-    toolbarContent: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.xs,
-    },
-    button: {
-      minHeight: DIMENSION.control,
-      minWidth: DIMENSION.control,
-      paddingHorizontal: SPACE.sm,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      borderRadius: RADIUS.sm,
-      backgroundColor: theme.colors.surface2,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: SPACE.xs,
-    },
-    buttonSelected: {
-      borderColor: theme.colors.accent,
-      backgroundColor: theme.colors.accent,
-    },
-    buttonPrimary: {
-      borderColor: theme.colors.accent,
-      backgroundColor: theme.colors.accent,
-    },
-    buttonDanger: {
-      borderColor: theme.colors.statusWarning,
-    },
-    buttonHovered: {
-      borderColor: theme.colors.foregroundMuted,
-    },
-    buttonPressed: {
-      opacity: 0.72,
-    },
-    buttonFocused: {
-      borderColor: theme.colors.accent,
-      borderWidth: 2,
-    },
-    buttonDisabled: {
-      opacity: 0.42,
-    },
-    buttonText: {
-      color: theme.colors.foreground,
-      fontSize: TYPE.caption,
-      fontWeight: "600",
-    },
-    buttonTextSelected: {
-      color: theme.colors.accentForeground,
-    },
-    field: {
-      height: DIMENSION.control,
-      paddingHorizontal: SPACE.sm,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      borderRadius: RADIUS.sm,
-      color: theme.colors.foreground,
-      backgroundColor: theme.colors.surface2,
-      fontSize: TYPE.body,
-    },
-    fieldFocused: {
-      borderColor: theme.colors.accent,
-      borderWidth: 2,
-    },
-    fieldDisabled: {
-      opacity: 0.5,
-    },
-    errorRow: {
-      paddingHorizontal: SPACE.sm,
-      paddingVertical: SPACE.xs,
-      borderLeftWidth: SPACE.xs,
-      borderLeftColor: theme.colors.statusDanger,
-      backgroundColor: theme.colors.surface1,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.sm,
-    },
-    errorText: {
-      flex: 1,
-      color: theme.colors.statusDanger,
-      fontSize: TYPE.caption,
-    },
-    canvasShell: {
-      flex: 1,
-      minHeight: compact ? DIMENSION.canvasCompact : DIMENSION.canvasRegular,
-      minWidth: 0,
-      margin: compact ? SPACE.sm : 0,
-      borderRadius: compact ? DIMENSION.screenRadius : 0,
-      overflow: "hidden",
-      backgroundColor: theme.colors.surface1,
-    },
-    canvas: {
-      flex: 1,
-      minHeight: 0,
-      overflow: "hidden",
-    },
-    frame: {
-      position: "absolute",
-      borderRadius: compact ? DIMENSION.screenRadius - SPACE.xs : 0,
-    },
-    interactionLayer: {
-      position: "absolute",
-    },
-    canvasState: {
-      flex: 1,
-      alignItems: "center",
-      justifyContent: "center",
-      padding: SPACE.lg,
-      gap: SPACE.sm,
-    },
-    canvasTitle: {
-      color: theme.colors.foreground,
-      fontSize: TYPE.title,
-      fontWeight: "600",
-      textAlign: "center",
-    },
-    canvasDetail: {
-      color: theme.colors.foregroundMuted,
-      fontSize: TYPE.caption,
-      textAlign: "center",
-      maxWidth: DIMENSION.helperMax,
-    },
-    canvasFooter: {
-      minHeight: DIMENSION.control,
-      paddingHorizontal: SPACE.sm,
-      borderTopWidth: 1,
-      borderTopColor: theme.colors.border,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: SPACE.sm,
-      backgroundColor: theme.colors.surface1,
-    },
-    canvasFooterText: {
-      color: theme.colors.foregroundMuted,
-      fontSize: TYPE.caption,
-      flexShrink: 1,
-    },
-    controls: {
-      paddingHorizontal: compact ? SPACE.md : SPACE.sm,
-      paddingTop: compact ? SPACE.md : SPACE.sm,
-      paddingBottom: compact ? SPACE.lg : SPACE.sm,
-      gap: compact ? SPACE.sm : SPACE.xs,
-      borderTopWidth: 1,
-      borderTopColor: theme.colors.border,
-      backgroundColor: theme.colors.surface0,
-    },
-    mobileRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.sm,
-    },
-    sheetContent: {
-      gap: SPACE.md,
-      padding: SPACE.sm,
-    },
-    sheetGrid: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      gap: SPACE.sm,
-    },
-    sheetPad: {
-      alignItems: "center",
-      gap: SPACE.sm,
-    },
-    sheetPadRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: SPACE.sm,
-    },
-    padSpacer: {
-      width: DIMENSION.pad,
-    },
-    controlStrip: {
-      minHeight: DIMENSION.control,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.xs,
-    },
-    stripLabel: {
-      color: theme.colors.foregroundMuted,
-      fontSize: TYPE.caption,
-      fontWeight: "600",
-      marginRight: SPACE.xs,
-    },
-    separator: {
-      width: 1,
-      alignSelf: "stretch",
-      marginVertical: SPACE.xs,
-      marginHorizontal: SPACE.xs,
-      backgroundColor: theme.colors.border,
-    },
-    viewportField: {
-      width: DIMENSION.viewportField,
-      textAlign: "center",
-    },
-    multiply: {
-      color: theme.colors.foregroundMuted,
-      fontSize: TYPE.body,
-    },
-    typeRow: {
-      flexDirection: compact ? "column" : "row",
-      gap: SPACE.xs,
-    },
-    typeInput: {
-      flex: 1,
-      minWidth: compact ? undefined : DIMENSION.typeField,
-    },
-    keysContent: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.xs,
-      paddingTop: SPACE.xs,
-    },
-    deviceModalContent: {
-      gap: SPACE.sm,
-      padding: SPACE.sm,
-    },
-    devicePresetRow: {
-      minHeight: 46,
-      paddingHorizontal: SPACE.md,
-      paddingVertical: SPACE.sm,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      borderRadius: RADIUS.md,
-      backgroundColor: theme.colors.surface1,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.sm,
-    },
-    devicePresetRowSelected: {
-      borderColor: theme.colors.accent,
-      backgroundColor: theme.colors.surface2,
-    },
-    devicePresetText: {
-      flex: 1,
-      color: theme.colors.foreground,
-      fontSize: TYPE.body,
-      fontWeight: "600",
-    },
-    devicePresetDetail: {
-      color: theme.colors.foregroundMuted,
-      fontSize: TYPE.caption,
-    },
-    customViewportRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.xs,
-    },
-    buttonLarge: {
-      minHeight: DIMENSION.touch,
-      paddingHorizontal: SPACE.md,
-      borderRadius: RADIUS.md,
-    },
-    buttonFill: {
-      flex: 1,
-    },
-    buttonPad: {
-      width: DIMENSION.pad,
-      minHeight: DIMENSION.touch,
-    },
-  });
-}
-
-interface ControlButtonStyles {
-  button: ViewStyle;
-  buttonSelected: ViewStyle;
-  buttonPrimary: ViewStyle;
-  buttonDanger: ViewStyle;
-  buttonHovered: ViewStyle;
-  buttonPressed: ViewStyle;
-  buttonFocused: ViewStyle;
-  buttonDisabled: ViewStyle;
-  buttonLarge: ViewStyle;
-  buttonFill: ViewStyle;
-  buttonPad: ViewStyle;
-  buttonText: TextStyle;
-  buttonTextSelected: TextStyle;
-}
-
-interface FieldStyles {
-  field: TextStyle;
-  fieldFocused: TextStyle;
-  fieldDisabled: TextStyle;
-}
-
-interface ErrorNoticeStyles extends ControlButtonStyles {
-  errorRow: ViewStyle;
-  errorText: TextStyle;
-}
-
-interface CanvasPlaceholderStyles {
-  canvasState: ViewStyle;
-  canvasTitle: TextStyle;
-  canvasDetail: TextStyle;
-}
-
-interface ControlButtonProps {
-  styles: ControlButtonStyles;
-  theme: Theme;
-  label: string;
-  accessibilityLabel?: string;
-  icon?: string;
-  selected?: boolean;
-  primary?: boolean;
-  danger?: boolean;
-  large?: boolean;
-  fill?: boolean;
-  pad?: boolean;
-  disabled?: boolean;
-  onPress(): void;
-}
-
-function ControlButton({
-  styles,
-  theme,
-  label,
-  accessibilityLabel,
-  icon,
-  selected = false,
-  primary = false,
-  danger = false,
-  large = false,
-  fill = false,
-  pad = false,
-  disabled = false,
-  onPress,
-}: ControlButtonProps) {
-  const [focused, setFocused] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const highlighted = selected || primary;
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel ?? label}
-      accessibilityState={{ disabled, selected }}
-      disabled={disabled}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.button,
-        selected ? styles.buttonSelected : null,
-        primary ? styles.buttonPrimary : null,
-        danger ? styles.buttonDanger : null,
-        hovered && !highlighted ? styles.buttonHovered : null,
-        pressed ? styles.buttonPressed : null,
-        focused ? styles.buttonFocused : null,
-        disabled ? styles.buttonDisabled : null,
-        large || pad ? styles.buttonLarge : null,
-        fill ? styles.buttonFill : null,
-        pad ? styles.buttonPad : null,
-      ]}
-    >
-      {icon ? (
-        <Icon
-          name={icon}
-          size={DIMENSION.icon}
-          color={highlighted ? theme.colors.accentForeground : theme.colors.foregroundMuted}
-        />
-      ) : null}
-      <Text style={[styles.buttonText, highlighted ? styles.buttonTextSelected : null]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-interface ChromeIconButtonStyles {
-  chromeIconButton: ViewStyle;
-  chromeIconButtonHovered: ViewStyle;
-  chromeIconButtonPressed: ViewStyle;
-  chromeIconButtonDisabled: ViewStyle;
-}
-
-function ChromeIconButton({
-  styles,
-  theme,
-  label,
-  icon,
-  selected = false,
-  disabled = false,
-  onPress,
-}: {
-  styles: ChromeIconButtonStyles;
-  theme: Theme;
-  label: string;
-  icon: string;
-  selected?: boolean;
-  disabled?: boolean;
-  onPress(): void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled, selected }}
-      disabled={disabled}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.chromeIconButton,
-        hovered ? styles.chromeIconButtonHovered : null,
-        pressed ? styles.chromeIconButtonPressed : null,
-        disabled ? styles.chromeIconButtonDisabled : null,
-      ]}
-    >
-      <Icon
-        name={icon}
-        size={16}
-        color={selected ? theme.colors.accent : theme.colors.foregroundMuted}
-      />
-    </Pressable>
-  );
-}
-
-interface FieldProps {
-  styles: FieldStyles;
-  theme: Theme;
-  value: string;
-  accessibilityLabel: string;
-  placeholder?: string;
-  editable?: boolean;
-  maxLength?: number;
-  keyboardType?: TextInputProps["keyboardType"];
-  inputMode?: TextInputProps["inputMode"];
-  returnKeyType?: TextInputProps["returnKeyType"];
-  selectTextOnFocus?: boolean;
-  style?: StyleProp<TextStyle>;
-  onChangeText(value: string): void;
-  onSubmit?(): void;
-  onFocus?(): void;
-  onBlur?(): void;
-}
-
-function Field({
-  styles,
-  theme,
-  value,
-  accessibilityLabel,
-  placeholder,
-  editable = true,
-  maxLength,
-  keyboardType,
-  inputMode,
-  returnKeyType,
-  selectTextOnFocus,
-  style,
-  onChangeText,
-  onSubmit,
-  onFocus,
-  onBlur,
-}: FieldProps) {
-  const [focused, setFocused] = useState(false);
-  return (
-    <TextInput
-      accessibilityLabel={accessibilityLabel}
-      autoCapitalize="none"
-      autoCorrect={false}
-      spellCheck={false}
-      editable={editable}
-      keyboardType={keyboardType}
-      inputMode={inputMode}
-      maxLength={maxLength}
-      onBlur={() => {
-        setFocused(false);
-        onBlur?.();
-      }}
-      onChangeText={onChangeText}
-      onFocus={() => {
-        setFocused(true);
-        onFocus?.();
-      }}
-      onSubmitEditing={onSubmit}
-      placeholder={placeholder}
-      placeholderTextColor={theme.colors.foregroundMuted}
-      returnKeyType={returnKeyType}
-      selectionColor={theme.colors.accent}
-      selectTextOnFocus={selectTextOnFocus}
-      style={[
-        styles.field,
-        style,
-        focused ? styles.fieldFocused : null,
-        !editable ? styles.fieldDisabled : null,
-      ]}
-      value={value}
-    />
-  );
-}
-
-function ErrorNotice({
-  styles,
-  theme,
-  message,
-  action,
-  onAction,
-  actionDisabled = false,
-}: {
-  styles: ErrorNoticeStyles;
-  theme: Theme;
-  message: string;
-  action?: string | undefined;
-  onAction?: (() => void) | undefined;
-  actionDisabled?: boolean;
-}) {
-  return (
-    <View accessibilityRole="alert" style={styles.errorRow}>
-      <Icon name="CircleAlert" size={DIMENSION.icon} color={theme.colors.statusDanger} />
-      <Text style={styles.errorText}>{message}</Text>
-      {action && onAction ? (
-        <ControlButton
-          styles={styles}
-          theme={theme}
-          label={action}
-          disabled={actionDisabled}
-          onPress={onAction}
-        />
-      ) : null}
-    </View>
-  );
-}
-
-function CanvasPlaceholder({
-  styles,
-  theme,
-  title,
-  detail,
-  loading = false,
-}: {
-  styles: CanvasPlaceholderStyles;
-  theme: Theme;
-  title: string;
-  detail: string;
-  loading?: boolean;
-}) {
-  return (
-    <View style={styles.canvasState}>
-      {loading ? <ActivityIndicator color={theme.colors.accent} /> : null}
-      <Text style={styles.canvasTitle}>{title}</Text>
-      <Text style={styles.canvasDetail}>{detail}</Text>
-    </View>
-  );
-}
-
-interface AgentDirectoryPage {
-  entries: Array<{ agent: { id: string; workspaceId?: string | undefined } }>;
-  pageInfo: { hasMore: boolean; nextCursor: string | null };
-}
-
-type AgentDirectoryUpdate =
-  | { kind: "remove"; agentId: string }
-  | { kind: "upsert"; agent: { id: string; workspaceId?: string | undefined } };
-type AgentPlacement = { id: string; workspaceId: string };
-
-export function contributeSharedBrowserClient(client: PluginClientContext) {
-  const agents = new Map<string, AgentPlacement>();
-  const pills = new Map<string, { workspaceId: string; remove: () => void }>();
-  const lifetime = new AbortController();
-  let openWorkspaceIds = new Set<string>();
-  let refreshing = false;
-  let stopped = false;
-  let directoryGeneration = 0;
-  let pendingDirectory: { generation: number; updates: AgentDirectoryUpdate[] } | null = null;
-  let unsubscribeDirectory: (() => void) | null = null;
-  let releaseDirectory: (() => Promise<void>) | null = null;
-
-  const removePill = (agentId: string) => {
-    pills.get(agentId)?.remove();
-    pills.delete(agentId);
-  };
-  const syncPill = (agent: AgentPlacement) => {
-    const current = pills.get(agent.id);
-    if (!openWorkspaceIds.has(agent.workspaceId)) {
-      removePill(agent.id);
-      return;
-    }
-    if (current?.workspaceId === agent.workspaceId) return;
-    removePill(agent.id);
-    const workspaceId = agent.workspaceId;
-    const pill = client.addComposerPill({
-      id: "open-shared-browser",
-      workspaceId,
-      agentId: agent.id,
-      button: {
-        title: "Open Shared Browser",
-        icon: "PanelsTopLeft",
-        label: "Shared Browser",
-        behavior: {
-          kind: "action",
-          onPress() {
-            client.openPanel("shared-browser", { workspaceId });
-          },
-        },
-      },
-    });
-    pills.set(agent.id, { workspaceId, remove: pill.remove });
-  };
-  const syncAllPills = () => {
-    for (const agent of agents.values()) syncPill(agent);
-  };
-  const refreshPresence = async () => {
-    if (stopped || refreshing) return;
-    refreshing = true;
-    try {
-      const result = await client.rpc(listOpenBrowserWorkspacesRpc, {});
-      if (stopped) return;
-      openWorkspaceIds = new Set(result.workspaceIds);
-      syncAllPills();
-    } catch {
-      return;
-    } finally {
-      refreshing = false;
-    }
-  };
-  const applyUpdate = (target: Map<string, AgentPlacement>, update: AgentDirectoryUpdate) => {
-    if (update.kind === "remove") {
-      target.delete(update.agentId);
-      return;
-    }
-    const { id, workspaceId } = update.agent;
-    if (workspaceId) target.set(id, { id, workspaceId });
-    else target.delete(id);
-  };
-  const applyLiveUpdate = (update: AgentDirectoryUpdate) => {
-    if (stopped) return;
-    pendingDirectory?.updates.push(update);
-    applyUpdate(agents, update);
-    if (update.kind === "remove") {
-      removePill(update.agentId);
-      return;
-    }
-    const { id, workspaceId } = update.agent;
-    if (!workspaceId) {
-      removePill(id);
-      return;
-    }
-    syncPill({ id, workspaceId });
-    void refreshPresence();
-  };
-  const replaceAgents = (next: Map<string, AgentPlacement>) => {
-    for (const agentId of agents.keys()) {
-      if (!next.has(agentId)) removePill(agentId);
-    }
-    agents.clear();
-    for (const [agentId, agent] of next) agents.set(agentId, agent);
-    syncAllPills();
-  };
-  const followSnapshot = async (snapshot: AgentDirectoryPage) => {
-    if (stopped) return;
-    const generation = ++directoryGeneration;
-    const transaction = { generation, updates: [] as AgentDirectoryUpdate[] };
-    pendingDirectory = transaction;
-    const next = new Map<string, AgentPlacement>();
-    for (const { agent } of snapshot.entries) {
-      if (agent.workspaceId) next.set(agent.id, { id: agent.id, workspaceId: agent.workspaceId });
-    }
-
-    try {
-      let cursor = snapshot.pageInfo.hasMore ? snapshot.pageInfo.nextCursor : null;
-      while (cursor) {
-        const page = await client.paseo.agents.list({
-          scope: "active",
-          page: { limit: AGENT_DIRECTORY_PAGE_LIMIT, cursor },
-          signal: lifetime.signal,
-        });
-        if (stopped || pendingDirectory?.generation !== generation) return;
-        for (const { agent } of page.entries) {
-          if (agent.workspaceId)
-            next.set(agent.id, { id: agent.id, workspaceId: agent.workspaceId });
-        }
-        cursor = page.pageInfo.hasMore ? page.pageInfo.nextCursor : null;
-      }
-      if (stopped || pendingDirectory?.generation !== generation) return;
-      for (const update of transaction.updates) applyUpdate(next, update);
-      pendingDirectory = null;
-      replaceAgents(next);
-      await refreshPresence();
-    } catch {
-      if (!stopped && pendingDirectory?.generation === generation) pendingDirectory = null;
-    }
-  };
-
-  void client.paseo.agents
-    .list({
-      scope: "active",
-      page: { limit: AGENT_DIRECTORY_PAGE_LIMIT },
-      subscribe: {},
-      signal: lifetime.signal,
-    })
-    .then(({ subscription }) => {
-      if (stopped) {
-        void subscription.release().catch(() => undefined);
-        return undefined;
-      }
-      releaseDirectory = subscription.release;
-      unsubscribeDirectory = subscription.subscribe({
-        snapshot: (snapshot) => void followSnapshot(snapshot),
-        update: (message) => {
-          if (message.type === "agent_update") applyLiveUpdate(message.payload);
-        },
-      });
-      return undefined;
-    })
-    .catch(() => undefined);
-  const presenceTimer = setInterval(() => void refreshPresence(), PILL_PRESENCE_POLL_MS);
-
-  return () => {
-    if (stopped) return;
-    stopped = true;
-    directoryGeneration += 1;
-    pendingDirectory = null;
-    clearInterval(presenceTimer);
-    unsubscribeDirectory?.();
-    void releaseDirectory?.().catch(() => undefined);
-    lifetime.abort();
-    for (const { remove } of pills.values()) remove();
-    pills.clear();
-    agents.clear();
-  };
-}
 export function SharedBrowserPanel({
   theme,
   host,
@@ -985,35 +179,71 @@ export function SharedBrowserPanel({
   const navigateBrowser = useRpc(navigateBrowserRpc);
   const resizeBrowser = useRpc(resizeBrowserRpc);
   const applyDevicePreset = useRpc(applyDevicePresetRpc);
+  const setCaptureDensity = useRpc(setCaptureDensityRpc);
   const sendBrowserInput = useRpc(sendBrowserInputRpc);
+  const beginBrowserGesture = useRpc(beginBrowserGestureRpc);
+  const updateBrowserGesture = useRpc(updateBrowserGestureRpc);
+  const endBrowserGesture = useRpc(endBrowserGestureRpc);
 
   const mountedRef = useRef(false);
   const activeViewerTokenRef = useRef<string | null>(null);
   const stateRef = useRef<BrowserState | null>(null);
-  const lifecycleRef = useRef(new FrameLifecycle());
-  const lifecycle = lifecycleRef.current;
+  // Lease observations can change while acquisition awaits with no local token.
+  // Count ownership transitions, not expiry renewals or ordinary media frames.
+  const controllerObservationRevision = useRef(0);
+  const frameRef = useRef<BrowserFrame | null>(null);
+  const committedViewport = useRef<{ sessionId: string; generation: number } | null>(null);
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
-  const captureInFlightRef = useRef(false);
+  const [inputLifecycle] = useState(createFrameLifecycle);
+  const [legacyInputBusy, setLegacyInputBusy] = useState(false);
+  // A visual-only old-read paint cannot wake strict initial-admission waiters.
+  const [admittedPaint, setAdmittedPaint] = useState<{ frameId: string; epoch: number } | null>(
+    null,
+  );
+  /** Notify initial-admission waiters only when the actual painted receipt gains input authority. */
+  const publishAdmittedPaint = (frameId: string, epoch: number) => {
+    setAdmittedPaint((previous) => {
+      if (previous?.frameId === frameId && previous.epoch === epoch) return previous;
+      return { frameId, epoch };
+    });
+  };
 
   const [state, setState] = useState<BrowserState | null>(null);
-  const [frame, setFrame] = useState<BrowserFrame | null>(null);
-  const [inputBusy, setInputBusy] = useState(false);
   const [controlToken, setControlToken] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
-  const [imageError, setImageError] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [runtimeNotice, setRuntimeNotice] = useState<string | null>(null);
   const [addressDraft, setAddressDraft] = useState("");
   const [addressFocused, setAddressFocused] = useState(false);
   const [viewportWidth, setViewportWidth] = useState("");
   const [viewportHeight, setViewportHeight] = useState("");
-  const [typeDraft, setTypeDraft] = useState("");
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>("click");
   const [devicePickerOpen, setDevicePickerOpen] = useState(false);
-  const [pointerSheetOpen, setPointerSheetOpen] = useState(false);
-  const [keysSheetOpen, setKeysSheetOpen] = useState(false);
-  const [swipeMode, setSwipeMode] = useState<SwipeMode>(layout.compact ? "scroll" : "drag");
+  const preferences = useResolutionFavorites(host.id);
+  const [keysSubmenuOpen, setKeysSubmenuOpen] = useState(false);
+  const keysAnchorRef = useRef<View | null>(null);
+  const [toolbarMenu, setToolbarMenu] = useState<"display" | "actions" | null>(null);
+  const [scaleMode, setScaleMode] = useState<BrowserCanvasDisplayMode>("fit");
+  const paneRef = useRef<View | null>(null);
+  const displayAnchorRef = useRef<View | null>(null);
+  const actionsAnchorRef = useRef<View | null>(null);
+  const [paneSize, setPaneSize] = useState<Size>({ width: 0, height: 0 });
+  const menuRestoreFocus = useRef(true);
+  const closeToolbarMenu = useCallback((restoreFocus = true) => {
+    menuRestoreFocus.current = restoreFocus;
+    setKeysSubmenuOpen(false);
+    setToolbarMenu(null);
+  }, []);
+  const toggleToolbarMenu = (menu: "display" | "actions") => {
+    menuRestoreFocus.current = true;
+    setKeysSubmenuOpen(false);
+    setToolbarMenu((current) => (current === menu ? null : menu));
+  };
+  const [composeRequest, setComposeRequest] = useState<{
+    id: number;
+    ownershipKey: string;
+  } | null>(null);
+  const nextComposeRequest = useRef(0);
+  const [activeInput, setActiveInput] = useState(false);
   const [containerSize, setContainerSize] = useState<Size>({ width: 0, height: 0 });
 
   useEffect(() => {
@@ -1023,28 +253,60 @@ export function SharedBrowserPanel({
     };
   }, []);
 
-  const acceptState = useCallback((next: BrowserState) => {
-    const previous = stateRef.current;
-    if (previous && !isBrowserStateCurrent(previous, next)) return false;
-    const currentFrame = lifecycle.frame;
-    if (previous && didBrowserRuntimeRestart(previous, next)) {
-      setRuntimeNotice(
-        "Browser restarted. The preserved viewer connection now targets the new runtime.",
-      );
-      setControlToken(null);
-    }
-    if (currentFrame && !isFrameCurrent(currentFrame, next)) {
-      lifecycle.drop();
-      setFrame(null);
-      lastPointRef.current = null;
-    }
-    stateRef.current = next;
-    setState(next);
-    return true;
+  const isCandidateCurrent = useCallback((candidate: FrameCandidate) => {
+    const current = stateRef.current;
+    return (
+      mountedRef.current &&
+      candidate.viewerToken === activeViewerTokenRef.current &&
+      candidate.mutationEpoch === inputLifecycle.epoch &&
+      current !== null &&
+      isFrameCurrent(candidate.frame, current)
+    );
   }, []);
+  const { buffer, frame, receive, settled, discardObsoletePending, reset } = useBrowserFrameBuffer(
+    frameRef,
+    isCandidateCurrent,
+  );
+  const imageError = buffer.imageError;
+
+  const acceptState = useCallback(
+    (next: BrowserState) => {
+      const previous = stateRef.current;
+      if (previous && !isBrowserStateCurrent(previous, next)) return false;
+      // Server state projects "self" against this exact viewer token. Media can
+      // observe our acquisition before its RPC returns the control token, so
+      // that transition must not revoke its own still-pending settlement.
+      // Competing ownership and subsequent release still advance the fence.
+      const observesOwnAcquisition = previous?.controller !== "self" && next.controller === "self";
+      if (
+        previous &&
+        !observesOwnAcquisition &&
+        (previous.controller !== next.controller ||
+          previous.controllerLabel !== next.controllerLabel)
+      ) {
+        controllerObservationRevision.current += 1;
+      }
+      const currentFrame = frameRef.current;
+      if (previous && didBrowserRuntimeRestart(previous, next)) {
+        setRuntimeNotice(
+          "Browser restarted. The preserved viewer connection now targets the new runtime.",
+        );
+        setControlToken(null);
+      }
+      if (currentFrame && !isFrameCurrent(currentFrame, next)) {
+        lastPointRef.current = null;
+      }
+      stateRef.current = next;
+      // Repeated captures in the new generation must not cancel its slow decoder.
+      discardObsoletePending();
+      setState(next);
+      return true;
+    },
+    [discardObsoletePending],
+  );
 
   const attachQuery = useQuery({
-    queryKey: ["shared-browser", "attach", workspaceId, viewerLabel],
+    queryKey: ["shared-browser", "attach", host.id, workspaceId, viewerLabel],
     queryFn: async () => {
       const result = await attachBrowser({ workspaceId, viewerLabel });
       if (!mountedRef.current) {
@@ -1076,56 +338,106 @@ export function SharedBrowserPanel({
 
   useEffect(() => {
     stateRef.current = null;
-    lifecycle.reset();
+    frameRef.current = null;
     setState(null);
-    setFrame(null);
-    setInputBusy(false);
+    reset();
+    inputLifecycle.bump();
+    inputLifecycle.reset();
+    setLegacyInputBusy(false);
     setControlToken(null);
     setOperationError(null);
     setRuntimeNotice(null);
-  }, [workspaceId]);
+  }, [reset, workspaceId, host.id, inputLifecycle]);
 
-  const captureQuery = useQuery({
-    queryKey: ["shared-browser", "capture", viewerToken],
-    queryFn: async () => {
-      if (!viewerToken) throw new Error("The browser viewer is not attached.");
-      const mutationEpoch = lifecycle.epoch;
-      const knownFrame = lifecycle.frame;
-      captureInFlightRef.current = true;
-      try {
-        const result = await captureBrowser({
-          viewerToken,
-          quality: "medium",
-          knownFrameId: knownFrame?.frameId ?? null,
-        });
-        return { ...result, mutationEpoch };
-      } finally {
-        captureInFlightRef.current = false;
-      }
+  useLayoutEffect(() => {
+    committedViewport.current = state
+      ? { sessionId: state.sessionId, generation: state.viewportGeneration }
+      : null;
+  }, [state?.sessionId, state?.viewportGeneration]);
+
+  const video = useBrowserVideo({
+    viewerToken,
+    quality: "high",
+    bitrate: preferences.videoBitrate,
+    fps: preferences.videoFps,
+    epoch: () => inputLifecycle.epoch,
+    viewport: () => stateRef.current?.viewport ?? null,
+    isCurrent: (packet, epoch) =>
+      mountedRef.current &&
+      activeViewerTokenRef.current === viewerToken &&
+      epoch === inputLifecycle.epoch &&
+      committedViewport.current?.sessionId === packet.frame.sessionId &&
+      committedViewport.current?.generation === packet.frame.viewportGeneration &&
+      stateRef.current !== null &&
+      isFrameCurrent(packet.frame, stateRef.current),
+    isDisplayCurrent: (packet) => {
+      const current = stateRef.current;
+      return (
+        mountedRef.current &&
+        activeViewerTokenRef.current === viewerToken &&
+        current !== null &&
+        isFrameDisplayCurrent(packet.frame, current)
+      );
     },
-    enabled: Boolean(viewerToken),
-    retry: false,
-    refetchInterval: (query) =>
-      query.state.data?.state.status === "ready"
-        ? CAPTURE_INTERVAL_READY
-        : CAPTURE_INTERVAL_WAITING,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
-    staleTime: 0,
+    acceptState,
+    onPresented: (packet, epoch) => {
+      inputLifecycle.accept(epoch, packet.frame);
+      publishAdmittedPaint(packet.frame.frameId, epoch);
+      setLegacyInputBusy(inputLifecycle.busy);
+    },
+  });
+
+  const {
+    query: captureQuery,
+    refreshCapture,
+    retryFrameCapture,
+  } = useBrowserImageCapture({
+    active: !video.supported || video.active,
+    viewerToken,
+    quality: preferences.captureQuality,
+    activeInput,
+    fallbackRevision: video.fallbackRevision,
+    videoOwnsPresentation: Boolean(
+      video.front &&
+        !video.fallbackRevision &&
+        state &&
+        isFrameDisplayCurrent(video.front.frame, state),
+    ),
+    hasVideoPresentation: () =>
+      Boolean(
+        video.front &&
+          !video.fallbackRevision &&
+          activeViewerTokenRef.current === viewerToken &&
+          stateRef.current &&
+          isFrameDisplayCurrent(video.front.frame, stateRef.current),
+      ),
+    refreshVideo: video.refresh,
+    mutationEpoch: () => inputLifecycle.epoch,
+    knownFrame: () => frameRef.current,
+    capture: captureBrowser,
   });
 
   useEffect(() => {
     const result = captureQuery.data;
-    if (!result || !lifecycle.isCurrent(result.mutationEpoch) || !acceptState(result.state)) {
+    if (
+      !result ||
+      result.viewerToken !== activeViewerTokenRef.current ||
+      result.captureQuality !== preferences.captureQuality ||
+      result.mutationEpoch !== inputLifecycle.epoch ||
+      !acceptState(result.state)
+    ) {
       return;
     }
     if (result.frame && isFrameCurrent(result.frame, result.state)) {
-      lifecycle.accept(result.mutationEpoch, result.frame);
-      setImageError(false);
-      setFrame(lifecycle.visible);
-      setInputBusy(lifecycle.busy);
+      receive({
+        frame: result.frame,
+        viewport: result.state.viewport,
+        viewerToken: result.viewerToken,
+        mutationEpoch: result.mutationEpoch,
+        fallbackRevision: result.fallbackRevision,
+      });
     }
-  }, [acceptState, captureQuery.data]);
+  }, [acceptState, captureQuery.data, preferences.captureQuality, receive]);
 
   useEffect(() => {
     if (state?.controller !== "self" && controlToken) setControlToken(null);
@@ -1141,18 +453,6 @@ export function SharedBrowserPanel({
     setViewportWidth(String(state.viewport.width));
     setViewportHeight(String(state.viewport.height));
   }, [state?.sessionId, state?.viewport.height, state?.viewport.width]);
-
-  useEffect(() => {
-    setImageError(false);
-  }, [frame?.frameId]);
-
-  const refreshCapture = useCallback(() => {
-    const requestWasInFlight = captureInFlightRef.current;
-    const request = captureQuery.refetch({ cancelRefetch: false });
-    if (requestWasInFlight) {
-      void request.then(() => captureQuery.refetch({ cancelRefetch: false }));
-    }
-  }, [captureQuery.refetch]);
 
   const mutationFailed = useCallback(
     (error: unknown) => {
@@ -1176,60 +476,117 @@ export function SharedBrowserPanel({
     [acceptState, refreshCapture],
   );
 
-  const acquireMutation = useMutation({
+  const mutationIdentity = JSON.stringify([
+    host.id,
+    workspaceId,
+    viewerToken,
+    controlToken,
+    controllerObservationRevision.current,
+  ]);
+  // Ref observations revoke settlement immediately, before the state commit.
+  const currentMutationIdentity = () =>
+    JSON.stringify([
+      host.id,
+      workspaceId,
+      activeViewerTokenRef.current,
+      controlToken,
+      controllerObservationRevision.current,
+    ]);
+  const acquireMutation = useBrowserScopedMutation({
+    identity: mutationIdentity,
+    currentIdentity: currentMutationIdentity,
     mutationFn: acquireControl,
-    retry: false,
     onSuccess: (result) => {
       setControlToken(result.controlToken);
       mutationSucceeded(result.state);
     },
     onError: mutationFailed,
   });
-  const releaseMutation = useMutation({
+  const releaseMutation = useBrowserScopedMutation({
+    identity: mutationIdentity,
+    currentIdentity: currentMutationIdentity,
     mutationFn: releaseControl,
-    retry: false,
     onSuccess: (result) => {
       setControlToken(null);
       mutationSucceeded(result.state);
     },
     onError: mutationFailed,
   });
-  const navigateMutation = useMutation({
+  const navigateMutation = useBrowserScopedMutation({
+    identity: mutationIdentity,
+    currentIdentity: currentMutationIdentity,
     mutationFn: navigateBrowser,
-    retry: false,
-    onSuccess: (result) => mutationSucceeded(result.state),
+    onSuccess: (result) => {
+      mutationSucceeded(result.state);
+      // Only acknowledged navigation grants explicit viewing recovery. Ordinary
+      // gesture/image refresh does not rearm an exhausted video reader.
+      video.retry();
+    },
     onError: mutationFailed,
   });
-  const resizeMutation = useMutation({
+  const resizeMutation = useBrowserScopedMutation({
+    identity: mutationIdentity,
+    currentIdentity: currentMutationIdentity,
     mutationFn: resizeBrowser,
-    retry: false,
-    onSuccess: (result) => mutationSucceeded(result.state),
+    onSuccess: (result) => {
+      setDevicePickerOpen(false);
+      mutationSucceeded(result.state);
+    },
     onError: mutationFailed,
   });
-  const deviceMutation = useMutation({
+  const deviceMutation = useBrowserScopedMutation({
+    identity: mutationIdentity,
+    currentIdentity: currentMutationIdentity,
     mutationFn: applyDevicePreset,
-    retry: false,
     onSuccess: (result) => mutationSucceeded(result.state),
     onError: mutationFailed,
   });
-  const settleInput = () => {
-    lifecycle.settle();
+  // Upstream's settlement gate protects discrete key controls and native text fallback.
+  // Continuous gestures retain their own ordered channel without waiting per event.
+  const settleLegacyInput = () => {
+    inputLifecycle.settle();
+    setLegacyInputBusy(true);
   };
-  const inputMutation = useMutation({
+  const inputMutation = useBrowserScopedMutation({
+    identity: mutationIdentity,
+    currentIdentity: currentMutationIdentity,
     mutationFn: sendBrowserInput,
-    retry: false,
-    onSuccess: (result, variables) => {
-      if (variables.event.kind === "type") {
-        const sentText = variables.event.text;
-        setTypeDraft((current) => (current === sentText ? "" : current));
-      }
-      settleInput();
+    onSuccess: (result) => {
+      settleLegacyInput();
       mutationSucceeded(result.state);
     },
     onError: (error) => {
-      settleInput();
+      settleLegacyInput();
       mutationFailed(error);
     },
+  });
+
+  const densityControl = useBrowserCaptureDensity({
+    identity: JSON.stringify([host.id, workspaceId, viewerToken, controlToken]),
+    current: () => {
+      const current = stateRef.current;
+      const viewer = activeViewerTokenRef.current;
+      if (viewingExpired || !current || !viewer || !controlToken || current.controller !== "self")
+        return null;
+      return {
+        state: current,
+        context: {
+          viewerToken: viewer,
+          controlToken,
+          expected: {
+            sessionId: current.sessionId,
+            navigationGeneration: current.navigationGeneration,
+            viewportGeneration: current.viewportGeneration,
+            ...(current.runtimeId ? { runtimeId: current.runtimeId } : {}),
+            ...(current.bridgeEpoch !== undefined ? { bridgeEpoch: current.bridgeEpoch } : {}),
+          },
+        },
+      };
+    },
+    change: setCaptureDensity,
+    beforeChange: () => inputLifecycle.bump(),
+    onSuccess: mutationSucceeded,
+    onError: mutationFailed,
   });
 
   const anyMutationPending =
@@ -1237,47 +594,81 @@ export function SharedBrowserPanel({
     releaseMutation.isPending ||
     navigateMutation.isPending ||
     resizeMutation.isPending ||
+    densityControl.pending ||
     deviceMutation.isPending ||
     inputMutation.isPending;
-  const canControl = Boolean(viewerToken && controlToken && state?.controller === "self");
-  const currentFrame = frame && state && isFrameCurrent(frame, state) ? frame : null;
-  const canSendInput =
-    canControl && Boolean(currentFrame) && !inputMutation.isPending && !inputBusy;
-
-  const frameUri = useMemo(
-    () => (currentFrame ? `data:${currentFrame.mimeType};base64,${currentFrame.dataBase64}` : null),
-    [currentFrame],
+  const videoViewerExpired =
+    video.errorViewerToken === viewerToken && isExpiredBrowserViewerError(video.error);
+  const viewingExpired = videoViewerExpired || isExpiredBrowserViewerError(captureQuery.error);
+  const canControl = Boolean(
+    viewerToken && controlToken && state?.controller === "self" && !viewingExpired,
   );
-  const [imageSize, setImageSize] = useState<{ uri: string; size: Size } | null>(null);
-  const loadImageSize = useMemo(
-    () =>
-      createImageSizeLoader(
-        (uri, success, failure) => Image.getSize(uri, success, failure),
-        (uri, size) => setImageSize(size ? { uri, size } : null),
-      ),
-    [],
-  );
+  const frontLayer = buffer.front === null ? null : buffer.layers[buffer.front];
+  useLayoutEffect(() => {
+    const candidate = frontLayer?.candidate;
+    if (
+      candidate &&
+      candidate.fallbackRevision === video.fallbackRevision &&
+      candidate.mutationEpoch === inputLifecycle.epoch &&
+      candidate.viewerToken === viewerToken &&
+      state &&
+      isFrameCurrent(candidate.frame, state)
+    )
+      video.completeFallback(candidate.fallbackRevision ?? 0);
+  }, [frontLayer, video.fallbackRevision, state, viewerToken, inputLifecycle]);
+  const videoFrame =
+    video.front && state && isFrameCurrent(video.front.frame, state) ? video.front.frame : null;
+  const currentFrame =
+    videoFrame ??
+    (frame &&
+    state &&
+    frontLayer?.candidate.viewerToken === viewerToken &&
+    isFrameCurrent(frame, state)
+      ? frame
+      : null);
   useEffect(() => {
-    if (frameUri) loadImageSize(frameUri);
-  }, [frameUri, loadImageSize]);
-  // The bitmap can disagree with the frame metadata; its own aspect ratio decides the rectangle.
-  const displayRect = useMemo(
+    const candidate = frontLayer?.candidate;
+    if (videoFrame || !frame || !candidate || candidate.mutationEpoch !== inputLifecycle.epoch)
+      return;
+    inputLifecycle.accept(candidate.mutationEpoch, frame);
+    publishAdmittedPaint(frame.frameId, candidate.mutationEpoch);
+    setLegacyInputBusy(inputLifecycle.busy);
+  }, [frame, frontLayer, inputLifecycle, videoFrame]);
+  const canSendInput =
+    canControl && Boolean(currentFrame) && !inputMutation.isPending && !legacyInputBusy;
+
+  // Layout belongs to the decoded front frame. A denser capture adds detail,
+  // not a larger 100% layout; scale never writes to the shared browser state.
+  const visualFrame = video.front?.frame ?? frame;
+  const canvasLayout = useMemo(
     () =>
-      currentFrame
-        ? containedRect(
+      visualFrame
+        ? getBrowserCanvasLayout(
             containerSize,
-            imageSize?.uri === frameUri
-              ? imageSize.size
-              : { width: currentFrame.width, height: currentFrame.height },
+            visualFrame,
+            video.front
+              ? (video.frontViewport ?? visualFrame)
+              : (frontLayer?.candidate.viewport ?? state?.viewport ?? visualFrame),
+            scaleMode,
           )
         : null,
-    [containerSize, currentFrame, frameUri, imageSize],
+    [
+      containerSize,
+      visualFrame,
+      frontLayer,
+      state?.viewport,
+      scaleMode,
+      video.front,
+      video.frontViewport,
+    ],
   );
+  const displayRect = canvasLayout?.frameRect ?? null;
 
   const controlContext = useCallback(() => {
     const viewer = activeViewerTokenRef.current;
     const current = stateRef.current;
-    if (!viewer || !controlToken || !current || current.controller !== "self") return null;
+    if (viewingExpired || !viewer || !controlToken || !current || current.controller !== "self")
+      return null;
     return {
       viewerToken: viewer,
       controlToken,
@@ -1287,13 +678,25 @@ export function SharedBrowserPanel({
         viewportGeneration: current.viewportGeneration,
       },
     };
-  }, [controlToken]);
+  }, [controlToken, viewingExpired]);
 
   const inputContext = useCallback(() => {
     const context = controlContext();
     const current = stateRef.current;
-    const targetFrame = lifecycle.frame;
-    if (!context || !current || !targetFrame || !isFrameCurrent(targetFrame, current)) return null;
+    const targetVideo = video.frontRef.current;
+    // A revoked video remains painted until React commits the fallback. Never
+    // borrow the JPEG token while those older video pixels still cover it.
+    if (video.front && !targetVideo) return null;
+    const targetFrame = targetVideo?.frame ?? frameRef.current;
+    if (
+      !context ||
+      !current ||
+      !targetFrame ||
+      !isFrameCurrent(targetFrame, current) ||
+      (!targetVideo && frontLayer?.candidate.viewerToken !== context.viewerToken)
+    ) {
+      return null;
+    }
     return {
       ...context,
       target: {
@@ -1302,7 +705,7 @@ export function SharedBrowserPanel({
         viewportGeneration: targetFrame.viewportGeneration,
       },
     };
-  }, [controlContext]);
+  }, [controlContext, frontLayer, video.frontRef, video.front]);
 
   const requireControlContext = useCallback(() => {
     const context = controlContext();
@@ -1325,81 +728,103 @@ export function SharedBrowserPanel({
 
   const sendEvent = useCallback(
     (event: BrowserInputEvent) => {
-      if (lifecycle.busy) return;
       const context = requireInputContext();
-      if (!context || !lifecycle.begin()) return;
-      setInputBusy(true);
+      if (!context || inputMutation.isPending || !inputLifecycle.begin()) return;
+      setLegacyInputBusy(true);
       inputMutation.mutate({ ...context, event });
     },
-    [inputMutation, lifecycle, requireInputContext],
+    [inputMutation, requireInputContext],
   );
 
-  const pointFromEvent = useCallback(
-    (event: GestureResponderEvent): DisplayPoint | null => {
-      if (!displayRect) return null;
-      const x = Math.min(displayRect.width, Math.max(0, event.nativeEvent.locationX));
-      const y = Math.min(displayRect.height, Math.max(0, event.nativeEvent.locationY));
-      return { x, y };
+  const liveInputEnabled = liveInputAllowed({
+    canSendInput,
+    mutationPending:
+      navigateMutation.isPending ||
+      resizeMutation.isPending ||
+      deviceMutation.isPending ||
+      releaseMutation.isPending ||
+      acquireMutation.isPending,
+    modalOpen: devicePickerOpen || toolbarMenu !== null,
+  });
+  /** Existing channels retain control incarnation while their next frame decodes. */
+  const gestureControlContext = useCallback(() => {
+    const context = controlContext();
+    const current = stateRef.current;
+    if (!mountedRef.current || !context || !current?.runtimeId || current.bridgeEpoch === undefined)
+      return null;
+    return {
+      ...context,
+      expected: {
+        ...context.expected,
+        runtimeId: current.runtimeId,
+        bridgeEpoch: current.bridgeEpoch,
+      },
+    };
+  }, [controlContext]);
+
+  // Forward physical mouse events and genuine touch on every remote preset.
+  const canvasInput = useBrowserCanvasInput({
+    authority: () => {
+      const input = inputContext();
+      const context = gestureControlContext();
+      return input && context ? { ...context, target: input.target } : null;
     },
-    [displayRect],
-  );
-
-  const finishPointerGesture = useCallback(
-    (event: GestureResponderEvent) => {
-      const start = dragStartRef.current;
-      const end = pointFromEvent(event);
-      const viewport = stateRef.current?.viewport;
-      dragStartRef.current = null;
-      if (!start || !end || !displayRect || !viewport) return;
-      const toViewport = (point: DisplayPoint) => toViewportPoint(point, displayRect, viewport);
-      lastPointRef.current = { x: end.x, y: end.y };
-      const distance = Math.hypot(end.x - start.x, end.y - start.y);
-      if (distance >= DRAG_THRESHOLD) {
-        if (swipeMode === "scroll") {
-          const scale = viewport.width / displayRect.width;
-          sendEvent({
-            kind: "scroll",
-            point: toViewport(start),
-            deltaX: clampScrollDelta((start.x - end.x) * scale),
-            deltaY: clampScrollDelta((start.y - end.y) * scale),
-          });
-          return;
-        }
-        sendEvent({
-          kind: "drag",
-          start: toViewport(start),
-          end: toViewport(end),
-          button: interactionMode === "right" ? "right" : "left",
-        });
-        return;
-      }
-      sendEvent({
-        kind: "click",
-        point: toViewport(end),
-        button: interactionMode === "right" ? "right" : "left",
-        clickCount: interactionMode === "double" ? 2 : 1,
-      });
+    controlAuthority: gestureControlContext,
+    transport: { begin: beginBrowserGesture, update: updateBrowserGesture, end: endBrowserGesture },
+    ownershipKey: JSON.stringify([
+      viewerToken,
+      controlToken,
+      state?.sessionId,
+      state?.runtimeId,
+      state?.bridgeEpoch,
+      state?.navigationGeneration,
+      state?.viewportGeneration,
+      displayRect?.width,
+      displayRect?.height,
+      containerSize.width,
+      containerSize.height,
+      scaleMode,
+      liveInputEnabled,
+    ]),
+    decodedFrameId: admittedPaint?.epoch === inputLifecycle.epoch ? admittedPaint.frameId : null,
+    enabled: liveInputEnabled,
+    displaySize: displayRect,
+    viewport: state?.viewport ?? null,
+    onState: acceptState,
+    onError: mutationFailed,
+    onFinish: refreshCapture,
+    onPoint: (point) => {
+      lastPointRef.current = { x: point.x, y: point.y };
     },
-    [displayRect, interactionMode, pointFromEvent, sendEvent, swipeMode],
-  );
+    onActivity: setActiveInput,
+    onInputAcknowledged: () => {
+      // Pixels requested before the host acknowledged this input cannot authorize
+      // the next press, even when their request began after the local press.
+      inputLifecycle.bump();
+    },
+    onInputBoundary: () => {
+      inputLifecycle.bump();
+    },
+  });
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => canSendInput,
-        onMoveShouldSetPanResponder: () => canSendInput,
-        onPanResponderGrant: (event) => {
-          const point = pointFromEvent(event);
-          dragStartRef.current = point ? { x: point.x, y: point.y } : null;
-        },
-        onPanResponderRelease: finishPointerGesture,
-        onPanResponderTerminate: () => {
-          dragStartRef.current = null;
-        },
-        onPanResponderTerminationRequest: () => false,
-      }),
-    [canSendInput, finishPointerGesture, pointFromEvent],
-  );
+  const composeOwnershipKey = JSON.stringify([
+    viewerToken,
+    controlToken,
+    state?.sessionId,
+    state?.runtimeId,
+    state?.bridgeEpoch,
+    state?.navigationGeneration,
+    state?.viewportGeneration,
+  ]);
+  const requestCompose = () => {
+    if (!canSendInput) return;
+    closeToolbarMenu(false);
+    nextComposeRequest.current += 1;
+    setComposeRequest({ id: nextComposeRequest.current, ownershipKey: composeOwnershipKey });
+  };
+  const composeRequestHandled = useCallback((id: number) => {
+    setComposeRequest((current) => (current?.id === id ? null : current));
+  }, []);
 
   const handleCanvasLayout = useCallback((event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
@@ -1411,7 +836,7 @@ export function SharedBrowserPanel({
   const takeControl = useCallback(
     (takeover: boolean) => {
       if (!viewerToken || acquireMutation.isPending) return;
-      lifecycle.bump();
+      inputLifecycle.bump();
       acquireMutation.mutate({ viewerToken, takeover });
     },
     [acquireMutation, viewerToken],
@@ -1426,7 +851,7 @@ export function SharedBrowserPanel({
     ) {
       return;
     }
-    lifecycle.bump();
+    inputLifecycle.bump();
     releaseMutation.mutate({ viewerToken: viewer, controlToken });
   }, [controlToken, releaseMutation]);
 
@@ -1440,11 +865,11 @@ export function SharedBrowserPanel({
           setOperationError("Enter an address to navigate.");
           return;
         }
-        lifecycle.bump();
+        inputLifecycle.bump();
         navigateMutation.mutate({ ...context, action: { kind: "goto", url: nextUrl } });
         return;
       }
-      lifecycle.bump();
+      inputLifecycle.bump();
       navigateMutation.mutate({ ...context, action: { kind: action } });
     },
     [navigateMutation, requireControlContext],
@@ -1468,7 +893,7 @@ export function SharedBrowserPanel({
       );
       return;
     }
-    lifecycle.bump();
+    inputLifecycle.bump();
     resizeMutation.mutate({ ...context, viewport: { width, height } });
   }, [requireControlContext, resizeMutation, viewportHeight, viewportWidth]);
 
@@ -1476,38 +901,36 @@ export function SharedBrowserPanel({
     (presetId: DevicePresetId) => {
       const context = requireControlContext();
       if (!context || deviceMutation.isPending) return;
-      lifecycle.bump();
+      inputLifecycle.bump();
       setDevicePickerOpen(false);
       deviceMutation.mutate({ ...context, presetId });
     },
     [deviceMutation, requireControlContext],
   );
 
-  const scroll = useCallback(
-    (deltaX: number, deltaY: number) => {
-      const viewport = stateRef.current?.viewport;
-      if (!displayRect || !viewport) return;
-      const previous = lastPointRef.current;
-      const x = previous && previous.x <= displayRect.width ? previous.x : displayRect.width / 2;
-      const y = previous && previous.y <= displayRect.height ? previous.y : displayRect.height / 2;
-      sendEvent({
-        kind: "scroll",
-        point: toViewportPoint({ x, y }, displayRect, viewport),
-        deltaX,
-        deltaY,
-      });
+  const applyEmulationSelection = useCallback(
+    (selection: EmulationSelection) => {
+      const context = requireControlContext();
+      if (!context || anyMutationPending) return;
+      inputLifecycle.bump();
+      deviceMutation.mutate({ ...context, ...selection });
     },
-    [displayRect, sendEvent],
+    [requireControlContext, anyMutationPending, inputLifecycle, deviceMutation],
   );
-
-  const sendText = useCallback(() => {
-    if (!typeDraft || inputMutation.isPending) return;
-    sendEvent({ kind: "type", text: typeDraft });
-  }, [inputMutation.isPending, sendEvent, typeDraft]);
+  const emulation = useBrowserEmulationMode({
+    identity: JSON.stringify([host.id, workspaceId]),
+    platform: layout.platform,
+    state,
+    canControl,
+    pending: anyMutationPending,
+    apply: applyEmulationSelection,
+  });
 
   const reconnect = useCallback(() => {
     if (attachQuery.isFetching) return;
-    lifecycle.bump();
+    inputLifecycle.bump();
+    // Immediately revoke local input while the viewing-only reattachment awaits.
+    activeViewerTokenRef.current = null;
     setReconnecting(true);
     setControlToken(null);
     setOperationError(null);
@@ -1516,7 +939,19 @@ export function SharedBrowserPanel({
     });
   }, [attachQuery.isFetching, attachQuery.refetch]);
 
-  const connectionError = attachQuery.error ?? captureQuery.error;
+  useBrowserViewerRecovery({
+    identity: JSON.stringify([host.id, workspaceId]),
+    viewerToken,
+    failedViewerToken: videoViewerExpired ? video.errorViewerToken : viewerToken,
+    captureError: videoViewerExpired ? video.error : captureQuery.error,
+    pending: reconnecting || attachQuery.isFetching,
+    reconnect,
+  });
+
+  // Expiry belongs to the viewing-only recovery path, not an action failure.
+  // A failed reattachment still surfaces its attachQuery error and manual retry.
+  const connectionError =
+    attachQuery.error ?? (viewingExpired ? null : (captureQuery.error ?? video.error));
   const recoveryError =
     state?.recoveryState === "runtime-unavailable"
       ? (state.error ?? "Browser runtime unavailable.")
@@ -1549,12 +984,23 @@ export function SharedBrowserPanel({
   const activeDevicePreset = state?.devicePresetId
     ? DEVICE_PRESETS.find(({ id }) => id === state.devicePresetId)
     : null;
-  const deviceLabel = activeDevicePreset?.label ?? "Custom display";
-  const transportLabel = currentFrame?.transport === "cdp-screencast" ? "CDP" : "fallback";
-  const frameSummary = currentFrame
+  const selectedResolutionPresetId = matchingResolutionPresetId(state);
+  const deviceLabel = selectedResolutionPresetId
+    ? (activeDevicePreset?.label ?? "Custom display")
+    : `${emulation.mode === "mobile" ? "Mobile" : "Desktop"} · custom display`;
+  const transportLabel =
+    video.front && video.fallbackRevision
+      ? "Updating video"
+      : video.front
+        ? "Video"
+        : frame?.transport === "cdp-screencast"
+          ? "CDP"
+          : "fallback";
+  const summaryFrame = video.front?.frame ?? currentFrame;
+  const frameSummary = summaryFrame
     ? layout.compact
-      ? `${currentFrame.width}×${currentFrame.height} · ${transportLabel}`
-      : `${currentFrame.width} × ${currentFrame.height} · ${Math.ceil(currentFrame.byteLength / BYTES_PER_KIBIBYTE)} KB · ${transportLabel} · ${deviceLabel}`
+      ? `${summaryFrame.width}×${summaryFrame.height} · ${transportLabel}`
+      : `${summaryFrame.width} × ${summaryFrame.height} · ${Math.ceil((video.front ? (video.front.dataBase64.length * 3) / 4 : (frame?.byteLength ?? 0)) / BYTES_PER_KIBIBYTE)} KB · ${transportLabel} · ${deviceLabel}`
     : state
       ? `${state.viewport.width} × ${state.viewport.height} canonical`
       : "No frame";
@@ -1597,17 +1043,6 @@ export function SharedBrowserPanel({
     );
   }
 
-  const imageStyle = displayRect
-    ? [
-        styles.frame,
-        {
-          left: displayRect.x,
-          top: displayRect.y,
-          width: displayRect.width,
-          height: displayRect.height,
-        },
-      ]
-    : styles.frame;
   const interactionStyle = displayRect
     ? [
         styles.interactionLayer,
@@ -1621,7 +1056,17 @@ export function SharedBrowserPanel({
     : styles.interactionLayer;
 
   return (
-    <View style={styles.screen}>
+    <View
+      ref={paneRef}
+      collapsable={false}
+      style={styles.screen}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        setPaneSize((previous) =>
+          previous.width === width && previous.height === height ? previous : { width, height },
+        );
+      }}
+    >
       <View style={styles.chrome}>
         <View style={styles.addressRow}>
           <ChromeIconButton
@@ -1655,6 +1100,8 @@ export function SharedBrowserPanel({
             accessibilityLabel="Browser address"
             placeholder="Enter a URL"
             editable={canControl && !navigateMutation.isPending}
+            dimWhenReadOnly={false}
+            keyboardType="url"
             maxLength={MAX_URL_LENGTH}
             returnKeyType="go"
             style={[styles.addressInput, styles.chromeAddressInput]}
@@ -1663,15 +1110,37 @@ export function SharedBrowserPanel({
             onBlur={() => setAddressFocused(false)}
             onSubmit={() => navigate("goto", addressDraft)}
           />
+          <View ref={displayAnchorRef} collapsable={false}>
+            <ChromeIconButton
+              styles={styles}
+              theme={theme}
+              label="Display options"
+              icon="Monitor"
+              selected={toolbarMenu === "display"}
+              expanded={toolbarMenu === "display"}
+              onPress={() => toggleToolbarMenu("display")}
+            />
+          </View>
           <ChromeIconButton
             styles={styles}
             theme={theme}
-            label={`Device: ${deviceLabel}`}
-            icon={activeDevicePreset?.isMobile ? "Smartphone" : "Monitor"}
-            selected={Boolean(activeDevicePreset)}
-            disabled={!canControl || deviceMutation.isPending}
-            onPress={() => setDevicePickerOpen(true)}
+            label={`${emulation.mode === "mobile" ? "Disable" : "Enable"} mobile emulation`}
+            icon="Smartphone"
+            selected={emulation.mode === "mobile"}
+            disabled={!canControl || anyMutationPending}
+            onPress={emulation.toggle}
           />
+          <View ref={actionsAnchorRef} collapsable={false}>
+            <ChromeIconButton
+              styles={styles}
+              theme={theme}
+              label="Browser menu"
+              icon="EllipsisVertical"
+              selected={toolbarMenu === "actions"}
+              expanded={toolbarMenu === "actions"}
+              onPress={() => toggleToolbarMenu("actions")}
+            />
+          </View>
         </View>
       </View>
 
@@ -1691,11 +1160,11 @@ export function SharedBrowserPanel({
         <View style={styles.actionRow}>{controlAction}</View>
       </View>
 
-      {runtimeNotice || visibleError ? (
+      {runtimeNotice || visibleError || state?.notice ? (
         <ErrorNotice
           styles={styles}
           theme={theme}
-          message={runtimeNotice ?? visibleError ?? ""}
+          message={runtimeNotice ?? visibleError ?? state?.notice ?? ""}
           action={connectionError || reconnecting ? "Reconnect" : undefined}
           onAction={connectionError || reconnecting ? reconnect : undefined}
           actionDisabled={attachQuery.isFetching}
@@ -1703,31 +1172,64 @@ export function SharedBrowserPanel({
       ) : null}
 
       <View style={styles.canvasShell}>
-        <View style={styles.canvas} onLayout={handleCanvasLayout}>
-          {frameUri && displayRect && !imageError ? (
-            <>
-              <Image
-                accessibilityLabel={
-                  state?.title ? `Shared browser: ${state.title}` : "Shared browser frame"
-                }
-                accessibilityRole="image"
-                onError={() => {
-                  lifecycle.frame = null;
-                  setImageError(true);
-                  void captureQuery.refetch({ cancelRefetch: false });
-                }}
-                resizeMode="contain"
-                source={{ uri: frameUri }}
-                style={imageStyle}
+        <BrowserCanvasViewport
+          mode={scaleMode}
+          style={styles.canvas}
+          contentSize={canvasLayout?.contentSize ?? containerSize}
+          localPanEnabled={layout.platform === "web" || !canControl}
+          onLayout={handleCanvasLayout}
+        >
+          {buffer.layers.map((layer, slot) => {
+            if (!layer) return null;
+            const rect = getBrowserCanvasLayout(
+              containerSize,
+              layer.candidate.frame,
+              layer.candidate.viewport ?? state?.viewport ?? layer.candidate.frame,
+              scaleMode,
+            )?.frameRect;
+            if (!rect) return null;
+            const visible = slot === buffer.front;
+            return (
+              <BrowserFrameImage
+                key={layer.ticket}
+                ticket={layer.ticket}
+                visible={visible}
+                label={state?.title ? `Shared browser: ${state.title}` : "Shared browser frame"}
+                settled={settled}
+                retry={retryFrameCapture}
+                source={layer.source}
+                x={rect.x}
+                y={rect.y}
+                width={rect.width}
+                height={rect.height}
+                cornerRadius={layout.compact ? DIMENSION.screenRadius - SPACE.xs : 0}
               />
-              <View
-                {...panResponder.panHandlers}
-                accessible={false}
-                pointerEvents={canSendInput ? "auto" : "none"}
-                style={interactionStyle}
-              />
-            </>
-          ) : imageError ? (
+            );
+          })}
+          {video.supported ? (
+            <BrowserVideoSurface
+              canvasRef={video.canvasRef}
+              style={{
+                position: "absolute",
+                left: displayRect?.x ?? 0,
+                top: displayRect?.y ?? 0,
+                width: displayRect?.width ?? containerSize.width,
+                height: displayRect?.height ?? containerSize.height,
+                opacity: video.front ? 1 : 0,
+                overflow: "hidden",
+                borderRadius: layout.compact ? DIMENSION.screenRadius - SPACE.xs : 0,
+              }}
+            />
+          ) : null}
+          {currentFrame && displayRect ? (
+            <View
+              ref={canvasInput.canvasRef}
+              {...canvasInput.panHandlers}
+              accessible={false}
+              pointerEvents={liveInputEnabled ? "auto" : "none"}
+              style={interactionStyle}
+            />
+          ) : video.front ? null : imageError ? (
             <CanvasPlaceholder
               styles={styles}
               theme={theme}
@@ -1761,7 +1263,7 @@ export function SharedBrowserPanel({
               loading={attachQuery.isPending || reconnecting || captureQuery.isFetching}
             />
           )}
-        </View>
+        </BrowserCanvasViewport>
         <View style={styles.canvasFooter}>
           <Text numberOfLines={1} style={styles.canvasFooterText}>
             {state?.title || state?.url || "Shared browser"}
@@ -1772,377 +1274,68 @@ export function SharedBrowserPanel({
         </View>
       </View>
 
-      <View style={styles.controls}>
-        {layout.compact ? (
-          <>
-            <View style={styles.mobileRow}>
-              <Field
-                styles={styles}
-                theme={theme}
-                value={typeDraft}
-                accessibilityLabel="Text to type in the shared browser"
-                placeholder={canSendInput ? "Type into the page" : "Take control to type"}
-                editable={canSendInput}
-                maxLength={MAX_TEXT_LENGTH}
-                returnKeyType="send"
-                style={[styles.typeInput, styles.buttonLarge]}
-                onChangeText={setTypeDraft}
-                onSubmit={sendText}
-              />
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="Send"
-                icon="Send"
-                primary
-                large
-                disabled={!canSendInput || !typeDraft || inputMutation.isPending}
-                onPress={sendText}
-              />
-            </View>
-            <View style={styles.mobileRow}>
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label={swipeMode === "scroll" ? "Swipe scrolls" : "Swipe drags"}
-                accessibilityLabel="Pointer and scrolling options"
-                icon="MousePointer2"
-                large
-                fill
-                disabled={!canControl}
-                onPress={() => setPointerSheetOpen(true)}
-              />
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="Keys"
-                icon="Keyboard"
-                large
-                fill
-                disabled={!canSendInput}
-                onPress={() => setKeysSheetOpen(true)}
-              />
-            </View>
-          </>
-        ) : (
-          <>
-            <ScrollView
-              horizontal
-              keyboardShouldPersistTaps="handled"
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.toolbarContent}
-            >
-              <View style={styles.controlStrip}>
-                <Text style={styles.stripLabel}>Tap</Text>
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="Click"
-                  selected={interactionMode === "click"}
-                  disabled={!canSendInput}
-                  onPress={() => setInteractionMode("click")}
-                />
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="Double"
-                  selected={interactionMode === "double"}
-                  disabled={!canSendInput}
-                  onPress={() => setInteractionMode("double")}
-                />
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="Right"
-                  selected={interactionMode === "right"}
-                  disabled={!canSendInput}
-                  onPress={() => setInteractionMode("right")}
-                />
-                <View style={styles.separator} />
-                <Text style={styles.stripLabel}>Drag</Text>
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="Scrolls"
-                  selected={swipeMode === "scroll"}
-                  disabled={!canControl}
-                  onPress={() => setSwipeMode("scroll")}
-                />
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="Drags"
-                  selected={swipeMode === "drag"}
-                  disabled={!canControl}
-                  onPress={() => setSwipeMode("drag")}
-                />
-                <View style={styles.separator} />
-                <Text style={styles.stripLabel}>Scroll</Text>
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="←"
-                  accessibilityLabel="Scroll left"
-                  disabled={!canSendInput}
-                  onPress={() => scroll(-SCROLL_STEP, 0)}
-                />
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="↑"
-                  accessibilityLabel="Scroll up"
-                  disabled={!canSendInput}
-                  onPress={() => scroll(0, -SCROLL_STEP)}
-                />
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="↓"
-                  accessibilityLabel="Scroll down"
-                  disabled={!canSendInput}
-                  onPress={() => scroll(0, SCROLL_STEP)}
-                />
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="→"
-                  accessibilityLabel="Scroll right"
-                  disabled={!canSendInput}
-                  onPress={() => scroll(SCROLL_STEP, 0)}
-                />
-              </View>
-            </ScrollView>
-
-            <View style={styles.typeRow}>
-              <Field
-                styles={styles}
-                theme={theme}
-                value={typeDraft}
-                accessibilityLabel="Text to type in the shared browser"
-                placeholder={
-                  canSendInput
-                    ? "Type into the focused page element"
-                    : "Take control and focus a page field"
-                }
-                editable={canSendInput}
-                maxLength={MAX_TEXT_LENGTH}
-                returnKeyType="send"
-                style={styles.typeInput}
-                onChangeText={setTypeDraft}
-                onSubmit={sendText}
-              />
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="Send"
-                icon="Send"
-                primary
-                disabled={!canSendInput || !typeDraft || inputMutation.isPending}
-                onPress={sendText}
-              />
-            </View>
-            <ScrollView
-              horizontal
-              keyboardShouldPersistTaps="handled"
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.keysContent}
-            >
-              <Text style={styles.stripLabel}>Keys</Text>
-              {SPECIAL_KEYS.map(({ key, label }) => (
-                <ControlButton
-                  key={key}
-                  styles={styles}
-                  theme={theme}
-                  label={label}
-                  accessibilityLabel={`Send ${key} key`}
-                  disabled={!canSendInput}
-                  onPress={() => sendEvent({ kind: "key", key })}
-                />
-              ))}
-            </ScrollView>
-          </>
-        )}
-      </View>
+      <ComposeTextControls
+        styles={styles}
+        theme={theme}
+        composeText={canvasInput.composeText}
+        cancelInput={canvasInput.cancel}
+        enabled={canSendInput}
+        ownershipKey={composeOwnershipKey}
+        request={composeRequest}
+        onRequestHandled={composeRequestHandled}
+      />
 
       <Modal
-        title="Pointer and scrolling"
-        icon={<Icon name="MousePointer2" size={18} color={theme.colors.foreground} />}
-        open={pointerSheetOpen}
-        onOpenChange={setPointerSheetOpen}
-      >
-        <Modal.Content>
-          <View style={styles.sheetContent}>
-            <Text style={styles.stripLabel}>Swipe gesture</Text>
-            <View style={styles.sheetGrid}>
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="Scrolls the page"
-                large
-                fill
-                selected={swipeMode === "scroll"}
-                disabled={!canControl}
-                onPress={() => setSwipeMode("scroll")}
-              />
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="Drags content"
-                large
-                fill
-                selected={swipeMode === "drag"}
-                disabled={!canControl}
-                onPress={() => setSwipeMode("drag")}
-              />
-            </View>
-            <Text style={styles.stripLabel}>Tap action</Text>
-            <View style={styles.sheetGrid}>
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="Click"
-                large
-                fill
-                selected={interactionMode === "click"}
-                disabled={!canControl}
-                onPress={() => setInteractionMode("click")}
-              />
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="Double"
-                large
-                fill
-                selected={interactionMode === "double"}
-                disabled={!canControl}
-                onPress={() => setInteractionMode("double")}
-              />
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="Right"
-                large
-                fill
-                selected={interactionMode === "right"}
-                disabled={!canControl}
-                onPress={() => setInteractionMode("right")}
-              />
-            </View>
-            <Text style={styles.stripLabel}>Nudge scroll</Text>
-            <View style={styles.sheetPad}>
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="↑"
-                accessibilityLabel="Scroll up"
-                pad
-                disabled={!canSendInput}
-                onPress={() => scroll(0, -SCROLL_STEP)}
-              />
-              <View style={styles.sheetPadRow}>
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="←"
-                  accessibilityLabel="Scroll left"
-                  pad
-                  disabled={!canSendInput}
-                  onPress={() => scroll(-SCROLL_STEP, 0)}
-                />
-                <View style={styles.padSpacer} />
-                <ControlButton
-                  styles={styles}
-                  theme={theme}
-                  label="→"
-                  accessibilityLabel="Scroll right"
-                  pad
-                  disabled={!canSendInput}
-                  onPress={() => scroll(SCROLL_STEP, 0)}
-                />
-              </View>
-              <ControlButton
-                styles={styles}
-                theme={theme}
-                label="↓"
-                accessibilityLabel="Scroll down"
-                pad
-                disabled={!canSendInput}
-                onPress={() => scroll(0, SCROLL_STEP)}
-              />
-            </View>
-            <Text style={styles.devicePresetDetail}>
-              Tap the page to click. Swipe to scroll or drag, depending on the gesture above.
-            </Text>
-          </View>
-        </Modal.Content>
-      </Modal>
-
-      <Modal
-        title="Keyboard keys"
-        icon={<Icon name="Keyboard" size={18} color={theme.colors.foreground} />}
-        open={keysSheetOpen}
-        onOpenChange={setKeysSheetOpen}
-      >
-        <Modal.Content>
-          <View style={styles.sheetContent}>
-            <View style={styles.sheetGrid}>
-              {SPECIAL_KEYS.map(({ key, label }) => (
-                <ControlButton
-                  key={key}
-                  styles={styles}
-                  theme={theme}
-                  label={label}
-                  accessibilityLabel={`Send ${key} key`}
-                  large
-                  disabled={!canSendInput}
-                  onPress={() => sendEvent({ kind: "key", key })}
-                />
-              ))}
-            </View>
-            <Text style={styles.devicePresetDetail}>
-              Keys go to the page element that currently has focus in the shared browser.
-            </Text>
-          </View>
-        </Modal.Content>
-      </Modal>
-      <Modal
-        title="Device emulation"
+        title="Resolution and quality"
         icon={<Icon name="Smartphone" size={18} color={theme.colors.foreground} />}
         open={devicePickerOpen}
         onOpenChange={setDevicePickerOpen}
       >
         <Modal.Content>
           <View style={styles.deviceModalContent}>
-            {DEVICE_PRESETS.map((preset) => {
-              const selected = state?.devicePresetId === preset.id;
-              return (
-                <Pressable
-                  key={preset.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Emulate ${preset.label}`}
-                  accessibilityState={{ selected }}
-                  disabled={!canControl || deviceMutation.isPending}
-                  onPress={() => selectDevicePreset(preset.id)}
-                  style={({ pressed }) => [
-                    styles.devicePresetRow,
-                    selected ? styles.devicePresetRowSelected : null,
-                    pressed ? styles.buttonPressed : null,
-                    !canControl ? styles.buttonDisabled : null,
-                  ]}
-                >
-                  <Icon
-                    name={preset.isMobile ? "Smartphone" : "Monitor"}
-                    size={18}
-                    color={selected ? theme.colors.accent : theme.colors.foregroundMuted}
-                  />
-                  <Text style={styles.devicePresetText}>{preset.label}</Text>
-                  <Text style={styles.devicePresetDetail}>
-                    {preset.viewport.width} × {preset.viewport.height}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            <BrowserResolutionPicker
+              theme={theme}
+              groups={groupResolutionPresets()}
+              selectedPresetId={selectedResolutionPresetId}
+              favoritePresetIds={preferences.favoritePresetIds}
+              selectDisabled={!canControl || anyMutationPending}
+              favoriteDisabled={preferences.disabled}
+              density={state?.captureScale ?? 1}
+              viewport={state?.viewport ?? null}
+              onDensityChange={(density) => {
+                if (!requireControlContext() || anyMutationPending) return;
+                densityControl.select(density);
+              }}
+              captureQuality={preferences.captureQuality}
+              videoBitrate={preferences.videoBitrate}
+              videoFps={preferences.videoFps}
+              onVideoBitrateChange={preferences.changeVideoBitrate}
+              onVideoFpsChange={preferences.changeVideoFps}
+              onSelect={selectDevicePreset}
+              onToggleFavorite={(id) => {
+                void preferences.toggleFavorite(id);
+              }}
+              onQualityChange={(quality) => {
+                void preferences.changeQuality(quality);
+              }}
+            />
+            {preferences.error ? (
+              <View style={styles.controlStrip}>
+                <Text accessibilityRole="alert" style={styles.mutedText}>
+                  {preferences.error}
+                </Text>
+                <ControlButton
+                  styles={styles}
+                  theme={theme}
+                  label="Reload preferences"
+                  onPress={preferences.reload}
+                />
+              </View>
+            ) : null}
             <Text style={styles.stripLabel}>Custom viewport</Text>
+            {visibleError ? (
+              <ErrorNotice styles={styles} theme={theme} message={visibleError} />
+            ) : null}
             <View style={styles.customViewportRow}>
               <Field
                 styles={styles}
@@ -2187,6 +1380,160 @@ export function SharedBrowserPanel({
           </View>
         </Modal.Content>
       </Modal>
+      {toolbarMenu ? (
+        <BrowserToolbarMenu
+          key={toolbarMenu}
+          theme={theme}
+          compact={layout.compact}
+          title={toolbarMenu === "display" ? "Display options" : "Browser menu"}
+          paneRef={paneRef}
+          paneSize={paneSize}
+          anchorRef={toolbarMenu === "display" ? displayAnchorRef : actionsAnchorRef}
+          preferredHeight={
+            toolbarMenu === "display"
+              ? 300 + preferences.favoritePresetIds.length * (layout.compact ? 44 : 36)
+              : layout.platform === "web"
+                ? 88
+                : 176
+          }
+          onClose={() => closeToolbarMenu()}
+          shouldRestoreFocus={() => menuRestoreFocus.current}
+          onSubmenuOpen={() => {
+            if (canSendInput) setKeysSubmenuOpen(true);
+          }}
+          submenu={
+            toolbarMenu === "actions" && keysSubmenuOpen
+              ? {
+                  title: "Send keys",
+                  anchorRef: keysAnchorRef,
+                  preferredHeight: 40 + SPECIAL_KEYS.length * (layout.compact ? 44 : 36),
+                  onBack: () => setKeysSubmenuOpen(false),
+                  children: SPECIAL_KEYS.map(({ key, label }) => (
+                    <BrowserMenuItem
+                      key={key}
+                      theme={theme}
+                      compact={layout.compact}
+                      label={label}
+                      disabled={!canSendInput}
+                      onPress={() => {
+                        sendEvent({ kind: "key", key });
+                      }}
+                    />
+                  )),
+                }
+              : undefined
+          }
+        >
+          {toolbarMenu === "display" ? (
+            <>
+              <BrowserMenuHeading theme={theme}>View size</BrowserMenuHeading>
+              <BrowserMenuItem
+                theme={theme}
+                compact={layout.compact}
+                label="Fit to panel"
+                icon="Minimize"
+                selected={scaleMode === "fit"}
+                onPress={() => {
+                  closeToolbarMenu();
+                  setScaleMode("fit");
+                }}
+              />
+              <BrowserMenuItem
+                theme={theme}
+                compact={layout.compact}
+                label="Actual size (100%)"
+                icon="Maximize"
+                selected={scaleMode === "actual"}
+                onPress={() => {
+                  closeToolbarMenu();
+                  setScaleMode("actual");
+                }}
+              />
+              {layout.platform !== "web" && scaleMode === "actual" ? (
+                <Text
+                  style={[styles.devicePresetDetail, { paddingHorizontal: 12, paddingVertical: 4 }]}
+                >
+                  Release control to pan this view. While controlling, swipes go to the page.
+                </Text>
+              ) : null}
+              <BrowserMenuSeparator theme={theme} />
+              <BrowserMenuHeading theme={theme}>Favorite resolutions</BrowserMenuHeading>
+              {preferences.favoritePresetIds.length === 0 ? (
+                <Text
+                  style={[styles.devicePresetDetail, { paddingHorizontal: 12, paddingVertical: 4 }]}
+                >
+                  Star resolutions in the full list to add them here.
+                </Text>
+              ) : (
+                preferences.favoritePresetIds.map((id) => {
+                  const preset = DEVICE_PRESETS.find((item) => item.id === id);
+                  return preset ? (
+                    <BrowserMenuItem
+                      key={id}
+                      theme={theme}
+                      compact={layout.compact}
+                      label={preset.label}
+                      icon={preset.isMobile ? "Smartphone" : "Monitor"}
+                      selected={selectedResolutionPresetId === id}
+                      disabled={!canControl || anyMutationPending}
+                      onPress={() => {
+                        closeToolbarMenu();
+                        selectDevicePreset(id);
+                      }}
+                    />
+                  ) : null;
+                })
+              )}
+              <BrowserMenuSeparator theme={theme} />
+              <BrowserMenuItem
+                theme={theme}
+                compact={layout.compact}
+                label="All resolutions and quality"
+                icon="Settings2"
+                onPress={() => {
+                  closeToolbarMenu(false);
+                  setDevicePickerOpen(true);
+                }}
+              />
+            </>
+          ) : (
+            <>
+              {layout.platform !== "web" || layout.compact ? (
+                <BrowserMenuItem
+                  theme={theme}
+                  compact={layout.compact}
+                  label="Compose text"
+                  icon="Pencil"
+                  disabled={!canSendInput}
+                  onPress={requestCompose}
+                />
+              ) : null}
+              <View ref={keysAnchorRef}>
+                <BrowserMenuItem
+                  theme={theme}
+                  compact={layout.compact}
+                  label="Send keys"
+                  icon="Keyboard"
+                  expanded={keysSubmenuOpen}
+                  disabled={!canSendInput}
+                  onPress={() => setKeysSubmenuOpen(true)}
+                />
+              </View>
+              <BrowserMenuItem
+                theme={theme}
+                compact={layout.compact}
+                label="Reconnect viewer"
+                icon="RotateCw"
+                disabled={attachQuery.isFetching}
+                onPress={() => {
+                  closeToolbarMenu();
+                  reconnect();
+                }}
+              />
+            </>
+          )}
+        </BrowserToolbarMenu>
+      ) : null}
     </View>
   );
 }

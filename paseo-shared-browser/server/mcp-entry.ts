@@ -3,13 +3,12 @@ import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { MAX_AGENT_VIEWPORT as MAX_VIEWPORT, MIN_VIEWPORT } from "../shared/viewport-limits";
 import type { JsonValue } from "./runtime-protocol";
 import { resolveSupervisorPaths } from "./supervisor";
 import { AgentSupervisorClient } from "./supervisor-client";
 
 const TICKET_ENV = "PASEO_SHARED_BROWSER_TICKET";
-const MIN_VIEWPORT = { width: 320, height: 480 } as const;
-const MAX_VIEWPORT = { width: 1600, height: 1200 } as const;
 
 const pointSchema = z.object({
   x: z.number().finite().nonnegative(),

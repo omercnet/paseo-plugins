@@ -18,6 +18,7 @@ import {
 } from "../server/supervisor";
 import { AgentSupervisorClient, SupervisorClient } from "../server/supervisor-client";
 import type { BrowserState } from "../shared/browser";
+import { DEFAULT_CAPTURE_QUALITY, JPEG_QUALITY } from "../shared/capture-settings";
 
 interface AgentRuntime extends RuntimeInstance {
   workspaceId: string;
@@ -31,6 +32,7 @@ interface RuntimeState {
 class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
   readonly states = new Map<string, RuntimeState>();
   readonly stopped: AgentRuntime[] = [];
+  readonly operations: string[] = [];
   failNextMutationUnknown = false;
 
   async create(workspaceId: string): Promise<AgentRuntime> {
@@ -44,6 +46,7 @@ class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
   async request(runtime: AgentRuntime, operation: string, input: JsonValue): Promise<JsonValue> {
     const state = this.states.get(runtime.workspaceId);
     if (!state) throw new Error(`Runtime is stopped: ${runtime.workspaceId}`);
+    this.operations.push(operation);
     const data = input && typeof input === "object" && !Array.isArray(input) ? input : {};
     if (this.failNextMutationUnknown && operation === "navigate") {
       this.failNextMutationUnknown = false;
@@ -58,6 +61,7 @@ class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
           title: runtime.workspaceId,
           canGoBack: false,
           canGoForward: false,
+          inputGeneration: "0:0",
         };
       case "navigate":
         state.url = String(data.url);
@@ -84,6 +88,8 @@ class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
       case "mouse.up":
       case "mouse.wheel":
       case "text.insert":
+      case "input.begin":
+      case "input.end":
       case "key.down":
       case "key.up":
         return null;
@@ -206,7 +212,256 @@ afterEach(async () => {
   await Promise.all(supervisors.splice(0).map((supervisor) => supervisor.stopAll()));
 });
 
+/** Pause a real policy metadata read without introducing sockets or a browser. */
+function holdNextMetadata(owner: AgentRuntimeOwner) {
+  let entered!: () => void;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = owner.request.bind(owner);
+  let hold = true;
+  owner.request = async (runtime, operation, input) => {
+    if (operation === "state" && hold) {
+      hold = false;
+      entered();
+      await gate;
+    }
+    return original(runtime, operation, input);
+  };
+  return { pending, release };
+}
+
 describe("agent shared-browser authorization", () => {
+  it("refuses revoked acquisition during attachment and removes the late viewer", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("revoked-attach");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    const hold = holdNextMetadata(owner);
+    const acquiring = agentRequest(supervisor, agentTicket, "acquire-control");
+    const refused = expect(acquiring).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
+    await hold.pending;
+    await revokeAgent(supervisor, bridge, "agent-one");
+    hold.release();
+    await refused;
+    const human = await browserRequest<{ state: BrowserState }>(supervisor, bridge, "attach", {
+      workspaceId: "workspace-one",
+      viewerLabel: "Human",
+    });
+    expect(human.state.viewerCount).toBe(1);
+    expect(human.state.controller).toBe("none");
+  });
+
+  it("refuses revoked queued native publication without replaying the mutation", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("revoked-mutation");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    const hold = holdNextMetadata(owner);
+    const reading = supervisor.requestWorkspace(
+      bridge.bridgeId,
+      bridge.epoch,
+      "workspace-one",
+      "state",
+      null,
+    );
+    await hold.pending;
+    const navigating = agentRequest(supervisor, agentTicket, "navigate", {
+      action: { kind: "goto", url: "https://must-not-publish.example/" },
+    });
+    const refused = expect(navigating).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
+    const revoking = revokeAgent(supervisor, bridge, "agent-one");
+    hold.release();
+    await reading;
+    await refused;
+    await revoking;
+    expect(owner.states.get("workspace-one")?.url).toBe("https://workspace-one.example/");
+  });
+
+  for (const heldCase of [
+    { name: "key", down: "key.down", up: "key.up", event: { kind: "key", key: "Enter" } },
+    {
+      name: "button",
+      down: "mouse.down",
+      up: "mouse.up",
+      event: {
+        kind: "click",
+        button: "left",
+        clickCount: 1,
+        point: { x: 30, y: 30, width: 1280, height: 800 },
+      },
+    },
+  ]) {
+    it(`releases an acknowledged ${heldCase.name} after revocation without admitting another press`, async () => {
+      const { owner, supervisor, bridge } = createHarness();
+      const agentTicket = ticket("revoked-held-key");
+      await issueTicket(supervisor, bridge, agentTicket);
+      await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+      await agentRequest(supervisor, agentTicket, "acquire-control");
+      await agentRequest(supervisor, agentTicket, "capture");
+      let entered!: () => void;
+      let release!: () => void;
+      const pressed = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const events: string[] = [];
+      const original = owner.request.bind(owner);
+      owner.request = async (runtime, operation, input) => {
+        if (operation === heldCase.down) {
+          events.push("down");
+          entered();
+          await gate;
+        }
+        if (operation === heldCase.up) events.push("up");
+        return original(runtime, operation, input);
+      };
+      const input = agentRequest(supervisor, agentTicket, "input", {
+        event: heldCase.event,
+      } as JsonValue);
+      const refused = expect(input).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
+      await pressed;
+      const revoking = revokeAgent(supervisor, bridge, "agent-one");
+      release();
+      await refused;
+      await revoking;
+      expect(events).toEqual(["down", "up"]);
+    });
+  }
+
+  it("cleans revoked uncertain-down intent on its original runtime without replay", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("revoked-uncertain-down");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    await agentRequest(supervisor, agentTicket, "capture");
+    let entered!: () => void;
+    let release!: () => void;
+    const pressed = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const events: string[] = [];
+    const original = owner.request.bind(owner);
+    owner.request = async (runtime, operation, input) => {
+      if (operation === "key.down") {
+        events.push("down");
+        entered();
+        await gate;
+        throw new CdpUnknownOutcomeError("Original down outcome unknown");
+      }
+      if (operation === "input.end") events.push("cleanup");
+      return original(runtime, operation, input);
+    };
+    const input = agentRequest(supervisor, agentTicket, "input", {
+      event: { kind: "key", key: "Enter" },
+    });
+    const refused = expect(input).rejects.toMatchObject({ code: "UNKNOWN_OUTCOME" });
+    await pressed;
+    const revoking = revokeAgent(supervisor, bridge, "agent-one");
+    release();
+    await refused;
+    await revoking;
+    expect(events).toEqual(["down", "cleanup"]);
+  });
+
+  it("validates raw agent mutation fields before any native action", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("validated-input");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    await agentRequest(supervisor, agentTicket, "capture");
+    const published: string[] = [];
+    const original = owner.request.bind(owner);
+    owner.request = async (runtime, operation, input) => {
+      published.push(operation);
+      return original(runtime, operation, input);
+    };
+    const invalid: { operation: AgentBrowserOperation; input: JsonValue }[] = [
+      { operation: "input", input: { event: { kind: "type", text: "x".repeat(16001) } } },
+      { operation: "input", input: { event: { kind: "key", key: "Control" } } },
+      {
+        operation: "input",
+        input: { event: { kind: "click", point: { x: -1, y: 5, width: 100, height: 100 } } },
+      },
+      { operation: "navigate", input: { action: { kind: "invalid" } } },
+      { operation: "viewport", input: { viewport: { width: 0, height: 800 } } },
+    ];
+    for (const request of invalid) {
+      await expect(
+        agentRequest(supervisor, agentTicket, request.operation, request.input),
+      ).rejects.toMatchObject({
+        code: "INVALID_REQUEST",
+        message: "Invalid agent browser request",
+      });
+    }
+    expect(published).toEqual([]);
+    await agentRequest(supervisor, agentTicket, "input", {
+      event: { kind: "type", text: "Valid committed text" },
+    });
+    expect(published.filter((operation) => operation === "text.insert")).toEqual(["text.insert"]);
+  });
+
+  it("enforces the 1600x1200 agent viewport at the raw ticket boundary, before any mutation", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("viewport-cap");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    const published: string[] = [];
+    const original = owner.request.bind(owner);
+    owner.request = async (runtime, operation, input) => {
+      published.push(operation);
+      return original(runtime, operation, input);
+    };
+    for (const viewport of [
+      { width: 1601, height: 1200 },
+      { width: 1600, height: 1201 },
+      { width: 2560, height: 2560 },
+    ]) {
+      await expect(
+        agentRequest(supervisor, agentTicket, "viewport", { viewport }),
+      ).rejects.toMatchObject({
+        code: "INVALID_REQUEST",
+        message: "Invalid agent browser request",
+      });
+    }
+    expect(published.filter((operation) => operation === "emulate")).toEqual([]);
+    await agentRequest(supervisor, agentTicket, "viewport", {
+      viewport: { width: 1600, height: 1200 },
+    });
+    expect(published.filter((operation) => operation === "emulate")).toEqual(["emulate"]);
+  });
+
+  it("keeps every explicit agent capture quality and defaults only when omitted", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("capture-quality");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    const qualities: unknown[] = [];
+    const original = owner.request.bind(owner);
+    owner.request = async (runtime, operation, input) => {
+      if (operation === "frame") qualities.push((input as { quality?: unknown }).quality);
+      return original(runtime, operation, input);
+    };
+    await agentRequest(supervisor, agentTicket, "capture", {});
+    await agentRequest(supervisor, agentTicket, "capture", { quality: "high" });
+    await agentRequest(supervisor, agentTicket, "capture", { quality: "low" });
+    expect(qualities).toEqual([JPEG_QUALITY.medium, JPEG_QUALITY.high, JPEG_QUALITY.low]);
+    expect(DEFAULT_CAPTURE_QUALITY).toBe("medium");
+  });
+
   it("uses an opaque agent ticket without claiming or fencing the admin bridge", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-agent-client-"));
     const paths = resolveSupervisorPaths(root);
@@ -469,5 +724,48 @@ describe("agent shared-browser authorization", () => {
     await expect(
       bindTicket(supervisor, bridge, lateTicket, "agent-two", "workspace-one"),
     ).rejects.toMatchObject({ code: "WORKSPACE_ARCHIVED" });
+  });
+
+  it("dispatches agent input only with control and a freshly captured frame", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("input");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    const click = {
+      event: {
+        kind: "click",
+        point: { x: 10, y: 20, width: 1280, height: 800 },
+        button: "left",
+        clickCount: 1,
+      },
+    } as JsonValue;
+
+    await agentRequest(supervisor, agentTicket, "status");
+    await expect(agentRequest(supervisor, agentTicket, "input", click)).rejects.toMatchObject({
+      code: "AUTHENTICATION_FAILED",
+    });
+    expect(owner.operations).not.toContain("mouse.down");
+
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    await expect(agentRequest(supervisor, agentTicket, "input", click)).rejects.toThrow(
+      "Capture a frame before sending input",
+    );
+    await agentRequest(supervisor, agentTicket, "capture", { quality: "medium" });
+    const result = await agentRequest<{ state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "input",
+      click,
+    );
+    expect(result.state.controller).toBe("self");
+    expect(owner.operations.filter((op) => op.startsWith("mouse."))).toEqual([
+      "mouse.move",
+      "mouse.down",
+      "mouse.up",
+    ]);
+
+    await expect(agentRequest(supervisor, agentTicket, "input", click)).rejects.toThrow(
+      "Capture a frame before sending input",
+    );
   });
 });

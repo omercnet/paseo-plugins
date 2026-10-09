@@ -9,6 +9,7 @@ import { resolveBrowserRuntimeRoot } from "../server/runtime-path";
 import { resolveSupervisorPaths, startSupervisorServer } from "../server/supervisor";
 import { SupervisorClient } from "../server/supervisor-client";
 import type { BrowserFrame, BrowserState } from "../shared/browser";
+import { DEFAULT_CAPTURE_QUALITY } from "../shared/capture-settings";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -87,9 +88,23 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       <html><head><title>Shared Browser Smoke</title><style>
         input{position:absolute;left:40px;top:30px;width:220px;height:32px}
         button{position:absolute;left:300px;top:30px;width:140px;height:36px}
+        .cursor-case{position:absolute;left:40px;width:400px;height:30px;font:20px/30px monospace;cursor:auto}
+        #plain{top:100px} #locked{top:150px;user-select:none}
+        #arrow{top:200px;cursor:default} #editor{top:250px}
+        #vertical{top:300px;width:30px;height:140px;writing-mode:vertical-rl}
+        #link{position:absolute;left:500px;top:100px}
+        #shadow{position:absolute;left:500px;top:150px}
       </style></head><body>
         <input aria-label="Shared value" oninput="fetch('/typed?value='+encodeURIComponent(this.value))">
         <button onclick="fetch('/clicked')">Record click</button>
+        <div id="plain" class="cursor-case">Selectable text</div>
+        <div id="locked" class="cursor-case">Non-selectable</div>
+        <div id="arrow" class="cursor-case">Explicit arrow</div>
+        <div id="editor" class="cursor-case" contenteditable="true"></div>
+        <div id="vertical" class="cursor-case">Vertical text</div>
+        <a id="link" href="#anchor">Link</a>
+        <div id="shadow"></div>
+        <script>document.getElementById('shadow').attachShadow({mode:'open'}).innerHTML = '<span style="cursor:auto;font:20px/30px monospace">Shadow text</span>';</script>
       </body></html>`;
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     if (url.searchParams.has("delayed")) {
@@ -98,7 +113,13 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       setTimeout(() => response.end(page), 100);
       return;
     }
-    response.end(page);
+    // Stream recovery after fallback needs sustained paint events, which a static
+    // page never produces. The cookie page animates so recovery is observable.
+    response.end(
+      url.pathname === "/set-cookie"
+        ? `${page}<style>@keyframes pulse{50%{opacity:.5}}</style><div style="width:8px;height:8px;background:#0a0;animation:pulse .1s infinite"></div>`
+        : page,
+    );
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -153,14 +174,73 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       action: { kind: "goto", url: `${origin}/?delayed=1` },
     });
     expect(navigated.state.url).toBe(`${origin}/?delayed=1`);
-    expect(navigated.state.title).toBe("Shared Browser Smoke");
+    // URL actions acknowledge native navigation; this fixture separately waits
+    // for its delayed DOM before exercising the remote input elements below.
+    await vi.waitFor(
+      async () => {
+        const current = await manager.status(first.viewerToken);
+        expect(current.state.title).toBe("Shared Browser Smoke");
+      },
+      { timeout: 5_000 },
+    );
     console.log("browser-smoke: navigated");
 
-    const firstCapture = await manager.capture(first.viewerToken, "medium", null);
+    let firstCapture = await manager.capture(first.viewerToken, "medium", null);
     expect(firstCapture.frame?.byteLength).toBeLessThanOrEqual(800_000);
     const secondCapture = await manager.capture(second.viewerToken, "medium", null);
     expect(secondCapture.state.sessionId).toBe(firstCapture.state.sessionId);
     expect(secondCapture.state.controller).toBe("other");
+
+    // Exercise actual glyph geometry through the same guarded human RPC path.
+    const { runtimeId, bridgeEpoch } = firstCapture.state;
+    if (typeof runtimeId !== "string" || typeof bridgeEpoch !== "number") {
+      throw new Error("Native cursor fixture requires current runtime identity");
+    }
+    const cursorContext = {
+      viewerToken: first.viewerToken,
+      controlToken: firstControl.controlToken,
+      expected: {
+        ...expected(firstCapture.state),
+        runtimeId,
+        bridgeEpoch,
+      },
+    };
+    const channel = await manager.beginGesture({
+      ...cursorContext,
+      target: target(firstCapture.frame!),
+      pointerKind: "mouse",
+    });
+    if (!("gestureId" in channel) || typeof channel.nextSequence !== "number") {
+      throw new Error("Fresh cursor fixture was not admitted");
+    }
+    let sequence = channel.nextSequence;
+    for (const [x, y, cursor] of [
+      [45, 115, "text"],
+      [390, 115, "default"],
+      [45, 165, "default"],
+      [45, 215, "default"],
+      [390, 265, "text"],
+      [55, 305, "vertical-text"],
+      [505, 108, "pointer"],
+      [505, 165, "text"],
+      [150, 46, "text"],
+    ] as const) {
+      const update = await manager.updateGesture({
+        ...cursorContext,
+        gestureId: channel.gestureId,
+        sequence,
+        event: { kind: "move", point: { x, y, width: 1280, height: 800 } },
+      });
+      expect(update.cursor, `Cursor at ${x},${y}`).toBe(cursor);
+      sequence = update.nextSequence;
+    }
+    await manager.endGesture({
+      ...cursorContext,
+      gestureId: channel.gestureId,
+      sequence,
+      cancel: false,
+    });
+    firstCapture = await manager.capture(first.viewerToken, "medium", null);
 
     await manager.sendInput({
       viewerToken: first.viewerToken,
@@ -198,6 +278,56 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       },
     });
     await vi.waitFor(() => expect(clicked).toBe(1));
+
+    // Two consecutive human presses on the JPEG path, each from its own freshly
+    // decoded receipt. An acknowledged press spends the receipt it used.
+    const humanPress = async (frame: BrowserFrame, state: BrowserState) => {
+      const context = {
+        viewerToken: first.viewerToken,
+        controlToken: firstControl.controlToken,
+        expected: {
+          ...expected(state),
+          runtimeId: state.runtimeId!,
+          bridgeEpoch: state.bridgeEpoch!,
+        },
+      };
+      const begun = await manager.beginGesture({
+        ...context,
+        target: target(frame),
+        pointerKind: "mouse",
+      });
+      if (!("gestureId" in begun) || typeof begun.nextSequence !== "number") return false;
+      const point = { x: 370, y: 46, width: 1280, height: 800 };
+      const down = await manager.updateGesture({
+        ...context,
+        gestureId: begun.gestureId,
+        sequence: begun.nextSequence,
+        target: target(frame),
+        event: { kind: "down", point, button: "left", clickCount: 1 },
+      });
+      const up = await manager.updateGesture({
+        ...context,
+        gestureId: begun.gestureId,
+        sequence: down.nextSequence,
+        event: { kind: "up", point, button: "left", clickCount: 1 },
+      });
+      await manager.endGesture({
+        ...context,
+        gestureId: begun.gestureId,
+        sequence: up.nextSequence,
+        cancel: false,
+      });
+      return true;
+    };
+    const pressFrameOne = await manager.capture(first.viewerToken, "medium", null);
+    expect(await humanPress(pressFrameOne.frame!, pressFrameOne.state)).toBe(true);
+    await vi.waitFor(() => expect(clicked).toBe(2));
+    expect(await humanPress(pressFrameOne.frame!, pressFrameOne.state)).toBe(false);
+    expect(clicked).toBe(2);
+    const pressFrameTwo = await manager.capture(first.viewerToken, "medium", null);
+    expect(pressFrameTwo.frame?.frameId).not.toBe(pressFrameOne.frame?.frameId);
+    expect(await humanPress(pressFrameTwo.frame!, pressFrameTwo.state)).toBe(true);
+    await vi.waitFor(() => expect(clicked).toBe(3));
     console.log("browser-smoke: input");
 
     const afterNavigation = await manager.navigate({
@@ -244,10 +374,20 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       action: { kind: "goto", url: `${origin}/set-cookie` },
     });
     await vi.waitFor(() => expect(lastUserAgent).toContain("Pixel 7"));
-    await vi.waitFor(async () => {
-      const resumedCapture = await manager.capture(resumed.viewerToken, "medium", null);
-      expect(resumedCapture.frame?.transport).toBe("cdp-screencast");
-    });
+    await vi.waitFor(
+      async () => {
+        // Only the default quality requests the shared CDP stream. Other viewer
+        // qualities intentionally use screenshots without restarting that stream.
+        // Leaving fallback needs a 1.5s dwell plus sustained paint events.
+        const resumedCapture = await manager.capture(
+          resumed.viewerToken,
+          DEFAULT_CAPTURE_QUALITY,
+          null,
+        );
+        expect(resumedCapture.frame?.transport).toBe("cdp-screencast");
+      },
+      { timeout: 10_000, interval: 250 },
+    );
     console.log("browser-smoke: emulated");
 
     manager.disconnect();

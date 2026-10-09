@@ -311,6 +311,8 @@ jobs:
         env:
           PASEO_HOME: ${{ runner.temp }}/paseo-home
         run: npm run prepare:runtime
+      - name: Compile Paseo client and server entries
+        run: node ../.github/scripts/build-plugin.mjs
       - name: Typecheck
         run: npm run typecheck
       - name: Check formatting and lint
@@ -322,6 +324,12 @@ jobs:
           PASEO_HOME: ${{ runner.temp }}/paseo-home
           PASEO_SHARED_BROWSER_CHROMIUM_ARGS: ${{ matrix.chromium_args }}
         run: npm run test:smoke
+      - name: Native video capture and decode smoke
+        if: ${{ runner.os == 'Linux' }}
+        env:
+          PASEO_HOME: ${{ runner.temp }}/paseo-home
+          PASEO_SHARED_BROWSER_CHROMIUM_ARGS: ${{ matrix.chromium_args }}
+        run: npm run test:video
 
   wsl-host-tools:
     needs: changes

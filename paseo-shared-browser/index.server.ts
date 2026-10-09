@@ -8,13 +8,18 @@ import {
   handleAcquireControl,
   handleApplyDevicePreset,
   handleAttachBrowser,
+  handleBeginBrowserGesture,
   handleCaptureBrowser,
   handleDetachBrowser,
+  handleEndBrowserGesture,
   handleListOpenBrowserWorkspaces,
   handleNavigateBrowser,
+  handleReadBrowserVideo,
   handleReleaseControl,
   handleResizeBrowser,
   handleSendBrowserInput,
+  handleSetCaptureDensity,
+  handleUpdateBrowserGesture,
   handleWorkspaceArchived,
   issueAgentTicket,
   revokeAgentBrowserAccess,
@@ -24,14 +29,20 @@ import {
   acquireControlRpc,
   applyDevicePresetRpc,
   attachBrowserRpc,
+  beginBrowserGestureRpc,
   captureBrowserRpc,
   detachBrowserRpc,
+  endBrowserGestureRpc,
   listOpenBrowserWorkspacesRpc,
   navigateBrowserRpc,
   releaseControlRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
+  setCaptureDensityRpc,
+  updateBrowserGestureRpc,
 } from "./shared/browser";
+import { browserDisplayPreferences } from "./shared/browser-display-preferences";
+import { readBrowserVideoRpc } from "./shared/browser-video";
 
 const TICKET_ENV = "PASEO_SHARED_BROWSER_TICKET";
 const MCP_SERVER_ID = "shared-browser";
@@ -67,12 +78,18 @@ function mcpBundlePath(): string {
 }
 
 export default function contribute(server: PluginServerContext) {
+  server.registerSettings(browserDisplayPreferences);
   server.handle(attachBrowserRpc, handleAttachBrowser);
   server.handle(detachBrowserRpc, handleDetachBrowser);
   server.handle(captureBrowserRpc, handleCaptureBrowser);
+  server.handle(setCaptureDensityRpc, handleSetCaptureDensity);
+  server.handle(readBrowserVideoRpc, handleReadBrowserVideo);
   server.handle(listOpenBrowserWorkspacesRpc, handleListOpenBrowserWorkspaces);
   server.handle(acquireControlRpc, handleAcquireControl);
   server.handle(releaseControlRpc, handleReleaseControl);
+  server.handle(beginBrowserGestureRpc, handleBeginBrowserGesture);
+  server.handle(updateBrowserGestureRpc, handleUpdateBrowserGesture);
+  server.handle(endBrowserGestureRpc, handleEndBrowserGesture);
   server.handle(navigateBrowserRpc, handleNavigateBrowser);
   server.handle(resizeBrowserRpc, handleResizeBrowser);
   server.handle(applyDevicePresetRpc, handleApplyDevicePreset);
