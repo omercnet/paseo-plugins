@@ -4,6 +4,11 @@ import { createServer, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { BrowserFrame, BrowserInputEvent, BrowserState, Viewport } from "../shared/browser";
+import {
+  beginBrowserGestureRpc,
+  endBrowserGestureRpc,
+  updateBrowserGestureRpc,
+} from "../shared/browser";
 import { SessionManager } from "./browser-policy";
 import { CdpUnknownOutcomeError } from "./cdp";
 import {
@@ -330,6 +335,17 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         break;
       case "input":
         result = await this.browserPolicy.sendInput(data as never);
+        this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
+        break;
+      case "gesture.begin":
+        result = await this.browserPolicy.beginGesture(beginBrowserGestureRpc.input.parse(data));
+        break;
+      case "gesture.update":
+        result = await this.browserPolicy.updateGesture(updateBrowserGestureRpc.input.parse(data));
+        this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
+        break;
+      case "gesture.end":
+        result = await this.browserPolicy.endGesture(endBrowserGestureRpc.input.parse(data));
         this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
         break;
       case "list":

@@ -88,6 +88,8 @@ class FakeSupervisorClient {
       case "text.insert":
       case "key.down":
       case "key.up":
+      case "input.begin":
+      case "input.end":
         return null;
       case "emulate":
         workspace.viewport = {
@@ -350,6 +352,38 @@ describe("SessionManager control leases", () => {
       width: 412,
       height: 839,
     });
+  });
+
+  it("keeps active mobile emulation when only the custom size changes", async () => {
+    const { manager, client } = createManager();
+    const viewer = await manager.attach("workspace-one", "Client");
+    const control = await manager.acquireControl(viewer.viewerToken, false);
+    const applied = await manager.applyDevicePreset({
+      viewerToken: viewer.viewerToken,
+      controlToken: control.controlToken,
+      expected: expected(control.state),
+      presetId: "pixel-7-sharp",
+    });
+    const resized = await manager.resize({
+      viewerToken: viewer.viewerToken,
+      controlToken: control.controlToken,
+      expected: expected(applied.state),
+      viewport: { width: 500, height: 900 },
+    });
+
+    const emulations = client.operations.filter(({ operation }) => operation === "emulate");
+    expect(emulations.at(-1)?.input).toEqual({
+      ...(emulations.at(-2)?.input as object),
+      width: 500,
+      height: 900,
+    });
+    expect(emulations.at(-1)?.input).toMatchObject({ mobile: true, touch: true, captureScale: 2 });
+    expect(resized.state).toMatchObject({
+      viewport: { width: 500, height: 900 },
+      devicePresetId: "pixel-7-sharp",
+      captureScale: 2,
+    });
+    expect(resized.state.userAgent).toBe(applied.state.userAgent);
   });
 
   it("archives and tears down the workspace runtime", async () => {

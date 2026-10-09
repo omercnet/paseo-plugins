@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FrameLifecycle } from "../client/frame-lifecycle";
+import { createFrameLifecycle } from "../client/frame-lifecycle";
 import type { BrowserFrame } from "../shared/browser";
 
 function frame(frameId: string): BrowserFrame {
@@ -7,8 +7,8 @@ function frame(frameId: string): BrowserFrame {
 }
 
 /** A lifecycle holding an accepted, actionable frame. */
-function ready(): FrameLifecycle {
-  const lifecycle = new FrameLifecycle();
+function ready(): ReturnType<typeof createFrameLifecycle> {
+  const lifecycle = createFrameLifecycle();
   expect(lifecycle.accept(lifecycle.epoch, frame("base"))).toBe(true);
   return lifecycle;
 }

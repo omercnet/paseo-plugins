@@ -31,6 +31,7 @@ interface RuntimeState {
 class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
   readonly states = new Map<string, RuntimeState>();
   readonly stopped: AgentRuntime[] = [];
+  readonly operations: string[] = [];
   failNextMutationUnknown = false;
 
   async create(workspaceId: string): Promise<AgentRuntime> {
@@ -44,6 +45,7 @@ class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
   async request(runtime: AgentRuntime, operation: string, input: JsonValue): Promise<JsonValue> {
     const state = this.states.get(runtime.workspaceId);
     if (!state) throw new Error(`Runtime is stopped: ${runtime.workspaceId}`);
+    this.operations.push(operation);
     const data = input && typeof input === "object" && !Array.isArray(input) ? input : {};
     if (this.failNextMutationUnknown && operation === "navigate") {
       this.failNextMutationUnknown = false;
@@ -86,6 +88,8 @@ class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
       case "text.insert":
       case "key.down":
       case "key.up":
+      case "input.begin":
+      case "input.end":
         return null;
       default:
         throw new Error(`Unexpected runtime operation: ${operation}`);
@@ -469,5 +473,48 @@ describe("agent shared-browser authorization", () => {
     await expect(
       bindTicket(supervisor, bridge, lateTicket, "agent-two", "workspace-one"),
     ).rejects.toMatchObject({ code: "WORKSPACE_ARCHIVED" });
+  });
+
+  it("dispatches agent input only with control and a freshly captured frame", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("input");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    const click = {
+      event: {
+        kind: "click",
+        point: { x: 10, y: 20, width: 1280, height: 800 },
+        button: "left",
+        clickCount: 1,
+      },
+    } as JsonValue;
+
+    await agentRequest(supervisor, agentTicket, "status");
+    await expect(agentRequest(supervisor, agentTicket, "input", click)).rejects.toMatchObject({
+      code: "AUTHENTICATION_FAILED",
+    });
+    expect(owner.operations).not.toContain("mouse.down");
+
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    await expect(agentRequest(supervisor, agentTicket, "input", click)).rejects.toThrow(
+      "Capture a frame before sending input",
+    );
+    await agentRequest(supervisor, agentTicket, "capture", { quality: "medium" });
+    const result = await agentRequest<{ state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "input",
+      click,
+    );
+    expect(result.state.controller).toBe("self");
+    expect(owner.operations.filter((op) => op.startsWith("mouse."))).toEqual([
+      "mouse.move",
+      "mouse.down",
+      "mouse.up",
+    ]);
+
+    await expect(agentRequest(supervisor, agentTicket, "input", click)).rejects.toThrow(
+      "Capture a frame before sending input",
+    );
   });
 });

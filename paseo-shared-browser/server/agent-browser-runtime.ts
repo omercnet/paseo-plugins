@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { chmod, mkdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
+import { captureDimensions } from "../shared/capture-settings";
+import { MAX_VIEWPORT } from "../shared/viewport-limits";
 import {
   attachToTarget,
   CdpConnection,
@@ -12,6 +14,20 @@ import {
   CdpUnknownOutcomeError,
   listPageTargets,
 } from "./cdp";
+import { readJpegFrameDimensions } from "./jpeg-frame";
+
+export { readJpegFrameDimensions as jpegDimensions } from "./jpeg-frame";
+
+import {
+  type BrowserCursor,
+  type BrowserGestureKeyEvent,
+  browserCursorSchema,
+  browserGestureKeySchema,
+} from "../shared/browser";
+import { browserCursorExpression } from "./browser-cursor";
+import { GESTURE_IDLE_MS, GESTURE_LIFETIME_MS } from "./browser-gesture";
+import { formatRuntimeInputGeneration } from "./input-generation";
+import { heldKeyModifiers, nativeKeyEvent } from "./keyboard-input";
 
 const execFileAsync = promisify(execFile);
 export const AGENT_BROWSER_VERSION = "0.37.1";
@@ -34,6 +50,8 @@ export interface BrowserViewport {
   width: number;
   height: number;
   deviceScaleFactor: number;
+  /** Image density is independent of CSS input geometry. */
+  captureScale?: number;
   mobile: boolean;
   touch: boolean;
   userAgent?: string;
@@ -68,6 +86,8 @@ export interface RuntimePageState {
   title: string;
   canGoBack: boolean;
   canGoForward: boolean;
+  /** Process-local attachment/document revision, including same-URL reloads. */
+  inputGeneration: string;
 }
 
 export interface RuntimeFrame {
@@ -115,7 +135,7 @@ interface PageLifecycleEvent {
 
 interface ScreencastFrame {
   data: string;
-  metadata: { deviceWidth: number; deviceHeight: number };
+  metadata: { deviceWidth: number; deviceHeight: number; timestamp?: number };
   sessionId: number;
 }
 
@@ -183,26 +203,6 @@ function findString(value: unknown, keys: readonly string[]): string | null {
   return null;
 }
 
-export function jpegDimensions(base64: string): { width: number; height: number } | null {
-  const bytes = Buffer.from(base64, "base64");
-  let offset = 2;
-  while (bytes[0] === 0xff && bytes[1] === 0xd8 && offset + 9 <= bytes.length) {
-    if (bytes[offset] !== 0xff) return null;
-    const marker = bytes[offset + 1];
-    // SOFn carries the frame size; DHT (c4), JPG (c8) and DAC (cc) share the range but do not.
-    if (
-      marker !== undefined &&
-      marker >= 0xc0 &&
-      marker <= 0xcf &&
-      ![0xc4, 0xc8, 0xcc].includes(marker)
-    )
-      return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) };
-    if (marker === 0xda) return null;
-    offset += 2 + bytes.readUInt16BE(offset + 2);
-  }
-  return null;
-}
-
 export class AgentBrowserRuntime {
   readonly binaryPath: string;
   readonly executablePath: string;
@@ -216,13 +216,32 @@ export class AgentBrowserRuntime {
   private connection: CdpConnection | null = null;
   private page: CdpSession | null = null;
   private targetId: string | null = null;
-  private viewport: BrowserViewport | null = null;
+  private viewport: DeviceEmulation | null = null;
+  private emulationAppliedPage: CdpSession | null = null;
+  private attachmentGeneration = 0;
+  private captureGeneration = 0;
   private screencastFrame: RuntimeFrame | null = null;
   private screencastWaiters = new Set<(frame: RuntimeFrame | null) => void>();
   private screencastActive = false;
-  private screencastQuality = 65;
+  private screencastQuality: number = 65;
   private heldButtons = new Set<MouseButton>();
-  private heldKeys = new Set<string>();
+  /** Last native pointer position sent, so cancelled drags release where they were. */
+  private lastMousePoint = { x: 0, y: 0 };
+  private heldKeys = new Map<string, { key: string; code: string }>();
+  private heldTouches = false;
+  /** Attachment on which the current held state was published; cleanup never targets another. */
+  private heldOwner: CdpSession | null = null;
+  private activeTouches = new Map<number, { x: number; y: number; id: number }>();
+  private documentGeneration = 0;
+  private liveInput: {
+    id: string;
+    page: CdpSession;
+    generation: number;
+    documentGeneration: number;
+    idleUntil: number;
+    expiresAt: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  } | null = null;
   private stopping = false;
 
   constructor(options: AgentBrowserRuntimeOptions) {
@@ -259,6 +278,8 @@ export class AgentBrowserRuntime {
       this.profilePath,
       "--executable-path",
       this.executablePath,
+      "--hide-scrollbars",
+      "false",
       ...(this.headed ? ["--headed"] : []),
       ...(chromiumArguments ? ["--args", chromiumArguments] : []),
       "--json",
@@ -272,6 +293,7 @@ export class AgentBrowserRuntime {
 
   async reconnect(): Promise<void> {
     const targetId = this.targetId;
+    this.attachmentGeneration += 1;
     this.invalidateScreencastFrame();
     this.connection?.close();
     this.connection = null;
@@ -325,21 +347,46 @@ export class AgentBrowserRuntime {
   }
 
   async selectTarget(targetId: string): Promise<void> {
+    const attachmentGeneration = ++this.attachmentGeneration;
+    const connection = this.requireConnection();
     const target = (await this.targets()).find((candidate) => candidate.targetId === targetId);
+    this.assertAttachmentCurrent(connection, attachmentGeneration);
     if (!target) throw new CdpUnavailableError(`Unknown page target: ${targetId}`);
     this.invalidateScreencastFrame();
-    if (this.page) {
+    const previous = this.page;
+    if (previous) {
       if (this.screencastActive) {
-        await this.page.send("Page.stopScreencast", {}, { mutation: true });
+        await previous.send("Page.stopScreencast", {}, { mutation: true });
+        this.assertAttachmentCurrent(connection, attachmentGeneration);
       }
-      await this.page.detach();
+      await previous.detach();
+      this.assertAttachmentCurrent(connection, attachmentGeneration);
     }
     this.invalidateScreencastFrame();
-    await this.requireConnection().send("Target.activateTarget", { targetId }, { mutation: true });
-    this.page = await attachToTarget(this.requireConnection(), targetId);
-    this.targetId = targetId;
-    await this.preparePage(this.page);
-    if (this.screencastActive) await this.startScreencastSession(this.page);
+    await connection.send("Target.activateTarget", { targetId }, { mutation: true });
+    this.assertAttachmentCurrent(connection, attachmentGeneration);
+    // CDP emulation is session-owned: detaching the former session restores native
+    // window metrics. Publish a replacement only after its retained settings succeed.
+    this.page = null;
+    this.emulationAppliedPage = null;
+    const replacement = await attachToTarget(connection, targetId);
+    try {
+      this.assertAttachmentCurrent(connection, attachmentGeneration);
+      await this.bindPageEvents(replacement);
+      this.assertAttachmentCurrent(connection, attachmentGeneration);
+      await this.restoreConfiguredEmulation(replacement);
+      this.assertAttachmentCurrent(connection, attachmentGeneration);
+      this.page = replacement;
+      this.targetId = targetId;
+    } catch (error) {
+      await replacement.detach().catch(() => undefined);
+      // Detaching a partial emulation can clear target metrics even if a newer
+      // attachment won. Its next access must restore intent before admitting pixels.
+      this.emulationAppliedPage = null;
+      this.invalidateScreencastFrame();
+      throw error;
+    }
+    if (this.screencastActive) await this.startScreencastSession(replacement);
   }
 
   private async navigationHistory(page: CdpSession): Promise<NavigationHistory> {
@@ -357,20 +404,38 @@ export class AgentBrowserRuntime {
       }
     }
   }
+  /** Read fresh metadata concurrently; never combine observations across native document changes. */
   async state(): Promise<RuntimePageState> {
     const page = await this.requirePage();
-    const history = await this.navigationHistory(page);
-    const evaluated = await page.send<{
-      result: { value?: { url?: string; title?: string } };
-    }>("Runtime.evaluate", {
-      expression: "({url: location.href, title: document.title})",
-      returnByValue: true,
-    });
+    const attachmentGeneration = this.attachmentGeneration;
+    const documentGeneration = this.documentGeneration;
+    // Native history and fixed DOM metadata are independent reads. Overlap their
+    // CDP round trips without caching metadata or weakening input attachment checks.
+    const [history, evaluated] = await Promise.all([
+      this.navigationHistory(page),
+      page.send<{
+        result: { value?: { url?: string; title?: string } };
+      }>("Runtime.evaluate", {
+        expression: "({url: location.href, title: document.title})",
+        returnByValue: true,
+      }),
+    ]);
+    if (
+      page !== this.page ||
+      attachmentGeneration !== this.attachmentGeneration ||
+      documentGeneration !== this.documentGeneration
+    ) {
+      throw new CdpUnavailableError("Browser metadata changed while being read");
+    }
     return {
       url: evaluated.result.value?.url ?? history.entries[history.currentIndex]?.url ?? "",
       title: evaluated.result.value?.title ?? history.entries[history.currentIndex]?.title ?? "",
       canGoBack: history.currentIndex > 0,
       canGoForward: history.currentIndex < history.entries.length - 1,
+      inputGeneration: formatRuntimeInputGeneration(
+        this.attachmentGeneration,
+        this.documentGeneration,
+      ),
     };
   }
 
@@ -445,12 +510,77 @@ export class AgentBrowserRuntime {
   async emulate(device: DeviceEmulation): Promise<void> {
     this.assertViewport(device);
     await this.withInvalidatedScreencast(async (page) => {
+      const attachmentGeneration = this.attachmentGeneration;
+      this.emulationAppliedPage = null;
       await this.applyEmulation(page, device);
+      this.assertAttachmentCurrent(page.connection, attachmentGeneration);
+      if (this.page !== page)
+        throw new CdpUnavailableError("Browser page changed during emulation");
       this.viewport = { ...device };
+      this.emulationAppliedPage = page;
     });
   }
 
-  async startScreencast(quality = 65): Promise<void> {
+  /** Apply the entire device contract to one CDP session without changing saved intent. */
+  private async applyEmulation(page: CdpSession, device: DeviceEmulation): Promise<void> {
+    await page.send(
+      "Emulation.setDeviceMetricsOverride",
+      {
+        width: device.width,
+        height: device.height,
+        deviceScaleFactor: device.deviceScaleFactor,
+        mobile: device.mobile,
+        screenWidth: device.screenWidth ?? device.width,
+        screenHeight: device.screenHeight ?? device.height,
+        screenOrientation: {
+          type: device.width > device.height ? "landscapePrimary" : "portraitPrimary",
+          angle: device.width > device.height ? 90 : 0,
+        },
+      },
+      { mutation: true },
+    );
+    await page.send(
+      "Emulation.setTouchEmulationEnabled",
+      { enabled: device.touch, maxTouchPoints: device.touch ? 5 : 1 },
+      { mutation: true },
+    );
+    if (device.userAgent) {
+      await page.send(
+        "Emulation.setUserAgentOverride",
+        { userAgent: device.userAgent, platform: device.platform ?? "" },
+        { mutation: true },
+      );
+    }
+  }
+
+  /** No frame/input may use a session whose emulated viewport has not been restored. */
+  private async restoreConfiguredEmulation(page: CdpSession): Promise<void> {
+    const device = this.viewport;
+    if (!device || this.emulationAppliedPage === page) return;
+    const attachmentGeneration = this.attachmentGeneration;
+    this.invalidateScreencastFrame();
+    this.emulationAppliedPage = null;
+    await this.applyEmulation(page, device);
+    this.assertAttachmentCurrent(page.connection, attachmentGeneration);
+    if (device !== this.viewport) {
+      throw new CdpUnavailableError("Browser device settings changed during restoration");
+    }
+    this.emulationAppliedPage = page;
+    this.invalidateScreencastFrame();
+  }
+
+  /** Reject late configuration completions after a disconnect or newer target selection. */
+  private assertAttachmentCurrent(connection: CdpConnection, generation: number): void {
+    if (
+      connection !== this.connection ||
+      !connection.isOpen ||
+      generation !== this.attachmentGeneration
+    ) {
+      throw new CdpUnavailableError("Browser attachment changed during emulation restoration");
+    }
+  }
+
+  async startScreencast(quality: number = 65): Promise<void> {
     if (!Number.isInteger(quality) || quality < 1 || quality > 100) {
       throw new RangeError("Screencast quality must be an integer from 1 to 100");
     }
@@ -471,71 +601,197 @@ export class AgentBrowserRuntime {
     }
   }
 
+  /** Capture only the current page and mutation generation; never return superseded pixels. */
   async frame(maxBytes: number, quality = 65, waitMs = 500): Promise<RuntimeFrame> {
-    if (!Number.isInteger(maxBytes) || maxBytes < 1)
+    if (!Number.isInteger(maxBytes) || maxBytes < 1) {
       throw new RangeError("maxBytes must be positive");
+    }
+    if (!Number.isFinite(quality)) throw new RangeError("JPEG quality must be finite");
+    const page = await this.requirePage();
+    // Quality is a viewer choice; do not reuse the shared stream for a different request.
+    if (quality !== this.screencastQuality) {
+      return this.captureScreenshot(maxBytes, quality);
+    }
+    const generation = this.captureGeneration;
     const streamed = this.screencastFrame ?? (await this.waitForFrame(waitMs));
+    this.assertCaptureCurrent(page, generation);
     if (streamed && streamed.byteLength <= maxBytes) return streamed;
-    let frame = await this.screenshot(await this.requirePage(), maxBytes, quality);
-    if (!this.sizeMismatch(frame)) return frame;
-    // The browser stopped honouring the cached viewport. Re-apply it once; never loop.
-    await this.emulate(this.requireViewport());
-    frame = await this.screenshot(await this.requirePage(), maxBytes, quality);
-    const mismatch = this.sizeMismatch(frame);
-    if (mismatch) throw new Error(`Browser returned a ${mismatch} after viewport resync`);
-    return frame;
+    return this.captureScreenshot(maxBytes, quality);
   }
 
-  private async screenshot(page: CdpSession, maxBytes: number, quality: number) {
-    for (const candidate of [quality, 50, 35, 20, 10, 1]) {
-      const boundedQuality = Math.max(1, Math.min(100, Math.round(candidate)));
+  /** Normalize screenshot pixels to the CSS viewport so native input targets the displayed geometry. */
+  private async captureScreenshot(
+    maxBytes: number,
+    requestedQuality: number,
+  ): Promise<RuntimeFrame> {
+    const page = await this.requirePage();
+    const screenshotGeneration = this.captureGeneration;
+    const viewport = this.requireViewport();
+    const expectedPixels = captureDimensions(viewport, viewport.captureScale);
+    const readClip = async () => {
+      const metrics = await page.send<{ cssVisualViewport: { pageX: number; pageY: number } }>(
+        "Page.getLayoutMetrics",
+      );
+      this.assertCaptureCurrent(page, screenshotGeneration);
+      return {
+        x: metrics.cssVisualViewport.pageX,
+        y: metrics.cssVisualViewport.pageY,
+        width: viewport.width,
+        height: viewport.height,
+        scale: (viewport.captureScale ?? 1) / viewport.deviceScaleFactor,
+      };
+    };
+    // Explicitly capture the visible CSS viewport, independent of the native window size.
+    // Preserve scroll position and normalize device pixel ratio to the frame/input contract.
+    let clip = await readClip();
+    let resynced = false;
+    // Reduce quality gradually only when a detailed frame exceeds the byte budget.
+    const initialQuality = requestedQuality;
+    const candidates = [...new Set([initialQuality, 50, 35, 20, 10, 1])].filter(
+      (candidate) => candidate <= initialQuality,
+    );
+    const capture = async (quality: number) => {
+      this.assertCaptureCurrent(page, screenshotGeneration);
       const result = await page.send<{ data: string }>("Page.captureScreenshot", {
         format: "jpeg",
-        quality: boundedQuality,
+        quality,
         fromSurface: true,
+        // Beyond-viewport capture replaces emulation and resets enabled touch.
         captureBeyondViewport: false,
+        clip,
       });
-      const byteLength = Buffer.byteLength(result.data, "base64");
-      if (byteLength <= maxBytes) {
-        const viewport = this.requireViewport();
-        return {
-          dataBase64: result.data,
-          byteLength,
-          width: viewport.width,
-          height: viewport.height,
-          transport: "screenshot",
-          capturedAt: new Date().toISOString(),
-        } satisfies RuntimeFrame;
+      this.assertCaptureCurrent(page, screenshotGeneration);
+      const dimensions = readJpegFrameDimensions(result.data);
+      if (!dimensions) throw new Error("Chromium returned a malformed JPEG screenshot");
+      return {
+        data: result.data,
+        dimensions,
+        byteLength: Buffer.byteLength(result.data, "base64"),
+      };
+    };
+    const matchesViewport = (dimensions: { width: number; height: number }) =>
+      dimensions.width === expectedPixels.width && dimensions.height === expectedPixels.height;
+
+    for (const candidate of candidates) {
+      const boundedQuality = Math.max(1, Math.min(100, Math.round(candidate)));
+      let pixels = await capture(boundedQuality);
+      if (!matchesViewport(pixels.dimensions) && !resynced) {
+        // Restore emulation once when Chromium returns inconsistent viewport pixels.
+        // Recapture pixels only; uncertain input is never replayed.
+        resynced = true;
+        const attachmentGeneration = this.attachmentGeneration;
+        await this.applyEmulation(page, viewport);
+        this.assertAttachmentCurrent(page.connection, attachmentGeneration);
+        this.assertCaptureCurrent(page, screenshotGeneration);
+        if (viewport !== this.viewport)
+          throw new CdpUnavailableError("Browser viewport changed during resync");
+        this.emulationAppliedPage = page;
+        clip = await readClip();
+        pixels = await capture(boundedQuality);
       }
+      if (!matchesViewport(pixels.dimensions)) {
+        throw new Error(
+          `Chromium returned a ${pixels.dimensions.width}x${pixels.dimensions.height} JPEG instead of ${expectedPixels.width}x${expectedPixels.height}`,
+        );
+      }
+      if (pixels.byteLength > maxBytes) continue;
+
+      const frame: RuntimeFrame = {
+        dataBase64: pixels.data,
+        byteLength: pixels.byteLength,
+        width: pixels.dimensions.width,
+        height: pixels.dimensions.height,
+        transport: "screenshot",
+        capturedAt: new Date().toISOString(),
+      };
+      return frame;
     }
     throw new Error(`JPEG screenshot exceeds ${maxBytes} bytes at minimum quality`);
   }
 
-  private sizeMismatch(frame: RuntimeFrame): string | null {
-    const { width, height, deviceScaleFactor: scale } = this.requireViewport();
-    const size = jpegDimensions(frame.dataBase64);
-    // Chromium rounds fractional device pixels, so allow one pixel of slack.
-    if (
-      size &&
-      Math.abs(size.width - width * scale) <= 1 &&
-      Math.abs(size.height - height * scale) <= 1
-    )
-      return null;
-    return `${size ? `${size.width}x${size.height}` : "unreadable"} JPEG for a ${width}x${height} viewport at ${scale}x`;
+  /** Refuse async pixels from a superseded session or mutation, without silently replaying capture. */
+  private assertCaptureCurrent(page: CdpSession, generation: number): void {
+    if (page !== this.page || generation !== this.captureGeneration) {
+      throw new CdpUnavailableError("Browser capture was invalidated while taking a screenshot");
+    }
   }
 
-  async mouseMove(x: number, y: number): Promise<void> {
+  /** Invalidate pre-input pixels even if Chromium cannot confirm the mutation. */
+  private async dispatchInput(
+    method: string,
+    params: Record<string, unknown>,
+    gestureId?: string,
+    track?: () => void,
+  ): Promise<void> {
+    try {
+      const page = await this.requirePage();
+      if (gestureId) await this.assertLiveInput(gestureId);
+      // Authority is validated. Record cleanup intent only now, immediately before
+      // native publication, so rejected unsent packets never alter it while an
+      // uncertain acknowledgement still leaves it in place.
+      if (track) {
+        if (this.heldOwner && this.heldOwner !== page) this.discardHeldState();
+        track();
+        if (this.holdsInput()) this.heldOwner ??= page;
+      }
+      const originalInput = gestureId ? this.liveInput : null;
+      const modifiers = heldKeyModifiers(this.heldKeys.values());
+      const nativeParams =
+        method === "Input.dispatchMouseEvent" && modifiers ? { ...params, modifiers } : params;
+      await page.send(method, nativeParams, { mutation: true });
+      if (gestureId) {
+        // An input can synchronously activate a link or submit a form. Its CDP
+        // acknowledgment succeeds even when navigation ends the old channel.
+        // Attachment replacement and uncertain sends retain their failure path.
+        if (
+          originalInput &&
+          page === this.page &&
+          originalInput.generation === this.attachmentGeneration &&
+          originalInput.documentGeneration !== this.documentGeneration
+        ) {
+          await this.endLiveInput(gestureId);
+          return;
+        }
+        await this.assertLiveInput(gestureId);
+        this.renewLiveInput(gestureId);
+      }
+    } finally {
+      this.invalidateScreencastFrame();
+    }
+  }
+
+  async mouseMove(x: number, y: number, gestureId?: string): Promise<void> {
     this.assertPoint(x, y);
-    await (await this.requirePage()).send(
+    await this.dispatchInput(
       "Input.dispatchMouseEvent",
       {
         type: "mouseMoved",
         x,
         y,
-        button: "none",
+        // Native scrollbar dragging needs the held button as well as its mask.
+        button: this.heldMoveButton(),
         buttons: this.buttonMask(),
       },
-      { mutation: true },
+      gestureId,
+      () => {
+        this.lastMousePoint = { x, y };
+      },
+    );
+  }
+
+  /** Fixed native mouse departure; never maps an outside point to a page control. */
+  async mouseLeave(gestureId: string): Promise<void> {
+    if (this.heldButtons.size > 0) throw new Error("Release held mouse buttons before leaving");
+    await this.dispatchInput(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseMoved",
+        x: -1,
+        y: -1,
+        button: "none",
+        buttons: 0,
+      },
+      gestureId,
     );
   }
 
@@ -544,9 +800,10 @@ export class AgentBrowserRuntime {
     y: number,
     button: MouseButton = "left",
     clickCount = 1,
+    gestureId?: string,
   ): Promise<void> {
     this.assertPoint(x, y);
-    await (await this.requirePage()).send(
+    await this.dispatchInput(
       "Input.dispatchMouseEvent",
       {
         type: "mousePressed",
@@ -556,14 +813,25 @@ export class AgentBrowserRuntime {
         buttons: this.buttonMask(button),
         clickCount,
       },
-      { mutation: true },
+      gestureId,
+      () => {
+        // Publication may succeed before an acknowledgement is lost, so a
+        // possibly held button is tracked from the send boundary.
+        this.heldButtons.add(button);
+        this.lastMousePoint = { x, y };
+      },
     );
-    this.heldButtons.add(button);
   }
 
-  async mouseUp(x: number, y: number, button: MouseButton = "left", clickCount = 1): Promise<void> {
+  async mouseUp(
+    x: number,
+    y: number,
+    button: MouseButton = "left",
+    clickCount = 1,
+    gestureId?: string,
+  ): Promise<void> {
     this.assertPoint(x, y);
-    await (await this.requirePage()).send(
+    await this.dispatchInput(
       "Input.dispatchMouseEvent",
       {
         type: "mouseReleased",
@@ -573,14 +841,23 @@ export class AgentBrowserRuntime {
         buttons: this.buttonMask(undefined, button),
         clickCount,
       },
-      { mutation: true },
+      gestureId,
+      () => {
+        this.lastMousePoint = { x, y };
+      },
     );
     this.heldButtons.delete(button);
   }
 
-  async wheel(x: number, y: number, deltaX: number, deltaY: number): Promise<void> {
+  async wheel(
+    x: number,
+    y: number,
+    deltaX: number,
+    deltaY: number,
+    gestureId?: string,
+  ): Promise<void> {
     this.assertPoint(x, y);
-    await (await this.requirePage()).send(
+    await this.dispatchInput(
       "Input.dispatchMouseEvent",
       {
         type: "mouseWheel",
@@ -591,16 +868,39 @@ export class AgentBrowserRuntime {
         button: "none",
         buttons: this.buttonMask(),
       },
-      { mutation: true },
+      gestureId,
     );
   }
 
-  async insertText(text: string): Promise<void> {
-    await (await this.requirePage()).send("Input.insertText", { text }, { mutation: true });
+  /** Insert a committed paste/IME value on the original guarded attachment. */
+  async insertText(text: string, gestureId?: string): Promise<void> {
+    await this.dispatchInput("Input.insertText", { text }, gestureId);
   }
 
-  async keyDown(key: string, code = key): Promise<void> {
-    await (await this.requirePage()).send(
+  /** Track cleanup intent before publication, including an uncertain key-down reply. */
+  async dispatchKey(event: BrowserGestureKeyEvent, gestureId: string): Promise<void> {
+    const parsed = browserGestureKeySchema.parse(event);
+    await this.assertLiveInput(gestureId);
+    const held = this.heldKeys.has(parsed.code);
+    if (parsed.type === "down" && held !== parsed.repeat) {
+      throw new Error(
+        parsed.repeat ? "Key repeat has no matching press" : "Key is already pressed",
+      );
+    }
+    if (parsed.type === "up" && !held) throw new Error("Key release has no matching press");
+    await this.dispatchInput(
+      "Input.dispatchKeyEvent",
+      nativeKeyEvent(parsed),
+      gestureId,
+      parsed.type === "down"
+        ? () => this.heldKeys.set(parsed.code, { key: parsed.key, code: parsed.code })
+        : undefined,
+    );
+    if (parsed.type === "up") this.heldKeys.delete(parsed.code);
+  }
+
+  async keyDown(key: string, code = key, gestureId?: string): Promise<void> {
+    await this.dispatchInput(
       "Input.dispatchKeyEvent",
       {
         type: "keyDown",
@@ -608,58 +908,194 @@ export class AgentBrowserRuntime {
         code,
         text: key.length === 1 ? key : undefined,
       },
-      { mutation: true },
+      gestureId,
+      () => this.heldKeys.set(code, { key, code }),
     );
-    this.heldKeys.add(key);
   }
 
-  async keyUp(key: string, code = key): Promise<void> {
-    await (await this.requirePage()).send(
-      "Input.dispatchKeyEvent",
-      { type: "keyUp", key, code },
-      { mutation: true },
-    );
-    this.heldKeys.delete(key);
+  async keyUp(key: string, code = key, gestureId?: string): Promise<void> {
+    await this.dispatchInput("Input.dispatchKeyEvent", { type: "keyUp", key, code }, gestureId);
+    this.heldKeys.delete(code);
   }
 
+  /**
+   * The caller supplies the complete active contact set. CDP touchMove does not
+   * release omitted contacts, so publish explicit contact ends before moving the
+   * survivors. Any uncertain publication retains cleanup intent until cancel.
+   */
   async touch(
     type: "touchStart" | "touchMove" | "touchEnd" | "touchCancel",
     points: Array<{ x: number; y: number; id?: number }>,
+    gestureId?: string,
   ): Promise<void> {
     for (const point of points) this.assertPoint(point.x, point.y);
-    await (await this.requirePage()).send(
+    if (gestureId) await this.assertLiveInput(gestureId);
+    const contacts = points.map((point, index) => ({ ...point, id: point.id ?? index }));
+    const activeIds = new Set(contacts.map((point) => point.id));
+    const removed =
+      type === "touchMove"
+        ? [...this.activeTouches.values()].filter((point) => !activeIds.has(point.id))
+        : [];
+    const hold = () => {
+      this.heldTouches = true;
+    };
+    if (removed.length > 0) {
+      await this.dispatchInput(
+        "Input.dispatchTouchEvent",
+        { type: "touchEnd", touchPoints: removed },
+        gestureId,
+        hold,
+      );
+    }
+    await this.dispatchInput(
       "Input.dispatchTouchEvent",
-      {
-        type,
-        touchPoints: points.map((point, index) => ({
-          x: point.x,
-          y: point.y,
-          id: point.id ?? index,
-        })),
-      },
-      { mutation: true },
+      { type, touchPoints: contacts },
+      gestureId,
+      hold,
     );
+    // Navigation cleanup already discarded this channel's contacts. Do not
+    // recreate held-touch state after its acknowledged start caused navigation.
+    if (gestureId && this.liveInput?.id !== gestureId) return;
+    this.activeTouches.clear();
+    if (type === "touchStart" || type === "touchMove") {
+      for (const point of contacts) this.activeTouches.set(point.id, point);
+    }
+    this.heldTouches = this.activeTouches.size > 0;
   }
 
-  async releaseHeldInput(): Promise<void> {
-    const page = this.page;
-    if (!page) {
-      this.heldButtons.clear();
-      this.heldKeys.clear();
-      return;
+  /** Pin this channel to one CDP attachment. Reconnects never replay held input on a replacement. */
+  async beginLiveInput(id: string): Promise<void> {
+    if (this.liveInput) await this.endLiveInput(this.liveInput.id);
+    const page = await this.requirePage();
+    const now = Date.now();
+    this.liveInput = {
+      id,
+      page,
+      generation: this.attachmentGeneration,
+      documentGeneration: this.documentGeneration,
+      idleUntil: now + GESTURE_IDLE_MS,
+      expiresAt: now + GESTURE_LIFETIME_MS,
+      timer: null,
+    };
+    this.scheduleLiveInputExpiry();
+  }
+
+  /** Compare after every asynchronous transport boundary, including automatic reconnect/reattach. */
+  async assertLiveInput(id: string): Promise<void> {
+    const page = await this.requirePage();
+    if (
+      this.liveInput?.id === id &&
+      (Date.now() >= this.liveInput.idleUntil || Date.now() >= this.liveInput.expiresAt)
+    ) {
+      await this.endLiveInput(id);
     }
-    const buttons = [...this.heldButtons];
-    const keys = [...this.heldKeys];
+    if (
+      !this.liveInput ||
+      this.liveInput.id !== id ||
+      this.liveInput.page !== page ||
+      this.liveInput.generation !== this.attachmentGeneration ||
+      this.liveInput.documentGeneration !== this.documentGeneration
+    ) {
+      throw new CdpUnavailableError("Live browser input attachment changed");
+    }
+  }
+
+  /** Cleanup is idempotent and targets the original attachment, never whatever is currently active. */
+  async endLiveInput(id: string): Promise<void> {
+    const current = this.liveInput;
+    if (!current || current.id !== id) return;
+    this.liveInput = null;
+    if (current.timer) clearTimeout(current.timer);
+    await this.releaseHeldInput(current.page);
+  }
+
+  /** Only acknowledged input extends idle time; metadata/checks cannot keep a stranded press alive. */
+  private renewLiveInput(id: string): void {
+    if (this.liveInput?.id !== id) return;
+    this.liveInput.idleUntil = Date.now() + GESTURE_IDLE_MS;
+    this.scheduleLiveInputExpiry();
+  }
+
+  /** Runtime-owned expiry survives plugin disconnect or a fenced supervisor IPC client. */
+  private scheduleLiveInputExpiry(): void {
+    const current = this.liveInput;
+    if (!current) return;
+    if (current.timer) clearTimeout(current.timer);
+    const delay = Math.max(0, Math.min(current.idleUntil, current.expiresAt) - Date.now());
+    current.timer = setTimeout(() => {
+      if (this.liveInput !== current) return;
+      void this.endLiveInput(current.id).catch(() => undefined);
+    }, delay);
+    current.timer.unref?.();
+  }
+
+  /** Fixed hit-test, safe cursor names only. Cursor failures cannot fail an acknowledged input. */
+  async cursorAt(x: number, y: number, gestureId: string): Promise<BrowserCursor | null> {
+    try {
+      this.assertPoint(x, y);
+      await this.assertLiveInput(gestureId);
+      const page = this.liveInput!.page;
+      const result = await page.send<{ result: { value?: unknown } }>("Runtime.evaluate", {
+        expression: browserCursorExpression(x, y),
+        returnByValue: true,
+      });
+      await this.assertLiveInput(gestureId);
+      const parsed = browserCursorSchema.safeParse(result.result.value);
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private holdsInput(): boolean {
+    return this.heldButtons.size > 0 || this.heldKeys.size > 0 || this.heldTouches;
+  }
+
+  /** Forget held state whose attachment is gone; it is never replayed on a replacement. */
+  private discardHeldState(): void {
     this.heldButtons.clear();
     this.heldKeys.clear();
+    this.heldTouches = false;
+    this.activeTouches.clear();
+    this.heldOwner = null;
+  }
+
+  /**
+   * Release only what `page` itself holds. State published on another attachment
+   * is left to that attachment's own cleanup, never retargeted here.
+   */
+  async releaseHeldInput(page = this.page): Promise<void> {
+    if (!page) {
+      this.discardHeldState();
+      return;
+    }
+    if (this.heldOwner && this.heldOwner !== page) return;
+    this.heldOwner = null;
+    const buttons = [...this.heldButtons];
+    const { x, y } = this.lastMousePoint;
+    const keys = [...this.heldKeys.values()];
+    this.heldButtons.clear();
+    this.heldKeys.clear();
+    const touchHeld = this.heldTouches;
+    this.heldTouches = false;
+    this.activeTouches.clear();
     await Promise.allSettled([
+      ...(touchHeld
+        ? [
+            page.send(
+              "Input.dispatchTouchEvent",
+              { type: "touchCancel", touchPoints: [] },
+              { mutation: true },
+            ),
+          ]
+        : []),
       ...buttons.map((button) =>
         page.send(
           "Input.dispatchMouseEvent",
           {
             type: "mouseReleased",
-            x: 0,
-            y: 0,
+            x,
+            y,
             button,
             buttons: 0,
             clickCount: 1,
@@ -667,13 +1103,13 @@ export class AgentBrowserRuntime {
           { mutation: true },
         ),
       ),
-      ...keys.map((key) =>
+      ...keys.map(({ key, code }) =>
         page.send(
           "Input.dispatchKeyEvent",
           {
             type: "keyUp",
             key,
-            code: key,
+            code,
           },
           { mutation: true },
         ),
@@ -684,6 +1120,7 @@ export class AgentBrowserRuntime {
   async shutdown(force = false): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    if (this.liveInput) await this.endLiveInput(this.liveInput.id);
     await this.releaseHeldInput();
     this.invalidateScreencastFrame();
     if (!force) {
@@ -776,6 +1213,8 @@ export class AgentBrowserRuntime {
       if (this.connection !== connection) return;
       this.page = null;
       this.targetId = null;
+      this.emulationAppliedPage = null;
+      this.attachmentGeneration += 1;
       this.invalidateScreencastFrame();
     });
     const targets = await listPageTargets(this.connection);
@@ -786,7 +1225,14 @@ export class AgentBrowserRuntime {
   }
 
   private async requirePage(): Promise<CdpSession> {
-    if (this.page && this.connection?.isOpen) return this.page;
+    if (this.page && this.connection?.isOpen) {
+      const page = this.page;
+      await this.restoreConfiguredEmulation(page);
+      if (this.page !== page || !this.connection?.isOpen) {
+        throw new CdpUnavailableError("Browser page changed during emulation restoration");
+      }
+      return page;
+    }
     await this.reconnect();
     if (!this.page) throw new CdpUnavailableError("No page target is attached");
     return this.page;
@@ -802,46 +1248,36 @@ export class AgentBrowserRuntime {
     return this.viewport;
   }
 
-  private async preparePage(page: CdpSession): Promise<void> {
-    page.on("Page.screencastFrame", this.onScreencastFrame);
+  private async bindPageEvents(page: CdpSession): Promise<void> {
+    // URL equality is insufficient for reload. Main-document and same-document
+    // navigation revoke the channel without treating child-frame loads as a reset.
+    let rootFrameId: string | undefined;
+    page.on("Page.frameNavigated", (event: { frame: { id: string; parentId?: string } }) => {
+      if (page !== this.page || event.frame.parentId) return;
+      rootFrameId = event.frame.id;
+      this.documentGeneration += 1;
+      void this.endLiveInput(this.liveInput?.id ?? "").catch(() => undefined);
+    });
+    page.on("Page.navigatedWithinDocument", (event: { frameId: string }) => {
+      if (page !== this.page || event.frameId !== rootFrameId) return;
+      this.documentGeneration += 1;
+      void this.endLiveInput(this.liveInput?.id ?? "").catch(() => undefined);
+    });
+    page.on("Page.screencastFrame", (event: ScreencastFrame) =>
+      this.onScreencastFrame(page, event),
+    );
     page.on("event", (event: CdpEvent) => {
-      if (event.method === "Inspector.targetCrashed") this.invalidateScreencastFrame();
+      if (event.method === "Inspector.targetCrashed" && this.page === page) {
+        this.documentGeneration += 1;
+        void this.endLiveInput(this.liveInput?.id ?? "").catch(() => undefined);
+        this.emulationAppliedPage = null;
+        this.invalidateScreencastFrame();
+      }
     });
     await Promise.all([page.send("Page.enable"), page.send("Runtime.enable")]);
+    const tree = await page.send<{ frameTree?: { frame: { id: string } } }>("Page.getFrameTree");
+    rootFrameId = tree.frameTree?.frame.id ?? rootFrameId;
     await this.navigationHistory(page);
-    // Emulation is scoped to the CDP session, so every fresh attach starts without it.
-    if (this.viewport) await this.applyEmulation(page, this.viewport);
-  }
-
-  private async applyEmulation(page: CdpSession, device: DeviceEmulation): Promise<void> {
-    await page.send(
-      "Emulation.setDeviceMetricsOverride",
-      {
-        width: device.width,
-        height: device.height,
-        deviceScaleFactor: device.deviceScaleFactor,
-        mobile: device.mobile,
-        screenWidth: device.screenWidth ?? device.width,
-        screenHeight: device.screenHeight ?? device.height,
-        screenOrientation: {
-          type: device.width > device.height ? "landscapePrimary" : "portraitPrimary",
-          angle: device.width > device.height ? 90 : 0,
-        },
-      },
-      { mutation: true },
-    );
-    await page.send(
-      "Emulation.setTouchEmulationEnabled",
-      { enabled: device.touch, maxTouchPoints: device.touch ? 5 : 1 },
-      { mutation: true },
-    );
-    if (device.userAgent) {
-      await page.send(
-        "Emulation.setUserAgentOverride",
-        { userAgent: device.userAgent, platform: device.platform ?? "" },
-        { mutation: true },
-      );
-    }
   }
 
   private async startScreencastSession(page: CdpSession): Promise<void> {
@@ -854,6 +1290,10 @@ export class AgentBrowserRuntime {
         if (this.page !== candidate) {
           candidate = await this.requirePage();
           continue;
+        }
+        await this.restoreConfiguredEmulation(candidate);
+        if (this.page !== candidate) {
+          throw new CdpUnavailableError("Browser page changed before screencast start");
         }
         await candidate.send(
           "Page.startScreencast",
@@ -876,8 +1316,14 @@ export class AgentBrowserRuntime {
   }
 
   private async reattachPageForScreencast(previous: CdpSession): Promise<CdpSession> {
+    if (this.page !== previous) {
+      if (!this.page) throw new CdpUnavailableError("Browser page changed during reattachment");
+      return this.page;
+    }
+    const attachmentGeneration = ++this.attachmentGeneration;
     const connection = this.requireConnection();
     const targets = await listPageTargets(connection);
+    this.assertAttachmentCurrent(connection, attachmentGeneration);
     const target = targets.find((candidate) => candidate.targetId === this.targetId) ?? targets[0];
     if (!target) throw new CdpUnavailableError("Chromium has no page target");
     await connection.send(
@@ -885,16 +1331,44 @@ export class AgentBrowserRuntime {
       { targetId: target.targetId },
       { mutation: true },
     );
+    this.assertAttachmentCurrent(connection, attachmentGeneration);
     const replacement = await attachToTarget(connection, target.targetId);
-    await this.preparePage(replacement);
-    if (this.page === previous) {
+    if (this.page !== previous || attachmentGeneration !== this.attachmentGeneration) {
+      await replacement.detach().catch(() => undefined);
+      // The losing controller's detach may clear target overrides. Repair the
+      // current controller on its next access rather than trust earlier pixels.
+      this.emulationAppliedPage = null;
+      this.invalidateScreencastFrame();
+      if (!this.page) throw new CdpUnavailableError("Browser page changed during reattachment");
+      return this.page;
+    }
+    this.assertAttachmentCurrent(connection, attachmentGeneration);
+
+    this.invalidateScreencastFrame();
+    // Detaching drops the session that holds any pressed button; release there first.
+    if (this.liveInput) await this.endLiveInput(this.liveInput.id);
+    await this.releaseHeldInput(previous);
+    this.page = null;
+    this.emulationAppliedPage = null;
+    // Detach first: the former session can otherwise clear the newly applied override.
+    try {
+      await previous.detach();
+      this.assertAttachmentCurrent(connection, attachmentGeneration);
+      await this.bindPageEvents(replacement);
+      this.assertAttachmentCurrent(connection, attachmentGeneration);
+      await this.restoreConfiguredEmulation(replacement);
+      this.assertAttachmentCurrent(connection, attachmentGeneration);
       this.page = replacement;
       this.targetId = target.targetId;
-    } else {
+      return replacement;
+    } catch (error) {
       await replacement.detach().catch(() => undefined);
+      // Detaching a partial emulation can clear target metrics even if a newer
+      // attachment won. Its next access must restore intent before admitting pixels.
+      this.emulationAppliedPage = null;
+      this.invalidateScreencastFrame();
+      throw error;
     }
-    await previous.detach().catch(() => undefined);
-    return this.page ?? replacement;
   }
 
   private async withInvalidatedScreencast(
@@ -908,23 +1382,35 @@ export class AgentBrowserRuntime {
       await mutation(page);
     } finally {
       this.invalidateScreencastFrame();
-      if (restart && this.page === page) await this.startScreencastSession(page);
+      if (restart && this.page === page) {
+        await this.restoreConfiguredEmulation(page);
+        await this.startScreencastSession(page);
+      }
     }
   }
 
+  /** Clear both sources and revoke every in-flight capture after input or transport changes. */
   private invalidateScreencastFrame(): void {
+    this.captureGeneration += 1;
     this.screencastFrame = null;
     this.resolveFrameWaiters(null);
   }
 
-  private readonly onScreencastFrame = (event: ScreencastFrame): void => {
-    void this.page
-      ?.send("Page.screencastFrameAck", { sessionId: event.sessionId })
+  private onScreencastFrame(page: CdpSession, event: ScreencastFrame): void {
+    // A late frame belongs to its emitting session, even after page reattachment.
+    void page
+      .send("Page.screencastFrameAck", { sessionId: event.sessionId })
       .catch(() => undefined);
-    const width = Math.round(event.metadata.deviceWidth);
-    const height = Math.round(event.metadata.deviceHeight);
+    if (page !== this.page || !this.screencastActive || this.emulationAppliedPage !== page) return;
+    const dimensions = readJpegFrameDimensions(event.data);
     const viewport = this.viewport;
-    if (!viewport || width !== viewport.width || height !== viewport.height) return;
+    // Chromium can report the new device dimensions while emitting a clipped transition image.
+    // Reject those pixels and use the bounded screenshot fallback rather than mislabeling them.
+    if (!viewport || !dimensions) return;
+    const expectedPixels = captureDimensions(viewport, viewport.captureScale);
+    if (dimensions.width !== expectedPixels.width || dimensions.height !== expectedPixels.height)
+      return;
+    const { width, height } = dimensions;
     const frame: RuntimeFrame = {
       dataBase64: event.data,
       byteLength: Buffer.byteLength(event.data, "base64"),
@@ -935,7 +1421,7 @@ export class AgentBrowserRuntime {
     };
     this.screencastFrame = frame;
     this.resolveFrameWaiters(frame);
-  };
+  }
 
   private waitForFrame(waitMs: number): Promise<RuntimeFrame | null> {
     const { promise, resolve } = Promise.withResolvers<RuntimeFrame | null>();
@@ -958,6 +1444,17 @@ export class AgentBrowserRuntime {
   }
 
   private assertViewport(viewport: BrowserViewport): void {
+    const captureScale = viewport.captureScale ?? 1;
+    const pixels = captureDimensions(viewport, captureScale);
+    if (
+      !Number.isFinite(captureScale) ||
+      captureScale < 1 ||
+      captureScale > 2 ||
+      pixels.width > MAX_VIEWPORT.width ||
+      pixels.height > MAX_VIEWPORT.height
+    ) {
+      throw new RangeError("Capture density exceeds the supported image bounds");
+    }
     if (
       !Number.isInteger(viewport.width) ||
       viewport.width < 1 ||
@@ -984,6 +1481,18 @@ export class AgentBrowserRuntime {
     ) {
       throw new RangeError("Input coordinates are outside the CSS viewport");
     }
+  }
+
+  /** CDP/Puppeteer priority for supported held buttons, independent of press order.
+   * https://github.com/puppeteer/puppeteer/blob/main/packages/puppeteer-core/src/cdp/Input.ts
+   */
+  private heldMoveButton(): MouseButton | "none" {
+    for (const button of ["left", "right", "middle"] as const) {
+      if (this.heldButtons.has(button)) {
+        return button;
+      }
+    }
+    return "none";
   }
 
   private buttonMask(add?: MouseButton, remove?: MouseButton): number {

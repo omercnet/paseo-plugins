@@ -9,13 +9,16 @@ import type {
   acquireControlRpc,
   applyDevicePresetRpc,
   attachBrowserRpc,
+  beginBrowserGestureRpc,
   captureBrowserRpc,
   detachBrowserRpc,
+  endBrowserGestureRpc,
   listOpenBrowserWorkspacesRpc,
   navigateBrowserRpc,
   releaseControlRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
+  updateBrowserGestureRpc,
 } from "../shared/browser";
 import { resolveBrowserRuntimeRoot } from "./runtime-path";
 import type { JsonValue } from "./runtime-protocol";
@@ -48,6 +51,12 @@ type ApplyDevicePresetInput = RpcInput<typeof applyDevicePresetRpc>;
 type ApplyDevicePresetOutput = RpcOutput<typeof applyDevicePresetRpc>;
 type SendInput = RpcInput<typeof sendBrowserInputRpc>;
 type SendOutput = RpcOutput<typeof sendBrowserInputRpc>;
+type BeginGestureInput = RpcInput<typeof beginBrowserGestureRpc>;
+type BeginGestureOutput = RpcOutput<typeof beginBrowserGestureRpc>;
+type UpdateGestureInput = RpcInput<typeof updateBrowserGestureRpc>;
+type UpdateGestureOutput = RpcOutput<typeof updateBrowserGestureRpc>;
+type EndGestureInput = RpcInput<typeof endBrowserGestureRpc>;
+type EndGestureOutput = RpcOutput<typeof endBrowserGestureRpc>;
 
 function paseoHome(): string {
   return process.env.PASEO_HOME ?? join(homedir(), ".paseo");
@@ -111,6 +120,18 @@ class RemoteBrowserManager {
 
   sendInput(input: SendInput): Promise<SendOutput> {
     return this.client.requestBrowser<SendOutput>("input", input as unknown as JsonValue);
+  }
+
+  beginGesture(input: BeginGestureInput): Promise<BeginGestureOutput> {
+    return this.client.requestBrowser("gesture.begin", input as unknown as JsonValue);
+  }
+
+  updateGesture(input: UpdateGestureInput): Promise<UpdateGestureOutput> {
+    return this.client.requestBrowser("gesture.update", input as unknown as JsonValue);
+  }
+
+  endGesture(input: EndGestureInput): Promise<EndGestureOutput> {
+    return this.client.requestBrowser("gesture.end", input as unknown as JsonValue);
   }
 
   async listOpenWorkspaceIds(): Promise<string[]> {
@@ -291,6 +312,23 @@ export async function handleApplyDevicePreset(
 
 export async function handleSendBrowserInput(input: SendInput): Promise<SendOutput> {
   return (await getProductionManager()).sendInput(input);
+}
+
+/** Human-viewer live gestures use the existing authenticated supervisor, never an agent ticket. */
+export async function handleBeginBrowserGesture(
+  input: BeginGestureInput,
+): Promise<BeginGestureOutput> {
+  return (await getProductionManager()).beginGesture(input);
+}
+
+export async function handleUpdateBrowserGesture(
+  input: UpdateGestureInput,
+): Promise<UpdateGestureOutput> {
+  return (await getProductionManager()).updateGesture(input);
+}
+
+export async function handleEndBrowserGesture(input: EndGestureInput): Promise<EndGestureOutput> {
+  return (await getProductionManager()).endGesture(input);
 }
 
 export async function cleanupBrowserServer(): Promise<void> {
