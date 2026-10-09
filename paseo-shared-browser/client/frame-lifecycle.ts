@@ -1,65 +1,68 @@
-import type { BrowserFrame } from "../shared/browser";
+import type { BrowserFrameAuthority as BrowserFrame } from "../shared/browser-video";
 
 /**
- * Tracks which captured frame input may target. After an input is submitted
- * and again when it settles, the actionable frame is dropped and the epoch
- * advances, so captures that began earlier are ignored. Input stays blocked
- * until a capture taken after settlement is accepted. The last accepted image
- * stays visible meanwhile.
+ * Tracks actionable captures across discrete input settlement. The decoded
+ * image remains visible while admission waits for a capture begun after settle.
+ * A factory keeps this upstream policy compatible with Paseo's mobile Hermes
+ * compiler, which rejects the emitted class declaration in client bundles.
  */
-export class FrameLifecycle {
-  epoch = 0;
-  /** Frame input may target; null while a fresh capture is awaited. */
-  frame: BrowserFrame | null = null;
-  /** Last accepted frame, kept on screen while input is blocked. */
-  visible: BrowserFrame | null = null;
-  private gate: "idle" | "pending" | "refreshing" = "idle";
+export function createFrameLifecycle() {
+  let epoch = 0;
+  let frame: BrowserFrame | null = null;
+  let visible: BrowserFrame | null = null;
+  let gate: "idle" | "pending" | "refreshing" = "idle";
 
-  get busy(): boolean {
-    return this.gate !== "idle";
-  }
+  const bump = () => {
+    epoch += 1;
+  };
+  const drop = () => {
+    frame = null;
+    visible = null;
+  };
 
-  bump(): void {
-    this.epoch += 1;
-  }
-
-  isCurrent(captureEpoch: number): boolean {
-    return captureEpoch === this.epoch;
-  }
-
-  /** Claims the input slot; false if an input is already in flight or awaiting a fresh frame. */
-  begin(): boolean {
-    if (this.busy) return false;
-    this.gate = "pending";
-    this.frame = null;
-    this.bump();
-    return true;
-  }
-
-  /** Called when an input succeeds or fails. Never replays the action. */
-  settle(): void {
-    this.frame = null;
-    this.bump();
-    this.gate = "refreshing";
-  }
-
-  /** Accepts a capture started at `captureEpoch`; false if it predates the latest boundary. */
-  accept(captureEpoch: number, frame: BrowserFrame): boolean {
-    if (!this.isCurrent(captureEpoch)) return false;
-    this.frame = frame;
-    this.visible = frame;
-    if (this.gate === "refreshing") this.gate = "idle";
-    return true;
-  }
-
-  /** Forgets all frames, e.g. when the session no longer matches them. */
-  drop(): void {
-    this.frame = null;
-    this.visible = null;
-  }
-
-  reset(): void {
-    this.drop();
-    this.gate = "idle";
-  }
+  return {
+    get epoch() {
+      return epoch;
+    },
+    get frame() {
+      return frame;
+    },
+    get visible() {
+      return visible;
+    },
+    get busy() {
+      return gate !== "idle";
+    },
+    bump,
+    isCurrent(captureEpoch: number) {
+      return captureEpoch === epoch;
+    },
+    /** Blocks further discrete input until settlement and a fresh decoded frame. */
+    begin() {
+      if (gate !== "idle") return false;
+      gate = "pending";
+      frame = null;
+      bump();
+      return true;
+    },
+    /** Advances even on failure; an uncertain action is never replayed. */
+    settle() {
+      frame = null;
+      bump();
+      gate = "refreshing";
+    },
+    /** A capture begun before settlement cannot restore admission. */
+    accept(captureEpoch: number, captured: BrowserFrame) {
+      if (captureEpoch !== epoch) return false;
+      frame = captured;
+      visible = captured;
+      if (gate === "refreshing") gate = "idle";
+      return true;
+    },
+    drop,
+    reset() {
+      drop();
+      gate = "idle";
+    },
+  };
 }

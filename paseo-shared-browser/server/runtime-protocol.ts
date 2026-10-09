@@ -36,7 +36,12 @@ export type AgentBrowserOperation =
   | "release-control"
   | "navigate"
   | "input"
-  | "viewport";
+  | "viewport"
+  | "device"
+  | "tabs.list"
+  | "tabs.create"
+  | "tabs.select"
+  | "tabs.close";
 
 export type RuntimeRequest =
   | (AdminRequestBase & { method: "bridge.claim"; takeover?: boolean })
@@ -57,6 +62,12 @@ export type RuntimeRequest =
       method: "workspace.archive";
       epoch: number;
       workspaceId: string;
+    })
+  | (AdminRequestBase & {
+      method: "workspace.close";
+      epoch: number;
+      workspaceId: string;
+      runtimeId: string;
     })
   | (AdminRequestBase & {
       method: "browser.request";
@@ -183,6 +194,17 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest {
       epoch,
       workspaceId: requireString(value, "workspaceId"),
     };
+  if (method === "workspace.close")
+    return {
+      id,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method,
+      token,
+      bridgeId,
+      epoch,
+      workspaceId: requireString(value, "workspaceId"),
+      runtimeId: requireString(value, "runtimeId"),
+    };
   if (method === "workspace.request")
     return {
       id,
@@ -267,7 +289,8 @@ function requireAgentOperation(value: unknown): AgentBrowserOperation {
     value === "release-control" ||
     value === "navigate" ||
     value === "input" ||
-    value === "viewport"
+    value === "viewport" ||
+    value === "device"
   )
     return value;
   throw new RuntimeProtocolError("INVALID_REQUEST", "Unknown agent browser operation");

@@ -9,6 +9,7 @@ import { resolveBrowserRuntimeRoot } from "../server/runtime-path";
 import { resolveSupervisorPaths, startSupervisorServer } from "../server/supervisor";
 import { SupervisorClient } from "../server/supervisor-client";
 import type { BrowserFrame, BrowserState } from "../shared/browser";
+import { DEFAULT_CAPTURE_QUALITY } from "../shared/capture-settings";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -87,9 +88,23 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       <html><head><title>Shared Browser Smoke</title><style>
         input{position:absolute;left:40px;top:30px;width:220px;height:32px}
         button{position:absolute;left:300px;top:30px;width:140px;height:36px}
+        .cursor-case{position:absolute;left:40px;width:400px;height:30px;font:20px/30px monospace;cursor:auto}
+        #plain{top:100px} #locked{top:150px;user-select:none}
+        #arrow{top:200px;cursor:default} #editor{top:250px}
+        #vertical{top:300px;width:30px;height:140px;writing-mode:vertical-rl}
+        #link{position:absolute;left:500px;top:100px}
+        #shadow{position:absolute;left:500px;top:150px}
       </style></head><body>
         <input aria-label="Shared value" oninput="fetch('/typed?value='+encodeURIComponent(this.value))">
         <button onclick="fetch('/clicked')">Record click</button>
+        <div id="plain" class="cursor-case">Selectable text</div>
+        <div id="locked" class="cursor-case">Non-selectable</div>
+        <div id="arrow" class="cursor-case">Explicit arrow</div>
+        <div id="editor" class="cursor-case" contenteditable="true"></div>
+        <div id="vertical" class="cursor-case">Vertical text</div>
+        <a id="link" href="#anchor">Link</a>
+        <div id="shadow"></div>
+        <script>document.getElementById('shadow').attachShadow({mode:'open'}).innerHTML = '<span style="cursor:auto;font:20px/30px monospace">Shadow text</span>';</script>
       </body></html>`;
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     if (url.searchParams.has("delayed")) {
@@ -153,14 +168,73 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       action: { kind: "goto", url: `${origin}/?delayed=1` },
     });
     expect(navigated.state.url).toBe(`${origin}/?delayed=1`);
-    expect(navigated.state.title).toBe("Shared Browser Smoke");
+    // URL actions acknowledge native navigation; this fixture separately waits
+    // for its delayed DOM before exercising the remote input elements below.
+    await vi.waitFor(
+      async () => {
+        const current = await manager.status(first.viewerToken);
+        expect(current.state.title).toBe("Shared Browser Smoke");
+      },
+      { timeout: 5_000 },
+    );
     console.log("browser-smoke: navigated");
 
-    const firstCapture = await manager.capture(first.viewerToken, "medium", null);
+    let firstCapture = await manager.capture(first.viewerToken, "medium", null);
     expect(firstCapture.frame?.byteLength).toBeLessThanOrEqual(800_000);
     const secondCapture = await manager.capture(second.viewerToken, "medium", null);
     expect(secondCapture.state.sessionId).toBe(firstCapture.state.sessionId);
     expect(secondCapture.state.controller).toBe("other");
+
+    // Exercise actual glyph geometry through the same guarded human RPC path.
+    const { runtimeId, bridgeEpoch } = firstCapture.state;
+    if (typeof runtimeId !== "string" || typeof bridgeEpoch !== "number") {
+      throw new Error("Native cursor fixture requires current runtime identity");
+    }
+    const cursorContext = {
+      viewerToken: first.viewerToken,
+      controlToken: firstControl.controlToken,
+      expected: {
+        ...expected(firstCapture.state),
+        runtimeId,
+        bridgeEpoch,
+      },
+    };
+    const channel = await manager.beginGesture({
+      ...cursorContext,
+      target: target(firstCapture.frame!),
+      pointerKind: "mouse",
+    });
+    if (!("gestureId" in channel) || typeof channel.nextSequence !== "number") {
+      throw new Error("Fresh cursor fixture was not admitted");
+    }
+    let sequence = channel.nextSequence;
+    for (const [x, y, cursor] of [
+      [45, 115, "text"],
+      [390, 115, "default"],
+      [45, 165, "default"],
+      [45, 215, "default"],
+      [390, 265, "text"],
+      [55, 305, "vertical-text"],
+      [505, 108, "pointer"],
+      [505, 165, "text"],
+      [150, 46, "text"],
+    ] as const) {
+      const update = await manager.updateGesture({
+        ...cursorContext,
+        gestureId: channel.gestureId,
+        sequence,
+        event: { kind: "move", point: { x, y, width: 1280, height: 800 } },
+      });
+      expect(update.cursor, `Cursor at ${x},${y}`).toBe(cursor);
+      sequence = update.nextSequence;
+    }
+    await manager.endGesture({
+      ...cursorContext,
+      gestureId: channel.gestureId,
+      sequence,
+      cancel: false,
+    });
+    firstCapture = await manager.capture(first.viewerToken, "medium", null);
 
     await manager.sendInput({
       viewerToken: first.viewerToken,
@@ -245,7 +319,13 @@ it("shares and persists a production agent-browser runtime across supervisor cli
     });
     await vi.waitFor(() => expect(lastUserAgent).toContain("Pixel 7"));
     await vi.waitFor(async () => {
-      const resumedCapture = await manager.capture(resumed.viewerToken, "medium", null);
+      // Only the default quality requests the shared CDP stream. Other viewer
+      // qualities intentionally use screenshots without restarting that stream.
+      const resumedCapture = await manager.capture(
+        resumed.viewerToken,
+        DEFAULT_CAPTURE_QUALITY,
+        null,
+      );
       expect(resumedCapture.frame?.transport).toBe("cdp-screencast");
     });
     console.log("browser-smoke: emulated");
@@ -265,8 +345,74 @@ it("shares and persists a production agent-browser runtime across supervisor cli
     await vi.waitFor(() => expect(retainedCookie).toContain("shared-browser-profile=retained"));
     console.log("browser-smoke: restored");
 
+    const originalPageUrl = (await manager.status(restored.viewerToken)).state.url;
+    const extraTab = await manager.createTab(restored.viewerToken);
+    const extraViewer = await manager.attach(
+      "workspace-smoke",
+      "Second page viewer",
+      extraTab.tabId,
+    );
+    const extraControl = await manager.acquireControl(extraViewer.viewerToken, false);
+    retainedCookie = "";
+    await manager.navigate({
+      viewerToken: extraViewer.viewerToken,
+      controlToken: extraControl.controlToken,
+      expected: expected(extraControl.state),
+      action: { kind: "goto", url: `${origin}/read-cookie` },
+    });
+    await vi.waitFor(() => expect(retainedCookie).toContain("shared-browser-profile=retained"));
+    const extraFrame = await manager.capture(extraViewer.viewerToken, "medium", null);
+    const originalFrame = await manager.capture(restored.viewerToken, "medium", null);
+    expect(extraFrame.frame?.byteLength).toBeGreaterThan(0);
+    expect(originalFrame.frame?.byteLength).toBeGreaterThan(0);
+    expect(extraFrame.state.sessionId).not.toBe(originalFrame.state.sessionId);
+    expect((await manager.status(restored.viewerToken)).state.url).toBe(originalPageUrl);
+    expect((await manager.status(restored.viewerToken)).state.controller).toBe("self");
+    const extraPreset = await manager.applyDevicePreset({
+      viewerToken: extraViewer.viewerToken,
+      controlToken: extraControl.controlToken,
+      expected: expected((await manager.status(extraViewer.viewerToken)).state),
+      presetId: "pixel-7",
+    });
+    expect(extraPreset.state.viewport).toEqual({ width: 412, height: 839 });
+    await manager.closeTab({
+      viewerToken: restored.viewerToken,
+      controlToken: restoredControl.controlToken,
+      tabId: restored.state.tabId!,
+    });
+    await expect(manager.status(restored.viewerToken)).rejects.toThrow("Browser tab is closed");
+    expect((await manager.status(extraViewer.viewerToken)).state.url).toBe(`${origin}/read-cookie`);
+    expect((await manager.capture(extraViewer.viewerToken, "medium", null)).frame?.width).toBe(412);
+    console.log("browser-smoke: independent-tabs");
+
+    await manager.closeBrowser({
+      viewerToken: extraViewer.viewerToken,
+      controlToken: extraControl.controlToken,
+      sessionId: extraViewer.state.sessionId,
+      runtimeId: extraViewer.state.runtimeId!,
+    });
+    await expect(manager.capture(extraViewer.viewerToken, "medium", null)).rejects.toThrow(
+      "Browser is closed",
+    );
+    await expect(manager.attach("workspace-smoke", "Background viewer")).rejects.toThrow(
+      "Browser is closed",
+    );
+    await manager.reopenBrowser("workspace-smoke");
+    const reopened = await manager.attach("workspace-smoke", "Explicitly reopened client");
+    expect(reopened.state.runtimeId).not.toBe(restored.state.runtimeId);
+    const reopenedControl = await manager.acquireControl(reopened.viewerToken, false);
+    retainedCookie = "";
+    await manager.navigate({
+      viewerToken: reopened.viewerToken,
+      controlToken: reopenedControl.controlToken,
+      expected: expected(reopenedControl.state),
+      action: { kind: "goto", url: `${origin}/read-cookie` },
+    });
+    await vi.waitFor(() => expect(retainedCookie).toContain("shared-browser-profile=retained"));
+    console.log("browser-smoke: closed-and-reopened");
+
     await manager.archiveWorkspace("workspace-smoke");
-    await expect(manager.capture(restored.viewerToken, "medium", null)).rejects.toThrow(
+    await expect(manager.capture(reopened.viewerToken, "medium", null)).rejects.toThrow(
       "invalid or expired",
     );
     console.log("browser-smoke: archived");

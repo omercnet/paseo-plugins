@@ -209,6 +209,22 @@ describe("detached runtime supervisor lifecycle", () => {
     expect(owner.stopped.map((runtime) => runtime.runtimeId)).toEqual(["runtime-1"]);
   });
 
+  it("closes only the expected workspace runtime and permits a fresh one", async () => {
+    const { owner, supervisor } = createHarness();
+    const bridge = supervisor.claimBridge("bridge-one");
+    const first = await supervisor.ensureWorkspace("bridge-one", bridge.epoch, "workspace-one");
+
+    await expect(
+      supervisor.closeWorkspace("bridge-one", bridge.epoch, "workspace-one", "wrong-runtime"),
+    ).rejects.toThrow("Browser runtime was replaced");
+    expect(owner.stopped).toEqual([]);
+
+    await supervisor.closeWorkspace("bridge-one", bridge.epoch, "workspace-one", first.runtimeId);
+    expect(owner.stopped.map((runtime) => runtime.runtimeId)).toEqual([first.runtimeId]);
+    const next = await supervisor.ensureWorkspace("bridge-one", bridge.epoch, "workspace-one");
+    expect(next.runtimeId).not.toBe(first.runtimeId);
+  });
+
   it("lets archive fence creation and tear down a runtime created concurrently", async () => {
     vi.useFakeTimers();
     const { owner, supervisor } = createHarness();
@@ -473,9 +489,51 @@ describe("detached runtime supervisor lifecycle", () => {
         }),
       ).resolves.toMatchObject({ ok: false, error: { code: "RUNTIME_BUSY" } });
 
+      // Normal global capacity stays full, but the current authenticated lease
+      // must retain its independently bounded maintenance slot.
+      await expect(
+        sendRequest(sockets[4]!, {
+          id: "heartbeat-during-global-busy",
+          token,
+          version: RUNTIME_PROTOCOL_VERSION,
+          method: "bridge.heartbeat",
+          bridgeId: "bridge-one",
+          epoch,
+        }),
+      ).resolves.toMatchObject({ ok: true });
+      for (const credentials of [
+        { token: "invalid-token", epoch },
+        { token, epoch: epoch + 1 },
+      ]) {
+        await expect(
+          sendRequest(sockets[4]!, {
+            id: "unqualified-heartbeat",
+            ...credentials,
+            version: RUNTIME_PROTOCOL_VERSION,
+            method: "bridge.heartbeat",
+            bridgeId: "bridge-one",
+          }),
+        ).resolves.toMatchObject({ ok: false, error: { code: "RUNTIME_BUSY" } });
+      }
+
       owner.requestGate.resolve();
       await vi.waitFor(() => expect(owner.requests).toHaveLength(64));
       await vi.waitFor(() => expect(owner.activeRequests).toBe(0));
+      for (const credentials of [
+        { token: "invalid-token", epoch, code: "AUTHENTICATION_FAILED" },
+        { token, epoch: epoch + 1, code: "BRIDGE_FENCED" },
+      ]) {
+        await expect(
+          sendRequest(sockets[4]!, {
+            id: "refused-heartbeat",
+            token: credentials.token,
+            epoch: credentials.epoch,
+            version: RUNTIME_PROTOCOL_VERSION,
+            method: "bridge.heartbeat",
+            bridgeId: "bridge-one",
+          }),
+        ).resolves.toMatchObject({ ok: false, error: { code: credentials.code } });
+      }
       await expect(
         sendRequest(sockets[4]!, {
           id: "heartbeat-after-busy",
@@ -510,4 +568,174 @@ describe("detached runtime supervisor lifecycle", () => {
     await expect(access(paths.lock)).rejects.toBeDefined();
     await rm(root, { recursive: true, force: true });
   });
+});
+
+/** Slow browser work must not stop authenticated bridge maintenance on the same socket. */
+it("retains global command headroom while bounded media reads are saturated", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shared-browser-media-global-"));
+  const paths = resolveSupervisorPaths(root);
+  const owner = new FakeOwner();
+  const held = deferred<void>();
+  const allStarted = deferred<void>();
+  const request = owner.request.bind(owner);
+  let videoReads = 0;
+  owner.request = async (runtime, operation) => {
+    if (operation === "video.read") {
+      if (++videoReads === 48) allStarted.resolve();
+      await held.promise;
+    }
+    return request(runtime, operation);
+  };
+  const server = await startSupervisorServer(owner, paths);
+  const sockets = await Promise.all(Array.from({ length: 5 }, () => openSocket(paths.socket)));
+  try {
+    const token = (await readFile(paths.token, "utf8")).trim();
+    const claimed = await sendRequest(sockets[0]!, {
+      id: "claim",
+      token,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method: "bridge.claim",
+      bridgeId: "bridge-one",
+    });
+    const epoch = (claimed.result as { epoch: number }).epoch;
+    await sendRequest(sockets[0]!, {
+      id: "ensure",
+      token,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method: "workspace.ensure",
+      bridgeId: "bridge-one",
+      epoch,
+      workspaceId: "owned",
+    });
+    const base = {
+      token,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method: "workspace.request",
+      bridgeId: "bridge-one",
+      epoch,
+      workspaceId: "owned",
+    };
+    const media = {
+      operation: "video.read",
+      input: {
+        quality: "high",
+        streamId: null,
+        afterSequence: 0,
+        waitMs: 500,
+        requestKeyFrame: false,
+      },
+    };
+    const busyReplies = sockets.slice(0, 4).map((socket, socketIndex) => {
+      for (let index = 0; index < 12; index++) {
+        socket.write(
+          `${JSON.stringify({ ...base, ...media, id: `media-${socketIndex}-${index}` })}\n`,
+        );
+      }
+      return sendRequest(socket, { ...base, ...media, id: `excess-${socketIndex}` });
+    });
+    await allStarted.promise;
+    for (const reply of await Promise.all(busyReplies)) {
+      expect(reply).toMatchObject({ ok: false, error: { code: "RUNTIME_BUSY" } });
+    }
+    await expect(
+      sendRequest(sockets[4]!, {
+        ...base,
+        ...media,
+        id: "global-excess-video",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "RUNTIME_BUSY" } });
+    await expect(
+      sendRequest(sockets[4]!, {
+        ...base,
+        id: "global-excess-jpeg",
+        operation: "frame",
+        input: {},
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "RUNTIME_BUSY" } });
+    await expect(
+      sendRequest(sockets[4]!, {
+        ...base,
+        id: "ordered-cleanup",
+        operation: "input.end",
+        input: { gestureId: "owned" },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(owner.requests).toEqual(["input.end"]);
+    expect(videoReads).toBe(48);
+  } finally {
+    held.resolve();
+    for (const socket of sockets) socket.destroy();
+    await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("renews the bridge heartbeat while a page operation is held", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shared-browser-heartbeat-socket-"));
+  const paths = resolveSupervisorPaths(root);
+  const owner = new FakeOwner();
+  const server = await startSupervisorServer(owner, paths);
+  const socket = await openSocket(paths.socket);
+  try {
+    const token = (await readFile(paths.token, "utf8")).trim();
+    const claimed = await sendRequest(socket, {
+      id: "claim",
+      token,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method: "bridge.claim",
+      bridgeId: "bridge-one",
+    });
+    const epoch = (claimed.result as { epoch: number }).epoch;
+    await sendRequest(socket, {
+      id: "ensure",
+      token,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method: "workspace.ensure",
+      bridgeId: "bridge-one",
+      epoch,
+      workspaceId: "workspace-one",
+    });
+    owner.requestGate = deferred<void>();
+    owner.requestStarted = deferred<void>();
+    socket.write(
+      `${JSON.stringify({
+        id: "held-page",
+        token,
+        version: RUNTIME_PROTOCOL_VERSION,
+        method: "workspace.request",
+        bridgeId: "bridge-one",
+        epoch,
+        workspaceId: "workspace-one",
+        operation: "frame",
+        input: null,
+      })}\n`,
+    );
+    await owner.requestStarted.promise;
+    const heartbeat = sendRequest(socket, {
+      id: "live-heartbeat",
+      token,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method: "bridge.heartbeat",
+      bridgeId: "bridge-one",
+      epoch,
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timely = await Promise.race([
+        heartbeat,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), 1000);
+        }),
+      ]);
+      expect(timely).toMatchObject({ id: "live-heartbeat", ok: true });
+      expect(owner.activeRequests).toBe(1);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } finally {
+    owner.requestGate?.resolve();
+    socket.destroy();
+    await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

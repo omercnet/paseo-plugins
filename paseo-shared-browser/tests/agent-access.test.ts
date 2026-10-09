@@ -58,6 +58,7 @@ class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
           title: runtime.workspaceId,
           canGoBack: false,
           canGoForward: false,
+          inputGeneration: "0:0",
         };
       case "navigate":
         state.url = String(data.url);
@@ -84,6 +85,8 @@ class AgentRuntimeOwner implements RuntimeOwner<AgentRuntime> {
       case "mouse.up":
       case "mouse.wheel":
       case "text.insert":
+      case "input.begin":
+      case "input.end":
       case "key.down":
       case "key.up":
         return null;
@@ -206,7 +209,208 @@ afterEach(async () => {
   await Promise.all(supervisors.splice(0).map((supervisor) => supervisor.stopAll()));
 });
 
+/** Pause a real policy metadata read without introducing sockets or a browser. */
+function holdNextMetadata(owner: AgentRuntimeOwner) {
+  let entered!: () => void;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = owner.request.bind(owner);
+  let hold = true;
+  owner.request = async (runtime, operation, input) => {
+    if (operation === "state" && hold) {
+      hold = false;
+      entered();
+      await gate;
+    }
+    return original(runtime, operation, input);
+  };
+  return { pending, release };
+}
+
 describe("agent shared-browser authorization", () => {
+  it("refuses revoked acquisition during attachment and removes the late viewer", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("revoked-attach");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    const hold = holdNextMetadata(owner);
+    const acquiring = agentRequest(supervisor, agentTicket, "acquire-control");
+    const refused = expect(acquiring).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
+    await hold.pending;
+    await revokeAgent(supervisor, bridge, "agent-one");
+    hold.release();
+    await refused;
+    const human = await browserRequest<{ state: BrowserState }>(supervisor, bridge, "attach", {
+      workspaceId: "workspace-one",
+      viewerLabel: "Human",
+    });
+    expect(human.state.viewerCount).toBe(1);
+    expect(human.state.controller).toBe("none");
+  });
+
+  it("refuses revoked queued native publication without replaying the mutation", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("revoked-mutation");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    const hold = holdNextMetadata(owner);
+    const reading = supervisor.requestWorkspace(
+      bridge.bridgeId,
+      bridge.epoch,
+      "workspace-one",
+      "state",
+      null,
+    );
+    await hold.pending;
+    const navigating = agentRequest(supervisor, agentTicket, "navigate", {
+      action: { kind: "goto", url: "https://must-not-publish.example/" },
+    });
+    const refused = expect(navigating).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
+    const revoking = revokeAgent(supervisor, bridge, "agent-one");
+    hold.release();
+    await reading;
+    await refused;
+    await revoking;
+    expect(owner.states.get("workspace-one")?.url).toBe("https://workspace-one.example/");
+  });
+
+  for (const heldCase of [
+    { name: "key", down: "key.down", up: "key.up", event: { kind: "key", key: "Enter" } },
+    {
+      name: "button",
+      down: "mouse.down",
+      up: "mouse.up",
+      event: {
+        kind: "click",
+        button: "left",
+        clickCount: 1,
+        point: { x: 30, y: 30, width: 1280, height: 800 },
+      },
+    },
+  ]) {
+    it(`releases an acknowledged ${heldCase.name} after revocation without admitting another press`, async () => {
+      const { owner, supervisor, bridge } = createHarness();
+      const agentTicket = ticket("revoked-held-key");
+      await issueTicket(supervisor, bridge, agentTicket);
+      await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+      await agentRequest(supervisor, agentTicket, "acquire-control");
+      await agentRequest(supervisor, agentTicket, "capture");
+      let entered!: () => void;
+      let release!: () => void;
+      const pressed = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const events: string[] = [];
+      const original = owner.request.bind(owner);
+      owner.request = async (runtime, operation, input) => {
+        if (operation === heldCase.down) {
+          events.push("down");
+          entered();
+          await gate;
+        }
+        if (operation === heldCase.up) events.push("up");
+        return original(runtime, operation, input);
+      };
+      const input = agentRequest(supervisor, agentTicket, "input", {
+        event: heldCase.event,
+      } as JsonValue);
+      const refused = expect(input).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
+      await pressed;
+      const revoking = revokeAgent(supervisor, bridge, "agent-one");
+      release();
+      await refused;
+      await revoking;
+      expect(events).toEqual(["down", "up"]);
+    });
+  }
+
+  it("cleans revoked uncertain-down intent on its original runtime without replay", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("revoked-uncertain-down");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    await agentRequest(supervisor, agentTicket, "capture");
+    let entered!: () => void;
+    let release!: () => void;
+    const pressed = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const events: string[] = [];
+    const original = owner.request.bind(owner);
+    owner.request = async (runtime, operation, input) => {
+      if (operation === "key.down") {
+        events.push("down");
+        entered();
+        await gate;
+        throw new CdpUnknownOutcomeError("Original down outcome unknown");
+      }
+      if (operation === "input.end") events.push("cleanup");
+      return original(runtime, operation, input);
+    };
+    const input = agentRequest(supervisor, agentTicket, "input", {
+      event: { kind: "key", key: "Enter" },
+    });
+    const refused = expect(input).rejects.toMatchObject({ code: "UNKNOWN_OUTCOME" });
+    await pressed;
+    const revoking = revokeAgent(supervisor, bridge, "agent-one");
+    release();
+    await refused;
+    await revoking;
+    expect(events).toEqual(["down", "cleanup"]);
+  });
+
+  it("validates raw agent mutation fields before any native action", async () => {
+    const { owner, supervisor, bridge } = createHarness();
+    const agentTicket = ticket("validated-input");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    await agentRequest(supervisor, agentTicket, "capture");
+    const published: string[] = [];
+    const original = owner.request.bind(owner);
+    owner.request = async (runtime, operation, input) => {
+      published.push(operation);
+      return original(runtime, operation, input);
+    };
+    const invalid: { operation: AgentBrowserOperation; input: JsonValue }[] = [
+      { operation: "input", input: { event: { kind: "type", text: "x".repeat(16001) } } },
+      { operation: "input", input: { event: { kind: "key", key: "Control" } } },
+      {
+        operation: "input",
+        input: { event: { kind: "click", point: { x: -1, y: 5, width: 100, height: 100 } } },
+      },
+      { operation: "navigate", input: { action: { kind: "invalid" } } },
+      { operation: "viewport", input: { viewport: { width: 0, height: 800 } } },
+      { operation: "device", input: { presetId: "invented-device" } },
+    ];
+    for (const request of invalid) {
+      await expect(
+        agentRequest(supervisor, agentTicket, request.operation, request.input),
+      ).rejects.toMatchObject({
+        code: "INVALID_REQUEST",
+        message: "Invalid agent browser request",
+      });
+    }
+    expect(published).toEqual([]);
+    await agentRequest(supervisor, agentTicket, "input", {
+      event: { kind: "type", text: "Valid committed text" },
+    });
+    expect(published.filter((operation) => operation === "text.insert")).toEqual(["text.insert"]);
+  });
+
   it("uses an opaque agent ticket without claiming or fencing the admin bridge", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-agent-client-"));
     const paths = resolveSupervisorPaths(root);
@@ -298,6 +502,181 @@ describe("agent shared-browser authorization", () => {
     });
     expect(owner.states.get("workspace-one")?.url).toBe("https://agent.example/");
     expect(owner.states.get("workspace-two")?.url).toBe("https://workspace-two.example/");
+  });
+
+  it("keeps an agent's selected tab and control when a human changes another tab", async () => {
+    const owner = new AgentRuntimeOwner();
+    const originalRequest = owner.request.bind(owner);
+    let secondUrl = "https://second.example/";
+    let hasSecondTab = false;
+    owner.request = async (runtime, operation, input) => {
+      const data = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+      if (operation === "tabs.create") {
+        hasSecondTab = true;
+        return { targetId: "page-two" };
+      }
+      if (operation === "tabs.close") {
+        hasSecondTab = false;
+        return null;
+      }
+      if (operation === "tabs.list") {
+        return [
+          { targetId: "page-one", title: "First", url: "https://first.example/" },
+          ...(hasSecondTab ? [{ targetId: "page-two", title: "Second", url: secondUrl }] : []),
+        ];
+      }
+      if (operation === "identity") {
+        return { userAgent: "Fake Chromium", targetId: data.targetId ?? "page-one" };
+      }
+      if (data.targetId === "page-two") {
+        if (operation === "state") {
+          return {
+            url: secondUrl,
+            title: "Second",
+            canGoBack: false,
+            canGoForward: false,
+            inputGeneration: "0:0",
+          };
+        }
+        if (operation === "navigate") {
+          secondUrl = String(data.url);
+          return null;
+        }
+        if (operation === "emulate") return null;
+      }
+      return originalRequest(runtime, operation, input);
+    };
+    const supervisor = new RuntimeSupervisor({ owner, maxWorkspaces: 1 });
+    supervisors.push(supervisor);
+    const bridge = supervisor.claimBridge("plugin-bridge");
+    const agentTicket = ticket("independent-tab");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "status");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+
+    const human = await browserRequest<{ viewerToken: string }>(supervisor, bridge, "attach", {
+      workspaceId: "workspace-one",
+      viewerLabel: "Human",
+    });
+    const created = await browserRequest<{ tabId: string }>(supervisor, bridge, "tabs.create", {
+      viewerToken: human.viewerToken,
+    });
+    const humanTab = await browserRequest<{ viewerToken: string }>(supervisor, bridge, "attach", {
+      workspaceId: "workspace-one",
+      viewerLabel: "Human second tab",
+      tabId: created.tabId,
+    });
+    const humanControl = await browserRequest<{ controlToken: string; state: BrowserState }>(
+      supervisor,
+      bridge,
+      "acquire-control",
+      { viewerToken: humanTab.viewerToken, takeover: false },
+    );
+    await browserRequest(supervisor, bridge, "navigate", {
+      viewerToken: humanTab.viewerToken,
+      controlToken: humanControl.controlToken,
+      expected: {
+        sessionId: humanControl.state.sessionId,
+        navigationGeneration: humanControl.state.navigationGeneration,
+        viewportGeneration: humanControl.state.viewportGeneration,
+      },
+      action: { kind: "goto", url: "https://changed-second.example/" },
+    });
+
+    await expect(
+      agentRequest<{ state: BrowserState }>(supervisor, agentTicket, "navigate", {
+        action: { kind: "goto", url: "https://agent-first.example/" },
+      }),
+    ).resolves.toMatchObject({ state: { tabId: "page-one", controller: "self" } });
+    expect(owner.states.get("workspace-one")?.url).toBe("https://agent-first.example/");
+    expect(secondUrl).toBe("https://changed-second.example/");
+
+    await browserRequest(supervisor, bridge, "release-control", {
+      viewerToken: humanTab.viewerToken,
+      controlToken: humanControl.controlToken,
+    });
+    const selected = await agentRequest<{ state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "tabs.select",
+      { tabId: created.tabId },
+    );
+    expect(selected.state.tabId).toBe("page-two");
+    const agentControl = await agentRequest<{ state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "acquire-control",
+    );
+    expect(agentControl.state.controller).toBe("self");
+    const humanFirstControl = await browserRequest<{ state: BrowserState }>(
+      supervisor,
+      bridge,
+      "acquire-control",
+      { viewerToken: human.viewerToken, takeover: false },
+    );
+    expect(humanFirstControl.state.controller).toBe("self");
+
+    await agentRequest(supervisor, agentTicket, "navigate", {
+      action: { kind: "goto", url: "https://agent-second.example/" },
+    });
+    expect(secondUrl).toBe("https://agent-second.example/");
+    expect(owner.states.get("workspace-one")?.url).toBe("https://agent-first.example/");
+    expect(
+      (await agentRequest<{ selectedTabId: string }>(supervisor, agentTicket, "tabs.list"))
+        .selectedTabId,
+    ).toBe("page-two");
+
+    const closed = await agentRequest<{ state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "tabs.close",
+    );
+    expect(closed.state.tabId).toBe("page-one");
+    expect(
+      (
+        await browserRequest<{ state: BrowserState }>(supervisor, bridge, "status", {
+          viewerToken: human.viewerToken,
+        })
+      ).state.controller,
+    ).toBe("self");
+  });
+
+  it("keeps an agent ticket bound across human close and explicit reopen", async () => {
+    const { supervisor, bridge } = createHarness();
+    const agentTicket = ticket("closed-and-reopened");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "status");
+
+    const human = await browserRequest<{ viewerToken: string; state: BrowserState }>(
+      supervisor,
+      bridge,
+      "attach",
+      { workspaceId: "workspace-one", viewerLabel: "Human" },
+    );
+    const control = await browserRequest<{ controlToken: string }>(
+      supervisor,
+      bridge,
+      "acquire-control",
+      { viewerToken: human.viewerToken, takeover: false },
+    );
+    const runtimeId = human.state.runtimeId;
+    if (!runtimeId) throw new Error("Attached browser has no runtime identity");
+    await browserRequest(supervisor, bridge, "close", {
+      viewerToken: human.viewerToken,
+      controlToken: control.controlToken,
+      sessionId: human.state.sessionId,
+      runtimeId,
+    });
+
+    await expect(agentRequest(supervisor, agentTicket, "status")).rejects.toThrow(
+      "Browser is closed",
+    );
+    await browserRequest(supervisor, bridge, "reopen", { workspaceId: "workspace-one" });
+    await expect(agentRequest(supervisor, agentTicket, "status")).resolves.toMatchObject({
+      state: { workspaceId: "workspace-one" },
+    });
   });
 
   it("fails closed for null, unknown, history-only, unbound, and revoked credentials", async () => {
@@ -446,6 +825,66 @@ describe("agent shared-browser authorization", () => {
     await expect(
       agentRequest(supervisor, agentTicket, "navigate", { action: { kind: "reload" } }),
     ).rejects.toThrow("lease is invalid or expired");
+  });
+
+  it("opens exactly one new tab after an idle agent viewer expires", async () => {
+    let now = 1_000;
+    const { owner, supervisor, bridge } = createHarness(() => now);
+    const original = owner.request.bind(owner);
+    let creations = 0;
+    owner.request = async (runtime, operation, input) => {
+      const data = input as Record<string, JsonValue> | null;
+      if (operation === "identity") {
+        return { targetId: data?.targetId ?? "page-one", userAgent: "Fake Chromium" };
+      }
+      if (operation === "tabs.create") {
+        creations++;
+        return { targetId: "page-two" };
+      }
+      return original(runtime, operation, input);
+    };
+    const agentTicket = ticket("idle-tab-open");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "status");
+    now = 30_000;
+    supervisor.heartbeat(bridge.bridgeId, bridge.epoch);
+    now = 46_001;
+    // Human attachment prunes the expired agent viewer before the open request.
+    await browserRequest(supervisor, bridge, "attach", {
+      workspaceId: "workspace-one",
+      viewerLabel: "Human",
+    });
+    await expect(agentRequest(supervisor, agentTicket, "tabs.create")).resolves.toMatchObject({
+      tabId: "page-two",
+      state: { tabId: "page-two" },
+    });
+    expect(creations).toBe(1);
+  });
+
+  it("reselects the same tab and reacquires control after its viewer expires", async () => {
+    let now = 1_000;
+    const { owner, supervisor, bridge } = createHarness(() => now);
+    const original = owner.request.bind(owner);
+    owner.request = async (runtime, operation, input) => {
+      if (operation === "identity") {
+        return { targetId: "page-one", userAgent: "Fake Chromium" };
+      }
+      return original(runtime, operation, input);
+    };
+    const agentTicket = ticket("idle-tab-select");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+    now = 30_000;
+    supervisor.heartbeat(bridge.bridgeId, bridge.epoch);
+    now = 46_001;
+    await expect(
+      agentRequest(supervisor, agentTicket, "tabs.select", { tabId: "page-one" }),
+    ).resolves.toMatchObject({ state: { tabId: "page-one", controller: "none" } });
+    await expect(agentRequest(supervisor, agentTicket, "acquire-control")).resolves.toMatchObject({
+      state: { tabId: "page-one", controller: "self" },
+    });
   });
 
   it("archives the runtime and permanently fences every ticket bound to its workspace", async () => {
