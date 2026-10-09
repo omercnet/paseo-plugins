@@ -33,14 +33,15 @@
     "server",
     "shared",
     "paseo-plugin.json",
-    "OVERVIEW.md"
+    "OVERVIEW.md",
+    "npm-shrinkwrap.json"
   ],
   "type": "module",
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check . && node ../scripts/shrinkwrap.mjs --check .",
     "check:write": "biome check --write .",
     "typecheck": "tsc --noEmit",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
