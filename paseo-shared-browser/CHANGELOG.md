@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v1.2.1...shared-browser-v1.2.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **packaging:** lock npm runtime dependencies with npm-shrinkwrap.json ([#300](https://github.com/omercnet/paseo-plugins/issues/300)) ([1b0755c](https://github.com/omercnet/paseo-plugins/commit/1b0755c9097681cdc167fb26bd2d1c3cc5e72830))
+
 ## [1.2.1](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v1.2.0...shared-browser-v1.2.1) (2026-10-08)
 
 
