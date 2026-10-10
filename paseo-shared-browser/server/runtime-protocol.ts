@@ -36,7 +36,11 @@ export type AgentBrowserOperation =
   | "release-control"
   | "navigate"
   | "input"
-  | "viewport";
+  | "viewport"
+  | "tabs.list"
+  | "tabs.create"
+  | "tabs.select"
+  | "tabs.close";
 
 export type RuntimeRequest =
   | (AdminRequestBase & { method: "bridge.claim"; takeover?: boolean })
@@ -57,6 +61,12 @@ export type RuntimeRequest =
       method: "workspace.archive";
       epoch: number;
       workspaceId: string;
+    })
+  | (AdminRequestBase & {
+      method: "workspace.close";
+      epoch: number;
+      workspaceId: string;
+      runtimeId: string;
     })
   | (AdminRequestBase & {
       method: "browser.request";
@@ -107,6 +117,7 @@ export type RuntimeErrorCode =
   | "WORKSPACE_NOT_FOUND"
   | "RUNTIME_BUSY"
   | "UNKNOWN_OUTCOME"
+  | "RUNTIME_LOST"
   | "RUNTIME_FAILURE";
 
 export class RuntimeProtocolError extends Error {
@@ -116,6 +127,14 @@ export class RuntimeProtocolError extends Error {
     super(message);
     this.name = "RuntimeProtocolError";
     this.code = code;
+  }
+}
+
+/** The owned runtime can never serve again; the next explicit attach must replace it. */
+export class RuntimeLostError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RuntimeLostError";
   }
 }
 
@@ -182,6 +201,17 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest {
       bridgeId,
       epoch,
       workspaceId: requireString(value, "workspaceId"),
+    };
+  if (method === "workspace.close")
+    return {
+      id,
+      version: RUNTIME_PROTOCOL_VERSION,
+      method,
+      token,
+      bridgeId,
+      epoch,
+      workspaceId: requireString(value, "workspaceId"),
+      runtimeId: requireString(value, "runtimeId"),
     };
   if (method === "workspace.request")
     return {

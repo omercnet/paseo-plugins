@@ -3,13 +3,13 @@ import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { browserTabIdSchema } from "../shared/browser";
+import { MAX_AGENT_VIEWPORT as MAX_VIEWPORT, MIN_VIEWPORT } from "../shared/viewport-limits";
 import type { JsonValue } from "./runtime-protocol";
 import { resolveSupervisorPaths } from "./supervisor";
 import { AgentSupervisorClient } from "./supervisor-client";
 
 const TICKET_ENV = "PASEO_SHARED_BROWSER_TICKET";
-const MIN_VIEWPORT = { width: 320, height: 480 } as const;
-const MAX_VIEWPORT = { width: 1600, height: 1200 } as const;
 
 const pointSchema = z.object({
   x: z.number().finite().nonnegative(),
@@ -128,6 +128,48 @@ async function main(): Promise<void> {
       }
       return { content };
     },
+  );
+
+  server.registerTool(
+    "shared_browser_tabs",
+    {
+      description: "List tabs in this agent's workspace and identify this agent's selected tab.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async () => textResult(await client.request("tabs.list", {})),
+  );
+
+  server.registerTool(
+    "shared_browser_tab_open",
+    {
+      description: "Open and select a new tab in the shared browser profile for this agent only.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async () => textResult(await client.request("tabs.create", {})),
+  );
+
+  server.registerTool(
+    "shared_browser_tab_select",
+    {
+      description:
+        "Select an existing tab for this agent only. Capture its current frame before sending input.",
+      inputSchema: z.object({ tabId: browserTabIdSchema }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ tabId }) => textResult(await client.request("tabs.select", { tabId })),
+  );
+
+  server.registerTool(
+    "shared_browser_tab_close",
+    {
+      description:
+        "Close this agent's selected and controlled tab for every viewer. Other tabs remain open.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    async () => textResult(await client.request("tabs.close", {})),
   );
 
   server.registerTool(

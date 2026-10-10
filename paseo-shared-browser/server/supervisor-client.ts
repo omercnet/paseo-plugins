@@ -41,6 +41,7 @@ export class SupervisorClient {
   private token = "";
   private epoch = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private heartbeatInFlight: Promise<void> | null = null;
   private receiveBuffer = "";
   private readonly takeover: boolean;
   private reconnecting: Promise<BridgeLease> | null = null;
@@ -143,6 +144,17 @@ export class SupervisorClient {
       bridgeId: this.bridgeId,
       epoch: this.epoch,
       workspaceId,
+    });
+  }
+
+  async closeWorkspace(workspaceId: string, runtimeId: string): Promise<void> {
+    await this.ensureLease();
+    await this.send({
+      method: "workspace.close",
+      bridgeId: this.bridgeId,
+      epoch: this.epoch,
+      workspaceId,
+      runtimeId,
     });
   }
   async requestBrowser<Result = JsonValue>(operation: string, input: JsonValue): Promise<Result> {
@@ -248,17 +260,28 @@ export class SupervisorClient {
   private armHeartbeat(intervalMs: number): void {
     this.clearHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      void this.send({ method: "bridge.heartbeat", bridgeId: this.bridgeId, epoch: this.epoch })
+      // A delayed response must not produce duplicate maintenance or let an old
+      // connection's completion replace or close the current bridge lease.
+      if (this.heartbeatInFlight) return;
+      const socket = this.socket;
+      const epoch = this.epoch;
+      const operation = this.send({ method: "bridge.heartbeat", bridgeId: this.bridgeId, epoch })
         .then((result) => {
+          if (this.socket !== socket || this.epoch !== epoch) return;
           const lease = result as BridgeLease;
           this.epoch = lease.epoch;
           this.lease = lease;
         })
-        .catch((error: unknown) =>
+        .catch((error: unknown) => {
+          if (this.socket !== socket || this.epoch !== epoch) return;
           this.handleClose(
             error instanceof Error ? error : new Error("Supervisor heartbeat failed"),
-          ),
-        );
+          );
+        })
+        .finally(() => {
+          if (this.heartbeatInFlight === operation) this.heartbeatInFlight = null;
+        });
+      this.heartbeatInFlight = operation;
     }, intervalMs);
     this.heartbeatTimer.unref();
   }
@@ -267,6 +290,7 @@ export class SupervisorClient {
     if (!this.heartbeatTimer) return;
     clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
+    this.heartbeatInFlight = null;
   }
 
   private async ensureLease(): Promise<void> {

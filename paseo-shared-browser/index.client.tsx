@@ -21,16 +21,6 @@ export default function contribute(client: PluginClientContext) {
       openPanel("shared-browser");
     },
   });
-  client.addCommandCenterItem({
-    id: "open-shared-browser-agent",
-    title: "Open Shared Browser",
-    icon: "PanelsTopLeft",
-    keywords: ["browser", "shared", "remote"],
-    context: "agent",
-    onSelect({ openPanel }) {
-      openPanel("shared-browser");
-    },
-  });
 
   const removeSidebar = contributeSharedBrowserSidebar(client);
   const cleanup = contributeSharedBrowserClient(client);

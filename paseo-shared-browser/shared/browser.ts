@@ -1,71 +1,28 @@
+import { captureDensitySchema } from "./capture-density";
+
+export { type CaptureDensity, canUseCaptureDensity, captureDensitySchema } from "./capture-density";
+
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import {
+  DEFAULT_CAPTURE_QUALITY,
+  FRAME_MAX_BASE64_CHARS,
+  FRAME_MAX_BYTES,
+} from "./capture-settings";
+import { DEVICE_PRESET_IDS } from "./device-presets";
+import { MAX_VIEWPORT, MIN_VIEWPORT } from "./viewport-limits";
+
+export {
+  DEFAULT_CAPTURE_QUALITY,
+  FRAME_MAX_BASE64_CHARS,
+  FRAME_MAX_BYTES,
+} from "./capture-settings";
+export { DEVICE_PRESET_IDS, DEVICE_PRESETS, type DevicePresetId } from "./device-presets";
 
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
-export const MIN_VIEWPORT = { width: 320, height: 480 } as const;
-export const MAX_VIEWPORT = { width: 1600, height: 1200 } as const;
-export const FRAME_MAX_BYTES = 800_000;
-export const FRAME_MAX_BASE64_CHARS = Math.ceil(FRAME_MAX_BYTES / 3) * 4;
+export const MAX_BROWSER_TABS = 8;
+export { MAX_VIEWPORT, MIN_VIEWPORT } from "./viewport-limits";
 
-export const DEVICE_PRESETS = [
-  {
-    id: "desktop-chrome",
-    label: "Desktop Chrome",
-    shortLabel: "Desktop",
-    viewport: { width: 1280, height: 720 },
-    deviceScaleFactor: 1,
-    isMobile: false,
-    hasTouch: false,
-    platform: "Win32",
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.8010.12 Safari/537.36",
-  },
-  {
-    id: "iphone-15-pro",
-    label: "iPhone 15 Pro",
-    shortLabel: "iPhone 15",
-    viewport: { width: 393, height: 659 },
-    deviceScaleFactor: 3,
-    isMobile: true,
-    hasTouch: true,
-    platform: "iPhone",
-    userAgent:
-      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1",
-  },
-  {
-    id: "pixel-7",
-    label: "Pixel 7",
-    shortLabel: "Pixel 7",
-    viewport: { width: 412, height: 839 },
-    deviceScaleFactor: 2.625,
-    isMobile: true,
-    hasTouch: true,
-    platform: "Linux armv81",
-    userAgent:
-      "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.8010.12 Mobile Safari/537.36",
-  },
-  {
-    id: "ipad-pro-11",
-    label: "iPad Pro 11",
-    shortLabel: "iPad 11",
-    viewport: { width: 834, height: 1194 },
-    deviceScaleFactor: 2,
-    isMobile: true,
-    hasTouch: true,
-    platform: "iPad",
-    userAgent:
-      "Mozilla/5.0 (iPad; CPU OS 12_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1",
-  },
-] as const;
-
-export const DEVICE_PRESET_IDS = [
-  "desktop-chrome",
-  "iphone-15-pro",
-  "pixel-7",
-  "ipad-pro-11",
-] as const;
-
-export type DevicePresetId = (typeof DEVICE_PRESET_IDS)[number];
 const devicePresetIdSchema = z.enum(DEVICE_PRESET_IDS);
 
 const workspaceIdSchema = z
@@ -81,6 +38,20 @@ const opaqueTokenSchema = z
 const generationSchema = z.number().int().nonnegative();
 const epochSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const runtimeIdSchema = opaqueTokenSchema;
+export const browserTabIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/);
+
+export const browserTabSchema = z.object({
+  id: browserTabIdSchema,
+  title: z.string().max(1_024),
+  url: z.string().max(8_192),
+  viewerCount: z.number().int().nonnegative(),
+  controllerLabel: z.string().max(64).nullable(),
+});
+export type BrowserTab = z.output<typeof browserTabSchema>;
 
 export const browserRecoveryStateSchema = z.enum([
   "available",
@@ -102,6 +73,7 @@ export const browserStateSchema = z.object({
   canGoBack: z.boolean(),
   canGoForward: z.boolean(),
   viewport: viewportSchema,
+  captureScale: z.number().min(1).max(2).default(1),
   navigationGeneration: generationSchema,
   viewportGeneration: generationSchema,
   devicePresetId: devicePresetIdSchema.nullable(),
@@ -111,7 +83,9 @@ export const browserStateSchema = z.object({
   controllerExpiresAt: z.string().datetime().nullable(),
   viewerCount: z.number().int().nonnegative(),
   error: z.string().max(2_048).nullable(),
+  notice: z.string().max(256).optional(),
   runtimeId: runtimeIdSchema.optional(),
+  tabId: browserTabIdSchema.optional(),
   runtimeCreatedAt: epochSchema.optional(),
   bridgeEpoch: epochSchema.optional(),
   recoveryState: browserRecoveryStateSchema.optional(),
@@ -138,6 +112,7 @@ export const attachBrowserRpc = defineRpc({
   input: z.object({
     workspaceId: workspaceIdSchema,
     viewerLabel: z.string().trim().min(1).max(64),
+    tabId: browserTabIdSchema.optional(),
   }),
   output: z.object({
     viewerToken: opaqueTokenSchema,
@@ -145,10 +120,51 @@ export const attachBrowserRpc = defineRpc({
   }),
 });
 
+export const listBrowserTabsRpc = defineRpc({
+  name: "shared-browser.tabs.list",
+  input: z.object({ viewerToken: opaqueTokenSchema }),
+  output: z.object({ tabs: z.array(browserTabSchema).max(MAX_BROWSER_TABS) }),
+});
+
+export const createBrowserTabRpc = defineRpc({
+  name: "shared-browser.tabs.create",
+  input: z.object({ viewerToken: opaqueTokenSchema }),
+  output: z.object({ tabId: browserTabIdSchema }),
+});
+
+export const closeBrowserTabRpc = defineRpc({
+  name: "shared-browser.tabs.close",
+  input: z.object({
+    viewerToken: opaqueTokenSchema,
+    controlToken: opaqueTokenSchema,
+    tabId: browserTabIdSchema,
+  }),
+  output: z.object({ closed: z.literal(true) }),
+});
+
 export const detachBrowserRpc = defineRpc({
   name: "shared-browser.detach",
   input: z.object({ viewerToken: opaqueTokenSchema }),
   output: z.object({ detached: z.boolean() }),
+});
+
+/** Stop the current workspace runtime only when its controller still owns this session. */
+export const closeBrowserRpc = defineRpc({
+  name: "shared-browser.close",
+  input: z.object({
+    viewerToken: opaqueTokenSchema,
+    controlToken: opaqueTokenSchema,
+    sessionId: opaqueTokenSchema,
+    runtimeId: runtimeIdSchema,
+  }),
+  output: z.object({ closed: z.literal(true) }),
+});
+
+/** Reopen a deliberately closed workspace browser using its retained profile. */
+export const reopenBrowserRpc = defineRpc({
+  name: "shared-browser.reopen",
+  input: z.object({ workspaceId: workspaceIdSchema }),
+  output: z.object({ opened: z.literal(true) }),
 });
 
 export const listOpenBrowserWorkspacesRpc = defineRpc({
@@ -161,7 +177,7 @@ export const captureBrowserRpc = defineRpc({
   name: "shared-browser.capture",
   input: z.object({
     viewerToken: opaqueTokenSchema,
-    quality: z.enum(["low", "medium", "high"]).default("medium"),
+    quality: z.enum(["low", "medium", "high", "maximum"]).default(DEFAULT_CAPTURE_QUALITY),
     knownFrameId: opaqueTokenSchema.nullable().default(null),
   }),
   output: z.object({
@@ -225,6 +241,22 @@ export const resizeBrowserRpc = defineRpc({
     controlToken: opaqueTokenSchema,
     expected: expectedStateSchema,
     viewport: viewportSchema,
+    /** Panel following changes layout size without resetting device behavior or density. */
+    preserveEmulation: z.boolean().optional(),
+    /** Resolve automatic density and panel geometry in one controlled transition. */
+    captureDensity: captureDensitySchema.optional(),
+  }),
+  output: z.object({ state: browserStateSchema }),
+});
+
+/** Independent, controller-authorized density selection; no page navigation or preset substitution. */
+export const setCaptureDensityRpc = defineRpc({
+  name: "shared-browser.capture.density",
+  input: z.object({
+    viewerToken: opaqueTokenSchema,
+    controlToken: opaqueTokenSchema,
+    expected: expectedStateSchema,
+    density: captureDensitySchema,
   }),
   output: z.object({ state: browserStateSchema }),
 });
@@ -236,6 +268,8 @@ export const applyDevicePresetRpc = defineRpc({
     controlToken: opaqueTokenSchema,
     expected: expectedStateSchema,
     presetId: devicePresetIdSchema,
+    /** Mode-only changes retain current CSS dimensions and JPEG capture density. */
+    preserveDisplay: z.boolean().optional(),
   }),
   output: z.object({ state: browserStateSchema }),
 });
@@ -310,6 +344,193 @@ export const sendBrowserInputRpc = defineRpc({
     event: browserInputEventSchema,
   }),
   output: z.object({ state: browserStateSchema }),
+});
+
+/** Safe CSS cursor names only. Custom cursor URLs never reach the local client. */
+export const browserCursorSchema = z.enum([
+  "default",
+  "none",
+  "pointer",
+  "text",
+  "vertical-text",
+  "crosshair",
+  "move",
+  "grab",
+  "grabbing",
+  "wait",
+  "progress",
+  "help",
+  "not-allowed",
+  "no-drop",
+  "copy",
+  "alias",
+  "context-menu",
+  "cell",
+  "all-scroll",
+  "col-resize",
+  "row-resize",
+  "n-resize",
+  "s-resize",
+  "e-resize",
+  "w-resize",
+  "ne-resize",
+  "nw-resize",
+  "se-resize",
+  "sw-resize",
+  "ew-resize",
+  "ns-resize",
+  "nesw-resize",
+  "nwse-resize",
+  "zoom-in",
+  "zoom-out",
+]);
+export type BrowserCursor = z.output<typeof browserCursorSchema>;
+
+const touchPointSchema = displayedPointSchema.extend({
+  id: z.number().int().min(0).max(2_147_483_647),
+});
+/** Native keyboard modifiers use CDP's bits: Alt 1, Control 2, Meta 4, Shift 8. */
+/** Bound simultaneous physical-key cleanup work without restricting layout codes. */
+export const MAX_HELD_BROWSER_KEYS = 32;
+
+export const browserGestureKeySchema = z
+  .object({
+    kind: z.literal("key"),
+    type: z.enum(["down", "up"]),
+    key: z.string().min(1).max(64),
+    code: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z][A-Za-z0-9]*$/),
+    modifiers: z.number().int().min(0).max(15),
+    repeat: z.boolean().default(false),
+    text: z.string().min(1).max(32).optional(),
+  })
+  .superRefine((event, context) => {
+    if (event.type === "up" && (event.repeat || event.text !== undefined)) {
+      context.addIssue({ code: "custom", message: "Key release cannot repeat or insert text" });
+    }
+    if (event.text !== undefined && (event.modifiers & 7) !== 0) {
+      context.addIssue({ code: "custom", message: "Shortcut keys cannot insert printable text" });
+    }
+  });
+export type BrowserGestureKeyEvent = z.output<typeof browserGestureKeySchema>;
+
+/**
+ * Ordered live input, in displayed-image coordinates. Touch start/move contain
+ * the complete active ID set; removing contacts in move releases those contacts.
+ * End/cancel contain no points. Wheel deltas are bounded browser CSS pixels.
+ */
+// Pointer snapshots use the same CDP modifier bits as key events. Omission
+// preserves native/older callers' held-key inference; explicit zero means none.
+const pointerModifiersSchema = z.number().int().min(0).max(15).optional();
+export const browserGestureEventSchema = z.discriminatedUnion("kind", [
+  browserGestureKeySchema,
+  z.object({ kind: z.literal("text"), text: z.string().min(1).max(16_000) }),
+  z.object({ kind: z.literal("leave") }),
+  z.object({
+    kind: z.literal("move"),
+    point: displayedPointSchema,
+    modifiers: pointerModifiersSchema,
+  }),
+  z.object({
+    kind: z.literal("down"),
+    point: displayedPointSchema,
+    modifiers: pointerModifiersSchema,
+    button: z.enum(["left", "right", "middle"]).default("left"),
+    clickCount: z.union([z.literal(1), z.literal(2)]).default(1),
+  }),
+  z.object({
+    kind: z.literal("up"),
+    point: displayedPointSchema,
+    modifiers: pointerModifiersSchema,
+    button: z.enum(["left", "right", "middle"]).default("left"),
+    clickCount: z.union([z.literal(1), z.literal(2)]).default(1),
+  }),
+  z.object({
+    kind: z.literal("scroll"),
+    point: displayedPointSchema,
+    modifiers: pointerModifiersSchema,
+    deltaX: z.number().finite().min(-4_000).max(4_000),
+    deltaY: z.number().finite().min(-4_000).max(4_000),
+  }),
+  z
+    .object({
+      kind: z.literal("touch"),
+      type: z.enum(["start", "move", "end", "cancel"]),
+      points: z.array(touchPointSchema).max(5),
+    })
+    .superRefine((event, context) => {
+      if ((event.type === "end" || event.type === "cancel") !== (event.points.length === 0)) {
+        context.addIssue({
+          code: "custom",
+          message: "Touch start/move require points; end/cancel require none",
+        });
+      }
+      if (new Set(event.points.map((point) => point.id)).size !== event.points.length) {
+        context.addIssue({ code: "custom", message: "Touch identifiers must be unique" });
+      }
+    }),
+]);
+export type BrowserGestureEvent = z.output<typeof browserGestureEventSchema>;
+
+const gestureContextSchema = z.object({
+  viewerToken: opaqueTokenSchema,
+  controlToken: opaqueTokenSchema,
+  expected: expectedStateSchema.extend({ runtimeId: runtimeIdSchema, bridgeEpoch: epochSchema }),
+});
+const gestureContinuationSchema = gestureContextSchema.extend({
+  gestureId: opaqueTokenSchema,
+  sequence: z.number().int().positive().max(100_000),
+});
+/** Begin pins a decoded recent frame but sends no physical input. One live channel per controller. Keyboard events may share either pointer channel. */
+export const beginBrowserGestureRpc = defineRpc({
+  name: "shared-browser.gesture.begin",
+  input: gestureContextSchema.extend({
+    target: targetFrameSchema,
+    pointerKind: z.enum(["mouse", "touch"]),
+  }),
+  output: z.union([
+    z.object({
+      state: browserStateSchema,
+      gestureId: opaqueTokenSchema,
+      nextSequence: z.number().int().positive(),
+    }),
+    // This receipt exists only before input.begin, so no physical action or channel is replayed.
+    z.object({ state: browserStateSchema, admission: z.literal("stale-frame") }),
+  ]),
+});
+/**
+ * Strict sequence continues the original frame context despite this channel's
+ * input invalidations. Independent mouse down/initial touch start require target;
+ * additional contacts in a held touch gesture continue its pinned geometry.
+ */
+export const updateBrowserGestureRpc = defineRpc({
+  name: "shared-browser.gesture.update",
+  input: gestureContinuationSchema.extend({
+    event: browserGestureEventSchema,
+    target: targetFrameSchema.optional(),
+  }),
+  // The native input was acknowledged and navigated on its original attachment.
+  // This closes the old channel; it never authorizes a continuation or a replay.
+  output: z.object({
+    state: browserStateSchema,
+    gestureId: opaqueTokenSchema,
+    nextSequence: z.number().int().positive(),
+    cursor: browserCursorSchema.nullable(),
+    completion: z.literal("navigation").optional(),
+  }),
+});
+/**
+ * End/cancel releases the original held input without retrying an uncertain action.
+ * cancel permits a stale sequence after a lost reply, but still requires the exact
+ * owned gesture/controller. Normal end requires the acknowledged next sequence.
+ */
+export const endBrowserGestureRpc = defineRpc({
+  name: "shared-browser.gesture.end",
+  input: gestureContinuationSchema.extend({ cancel: z.boolean().default(false) }),
+  output: z.object({ state: browserStateSchema, cursor: browserCursorSchema.nullable() }),
 });
 
 export type BrowserState = z.output<typeof browserStateSchema>;
