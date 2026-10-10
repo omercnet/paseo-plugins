@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.4](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v1.2.3...paseo-context-mode-v1.2.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* **context-mode:** inject into providers derived via extends ([#306](https://github.com/omercnet/paseo-plugins/issues/306)) ([459f12a](https://github.com/omercnet/paseo-plugins/commit/459f12a6ff181e67dfd178b2d1e27cad05c4413e))
+
 ## [1.2.3](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v1.2.2...paseo-context-mode-v1.2.3) (2026-10-09)
 
 
