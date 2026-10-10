@@ -54,6 +54,49 @@ export interface IntegrationDependencies {
   fileContains?: (path: string, text: string) => Promise<boolean>;
   now?: () => Date;
   env?: NodeJS.ProcessEnv;
+  providers?: ProviderOverrides;
+}
+
+export type ProviderOverrides = Readonly<
+  Record<string, { extends?: string; env?: Readonly<Record<string, string>> }>
+>;
+
+/** Structural slice of the hook/RPC `paseo` API; avoids a client-package import. */
+export interface ProviderConfigSource {
+  config: { get(): Promise<{ config: { providers?: unknown } }> };
+}
+
+/**
+ * Reads `agents.providers` from the daemon. Paseo applies a provider's own `env` and `extends`
+ * after the `agent.create` hook runs, so the hooks must look them up to find the right storage.
+ * Failures degrade to "no overrides" (canonical provider behavior).
+ */
+export async function readProviderOverrides(
+  paseo: ProviderConfigSource | undefined,
+): Promise<ProviderOverrides> {
+  try {
+    const { config } = (await paseo?.config.get()) ?? {};
+    const result: Record<string, { extends?: string; env?: Record<string, string> }> = {};
+    for (const [id, value] of Object.entries(config?.providers ?? {})) {
+      if (typeof value !== "object" || value === null) continue;
+      const { extends: parent, env } = value as { extends?: unknown; env?: unknown };
+      result[id] = {
+        ...(typeof parent === "string" ? { extends: parent } : {}),
+        ...(typeof env === "object" && env !== null
+          ? {
+              env: Object.fromEntries(
+                Object.entries(env).filter(
+                  (entry): entry is [string, string] => typeof entry[1] === "string",
+                ),
+              ),
+            }
+          : {}),
+      };
+    }
+    return result;
+  } catch {
+    return {};
+  }
 }
 
 export interface ContextModeStorageOptions {
@@ -241,7 +284,23 @@ const PROVIDER_POLICIES: Readonly<Record<Exclude<AuditedProvider, "omp-plugin">,
 
 function providerPolicy(provider: string): ProviderPolicy | null {
   if (provider === "omp-plugin" || provider.startsWith("omp-plugin-")) return OMP_POLICY;
-  return PROVIDER_POLICIES[provider as keyof typeof PROVIDER_POLICIES] ?? null;
+  return Object.hasOwn(PROVIDER_POLICIES, provider)
+    ? PROVIDER_POLICIES[provider as keyof typeof PROVIDER_POLICIES]
+    : null;
+}
+
+/**
+ * Mirrors Paseo's single-level `extends`: a derived provider uses its parent's policy, and its
+ * effective env is the parent's override env overlaid with its own.
+ */
+function resolveProvider(
+  id: string,
+  providers: ProviderOverrides = {},
+): { base: string; policy: ProviderPolicy | null; env: Record<string, string> } {
+  const own = Object.hasOwn(providers, id) ? providers[id] : undefined;
+  const base = own?.extends ?? id;
+  const parent = base !== id && Object.hasOwn(providers, base) ? providers[base] : undefined;
+  return { base, policy: providerPolicy(base), env: { ...parent?.env, ...own?.env } };
 }
 
 async function defaultPathExists(path: string): Promise<boolean> {
@@ -322,24 +381,40 @@ export async function createIntegrationAudit(
   const pathExists = dependencies.pathExists ?? defaultPathExists;
   const fileContains = dependencies.fileContains ?? defaultFileContains;
   const hostEnvironment = dependencies.env ?? process.env;
-  const context = providerContext(home, undefined, hostEnvironment);
-  const nativeByPolicy = new Map<ProviderPolicy, Promise<boolean>>();
-  const detectNative = (policy: ProviderPolicy) => {
-    const existing = nativeByPolicy.get(policy);
+  const nativeByPolicy = new Map<string, Promise<boolean>>();
+  const detectNative = (
+    policy: ProviderPolicy,
+    env: Readonly<Record<string, string | undefined>>,
+    key: string,
+  ) => {
+    const cacheKey = `${policy.platform}\0${key}`;
+    const existing = nativeByPolicy.get(cacheKey);
     if (existing) return existing;
-    const detected = nativeIntegrationDetected(policy, context, pathExists, fileContains);
-    nativeByPolicy.set(policy, detected);
+    const detected = nativeIntegrationDetected(
+      policy,
+      providerContext(home, undefined, env),
+      pathExists,
+      fileContains,
+    );
+    nativeByPolicy.set(cacheKey, detected);
     return detected;
   };
+  const configured = dependencies.providers ?? {};
+  const derived = Object.keys(configured).filter(
+    (id) => !(AUDITED_PROVIDERS as readonly string[]).includes(id),
+  );
   const providers: ProviderIntegration[] = [];
-  for (const provider of AUDITED_PROVIDERS) {
-    const policy = providerPolicy(provider);
+  for (const provider of [...AUDITED_PROVIDERS, ...derived]) {
+    const { base, policy, env: providerEnv } = resolveProvider(provider, configured);
     if (!policy) continue;
-    const storageRoot = contextModeStorageRootFor(provider, { home, env: hostEnvironment });
+    const env = { ...hostEnvironment, ...providerEnv };
+    const storageRoot = contextModeStorageRootFor(base, { home, env });
     if (!storageRoot) continue;
     const reusesExistingStorage = await pathExists(storageRoot);
     const native =
-      settings.autoInject && settings.preferNativeIntegrations && (await detectNative(policy));
+      settings.autoInject &&
+      settings.preferNativeIntegrations &&
+      (await detectNative(policy, env, JSON.stringify(providerEnv)));
     const activation = !settings.autoInject ? "disabled" : native ? "native" : "mcp";
     providers.push({
       provider,
@@ -377,34 +452,35 @@ export async function injectContextModeOnCreate<T extends CreateRequest>(
   ) {
     return request;
   }
-  const policy = providerPolicy(request.config.provider);
+  const {
+    base,
+    policy,
+    env: providerEnv,
+  } = resolveProvider(request.config.provider, dependencies.providers);
   if (!policy) return request;
   const home = dependencies.home ?? homedir();
   const hostEnvironment = dependencies.env ?? process.env;
   const pathExists = dependencies.pathExists ?? defaultPathExists;
   const fileContains = dependencies.fileContains ?? defaultFileContains;
-  const context = providerContext(home, request.config.cwd, {
-    ...hostEnvironment,
-    ...request.env,
-  });
+  const env = { ...hostEnvironment, ...providerEnv, ...request.env };
   if (
     settings.preferNativeIntegrations &&
-    (await nativeIntegrationDetected(policy, context, pathExists, fileContains))
+    (await nativeIntegrationDetected(
+      policy,
+      providerContext(home, request.config.cwd, env),
+      pathExists,
+      fileContains,
+    ))
   ) {
     return request;
   }
-  const storageRoot = contextModeStorageRootFor(request.config.provider, {
-    home,
-    cwd: request.config.cwd,
-    env: { ...hostEnvironment, ...request.env },
-  });
+  const storageRoot = contextModeStorageRootFor(base, { home, cwd: request.config.cwd, env });
   if (!storageRoot) return request;
-  const env = serverEnvironment(policy, storageRoot, request.env);
   const server: McpServer = {
     type: "stdio",
     command: launch.program,
     args: launch.args,
-    env,
+    env: serverEnvironment(policy, storageRoot, request.env),
   };
   return {
     ...request,
@@ -421,14 +497,18 @@ export async function injectContextModeEnvironment<T extends SessionOpenRequest>
   dependencies: IntegrationDependencies = {},
 ): Promise<T> {
   if (!settings.autoInject) return request;
-  const policy = providerPolicy(request.provider);
+  const {
+    base,
+    policy,
+    env: providerEnv,
+  } = resolveProvider(request.provider, dependencies.providers);
   if (!policy) return request;
   const home = dependencies.home ?? homedir();
   const hostEnvironment = dependencies.env ?? process.env;
-  const storageRoot = contextModeStorageRootFor(request.provider, {
+  const storageRoot = contextModeStorageRootFor(base, {
     home,
     cwd: request.cwd,
-    env: { ...hostEnvironment, ...request.env },
+    env: { ...hostEnvironment, ...providerEnv, ...request.env },
   });
   if (!storageRoot) return request;
   return {
