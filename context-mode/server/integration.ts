@@ -76,24 +76,27 @@ export async function readProviderOverrides(
 ): Promise<ProviderOverrides> {
   try {
     const { config } = (await paseo?.config.get()) ?? {};
-    const result: Record<string, { extends?: string; env?: Record<string, string> }> = {};
+    const entries: Array<[string, { extends?: string; env?: Record<string, string> }]> = [];
     for (const [id, value] of Object.entries(config?.providers ?? {})) {
       if (typeof value !== "object" || value === null) continue;
       const { extends: parent, env } = value as { extends?: unknown; env?: unknown };
-      result[id] = {
-        ...(typeof parent === "string" ? { extends: parent } : {}),
-        ...(typeof env === "object" && env !== null
-          ? {
-              env: Object.fromEntries(
-                Object.entries(env).filter(
-                  (entry): entry is [string, string] => typeof entry[1] === "string",
+      entries.push([
+        id,
+        {
+          ...(typeof parent === "string" ? { extends: parent } : {}),
+          ...(typeof env === "object" && env !== null && !Array.isArray(env)
+            ? {
+                env: Object.fromEntries(
+                  Object.entries(env).filter(
+                    (entry): entry is [string, string] => typeof entry[1] === "string",
+                  ),
                 ),
-              ),
-            }
-          : {}),
-      };
+              }
+            : {}),
+        },
+      ]);
     }
-    return result;
+    return Object.fromEntries(entries);
   } catch {
     return {};
   }
