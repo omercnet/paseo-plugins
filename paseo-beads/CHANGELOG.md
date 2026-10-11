@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v1.2.0...paseo-beads-v1.2.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **plugins:** ship OVERVIEW.md in published packages ([640f9a4](https://github.com/omercnet/paseo-plugins/commit/640f9a4d7bd6dbad226c4ee1ebaa199abfc62776))
+
 ## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v1.1.0...paseo-beads-v1.2.0) (2026-10-03)
 
 

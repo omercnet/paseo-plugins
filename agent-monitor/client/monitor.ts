@@ -64,6 +64,14 @@ export type Roster =
 
 export const PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
 
+/** Prefers the first-class snapshot field; older hosts only carry the legacy label. */
+export function parentAgentId(agent: AgentSnapshot): string | null {
+  const firstClass = "parentAgentId" in agent ? agent.parentAgentId : null;
+  if (typeof firstClass === "string" && firstClass.trim()) return firstClass.trim();
+  const legacy = agent.labels?.[PARENT_AGENT_ID_LABEL];
+  return typeof legacy === "string" && legacy.trim() ? legacy.trim() : null;
+}
+
 export type Bucket = "attention" | "running" | "idle" | "closed";
 
 export const BUCKETS: readonly Bucket[] = ["attention", "running", "idle", "closed"];
@@ -199,8 +207,8 @@ function compareBySort(left: AgentEntry, right: AgentEntry, agentSort: AgentSort
 
 export function sortEntries(entries: AgentEntry[], agentSort: AgentSort): void {
   entries.sort((left, right) => {
-    const leftChild = PARENT_AGENT_ID_LABEL in left.agent.labels;
-    const rightChild = PARENT_AGENT_ID_LABEL in right.agent.labels;
+    const leftChild = parentAgentId(left.agent) !== null;
+    const rightChild = parentAgentId(right.agent) !== null;
     if (leftChild !== rightChild) return leftChild ? 1 : -1;
     return compareBySort(left, right, agentSort);
   });
@@ -396,7 +404,7 @@ export function buildRoster(
 export function childCounts(entries: readonly AgentEntry[]): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
   for (const entry of entries) {
-    const parentId = entry.agent.labels[PARENT_AGENT_ID_LABEL];
+    const parentId = parentAgentId(entry.agent);
     if (parentId) counts.set(parentId, (counts.get(parentId) ?? 0) + 1);
   }
   return counts;

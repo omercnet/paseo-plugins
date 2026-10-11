@@ -1,14 +1,14 @@
 # Shared Browser
 
-A Paseo plugin that runs one real Chromium browser per workspace on the daemon host and shares that
-exact live session with every connected Paseo client. Version 1.0 replaces the previous browser
+A Paseo plugin that runs one real Chromium browser per workspace on the daemon host and shares its
+pages with connected Paseo clients and workspace agents. Version 1.0 replaces the previous browser
 runtime in place with a plugin-owned, pinned `agent-browser` runtime; existing installations keep
 the `shared-browser` plugin ID and upgrade without installing a second plugin.
 
-This is not URL synchronization and not a second browser with copied cookies. Every viewer and
-eligible workspace agent acts on the same running page, DOM, navigation state, and login state.
-Many viewers can watch; human control remains server-authoritative and takes priority over agent
-input.
+Each browser tab is a real page in the same Chromium profile, so tabs share site logins and cookies.
+Each client and agent selects a tab independently. Viewers of the same tab share its live page,
+navigation and control state. Human control remains server-authoritative and takes priority over
+agent input on that tab.
 
 ## Demo
 
@@ -33,6 +33,13 @@ organization names.
 - The plugin server runs beside the Paseo daemon and starts one `agent-browser` session and Chromium
   process per open browser workspace. Browser execution, profiles, IPC, and network access are on the
   daemon host, not on the viewing phone, browser, or desktop app.
+- A workspace can have up to eight tabs. Each tab has its own page, capture stream, viewport and
+  controller. Selecting a tab affects only the selecting viewer or agent. Closing a tab removes it
+  for every participant viewing it; the last tab stays open until the browser is closed.
+- Viewers can select a browser action while observing. A dialog offers control, names the current
+  controller when a takeover is needed, and continues the selected action after control is granted.
+  Closing a tab or browser still requires its own confirmation. Actions that need a fresh frame wait
+  for one before sending input.
 - The plugin owns `agent-browser` version `0.38.2`, its IPC directory, and the Chromium executable.
   It strips inherited `AGENT_BROWSER_*` variables and sets `AGENT_BROWSER_SOCKET_DIR`,
   `AGENT_BROWSER_IDLE_TIMEOUT_MS=0`, `AGENT_BROWSER_STREAM_PORT=0`, and
@@ -56,6 +63,12 @@ that client's viewer/control tokens but does not immediately close Chromium. A r
 bridge can reclaim the existing workspace runtime. If no bridge reconnects, the supervisor closes
 all orphaned runtimes after a 120-second grace period. A missed heartbeat fences the old bridge after
 30 seconds; the bridge sends heartbeats every 10 seconds.
+
+The browser actions menu has **Close shared browser**. After confirmation,
+it stops that workspace's Chromium process and ends every viewer and agent connection to it, even
+when their panels are active. Background reconnects cannot reopen a deliberately closed browser.
+A person can select the prominent **Open shared browser** button in the closed panel to start a new runtime with the
+retained profile. Closing the browser does not remove saved cookies or site data.
 
 Each workspace gets a private profile under
 `$PASEO_HOME/plugin-data/shared-browser/profiles/<workspace-id-sha256>`. Cookies and site login state
@@ -107,20 +120,21 @@ The plugin automatically injects its stdio MCP adapter only when a new, non-inte
 created with a provider that accepts external MCP servers. Agents that already exist, resumed
 sessions, imported sessions, and Paseo's internal agents are not modified. Paseo's built-in OMP
 provider accepts session MCP servers from Paseo 0.11, so new OMP agents receive the adapter there.
-On Paseo 0.9 and 0.10 the built-in OMP adapter rejects external MCP servers, so OMP agents are left
-unchanged. Pi agents continue to receive the adapter, but they require Pi's optional MCP support to
+Pi agents also receive the adapter, but require Pi's optional MCP support to
 launch it.
 
-The injected MCP server exposes exactly these tools: `shared_browser_status`,
-`shared_browser_capture`, `shared_browser_acquire_control`, `shared_browser_release_control`,
-`shared_browser_navigate`, `shared_browser_input`, and `shared_browser_viewport`. It does not
+The injected MCP server exposes `shared_browser_status`, `shared_browser_capture`,
+`shared_browser_acquire_control`, `shared_browser_release_control`,
+`shared_browser_navigate`, `shared_browser_input`, `shared_browser_viewport`,
+`shared_browser_tabs`, `shared_browser_tab_open`, `shared_browser_tab_select`, and
+`shared_browser_tab_close`. It does not
 expose arbitrary CDP commands, JavaScript or page evaluation, browser profile access, or filesystem
 access.
 
 Each adapter launch receives an opaque credential bound to its workspace. It cannot use that
 credential to operate another workspace's browser. Agent input follows human-priority control: an
-agent cannot force a takeover while a human viewer holds control. The human must release control or
-the lease must expire before agent input can proceed.
+agent cannot force a takeover while a human viewer holds control of the same tab. The human must
+release control or the lease must expire before agent input can proceed on that tab.
 
 The provider launches the stdio adapter on the Paseo daemon host, beside the daemon-owned browser
 runtime. Web, desktop, and mobile clients never own or host the adapter or Chromium, and a client
@@ -142,20 +156,29 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 ## Controls
 
 - Toolbar: back, forward, reload, address bar, a combined monitor menu, mobile emulation toggle
-  and a vertical-dots browser actions menu. Icon controls expose their action name
+  and a vertical-dots browser actions menu. The controller can close the shared browser from that
+  menu after confirmation. Icon controls expose their action name
   as a hover tooltip on desktop/web and retain native accessibility labels.
-- Custom viewports support 320 to 2560 pixels wide and 480 to 2560 pixels high. Applying one
-  changes only the dimensions; the active profile's mobile mode, touch, user agent and capture
-  density are kept. Invalid sizes
+- Custom viewports support 320 to 3840 pixels wide and 480 to 3840 pixels high. Invalid sizes
   show their error inside the device dialog; a successful Apply closes it.
 - Desktop presets also include 1280 × 800 (16:10) and 1280 × 1280 (1:1).
 - Pixel 7 (high resolution) keeps the same 412 × 839 phone layout and input coordinates,
   with a sharper 824 × 1678 capture.
 - Desktop presets include 1920 × 1080 and 2560 × 1440 (16:9), 1920 × 1200 and
   2560 × 1600 (16:10), and 1920 × 1920 and 2560 × 2560 (1:1).
+- Desktop choices use height names such as 720p, 1080p, 1200p and 1440p, with
+  dimensions shown alongside. Square choices name their width explicitly.
+  The 1440-wide choices are 1440 × 810, 1440 × 900 and 1440 × 1440.
 - The Resolution and quality menu groups desktop choices by 16:9, 16:10 and 1:1,
   then mobile. Each group sorts by width. Filled stars mark favorites; the monitor
-  menu provides favorites and access to the full resolution and quality list.
+  menu provides favorites in that same grouped order and access to the full
+  resolution and quality list.
+- **Fill viewport** resizes the shared browser to the visible panel and follows panel size
+  changes while this viewer controls it. It preserves mobile behavior. Auto capture density
+  adjusts detail for the screen as the panel grows or shrinks; manual density is retained.
+  Following pauses when the panel is hidden, control is released, or its dimensions exceed
+  the supported resolution at the current density. Choosing a preset or custom resolution
+  stops following; a failed resize also stops it and displays an error.
 - Monitor and browser actions open compact anchored menus rather than dialogs. Menus stay
   within the pane, scroll long lists, and dismiss with an outside press, Escape or native Back.
 - The monitor menu offers **Fit to panel** (default) and **Actual size (100%)**. Actual size
@@ -180,11 +203,16 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
   corresponding video bitrate when upgraded. These are encoder targets, not measured
   bandwidth or guaranteed frame rates. Large JPEGs may reduce quality to stay within
   the 800 KB frame bound. Preferences persist on the connected Paseo host.
-  Capture density is a separate 1x/2x option for the controller. It raises real source
+  Capture density defaults to Auto for each viewer panel. While controlling, it selects
+  1x or 2x from the displayed page size and screen pixel density, accounting for Fit's
+  letterboxing and Actual size. Manual 1x/2x choices override Auto until Auto is selected
+  again, the workspace changes, or the panel is reopened. Density raises real source
   pixel detail without changing page size, input mode, or user agent. The 2x option
-  requires both page dimensions to be 1280 or less; larger pages keep 1x rather than
-  being resized. It can increase processing and bandwidth substantially. Quality
-  changes do not navigate or reload the shared page.
+  requires both page dimensions to be 1920 or less; larger pages use 1x. Fill viewport
+  adjusts automatic density and layout size together. Hidden panels, observers, active
+  gestures, and pending operations never trigger automatic density writes. A failed
+  adjustment pauses automation until Auto is selected again. Higher density can increase
+  processing and bandwidth substantially. Quality changes do not navigate or reload the page.
 - Video packets travel through the existing authenticated Paseo RPC connection, including its
   relay. No extra video port or unauthenticated media server is opened. This is encoded video
   delivered in bounded request/reply batches, not WebRTC or a custom push subscription.
@@ -205,11 +233,11 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
   keyframe. One already-issued bounded RPC may finish, but cannot restore old input authority.
   Video remains video when the page is quiet; no idle still-image overlay or static-page
   polling is used. Keyframes restore decoding after a gap but do not make video lossless.
-- Every independent human press requires its own decoded and painted frame receipt
-  (JPEG or video); held drags, releases and keys of an admitted gesture continue on
-  its ordered channel while video catches up. Agent commands retain strict
-  fresh-frame targeting. Document, viewport, runtime, bridge and controller changes
-  invalidate the channel. Dropped packets recover at a keyframe rather
+- Initial human control requires decoded and painted geometry. Once admitted,
+  the controller's ordered input channel continues while video catches up.
+  A click may reach a page ahead of the displayed image, as in remote desktop.
+  Agent commands retain strict fresh-frame targeting. Document, viewport,
+  runtime, bridge and controller changes invalidate the human admission. Dropped packets recover at a keyframe rather
   than decoding a broken delta chain. Video reads wait outside the input queues.
 - If no fresh video is painted for 2.5 seconds, the viewer revokes video input authority and
   requests JPEG fallback and a fresh keyframe. The retained video remains visible
@@ -231,7 +259,8 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
   The fallback captures the complete visible viewport, preserves scroll position, and accounts
   for device pixel ratio and capture scale so inputs still use the original layout coordinates.
 - The last decoded frame stays visible while its replacement loads, with native image fading
-  disabled. Human presses and agent commands use the painted frame's receipt.
+  disabled. Initial human admission and agent commands use the painted frame;
+  admitted human input retains its qualified geometry while pixels catch up.
   Obsolete image callbacks cannot replace the displayed frame.
 - Status row: session state, viewer count, controller, and lease expiry.
 - Returning after viewer expiry reattaches viewing once automatically while preserving the
@@ -240,13 +269,23 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 - Clicking a link or submitting a form may navigate before its input reply arrives. A completed
   input returns the new viewing state without a false failure or repeating the action.
   Replaced controls, targets and uncertain sends remain rejected.
+- A document change during metadata reads discards both partial observations and
+  permits one fresh read on the same attachment within the original timeout.
+  Repeated changes, failed reads and replacement attachments remain errors;
+  browser input is never replayed to obtain metadata.
+- Agent stale-frame errors identify initial admission or a context change during admitted
+  input. Known receipt age is bounded to 60 seconds and uses its original clock; missing
+  receipts report missing-or-revoked without inventing an age. These diagnostics contain
+  no page content or authority identifiers and do not authorize replay. Initial frame
+  admission still expires after five seconds.
 - Human control: **Take control**, **Release**, and **Take over** for explicit handoff. Agent MCP
   calls have no forced-takeover operation.
 - With control, mouse movement forwards real hover effects and standard browser cursor changes.
   Wheel scrolling stays inside the browser canvas; held drags update before release. Leaving the
   canvas clears remote hover, while dragging beyond its edges still releases the held button.
-- Linux hover media-queries need the opt-in private virtual display described under
-  Maintainer references; by default browsers stay headless.
+- Hidden Linux browsers are headless by default. Opting in to a private virtual display
+  (see Optional Linux desktop hover) supplies native desktop pointer/hover capabilities,
+  including after switching back from phone mode.
 - Native touch forwards active fingers continuously, including pan and pinch on desktop and mobile
   presets. Physical mouse buttons and double clicks retain their natural actions; touch never
   changes into a synthetic mouse gesture.
@@ -260,12 +299,10 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 - The address-bar Browser menu contains a Send keys submenu and reconnect actions. On desktop,
   keys open beside the menu; on compact screens, Back returns to the parent menu. Extra keys
   are no longer shown below the canvas or in a separate dialog.
-- On native phones and compact web layouts, **Compose text** in the Browser menu opens a visible
-  local draft. **Done** inserts it once into the focused page field; it requires human control and
-  is dropped if control or the page changes. There is no live software-keyboard relay. Phone
-  keyboard behavior still needs physical-device testing.
-- While the Resolution and quality dialog or a toolbar menu is open, canvas input is not
-  forwarded and held gestures are cancelled.
+- On native phones and compact web layouts, Compose text in that menu opens an explicit local
+  draft for keyboard or IME text, inserted once into the focused page field when you choose
+  Done. Native phones have no live software-keyboard relay; compact web also keeps canvas
+  typing. Extra keys remain available in the Send keys submenu.
 - Local plain-text paste is forwarded; remote copy/cut are not synchronized to the local clipboard.
 - The address-bar mobile toggle changes shared emulation while preserving the current display
   dimensions and capture density. Choose a resolution explicitly to change the display.
@@ -372,7 +409,8 @@ then creates its own temporary Paseo home, browser profile, Unix socket and loca
 It checks the production video decoder and canvas at 1280x800, sharp Pixel and 2560x2560,
 including all four corner markers. It never uses the live browser. This gate requires usable
 WebCodecs/tab capture and the local runtime assets; it is separate from unit tests.
-Linux CI runs this video gate without skipping unsupported capture. macOS and Windows run the image/browser smoke; their native video
+Linux CI requires Xvfb and runs this video gate without skipping unsupported
+capture. macOS and Windows run the image/browser smoke; their native video
 hardware and remote-network performance require separate qualification. CI also
 runs the actual Paseo compiler on both plugin entries.
 
@@ -404,6 +442,9 @@ bounds, input admission and recovery. [Remote-control research](REMOTE_BROWSER_R
 records primary-source comparisons and the trade-offs behind continuous human
 input. These describe the implementation's guarantees, not a promise of a
 particular frame rate or remote-network latency.
+
+
+## Optional Linux desktop hover
 
 Hidden browsers are headless by default. To expose desktop pointer and hover
 behavior on Linux, opt in by setting `PASEO_SHARED_BROWSER_XVFB=1` (exactly `1`;

@@ -16,14 +16,6 @@ export interface CanvasInputOptions {
   onPoint(point: BrowserGesturePoint): void;
   onActivity(active: boolean): void;
 }
-/** Live canvas input needs a current frame and no mutation or modal surface that owns the keyboard/pointer. */
-export function liveInputAllowed(state: {
-  canSendInput: boolean;
-  mutationPending: boolean;
-  modalOpen: boolean;
-}): boolean {
-  return state.canSendInput && !state.mutationPending && !state.modalOpen;
-}
 const MAX_SCROLL_DELTA = 4_000;
 
 /** Preserve wheel distance by splitting oversized deltas instead of clipping it. */
@@ -159,8 +151,8 @@ export function createBrowserCanvasInput(options: CanvasInputOptions) {
     }
     if (!activeTouchIds.size && phase !== "start") return true;
     if (!options.enabled()) {
-      if (points.length > 0) touchBlockedUntilRelease = true;
       cancel();
+      touchBlockedUntilRelease = points.length > 0;
       return false;
     }
     if (points.length > 5 || new Set(points.map((point) => point.id)).size !== points.length) {
@@ -175,6 +167,14 @@ export function createBrowserCanvasInput(options: CanvasInputOptions) {
     const type = points.length === 0 ? "end" : hasNewPoint ? "start" : "move";
     if (points.length === 0 && activeTouchIds.size === 0) return false;
     const accepted = options.enqueue({ kind: "touch", type, points });
+    if (!accepted) {
+      // An unavailable decoded frame or synchronous queue failure did not admit
+      // these contacts. Never let a later move invent their missing start, or
+      // overwrite a reset performed by the queue's error callback.
+      cancel();
+      touchBlockedUntilRelease = points.length > 0;
+      return false;
+    }
     activeTouchIds = new Set(points.map((point) => point.id));
     options.onActivity(points.length > 0);
     if (points.length === 0) options.finish();

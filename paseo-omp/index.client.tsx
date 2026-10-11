@@ -351,7 +351,7 @@ export default function contribute(client: PluginClientContext) {
         workspaceId: entry.workspaceId,
         agentId: agent.id,
         button: {
-          title: "OMP provider quotas",
+          title: "OMP provider quotas (last recorded usage, not live)",
           icon: quotaProviderIcon(entry.quotaProvider, "unknown"),
           label: "Quota",
           visible: false,

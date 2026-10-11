@@ -1,6 +1,6 @@
 /** Ready, attached navigation budget inside the host's 30s RPC deadline.
  * Native ACK and matched main-frame commit are distinct from document loading.
- * Metadata gets one short post-commit observation; history needs a preflight.
+ * Metadata gets one bounded post-commit phase; history needs a preflight.
  * Reattachment and held-input cleanup remain separate possible failure costs.
  */
 export const NAVIGATION_ACK_TIMEOUT_MS = 10_000;

@@ -2,6 +2,7 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import {
   createBrowserViewerRecovery,
+  isBrowserClosedError,
   isExpiredBrowserViewerError,
 } from "./browser-viewer-recovery";
 
@@ -20,6 +21,17 @@ const observation = {
 };
 
 describe("expired browser viewing recovery", () => {
+  it("recognizes explicit closure without treating it as an expired viewer", () => {
+    const closed = Object.assign(
+      new Error(
+        "Request failed: Browser is closed requestType=plugin.rpc.invoke.request code=handler_error",
+      ),
+      { code: "handler_error" },
+    );
+    expect(isBrowserClosedError(closed)).toBe(true);
+    expect(isExpiredBrowserViewerError(closed)).toBe(false);
+    expect(isBrowserClosedError(expired)).toBe(false);
+  });
   it("matches the actual SDK handler-error suffix but not transport, control or arbitrary failures", () => {
     expect(isExpiredBrowserViewerError(expired)).toBe(true);
     expect(

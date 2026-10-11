@@ -590,7 +590,7 @@ export function PrRadar({
         : savedView
           ? `No pull requests match the ${SAVED_VIEW_TITLES[savedView].toLowerCase()} view.`
           : selected
-            ? `No pull requests are ${BUCKET_TITLES[selected].toLowerCase()}.`
+            ? "No pull requests are in this queue."
             : "No open pull requests are visible to GitHub or linked to a Paseo workspace.";
   const summaryMetrics = [
     { label: "Action now", value: counts["needs-you"] },

@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-agent-crew",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "type": "module",
   "description": "A Paseo Explorer panel for visualizing and controlling every managed agent crew in a workspace.",
   "license": "MIT",
@@ -36,7 +36,8 @@
     "server",
     "index.client.tsx",
     "index.server.ts",
-    "paseo-plugin.json"
+    "paseo-plugin.json",
+    "OVERVIEW.md"
   ],
   "scripts": {
     "check": "biome check .",
@@ -55,7 +56,6 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@vitest/coverage-v8": "catalog:",
-    "fflate": "catalog:",
     "react": "catalog:",
     "react-native": "catalog:",
     "typescript": "catalog:",

@@ -209,6 +209,22 @@ describe("detached runtime supervisor lifecycle", () => {
     expect(owner.stopped.map((runtime) => runtime.runtimeId)).toEqual(["runtime-1"]);
   });
 
+  it("closes only the expected workspace runtime and permits a fresh one", async () => {
+    const { owner, supervisor } = createHarness();
+    const bridge = supervisor.claimBridge("bridge-one");
+    const first = await supervisor.ensureWorkspace("bridge-one", bridge.epoch, "workspace-one");
+
+    await expect(
+      supervisor.closeWorkspace("bridge-one", bridge.epoch, "workspace-one", "wrong-runtime"),
+    ).rejects.toThrow("Browser runtime was replaced");
+    expect(owner.stopped).toEqual([]);
+
+    await supervisor.closeWorkspace("bridge-one", bridge.epoch, "workspace-one", first.runtimeId);
+    expect(owner.stopped.map((runtime) => runtime.runtimeId)).toEqual([first.runtimeId]);
+    const next = await supervisor.ensureWorkspace("bridge-one", bridge.epoch, "workspace-one");
+    expect(next.runtimeId).not.toBe(first.runtimeId);
+  });
+
   it("lets archive fence creation and tear down a runtime created concurrently", async () => {
     vi.useFakeTimers();
     const { owner, supervisor } = createHarness();

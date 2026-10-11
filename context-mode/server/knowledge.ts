@@ -12,7 +12,13 @@ import type {
 } from "../shared/knowledge";
 import type { ContextModeSettings, contextModeSettings } from "../shared/settings";
 import { type BinaryResolution, type LaunchDescriptor, resolveContextModeBinary } from "./binary";
-import { contextModeStorageRootFor } from "./integration";
+import {
+  contextModeStorageRootFor,
+  type ProviderConfigSource,
+  type ProviderOverrides,
+  readProviderOverrides,
+  resolveProvider,
+} from "./integration";
 import {
   type ContextModeToolName,
   callContextModeTool,
@@ -35,11 +41,16 @@ export interface KnowledgeHandlerDependencies {
   callTool?: KnowledgeToolCaller;
 }
 
+type KnowledgeContext = { paseo?: ProviderConfigSource };
+
 export interface ContextModeKnowledgeHandlers {
-  search(input: SearchKnowledgeInput): Promise<KnowledgeToolResult>;
-  indexPath(input: IndexPathInput): Promise<KnowledgeToolResult>;
-  fetchAndIndex(input: FetchAndIndexInput): Promise<KnowledgeToolResult>;
-  purge(input: PurgeKnowledgeInput): Promise<KnowledgeToolResult>;
+  search(input: SearchKnowledgeInput, context?: KnowledgeContext): Promise<KnowledgeToolResult>;
+  indexPath(input: IndexPathInput, context?: KnowledgeContext): Promise<KnowledgeToolResult>;
+  fetchAndIndex(
+    input: FetchAndIndexInput,
+    context?: KnowledgeContext,
+  ): Promise<KnowledgeToolResult>;
+  purge(input: PurgeKnowledgeInput, context?: KnowledgeContext): Promise<KnowledgeToolResult>;
 }
 
 const PROVIDER_PLATFORMS: Readonly<Record<ContextModeProvider, ContextModePlatform>> = {
@@ -57,17 +68,21 @@ export function contextModePlatformFor(provider: ContextModeProvider): ContextMo
   return PROVIDER_PLATFORMS[provider];
 }
 
+/**
+ * `provider` is a Paseo provider id: a built-in, or a configured one whose own `extends` and env
+ * decide the storage root (`providers` is `agents.providers`).
+ */
 export function contextModeEnvironmentFor(
-  provider: ContextModeProvider,
+  provider: string,
   home = homedir(),
   env: NodeJS.ProcessEnv = process.env,
+  providers: ProviderOverrides = {},
 ): NodeJS.ProcessEnv {
-  const storageRoot = contextModeStorageRootFor(provider, { home, env });
-  if (!storageRoot) throw new Error(`Context Mode does not support provider ${provider}.`);
-  return {
-    CONTEXT_MODE_PLATFORM: contextModePlatformFor(provider),
-    CONTEXT_MODE_DIR: storageRoot,
-  };
+  const { base, policy, env: providerEnv } = resolveProvider(provider, providers);
+  const storageRoot = contextModeStorageRootFor(base, { home, env: { ...env, ...providerEnv } });
+  if (!policy || !storageRoot)
+    throw new Error(`Context Mode does not support provider ${provider}.`);
+  return { CONTEXT_MODE_PLATFORM: policy.platform, CONTEXT_MODE_DIR: storageRoot };
 }
 
 function definedArguments(values: Record<string, unknown>): McpToolArguments {
@@ -95,42 +110,51 @@ export function createContextModeKnowledgeHandlers(
   }
 
   async function run(
-    provider: ContextModeProvider,
+    provider: string,
     projectPath: string,
     name: ContextModeToolName,
     arguments_: McpToolArguments,
+    context: KnowledgeContext | undefined,
     environmentOverrides: NodeJS.ProcessEnv = {},
   ): Promise<KnowledgeToolResult> {
     const launch = await launchDescriptor();
+    const providers = await readProviderOverrides(context?.paseo);
     const output = await callTool(launch, name, arguments_, {
-      env: { ...contextModeEnvironmentFor(provider), ...environmentOverrides },
+      env: {
+        ...contextModeEnvironmentFor(provider, homedir(), process.env, providers),
+        ...environmentOverrides,
+      },
       cwd: projectPath,
     });
     return { provider, output, completedAt: now().toISOString() };
   }
 
   return {
-    search({ provider, projectPath, queries, limit, source, contentType, sort }) {
+    search({ provider, projectPath, queries, limit, source, contentType, sort }, context) {
       return run(
         provider,
         projectPath,
         "ctx_search",
         definedArguments({ queries, limit, source, contentType, sort }),
+        context,
       );
     },
-    indexPath({
-      provider,
-      projectPath,
-      path,
-      source,
-      include,
-      exclude,
-      maxDepth,
-      maxFiles,
-      extensions,
-      respectGitignore,
-      followSymlinks,
-    }) {
+    indexPath(
+      {
+        provider,
+        projectPath,
+        path,
+        source,
+        include,
+        exclude,
+        maxDepth,
+        maxFiles,
+        extensions,
+        respectGitignore,
+        followSymlinks,
+      },
+      context,
+    ) {
       if (!isAbsolute(path)) {
         throw new Error("Knowledge indexing requires an absolute path on this host.");
       }
@@ -149,18 +173,20 @@ export function createContextModeKnowledgeHandlers(
           respectGitignore,
           followSymlinks,
         }),
+        context,
       );
     },
-    fetchAndIndex({ provider, projectPath, url, source, force, ttl }) {
+    fetchAndIndex({ provider, projectPath, url, source, force, ttl }, context) {
       return run(
         provider,
         projectPath,
         "ctx_fetch_and_index",
         definedArguments({ url, source, force, ttl }),
+        context,
         { CTX_FETCH_STRICT: "1" },
       );
     },
-    async purge(input) {
+    async purge(input, context) {
       const raw = input as PurgeKnowledgeInput & { sessionId?: string };
       if (raw.confirm !== true) {
         throw new Error("Purge requires exact confirmation with confirm: true.");
@@ -169,19 +195,24 @@ export function createContextModeKnowledgeHandlers(
         if (raw.sessionId !== undefined) {
           throw new Error("Purge requires exactly one scope.");
         }
-        return await run(raw.provider, raw.projectPath, "ctx_purge", {
-          confirm: true,
-          scope: "project",
-        });
+        return await run(
+          raw.provider,
+          raw.projectPath,
+          "ctx_purge",
+          { confirm: true, scope: "project" },
+          context,
+        );
       }
       if (raw.scope !== "session" || !raw.sessionId) {
         throw new Error("Session purge requires exactly one non-empty sessionId scope.");
       }
-      return await run(raw.provider, raw.projectPath, "ctx_purge", {
-        confirm: true,
-        scope: "session",
-        sessionId: raw.sessionId,
-      });
+      return await run(
+        raw.provider,
+        raw.projectPath,
+        "ctx_purge",
+        { confirm: true, scope: "session", sessionId: raw.sessionId },
+        context,
+      );
     },
   };
 }

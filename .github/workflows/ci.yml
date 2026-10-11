@@ -324,6 +324,9 @@ jobs:
           PASEO_HOME: ${{ runner.temp }}/paseo-home
           PASEO_SHARED_BROWSER_CHROMIUM_ARGS: ${{ matrix.chromium_args }}
         run: npm run test:smoke
+      - name: Require virtual display for native video
+        if: ${{ runner.os == 'Linux' }}
+        run: command -v Xvfb
       - name: Native video capture and decode smoke
         if: ${{ runner.os == 'Linux' }}
         env:

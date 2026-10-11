@@ -146,6 +146,17 @@ export class SupervisorClient {
       workspaceId,
     });
   }
+
+  async closeWorkspace(workspaceId: string, runtimeId: string): Promise<void> {
+    await this.ensureLease();
+    await this.send({
+      method: "workspace.close",
+      bridgeId: this.bridgeId,
+      epoch: this.epoch,
+      workspaceId,
+      runtimeId,
+    });
+  }
   async requestBrowser<Result = JsonValue>(operation: string, input: JsonValue): Promise<Result> {
     await this.ensureLease();
     return (await this.send({

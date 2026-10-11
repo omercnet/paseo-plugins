@@ -86,7 +86,7 @@ it("uses an authenticated private high abstract-only display and idempotent clea
     args[0],
     "-screen",
     "0",
-    "2560x2560x24",
+    "3840x3840x24",
     "-nolisten",
     "unix",
     "-nolisten",

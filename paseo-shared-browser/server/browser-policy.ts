@@ -7,11 +7,14 @@ import {
   type BrowserGestureEvent,
   type BrowserInputEvent,
   type BrowserState,
+  type BrowserTab,
   type beginBrowserGestureRpc,
   browserCursorSchema,
   browserGestureEventSchema,
+  browserTabSchema,
   canUseCaptureDensity,
   type captureBrowserRpc,
+  type closeBrowserRpc,
   DEFAULT_VIEWPORT,
   DEVICE_PRESETS,
   type DevicePresetId,
@@ -41,6 +44,8 @@ import {
   DEFAULT_CAPTURE_QUALITY,
   JPEG_QUALITY,
 } from "../shared/capture-settings";
+import { frameMatchesBrowserContext } from "./browser-frame-context";
+import { createBrowserFrameRejection } from "./browser-frame-rejection";
 import { BrowserGesture } from "./browser-gesture";
 import { runWithInputCleanup } from "./input-cleanup";
 import { sameRuntimeInputAttachment } from "./input-generation";
@@ -51,6 +56,7 @@ import { createViewerCaptureLifetime, type ViewerCaptureLifetime } from "./viewe
 export type WorkspaceValidator = (workspaceId: string) => Promise<void | boolean>;
 type CaptureReply = Omit<RpcOutput<typeof captureBrowserRpc>, "state"> & { state: BrowserState };
 type DensityInput = RpcInput<typeof setCaptureDensityRpc>;
+type CloseInput = RpcInput<typeof closeBrowserRpc>;
 type NavigateInput = RpcInput<typeof navigateBrowserRpc>;
 type ResizeInput = RpcInput<typeof resizeBrowserRpc>;
 type ApplyDevicePresetInput = RpcInput<typeof applyDevicePresetRpc>;
@@ -61,7 +67,6 @@ type UpdateGestureReply = Omit<RpcOutput<typeof updateBrowserGestureRpc>, "state
   state: BrowserState;
 };
 type EndGestureInput = RpcInput<typeof endBrowserGestureRpc>;
-type InputTarget = SendInput["target"];
 
 const VIEWER_TTL_MS = 45_000;
 const CONTROL_LEASE_MS = 30_000;
@@ -69,7 +74,7 @@ const FRAME_CACHE_MS = 100;
 const FRAME_TOKEN_TTL_MS = 5_000;
 const MAX_RECENT_FRAMES = 512;
 const MAX_VIEWERS_PER_SESSION = 16;
-const MAX_SESSIONS = 8;
+const MAX_SESSIONS = 64;
 const SCREENCAST_WAIT_MS = 500;
 
 export interface BrowserRuntimeClient {
@@ -85,6 +90,7 @@ export interface BrowserRuntimeClient {
   }>;
   requestWorkspace(workspaceId: string, operation: string, input: JsonValue): Promise<JsonValue>;
   archiveWorkspace(workspaceId: string): Promise<void>;
+  closeWorkspace(workspaceId: string, runtimeId: string): Promise<void>;
   disconnect(): void;
 }
 
@@ -111,7 +117,9 @@ interface Controller {
   expiresAt: number;
 }
 interface BrowserSession {
+  key: string;
   workspaceId: string;
+  tabId: string | null;
   sessionId: string;
   runtimeId: string;
   runtimeCreatedAt: number;
@@ -150,7 +158,7 @@ interface BrowserSession {
   canGoForward: boolean;
   error: string | null;
   notice: string | null;
-  /** Set when the runtime reported it can never serve again; the next attach replaces it. */
+  /** Set when the runtime reported it can never serve again; the next explicit attach replaces it. */
   runtimeLost: boolean;
   archived: boolean;
   gesture: BrowserGesture | null;
@@ -221,8 +229,12 @@ export class SessionManager {
   private readonly maxSessions: number;
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly viewerSessions = new Map<string, BrowserSession>();
+  private readonly closedViewerWorkspaces = new Map<string, string>();
+  private readonly closedViewerTabs = new Map<string, number>();
   private readonly sessionCreations = new Map<string, Promise<BrowserSession>>();
+  private readonly sessionClosures = new Map<string, Promise<void>>();
   private readonly archived = new Set<string>();
+  private readonly deliberatelyClosed = new Set<string>();
   private bridgeEpoch = 0;
   private lifecycleGeneration = 0;
   private closed = false;
@@ -260,12 +272,14 @@ export class SessionManager {
 
   /**
    * `replaceLost` is internal authority held only by the supervisor's explicit human attach
-   * path. It lets this call replace a runtime that reported RuntimeLostError (before or while
-   * attaching) exactly once; every other caller observes the lost session without restarting it.
+   * path. It lets this call replace a workspace runtime that reported it was lost (before or
+   * while attaching) exactly once; every other caller observes the lost session without
+   * restarting it.
    */
   async attach(
     workspaceId: string,
     viewerLabel: string,
+    tabId?: string,
     options: { replaceLost?: boolean } = {},
   ): Promise<{ viewerToken: string; state: BrowserState }> {
     this.assertOpen();
@@ -274,25 +288,39 @@ export class SessionManager {
     const validation = await this.validateWorkspace(workspaceId);
     if (validation === false) throw new Error("Workspace not found");
     this.assertOpen();
-    let session = await this.getOrCreateSession(workspaceId, options.replaceLost === true);
+    const replaceLost = options.replaceLost === true;
+    let session = await this.getOrCreateSession(workspaceId, tabId, replaceLost);
     let replaced = false;
-    if (session.runtimeLost && options.replaceLost) {
-      session = await this.replaceLostSession(session);
+    if (session.runtimeLost && replaceLost) {
+      session = await this.replaceLostRuntime(session);
       replaced = true;
     }
     const attached = await this.attachViewer(session, label);
-    if (session.runtimeLost && options.replaceLost && !replaced) {
+    if (session.runtimeLost && replaceLost && !replaced) {
       // The loss was first observed by this very attach. One fenced replacement, no input replay.
-      session = await this.replaceLostSession(session);
+      session = await this.replaceLostRuntime(session);
       return this.attachViewer(session, label);
     }
     return attached;
   }
 
-  /** Discards the dead session behind a fresh session id and runtime id; nothing is replayed. */
-  private async replaceLostSession(lost: BrowserSession): Promise<BrowserSession> {
-    await this.discardSession(lost);
-    return this.getOrCreateSession(lost.workspaceId, true);
+  /**
+   * Discards every page session of the dead workspace runtime behind fresh session and
+   * runtime ids; nothing is replayed. Page ids belong to the old browser, so the
+   * replacement attaches to the new browser's launch page.
+   */
+  private async replaceLostRuntime(lost: BrowserSession): Promise<BrowserSession> {
+    for (const candidate of [...this.sessions.values()]) {
+      if (candidate.workspaceId !== lost.workspaceId) continue;
+      candidate.archived = true;
+      candidate.videoLifetime?.cancel();
+      await this.cancelGesture(candidate);
+      for (const token of candidate.viewers.keys()) this.viewerSessions.delete(token);
+      candidate.viewers.clear();
+      candidate.controller = null;
+      this.sessions.delete(candidate.key);
+    }
+    return this.getOrCreateSession(lost.workspaceId, undefined, true);
   }
 
   private attachViewer(
@@ -300,6 +328,7 @@ export class SessionManager {
     label: string,
   ): Promise<{ viewerToken: string; state: BrowserState }> {
     return this.serialize(session, async () => {
+      if (session.archived) throw new Error("Browser session is closed");
       this.pruneExpired(session);
       if (session.viewers.size >= MAX_VIEWERS_PER_SESSION)
         throw new Error(`Shared browser viewer limit (${MAX_VIEWERS_PER_SESSION}) reached`);
@@ -337,54 +366,211 @@ export class SessionManager {
     });
   }
 
+  /** Enumerate pages in this viewer's workspace without changing any selected page. */
+  async listTabs(workspaceId: string): Promise<{ tabs: BrowserTab[] }> {
+    if (this.deliberatelyClosed.has(workspaceId)) throw new Error("Browser is closed");
+    const targets = await this.client.requestWorkspace(workspaceId, "tabs.list", null);
+    if (!Array.isArray(targets)) throw new Error("Browser returned an invalid tab list");
+    const tabs = await Promise.all(
+      targets.map(async (target) => {
+        const value = asRecord(target);
+        const tabId = browserTabSchema.shape.id.parse(value.targetId);
+        const session = [...this.sessions.values()].find(
+          (candidate) => candidate.workspaceId === workspaceId && candidate.tabId === tabId,
+        );
+        const presence = session
+          ? await this.serialize(session, async () => {
+              this.pruneExpired(session);
+              const controllerToken = session.controller?.viewerToken;
+              return {
+                viewerCount: session.viewers.size,
+                controllerLabel: controllerToken
+                  ? (session.viewers.get(controllerToken)?.label ?? null)
+                  : null,
+              };
+            })
+          : { viewerCount: 0, controllerLabel: null };
+        return browserTabSchema.parse({
+          id: tabId,
+          title: boundedText(String(value.title ?? ""), 1_024),
+          url: boundedText(String(value.url ?? ""), 8_192),
+          ...presence,
+        });
+      }),
+    );
+    return { tabs };
+  }
+
+  /** Expose tab metadata to a client only through its active viewer lease. */
+  async listTabsForViewer(viewerToken: string): Promise<{ tabs: BrowserTab[] }> {
+    const session = this.requireViewer(viewerToken);
+    const listed = await this.listTabs(session.workspaceId);
+    // The lease may have lapsed while the runtime answered; never return metadata then.
+    let current = false;
+    try {
+      current = this.requireViewer(viewerToken) === session && !session.archived;
+    } catch {
+      current = false;
+    }
+    if (!current) throw new Error("Browser viewer attachment changed while listing tabs");
+    return listed;
+  }
+
+  /** A new page shares the workspace profile but does not change any viewer's selection. */
+  async createTab(viewerToken: string): Promise<{ tabId: string }> {
+    const session = this.requireViewer(viewerToken);
+    const value = asRecord(
+      await this.client.requestWorkspace(session.workspaceId, "tabs.create", null),
+    );
+    // The page now exists. A viewer lease that ended meanwhile must not read as a
+    // pre-dispatch refusal, or a caller recovering from an expired viewer would create twice.
+    let current = false;
+    try {
+      current = this.requireViewer(viewerToken) === session && !session.archived;
+    } catch {
+      current = false;
+    }
+    if (!current) throw new Error("Browser viewer attachment changed during tab creation");
+    const tabId = browserTabSchema.shape.id.parse(value.targetId);
+    return { tabId };
+  }
+
+  /** Close only the page controlled by this viewer, leaving other pages and viewers alive. */
+  async closeTab(input: {
+    viewerToken: string;
+    controlToken: string;
+    tabId: string;
+  }): Promise<{ closed: true }> {
+    const session = this.requireViewer(input.viewerToken);
+    return this.serialize(session, async () => {
+      this.requireController(session, input.viewerToken, input.controlToken);
+      if (session.tabId !== input.tabId) throw new Error("Browser tab selection is stale");
+      await this.cancelGesture(session);
+      await this.request(session, "tabs.close", { targetId: input.tabId });
+      session.archived = true;
+      session.videoLifetime?.cancel();
+      for (const [token, expiresAt] of this.closedViewerTabs) {
+        if (expiresAt <= this.now()) this.closedViewerTabs.delete(token);
+      }
+      for (const token of session.viewers.keys()) {
+        this.viewerSessions.delete(token);
+        this.closedViewerTabs.set(token, this.now() + this.viewerTtlMs);
+      }
+      session.viewers.clear();
+      session.controller = null;
+      this.sessions.delete(session.key);
+      return { closed: true };
+    });
+  }
+
+  /** Stop one runtime and invalidate every viewer without archiving its workspace or profile. */
+  async closeBrowser(input: CloseInput): Promise<{ closed: true }> {
+    const session = this.requireViewer(input.viewerToken);
+    const closing = this.serialize(session, async () => {
+      this.requireController(session, input.viewerToken, input.controlToken);
+      if (session.sessionId !== input.sessionId || session.runtimeId !== input.runtimeId)
+        throw new Error("Browser session is stale");
+
+      this.deliberatelyClosed.add(session.workspaceId);
+      const workspaceSessions = [...this.sessions.values()].filter(
+        (candidate) => candidate.workspaceId === session.workspaceId,
+      );
+      for (const candidate of workspaceSessions) {
+        candidate.videoLifetime?.cancel();
+        await this.cancelGesture(candidate);
+        candidate.archived = true;
+        for (const token of candidate.viewers.keys()) {
+          this.viewerSessions.delete(token);
+          this.closedViewerWorkspaces.set(token, session.workspaceId);
+        }
+        candidate.viewers.clear();
+        candidate.controller = null;
+      }
+      try {
+        await this.client.closeWorkspace(session.workspaceId, session.runtimeId);
+      } finally {
+        for (const candidate of workspaceSessions) this.sessions.delete(candidate.key);
+      }
+    });
+    this.sessionClosures.set(session.workspaceId, closing);
+    try {
+      await closing;
+      return { closed: true };
+    } finally {
+      if (this.sessionClosures.get(session.workspaceId) === closing)
+        this.sessionClosures.delete(session.workspaceId);
+    }
+  }
+
+  /** Only an explicit human reopen removes the close fence used by viewer and agent attach. */
+  async reopenBrowser(workspaceId: string): Promise<{ opened: true }> {
+    this.assertOpen();
+    const validation = await this.validateWorkspace(workspaceId);
+    if (validation === false) throw new Error("Workspace not found");
+    const closing = this.sessionClosures.get(workspaceId);
+    if (closing) await closing.catch(() => undefined);
+    this.deliberatelyClosed.delete(workspaceId);
+    try {
+      await this.getOrCreateSession(workspaceId);
+    } catch (error) {
+      this.deliberatelyClosed.add(workspaceId);
+      throw error;
+    }
+    for (const [token, closedWorkspaceId] of this.closedViewerWorkspaces)
+      if (closedWorkspaceId === workspaceId) this.closedViewerWorkspaces.delete(token);
+    return { opened: true };
+  }
+
   async archiveWorkspace(workspaceId: string): Promise<void> {
     this.assertOpen();
     this.archived.add(workspaceId);
     await this.client.archiveWorkspace(workspaceId);
-    const pending = this.sessionCreations.get(workspaceId);
-    if (pending) await pending.catch(() => undefined);
-    const session = this.sessions.get(workspaceId);
-    if (!session) return;
-    session.archived = true;
-    session.videoLifetime?.cancel();
-    await this.cancelGesture(session);
-    for (const token of session.viewers.keys()) this.viewerSessions.delete(token);
-    session.viewers.clear();
-    session.controller = null;
-    this.sessions.delete(workspaceId);
-  }
-
-  private async discardSession(session: BrowserSession): Promise<void> {
-    session.archived = true;
-    await this.cancelGesture(session);
-    for (const token of session.viewers.keys()) this.viewerSessions.delete(token);
-    session.viewers.clear();
-    session.controller = null;
-    if (this.sessions.get(session.workspaceId) === session)
-      this.sessions.delete(session.workspaceId);
+    const pending = [...this.sessionCreations.entries()]
+      .filter(([key]) => key === workspaceId || key.startsWith(`${workspaceId}/`))
+      .map(([, creation]) => creation);
+    await Promise.allSettled(pending);
+    for (const session of this.sessions.values()) {
+      if (session.workspaceId !== workspaceId) continue;
+      session.archived = true;
+      session.videoLifetime?.cancel();
+      await this.cancelGesture(session);
+      for (const token of session.viewers.keys()) this.viewerSessions.delete(token);
+      session.viewers.clear();
+      session.controller = null;
+      this.sessions.delete(session.key);
+    }
   }
 
   /** List retained browser sessions even after their last viewer leaves or expires. */
   async listOpenWorkspaceIds(): Promise<string[]> {
     this.assertOpen();
-    const result: string[] = [];
+    const result = new Set<string>();
     for (const session of this.sessions.values()) {
       await this.serialize(session, async () => {
         this.pruneExpired(session);
         // Viewer leases control access and capture, not the lifetime of the browser.
         // Keep an idle browser discoverable so another device can reattach to it.
-        if (!session.archived) result.push(session.workspaceId);
+        if (!session.archived) result.add(session.workspaceId);
       });
     }
-    return result;
+    return [...result];
   }
   async status(viewerToken: string): Promise<{ state: BrowserState }> {
     const session = this.requireViewer(viewerToken);
     return this.serialize(session, async () => {
+      if (session.archived) throw new Error("Browser session is closed");
       this.pruneExpired(session);
       this.heartbeatViewer(session, viewerToken);
       return { state: await this.snapshotState(session, viewerToken) };
     });
+  }
+
+  /** A lost runtime keeps its typed code so observers can tell it from a transient failure. */
+  private metadataFailure(session: BrowserSession, error: string): Error {
+    const message = `Browser capture metadata failed: ${error}`;
+    return session.runtimeLost
+      ? new RuntimeProtocolError("RUNTIME_LOST", message)
+      : new Error(message);
   }
 
   async capture(
@@ -396,12 +582,29 @@ export class SessionManager {
     return this.serialize(session, async () => {
       this.pruneExpired(session);
       this.heartbeatViewer(session, viewerToken);
+      // Reconcile native document identity before capturing and again before
+      // issuing authority. A same-URL reload can invalidate the captured pixels.
+      const before = await this.snapshotState(session, viewerToken);
+      if (before.error) throw this.metadataFailure(session, before.error);
+      const inputGeneration = session.inputGeneration;
+      const revision = session.frameRevision;
       const frame = await this.frameForQuality(session, quality);
-      this.rememberFrame(session, frame);
-      return {
-        state: await this.snapshotState(session, viewerToken),
-        frame: knownFrameId === frame.frameId ? null : frame,
-      };
+      const observedAt = this.now();
+      const state = await this.snapshotState(session, viewerToken);
+      if (state.error) throw this.metadataFailure(session, state.error);
+      if (
+        inputGeneration !== session.inputGeneration ||
+        revision !== session.frameRevision ||
+        !frameMatchesBrowserContext(frame, before) ||
+        !frameMatchesBrowserContext(frame, state)
+      ) {
+        throw new Error("Browser changed during capture; request another frame");
+      }
+      if (observedAt + FRAME_TOKEN_TTL_MS <= this.now()) {
+        throw new Error("Browser capture expired during validation; request another frame");
+      }
+      this.rememberFrame(session, frame, undefined, observedAt);
+      return { state, frame: knownFrameId === frame.frameId ? null : frame };
     });
   }
 
@@ -640,29 +843,47 @@ export class SessionManager {
     });
   }
 
+  /** Resize CSS layout under the control lease; panel following preserves device behavior and density. */
   async resize(input: ResizeInput): Promise<{ state: BrowserState }> {
     const session = this.requireViewer(input.viewerToken);
     return this.serialize(session, async () => {
       this.requireMutationAccess(session, input);
       await this.cancelGesture(session);
       assertViewport(input.viewport);
-      // A custom size changes dimensions only: the active profile keeps its
-      // mobile/touch/density/UA/platform/capture density and stays selected.
-      const preset = DEVICE_PRESETS.find(({ id }) => id === session.devicePresetId);
+      const preserveEmulation = input.preserveEmulation === true;
+      const captureScale = input.captureDensity ?? (preserveEmulation ? session.captureScale : 1);
+      if (
+        input.viewport.width * captureScale > MAX_VIEWPORT.width ||
+        input.viewport.height * captureScale > MAX_VIEWPORT.height
+      ) {
+        throw new RangeError(
+          "Viewport at the current capture density exceeds supported image bounds",
+        );
+      }
       if (
         session.viewport.width !== input.viewport.width ||
-        session.viewport.height !== input.viewport.height
+        session.viewport.height !== input.viewport.height ||
+        session.captureScale !== captureScale ||
+        (!preserveEmulation && session.devicePresetId !== null)
       ) {
+        const preset = preserveEmulation
+          ? DEVICE_PRESETS.find(({ id }) => id === session.devicePresetId)
+          : undefined;
         await this.request(session, "emulate", {
           ...input.viewport,
-          deviceScaleFactor: preset?.deviceScaleFactor ?? 1,
-          captureScale: session.captureScale,
+          deviceScaleFactor: Math.max(preset?.deviceScaleFactor ?? 1, captureScale),
+          captureScale,
           mobile: preset?.isMobile ?? false,
           touch: preset?.hasTouch ?? false,
-          userAgent: session.userAgent,
+          userAgent: preserveEmulation ? session.userAgent : session.defaultUserAgent,
           platform: preset?.platform ?? "",
         });
         session.viewport = { ...input.viewport };
+        session.captureScale = captureScale;
+        if (!preserveEmulation) {
+          session.devicePresetId = null;
+          session.userAgent = session.defaultUserAgent;
+        }
         session.viewportGeneration += 1;
         this.invalidateFrames(session);
       }
@@ -710,9 +931,10 @@ export class SessionManager {
     return this.serialize(session, async () => {
       this.requireMutationAccess(session, input);
       this.requireRecentFrame(session, input.target);
+      const assertTargetCurrent = this.discreteInputGuard(session, input);
       try {
         await this.cancelGesture(session);
-        await this.dispatchDiscreteInput(session, input.event, input.target);
+        await this.dispatchDiscreteInput(session, input.event, assertTargetCurrent);
       } finally {
         const hadVideo = session.videoReceipts.size > 0 || session.videoReads.size > 0;
         // Revoke authority even if auxiliary capture fails. Source-age fencing
@@ -1073,6 +1295,8 @@ export class SessionManager {
     this.sessions.clear();
     this.sessionCreations.clear();
     this.viewerSessions.clear();
+    this.closedViewerWorkspaces.clear();
+    this.closedViewerTabs.clear();
   }
 
   disconnect(): void {
@@ -1084,49 +1308,68 @@ export class SessionManager {
 
   private async getOrCreateSession(
     workspaceId: string,
+    tabId?: string,
     replaceLost = false,
   ): Promise<BrowserSession> {
     if (this.archived.has(workspaceId)) throw new Error("Workspace was archived");
-    const existing = this.sessions.get(workspaceId);
+    const closing = this.sessionClosures.get(workspaceId);
+    if (closing) await closing.catch(() => undefined);
+    if (this.deliberatelyClosed.has(workspaceId)) throw new Error("Browser is closed");
+    const existing = [...this.sessions.values()].find(
+      (session) => session.workspaceId === workspaceId && (!tabId || session.tabId === tabId),
+    );
     if (existing) return existing;
-    const pending = this.sessionCreations.get(workspaceId);
-    if (pending) return pending;
+
+    // The launch page has no known target ID until identity returns. Wait for
+    // another first attachment before deciding whether this target needs a
+    // second policy session, so control and presence cannot split in two.
+    const workspaceCreation = [...this.sessionCreations.entries()].find(
+      ([pendingKey]) => pendingKey === workspaceId || pendingKey.startsWith(`${workspaceId}/`),
+    )?.[1];
+    if (workspaceCreation) {
+      await workspaceCreation.catch(() => undefined);
+      return this.getOrCreateSession(workspaceId, tabId, replaceLost);
+    }
+    const key = tabId ? `${workspaceId}/${tabId}` : workspaceId;
     if (this.sessions.size + this.sessionCreations.size >= this.maxSessions)
       throw new Error(`Shared browser session limit (${this.maxSessions}) reached`);
     const lifecycleGeneration = this.lifecycleGeneration;
-    const creation = this.createSession(workspaceId, replaceLost);
-    this.sessionCreations.set(workspaceId, creation);
+    const creation = this.createSession(workspaceId, key, tabId, replaceLost);
+    this.sessionCreations.set(key, creation);
     try {
       const session = await creation;
-      if (
-        this.closed ||
-        this.archived.has(workspaceId) ||
-        lifecycleGeneration !== this.lifecycleGeneration
-      )
-        throw new Error(
-          this.closed
-            ? "Shared browser manager is closed"
-            : this.archived.has(workspaceId)
-              ? "Workspace was archived"
-              : "Shared browser manager was reset",
-        );
-      this.sessions.set(workspaceId, session);
+      if (this.closed) throw new Error("Shared browser manager is closed");
+      if (this.archived.has(workspaceId)) throw new Error("Workspace was archived");
+      if (this.deliberatelyClosed.has(workspaceId)) throw new Error("Browser is closed");
+      if (lifecycleGeneration !== this.lifecycleGeneration) {
+        throw new Error("Shared browser manager was reset");
+      }
+      this.sessions.set(key, session);
       return session;
     } catch (error) {
       if (this.archived.has(workspaceId)) throw new Error("Workspace was archived");
       throw error;
     } finally {
-      if (this.sessionCreations.get(workspaceId) === creation)
-        this.sessionCreations.delete(workspaceId);
+      if (this.sessionCreations.get(key) === creation) this.sessionCreations.delete(key);
     }
   }
 
-  private async createSession(workspaceId: string, replaceLost: boolean): Promise<BrowserSession> {
-    let ensured = false;
+  private async createSession(
+    workspaceId: string,
+    key: string,
+    requestedTabId?: string,
+    replaceLost = false,
+  ): Promise<BrowserSession> {
+    let runtimeId: string | null = null;
     try {
       const descriptor = await this.client.ensureWorkspace(workspaceId, { replaceLost });
-      ensured = true;
-      const identity = asRecord(await this.client.requestWorkspace(workspaceId, "identity", null));
+      runtimeId = descriptor.runtimeId;
+      const initialTarget = requestedTabId ? { targetId: requestedTabId } : null;
+      const identity = asRecord(
+        await this.client.requestWorkspace(workspaceId, "identity", initialTarget),
+      );
+      const tabId =
+        requestedTabId ?? (typeof identity.targetId === "string" ? identity.targetId : null);
       const userAgent = boundedText(String(identity.userAgent ?? "Chromium"), 512);
       await this.client.requestWorkspace(workspaceId, "emulate", {
         ...DEFAULT_VIEWPORT,
@@ -1135,10 +1378,19 @@ export class SessionManager {
         touch: false,
         userAgent,
         platform: "",
+        ...(tabId ? { targetId: tabId } : {}),
       });
-      const state = asRecord(await this.client.requestWorkspace(workspaceId, "state", null));
+      const state = asRecord(
+        await this.client.requestWorkspace(
+          workspaceId,
+          "state",
+          tabId ? { targetId: tabId } : null,
+        ),
+      );
       return {
+        key,
         workspaceId,
+        tabId,
         sessionId: this.issueUniqueToken(),
         runtimeId: descriptor.runtimeId,
         runtimeCreatedAt: descriptor.createdAt,
@@ -1176,7 +1428,19 @@ export class SessionManager {
         inputGeneration: typeof state.inputGeneration === "string" ? state.inputGeneration : null,
       };
     } catch (error) {
-      if (ensured) await this.client.archiveWorkspace(workspaceId).catch(() => undefined);
+      const hasOtherSession = [...this.sessions.values()].some(
+        (session) => session.workspaceId === workspaceId && session.key !== key,
+      );
+      const hasOtherCreation = [...this.sessionCreations.keys()].some(
+        (pendingKey) =>
+          pendingKey !== key &&
+          (pendingKey === workspaceId || pendingKey.startsWith(`${workspaceId}/`)),
+      );
+      // An invalid explicit tab must never tear down a workspace runtime that
+      // another participant may already be using without a policy session.
+      if (runtimeId && !requestedTabId && !hasOtherSession && !hasOtherCreation) {
+        await this.client.closeWorkspace(workspaceId, runtimeId).catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -1187,11 +1451,22 @@ export class SessionManager {
     input: JsonValue,
   ): Promise<JsonValue> {
     if (session.archived) throw new Error("Workspace was archived");
-    return this.client.requestWorkspace(session.workspaceId, operation, input).catch((error) => {
-      if (error instanceof RuntimeProtocolError && error.code === "RUNTIME_LOST")
-        session.runtimeLost = true;
-      throw error;
-    });
+    const data = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    return this.client
+      .requestWorkspace(
+        session.workspaceId,
+        operation,
+        session.tabId ? { ...data, targetId: session.tabId } : input,
+      )
+      .catch((error) => {
+        if (error instanceof RuntimeProtocolError && error.code === "RUNTIME_LOST") {
+          // The workspace's single browser is gone, so every page session of it is gone.
+          session.runtimeLost = true;
+          for (const candidate of this.sessions.values())
+            if (candidate.workspaceId === session.workspaceId) candidate.runtimeLost = true;
+        }
+        throw error;
+      });
   }
 
   /** Cleanup depends on viewer ownership, never on whether capture produced pixels. */
@@ -1212,7 +1487,7 @@ export class SessionManager {
           : null,
       onExpired: () =>
         this.serialize(session, async () => {
-          if (this.sessions.get(session.workspaceId) !== session || session.archived) return;
+          if (this.sessions.get(session.key) !== session || session.archived) return;
           this.pruneExpired(session);
           await this.stopUnusedVideo(session);
         }),
@@ -1221,8 +1496,17 @@ export class SessionManager {
   }
 
   private requireViewer(token: string): BrowserSession {
+    if (this.closedViewerWorkspaces.has(token)) throw new Error("Browser is closed");
+    const closedTabExpiry = this.closedViewerTabs.get(token);
+    if (closedTabExpiry !== undefined) {
+      if (closedTabExpiry > this.now()) throw new Error("Browser tab is closed");
+      this.closedViewerTabs.delete(token);
+    }
     const session = this.viewerSessions.get(token);
-    if (!session || !session.viewers.has(token))
+    const viewer = session?.viewers.get(token);
+    // Expiry is enforced at the authentication boundary itself: an unpruned lapsed lease
+    // never authorizes an entrypoint that does not run pruneExpired first.
+    if (!session || !viewer || viewer.expiresAt <= this.now())
       throw new Error("Viewer token is invalid or expired");
     return session;
   }
@@ -1295,7 +1579,17 @@ export class SessionManager {
     session: BrowserSession,
     target: { frameId: string; navigationGeneration: number; viewportGeneration: number },
   ): void {
-    if (!this.isRecentFrame(session, target)) throw new Error("Browser frame is stale");
+    // Retain diagnostic evidence before validation prunes expired receipts.
+    // An absent receipt cannot distinguish expiry from an earlier revocation.
+    const frame = session.recentFrames.get(target.frameId);
+    if (this.isRecentFrame(session, target)) return;
+    if (!frame) throw createBrowserFrameRejection("admission", "missing-or-revoked");
+
+    const expiresAt = frame.expiresAtMonotonicMs ?? frame.expiresAt;
+    const now = frame.expiresAtMonotonicMs === undefined ? this.now() : this.monotonicNow();
+    const ageMs = now - (expiresAt - FRAME_TOKEN_TTL_MS);
+    const reason = expiresAt <= now ? "expired" : "context-changed";
+    throw createBrowserFrameRejection("admission", reason, ageMs);
   }
 
   /** Check issued frame authority without admitting or cancelling a live channel. */
@@ -1376,11 +1670,7 @@ export class SessionManager {
     const cached = session.frameCache.get(quality);
     if (
       cached &&
-      cached.frame.sessionId === session.sessionId &&
-      cached.frame.runtimeId === session.runtimeId &&
-      cached.frame.captureEpoch === session.bridgeEpoch &&
-      cached.frame.navigationGeneration === session.navigationGeneration &&
-      cached.frame.viewportGeneration === session.viewportGeneration &&
+      frameMatchesBrowserContext(cached.frame, session) &&
       this.now() - cached.cachedAt <= this.frameCacheMs
     )
       return cached.frame;
@@ -1398,13 +1688,7 @@ export class SessionManager {
         waitMs: SCREENCAST_WAIT_MS,
       }),
     );
-    if (
-      generation.sessionId !== session.sessionId ||
-      generation.runtimeId !== session.runtimeId ||
-      generation.captureEpoch !== session.bridgeEpoch ||
-      generation.navigationGeneration !== session.navigationGeneration ||
-      generation.viewportGeneration !== session.viewportGeneration
-    )
+    if (!frameMatchesBrowserContext(generation, session))
       throw new Error("Browser changed during capture; request another frame");
     const byteLength = Number(raw.byteLength);
     const dataBase64 = String(raw.dataBase64 ?? "");
@@ -1463,6 +1747,7 @@ export class SessionManager {
     session: BrowserSession,
     frame: BrowserFrameAuthority,
     capturedAtMonotonicMs?: number,
+    observedAt = this.now(),
   ): boolean {
     if (capturedAtMonotonicMs !== undefined && session.videoInputNotBefore !== null) {
       const exclusiveFloor = session.videoInputNotBefore + VIDEO_SOURCE_CLOCK_TOLERANCE_MS;
@@ -1475,7 +1760,7 @@ export class SessionManager {
     session.recentFrames.set(frame.frameId, {
       navigationGeneration: frame.navigationGeneration,
       viewportGeneration: frame.viewportGeneration,
-      expiresAt: this.now() + FRAME_TOKEN_TTL_MS,
+      expiresAt: observedAt + FRAME_TOKEN_TTL_MS,
       ...(capturedAtMonotonicMs === undefined
         ? {}
         : {
@@ -1491,22 +1776,51 @@ export class SessionManager {
   }
 
   /**
-   * Every discrete primitive runs inside one private runtime-owned channel. The
-   * captured document is reconciled before anything is published, native begin
-   * pins that exact attachment and document (expectedInputGeneration), and the
-   * runtime re-checks the pin before each primitive, so autonomous navigation
-   * after capture cannot reach an unobserved page. The ID is never returned and
-   * grants no agent continuation. Native end releases anything still held on the
-   * original attachment, even after navigation, revocation or a lost ACK.
-   * Nothing is retried.
+   * Retain one freshly admitted observation for this operation only. Runtime
+   * latency cannot expire it after publication; control, native document and
+   * every attachment/display fence still revoke it. No continuation is exposed.
    */
+  private discreteInputGuard(session: BrowserSession, input: SendInput): () => Promise<void> {
+    const context = {
+      viewerToken: input.viewerToken,
+      controlToken: input.controlToken,
+      expected: {
+        sessionId: session.sessionId,
+        runtimeId: session.runtimeId,
+        bridgeEpoch: session.bridgeEpoch,
+        navigationGeneration: session.navigationGeneration,
+        viewportGeneration: session.viewportGeneration,
+      },
+    };
+    const inputGeneration = session.inputGeneration;
+    const revision = session.frameRevision;
+    return async () => {
+      await this.refreshPageMetadata(session);
+      if (
+        inputGeneration !== session.inputGeneration ||
+        revision !== session.frameRevision ||
+        context.expected.navigationGeneration !== session.navigationGeneration ||
+        context.expected.viewportGeneration !== session.viewportGeneration
+      ) {
+        throw createBrowserFrameRejection("admitted-input", "context-changed");
+      }
+      this.requireMutationAccess(session, context);
+    };
+  }
+
+  /** Every discrete native primitive (text, key, press, hover, wheel) runs on one private
+   * channel pinned to the original attachment and document, which the runtime re-checks
+   * before each publication. The ID is never returned to callers and grants no agent
+   * continuation. Native end uses the original page even after navigation, revocation
+   * or a lost down ACK. */
   private async dispatchDiscreteInput(
     session: BrowserSession,
     event: BrowserInputEvent,
-    target: InputTarget,
+    assertTargetCurrent: () => Promise<void>,
   ): Promise<void> {
-    await this.refreshPageMetadata(session);
-    this.requireRecentFrame(session, target);
+    // Reconcile the captured document before anything is published, hover included, so a
+    // stalled or failed metadata read holds back every native primitive.
+    await assertTargetCurrent();
     if (session.inputGeneration === null) {
       throw new Error("Browser input identity is unavailable");
     }
@@ -1517,7 +1831,7 @@ export class SessionManager {
           gestureId,
           expectedInputGeneration: session.inputGeneration,
         });
-        await this.dispatchInput(session, event, target, gestureId);
+        await this.dispatchInput(session, event, assertTargetCurrent, gestureId);
       },
       () => this.request(session, "input.end", { gestureId }),
     );
@@ -1526,40 +1840,46 @@ export class SessionManager {
   private async dispatchInput(
     session: BrowserSession,
     event: BrowserInputEvent,
-    target: InputTarget,
+    assertTargetCurrent: () => Promise<void>,
     gestureId: string,
   ): Promise<void> {
-    const send = (operation: string, input: Record<string, JsonValue>) =>
-      this.request(session, operation, { ...input, gestureId });
-    const assertTargetCurrent = async () => {
-      await this.refreshPageMetadata(session);
-      this.requireRecentFrame(session, target);
-    };
-    // Validate the captured document before any primitive, including text and keys.
-    await assertTargetCurrent();
+    // The document was reconciled and pinned by dispatchDiscreteInput; the runtime refuses
+    // every primitive below once its attachment or document differs from that pin.
+    if (event.kind === "move") {
+      const point = mapDisplayedPoint(event.point, session.viewport);
+      await this.request(session, "mouse.move", { x: point.x, y: point.y, gestureId });
+      return;
+    }
     if (event.kind === "type") {
-      await send("text.insert", { text: event.text });
+      await this.request(session, "text.insert", {
+        text: event.text,
+        gestureId,
+      });
       return;
     }
     if (event.kind === "key") {
-      await send("key.down", { key: event.key });
-      await runWithInputCleanup(assertTargetCurrent, () => send("key.up", { key: event.key }));
-      return;
-    }
-    if (event.kind === "move") {
-      const point = mapDisplayedPoint(event.point, session.viewport);
-      await send("mouse.move", { x: point.x, y: point.y });
+      await this.request(session, "key.down", {
+        key: event.key,
+        gestureId,
+      });
+      await runWithInputCleanup(assertTargetCurrent, () =>
+        this.request(session, "key.up", {
+          key: event.key,
+          gestureId,
+        }),
+      );
       return;
     }
     if (event.kind === "scroll") {
       const point = mapDisplayedPoint(event.point, session.viewport);
-      await send("mouse.move", { x: point.x, y: point.y });
+      await this.request(session, "mouse.move", { x: point.x, y: point.y, gestureId });
       await assertTargetCurrent();
-      await send("mouse.wheel", {
+      await this.request(session, "mouse.wheel", {
         x: point.x,
         y: point.y,
         deltaX: event.deltaX,
         deltaY: event.deltaY,
+        gestureId,
       });
       return;
     }
@@ -1567,33 +1887,43 @@ export class SessionManager {
       event.kind === "drag" ? event.start : event.point,
       session.viewport,
     );
-    await send("mouse.move", { x: start.x, y: start.y });
+    await this.request(session, "mouse.move", {
+      x: start.x,
+      y: start.y,
+      gestureId,
+    });
     await assertTargetCurrent();
     const count = event.kind === "click" ? event.clickCount : 1;
     for (let clickCount = 1; clickCount <= count; clickCount += 1) {
-      await send("mouse.down", {
+      await this.request(session, "mouse.down", {
         x: start.x,
         y: start.y,
         button: event.button,
         clickCount,
+        gestureId,
       });
       await runWithInputCleanup(
         async () => {
           await assertTargetCurrent();
           if (event.kind === "drag") {
             const end = mapDisplayedPoint(event.end, session.viewport);
-            await send("mouse.move", { x: end.x, y: end.y });
+            await this.request(session, "mouse.move", {
+              x: end.x,
+              y: end.y,
+              gestureId,
+            });
             await assertTargetCurrent();
           }
         },
         async () => {
           const end =
             event.kind === "drag" ? mapDisplayedPoint(event.end, session.viewport) : start;
-          await send("mouse.up", {
+          await this.request(session, "mouse.up", {
             x: end.x,
             y: end.y,
             button: event.button,
             clickCount,
+            gestureId,
           });
         },
       );
@@ -1646,6 +1976,7 @@ export class SessionManager {
       sessionId: session.sessionId,
       workspaceId: session.workspaceId,
       runtimeId: session.runtimeId,
+      ...(session.tabId ? { tabId: session.tabId } : {}),
       runtimeCreatedAt: session.runtimeCreatedAt,
       bridgeEpoch: session.bridgeEpoch,
       status: session.error ? "error" : "ready",

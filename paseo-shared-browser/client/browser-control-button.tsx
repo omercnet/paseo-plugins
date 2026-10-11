@@ -1,7 +1,9 @@
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Pressable, Text, type TextStyle, type ViewStyle } from "react-native";
+
+import { setBrowserControlTooltip } from "./browser-control-tooltip-web";
 
 type Theme = PluginWorkspacePanelProps["theme"];
 
@@ -17,6 +19,7 @@ export interface ControlButtonStyles {
   buttonLarge: ViewStyle;
   buttonFill: ViewStyle;
   buttonPad?: ViewStyle;
+  buttonIconOnly?: ViewStyle;
   buttonText: TextStyle;
   buttonTextSelected: TextStyle;
 }
@@ -33,6 +36,7 @@ interface ControlButtonProps {
   large?: boolean;
   fill?: boolean;
   pad?: boolean;
+  iconOnly?: boolean;
   disabled?: boolean;
   onPress(): void;
 }
@@ -50,14 +54,20 @@ export function ControlButton({
   large = false,
   fill = false,
   pad = false,
+  iconOnly = false,
   disabled = false,
   onPress,
 }: ControlButtonProps) {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
   const highlighted = selected || primary;
+  const tooltipRef = useCallback(
+    (node: unknown) => setBrowserControlTooltip(node, accessibilityLabel ?? label),
+    [accessibilityLabel, label],
+  );
   return (
     <Pressable
+      ref={iconOnly ? tooltipRef : undefined}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? label}
       accessibilityState={{ disabled, selected }}
@@ -69,6 +79,7 @@ export function ControlButton({
       onPress={onPress}
       style={({ pressed }) => [
         styles.button,
+        iconOnly ? styles.buttonIconOnly : null,
         selected ? styles.buttonSelected : null,
         primary ? styles.buttonPrimary : null,
         danger ? styles.buttonDanger : null,
@@ -88,9 +99,11 @@ export function ControlButton({
           color={highlighted ? theme.colors.accentForeground : theme.colors.foregroundMuted}
         />
       ) : null}
-      <Text style={[styles.buttonText, highlighted ? styles.buttonTextSelected : null]}>
-        {label}
-      </Text>
+      {iconOnly ? null : (
+        <Text style={[styles.buttonText, highlighted ? styles.buttonTextSelected : null]}>
+          {label}
+        </Text>
+      )}
     </Pressable>
   );
 }

@@ -1,9 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { browserGestureKeySchema } from "../shared/browser";
+import { browserGestureKeySchema, MAX_BROWSER_TABS } from "../shared/browser";
 import { videoBitrateSchema, videoFrameRateSchema } from "../shared/video-settings";
-import { AgentBrowserRuntime, type BrowserViewport } from "./agent-browser-runtime";
+import {
+  AgentBrowserRuntime,
+  type AgentBrowserRuntimeOptions,
+  type BrowserViewport,
+} from "./agent-browser-runtime";
 import { resolveBrowserRuntimeRoot } from "./runtime-path";
 import type { JsonValue } from "./runtime-protocol";
 import type { RuntimeOwner } from "./supervisor";
@@ -18,6 +22,9 @@ const DEFAULT_BROWSER_URL = "https://example.com/";
 interface OwnedRuntime {
   runtimeId: string;
   runtime: AgentBrowserRuntime;
+  rootTargetId: string;
+  runtimeOptions: AgentBrowserRuntimeOptions;
+  tabs: Map<string, Promise<AgentBrowserRuntime>>;
   display: PrivateVirtualDisplay | null;
   /** Bounded, secret-free reason an opted-in private display is not in use. */
   displayNotice: string | null;
@@ -44,6 +51,34 @@ function optionalMouseModifiers(data: Record<string, JsonValue>): [] | [number] 
   return data.modifiers === undefined
     ? []
     : [browserGestureKeySchema.shape.modifiers.parse(data.modifiers)];
+}
+
+/** Give each page its own CDP attachment and media state within one Chromium profile. */
+async function tabRuntime(owned: OwnedRuntime, targetId: string): Promise<AgentBrowserRuntime> {
+  const existing = owned.tabs.get(targetId);
+  if (existing) return existing;
+
+  const attaching = (async () => {
+    const targets = await owned.runtime.targets();
+    if (!targets.some((target) => target.targetId === targetId)) {
+      throw new Error("Browser tab is no longer available");
+    }
+    const runtime = new AgentBrowserRuntime(owned.runtimeOptions);
+    try {
+      await runtime.attachTarget(targetId);
+      return runtime;
+    } catch (error) {
+      await runtime.shutdown().catch(() => undefined);
+      throw error;
+    }
+  })();
+  owned.tabs.set(targetId, attaching);
+  try {
+    return await attaching;
+  } catch (error) {
+    if (owned.tabs.get(targetId) === attaching) owned.tabs.delete(targetId);
+    throw error;
+  }
 }
 
 export async function createRuntimeOwner(
@@ -73,7 +108,7 @@ export async function createRuntimeOwner(
   return {
     async create(workspaceId) {
       const hash = createHash("sha256").update(workspaceId).digest("hex");
-      // Explicit headed mode uses the caller's real display. Hidden Linux mode
+      // Explicit headed mode uses the caller's real display. An opted-in hidden Linux mode
       // gets a private virtual mouse so native pointer media survive emulation.
       let display: PrivateVirtualDisplay | null = null;
       let displayNotice: string | null = null;
@@ -95,7 +130,7 @@ export async function createRuntimeOwner(
       }
       let runtime: AgentBrowserRuntime | null = null;
       try {
-        runtime = new AgentBrowserRuntime({
+        const runtimeOptions: AgentBrowserRuntimeOptions = {
           binaryPath,
           executablePath,
           profilePath: join(root, "profiles", hash),
@@ -105,10 +140,20 @@ export async function createRuntimeOwner(
           headed: display ? true : (options.headed ?? false),
           nativeVideo: options.nativeVideo ?? process.env.PASEO_SHARED_BROWSER_VIDEO === "1",
           ...(display ? { launchEnvironment: display.launchEnvironment } : {}),
-        });
+        };
+        runtime = new AgentBrowserRuntime(runtimeOptions);
         await runtime.launch();
         display?.assertAvailable();
-        return { runtimeId: randomUUID(), runtime, display, displayNotice };
+        const identity = await runtime.identity();
+        return {
+          runtimeId: randomUUID(),
+          runtime,
+          rootTargetId: identity.targetId,
+          runtimeOptions,
+          tabs: new Map(),
+          display,
+          displayNotice,
+        };
       } catch (error) {
         let cleanupFailure: unknown = null;
         try {
@@ -133,49 +178,85 @@ export async function createRuntimeOwner(
         input && typeof input === "object" && !Array.isArray(input)
           ? (input as Record<string, JsonValue>)
           : {};
+      if (operation === "tabs.list") {
+        return (await owned.runtime.targets()).map(({ targetId, title, url }) => ({
+          targetId,
+          title,
+          url,
+        }));
+      }
+      if (operation === "tabs.create") {
+        if ((await owned.runtime.targets()).length >= MAX_BROWSER_TABS)
+          throw new Error("Browser tab limit reached");
+        return { targetId: await owned.runtime.createTarget() };
+      }
+      if (operation === "tabs.close") {
+        const targetId = String(data.targetId);
+        const targets = await owned.runtime.targets();
+        if (!targets.some((target) => target.targetId === targetId)) {
+          throw new Error("Browser tab is no longer available");
+        }
+        if (targets.length <= 1) {
+          throw new Error("The last browser tab cannot be closed");
+        }
+        const controller = owned.tabs.get(targetId);
+        if (controller) await (await controller).shutdown();
+        if (owned.rootTargetId === targetId) {
+          const successor = targets.find((target) => target.targetId !== targetId)!;
+          await owned.runtime.selectTarget(successor.targetId, false);
+          owned.rootTargetId = successor.targetId;
+        }
+        await owned.runtime.closeTarget(targetId);
+        owned.tabs.delete(targetId);
+        return null;
+      }
+      const targetId = typeof data.targetId === "string" ? data.targetId : null;
+      // Keep the launch page on its original CDP session. A second session on
+      // the same target can reset emulation and interrupt its video source.
+      const runtime =
+        targetId && (targetId !== owned.rootTargetId || owned.tabs.has(targetId))
+          ? await tabRuntime(owned, targetId)
+          : owned.runtime;
       const gestureId = typeof data.gestureId === "string" ? data.gestureId : undefined;
       switch (operation) {
         case "identity": {
-          const identity = await owned.runtime.identity();
+          const identity = await runtime.identity();
           return {
             ...identity,
             ...(owned.displayNotice ? { displayNotice: owned.displayNotice } : {}),
           } as unknown as JsonValue;
         }
         case "state":
-          if (data.timeoutMs === undefined) return owned.runtime.state() as unknown as JsonValue;
+          if (data.timeoutMs === undefined) return runtime.state() as unknown as JsonValue;
           if (typeof data.timeoutMs !== "number")
             throw new Error("Invalid browser metadata timeout");
-          return owned.runtime.state({ timeoutMs: data.timeoutMs }) as unknown as JsonValue;
+          return runtime.state({ timeoutMs: data.timeoutMs }) as unknown as JsonValue;
         case "navigate":
-          await owned.runtime.navigate(String(data.url));
+          await runtime.navigate(String(data.url));
           return null;
         case "back":
-          await owned.runtime.back();
+          await runtime.back();
           return null;
         case "forward":
-          await owned.runtime.forward();
+          await runtime.forward();
           return null;
         case "reload":
-          await owned.runtime.reload();
+          await runtime.reload();
           return null;
         case "emulate":
-          await owned.runtime.emulate(data as unknown as BrowserViewport);
+          await runtime.emulate(data as unknown as BrowserViewport);
           return null;
         case "capture.density":
-          await owned.runtime.setCaptureDensity(
-            Number(data.density),
-            Number(data.deviceScaleFactor),
-          );
+          await runtime.setCaptureDensity(Number(data.density), Number(data.deviceScaleFactor));
           return null;
         case "screencast.start":
-          await owned.runtime.startScreencast(Number(data.quality));
+          await runtime.startScreencast(Number(data.quality));
           return null;
         case "screencast.stop":
-          await owned.runtime.stopScreencast();
+          await runtime.stopScreencast();
           return null;
         case "video.read":
-          return (await owned.runtime.readVideo({
+          return (await runtime.readVideo({
             quality: data.quality === "low" || data.quality === "medium" ? data.quality : "high",
             streamId: typeof data.streamId === "string" ? data.streamId : null,
             requestKeyFrame: data.requestKeyFrame === true,
@@ -187,19 +268,19 @@ export async function createRuntimeOwner(
             waitMs: Number(data.waitMs ?? 250),
           })) as unknown as JsonValue;
         case "video.stop":
-          await owned.runtime.stopVideo();
+          await runtime.stopVideo();
           return null;
         case "video.invalidate":
-          owned.runtime.invalidateQueuedVideoFrames();
+          runtime.invalidateQueuedVideoFrames();
           return null;
         case "frame":
-          return (await owned.runtime.frame(
+          return (await runtime.frame(
             Number(data.maxBytes),
             Number(data.quality),
             Number(data.waitMs),
           )) as unknown as JsonValue;
         case "mouse.move":
-          await owned.runtime.mouseMove(
+          await runtime.mouseMove(
             Number(data.x),
             Number(data.y),
             gestureId,
@@ -207,7 +288,7 @@ export async function createRuntimeOwner(
           );
           return null;
         case "mouse.down":
-          await owned.runtime.mouseDown(
+          await runtime.mouseDown(
             Number(data.x),
             Number(data.y),
             String(data.button) as "left" | "middle" | "right",
@@ -217,7 +298,7 @@ export async function createRuntimeOwner(
           );
           return null;
         case "mouse.up":
-          await owned.runtime.mouseUp(
+          await runtime.mouseUp(
             Number(data.x),
             Number(data.y),
             String(data.button) as "left" | "middle" | "right",
@@ -227,7 +308,7 @@ export async function createRuntimeOwner(
           );
           return null;
         case "mouse.wheel":
-          await owned.runtime.wheel(
+          await runtime.wheel(
             Number(data.x),
             Number(data.y),
             Number(data.deltaX),
@@ -238,26 +319,26 @@ export async function createRuntimeOwner(
           return null;
         case "mouse.leave":
           if (!gestureId) throw new Error("Gesture identity is required");
-          await owned.runtime.mouseLeave(gestureId);
+          await runtime.mouseLeave(gestureId);
           return null;
         case "input.begin":
           if (!gestureId) throw new Error("Gesture identity is required");
           if (typeof data.expectedInputGeneration !== "string") {
             throw new Error("Expected native input generation is required");
           }
-          await owned.runtime.beginLiveInput(gestureId, data.expectedInputGeneration);
+          await runtime.beginLiveInput(gestureId, data.expectedInputGeneration);
           return null;
         case "input.check":
           if (!gestureId) throw new Error("Gesture identity is required");
-          await owned.runtime.assertLiveInput(gestureId);
+          await runtime.assertLiveInput(gestureId);
           return null;
         case "input.end":
           if (!gestureId) throw new Error("Gesture identity is required");
-          await owned.runtime.endLiveInput(gestureId);
+          await runtime.endLiveInput(gestureId);
           return null;
         case "cursor":
           if (!gestureId) throw new Error("Gesture identity is required");
-          return owned.runtime.cursorAt(Number(data.x), Number(data.y), gestureId);
+          return runtime.cursorAt(Number(data.x), Number(data.y), gestureId);
         case "touch": {
           if (!gestureId || !Array.isArray(data.points) || data.points.length > 5)
             throw new Error("Invalid touch input");
@@ -290,12 +371,12 @@ export async function createRuntimeOwner(
                 : type === "end"
                   ? "touchEnd"
                   : "touchCancel";
-          await owned.runtime.touch(nativeType, points, gestureId);
+          await runtime.touch(nativeType, points, gestureId);
           return null;
         }
         case "input.key":
           if (!gestureId) throw new Error("Gesture identity is required");
-          await owned.runtime.dispatchKey(browserGestureKeySchema.parse(data.event), gestureId);
+          await runtime.dispatchKey(browserGestureKeySchema.parse(data.event), gestureId);
           return null;
         case "input.text":
           if (
@@ -306,16 +387,16 @@ export async function createRuntimeOwner(
           ) {
             throw new Error("Invalid committed text input");
           }
-          await owned.runtime.insertText(data.text, gestureId);
+          await runtime.insertText(data.text, gestureId);
           return null;
         case "text.insert":
-          await owned.runtime.insertText(String(data.text), gestureId);
+          await runtime.insertText(String(data.text), gestureId);
           return null;
         case "key.down":
-          await owned.runtime.keyDown(String(data.key), String(data.key), gestureId);
+          await runtime.keyDown(String(data.key), String(data.key), gestureId);
           return null;
         case "key.up":
-          await owned.runtime.keyUp(String(data.key), String(data.key), gestureId);
+          await runtime.keyUp(String(data.key), String(data.key), gestureId);
           return null;
         default:
           throw new Error(`Unknown browser runtime operation: ${operation}`);
@@ -323,6 +404,11 @@ export async function createRuntimeOwner(
     },
     async stop(owned) {
       try {
+        await Promise.allSettled(
+          [...owned.tabs.values()].map(async (controller) =>
+            (await controller).shutdown().catch(() => undefined),
+          ),
+        );
         await owned.runtime.shutdown();
       } finally {
         await owned.display?.stop();

@@ -38,6 +38,7 @@ it.each([-1, 0, 40])(
           createdAt: now,
         }),
         archiveWorkspace: async () => {},
+        closeWorkspace: async () => {},
         disconnect() {},
         requestWorkspace: async (_workspace, operation) => {
           calls.push(operation);

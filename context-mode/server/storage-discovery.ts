@@ -3,6 +3,7 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { AnalyticsWarning } from "../shared/analytics";
+import { contextModeStorageRootFor, type ProviderOverrides, resolveProvider } from "./integration";
 
 const MAX_DATABASES_PER_DIRECTORY = 512;
 const MAX_LOCAL_DISCOVERY_WARNINGS = 10;
@@ -23,6 +24,8 @@ export interface StorageDiscoveryOptions {
   home?: string;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
+  /** Paseo `agents.providers`; each one contributes the storage its own env resolves to. */
+  providers?: ProviderOverrides;
 }
 
 interface ProviderLocation {
@@ -54,6 +57,7 @@ function providerLocations(
   env: NodeJS.ProcessEnv,
   warnings: AnalyticsWarning[],
   platform: NodeJS.Platform,
+  providers: ProviderOverrides,
 ): ProviderLocation[] {
   const configuredRoot = configuredDirectory(
     env.CONTEXT_MODE_DIR,
@@ -82,6 +86,14 @@ function providerLocations(
       : (configuredDirectory(env.XDG_CONFIG_HOME, home, "XDG_CONFIG_HOME", warnings) ??
         join(home, ".config"));
 
+  const configured = Object.keys(providers).flatMap((id) => {
+    const { base, policy, env: providerEnv } = resolveProvider(id, providers);
+    const root = policy
+      ? contextModeStorageRootFor(base, { home, env: { ...env, ...providerEnv } })
+      : null;
+    return root ? [{ provider: id, root }] : [];
+  });
+
   return [
     ...(configuredRoot ? [{ provider: "custom", root: configuredRoot }] : []),
     ...(configuredDataRoot
@@ -106,6 +118,7 @@ function providerLocations(
       provider: "jetbrains-copilot",
       root: join(home, ".config", "JetBrains", "context-mode"),
     },
+    ...configured,
   ];
 }
 
@@ -132,6 +145,7 @@ export async function discoverContextModeStorageRoots(
     env,
     warnings,
     options.platform ?? process.platform,
+    options.providers ?? {},
   )) {
     try {
       const info = await lstat(location.root);

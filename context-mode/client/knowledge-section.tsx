@@ -13,7 +13,6 @@ import {
   type ViewStyle,
 } from "react-native";
 import {
-  type ContextModeProvider,
   fetchAndIndexContextMode,
   indexContextModePath,
   type KnowledgeToolResult,
@@ -22,22 +21,29 @@ import {
 } from "../shared/knowledge";
 import type { KnowledgeScope } from "./screen-scope";
 
-const PROVIDERS = [
-  { value: "claude", label: "Claude" },
-  { value: "codex", label: "Codex" },
-  { value: "copilot", label: "Copilot" },
-  { value: "cursor", label: "Cursor" },
-  { value: "opencode", label: "OpenCode" },
-  { value: "pi", label: "Pi" },
-  { value: "omp", label: "OMP" },
-  { value: "omp-plugin", label: "OMP plugin" },
-] as const;
+const PROVIDER_LABELS: Readonly<Record<string, string>> = {
+  claude: "Claude",
+  codex: "Codex",
+  copilot: "Copilot",
+  cursor: "Cursor",
+  opencode: "OpenCode",
+  pi: "Pi",
+  omp: "OMP",
+  "omp-plugin": "OMP plugin",
+};
+
+/** Used until the integration audit reports the configured providers. */
+export const BUILTIN_KNOWLEDGE_PROVIDERS = Object.keys(PROVIDER_LABELS);
+
+const providerLabel = (id: string) => PROVIDER_LABELS[id] ?? id;
 
 const INSIGHT_URL = "https://context-mode.com/insight";
-type Provider = ContextModeProvider;
+type Provider = string;
 type PurgeScope = "project" | "session";
 export type KnowledgeSectionProps = Pick<PluginSurfaceProps, "theme" | "layout" | "host"> & {
   initialScope?: KnowledgeScope;
+  /** Paseo provider ids with a Context Mode store: the built-ins plus every configured provider. */
+  providers: readonly string[];
 };
 
 interface KnowledgeStyles {
@@ -238,7 +244,13 @@ function ResultPanel({
   );
 }
 
-export function KnowledgeSection({ theme, layout, host, initialScope }: KnowledgeSectionProps) {
+export function KnowledgeSection({
+  theme,
+  layout,
+  host,
+  initialScope,
+  providers,
+}: KnowledgeSectionProps) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
   const searchKnowledge = useRpc(searchContextModeKnowledge);
   const indexPath = useRpc(indexContextModePath);
@@ -250,8 +262,15 @@ export function KnowledgeSection({ theme, layout, host, initialScope }: Knowledg
       queryKey: ["context-mode", host.id, "analytics-dashboard"],
     });
 
+  const scopedProvider = initialScope?.provider ?? null;
+  const scopedProviderKnown = scopedProvider !== null && providers.includes(scopedProvider);
+  const note =
+    initialScope?.note ??
+    (scopedProvider && !scopedProviderKnown
+      ? `Provider ${scopedProvider} has no Context Mode store on this host. Select one explicitly.`
+      : undefined);
   const [provider, setProvider] = useState<Provider | null>(
-    initialScope ? initialScope.provider : "claude",
+    initialScope ? (scopedProviderKnown ? scopedProvider : null) : "claude",
   );
   const [projectPath, setProjectPath] = useState(initialScope?.projectPath ?? "");
   const [query, setQuery] = useState("");
@@ -367,18 +386,18 @@ export function KnowledgeSection({ theme, layout, host, initialScope }: Knowledg
 
       <View style={styles.card}>
         <Text style={styles.fieldLabel}>Provider store</Text>
-        {initialScope?.note ? <Text style={styles.scopeNote}>{initialScope.note}</Text> : null}
+        {note ? <Text style={styles.scopeNote}>{note}</Text> : null}
         <View accessibilityRole="radiogroup" style={styles.choiceRow}>
-          {PROVIDERS.map((option) => {
-            const selected = provider === option.value;
+          {providers.map((id) => {
+            const selected = provider === id;
             return (
               <Pressable
-                key={option.value}
-                accessibilityLabel={`${option.label} provider store`}
+                key={id}
+                accessibilityLabel={`${providerLabel(id)} provider store`}
                 disabled={busy}
                 accessibilityRole="radio"
                 accessibilityState={{ checked: selected, disabled: busy }}
-                onPress={() => changeProvider(option.value)}
+                onPress={() => changeProvider(id)}
                 style={[
                   styles.choice,
                   selected ? styles.choiceSelected : null,
@@ -386,7 +405,7 @@ export function KnowledgeSection({ theme, layout, host, initialScope }: Knowledg
                 ]}
               >
                 <Text style={[styles.choiceText, selected ? styles.choiceTextSelected : null]}>
-                  {option.label}
+                  {providerLabel(id)}
                 </Text>
               </Pressable>
             );
@@ -406,7 +425,7 @@ export function KnowledgeSection({ theme, layout, host, initialScope }: Knowledg
         />
         <Text accessibilityLiveRegion="polite" style={styles.scopeNote}>
           {provider && projectPath.trim()
-            ? `Current destination: ${PROVIDERS.find((item) => item.value === provider)?.label} storage for ${projectPath.trim()}.`
+            ? `Current destination: ${providerLabel(provider)} storage for ${projectPath.trim()}.`
             : "Select a provider and absolute project path. No storage destination is selected by default."}
         </Text>
       </View>

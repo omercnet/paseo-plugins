@@ -110,7 +110,13 @@ comparison loop is used.
 
 Capture density is independently controller-authorized at 1x or 2x. It preserves
 CSS dimensions, input mode, user agent and preset identity. Physical dimensions
-must each remain at most 2560, so 2x is unavailable above 1280 on either CSS axis.
+must each remain at most 3840, so 2x is unavailable above 1920 on either CSS axis.
+Each viewer panel defaults to Auto, choosing the smallest supported density for
+its displayed frame size and screen pixel ratio. Fit uses the contained frame;
+Actual uses CSS dimensions. Manual selections disable automatic adjustment for
+the panel. Adjustments are debounced, require visible/idle controller authority,
+and pause on failure. Fill viewport carries the chosen density in its resize RPC
+so growing beyond the 2x limit can reduce density and resize in one transition.
 Rendering DPR is raised to at least the selected density while a genuine phone
 DPR is retained. Explicit preset changes retain their established density reset
 behavior; mode-only changes retain it. Returned state reports actual density.

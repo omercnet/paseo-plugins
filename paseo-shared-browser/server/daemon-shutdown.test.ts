@@ -9,7 +9,7 @@ import { RUNTIME_OWNER_VARIABLE } from "./process-identity";
 
 const probe = vi.hoisted(() => ({
   unreadable: false,
-  /** Simulated /proc ownership for the OS-independent state-machine tests: pid -> start ticks. */
+  /** Simulated /proc ownership for platforms without it: pid -> start ticks. */
   simulated: null as Map<number, string> | null,
 }));
 vi.mock("./process-identity", async (importOriginal) => {
@@ -45,7 +45,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
       cli.closes += 1;
       cli.onClose?.();
     }
-    callback(null, { stdout: args.includes("--version") ? "0.38.2\n" : "{}\n" });
+    callback(null, { stdout: args.includes("--version") ? "0.37.1\n" : "{}\n" });
   },
 }));
 
@@ -136,10 +136,14 @@ describe.skipIf(process.platform !== "linux")("owned daemon shutdown", () => {
     const f = await fixture(200);
     const daemon = await ownChild(f.native.ownerNonce);
     await f.recordPid(daemon.pid as number);
+    const kill = vi.spyOn(process, "kill");
     await f.runtime.shutdown();
     // exit was confirmed before shutdown returned; the OS only has to deliver the status
     await exited(daemon);
-    expect(daemon.signalCode).toBe("SIGKILL");
+    // Portable contract (signalCode is POSIX-only): the runtime asked for SIGKILL of the
+    // owned pid, and that process is observably gone.
+    expect(kill).toHaveBeenCalledWith(daemon.pid, "SIGKILL");
+    expect(daemon.pid && alive(daemon.pid)).toBe(false);
     expect(cli.closes).toBe(1);
     await expect(readFile(join(f.ipc, "owned.pid"))).rejects.toThrow();
   });
@@ -228,7 +232,6 @@ describe.each(ownershipModes)(
       const f = await fixture(150);
       const daemon = await ownChild(f.native.ownerNonce);
       own(daemon);
-      own(daemon);
       f.native.daemonLaunched = true; // launched, but the PID file is unreadable at capture
       await f.native.captureDaemon();
       expect(f.native.daemon).toBeNull();
@@ -250,7 +253,6 @@ describe.each(ownershipModes)(
     it("does not treat a later unreadable identity as exit and never signals on it", async () => {
       const f = await fixture(150);
       const daemon = await ownChild(f.native.ownerNonce);
-      own(daemon);
       own(daemon);
       await f.recordPid(daemon.pid as number);
       expect(f.native.daemon?.identity).toBeTruthy();

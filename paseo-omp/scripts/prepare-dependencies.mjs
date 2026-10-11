@@ -42,7 +42,7 @@ export function prepareDependencies(root = projectRoot, execute = execFileSync) 
   stageManifest(root, catalog, () => {
     execute(
       process.platform === "win32" ? "npm.cmd" : "npm",
-      ["install", "--omit=dev", "--ignore-scripts", "--no-package-lock", "--workspaces=false"],
+      ["ci", "--omit=dev", "--ignore-scripts", "--workspaces=false"],
       {
         cwd: root,
         stdio: "inherit",

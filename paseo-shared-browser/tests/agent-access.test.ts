@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CdpUnknownOutcomeError } from "../server/cdp";
 import {
   type AgentBrowserOperation,
@@ -498,6 +498,79 @@ describe("agent shared-browser authorization", () => {
     }
   });
 
+  for (const rejection of ["expired", "context-changed"] as const) {
+    it(`redacts ${rejection} diagnostics through the actual agent socket and retains native cleanup`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "shared-browser-frame-rejection-"));
+      const paths = resolveSupervisorPaths(root);
+      let clock = 1_000;
+      const clockSpy = vi.spyOn(Date, "now").mockImplementation(() => clock);
+      const owner = new AgentRuntimeOwner();
+      const calls: string[] = [];
+      let generation = "0:0";
+      const original = owner.request.bind(owner);
+      owner.request = async (runtime, operation, input) => {
+        calls.push(operation);
+        const result = await original(runtime, operation, input);
+        if (operation === "key.down" && rejection === "context-changed") generation = "0:1";
+        if (operation === "state")
+          return { ...(result as Record<string, JsonValue>), inputGeneration: generation };
+        return result;
+      };
+      const server = await startSupervisorServer(owner, paths);
+      const admin = new SupervisorClient({ bridgeId: "private-plugin-bridge", paths });
+      const agentTicket = ticket("private-agent-ticket");
+      const agent = new AgentSupervisorClient({ ticket: agentTicket, paths });
+      try {
+        await admin.connect();
+        await admin.issueAgentTicket(agentTicket);
+        await admin.bindAgentTicket(agentTicket, "private-agent", "private-workspace");
+        await agent.open();
+        await agent.request("acquire-control", {});
+        const captured = await agent.request("capture", {});
+        if (rejection === "expired") clock += 5_000;
+        let failure: unknown;
+        try {
+          await agent.request("input", { event: { kind: "key", key: "End" } });
+        } catch (error) {
+          failure = error;
+        }
+        const message =
+          rejection === "expired"
+            ? "Browser frame is stale (stage=admission; reason=expired; ageMs=5000)"
+            : "Browser frame is stale (stage=admitted-input; reason=context-changed)";
+        expect(failure).toMatchObject({ code: "RUNTIME_FAILURE", message });
+        const serialized = JSON.stringify(failure);
+        expect(serialized).not.toMatch(
+          /private-|https:|runtime_|viewerToken|controlToken|frameId|sessionId/,
+        );
+        expect(serialized).not.toContain(agentTicket);
+        const authority = captured as unknown as {
+          state: BrowserState;
+          frame: { frameId: string };
+        };
+        for (const value of [
+          authority.state.sessionId,
+          authority.state.runtimeId,
+          authority.frame.frameId,
+        ]) {
+          expect(serialized).not.toContain(value);
+        }
+        const publications = calls.filter((operation) =>
+          /^(?:mouse\.|key\.|text\.|input\.)/.test(operation),
+        );
+        expect(publications).toEqual(
+          rejection === "expired" ? [] : ["input.begin", "key.down", "key.up", "input.end"],
+        );
+      } finally {
+        agent.disconnect();
+        admin.disconnect();
+        await server.close();
+        clockSpy.mockRestore();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("reclaims the cached plugin bridge after its socket closes", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-reconnect-"));
     const paths = resolveSupervisorPaths(root);
@@ -553,6 +626,181 @@ describe("agent shared-browser authorization", () => {
     });
     expect(owner.states.get("workspace-one")?.url).toBe("https://agent.example/");
     expect(owner.states.get("workspace-two")?.url).toBe("https://workspace-two.example/");
+  });
+
+  it("keeps an agent's selected tab and control when a human changes another tab", async () => {
+    const owner = new AgentRuntimeOwner();
+    const originalRequest = owner.request.bind(owner);
+    let secondUrl = "https://second.example/";
+    let hasSecondTab = false;
+    owner.request = async (runtime, operation, input) => {
+      const data = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+      if (operation === "tabs.create") {
+        hasSecondTab = true;
+        return { targetId: "page-two" };
+      }
+      if (operation === "tabs.close") {
+        hasSecondTab = false;
+        return null;
+      }
+      if (operation === "tabs.list") {
+        return [
+          { targetId: "page-one", title: "First", url: "https://first.example/" },
+          ...(hasSecondTab ? [{ targetId: "page-two", title: "Second", url: secondUrl }] : []),
+        ];
+      }
+      if (operation === "identity") {
+        return { userAgent: "Fake Chromium", targetId: data.targetId ?? "page-one" };
+      }
+      if (data.targetId === "page-two") {
+        if (operation === "state") {
+          return {
+            url: secondUrl,
+            title: "Second",
+            canGoBack: false,
+            canGoForward: false,
+            inputGeneration: "0:0",
+          };
+        }
+        if (operation === "navigate") {
+          secondUrl = String(data.url);
+          return null;
+        }
+        if (operation === "emulate") return null;
+      }
+      return originalRequest(runtime, operation, input);
+    };
+    const supervisor = new RuntimeSupervisor({ owner, maxWorkspaces: 1 });
+    supervisors.push(supervisor);
+    const bridge = supervisor.claimBridge("plugin-bridge");
+    const agentTicket = ticket("independent-tab");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "status");
+    await agentRequest(supervisor, agentTicket, "acquire-control");
+
+    const human = await browserRequest<{ viewerToken: string }>(supervisor, bridge, "attach", {
+      workspaceId: "workspace-one",
+      viewerLabel: "Human",
+    });
+    const created = await browserRequest<{ tabId: string }>(supervisor, bridge, "tabs.create", {
+      viewerToken: human.viewerToken,
+    });
+    const humanTab = await browserRequest<{ viewerToken: string }>(supervisor, bridge, "attach", {
+      workspaceId: "workspace-one",
+      viewerLabel: "Human second tab",
+      tabId: created.tabId,
+    });
+    const humanControl = await browserRequest<{ controlToken: string; state: BrowserState }>(
+      supervisor,
+      bridge,
+      "acquire-control",
+      { viewerToken: humanTab.viewerToken, takeover: false },
+    );
+    await browserRequest(supervisor, bridge, "navigate", {
+      viewerToken: humanTab.viewerToken,
+      controlToken: humanControl.controlToken,
+      expected: {
+        sessionId: humanControl.state.sessionId,
+        navigationGeneration: humanControl.state.navigationGeneration,
+        viewportGeneration: humanControl.state.viewportGeneration,
+      },
+      action: { kind: "goto", url: "https://changed-second.example/" },
+    });
+
+    await expect(
+      agentRequest<{ state: BrowserState }>(supervisor, agentTicket, "navigate", {
+        action: { kind: "goto", url: "https://agent-first.example/" },
+      }),
+    ).resolves.toMatchObject({ state: { tabId: "page-one", controller: "self" } });
+    expect(owner.states.get("workspace-one")?.url).toBe("https://agent-first.example/");
+    expect(secondUrl).toBe("https://changed-second.example/");
+
+    await browserRequest(supervisor, bridge, "release-control", {
+      viewerToken: humanTab.viewerToken,
+      controlToken: humanControl.controlToken,
+    });
+    const selected = await agentRequest<{ state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "tabs.select",
+      { tabId: created.tabId },
+    );
+    expect(selected.state.tabId).toBe("page-two");
+    const agentControl = await agentRequest<{ state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "acquire-control",
+    );
+    expect(agentControl.state.controller).toBe("self");
+    const humanFirstControl = await browserRequest<{ state: BrowserState }>(
+      supervisor,
+      bridge,
+      "acquire-control",
+      { viewerToken: human.viewerToken, takeover: false },
+    );
+    expect(humanFirstControl.state.controller).toBe("self");
+
+    await agentRequest(supervisor, agentTicket, "navigate", {
+      action: { kind: "goto", url: "https://agent-second.example/" },
+    });
+    expect(secondUrl).toBe("https://agent-second.example/");
+    expect(owner.states.get("workspace-one")?.url).toBe("https://agent-first.example/");
+    expect(
+      (await agentRequest<{ selectedTabId: string }>(supervisor, agentTicket, "tabs.list"))
+        .selectedTabId,
+    ).toBe("page-two");
+
+    const closed = await agentRequest<{ state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "tabs.close",
+    );
+    expect(closed.state.tabId).toBe("page-one");
+    expect(
+      (
+        await browserRequest<{ state: BrowserState }>(supervisor, bridge, "status", {
+          viewerToken: human.viewerToken,
+        })
+      ).state.controller,
+    ).toBe("self");
+  });
+
+  it("keeps an agent ticket bound across human close and explicit reopen", async () => {
+    const { supervisor, bridge } = createHarness();
+    const agentTicket = ticket("closed-and-reopened");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "status");
+
+    const human = await browserRequest<{ viewerToken: string; state: BrowserState }>(
+      supervisor,
+      bridge,
+      "attach",
+      { workspaceId: "workspace-one", viewerLabel: "Human" },
+    );
+    const control = await browserRequest<{ controlToken: string }>(
+      supervisor,
+      bridge,
+      "acquire-control",
+      { viewerToken: human.viewerToken, takeover: false },
+    );
+    const runtimeId = human.state.runtimeId;
+    if (!runtimeId) throw new Error("Attached browser has no runtime identity");
+    await browserRequest(supervisor, bridge, "close", {
+      viewerToken: human.viewerToken,
+      controlToken: control.controlToken,
+      sessionId: human.state.sessionId,
+      runtimeId,
+    });
+
+    await expect(agentRequest(supervisor, agentTicket, "status")).rejects.toThrow(
+      "Browser is closed",
+    );
+    await browserRequest(supervisor, bridge, "reopen", { workspaceId: "workspace-one" });
+    await expect(agentRequest(supervisor, agentTicket, "status")).resolves.toMatchObject({
+      state: { workspaceId: "workspace-one" },
+    });
   });
 
   it("fails closed for null, unknown, history-only, unbound, and revoked credentials", async () => {
@@ -767,5 +1015,61 @@ describe("agent shared-browser authorization", () => {
     await expect(agentRequest(supervisor, agentTicket, "input", click)).rejects.toThrow(
       "Capture a frame before sending input",
     );
+  });
+
+  it("replaces a lapsed agent viewer before creating a tab, creating exactly one page", async () => {
+    let clock = 1_000;
+    const { owner, supervisor, bridge } = createHarness(() => clock);
+    const originalRequest = owner.request.bind(owner);
+    let creates = 0;
+    owner.request = async (runtime, operation, input) => {
+      const data = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+      if (operation === "tabs.create") {
+        creates += 1;
+        return { targetId: "page-two" };
+      }
+      if (operation === "tabs.list") {
+        return [
+          { targetId: "page-one", title: "First", url: "https://first.example/" },
+          ...(creates
+            ? [{ targetId: "page-two", title: "Second", url: "https://second.example/" }]
+            : []),
+        ];
+      }
+      if (operation === "identity") {
+        return { userAgent: "Fake Chromium", targetId: data.targetId ?? "page-one" };
+      }
+      if (data.targetId === "page-two") {
+        if (operation === "state") {
+          return {
+            url: "https://second.example/",
+            title: "Second",
+            canGoBack: false,
+            canGoForward: false,
+            inputGeneration: "0:0",
+          };
+        }
+        if (operation === "emulate") return null;
+      }
+      return originalRequest(runtime, operation, input);
+    };
+    const agentTicket = ticket("lapsed-viewer-tab");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await agentRequest(supervisor, agentTicket, "status");
+
+    // Beyond the 45 s viewer lease, within each bridge lease.
+    for (let step = 0; step < 3; step += 1) {
+      clock += 20_000;
+      supervisor.heartbeat(bridge.bridgeId, bridge.epoch);
+    }
+    const result = await agentRequest<{ tabId: string; state: BrowserState }>(
+      supervisor,
+      agentTicket,
+      "tabs.create",
+    );
+    expect(result.tabId).toBe("page-two");
+    expect(result.state.tabId).toBe("page-two");
+    expect(creates).toBe(1);
   });
 });

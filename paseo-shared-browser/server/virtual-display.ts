@@ -150,7 +150,7 @@ async function stopDisplayChild(child: ChildProcess): Promise<void> {
  * Starts Xvfb only for Linux hidden browsers when the existing executable exists.
  * Absence returns null. Present-but-broken Xvfb fails closed with bounded cleanup.
  * No process.env mutation, network listener, host display, or dependency install.
- * One 2560x2560x24 framebuffer is bounded at about 25 MiB before server overhead;
+ * One 3840x3840x24 framebuffer is bounded at about 57 MiB before server overhead;
  * Chromium CPU/memory costs remain those of the existing browser runtime.
  */
 export async function createPrivateVirtualDisplay(

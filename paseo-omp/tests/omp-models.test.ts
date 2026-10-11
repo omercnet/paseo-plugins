@@ -76,9 +76,12 @@ describe("OMP model catalog contract", () => {
       input: [],
       thinkingLevels: [],
     };
-    expect(OmpModelListResultSchema.safeParse({ models: Array(257).fill(candidate) }).success).toBe(
-      false,
-    );
+    expect(
+      OmpModelListResultSchema.safeParse({ models: Array(4_096).fill(candidate) }).success,
+    ).toBe(true);
+    expect(
+      OmpModelListResultSchema.safeParse({ models: Array(4_097).fill(candidate) }).success,
+    ).toBe(false);
     expect(
       OmpModelListResultSchema.safeParse({
         models: [{ ...candidate, provider: "p".repeat(257) }],
@@ -112,6 +115,19 @@ describe("resolveListOmpModels", () => {
     expect(harness.starts[0]).toMatchObject({ cwd: homedir(), noSession: true });
     expect(harness.starts[0]?.environment).toBe(process.env);
     expect(harness.closeCalls).toBe(1);
+  });
+
+  test("lists a registry-scale catalog that exceeds the former 256-model result limit", async () => {
+    const models = Array.from({ length: 1_500 }, (_, index) => ({
+      ...MODEL,
+      id: `model-${index}`,
+    }));
+    const harness = createRuntimeHarness({ models });
+
+    const result = await resolveListOmpModels({}, harness.runtime);
+
+    expect(result.models).toHaveLength(1_500);
+    expect(OmpModelListResultSchema.parse(result)).toEqual(result);
   });
 
   test("passes a named profile through request-local environment without mutating process.env", async () => {

@@ -848,13 +848,13 @@ describe("OMP direct provider", () => {
     await session.close();
   });
 
-  test("rejects model 257 during initial session open", async () => {
+  test("rejects model 4097 during initial session open", async () => {
     const hiddenModel: OmpModel = { provider: "future-provider", id: "hidden-model" };
     const runtime = new FakeOmpRuntime();
     runtime.availableModels = [
       MODEL,
       ...Array.from(
-        { length: 255 },
+        { length: 4095 },
         (_, index): OmpModel => ({ provider: "provider", id: `model-${index}` }),
       ),
       hiddenModel,
@@ -890,7 +890,7 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("rebuilds a bounded public catalog when fallback selects model 257", async () => {
+  test("rebuilds a bounded public catalog when fallback selects model 4097", async () => {
     const runtime = new FakeOmpRuntime();
     const fallbackModel: OmpModel = {
       provider: "future-provider",
@@ -901,7 +901,7 @@ describe("OMP direct provider", () => {
     runtime.availableModels = [
       MODEL,
       ...Array.from(
-        { length: 255 },
+        { length: 4095 },
         (_, index): OmpModel => ({ provider: "provider", id: `model-${index}` }),
       ),
       fallbackModel,
@@ -920,7 +920,7 @@ describe("OMP direct provider", () => {
 
     const initialConfig = events.findLast((event) => event.type === "session.config");
     if (initialConfig?.type !== "session.config") throw new Error("Expected session config");
-    expect(initialConfig.config.models).toHaveLength(256);
+    expect(initialConfig.config.models).toHaveLength(4096);
     expect(
       initialConfig.config.models.some((model) => model.id === ompModelId(fallbackModel)),
     ).toBe(false);
@@ -946,7 +946,7 @@ describe("OMP direct provider", () => {
     session.emit({ type: "retry_fallback_succeeded", model: "future", role: "default" });
     const fallbackConfig = await refreshed;
     if (fallbackConfig.type !== "session.config") throw new Error("Expected fallback config");
-    expect(fallbackConfig.config.models).toHaveLength(256);
+    expect(fallbackConfig.config.models).toHaveLength(4096);
     expect(
       fallbackConfig.config.models.some((model) => model.id === ompModelId(fallbackModel)),
     ).toBe(true);
@@ -958,7 +958,7 @@ describe("OMP direct provider", () => {
       await startPrompt(
         connection,
         events,
-        "fallback-257-recovery",
+        "fallback-4097-recovery",
         "continue",
         "oversized-catalog-session",
       ),
@@ -972,7 +972,7 @@ describe("OMP direct provider", () => {
     );
     const recoveredConfig = events.findLast((event) => event.type === "session.config");
     if (recoveredConfig?.type !== "session.config") throw new Error("Expected recovered config");
-    expect(recoveredConfig.config.models).toHaveLength(256);
+    expect(recoveredConfig.config.models).toHaveLength(4096);
     expect(
       recoveredConfig.config.models.some((model) => model.id === ompModelId(fallbackModel)),
     ).toBe(true);

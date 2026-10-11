@@ -180,8 +180,6 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
       viewport: () => current.current.viewport,
       enqueue(event) {
         clearIdle();
-        if (event.kind === "down" || (event.kind === "touch" && event.type === "start")) {
-        }
         // Queue snapshots the actual decoded admission before a local epoch bump.
         // Already admitted edges continue on their opaque channel independently.
         const accepted = queue.enqueue(event);

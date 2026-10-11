@@ -46,7 +46,6 @@ interface RuntimeControl {
   screencastActive: boolean;
   screencastFrame: unknown;
   attachmentGeneration: number;
-  documentGeneration: number;
   assertVersion(): Promise<void>;
   connectCdp(targetId?: string): Promise<void>;
   requirePage(): Promise<CdpSession>;
@@ -64,6 +63,14 @@ const pixel: DeviceEmulation = {
   screenHeight: 900,
   userAgent: "fixture-mobile-agent",
   platform: "Android",
+};
+
+const generation = (runtime: AgentBrowserRuntime) => {
+  const { attachmentGeneration, documentGeneration } = runtime as unknown as {
+    attachmentGeneration: number;
+    documentGeneration: number;
+  };
+  return `${attachmentGeneration}:${documentGeneration}`;
 };
 
 function fixture() {
@@ -90,10 +97,7 @@ function fixture() {
 
 it("never releases input held on an older attachment onto a later one during screencast retry", async () => {
   const { runtime, connection, control } = fixture();
-  await runtime.beginLiveInput(
-    "old-channel",
-    `${control.attachmentGeneration}:${control.documentGeneration}`,
-  );
+  await runtime.beginLiveInput("old-channel", generation(runtime));
   await runtime.mouseDown(10, 20, "left", 1, "old-channel");
   // Real reconnect + target publication; only transport setup is replaced.
   const reconnected = new ConnectionFixture();
@@ -111,10 +115,7 @@ it("never releases input held on an older attachment onto a later one during scr
 
 it("still releases held input on its own attachment before reattach detaches it", async () => {
   const { runtime, connection, control, previous } = fixture();
-  await runtime.beginLiveInput(
-    "channel",
-    `${control.attachmentGeneration}:${control.documentGeneration}`,
-  );
+  await runtime.beginLiveInput("channel", generation(runtime));
   await runtime.mouseDown(10, 20, "left", 1, "channel");
   await control.reattachPageForScreencast(previous);
   const order = connection.calls.map((call) => call.params.type ?? call.method);

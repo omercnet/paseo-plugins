@@ -22,18 +22,18 @@ These previews were captured from an isolated Paseo test daemon with Context Mod
 
 - Bundles Context Mode as a runtime dependency; a separately installed global executable remains optional.
 - Resolves a configured absolute executable first, then the daemon's `PATH`, then the bundled runtime.
-- Shows Context Mode version, structured diagnostics, provider activation, storage roots, lifetime savings, activity, categories, and indexed sources.
+- Shows Context Mode version, structured diagnostics, provider activation, storage roots, lifetime savings, activity, categories, and indexed sources. Savings lists the built-in harness storage plus the storage of every provider configured in Paseo (including ones derived with `extends`), the latter under its Paseo provider id and the root its own `env` resolves to. `ctx_stats` and the Setup tab report the daemon's storage only.
 - Reads Context Mode 1.0.169 SQLite databases in query-only mode, honors active WAL state, isolates corrupt databases, and reports partial coverage instead of mutating schemas.
 - Injects the bundled stdio MCP server into new supported agents through Paseo's `agent.create` hook.
 - Injects provider identity and an existing provider-specific storage root on create, resume, refresh, and import.
 - Preserves existing MCP servers and explicit environment overrides.
 - Prefers detected native provider integrations to avoid duplicate `ctx_*` tools.
 - Reuses existing provider-specific databases. It does not merge session databases across providers because Context Mode intentionally isolates their session identities.
-- Provides provider- and project-scoped knowledge search, local-path indexing, URL fetch/index, indexed-source visibility, and an Insight link.
+- Provides provider- and project-scoped knowledge search, local-path indexing, URL fetch/index, indexed-source visibility, and an Insight link. Knowledge covers the built-in providers and every configured provider that resolves to a Context Mode store, using that provider's own `env`.
 - Requires an explicit provider, project path, scope review, and second confirmation before purge. Purge remains delegated to Context Mode's own MCP contract.
 - Returns structured install and provider-specific upgrade argv for review; Paseo never executes those commands automatically.
 - On Paseo 0.11, registers the `context-mode` screen with URL-persisted `section`, `agentId`, and `workspaceId` params. Composer pills open Knowledge using the selected host's agent provider and working directory. URL params never carry paths or queries.
-- Custom or named providers that do not exactly match a Knowledge RPC provider require explicit provider selection. Missing agents or mismatched workspaces also require explicit scope selection.
+- Providers that Context Mode does not support, and missing agents or mismatched workspaces, require explicit scope selection.
 - Adds a live Healthy/Failing sidebar footer row on Paseo 0.11, reusing the screen's health data. Paseo 0.9/0.10 retain the static sidebar, Savings surface, and unscoped composer shortcut.
 
 Context Mode currently couples sessions, stats, and indexed content under `CONTEXT_MODE_DIR`. Until upstream supports separate session and content roots, this plugin keeps storage provider-scoped instead of risking cross-provider session contamination.

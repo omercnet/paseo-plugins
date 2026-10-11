@@ -9,7 +9,9 @@ import type { BrowserFrame, BrowserState } from "../shared/browser";
 import {
   beginBrowserGestureRpc,
   captureBrowserRpc,
+  closeBrowserRpc,
   endBrowserGestureRpc,
+  MAX_BROWSER_TABS,
   navigateBrowserRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
@@ -94,6 +96,8 @@ interface AgentBinding {
   ticket: string;
   agentId: string | null;
   workspaceId: string | null;
+  tabId: string | null;
+  selectionRevision: number;
   viewerToken: string | null;
   controlToken: string | null;
   lastState: BrowserState | null;
@@ -103,6 +107,7 @@ interface AgentBinding {
 /** Pair cleanup with a down acknowledged in this exact request/runtime. */
 interface AgentPublicationContext {
   binding: AgentBinding;
+  selectionRevision: number;
   keys: Map<string, RuntimeInstance>;
   buttons: Map<string, RuntimeInstance>;
   channels: Map<string, RuntimeInstance>;
@@ -151,10 +156,14 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         requestWorkspace: (workspaceId, operation, input) =>
           this.requestWorkspaceLocal(workspaceId, operation, input),
         archiveWorkspace: (workspaceId) => this.archiveWorkspaceLocal(workspaceId).then(() => {}),
+        closeWorkspace: (workspaceId, runtimeId) =>
+          this.closeWorkspaceLocal(workspaceId, runtimeId),
         disconnect: () => {},
       },
       now: this.now,
-      maxSessions: this.maxWorkspaces,
+      // Each workspace owns one Chromium runtime but may have several
+      // independent page sessions with separate viewers and control leases.
+      maxSessions: this.maxWorkspaces * MAX_BROWSER_TABS,
     });
   }
 
@@ -246,6 +255,19 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
     return result;
   }
 
+  async closeWorkspace(
+    bridgeId: string,
+    epoch: number,
+    workspaceId: string,
+    runtimeId: string,
+  ): Promise<void> {
+    const bridge = this.assertActiveBridge(bridgeId, epoch);
+    await bridge.ready;
+    this.assertActiveBridge(bridgeId, epoch);
+    await this.closeWorkspaceLocal(workspaceId, runtimeId);
+    this.assertActiveBridge(bridgeId, epoch);
+  }
+
   private ensureWorkspaceLocal(
     workspaceId: string,
     replaceLost = false,
@@ -312,7 +334,12 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         ((operation === "key.up" && agent.keys.get(key) === entry.runtime) ||
           (operation === "mouse.up" && agent.buttons.get(button) === entry.runtime) ||
           (operation === "input.end" && agent.channels.get(channelId) === entry.runtime));
-      if (agent && !pairedRelease) this.assertAgentBindingCurrent(agent.binding);
+      if (agent && !pairedRelease) {
+        this.assertAgentBindingCurrent(agent.binding);
+        if (agent.binding.selectionRevision !== agent.selectionRevision) {
+          throw new RuntimeProtocolError("AUTHENTICATION_FAILED", "Agent tab selection changed");
+        }
+      }
       // A lost down/begin ACK still requires cleanup. Record intent only after
       // the current binding fence, immediately before native publication.
       if (agent) {
@@ -371,6 +398,19 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
     });
   }
 
+  /** Stop the exact runtime confirmed by the viewer while keeping the workspace reusable. */
+  private closeWorkspaceLocal(workspaceId: string, runtimeId: string): Promise<void> {
+    return this.runWorkspaceOperation(workspaceId, async () => {
+      const entry = this.workspaces.get(workspaceId);
+      if (!entry || entry.runtime.runtimeId !== runtimeId)
+        throw new RuntimeProtocolError("RUNTIME_FAILURE", "Browser runtime was replaced");
+      this.invalidateAgentObservations(workspaceId);
+      this.revokeAgentControl(workspaceId);
+      await this.owner.stop(entry.runtime);
+      if (this.workspaces.get(workspaceId) === entry) this.workspaces.delete(workspaceId);
+    });
+  }
+
   private async requestBrowser(
     bridgeId: string,
     epoch: number,
@@ -387,6 +427,7 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         result = await this.browserPolicy.attach(
           requireText(data, "workspaceId"),
           requireText(data, "viewerLabel"),
+          typeof data.tabId === "string" ? data.tabId : undefined,
           // Only this bridge-authorised human attach may replace a lost runtime.
           { replaceLost: true },
         );
@@ -418,7 +459,7 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
           data.takeover === true,
         );
         const state = stateFromPolicyResult(result);
-        if (data.takeover === true) this.revokeAgentControl(state.workspaceId);
+        if (data.takeover === true) this.revokeAgentControl(state.workspaceId, state.tabId);
         break;
       }
       case "release-control":
@@ -429,33 +470,52 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         break;
       case "navigate":
         result = await this.browserPolicy.navigate(data as never);
-        this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
+        this.invalidateAgentObservationsForState(result);
         break;
       case "viewport":
         result = await this.browserPolicy.resize(data as never);
-        this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
+        this.invalidateAgentObservationsForState(result);
         break;
       case "device":
         result = await this.browserPolicy.applyDevicePreset(data as never);
-        this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
+        this.invalidateAgentObservationsForState(result);
         break;
       case "input":
         result = await this.browserPolicy.sendInput(data as never);
-        this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
+        this.invalidateAgentObservationsForState(result);
         break;
       case "gesture.begin":
         result = await this.browserPolicy.beginGesture(beginBrowserGestureRpc.input.parse(data));
         break;
       case "gesture.update":
         result = await this.browserPolicy.updateGesture(updateBrowserGestureRpc.input.parse(data));
-        this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
+        this.invalidateAgentObservationsForState(result);
         break;
       case "gesture.end":
         result = await this.browserPolicy.endGesture(endBrowserGestureRpc.input.parse(data));
-        this.invalidateAgentObservations(stateFromPolicyResult(result).workspaceId);
+        this.invalidateAgentObservationsForState(result);
         break;
       case "list":
         result = { workspaceIds: await this.browserPolicy.listOpenWorkspaceIds() };
+        break;
+      case "tabs.list":
+        result = await this.browserPolicy.listTabsForViewer(requireText(data, "viewerToken"));
+        break;
+      case "tabs.create":
+        result = await this.browserPolicy.createTab(requireText(data, "viewerToken"));
+        break;
+      case "tabs.close":
+        result = await this.browserPolicy.closeTab({
+          viewerToken: requireText(data, "viewerToken"),
+          controlToken: requireText(data, "controlToken"),
+          tabId: requireText(data, "tabId"),
+        });
+        break;
+      case "close":
+        result = await this.browserPolicy.closeBrowser(closeBrowserRpc.input.parse(data));
+        break;
+      case "reopen":
+        result = await this.browserPolicy.reopenBrowser(requireText(data, "workspaceId"));
         break;
       case "archive": {
         const workspaceId = requireText(data, "workspaceId");
@@ -493,6 +553,8 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
       issuedAt: this.now(),
       agentId: null,
       workspaceId: null,
+      tabId: null,
+      selectionRevision: 0,
       viewerToken: null,
       controlToken: null,
       lastState: null,
@@ -552,11 +614,22 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
     const execute = () => this.executeAgentRequest(binding, operation, input);
     // Attachment constructs shared session state; its late viewer is removed
     // explicitly. Only actionable requests carry a native publication fence.
-    if (operation === "status" || operation === "capture" || operation === "acquire-control") {
+    if (
+      operation === "status" ||
+      operation === "capture" ||
+      operation === "acquire-control" ||
+      operation === "tabs.list"
+    ) {
       return execute();
     }
     return this.agentRequestContext.run(
-      { binding, keys: new Map(), buttons: new Map(), channels: new Map() },
+      {
+        binding,
+        selectionRevision: binding.selectionRevision,
+        keys: new Map(),
+        buttons: new Map(),
+        channels: new Map(),
+      },
       execute,
     );
   }
@@ -570,13 +643,74 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
     const data = asObject(input);
     if (operation === "status" || operation === "capture")
       return (await this.requestAgentObservation(binding, operation, data)) as unknown as JsonValue;
+    if (operation === "tabs.list") {
+      const listed = await this.browserPolicy.listTabs(binding.workspaceId!);
+      return { ...listed, selectedTabId: binding.tabId };
+    }
+    if (operation === "tabs.select") {
+      const tabId = requireText(data, "tabId");
+      return { state: await this.selectAgentTab(binding, tabId) } as unknown as JsonValue;
+    }
+    if (operation === "tabs.create") {
+      const create = async () =>
+        this.browserPolicy.createTab(await this.ensureAgentViewer(binding));
+      let created: { tabId: string };
+      try {
+        created = await create();
+      } catch (error) {
+        // Only a refusal before dispatch is recoverable: the lapsed agent viewer is replaced
+        // once. A lease that ends after the page was created is a distinct, non-retried error.
+        if (!isInvalidViewer(error)) throw error;
+        binding.viewerToken = null;
+        binding.controlToken = null;
+        created = await create();
+      }
+      return {
+        tabId: created.tabId,
+        state: await this.selectAgentTab(binding, created.tabId),
+      } as unknown as JsonValue;
+    }
+    if (operation === "tabs.close") {
+      const viewerToken = binding.viewerToken;
+      const controlToken = binding.controlToken;
+      const tabId = binding.tabId;
+      if (!viewerToken || !controlToken || !tabId) {
+        throw new RuntimeProtocolError("AUTHENTICATION_FAILED", "Agent does not control a tab");
+      }
+      await this.browserPolicy.closeTab({ viewerToken, controlToken, tabId });
+      binding.viewerToken = null;
+      binding.tabId = null;
+      binding.controlToken = null;
+      binding.lastState = null;
+      binding.lastFrame = null;
+      const { tabs } = await this.browserPolicy.listTabs(binding.workspaceId!);
+      const next = tabs[0];
+      if (!next) throw new RuntimeProtocolError("RUNTIME_FAILURE", "Browser has no remaining tab");
+      return { state: await this.selectAgentTab(binding, next.id) } as unknown as JsonValue;
+    }
     try {
       if (operation === "acquire-control") {
+        const selectionRevision = binding.selectionRevision;
         await this.requestAgentObservation(binding, "status", {});
         this.assertAgentBindingCurrent(binding);
+        if (binding.selectionRevision !== selectionRevision) {
+          throw new RuntimeProtocolError(
+            "INVALID_REQUEST",
+            "Agent tab changed during control acquisition",
+          );
+        }
         const viewerToken = binding.viewerToken!;
         const result = await this.browserPolicy.acquireControl(viewerToken, false);
         this.assertAgentBindingCurrent(binding);
+        if (binding.selectionRevision !== selectionRevision) {
+          await this.browserPolicy
+            .releaseControl(viewerToken, result.controlToken)
+            .catch(() => undefined);
+          throw new RuntimeProtocolError(
+            "INVALID_REQUEST",
+            "Agent tab changed during control acquisition",
+          );
+        }
         binding.controlToken = result.controlToken;
         binding.lastState = result.state;
         return { state: result.state } as unknown as JsonValue;
@@ -598,6 +732,7 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         }
       }
       this.assertAgentBindingCurrent(binding);
+      const selectionRevision = binding.selectionRevision;
       const expected = expectedState(binding);
       let result: { state: BrowserState };
       if (operation === "navigate") {
@@ -641,6 +776,9 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         throw new RuntimeProtocolError("INVALID_REQUEST", `Unknown agent operation: ${operation}`);
       }
       this.assertAgentBindingCurrent(binding);
+      if (binding.selectionRevision !== selectionRevision) {
+        throw new RuntimeProtocolError("INVALID_REQUEST", "Agent tab changed during action");
+      }
       binding.lastState = result.state;
       binding.lastFrame = null;
       return result as unknown as JsonValue;
@@ -656,6 +794,7 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
     operation: "status" | "capture",
     input: Record<string, JsonValue>,
   ): Promise<{ state: BrowserState; frame?: BrowserFrame | null }> {
+    const selectionRevision = binding.selectionRevision;
     const run = async (viewerToken: string) =>
       operation === "status"
         ? await this.browserPolicy.status(viewerToken)
@@ -676,21 +815,73 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
       result = await run(await this.ensureAgentViewer(binding));
     }
     this.assertAgentBindingCurrent(binding);
+    if (binding.selectionRevision !== selectionRevision) {
+      throw new RuntimeProtocolError("INVALID_REQUEST", "Agent tab changed during observation");
+    }
     binding.lastState = result.state;
+    binding.tabId = result.state.tabId ?? null;
     if (operation === "capture") binding.lastFrame = result.frame ?? null;
     return result;
+  }
+
+  /** Move only this agent's viewer to a page, preserving every other viewer's selection. */
+  private async selectAgentTab(binding: AgentBinding, tabId: string): Promise<BrowserState> {
+    this.assertAgentBindingCurrent(binding);
+    if (binding.tabId === tabId && binding.viewerToken) {
+      const current = await this.browserPolicy.status(binding.viewerToken);
+      this.assertAgentBindingCurrent(binding);
+      if (binding.tabId !== tabId) {
+        throw new RuntimeProtocolError("INVALID_REQUEST", "Agent tab changed during selection");
+      }
+      binding.lastState = current.state;
+      return current.state;
+    }
+    const revision = ++binding.selectionRevision;
+    const requestContext = this.agentRequestContext.getStore();
+    if (requestContext?.binding === binding) requestContext.selectionRevision = revision;
+    const previousViewer = binding.viewerToken;
+    binding.controlToken = null;
+    binding.lastState = null;
+    binding.lastFrame = null;
+    const attached = await this.browserPolicy.attach(
+      binding.workspaceId!,
+      `Agent ${binding.agentId!.slice(0, 48)}`,
+      tabId,
+    );
+    try {
+      this.assertAgentBindingCurrent(binding);
+      if (binding.selectionRevision !== revision) {
+        throw new RuntimeProtocolError("INVALID_REQUEST", "Agent tab selection was replaced");
+      }
+      if (previousViewer) await this.browserPolicy.detach(previousViewer);
+      this.assertAgentBindingCurrent(binding);
+      binding.viewerToken = attached.viewerToken;
+      binding.tabId = attached.state.tabId ?? tabId;
+      binding.controlToken = null;
+      binding.lastState = attached.state;
+      binding.lastFrame = null;
+      return attached.state;
+    } catch (error) {
+      await this.browserPolicy.detach(attached.viewerToken).catch(() => undefined);
+      throw error;
+    }
   }
 
   /** Publish an attached viewer only while its original credential still exists. */
   private async ensureAgentViewer(binding: AgentBinding): Promise<string> {
     this.assertAgentBindingCurrent(binding);
     if (binding.viewerToken) return binding.viewerToken;
+    const selectionRevision = binding.selectionRevision;
     const attached = await this.browserPolicy.attach(
       binding.workspaceId!,
       `Agent ${binding.agentId!.slice(0, 48)}`,
+      binding.tabId ?? undefined,
     );
     try {
       this.assertAgentBindingCurrent(binding);
+      if (binding.selectionRevision !== selectionRevision) {
+        throw new RuntimeProtocolError("INVALID_REQUEST", "Agent tab changed during attachment");
+      }
     } catch (error) {
       // Cleanup must run outside the revoked caller's publication fence.
       await this.agentRequestContext
@@ -706,6 +897,7 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
     }
     binding.viewerToken = attached.viewerToken;
     binding.lastState = attached.state;
+    binding.tabId = attached.state.tabId ?? null;
     return attached.viewerToken;
   }
 
@@ -731,18 +923,25 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
       throw new RuntimeProtocolError("BRIDGE_FENCED", "Shared Browser plugin is unavailable");
   }
 
-  private revokeAgentControl(workspaceId: string): void {
+  private revokeAgentControl(workspaceId: string, tabId?: string): void {
     for (const binding of this.agentBindings.values()) {
       if (binding.workspaceId !== workspaceId) continue;
+      if (tabId && binding.tabId !== tabId) continue;
       binding.controlToken = null;
       binding.lastState = null;
       binding.lastFrame = null;
     }
   }
 
-  private invalidateAgentObservations(workspaceId: string): void {
+  private invalidateAgentObservationsForState(result: unknown): void {
+    const state = stateFromPolicyResult(result);
+    this.invalidateAgentObservations(state.workspaceId, state.tabId);
+  }
+
+  private invalidateAgentObservations(workspaceId: string, tabId?: string): void {
     for (const binding of this.agentBindings.values()) {
       if (binding.workspaceId !== workspaceId) continue;
+      if (tabId && binding.tabId !== tabId) continue;
       binding.lastState = null;
       binding.lastFrame = null;
     }
@@ -818,6 +1017,13 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         );
       case "workspace.archive":
         return this.archiveWorkspace(request.bridgeId, request.epoch, request.workspaceId);
+      case "workspace.close":
+        return this.closeWorkspace(
+          request.bridgeId,
+          request.epoch,
+          request.workspaceId,
+          request.runtimeId,
+        ).then(() => ({ closed: true }));
       case "browser.request":
         return this.requestBrowser(
           request.bridgeId,

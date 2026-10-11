@@ -3,9 +3,9 @@ import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { BrowserDisplayPreferences } from "../shared/browser-display-preferences";
-import type { CaptureDensity } from "../shared/capture-density";
 import type { DevicePresetId } from "../shared/device-presets";
 import type { ResolutionGroup } from "../shared/resolution-menu";
+import type { CaptureDensityMode } from "./browser-auto-capture-density";
 import { BrowserQualityControls } from "./browser-quality-controls";
 import { FavoriteStar } from "./favorite-star";
 
@@ -13,12 +13,17 @@ export interface BrowserResolutionPickerProps {
   theme: PluginHostProps["theme"];
   groups: readonly ResolutionGroup[];
   selectedPresetId: DevicePresetId | null;
+  fillViewportResolution: { width: number; height: number } | null;
+  fillViewportSelected: boolean;
+  fillViewportDetail: string;
+  onFillViewport(): void;
   favoritePresetIds: readonly DevicePresetId[];
   selectDisabled: boolean;
   favoriteDisabled: boolean;
   density: number;
+  densityMode: CaptureDensityMode;
   viewport: { width: number; height: number } | null;
-  onDensityChange(value: CaptureDensity): void;
+  onDensityChange(value: CaptureDensityMode): void;
   captureQuality: BrowserDisplayPreferences["captureQuality"];
   videoBitrate: BrowserDisplayPreferences["videoBitrate"];
   videoFps: BrowserDisplayPreferences["videoFps"];
@@ -76,8 +81,30 @@ export function BrowserResolutionPicker(props: BrowserResolutionPickerProps) {
     borderColor: colors.border,
     backgroundColor: colors.surface1,
   };
+  const fillDisabled = props.selectDisabled || !props.fillViewportResolution;
   return (
     <View style={{ gap: 12 }}>
+      <View style={STYLES.group}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Fill viewport, ${props.fillViewportDetail}`}
+          accessibilityState={{ disabled: fillDisabled, selected: props.fillViewportSelected }}
+          disabled={fillDisabled}
+          onPress={props.onFillViewport}
+          style={({ pressed }) => [
+            STYLES.quality,
+            baseStyle,
+            props.fillViewportSelected ? selectedStyle : null,
+            { opacity: fillDisabled ? 0.45 : pressed ? 0.72 : 1 },
+          ]}
+        >
+          <Icon name="Maximize" size={18} color={colors.foregroundMuted} />
+          <Text style={[STYLES.title, { color: colors.foreground }]}>Fill viewport</Text>
+        </Pressable>
+        <Text style={[STYLES.detail, { color: colors.foregroundMuted }]}>
+          {props.fillViewportDetail} · Follow the visible browser area while controlling
+        </Text>
+      </View>
       {props.groups.map((group) => (
         <View key={group.id} style={STYLES.group}>
           <Text style={[STYLES.header, { color: colors.foregroundMuted }]}>{group.label}</Text>
@@ -145,6 +172,7 @@ export function BrowserResolutionPicker(props: BrowserResolutionPickerProps) {
       <BrowserQualityControls
         theme={theme}
         density={props.density}
+        densityMode={props.densityMode}
         viewport={props.viewport}
         densityDisabled={props.selectDisabled}
         onDensityChange={props.onDensityChange}

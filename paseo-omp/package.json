@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-omp",
-  "version": "1.2.0",
+  "version": "1.3.3",
   "type": "module",
   "description": "Paseo integration for OMP, including its direct provider and workspace tooling.",
   "license": "MIT",
@@ -37,10 +37,12 @@
     "client",
     "server",
     "shared",
-    "paseo-plugin.json"
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check . && node ../scripts/shrinkwrap.mjs --check .",
     "check:write": "biome check --write .",
     "test": "vitest run",
     "test:coverage": "PASEO_OMP_COVERAGE=1 vitest run --coverage",

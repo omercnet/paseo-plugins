@@ -16,6 +16,7 @@ import {
   readContextModeDatabase,
   type SessionDatabaseSnapshot,
 } from "./context-mode-db";
+import { type ProviderConfigSource, readProviderOverrides } from "./integration";
 import {
   discoverContextModeStorageRoots,
   listRegularContextModeDatabases,
@@ -257,7 +258,11 @@ export async function collectContextModeAnalytics(
   const listDatabases = dependencies.listDatabases ?? listRegularContextModeDatabases;
   const readDatabase = dependencies.readDatabase ?? readContextModeDatabase;
   const warningCollector = new WarningCollector();
-  const discovery = await discoverStorage({ home: dependencies.home, env: dependencies.env });
+  const discovery = await discoverStorage({
+    home: dependencies.home,
+    env: dependencies.env,
+    providers: dependencies.providers,
+  });
   for (const warning of discovery.warnings) warningCollector.add(warning);
 
   const total = createAggregate();
@@ -419,6 +424,13 @@ export async function collectContextModeAnalytics(
 
 export function createContextModeAnalyticsHandler(
   dependencies: ContextModeAnalyticsDependencies = {},
-): (_input: Record<string, never>) => Promise<AnalyticsDashboard> {
-  return async () => collectContextModeAnalytics(dependencies);
+): (
+  _input: Record<string, never>,
+  context?: { paseo?: ProviderConfigSource },
+) => Promise<AnalyticsDashboard> {
+  return async (_input, context) =>
+    collectContextModeAnalytics({
+      ...dependencies,
+      providers: dependencies.providers ?? (await readProviderOverrides(context?.paseo)),
+    });
 }

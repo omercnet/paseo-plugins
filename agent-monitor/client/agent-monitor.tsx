@@ -16,8 +16,8 @@ import {
   childCounts,
   type MonitorDirectory,
   matches,
-  PARENT_AGENT_ID_LABEL,
   type ProjectGroup,
+  parentAgentId,
   parseBucketParam,
   placement,
   shouldCollapseWorkspace,
@@ -509,7 +509,7 @@ function AgentMonitorRoster({
           {group.entries.map((entry) => (
             <View
               key={entry.agent.id}
-              style={PARENT_AGENT_ID_LABEL in entry.agent.labels ? styles.childRow : undefined}
+              style={parentAgentId(entry.agent) !== null ? styles.childRow : undefined}
             >
               {renderRow({ item: entry })}
             </View>

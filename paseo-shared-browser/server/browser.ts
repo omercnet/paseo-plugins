@@ -11,11 +11,16 @@ import type {
   attachBrowserRpc,
   beginBrowserGestureRpc,
   captureBrowserRpc,
+  closeBrowserRpc,
+  closeBrowserTabRpc,
+  createBrowserTabRpc,
   detachBrowserRpc,
   endBrowserGestureRpc,
+  listBrowserTabsRpc,
   listOpenBrowserWorkspacesRpc,
   navigateBrowserRpc,
   releaseControlRpc,
+  reopenBrowserRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
   setCaptureDensityRpc,
@@ -43,6 +48,14 @@ type DensityInput = RpcInput<typeof setCaptureDensityRpc>;
 type DensityOutput = RpcOutput<typeof setCaptureDensityRpc>;
 type CaptureInput = RpcInput<typeof captureBrowserRpc>;
 type CaptureOutput = RpcOutput<typeof captureBrowserRpc>;
+type CloseInput = RpcInput<typeof closeBrowserRpc>;
+type CloseOutput = RpcOutput<typeof closeBrowserRpc>;
+type CloseTabInput = RpcInput<typeof closeBrowserTabRpc>;
+type CloseTabOutput = RpcOutput<typeof closeBrowserTabRpc>;
+type CreateTabOutput = RpcOutput<typeof createBrowserTabRpc>;
+type ListTabsOutput = RpcOutput<typeof listBrowserTabsRpc>;
+type ReopenInput = RpcInput<typeof reopenBrowserRpc>;
+type ReopenOutput = RpcOutput<typeof reopenBrowserRpc>;
 type AcquireControlInput = RpcInput<typeof acquireControlRpc>;
 type AcquireControlOutput = RpcOutput<typeof acquireControlRpc>;
 type ReleaseControlInput = RpcInput<typeof releaseControlRpc>;
@@ -80,12 +93,36 @@ class RemoteBrowserManager {
     await this.client.connect();
   }
 
-  attach(workspaceId: string, viewerLabel: string): Promise<AttachOutput> {
-    return this.requestBrowser<AttachOutput>("attach", { workspaceId, viewerLabel });
+  attach(workspaceId: string, viewerLabel: string, tabId?: string): Promise<AttachOutput> {
+    return this.requestBrowser<AttachOutput>("attach", {
+      workspaceId,
+      viewerLabel,
+      ...(tabId ? { tabId } : {}),
+    });
+  }
+
+  listTabs(viewerToken: string): Promise<ListTabsOutput> {
+    return this.requestBrowser<ListTabsOutput>("tabs.list", { viewerToken });
+  }
+
+  createTab(viewerToken: string): Promise<CreateTabOutput> {
+    return this.requestBrowser<CreateTabOutput>("tabs.create", { viewerToken });
+  }
+
+  closeTab(input: CloseTabInput): Promise<CloseTabOutput> {
+    return this.requestBrowser<CloseTabOutput>("tabs.close", input);
   }
 
   detach(viewerToken: string): Promise<DetachOutput> {
     return this.requestBrowser<DetachOutput>("detach", { viewerToken });
+  }
+
+  close(input: CloseInput): Promise<CloseOutput> {
+    return this.requestBrowser<CloseOutput>("close", input);
+  }
+
+  reopen(workspaceId: string): Promise<ReopenOutput> {
+    return this.requestBrowser<ReopenOutput>("reopen", { workspaceId });
   }
 
   capture(
@@ -274,11 +311,44 @@ export async function handleAttachBrowser(
 ): Promise<AttachOutput> {
   const workspace = await context.paseo.workspaces.ref(input.workspaceId).refresh();
   if (!workspace) throw new Error("Workspace not found");
-  return (await getProductionManager()).attach(input.workspaceId, input.viewerLabel);
+  return (await getProductionManager()).attach(input.workspaceId, input.viewerLabel, input.tabId);
+}
+
+export async function handleListBrowserTabs({
+  viewerToken,
+}: {
+  viewerToken: string;
+}): Promise<ListTabsOutput> {
+  return (await getProductionManager()).listTabs(viewerToken);
+}
+
+export async function handleCreateBrowserTab({
+  viewerToken,
+}: {
+  viewerToken: string;
+}): Promise<CreateTabOutput> {
+  return (await getProductionManager()).createTab(viewerToken);
+}
+
+export async function handleCloseBrowserTab(input: CloseTabInput): Promise<CloseTabOutput> {
+  return (await getProductionManager()).closeTab(input);
 }
 
 export async function handleDetachBrowser({ viewerToken }: DetachInput): Promise<DetachOutput> {
   return (await getProductionManager()).detach(viewerToken);
+}
+
+export async function handleCloseBrowser(input: CloseInput): Promise<CloseOutput> {
+  return (await getProductionManager()).close(input);
+}
+
+export async function handleReopenBrowser(
+  input: ReopenInput,
+  context: PluginHandlerContext,
+): Promise<ReopenOutput> {
+  const workspace = await context.paseo.workspaces.ref(input.workspaceId).refresh();
+  if (!workspace) throw new Error("Workspace not found");
+  return (await getProductionManager()).reopen(input.workspaceId);
 }
 
 export async function handleWorkspaceArchived(workspaceId: string): Promise<void> {

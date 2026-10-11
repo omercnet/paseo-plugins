@@ -3,7 +3,11 @@ import { createContextModeActionHandlers } from "./server/actions";
 import { createContextModeAnalyticsHandler } from "./server/analytics";
 import { resolveContextModeBinary } from "./server/binary";
 import { createContextModeHandlers } from "./server/handlers";
-import { injectContextModeEnvironment, injectContextModeOnCreate } from "./server/integration";
+import {
+  injectContextModeEnvironment,
+  injectContextModeOnCreate,
+  readProviderOverrides,
+} from "./server/integration";
 import { createContextModeKnowledgeHandlers } from "./server/knowledge";
 import {
   contextModeSettings,
@@ -38,17 +42,19 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getContextModeDoctorReport, actionHandlers.doctor);
   server.handle(getContextModeInstallAction, actionHandlers.install);
   server.handle(getContextModeUpgradeAction, actionHandlers.upgrade);
-  server.before("agent.create", async ({ request }) => {
+  server.before("agent.create", async ({ request }, { paseo }) => {
     const current = await settings.read();
     if (current.status !== "ready") return request;
     const binary = await resolveContextModeBinary(current.values);
     if (binary.state !== "found") return request;
-    return injectContextModeOnCreate(request, current.values, binary.launch);
+    const providers = await readProviderOverrides(paseo);
+    return injectContextModeOnCreate(request, current.values, binary.launch, { providers });
   });
-  server.before("agent.session_open", async ({ request }) => {
+  server.before("agent.session_open", async ({ request }, { paseo }) => {
     const current = await settings.read();
     if (current.status !== "ready") return request;
-    return injectContextModeEnvironment(request, current.values);
+    const providers = await readProviderOverrides(paseo);
+    return injectContextModeEnvironment(request, current.values, { providers });
   });
   return () => {};
 }

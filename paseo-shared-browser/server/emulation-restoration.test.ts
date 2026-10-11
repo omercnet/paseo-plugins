@@ -104,6 +104,10 @@ function assertDeviceRestored(connection: ConnectionFixture, sessionId: string) 
   expect(
     calls.find((call) => call.method === "Emulation.setTouchEmulationEnabled")?.params,
   ).toEqual({ enabled: true, maxTouchPoints: 5 });
+  // Target-scoped: lets a page behind another tab acknowledge input without being raised.
+  expect(
+    calls.find((call) => call.method === "Emulation.setFocusEmulationEnabled")?.params,
+  ).toEqual({ enabled: true });
   expect(calls.find((call) => call.method === "Emulation.setUserAgentOverride")?.params).toEqual({
     userAgent: "fixture-mobile-agent",
     platform: "Android",
@@ -118,7 +122,7 @@ describe("session-owned device emulation restoration", () => {
       if (method.startsWith("Emulation.")) publications.push(control.page);
     };
     await runtime.selectTarget("b");
-    expect(publications).toEqual([null, null, null]);
+    expect(publications).toEqual([null, null, null, null]);
     expect(control.page?.targetId).toBe("b");
     expect(control.emulationAppliedPage).toBe(control.page);
     expect(control.viewport.captureScale).toBe(2);

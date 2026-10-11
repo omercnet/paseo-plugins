@@ -20,7 +20,7 @@ const { join } = require("node:path");
 const args = process.argv.slice(2);
 const dir = process.env.AGENT_BROWSER_SOCKET_DIR;
 const session = args[args.indexOf("--session") + 1];
-if (args.includes("--version")) console.log("0.38.2");
+if (args.includes("--version")) console.log("0.37.1");
 else if (args.includes("open")) {
   // Like the shipped launcher: the daemon is detached but inherits this process's environment.
   const daemon = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: "ignore" });

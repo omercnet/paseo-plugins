@@ -4,6 +4,22 @@
  * never trigger action replay, control acquisition or lease takeover.
  */
 const VIEWER_EXPIRED_MESSAGE = "Viewer token is invalid or expired";
+const BROWSER_CLOSED_MESSAGE = "Browser is closed";
+
+/** Recognize the server's explicit close fence without confusing it with a transport failure. */
+export function isBrowserClosedError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { message?: unknown; code?: unknown };
+  if (typeof value.message !== "string") return false;
+  if (value.code !== undefined && value.code !== "handler_error") return false;
+  const message = value.message.startsWith("Request failed: ")
+    ? value.message.slice("Request failed: ".length)
+    : value.message;
+  return (
+    message === BROWSER_CLOSED_MESSAGE ||
+    (value.code === "handler_error" && message.startsWith(`${BROWSER_CLOSED_MESSAGE} requestType=`))
+  );
+}
 
 /** Match the owned handler error, including Paseo's documented RPC error suffix. */
 export function isExpiredBrowserViewerError(error: unknown): boolean {

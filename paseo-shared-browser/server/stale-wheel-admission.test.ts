@@ -41,6 +41,7 @@ it("recovers a captured-before-wheel frame that decodes after invalidation witho
       return null;
     },
     archiveWorkspace: async () => {},
+    closeWorkspace: async () => {},
     disconnect: () => {},
   };
   const manager = new SessionManager({

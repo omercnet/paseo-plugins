@@ -57,6 +57,7 @@ async function fixture(
       return null;
     },
     archiveWorkspace: async () => {},
+    closeWorkspace: async () => {},
     disconnect: () => {},
   };
   const manager = new SessionManager({
@@ -183,6 +184,102 @@ describe("owned ordered live input", () => {
       expect(released).toBeGreaterThan(-1);
       expect(emulated).toBeGreaterThan(released);
       await expect(state.update({ kind: "move", point: point(90, 60) })).rejects.toThrow();
+    } finally {
+      await state.manager.disconnect();
+    }
+  });
+
+  it("fills the panel while preserving mobile behavior and sharp capture density", async () => {
+    const state = await fixture();
+    try {
+      const mobile = await state.manager.applyDevicePreset({
+        ...state.context,
+        presetId: "pixel-7-sharp",
+      });
+      const context = {
+        ...state.context,
+        expected: {
+          ...state.context.expected,
+          viewportGeneration: mobile.state.viewportGeneration,
+        },
+      };
+      const viewport = { width: 1000, height: 700 };
+      const resized = await state.manager.resize({ ...context, viewport, preserveEmulation: true });
+      expect(resized.state.viewport).toEqual(viewport);
+      expect(resized.state.devicePresetId).toBe("pixel-7-sharp");
+      expect(resized.state.captureScale).toBe(2);
+      expect(resized.state.userAgent).toBe(mobile.state.userAgent);
+      expect(
+        state.calls.filter(({ operation }) => operation === "emulate").at(-1)?.input,
+      ).toMatchObject({
+        ...viewport,
+        captureScale: 2,
+        mobile: true,
+        touch: true,
+        userAgent: mobile.state.userAgent,
+      });
+
+      const resizedContext = {
+        ...context,
+        expected: { ...context.expected, viewportGeneration: resized.state.viewportGeneration },
+      };
+      await expect(
+        state.manager.resize({
+          ...resizedContext,
+          viewport: { width: 2000, height: 700 },
+          preserveEmulation: true,
+        }),
+      ).rejects.toThrow("capture density");
+      // Automatic following lowers density together with a larger CSS viewport.
+      const large = await state.manager.resize({
+        ...resizedContext,
+        viewport: { width: 2400, height: 2000 },
+        preserveEmulation: true,
+        captureDensity: 1,
+      });
+      expect(large.state.viewport).toEqual({ width: 2400, height: 2000 });
+      expect(large.state.captureScale).toBe(1);
+      expect(large.state.devicePresetId).toBe("pixel-7-sharp");
+      expect(large.state.userAgent).toBe(mobile.state.userAgent);
+      expect(
+        state.calls.filter(({ operation }) => operation === "emulate").at(-1)?.input,
+      ).toMatchObject({
+        width: 2400,
+        height: 2000,
+        captureScale: 1,
+        mobile: true,
+        touch: true,
+      });
+      const sharp = await state.manager.resize({
+        ...resizedContext,
+        expected: {
+          ...resizedContext.expected,
+          viewportGeneration: large.state.viewportGeneration,
+        },
+        viewport,
+        preserveEmulation: true,
+        captureDensity: 2,
+      });
+      expect(sharp.state.captureScale).toBe(2);
+      expect(sharp.state.devicePresetId).toBe("pixel-7-sharp");
+      // Explicit custom dimensions retain their established desktop reset behavior.
+      const custom = await state.manager.resize({
+        ...resizedContext,
+        expected: {
+          ...resizedContext.expected,
+          viewportGeneration: sharp.state.viewportGeneration,
+        },
+        viewport,
+      });
+      expect(custom.state.devicePresetId).toBeNull();
+      expect(custom.state.captureScale).toBe(1);
+      expect(
+        state.calls.filter(({ operation }) => operation === "emulate").at(-1)?.input,
+      ).toMatchObject({
+        mobile: false,
+        touch: false,
+        captureScale: 1,
+      });
     } finally {
       await state.manager.disconnect();
     }

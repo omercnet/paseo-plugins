@@ -32,49 +32,75 @@ export function createStyles(theme: Theme, compact: boolean) {
       minHeight: 0,
       backgroundColor: theme.colors.surface0,
     },
-    statusRow: {
-      minHeight: 30,
+    tabBar: {
+      minHeight: DIMENSION.touch,
       paddingHorizontal: SPACE.sm,
-      paddingVertical: SPACE.xxs,
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
-      gap: SPACE.sm,
+      gap: SPACE.xs,
       borderBottomWidth: 1,
       borderBottomColor: theme.colors.border,
-      backgroundColor: theme.colors.surface0,
+      backgroundColor: theme.colors.surface1,
     },
-    statusSummary: {
-      minWidth: 0,
+    tabList: {
       flex: 1,
+      minWidth: 0,
+    },
+    tabListContent: {
+      alignItems: "center",
+      gap: SPACE.xs,
+    },
+    tabItem: {
+      minHeight: DIMENSION.touch,
+      width: compact ? 132 : 176,
       flexDirection: "row",
       alignItems: "center",
-      flexWrap: "wrap",
-      gap: SPACE.sm,
+      borderBottomWidth: 2,
+      borderBottomColor: "transparent",
+    },
+    tabItemSelected: {
+      width: compact ? 200 : 230,
+      borderBottomColor: theme.colors.accent,
+    },
+    tabSelect: {
+      flex: 1,
+      minWidth: 0,
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: SPACE.xxs,
+      justifyContent: "center",
+    },
+    tabMetaRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.xs,
+    },
+    tabMeta: {
+      flexShrink: 1,
+      color: theme.colors.foregroundMuted,
+      fontSize: TYPE.caption,
+    },
+    tabActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.xxs,
+      paddingRight: SPACE.xs,
+    },
+    tabLabel: {
+      color: theme.colors.foregroundMuted,
+      fontSize: TYPE.body,
+    },
+    tabLabelSelected: {
+      color: theme.colors.foreground,
+      fontWeight: "600",
     },
     statusDot: {
       width: SPACE.sm,
       height: SPACE.sm,
       borderRadius: RADIUS.sm,
     },
-    statusText: {
-      color: theme.colors.foreground,
-      fontSize: TYPE.body,
-      fontWeight: "600",
-    },
     mutedText: {
       color: theme.colors.foregroundMuted,
       fontSize: TYPE.caption,
-    },
-    controllerText: {
-      color: theme.colors.foregroundMuted,
-      fontSize: TYPE.caption,
-      flexShrink: 1,
-    },
-    actionRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACE.xs,
     },
     chrome: {
       minHeight: 40,
@@ -135,6 +161,11 @@ export function createStyles(theme: Theme, compact: boolean) {
       alignItems: "center",
       justifyContent: "center",
       gap: SPACE.xs,
+    },
+    buttonIconOnly: {
+      width: DIMENSION.control,
+      minWidth: DIMENSION.control,
+      paddingHorizontal: 0,
     },
     buttonSelected: {
       borderColor: theme.colors.accent,
@@ -204,7 +235,8 @@ export function createStyles(theme: Theme, compact: boolean) {
       flex: 1,
       minHeight: compact ? DIMENSION.canvasCompact : DIMENSION.canvasRegular,
       minWidth: 0,
-      margin: compact ? SPACE.sm : 0,
+      // Keep the compact side inset without adding blank bands above and below the feed.
+      marginHorizontal: compact ? SPACE.sm : 0,
       borderRadius: compact ? DIMENSION.screenRadius : 0,
       overflow: "hidden",
       backgroundColor: theme.colors.surface1,
@@ -272,6 +304,23 @@ export function createStyles(theme: Theme, compact: boolean) {
       flexDirection: "row",
       alignItems: "center",
       gap: SPACE.xs,
+    },
+    dialogBody: {
+      gap: SPACE.md,
+      paddingBottom: SPACE.xs,
+    },
+    dialogMessage: {
+      color: theme.colors.foregroundMuted,
+      fontSize: TYPE.body,
+      lineHeight: 20,
+      textAlign: "left",
+    },
+    dialogActions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      alignItems: "center",
+      gap: SPACE.sm,
+      paddingTop: SPACE.xs,
     },
     stripLabel: {
       color: theme.colors.foregroundMuted,

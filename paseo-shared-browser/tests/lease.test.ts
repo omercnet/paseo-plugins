@@ -25,6 +25,9 @@ class FakeSupervisorClient {
     input: JsonValue;
   }> = [];
   archiveCalls: string[] = [];
+  closeCalls: string[] = [];
+  closeGate: Promise<void> | null = null;
+  closeStarted: (() => void) | null = null;
   failOperation: string | null = null;
   ensureGate: Promise<void> | null = null;
   ensureStarted: (() => void) | null = null;
@@ -89,10 +92,10 @@ class FakeSupervisorClient {
       case "mouse.move":
       case "mouse.wheel":
       case "text.insert":
-      case "key.down":
-      case "key.up":
       case "input.begin":
       case "input.end":
+      case "key.down":
+      case "key.up":
         return null;
       case "emulate":
         workspace.viewport = {
@@ -127,6 +130,16 @@ class FakeSupervisorClient {
     this.archiveCalls.push(workspaceId);
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) workspace.stopped = true;
+  }
+
+  async closeWorkspace(workspaceId: string, runtimeId: string) {
+    const workspace = this.workspaces.get(workspaceId);
+    if (!workspace || runtimeId !== `runtime-${workspaceId}`)
+      throw new Error("Browser runtime was replaced");
+    this.closeCalls.push(workspaceId);
+    this.closeStarted?.();
+    if (this.closeGate) await this.closeGate;
+    workspace.stopped = true;
   }
 
   disconnect() {
@@ -498,36 +511,79 @@ describe("SessionManager control leases", () => {
     });
   });
 
-  it("keeps active mobile emulation when only the custom size changes", async () => {
+  it("switches mobile and desktop behavior while preserving the current custom display", async () => {
     const { manager, client } = createManager();
-    const viewer = await manager.attach("workspace-one", "Client");
+    const viewer = await manager.attach("workspace-mode", "Client");
     const control = await manager.acquireControl(viewer.viewerToken, false);
-    const applied = await manager.applyDevicePreset({
+    const resized = await manager.resize({
+      viewerToken: viewer.viewerToken,
+      controlToken: control.controlToken,
+      expected: expected(control.state),
+      viewport: { width: 1920, height: 1200 },
+    });
+    const capture = await manager.capture(viewer.viewerToken, "high", null);
+    const mobile = await manager.applyDevicePreset({
+      viewerToken: viewer.viewerToken,
+      controlToken: control.controlToken,
+      expected: expected(resized.state),
+      presetId: "pixel-7-sharp",
+      preserveDisplay: true,
+    });
+    expect(mobile.state.viewport).toEqual({ width: 1920, height: 1200 });
+    expect(mobile.state.captureScale).toBe(1);
+    expect(mobile.state.viewportGeneration).toBeGreaterThan(resized.state.viewportGeneration);
+    expect(mobile.state.navigationGeneration).toBe(resized.state.navigationGeneration);
+    expect(
+      client.operations.filter((op) => op.operation === "emulate").at(-1)?.input,
+    ).toMatchObject({ width: 1920, height: 1200, captureScale: 1, mobile: true, touch: true });
+    await expect(
+      manager.sendInput({
+        viewerToken: viewer.viewerToken,
+        controlToken: control.controlToken,
+        expected: expected(capture.state),
+        target: capture.frame!,
+        event: { kind: "key", key: "Enter" },
+      }),
+    ).rejects.toThrow("viewport");
+    const desktop = await manager.applyDevicePreset({
+      viewerToken: viewer.viewerToken,
+      controlToken: control.controlToken,
+      expected: expected(mobile.state),
+      presetId: "desktop-chrome",
+      preserveDisplay: true,
+    });
+    expect(desktop.state.viewport).toEqual({ width: 1920, height: 1200 });
+    expect(desktop.state.captureScale).toBe(1);
+    expect(
+      client.operations.filter((op) => op.operation === "emulate").at(-1)?.input,
+    ).toMatchObject({ width: 1920, height: 1200, captureScale: 1, mobile: false, touch: false });
+    expect(client.operations.some((op) => ["reload", "navigate"].includes(op.operation))).toBe(
+      false,
+    );
+  });
+
+  it("preserves sharp capture density during a mode-only desktop switch", async () => {
+    const { manager, client } = createManager();
+    const viewer = await manager.attach("workspace-sharp-mode", "Client");
+    const control = await manager.acquireControl(viewer.viewerToken, false);
+    const mobile = await manager.applyDevicePreset({
       viewerToken: viewer.viewerToken,
       controlToken: control.controlToken,
       expected: expected(control.state),
       presetId: "pixel-7-sharp",
     });
-    const resized = await manager.resize({
+    const desktop = await manager.applyDevicePreset({
       viewerToken: viewer.viewerToken,
       controlToken: control.controlToken,
-      expected: expected(applied.state),
-      viewport: { width: 500, height: 900 },
+      expected: expected(mobile.state),
+      presetId: "desktop-chrome",
+      preserveDisplay: true,
     });
-
-    const emulations = client.operations.filter(({ operation }) => operation === "emulate");
-    expect(emulations.at(-1)?.input).toEqual({
-      ...(emulations.at(-2)?.input as object),
-      width: 500,
-      height: 900,
-    });
-    expect(emulations.at(-1)?.input).toMatchObject({ mobile: true, touch: true, captureScale: 2 });
-    expect(resized.state).toMatchObject({
-      viewport: { width: 500, height: 900 },
-      devicePresetId: "pixel-7-sharp",
-      captureScale: 2,
-    });
-    expect(resized.state.userAgent).toBe(applied.state.userAgent);
+    expect(desktop.state.viewport).toEqual(mobile.state.viewport);
+    expect(desktop.state.captureScale).toBe(2);
+    expect(
+      client.operations.filter((op) => op.operation === "emulate").at(-1)?.input,
+    ).toMatchObject({ width: 412, height: 839, captureScale: 2, mobile: false, touch: false });
   });
 
   it("archives and tears down the workspace runtime", async () => {
@@ -540,6 +596,68 @@ describe("SessionManager control leases", () => {
       "invalid or expired",
     );
     await expect(manager.attach("workspace-archive", "Late client")).rejects.toThrow("archived");
+  });
+
+  it("closes every viewer and blocks background attach until a person reopens", async () => {
+    const { manager, client } = createManager();
+    const first = await manager.attach("workspace-close", "First viewer");
+    const second = await manager.attach("workspace-close", "Second viewer");
+    const control = await manager.acquireControl(first.viewerToken);
+
+    await expect(
+      manager.closeBrowser({
+        viewerToken: second.viewerToken,
+        controlToken: control.controlToken,
+        sessionId: first.state.sessionId,
+        runtimeId: first.state.runtimeId!,
+      }),
+    ).rejects.toThrow("control lease");
+    expect(client.workspaces.get("workspace-close")?.stopped).toBe(false);
+
+    await expect(
+      manager.closeBrowser({
+        viewerToken: first.viewerToken,
+        controlToken: control.controlToken,
+        sessionId: first.state.sessionId,
+        runtimeId: first.state.runtimeId!,
+      }),
+    ).resolves.toEqual({ closed: true });
+    expect(client.workspaces.get("workspace-close")?.stopped).toBe(true);
+    expect(await manager.listOpenWorkspaceIds()).toEqual([]);
+    await expect(manager.status(first.viewerToken)).rejects.toThrow("Browser is closed");
+    await expect(manager.status(second.viewerToken)).rejects.toThrow("Browser is closed");
+    await expect(manager.attach("workspace-close", "Background viewer")).rejects.toThrow(
+      "Browser is closed",
+    );
+
+    await manager.reopenBrowser("workspace-close");
+    const reopened = await manager.attach("workspace-close", "New viewer");
+    expect(reopened.state.sessionId).not.toBe(first.state.sessionId);
+    expect(client.workspaces.get("workspace-close")?.stopped).toBe(false);
+  });
+
+  it("does not let an attachment queued behind close restart Chromium", async () => {
+    const { manager, client } = createManager();
+    const viewer = await manager.attach("workspace-close-race", "Controller");
+    const control = await manager.acquireControl(viewer.viewerToken);
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    client.closeStarted = started.resolve;
+    client.closeGate = release.promise;
+
+    const closing = manager.closeBrowser({
+      viewerToken: viewer.viewerToken,
+      controlToken: control.controlToken,
+      sessionId: viewer.state.sessionId,
+      runtimeId: viewer.state.runtimeId!,
+    });
+    await started.promise;
+    const attaching = manager.attach("workspace-close-race", "Late viewer");
+    release.resolve();
+
+    await expect(closing).resolves.toEqual({ closed: true });
+    await expect(attaching).rejects.toThrow("Browser is closed");
+    expect(client.workspaces.get("workspace-close-race")?.stopped).toBe(true);
   });
 
   it("cannot create a runtime after disconnect begins", async () => {
@@ -616,12 +734,13 @@ describe("SessionManager control leases", () => {
     await expect(manager.attach("workspace-racing", "Late client")).rejects.toThrow("archived");
   });
 
-  it("archives an ensured runtime when session initialization fails", async () => {
+  it("closes an ensured runtime without archiving when session initialization fails", async () => {
     const { manager, client } = createManager();
     client.failOperation = "identity";
 
     await expect(manager.attach("workspace-failed", "Client")).rejects.toThrow("Failed identity");
-    expect(client.archiveCalls).toEqual(["workspace-failed"]);
+    expect(client.closeCalls).toEqual(["workspace-failed"]);
+    expect(client.archiveCalls).toEqual([]);
     expect(client.workspaces.get("workspace-failed")?.stopped).toBe(true);
   });
 });

@@ -12,6 +12,7 @@ type ProviderCatalogOptionsCompat = {
 import { MAX_INHERITED_ENVIRONMENT_NAMES } from "../../shared/provider-launch-settings";
 import { parseOmpProviderOptions } from "./provider-options";
 import { OmpPublicError } from "./security";
+import { withoutOmpSessionPurpose } from "./session-purpose";
 import { OmpModeSchema } from "./settings";
 
 const OMP_BUILTIN_TOOL_NAMES = [
@@ -84,7 +85,7 @@ export function normalizeOmpCatalogOptions(
     mode: "full",
     noSession: true,
     ...(providerOptions.command ? { command: providerOptions.command } : {}),
-    ...(providerOptions.env ? { env: providerOptions.env } : {}),
+    ...(providerOptions.env ? { env: withoutOmpSessionPurpose(providerOptions.env) } : {}),
     ...(inheritEnv ? { inheritEnv } : {}),
     outputRedaction: providerOptions.outputRedaction,
     ...(params.sessionDir ? { sessionDir: params.sessionDir } : {}),
@@ -136,7 +137,7 @@ export function normalizeOmpSessionConfig(
     .deniedTools;
   const tools = allowedOmpTools(deniedTools);
   const params = options.params ?? {};
-  const env = { ...options.env, ...config.env };
+  const env = withoutOmpSessionPurpose({ ...options.env, ...config.env });
   const inheritEnv = mergeOmpInheritedEnvironmentNames(hostInheritEnv, options.inheritEnv);
   return {
     cwd: config.cwd,

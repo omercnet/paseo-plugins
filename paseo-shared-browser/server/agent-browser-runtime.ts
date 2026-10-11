@@ -18,12 +18,6 @@ import {
   listPageTargets,
 } from "./cdp";
 import { readJpegFrameDimensions } from "./jpeg-frame";
-import {
-  type ProcessIdentity,
-  probeProcess,
-  processExists,
-  RUNTIME_OWNER_VARIABLE,
-} from "./process-identity";
 
 export { readJpegFrameDimensions as jpegDimensions } from "./jpeg-frame";
 
@@ -53,6 +47,12 @@ import {
   NAVIGATION_METADATA_TIMEOUT_MS,
 } from "./navigation-budget";
 import { waitForNavigationCommit } from "./navigation-commit";
+import {
+  type ProcessIdentity,
+  probeProcess,
+  processExists,
+  RUNTIME_OWNER_VARIABLE,
+} from "./process-identity";
 import { createScreencastSourceTime } from "./screencast-source-time";
 import { createVideoSourceRecovery } from "./video-source-recovery";
 
@@ -64,7 +64,6 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const SCREENCAST_SETUP_RETRY_MS = 25;
 /** Bound for the agent-browser session daemon to exit after close or SIGKILL. */
 const DAEMON_EXIT_WAIT_MS = 5_000;
-
 // Cursor decoration must not hold the serialized input/video fence while page
 // scripts are busy. A missed sample leaves input and its cleanup unchanged.
 const CURSOR_SAMPLE_TIMEOUT_MS = 250;
@@ -313,14 +312,15 @@ export class AgentBrowserRuntime {
     expiresAt: number;
     timer: ReturnType<typeof setTimeout> | null;
   } | null = null;
+  private stopping = false;
   private shutdownInFlight: Promise<void> | null = null;
   private shutDown = false;
   /** A daemon was launched for this session, so absence of evidence is not proof of exit. */
   private daemonLaunched = false;
-  private stopping = false;
   private readonly nativeVideo: boolean;
   private video: NativeVideoCapture | null = null;
   private videoRetirement: Promise<void> | null = null;
+  private ownsBrowser = true;
   private readonly videoRecovery = createVideoSourceRecovery();
   private videoTransitionDepth = 0;
   private videoTransitionEpoch = 0;
@@ -350,7 +350,6 @@ export class AgentBrowserRuntime {
     this.assertRuntimeOpen();
     if (this.connection?.isOpen) return;
     this.invalidateScreencastFrame();
-    this.shutDown = false;
     await mkdir(this.profilePath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
     await mkdir(this.ipcDirectory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
     await Promise.all([
@@ -373,6 +372,7 @@ export class AgentBrowserRuntime {
     ]
       .filter(Boolean)
       .join(",");
+    this.ownsBrowser = true;
     // From here a nonce-owned daemon may exist even if open rejects (e.g. navigation failure).
     this.daemonLaunched = true;
     this.daemon = null;
@@ -398,6 +398,33 @@ export class AgentBrowserRuntime {
     await this.captureDaemon();
     this.assertRuntimeOpen();
     await this.connectCdp(targetId);
+  }
+
+  /** Attach an independent page controller to an existing browser session. */
+  async attachTarget(targetId: string): Promise<void> {
+    this.assertRuntimeOpen();
+    this.ownsBrowser = false;
+    await this.connectCdp(targetId, false);
+  }
+
+  /** Create a page in the existing profile without changing another controller's selected page. */
+  async createTarget(url = "about:blank"): Promise<string> {
+    const result = await this.requireConnection().send<{ targetId: string }>(
+      "Target.createTarget",
+      { url },
+      { mutation: true },
+    );
+    return result.targetId;
+  }
+
+  /** Close only the named page. The caller must keep another page in the browser. */
+  async closeTarget(targetId: string): Promise<void> {
+    const result = await this.requireConnection().send<{ success: boolean }>(
+      "Target.closeTarget",
+      { targetId },
+      { mutation: true },
+    );
+    if (!result.success) throw new CdpUnavailableError("Browser tab could not be closed");
   }
 
   async reconnect(): Promise<void> {
@@ -461,7 +488,7 @@ export class AgentBrowserRuntime {
     );
   }
 
-  async selectTarget(targetId: string): Promise<void> {
+  async selectTarget(targetId: string, activate = true): Promise<void> {
     await this.withVideoTransition(async () => {
       const attachmentGeneration = ++this.attachmentGeneration;
       const connection = this.requireConnection();
@@ -479,8 +506,10 @@ export class AgentBrowserRuntime {
         this.assertAttachmentCurrent(connection, attachmentGeneration);
       }
       this.invalidateScreencastFrame();
-      await connection.send("Target.activateTarget", { targetId }, { mutation: true });
-      this.assertAttachmentCurrent(connection, attachmentGeneration);
+      if (activate) {
+        await connection.send("Target.activateTarget", { targetId }, { mutation: true });
+        this.assertAttachmentCurrent(connection, attachmentGeneration);
+      }
       // CDP emulation is session-owned: detaching the former session restores native
       // window metrics. Publish a replacement only after its retained settings succeed.
       this.page = null;
@@ -531,9 +560,10 @@ export class AgentBrowserRuntime {
       }
     }
   }
-  /** Read fresh metadata concurrently; never combine observations across document changes.
-   * Internal navigation callers can shorten the per-read budget in milliseconds.
-   * Unavailable metadata rejects; it never becomes a fabricated ready receipt. */
+  /** Read fresh metadata concurrently, discarding both replies if the document changes.
+   * One same-attachment reread shares the original monotonic timeout budget in
+   * milliseconds. Failed reads, replacement attachments and repeated document
+   * changes reject; this read-only recovery never repeats a native mutation. */
   async state(options: { timeoutMs?: number } = {}): Promise<RuntimePageState> {
     if (
       options.timeoutMs !== undefined &&
@@ -546,39 +576,52 @@ export class AgentBrowserRuntime {
     const timeoutMs = Math.min(options.timeoutMs ?? this.timeoutMs, this.timeoutMs);
     const page = await this.requirePage();
     const attachmentGeneration = this.attachmentGeneration;
-    const documentGeneration = this.documentGeneration;
-    // Native history and fixed DOM metadata are independent reads. Overlap their
-    // CDP round trips without caching metadata or weakening input attachment checks.
-    const [history, evaluated] = await Promise.all([
-      this.navigationHistory(page, timeoutMs),
-      page.send<{
-        result: { value?: { url?: string; title?: string } };
-      }>(
-        "Runtime.evaluate",
-        {
-          expression: "({url: location.href, title: document.title})",
-          returnByValue: true,
-        },
-        { timeoutMs },
-      ),
-    ]);
-    if (
-      page !== this.page ||
-      attachmentGeneration !== this.attachmentGeneration ||
-      documentGeneration !== this.documentGeneration
-    ) {
-      throw new CdpUnavailableError("Browser metadata changed while being read");
+    const deadline = performance.now() + timeoutMs;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.assertRuntimeOpen();
+      const remaining = attempt === 0 ? timeoutMs : deadline - performance.now();
+      if (remaining <= 0) {
+        throw new CdpUnavailableError("Browser metadata observation timed out");
+      }
+      const documentGeneration = this.documentGeneration;
+      // Both observations must describe the same document. A navigation discards
+      // the entire pair; neither native history nor DOM metadata is cached.
+      const [history, evaluated] = await Promise.all([
+        this.navigationHistory(page, remaining),
+        page.send<{
+          result: { value?: { url?: string; title?: string } };
+        }>(
+          "Runtime.evaluate",
+          {
+            expression: "({url: location.href, title: document.title})",
+            returnByValue: true,
+          },
+          { timeoutMs: remaining },
+        ),
+      ]);
+      this.assertRuntimeOpen();
+      if (page !== this.page || attachmentGeneration !== this.attachmentGeneration) {
+        throw new CdpUnavailableError("Browser metadata changed while being read");
+      }
+      // Successful replies can beat an overdue CDP timer in the event queue.
+      // Their metadata still cannot outlive the original shared phase budget.
+      if (performance.now() >= deadline) {
+        throw new CdpUnavailableError("Browser metadata observation timed out");
+      }
+      if (documentGeneration !== this.documentGeneration) {
+        if (attempt === 0) continue;
+        throw new CdpUnavailableError("Browser metadata changed while being read");
+      }
+      return {
+        url: evaluated.result.value?.url ?? history.entries[history.currentIndex]?.url ?? "",
+        title: evaluated.result.value?.title ?? history.entries[history.currentIndex]?.title ?? "",
+        canGoBack: history.currentIndex > 0,
+        canGoForward: history.currentIndex < history.entries.length - 1,
+        inputGeneration: formatRuntimeInputGeneration(attachmentGeneration, documentGeneration),
+      };
     }
-    return {
-      url: evaluated.result.value?.url ?? history.entries[history.currentIndex]?.url ?? "",
-      title: evaluated.result.value?.title ?? history.entries[history.currentIndex]?.title ?? "",
-      canGoBack: history.currentIndex > 0,
-      canGoForward: history.currentIndex < history.entries.length - 1,
-      inputGeneration: formatRuntimeInputGeneration(
-        this.attachmentGeneration,
-        this.documentGeneration,
-      ),
-    };
+    throw new CdpUnavailableError("Browser metadata changed while being read");
   }
 
   /** Await native ACK and its main-frame commit, without waiting for scripts or
@@ -773,6 +816,11 @@ export class AgentBrowserRuntime {
       { enabled: device.touch, maxTouchPoints: device.touch ? 5 : 1 },
       { mutation: true },
     );
+    // A page controlled through its own session may sit behind another tab in the shared
+    // browser. Chromium holds a hidden page's mouseMoved acknowledgement for ~5 s (equal to the
+    // input idle bound), so every press there failed. Target-scoped focus emulation makes only
+    // this page report visible/focused: no tab is raised and no viewer's selection changes.
+    await page.send("Emulation.setFocusEmulationEnabled", { enabled: true }, { mutation: true });
     if (device.userAgent) {
       await page.send(
         "Emulation.setUserAgentOverride",
@@ -1241,8 +1289,8 @@ export class AgentBrowserRuntime {
     method: string,
     params: Record<string, unknown>,
     gestureId?: string,
-    track?: () => void,
     mouseModifiers?: number,
+    track?: () => void,
   ): Promise<void> {
     try {
       const page = await this.requirePage();
@@ -1299,10 +1347,10 @@ export class AgentBrowserRuntime {
         buttons: this.buttonMask(),
       },
       gestureId,
+      modifiers,
       () => {
         this.lastMousePoint = { x, y };
       },
-      modifiers,
     );
   }
 
@@ -1343,13 +1391,13 @@ export class AgentBrowserRuntime {
         clickCount,
       },
       gestureId,
+      modifiers,
       () => {
         // Publication may succeed before an acknowledgement is lost, so a
         // possibly held button is tracked from the send boundary.
         this.heldButtons.add(button);
         this.lastMousePoint = { x, y };
       },
-      modifiers,
     );
   }
 
@@ -1374,10 +1422,10 @@ export class AgentBrowserRuntime {
         clickCount,
       },
       gestureId,
+      modifiers,
       () => {
         this.lastMousePoint = { x, y };
       },
-      modifiers,
     );
     this.heldButtons.delete(button);
   }
@@ -1404,7 +1452,6 @@ export class AgentBrowserRuntime {
         buttons: this.buttonMask(),
       },
       gestureId,
-      undefined,
       modifiers,
     );
   }
@@ -1425,22 +1472,24 @@ export class AgentBrowserRuntime {
       );
     }
     if (parsed.type === "up" && !held) throw new Error("Key release has no matching press");
+    if (parsed.type === "down") this.assertHeldKeyCapacity(parsed.code);
     await this.dispatchInput(
       "Input.dispatchKeyEvent",
       nativeKeyEvent(parsed),
       gestureId,
+      undefined,
       parsed.type === "down"
-        ? () => {
-            this.assertHeldKeyCapacity(parsed.code);
-            this.heldKeys.set(parsed.code, { key: parsed.key, code: parsed.code });
-          }
+        ? () => this.heldKeys.set(parsed.code, { key: parsed.key, code: parsed.code })
         : undefined,
     );
     if (parsed.type === "up") this.heldKeys.delete(parsed.code);
   }
 
-  /** Cleanup intent is tracked at the validated send boundary, including an uncertain key-down. */
+  /** Track intent before publication. Internal discrete presses can use the
+   * same opaque channel as live input so a lost ACK retains original-page cleanup. */
   async keyDown(key: string, code = key, gestureId?: string): Promise<void> {
+    if (gestureId) await this.assertLiveInput(gestureId);
+    this.assertHeldKeyCapacity(code);
     await this.dispatchInput(
       "Input.dispatchKeyEvent",
       {
@@ -1450,10 +1499,8 @@ export class AgentBrowserRuntime {
         text: key.length === 1 ? key : undefined,
       },
       gestureId,
-      () => {
-        this.assertHeldKeyCapacity(code);
-        this.heldKeys.set(code, { key, code });
-      },
+      undefined,
+      () => this.heldKeys.set(code, { key, code }),
     );
   }
 
@@ -1490,6 +1537,7 @@ export class AgentBrowserRuntime {
         "Input.dispatchTouchEvent",
         { type: "touchEnd", touchPoints: removed },
         gestureId,
+        undefined,
         hold,
       );
     }
@@ -1497,6 +1545,7 @@ export class AgentBrowserRuntime {
       "Input.dispatchTouchEvent",
       { type, touchPoints: contacts },
       gestureId,
+      undefined,
       hold,
     );
     // Navigation cleanup already discarded this channel's contacts. Do not
@@ -1686,13 +1735,7 @@ export class AgentBrowserRuntime {
   async shutdown(force = false): Promise<void> {
     if (this.shutDown) return;
     if (this.shutdownInFlight) return this.shutdownInFlight;
-    // Fence new media and screencast starts at once; the rest waits behind the
-    // video barrier so a native capture stop cannot overlap daemon teardown.
-    this.stopping = true;
-    this.jpegDemand.close();
-    this.screencastActive = false;
-    this.invalidateScreencastFrame();
-    const operation = this.withVideoTransition(() => this.performShutdown(force));
+    const operation = this.performShutdown(force);
     this.shutdownInFlight = operation;
     try {
       await operation;
@@ -1703,33 +1746,41 @@ export class AgentBrowserRuntime {
   }
 
   private async performShutdown(force: boolean): Promise<void> {
-    if (this.liveInput) await this.endLiveInput(this.liveInput.id);
-    await this.releaseHeldInput();
+    this.stopping = true;
+    this.jpegDemand.close();
+    this.screencastActive = false;
     this.invalidateScreencastFrame();
-    if (!force) {
+    await this.withVideoTransition(async () => {
+      if (this.liveInput) await this.endLiveInput(this.liveInput.id);
+      await this.releaseHeldInput();
+      this.invalidateScreencastFrame();
+      // Only the controller that launched the browser owns its session daemon.
+      if (this.ownsBrowser) await this.stopDaemon(force);
+      this.connection?.close();
+      this.connection = null;
+      this.page = null;
+      this.targetId = null;
+      this.invalidateScreencastFrame();
+    });
+  }
+
+  /** Close, then require observed exit; escalate to a verified-owned SIGKILL and observe that too. */
+  private async stopDaemon(force: boolean): Promise<void> {
+    let forced = force;
+    if (!forced) {
       try {
         await this.invoke(["--session", this.session, "--json", "close"]);
       } catch {
-        await this.performShutdown(true);
-        return;
+        forced = true;
       }
       // close returns before the session daemon exits. A same-session relaunch would reach
       // that daemon with its original launch environment (e.g. a stopped private display).
-      if (!(await this.daemonExited())) {
-        await this.performShutdown(true);
-        return;
-      }
-    } else {
-      await this.terminateDaemon();
+      if (!forced && !(await this.daemonExited())) forced = true;
     }
-    if (force || this.daemonLaunched) await this.removeIpcMetadata();
+    if (forced) await this.terminateDaemon();
+    if (forced || this.daemonLaunched) await this.removeIpcMetadata();
     this.daemonLaunched = false;
     this.daemon = null;
-    this.connection?.close();
-    this.connection = null;
-    this.page = null;
-    this.targetId = null;
-    this.invalidateScreencastFrame();
   }
 
   /**
@@ -1832,7 +1883,10 @@ export class AgentBrowserRuntime {
     }
   }
 
-  private async connectCdp(preferredTargetId: string | null = null): Promise<void> {
+  private async connectCdp(
+    preferredTargetId: string | null = null,
+    activate = this.ownsBrowser,
+  ): Promise<void> {
     this.assertRuntimeOpen();
     // A launch-selected page remains the intended target even if its first
     // attachment fails. Otherwise a retry could silently adopt another tab.
@@ -1876,7 +1930,7 @@ export class AgentBrowserRuntime {
       throw new CdpUnavailableError("The selected browser page is no longer available");
     }
     if (!target) throw new CdpUnavailableError("Chromium has no page target");
-    await this.selectTarget(target.targetId);
+    await this.selectTarget(target.targetId, activate);
   }
 
   private async requirePage(): Promise<CdpSession> {

@@ -46,9 +46,9 @@ async function fixture(name: string) {
   );
   quota
     .prepare(
-      "INSERT INTO usage_history VALUES (1, ?, 'fixture-account', 'fixture-limit', ?, NULL, 0.25, NULL, NULL, 1000)",
+      "INSERT INTO usage_history VALUES (1, ?, 'fixture-account', 'fixture-limit', ?, NULL, 0.25, NULL, NULL, ?)",
     )
-    .run(name, name);
+    .run(name, name, Date.now());
   quota.close();
   const bank = join(root, "memories", "mnemopi", "banks", `workspace-${name}`);
   await mkdir(bank, { recursive: true });

@@ -27,6 +27,7 @@ it("revokes old bridge pixel tokens and admits a new capture without publishing 
         createdAt: 1,
       }),
       archiveWorkspace: async () => {},
+      closeWorkspace: async () => {},
       disconnect: () => {},
       requestWorkspace: async (_workspace, operation) => {
         calls.push(operation);

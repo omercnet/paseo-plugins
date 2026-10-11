@@ -1,0 +1,7 @@
+Gas City connects Paseo to a Gas City supervisor, so you can see its cities, sessions, convoys, work items and events from Paseo and, if you turn it on, act on them. It adds a **Gas City** screen and a **Factory** panel in workspaces that map to a Gas City rig.
+
+Gas City v1.4.1 must be running with its supervisor HTTP API reachable from the Paseo daemon, and the plugin requires Paseo `^0.9.0 || ^0.10.0 || ^0.11.0`. The daemon, not the app, sends every request. By default it talks to a supervisor on the local machine, and it refuses any other host until you turn on the remote endpoint setting. Settings are host-wide, so every client connected to that daemon shares them.
+
+The plugin reads the supervisor's health, cities, rigs, sessions, convoys, work items, pending interactions and events. It makes changes only after you turn on mutations, which are off by default. Mutations dispatch work, control sessions, and respond to permission and input requests, and each one needs explicit confirmation in the interface. That switch and confirmation guard against mistakes and are not authentication, so access control stays with Gas City, and the settings are not a place to store credentials.
+
+A Paseo workspace maps to a rig by the longest rig path that contains the workspace path. A workspace outside every rig, or one that ties between rigs, needs an explicit mapping in the settings. Chatting with a Gas City session from a Paseo agent view is not available with Gas City v1.4.1.

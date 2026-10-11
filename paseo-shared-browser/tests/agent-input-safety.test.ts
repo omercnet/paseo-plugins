@@ -14,13 +14,41 @@ async function agentFixture() {
   let afterDown = false;
   let failStateAfterDown = false;
   let unknownText = false;
+  // Mirrors the runtime's live-input contract: input.begin pins the native
+  // attachment/document, and every primitive carrying that channel is refused
+  // once it differs. A primitive without a channel is not protected.
+  const pinned = new Map<string, string>();
+  let replaceBefore: string | null = null;
+  const accepted: { operation: string; url: string }[] = [];
   const calls: { operation: string; url: string; input: Record<string, unknown> }[] = [];
   const supervisor = new RuntimeSupervisor({
     owner: {
       create: async () => ({ runtimeId: "r".repeat(40) }),
       stop: async () => {},
       request: async (_runtime, operation, input) => {
-        calls.push({ operation, input: (input ?? {}) as Record<string, unknown>, url });
+        const data = (input ?? {}) as Record<string, unknown>;
+        calls.push({ operation, input: data, url });
+        if (operation === replaceBefore) {
+          // Autonomous navigation lands after every policy check, just before publication.
+          replaceBefore = null;
+          url = "https://replacement.invalid/";
+          generation = "1:2";
+        }
+        if (operation === "input.begin") {
+          if (data.expectedInputGeneration !== generation)
+            throw new Error("Live browser input attachment changed before admission");
+          pinned.set(String(data.gestureId), generation);
+          return null;
+        }
+        if (operation === "input.end") {
+          pinned.delete(String(data.gestureId));
+          return null;
+        }
+        if (/^(text|key|mouse)\./.test(operation)) {
+          if (typeof data.gestureId === "string" && pinned.get(data.gestureId) !== generation)
+            throw new Error("Live browser input attachment changed");
+          accepted.push({ operation, url });
+        }
         if (operation === "identity") return { userAgent: "review fixture" };
         if (operation === "state") {
           if (failStateAfterDown && afterDown) {
@@ -80,6 +108,10 @@ async function agentFixture() {
   return {
     request,
     calls,
+    accepted,
+    replaceBefore: (operation: string) => {
+      replaceBefore = operation;
+    },
     navigate: () => {
       url = "https://replacement.invalid/";
       generation = "1:2";
@@ -125,6 +157,52 @@ describe("agent input after autonomous navigation", () => {
     expect(ops.indexOf("input.end", begin)).toBeGreaterThan(ops.indexOf("text.insert", begin));
     const insert = fixture.calls.filter((call) => call.operation === "text.insert").at(-1);
     expect(insert?.input.gestureId).toBe(fixture.calls[begin]?.input.gestureId);
+  });
+
+  it.each([
+    { name: "hover move", event: { kind: "move", point: click.point }, before: "mouse.move" },
+    {
+      name: "scroll's first move",
+      event: { kind: "scroll", point: click.point, deltaX: 0, deltaY: 120 },
+      before: "mouse.move",
+    },
+    {
+      name: "scroll's wheel after its metadata check",
+      event: { kind: "scroll", point: click.point, deltaX: 0, deltaY: 120 },
+      before: "mouse.wheel",
+    },
+  ])(
+    "$name: a document replaced after the metadata check reaches no native primitive on it",
+    async ({ event, before }) => {
+      const fixture = await agentFixture();
+      fixture.replaceBefore(before);
+      await expect(fixture.request("input", { event })).rejects.toThrow();
+      expect(fixture.accepted.filter((call) => call.url.startsWith("https://replacement"))).toEqual(
+        [],
+      );
+      // The wheel never published once its document changed.
+      if (before === "mouse.wheel")
+        expect(fixture.accepted.map((call) => call.operation)).not.toContain("mouse.wheel");
+    },
+  );
+
+  it.each([
+    { kind: "move", point: click.point },
+    { kind: "scroll", point: click.point, deltaX: 0, deltaY: 120 },
+  ])("runs $kind on the pinned channel and ends it", async (event) => {
+    const fixture = await agentFixture();
+    await fixture.request("input", { event });
+    const begin = fixture.calls.findLast((call) => call.operation === "input.begin");
+    const gestureId = begin?.input.gestureId;
+    expect(typeof gestureId).toBe("string");
+    const native = fixture.calls.filter((call) => /^mouse\./.test(call.operation));
+    expect(native.length).toBeGreaterThan(0);
+    for (const call of native) expect(call.input.gestureId).toBe(gestureId);
+    expect(
+      fixture.calls.some(
+        (call) => call.operation === "input.end" && call.input.gestureId === gestureId,
+      ),
+    ).toBe(true);
   });
 });
 

@@ -19,7 +19,7 @@ vi.mock("react", () => ({
   },
   useState: (initial: unknown) => {
     const i = hooks.index++;
-    hooks.slots[i] ??= typeof initial === "function" ? (initial as () => unknown)() : initial;
+    hooks.slots[i] ??= initial;
     return [
       hooks.slots[i],
       (next: unknown) => {
@@ -38,7 +38,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => {
   return { Modal, TextInput: () => null };
 });
 vi.mock("react-native", () => ({ Text: () => null, View: () => null }));
-vi.mock("./browser-control-button", () => ({ ControlButton: () => null }));
+vi.mock("./browser-chrome", () => ({ ControlButton: () => null }));
 
 import { ComposeTextControls } from "./browser-compose-controls";
 
@@ -61,6 +61,7 @@ function find(
 
 const composeText = vi.fn((_text: string) => true);
 const cancelInput = vi.fn();
+const onRequestControlForCompose = vi.fn();
 let props: Parameters<typeof ComposeTextControls>[0];
 let tree: Node;
 
@@ -81,6 +82,7 @@ beforeEach(() => {
   hooks.slots = [];
   composeText.mockClear();
   cancelInput.mockClear();
+  onRequestControlForCompose.mockClear();
   hooks.rerender = () => {
     hooks.index = 0;
     hooks.effects = [];
@@ -93,13 +95,16 @@ beforeEach(() => {
     cancelInput,
     enabled: true,
     ownershipKey: "page-1",
+    documentKey: "doc-1",
     request: null,
     onRequestHandled: vi.fn(),
+    onRequestControlForCompose,
+    canRequestControl: false,
   };
 });
 
 function open() {
-  render({ request: { id: 1, ownershipKey: "page-1" } });
+  render({ request: { id: 1, kind: "compose", ownershipKey: "page-1" } });
   draft("hello");
   render();
 }
@@ -134,15 +139,32 @@ describe("ComposeTextControls", () => {
     expect(composeText).toHaveBeenCalledTimes(2);
   });
 
-  it("a retained Done callback cannot insert after ownership changes", () => {
+  it("a retained Done callback cannot insert after ownership changes; the same document rebinds once", () => {
     open();
     const stale = done().onPress as () => void;
     render({ ownershipKey: "page-2" });
-    expect(done().disabled).toBe(true);
     stale();
     expect(composeText).not.toHaveBeenCalled();
     (done().onPress as () => void)();
+    expect(composeText).toHaveBeenCalledTimes(1);
+    expect(composeText).toHaveBeenCalledWith("hello");
+  });
+
+  it("a replaced document refuses Done entirely", () => {
+    open();
+    const stale = done().onPress as () => void;
+    render({ ownershipKey: "page-2", documentKey: "doc-2" });
+    expect(done().disabled).toBe(true);
+    stale();
     expect(composeText).not.toHaveBeenCalled();
+  });
+
+  it("without control, Done asks for control instead of inserting", () => {
+    open();
+    render({ enabled: false, canRequestControl: true });
+    (done().onPress as () => void)();
+    expect(composeText).not.toHaveBeenCalled();
+    expect(onRequestControlForCompose).toHaveBeenCalledTimes(1);
   });
 
   it("a retained Done callback cannot insert after control is lost", () => {
@@ -154,7 +176,7 @@ describe("ComposeTextControls", () => {
   });
 
   it("keeps every character of input that arrives faster than a re-render, and never echoes a value back", () => {
-    render({ request: { id: 1, ownershipKey: "page-1" } });
+    render({ request: { id: 1, kind: "compose", ownershipKey: "page-1" } });
     const field = find(tree, (p) => "onChangeText" in p);
     expect("value" in field).toBe(false);
     // One retained handler, no render between events: the host input owns the text.
@@ -167,7 +189,7 @@ describe("ComposeTextControls", () => {
   });
 
   it("commits ten rapid characters and an IME-style whole-string replacement exactly", () => {
-    render({ request: { id: 1, ownershipKey: "page-1" } });
+    render({ request: { id: 1, kind: "compose", ownershipKey: "page-1" } });
     const change = find(tree, (p) => "onChangeText" in p).onChangeText as (t: string) => void;
     for (let i = 1; i <= 10; i++) change("abcdefghij".slice(0, i));
     change("にほんご"); // composition commit replaces the whole value
@@ -177,13 +199,13 @@ describe("ComposeTextControls", () => {
   });
 
   it("clears the draft on close and reopen, and ignores a retained handler from the old draft", () => {
-    render({ request: { id: 1, ownershipKey: "page-1" } });
+    render({ request: { id: 1, kind: "compose", ownershipKey: "page-1" } });
     const retained = find(tree, (p) => "onChangeText" in p).onChangeText as (t: string) => void;
     retained("old draft");
     render();
     (find(tree, (p) => p.label === "Cancel").onPress as () => void)();
     retained("late old text");
-    render({ request: { id: 2, ownershipKey: "page-1" } });
+    render({ request: { id: 2, kind: "compose", ownershipKey: "page-1" } });
     expect(done().disabled).toBe(true);
     (done().onPress as () => void)();
     expect(composeText).not.toHaveBeenCalled();
@@ -194,7 +216,7 @@ describe("ComposeTextControls", () => {
     find(tree, (p) => "onOpenChange" in p).onOpenChange as (o: boolean) => void;
   const reopen = (id: number) => {
     cancel()();
-    render({ request: { id, ownershipKey: "page-1" } });
+    render({ request: { id, kind: "compose", ownershipKey: "page-1" } });
   };
 
   it("a retained Done from a closed draft cannot publish or close a same-owner replacement", () => {
@@ -238,5 +260,16 @@ describe("ComposeTextControls", () => {
     expect(composeText).toHaveBeenCalledTimes(1);
     (done().onPress as () => void)();
     expect(composeText).toHaveBeenLastCalledWith("second");
+  });
+
+  it("a retained Done from a closed draft neither rebinds nor requests control", () => {
+    open();
+    render({ enabled: false, canRequestControl: true });
+    const staleDone = done().onPress as () => void;
+    reopen(2);
+    render({ enabled: false, canRequestControl: true });
+    staleDone();
+    expect(onRequestControlForCompose).not.toHaveBeenCalled();
+    expect(composeText).not.toHaveBeenCalled();
   });
 });

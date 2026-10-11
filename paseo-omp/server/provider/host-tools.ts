@@ -29,6 +29,7 @@ import {
   truncateUtf8,
   utf8Bytes,
 } from "./security";
+import { withOmpSessionPurpose } from "./session-purpose";
 
 type HostToolFailureStage = Extract<
   OmpOperationalFailure,
@@ -1024,4 +1025,20 @@ export function withOmpWorkspaceIdentity<
   if (request.workspaceId) env.PASEO_WORKSPACE_ID = request.workspaceId;
   else delete env.PASEO_WORKSPACE_ID;
   return { ...request, env };
+}
+
+/**
+ * The complete env transform for an OMP `agent.session_open` hook: the caller's identity plus the
+ * host-decided launch purpose. Registered once by the plugin and exercised directly by tests.
+ */
+export function withOmpSessionOpenEnv<
+  T extends {
+    agentId: string;
+    workspaceId: string | null;
+    reason?: string;
+    purpose?: string;
+    env: Record<string, string>;
+  },
+>(request: T) {
+  return withOmpSessionPurpose(withOmpWorkspaceIdentity(request));
 }

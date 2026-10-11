@@ -123,6 +123,30 @@ describe("runtime-owned live input", () => {
     });
   }
 
+  it("releases a cancelled held drag at its last native pointer position, not the origin", async () => {
+    const state = fixture();
+    await state.begin("owned");
+    await state.runtime.mouseDown(10, 20, "left", 1, "owned");
+    await state.runtime.mouseMove(300, 410, "owned");
+    await state.runtime.endLiveInput("owned");
+    const released = state.calls.filter((call) => call.params.type === "mouseReleased");
+    expect(released).toHaveLength(1);
+    expect(released[0]?.params).toMatchObject({ x: 300, y: 410, button: "left", buttons: 0 });
+  });
+
+  it("releases a held button where an unacknowledged press was sent", async () => {
+    const state = fixture();
+    await state.begin("owned");
+    state.intercept(async (method) => {
+      if (method === "Input.dispatchMouseEvent") throw new Error("Unknown publication outcome");
+    });
+    await expect(state.runtime.mouseDown(55, 66, "left", 1, "owned")).rejects.toThrow();
+    state.intercept(async () => {});
+    await state.runtime.endLiveInput("owned");
+    const released = state.calls.filter((call) => call.params.type === "mouseReleased");
+    expect(released[0]?.params).toMatchObject({ x: 55, y: 66 });
+  });
+
   it("bounds optional cursor sampling without cancelling a held mouse or replaying its press", async () => {
     const state = fixture();
     await state.begin("owned");
@@ -205,30 +229,6 @@ describe("runtime-owned live input", () => {
     await vi.advanceTimersByTimeAsync(1_001);
     expect(state.calls.filter((call) => call.params.type === "mouseReleased")).toHaveLength(1);
     await expect(state.runtime.mouseMove(20, 30, "owned")).rejects.toThrow("attachment");
-  });
-
-  it("releases a cancelled held drag at its last native pointer position, not the origin", async () => {
-    const state = fixture();
-    await state.begin("owned");
-    await state.runtime.mouseDown(10, 20, "left", 1, "owned");
-    await state.runtime.mouseMove(300, 410, "owned");
-    await state.runtime.endLiveInput("owned");
-    const released = state.calls.filter((call) => call.params.type === "mouseReleased");
-    expect(released).toHaveLength(1);
-    expect(released[0]?.params).toMatchObject({ x: 300, y: 410, button: "left", buttons: 0 });
-  });
-
-  it("releases a held button where an unacknowledged press was sent", async () => {
-    const state = fixture();
-    await state.begin("owned");
-    state.intercept(async (method) => {
-      if (method === "Input.dispatchMouseEvent") throw new Error("Unknown publication outcome");
-    });
-    await expect(state.runtime.mouseDown(55, 66, "left", 1, "owned")).rejects.toThrow();
-    state.intercept(async () => {});
-    await state.runtime.endLiveInput("owned");
-    const released = state.calls.filter((call) => call.params.type === "mouseReleased");
-    expect(released[0]?.params).toMatchObject({ x: 55, y: 66 });
   });
 
   it.each(["move", "up"] as const)(

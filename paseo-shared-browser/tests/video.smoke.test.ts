@@ -615,10 +615,10 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
       }
     }
     expect(secondTarget).not.toBeNull();
-    const second = await press(secondTarget!);
-    expect(second.admitted).toBe(true);
-    if (!second.admitted) throw new Error("Second press was not admitted");
-    state = second.state;
+    const secondPress = await press(secondTarget!);
+    expect(secondPress.admitted).toBe(true);
+    if (!secondPress.admitted) throw new Error("Second press was not admitted");
+    state = secondPress.state;
     await vi.waitFor(async () => expect(await clicksSoFar()).toBe(2), { timeout: 2000 });
     expect(state.url).toBe(`${origin}/pending-dom`);
     let ordinaryClickPainted = false;
@@ -650,6 +650,56 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
     }
     expect(ordinaryClickPainted).toBe(true);
     await consumer.send("Runtime.evaluate", { expression: "finishVideo()" });
+
+    const tab = await client.requestBrowser<{ tabId: string }>("tabs.create", {
+      viewerToken: attached.viewerToken,
+    });
+    const second = await client.requestBrowser<{ viewerToken: string; state: BrowserState }>(
+      "attach",
+      { workspaceId: "video-smoke", viewerLabel: "Second tab viewer", tabId: tab.tabId },
+    );
+    const secondControl = await client.requestBrowser<{
+      controlToken: string;
+      state: BrowserState;
+    }>("acquire-control", { viewerToken: second.viewerToken });
+    await client.requestBrowser("navigate", {
+      viewerToken: second.viewerToken,
+      controlToken: secondControl.controlToken,
+      expected: expected(secondControl.state),
+      action: { kind: "goto", url: `${origin}/source` },
+    });
+    const readTabPacket = async (viewerToken: string): Promise<BrowserVideoReadReply> => {
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const reply = await client!.requestBrowser<BrowserVideoReadReply>("video.read", {
+          viewerToken,
+          quality: "high",
+          streamId: null,
+          afterSequence: 0,
+          waitMs: 250,
+          requestKeyFrame: true,
+        });
+        expect(reply.status).not.toBe("unsupported");
+        if (reply.packets.length) return reply;
+      }
+      throw new Error("Tab produced no native video packets");
+    };
+    const secondVideo = await readTabPacket(second.viewerToken);
+    const firstVideo = await readTabPacket(attached.viewerToken);
+    expect(secondVideo.streamId).not.toBe(firstVideo.streamId);
+    expect(secondVideo.state.tabId).toBe(tab.tabId);
+    expect(firstVideo.state.tabId).toBe(attached.state.tabId);
+    expect(firstVideo.state.controller).toBe("self");
+    expect(firstVideo.state.url).toBe(`${origin}/pending-dom`);
+    await client.requestBrowser("tabs.close", {
+      viewerToken: attached.viewerToken,
+      controlToken: lease.controlToken,
+      tabId: attached.state.tabId!,
+    });
+    const afterOriginalClose = await readTabPacket(second.viewerToken);
+    expect(afterOriginalClose.state.tabId).toBe(tab.tabId);
+    expect(afterOriginalClose.state.controller).toBe("self");
+    expect(afterOriginalClose.state.url).toBe(`${origin}/source`);
+    await client.requestBrowser("detach", { viewerToken: second.viewerToken });
     await client.requestBrowser("detach", { viewerToken: attached.viewerToken });
     if (process.env.PASEO_SHARED_BROWSER_VIDEO_SMOKE_RECEIPT) {
       await writeFile(

@@ -11,8 +11,12 @@ const SEARCH_LIMIT = 100;
 const ENRICHMENT_BATCH_SIZE = 20;
 const COMMAND_TIMEOUT_MS = 15_000;
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
-const statePath = join(homedir(), ".paseo", "plugin-data", "pr-radar", "inbox-state.json");
 const SCOPE_SEARCH_LIMIT = 1000;
+
+function statePath(): string {
+  const home = process.env.PASEO_HOME ?? join(homedir(), ".paseo");
+  return join(home, "plugin-data", "pr-radar", "inbox-state.json");
+}
 
 interface SearchRecord {
   id: string;
@@ -254,7 +258,7 @@ function toInboxItem(
 
 async function readState(): Promise<StoredState> {
   try {
-    const state = JSON.parse(await readFile(statePath, "utf8")) as StoredState;
+    const state = JSON.parse(await readFile(statePath(), "utf8")) as StoredState;
     if (state.version === 2 && state.windows && typeof state.windows === "object") return state;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -265,10 +269,11 @@ async function readState(): Promise<StoredState> {
 }
 
 async function writeState(state: StoredState): Promise<void> {
-  await mkdir(dirname(statePath), { recursive: true });
-  const temporaryPath = `${statePath}.${process.pid}.tmp`;
+  const path = statePath();
+  await mkdir(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.${process.pid}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(state)}\n`, { mode: 0o600 });
-  await rename(temporaryPath, statePath);
+  await rename(temporaryPath, path);
 }
 
 function storedItem(item: GitHubInboxItem): StoredItem {

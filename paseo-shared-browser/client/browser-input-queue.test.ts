@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserGestureEvent, BrowserState } from "../shared/browser";
+import { createBrowserCanvasInput } from "./browser-canvas-input";
 import {
   type BrowserGestureAuthority,
   type BrowserGestureControl,
@@ -122,6 +123,36 @@ function fixture(
 }
 
 describe("bounded browser input queue", () => {
+  it("never sends orphan moves after a canvas touch starts without decoded-frame authority", async () => {
+    const f = fixture(undefined, true);
+    const input = createBrowserCanvasInput({
+      enabled: () => true,
+      viewport: () => ({ width: 800, height: 600 }),
+      enqueue: f.queue.enqueue,
+      finish: f.queue.finish,
+      cancel: f.queue.cancel,
+      onPoint: vi.fn(),
+      onActivity: vi.fn(),
+    });
+    const contact = { ...point(10), id: 0 };
+    f.changeAuthority(null);
+    expect(input.touch("start", [contact])).toBe(false);
+    f.changeAuthority(authority);
+    input.touch("move", [{ ...contact, x: 30 }]);
+    input.touch("end", []);
+    input.touch("start", [contact]);
+    f.beginGate.resolve({ state, gestureId: "fresh-touch", nextSequence: 1 });
+    await flush();
+    expect(f.sent.map(({ event }) => event)).toEqual([
+      { kind: "touch", type: "start", points: [contact] },
+    ]);
+    expect(f.errors).toEqual([]);
+    input.touch("end", []);
+    await flush();
+    f.queue.finish();
+    await flush();
+  });
+
   it("completes acknowledged Enter navigation before state projection revokes the decoded frame", async () => {
     const f = fixture();
     const next: BrowserState = {

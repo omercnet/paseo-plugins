@@ -10,6 +10,20 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [1.2.2](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v1.2.1...agent-monitor-v1.2.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **plugins:** ship OVERVIEW.md in published packages ([640f9a4](https://github.com/omercnet/paseo-plugins/commit/640f9a4d7bd6dbad226c4ee1ebaa199abfc62776))
+
+## [1.2.1](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v1.2.0...agent-monitor-v1.2.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **agent-monitor:** prefer first-class parentAgentId with legacy label fallback ([#285](https://github.com/omercnet/paseo-plugins/issues/285)) ([2e3ce7f](https://github.com/omercnet/paseo-plugins/commit/2e3ce7f86e52fd2ffa448977b1e3fab5bd2f59e7))
+
 ## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v1.1.0...agent-monitor-v1.2.0) (2026-10-03)
 
 

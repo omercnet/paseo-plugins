@@ -20,6 +20,7 @@ export {
 export { DEVICE_PRESET_IDS, DEVICE_PRESETS, type DevicePresetId } from "./device-presets";
 
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
+export const MAX_BROWSER_TABS = 8;
 export { MAX_VIEWPORT, MIN_VIEWPORT } from "./viewport-limits";
 
 const devicePresetIdSchema = z.enum(DEVICE_PRESET_IDS);
@@ -37,6 +38,20 @@ const opaqueTokenSchema = z
 const generationSchema = z.number().int().nonnegative();
 const epochSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const runtimeIdSchema = opaqueTokenSchema;
+export const browserTabIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/);
+
+export const browserTabSchema = z.object({
+  id: browserTabIdSchema,
+  title: z.string().max(1_024),
+  url: z.string().max(8_192),
+  viewerCount: z.number().int().nonnegative(),
+  controllerLabel: z.string().max(64).nullable(),
+});
+export type BrowserTab = z.output<typeof browserTabSchema>;
 
 export const browserRecoveryStateSchema = z.enum([
   "available",
@@ -70,6 +85,7 @@ export const browserStateSchema = z.object({
   error: z.string().max(2_048).nullable(),
   notice: z.string().max(256).optional(),
   runtimeId: runtimeIdSchema.optional(),
+  tabId: browserTabIdSchema.optional(),
   runtimeCreatedAt: epochSchema.optional(),
   bridgeEpoch: epochSchema.optional(),
   recoveryState: browserRecoveryStateSchema.optional(),
@@ -96,6 +112,7 @@ export const attachBrowserRpc = defineRpc({
   input: z.object({
     workspaceId: workspaceIdSchema,
     viewerLabel: z.string().trim().min(1).max(64),
+    tabId: browserTabIdSchema.optional(),
   }),
   output: z.object({
     viewerToken: opaqueTokenSchema,
@@ -103,10 +120,51 @@ export const attachBrowserRpc = defineRpc({
   }),
 });
 
+export const listBrowserTabsRpc = defineRpc({
+  name: "shared-browser.tabs.list",
+  input: z.object({ viewerToken: opaqueTokenSchema }),
+  output: z.object({ tabs: z.array(browserTabSchema).max(MAX_BROWSER_TABS) }),
+});
+
+export const createBrowserTabRpc = defineRpc({
+  name: "shared-browser.tabs.create",
+  input: z.object({ viewerToken: opaqueTokenSchema }),
+  output: z.object({ tabId: browserTabIdSchema }),
+});
+
+export const closeBrowserTabRpc = defineRpc({
+  name: "shared-browser.tabs.close",
+  input: z.object({
+    viewerToken: opaqueTokenSchema,
+    controlToken: opaqueTokenSchema,
+    tabId: browserTabIdSchema,
+  }),
+  output: z.object({ closed: z.literal(true) }),
+});
+
 export const detachBrowserRpc = defineRpc({
   name: "shared-browser.detach",
   input: z.object({ viewerToken: opaqueTokenSchema }),
   output: z.object({ detached: z.boolean() }),
+});
+
+/** Stop the current workspace runtime only when its controller still owns this session. */
+export const closeBrowserRpc = defineRpc({
+  name: "shared-browser.close",
+  input: z.object({
+    viewerToken: opaqueTokenSchema,
+    controlToken: opaqueTokenSchema,
+    sessionId: opaqueTokenSchema,
+    runtimeId: runtimeIdSchema,
+  }),
+  output: z.object({ closed: z.literal(true) }),
+});
+
+/** Reopen a deliberately closed workspace browser using its retained profile. */
+export const reopenBrowserRpc = defineRpc({
+  name: "shared-browser.reopen",
+  input: z.object({ workspaceId: workspaceIdSchema }),
+  output: z.object({ opened: z.literal(true) }),
 });
 
 export const listOpenBrowserWorkspacesRpc = defineRpc({
@@ -183,6 +241,10 @@ export const resizeBrowserRpc = defineRpc({
     controlToken: opaqueTokenSchema,
     expected: expectedStateSchema,
     viewport: viewportSchema,
+    /** Panel following changes layout size without resetting device behavior or density. */
+    preserveEmulation: z.boolean().optional(),
+    /** Resolve automatic density and panel geometry in one controlled transition. */
+    captureDensity: captureDensitySchema.optional(),
   }),
   output: z.object({ state: browserStateSchema }),
 });

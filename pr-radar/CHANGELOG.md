@@ -6,6 +6,21 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [1.2.2](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v1.2.1...pr-radar-v1.2.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **plugins:** ship OVERVIEW.md in published packages ([640f9a4](https://github.com/omercnet/paseo-plugins/commit/640f9a4d7bd6dbad226c4ee1ebaa199abfc62776))
+
+## [1.2.1](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v1.2.0...pr-radar-v1.2.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **pr-radar:** honor PASEO_HOME for inbox state ([#283](https://github.com/omercnet/paseo-plugins/issues/283)) ([debe292](https://github.com/omercnet/paseo-plugins/commit/debe2927653212455e5f08d91028b83826867fd9))
+* **ui:** raise context-mode eyebrow contrast and fix radar empty-queue copy ([#290](https://github.com/omercnet/paseo-plugins/issues/290)) ([ed16e30](https://github.com/omercnet/paseo-plugins/commit/ed16e30efe09aef0c4ebdee9b6d69d25e0e3cb2e))
+
 ## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v1.1.0...pr-radar-v1.2.0) (2026-10-03)
 
 

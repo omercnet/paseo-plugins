@@ -44,6 +44,7 @@ function fixture(monotonicStart?: number) {
       createdAt: now,
     }),
     archiveWorkspace: async () => {},
+    closeWorkspace: async () => {},
     disconnect() {},
     async requestWorkspace(_workspaceId, operation, params) {
       calls.push(operation);
