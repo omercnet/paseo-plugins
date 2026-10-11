@@ -196,6 +196,39 @@ describe("OMP quota reader", () => {
     expect(listOmpQuotasFrom(path, now).map((quota) => quota.label)).toEqual(["Live", "Active"]);
   });
 
+  test("judges only the newest row of a series and drops exact boundaries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-quotas-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
+      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+    )`);
+    const now = 1_800_000_000_000;
+    const window = 30 * 86_400_000;
+    const insert = database.prepare(
+      "INSERT INTO usage_history VALUES (?, 'p', 'a', ?, ?, NULL, ?, NULL, ?, ?)",
+    );
+    // Older live row must not resurrect a series whose newest row already reset.
+    insert.run(1, "dead", "Dead", 0.1, now + 1_000, now - 2_000);
+    insert.run(2, "dead", "Dead", 0.2, now - 1, now - 1_000);
+    // Newest live row wins over an older expired one.
+    insert.run(3, "revived", "Revived", 0.3, now - 5_000, now - 4_000);
+    insert.run(4, "revived", "Revived", 0.4, now + 1_000, now - 3_000);
+    insert.run(5, "reset-at-now", "ResetAtNow", 0.5, now, now - 1);
+    insert.run(6, "reset-after-now", "ResetAfterNow", 0.6, now + 1, now - 1);
+    insert.run(7, "recorded-at-cutoff", "RecordedAtCutoff", 0.7, null, now - window);
+    insert.run(8, "recorded-after-cutoff", "RecordedAfterCutoff", 0.8, null, now - window + 1);
+    database.close();
+
+    expect(listOmpQuotasFrom(path, now).map((quota) => quota.label)).toEqual([
+      "RecordedAfterCutoff",
+      "ResetAfterNow",
+      "Revived",
+    ]);
+  });
+
   test("resolves quotas from the configured OMP agent directory", async () => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-quota-resolver-"));
     quotaRoots.push(root);
