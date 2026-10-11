@@ -124,22 +124,76 @@ describe("OMP quota reader", () => {
       id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
       window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
     )`);
-    database
-      .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(1, "anthropic", "account", "five-hour", "Five hour", "5h", 0.1, "ok", null, 1);
-    database
-      .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(2, "anthropic", "account", "five-hour", "Five hour", "5h", 0.9, "warning", 2, 2);
-    database
-      .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(3, "openai", "account", "daily", "Daily", null, 0.2, "ok", null, 3);
+    const now = Date.now();
+    const insert = database.prepare(
+      "INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    insert.run(1, "anthropic", "account", "five-hour", "Five hour", "5h", 0.1, "ok", null, now - 3);
+    insert.run(
+      2,
+      "anthropic",
+      "account",
+      "five-hour",
+      "Five hour",
+      "5h",
+      0.9,
+      "warning",
+      now + 60_000,
+      now - 2,
+    );
+    insert.run(3, "openai", "account", "daily", "Daily", null, 0.2, "ok", null, now - 1);
     database.close();
 
-    expect(listOmpQuotasFrom(path)).toEqual([
-      expect.objectContaining({ provider: "anthropic", usedFraction: 0.9, recordedAt: 2 }),
-      expect.objectContaining({ provider: "openai", usedFraction: 0.2, recordedAt: 3 }),
+    expect(listOmpQuotasFrom(path, now)).toEqual([
+      expect.objectContaining({ provider: "anthropic", usedFraction: 0.9, recordedAt: now - 2 }),
+      expect.objectContaining({ provider: "openai", usedFraction: 0.2, recordedAt: now - 1 }),
     ]);
     expect(listOmpQuotasFrom(join(root, "missing.db"))).toEqual([]);
+  });
+
+  test("drops windows that already reset and reset-less rows abandoned for over 30 days", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-quotas-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
+      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+    )`);
+    const now = Date.now();
+    const day = 86_400_000;
+    const insert = database.prepare(
+      "INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    insert.run(
+      1,
+      "cursor",
+      "old",
+      "other",
+      "Exhausted",
+      null,
+      1,
+      "exhausted",
+      now - 40 * day,
+      now - 41 * day,
+    );
+    insert.run(
+      2,
+      "anthropic",
+      "acct",
+      "5h",
+      "Live",
+      "5h",
+      0.2,
+      "ok",
+      now + 3_600_000,
+      now - 60_000,
+    );
+    insert.run(3, "openai", "acct", "idle", "Idle", null, 0.9, null, null, now - 31 * day);
+    insert.run(4, "openai", "acct", "active", "Active", null, 0.1, null, null, now - 29 * day);
+    database.close();
+
+    expect(listOmpQuotasFrom(path, now).map((quota) => quota.label)).toEqual(["Live", "Active"]);
   });
 
   test("resolves quotas from the configured OMP agent directory", async () => {
@@ -152,7 +206,7 @@ describe("OMP quota reader", () => {
     )`);
     database
       .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(1, "anthropic", "account", "daily", "Daily", null, 0.5, "ok", null, 10);
+      .run(1, "anthropic", "account", "daily", "Daily", null, 0.5, "ok", null, Date.now() - 10);
     database.close();
     const previous = process.env.PASEO_OMP_AGENT_DIR;
     process.env.PASEO_OMP_AGENT_DIR = root;

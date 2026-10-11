@@ -105,7 +105,9 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
     await writeFile(join(agent, "config.yml"), "theme:\n  dark: migrated\n");
     const quota = new DatabaseSync(join(data, "agent.db"));
     quota.exec(
-      "CREATE TABLE usage_history (id INTEGER, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER); INSERT INTO usage_history VALUES (1, 'migrated', 'fixture', 'limit', 'Fixture', NULL, 0.25, NULL, NULL, 1000)",
+      "CREATE TABLE usage_history (id INTEGER, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER); INSERT INTO usage_history VALUES (1, 'migrated', 'fixture', 'limit', 'Fixture', NULL, 0.25, NULL, NULL, " +
+        Date.now() +
+        ")",
     );
     quota.close();
     const history = new DatabaseSync(join(data, "history.db"));
