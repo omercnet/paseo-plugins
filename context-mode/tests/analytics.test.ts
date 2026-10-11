@@ -444,6 +444,20 @@ describe("structured Context Mode analytics", () => {
     ]);
   });
 
+  test("lists a built-in provider id with its own env override as a separate row", async () => {
+    const home = await temporaryHome();
+    await createMinimalSessionDatabase(home, ".claude", "daemon-session", "/work/a");
+    await createMinimalSessionDatabase(home, ".claude_override", "override-session", "/work/b");
+
+    const result = await collectContextModeAnalytics({
+      home,
+      env: {},
+      providers: { claude: { env: { CLAUDE_CONFIG_DIR: join(home, ".claude_override") } } },
+    });
+
+    expect(result.byProvider.map((entry) => entry.provider)).toEqual(["claude-code", "claude"]);
+  });
+
   test("discovers configured provider roots without double counting shared storage", async () => {
     const home = await temporaryHome();
     await createMinimalSessionDatabase(home, ".claude", "shared", "/work/a");

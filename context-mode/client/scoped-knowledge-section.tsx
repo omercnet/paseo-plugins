@@ -40,7 +40,11 @@ export function ScopedKnowledgeSection({
   // Remount only when the resolved destination changes so stale form state never survives it.
   return (
     <KnowledgeSection
-      key={JSON.stringify([scope.data.provider, scope.data.projectPath])}
+      key={JSON.stringify([
+        scope.data.provider,
+        scope.data.projectPath,
+        props.providers.includes(scope.data.provider ?? ""),
+      ])}
       {...props}
       initialScope={scope.data}
     />
