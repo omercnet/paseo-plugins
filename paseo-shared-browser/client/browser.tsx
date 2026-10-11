@@ -84,6 +84,7 @@ import {
   BrowserMenuSeparator,
   BrowserToolbarMenu,
 } from "./browser-toolbar-menu";
+import { isFrameCurrent, isVideoSourceCurrent } from "./browser-video-currency";
 import { BrowserVideoSurface } from "./browser-video-surface";
 import { isBrowserClosedError, isExpiredBrowserViewerError } from "./browser-viewer-recovery";
 import { createFrameLifecycle } from "./frame-lifecycle";
@@ -179,18 +180,6 @@ function isFrameDisplayCurrent(frame: BrowserFrameAuthority, state: BrowserState
       frame.runtimeId === state.runtimeId &&
       frame.captureEpoch === state.bridgeEpoch &&
       frame.viewportGeneration === state.viewportGeneration,
-  );
-}
-
-function isFrameCurrent(frame: BrowserFrameAuthority, state: BrowserState): boolean {
-  return (
-    frame.sessionId === state.sessionId &&
-    (!frame.runtimeId || !state.runtimeId || frame.runtimeId === state.runtimeId) &&
-    (frame.captureEpoch === undefined ||
-      state.bridgeEpoch === undefined ||
-      frame.captureEpoch === state.bridgeEpoch) &&
-    frame.navigationGeneration === state.navigationGeneration &&
-    frame.viewportGeneration === state.viewportGeneration
   );
 }
 
@@ -505,14 +494,17 @@ export function SharedBrowserPanel({
     epoch: () => inputLifecycle.epoch,
     viewport: () => stateRef.current?.viewport ?? null,
     isCurrent: (packet, epoch) =>
-      packet.actionable !== false &&
-      mountedRef.current &&
-      activeViewerTokenRef.current === viewerToken &&
-      epoch === inputLifecycle.epoch &&
-      committedViewport.current?.sessionId === packet.frame.sessionId &&
-      committedViewport.current?.generation === packet.frame.viewportGeneration &&
-      stateRef.current !== null &&
-      isFrameCurrent(packet.frame, stateRef.current),
+      isVideoSourceCurrent(
+        {
+          mounted: mountedRef.current,
+          viewerActive: activeViewerTokenRef.current === viewerToken,
+          epoch: inputLifecycle.epoch,
+          committedViewport: committedViewport.current,
+          state: stateRef.current,
+        },
+        packet,
+        epoch,
+      ),
     isDisplayCurrent: (packet) => {
       const current = stateRef.current;
       return (

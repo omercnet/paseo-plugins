@@ -1,10 +1,12 @@
 /** Deliberately defer React commits to exercise canvas paint and RPC replacement windows. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BrowserState } from "../shared/browser";
 import type {
   BrowserVideoPacket,
   BrowserVideoReadInput,
   BrowserVideoReadReply,
 } from "../shared/browser-video";
+import { isVideoSourceCurrent } from "./browser-video-currency";
 import type { BrowserVideoDecodeEnvironment } from "./browser-video-decoder";
 
 interface HookSlot {
@@ -152,7 +154,7 @@ const packet = (sequence: number): BrowserVideoPacket => ({
 const drain = async () => {
   for (let i = 0; i < 15; i++) await Promise.resolve();
 };
-function setup(retainDocumentDisplay = false, panelRejectsDisplayOnly = false) {
+function setup(retainDocumentDisplay = false) {
   let draw: (() => void) | null = null;
   const presented: number[] = [];
   const drawn: number[] = [];
@@ -211,14 +213,30 @@ function setup(retainDocumentDisplay = false, panelRejectsDisplayOnly = false) {
       fps,
       epoch: () => mutationEpoch,
       viewport: () => ({ width: 1280, height: 800 }),
+      // The mounted panel's real source predicate, fed a fake panel context, so a drift
+      // in what the panel decides (for example consulting the input-only actionable flag)
+      // fails here instead of in a copied predicate.
       isCurrent: (value, epoch) =>
-        // The mounted panel's predicate: source, document and geometry only. The
-        // legacy variant additionally rejected display-only packets (VIDEO-1 repro).
-        (!panelRejectsDisplayOnly || value.actionable !== false) &&
         current &&
-        epoch === mutationEpoch &&
-        Object.entries(identity).every(
-          ([key, expected]) => value.frame[key as keyof typeof identity] === expected,
+        isVideoSourceCurrent(
+          {
+            mounted: true,
+            viewerActive: true,
+            epoch: mutationEpoch,
+            committedViewport: {
+              sessionId: identity.sessionId,
+              generation: identity.viewportGeneration,
+            },
+            state: {
+              sessionId: identity.sessionId,
+              runtimeId: identity.runtimeId,
+              bridgeEpoch: identity.captureEpoch,
+              navigationGeneration: identity.navigationGeneration,
+              viewportGeneration: identity.viewportGeneration,
+            } as unknown as BrowserState,
+          },
+          value,
+          epoch,
         ),
       ...(retainDocumentDisplay
         ? {
