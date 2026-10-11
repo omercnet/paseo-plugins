@@ -503,8 +503,9 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
       await expect(available.client.getDiagnostic?.()).resolves.toEqual({
         diagnostic: "Provider is available",
       });
-      // Creation already requires a ready catalogue, which spawns this same default launch, so
-      // a missing executable is reported as such instead of an opaque catalogue failure.
+      // The host asks `status` before create, resume, and draft calls and never passes per-agent
+      // providerOptions, so a missing default executable blocks all of them, including agents
+      // configured with an otherwise valid custom command. This is the accepted breaking change.
       await expect(missing.client.isAvailable()).resolves.toBe(false);
       await expect(missing.client.getDiagnostic?.()).resolves.toEqual({
         diagnostic: "OMP executable was not found",

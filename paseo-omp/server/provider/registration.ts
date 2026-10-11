@@ -63,7 +63,11 @@ function toProviderStatus(availability: ProviderAvailabilityCompat): ProviderSta
   };
 }
 
-/** Share one bounded probe across the host's frequent status calls; rejections are not cached. */
+/**
+ * Share one bounded probe across the host's frequent status calls. Only an available result is
+ * kept for the interval; an unavailable or failed result is shared by in-flight callers and then
+ * dropped, so installing the executable is picked up by the very next host call.
+ */
 export function createOmpStatus(
   probe: () => Promise<ProviderAvailabilityCompat>,
 ): () => Promise<ProviderStatus> {
@@ -76,9 +80,14 @@ export function createOmpStatus(
       result: probe().then(toProviderStatus),
     };
     cached = entry;
-    entry.result.catch(() => {
-      if (cached === entry) cached = undefined;
-    });
+    entry.result.then(
+      (status) => {
+        if (!status.available && cached === entry) cached = undefined;
+      },
+      () => {
+        if (cached === entry) cached = undefined;
+      },
+    );
     return entry.result;
   };
 }

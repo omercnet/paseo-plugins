@@ -152,6 +152,21 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("catalog cache identity ignores daemon launch data", async () => {
+    const provider = createOmpProvider({ environment: TEST_RUNTIME_ENV });
+    const base = { scope: "workspace" as const, cwd: "/repo", providerOptions: {}, settings: {} };
+    const launch = {
+      command: "/daemon/resolved/omp",
+      args: ["--daemon-arg"],
+      env: { DAEMON_ONLY_SECRET: "daemon-secret" },
+    };
+    const withoutLaunch = await provider.getCatalogCacheKey?.(base);
+    expect(withoutLaunch).toBeDefined();
+    await expect(provider.getCatalogCacheKey?.({ ...base, launch } as never)).resolves.toBe(
+      withoutLaunch,
+    );
+  });
+
   describe("0.11 status", () => {
     afterEach(() => vi.useRealTimers());
 
@@ -212,6 +227,29 @@ describe("OMP direct provider", () => {
       failNext = false;
       await expect(provider.status?.({})).resolves.toEqual({ available: true });
       expect(calls).toBe(3);
+    });
+
+    test("recovers on the next call after a missing executable is installed", async () => {
+      let installed = false;
+      let calls = 0;
+      const provider = createOmpProvider({
+        runtime: new FakeOmpRuntime(),
+        availabilityProbe: async () => {
+          calls += 1;
+          return installed
+            ? { status: "available" }
+            : { status: "missing", diagnostic: "OMP executable was not found" };
+        },
+      });
+      await expect(provider.status?.({})).resolves.toEqual({
+        available: false,
+        diagnostic: "OMP executable was not found",
+      });
+      // No time passes: an unavailable answer must not be remembered across calls.
+      installed = true;
+      await expect(provider.status?.({})).resolves.toEqual({ available: true });
+      await provider.status?.({});
+      expect(calls).toBe(2);
     });
   });
 
