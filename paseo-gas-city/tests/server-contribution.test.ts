@@ -53,7 +53,7 @@ describe("server settings", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  test("fails closed when Paseo 0.9 persisted settings are invalid", async () => {
+  test("fails closed when persisted settings are invalid", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     const registered = {
