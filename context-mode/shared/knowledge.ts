@@ -27,6 +27,9 @@ export const ContextModePlatformSchema = z.enum([
   "omp",
 ]);
 
+/** A Paseo provider id: a built-in or one configured in `agents.providers`. */
+export const KnowledgeProviderSchema = z.string().trim().min(1).max(128);
+
 const boundedLabel = z.string().trim().min(1).max(MAX_LABEL_LENGTH);
 const boundedPattern = z.string().trim().min(1).max(256);
 const absoluteLocalPath = z
@@ -43,7 +46,7 @@ const absoluteLocalPath = z
     { message: "path must be an absolute local path" },
   );
 const providerScope = z
-  .object({ provider: ContextModeProviderSchema, projectPath: absoluteLocalPath })
+  .object({ provider: KnowledgeProviderSchema, projectPath: absoluteLocalPath })
   .strict();
 const httpUrl = z
   .string()
@@ -55,7 +58,7 @@ const httpUrl = z
 
 export const KnowledgeToolResultSchema = z
   .object({
-    provider: ContextModeProviderSchema,
+    provider: KnowledgeProviderSchema,
     output: z.string().max(MAX_OUTPUT_LENGTH),
     completedAt: z.string().datetime(),
   })
@@ -96,7 +99,7 @@ export const FetchAndIndexInputSchema = providerScope
 
 const projectPurge = z
   .object({
-    provider: ContextModeProviderSchema,
+    provider: KnowledgeProviderSchema,
     projectPath: absoluteLocalPath,
     confirm: z.literal(true),
     scope: z.literal("project"),
@@ -104,7 +107,7 @@ const projectPurge = z
   .strict();
 const sessionPurge = z
   .object({
-    provider: ContextModeProviderSchema,
+    provider: KnowledgeProviderSchema,
     projectPath: absoluteLocalPath,
     confirm: z.literal(true),
     scope: z.literal("session"),

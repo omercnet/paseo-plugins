@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-queens",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "type": "module",
   "description": "A cross-platform Queens logic puzzle for Paseo.",
   "license": "MIT",
@@ -35,7 +35,8 @@
     "shared",
     "server",
     "scripts",
-    "paseo-plugin.json"
+    "paseo-plugin.json",
+    "OVERVIEW.md"
   ],
   "scripts": {
     "check": "biome check .",

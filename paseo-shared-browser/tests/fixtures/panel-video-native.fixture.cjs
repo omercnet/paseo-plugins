@@ -4,6 +4,7 @@ const React = require(
 );
 const Native = {
   Platform: { OS: "web" },
+  useWindowDimensions: () => ({ width: 800, height: 600, scale: 1, fontScale: 1 }),
   AppState: {
     currentState: "active",
     addEventListener() {

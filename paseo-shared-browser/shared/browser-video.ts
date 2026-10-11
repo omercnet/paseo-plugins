@@ -1,6 +1,6 @@
 /**
  * Encoded browser-tab video over the existing authenticated Paseo RPC transport.
- * Android uses the host video canvas; other native clients retain JPEG playback.
+ * Opt-in on the daemon and decoded by WebCodecs on the web; every other client retains JPEG.
  * Packets never grant control; only a decoded
  * presentation with current browser authority can provide an input target.
  */
@@ -52,6 +52,9 @@ export type NativeVideoPacket = z.infer<typeof nativeVideoPacketSchema>;
 
 export const browserVideoPacketSchema = nativeVideoPacketSchema.extend({
   frame: browserFrameAuthoritySchema,
+  /** False when the host refused this capture as an input receipt (it predates
+   * acknowledged input). It may still be painted. Absent from older hosts. */
+  actionable: z.boolean().optional(),
 });
 export type BrowserVideoPacket = z.infer<typeof browserVideoPacketSchema>;
 
@@ -73,7 +76,7 @@ export const readBrowserVideoRpc = defineRpc({
     streamId: opaqueIdSchema.nullable(),
     packets: z.array(browserVideoPacketSchema).max(VIDEO_MAX_BATCH_PACKETS),
     reason: z.string().max(256).optional(),
-    reasonCode: z.literal("encoder-capacity").optional(),
+    reasonCode: z.enum(["encoder-capacity", "video-disabled"]).optional(),
   }),
 });
 export type BrowserVideoReadInput = z.infer<typeof readBrowserVideoRpc.input>;

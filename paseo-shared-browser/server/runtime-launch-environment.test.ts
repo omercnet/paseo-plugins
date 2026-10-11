@@ -1,8 +1,9 @@
 /** Per-instance display context reaches native CLI children without changing host or session authority. */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentBrowserRuntime } from "./agent-browser-runtime";
 
 const temporary: string[] = [];
@@ -10,17 +11,26 @@ afterEach(async () => {
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
+const exec = vi.hoisted(() => ({
+  calls: [] as { file: string; args: string[]; env: NodeJS.ProcessEnv }[],
+}));
+// Records the exact child launch instead of running a platform-specific script.
+vi.mock("node:child_process", () => ({
+  execFile: (
+    file: string,
+    args: string[],
+    options: { env: NodeJS.ProcessEnv },
+    callback: (error: null, result: { stdout: string }) => void,
+  ) => {
+    exec.calls.push({ file, args, env: options.env });
+    callback(null, { stdout: args.includes("--version") ? "0.38.2\n" : "{}\n" });
+  },
+}));
+
 async function fixture(launchEnvironment?: Readonly<Record<string, string>>) {
-  const directory = await mkdtemp("/tmp/printstream-runtime-env-");
+  const directory = await mkdtemp(join(tmpdir(), "shared-browser-runtime-env-"));
   temporary.push(directory);
   const binary = join(directory, "owned-cli");
-  await writeFile(
-    binary,
-    "#!" +
-      process.execPath +
-      '\nif(process.argv.includes("--version")){console.log("0.38.2");}else{console.log(JSON.stringify({display:process.env.DISPLAY??null,authority:process.env.XAUTHORITY??null,wayland:process.env.WAYLAND_DISPLAY??null,socket:process.env.AGENT_BROWSER_SOCKET_DIR,profile:process.env.AGENT_BROWSER_PROFILE??null,args:process.argv.slice(2)}));}\n',
-    { mode: 0o700 },
-  );
   const runtime = new AgentBrowserRuntime({
     binaryPath: binary,
     executablePath: join(directory, "unlaunched-chromium"),
@@ -31,16 +41,22 @@ async function fixture(launchEnvironment?: Readonly<Record<string, string>>) {
   });
   const native = runtime as unknown as {
     assertVersion(): Promise<void>;
-    invoke(args: string[]): Promise<{
-      display: string | null;
-      authority: string | null;
-      wayland: string | null;
-      socket: string;
-      profile: null;
-      args: string[];
-    }>;
+    invoke(args: string[]): Promise<unknown>;
   };
-  return { directory, runtime, native };
+  /** Environment the owned CLI child received for the call with these arguments. */
+  const launched = (args: string[]) => {
+    const call = exec.calls.find(
+      (candidate) => candidate.file === binary && candidate.args.join() === args.join(),
+    );
+    if (!call) throw new Error(`CLI was not launched with ${args.join(" ")}`);
+    return {
+      display: call.env.DISPLAY ?? null,
+      authority: call.env.XAUTHORITY ?? null,
+      wayland: call.env.WAYLAND_DISPLAY ?? null,
+      socket: call.env.AGENT_BROWSER_SOCKET_DIR,
+    };
+  };
+  return { directory, runtime, native, launched };
 }
 
 describe("trusted private display launch environment", () => {
@@ -54,15 +70,13 @@ describe("trusted private display launch environment", () => {
     const f = await fixture(environment);
     environment.DISPLAY = ":24702";
     await f.native.assertVersion();
-    for (const args of [["owned-request"], ["owned-reconnect"]]) {
-      const result = await f.native.invoke(args);
-      expect(result).toEqual({
+    for (const args of [["owned-request"], ["owned-reconnect"], ["--version"]]) {
+      if (args[0] !== "--version") await f.native.invoke(args);
+      expect(f.launched(args)).toEqual({
         display: ":24701",
         authority: "/tmp/owned-private-auth",
         wayland: null,
         socket: join(f.directory, "owned-ipc"),
-        profile: null,
-        args,
       });
     }
     expect({
@@ -74,8 +88,8 @@ describe("trusted private display launch environment", () => {
   });
   it("preserves the ordinary host display path when no private environment is provided", async () => {
     const f = await fixture();
-    const result = await f.native.invoke(["ordinary"]);
-    expect(result).toMatchObject({
+    await f.native.invoke(["ordinary"]);
+    expect(f.launched(["ordinary"])).toMatchObject({
       display: process.env.DISPLAY ?? null,
       authority: process.env.XAUTHORITY ?? null,
       wayland: process.env.WAYLAND_DISPLAY ?? null,

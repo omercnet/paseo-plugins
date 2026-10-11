@@ -32,7 +32,9 @@ import {
   OmpPublicError,
   utf8Bytes,
 } from "./security";
-import { OmpProviderSession, ompPersistenceSessionId } from "./session";
+import { type OmpOpenedSession, OmpProviderSession, ompPersistenceSessionId } from "./session";
+import { OmpHistorySession } from "./session-history";
+import { isOmpHistoryOnlyOpen } from "./session-purpose";
 
 type ProviderConfigurationCompat = {
   providerOptions?: Readonly<Record<string, unknown>>;
@@ -747,7 +749,7 @@ export function createOmpConnection(
     string,
     {
       token: symbol;
-      session: OmpProviderSession;
+      session: OmpOpenedSession;
       nativeSessionId?: string;
       removeBrowserAuthorization?: () => void;
     }
@@ -909,10 +911,15 @@ export function createOmpConnection(
         opening.set(input.sessionId, { token, controller, settled: openingSettled.promise });
         let nativeSessionId: string | undefined;
         let persistentOpening = false;
-        let session: OmpProviderSession | undefined;
+        let historyOnly = false;
+        let session: OmpOpenedSession | undefined;
         try {
+          historyOnly = isOmpHistoryOnlyOpen(input);
           nativeSessionId = ompPersistenceSessionId(input);
-          if (nativeSessionId) {
+          if (historyOnly) {
+            // History reads one authorized transcript and runs nothing, so it takes no native
+            // session reservation and neither blocks nor is blocked by an interactive session.
+          } else if (nativeSessionId) {
             await nativeReservations.reserve(nativeSessionId, token, controller.signal);
           } else if (input.config.persist) {
             await nativeReservations.beginPersistentOpen(token, controller.signal);
@@ -955,23 +962,35 @@ export function createOmpConnection(
           const retireRewindSession = () => {
             deleteSession(input.sessionId, token);
           };
-          session = await OmpProviderSession.open(
-            input,
-            runtime,
-            safeCapabilities,
-            sessionEmit,
-            transitionNativeSession,
-            quarantineRewindCleanup,
-            retireRewindSession,
-            scheduler,
-            replayTimeoutMs,
-            controller.signal,
-            environment,
-            mcpConnector,
-            mcpInitializationTimeoutMs,
-            reportOperationalFailure,
-            (await resolveHostInheritEnv?.()) ?? [],
-          );
+          const hostInheritEnv = (await resolveHostInheritEnv?.()) ?? [];
+          session = historyOnly
+            ? await OmpHistorySession.open(
+                input,
+                runtime,
+                safeCapabilities,
+                sessionEmit,
+                replayTimeoutMs,
+                environment,
+                hostInheritEnv,
+                scheduler,
+              )
+            : await OmpProviderSession.open(
+                input,
+                runtime,
+                safeCapabilities,
+                sessionEmit,
+                transitionNativeSession,
+                quarantineRewindCleanup,
+                retireRewindSession,
+                scheduler,
+                replayTimeoutMs,
+                controller.signal,
+                environment,
+                mcpConnector,
+                mcpInitializationTimeoutMs,
+                reportOperationalFailure,
+                hostInheritEnv,
+              );
           const discoveredNativeSessionId = session.persistenceSessionId;
           if (discoveredNativeSessionId) nativeSessionId = discoveredNativeSessionId;
           if (persistentOpening) {
@@ -995,10 +1014,13 @@ export function createOmpConnection(
             return;
           }
           const browserAgentId = input.config.env.PASEO_AGENT_ID?.trim() || input.sessionId;
-          const browserAuthorization = browserAuthorizationRegistry?.register(
-            browserAgentId,
-            session.openPaseoBrowser.bind(session),
-          );
+          // A history session has no live Paseo browser tools to authorize.
+          const browserAuthorization = historyOnly
+            ? undefined
+            : browserAuthorizationRegistry?.register(
+                browserAgentId,
+                session.openPaseoBrowser.bind(session),
+              );
           session.setBrowserAuthorizationIssuer(browserAuthorization?.issue ?? null);
           const removeBrowserAuthorization = browserAuthorization
             ? () => {
@@ -1155,7 +1177,7 @@ export function createOmpConnection(
     for (const result of operationResults) {
       if (result.status === "rejected") failures.push(result.reason);
     }
-    const seenSessions = new Set<OmpProviderSession>();
+    const seenSessions = new Set<OmpOpenedSession>();
     const seenCleanups = new Set<Promise<void>>();
     const cleanupBatch: Promise<void>[] = [];
     for (const [sessionId, { session, nativeSessionId, token }] of sessions) {

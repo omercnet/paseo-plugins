@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -46,6 +47,12 @@ import {
   NAVIGATION_METADATA_TIMEOUT_MS,
 } from "./navigation-budget";
 import { waitForNavigationCommit } from "./navigation-commit";
+import {
+  type ProcessIdentity,
+  probeProcess,
+  processExists,
+  RUNTIME_OWNER_VARIABLE,
+} from "./process-identity";
 import { createScreencastSourceTime } from "./screencast-source-time";
 import { createVideoSourceRecovery } from "./video-source-recovery";
 
@@ -55,6 +62,8 @@ const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const SCREENCAST_SETUP_RETRY_MS = 25;
+/** Bound for the agent-browser session daemon to exit after close or SIGKILL. */
+const DAEMON_EXIT_WAIT_MS = 5_000;
 // Cursor decoration must not hold the serialized input/video fence while page
 // scripts are busy. A missed sample leaves input and its cleanup unchanged.
 const CURSOR_SAMPLE_TIMEOUT_MS = 250;
@@ -139,7 +148,11 @@ export interface AgentBrowserRuntimeOptions {
   headed?: boolean;
   /** Trusted per-instance private X11 context, only DISPLAY/XAUTHORITY; never mutates host environment. */
   launchEnvironment?: Readonly<Record<string, string>>;
+  /** Trusted daemon-side opt-in. Only then is the capture extension materialized and loaded. */
+  nativeVideo?: boolean;
   timeoutMs?: number;
+  /** Bound for the session daemon to exit after close or SIGKILL. */
+  daemonExitWaitMs?: number;
 }
 
 interface VersionResult {
@@ -167,7 +180,8 @@ function requireAbsolute(path: string, label: string): string {
 
 function runtimeEnvironment(
   ipcDirectory: string,
-  launchEnvironment?: Readonly<Record<string, string>>,
+  launchEnvironment: Readonly<Record<string, string>> | undefined,
+  ownerNonce: string,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const key of [
@@ -217,6 +231,7 @@ function runtimeEnvironment(
     // A private X11 display must not inherit an unrelated host Wayland session.
     delete environment.WAYLAND_DISPLAY;
   }
+  environment[RUNTIME_OWNER_VARIABLE] = ownerNonce;
   environment.AGENT_BROWSER_SOCKET_DIR = ipcDirectory;
   environment.AGENT_BROWSER_IDLE_TIMEOUT_MS = "0";
   environment.AGENT_BROWSER_STREAM_PORT = "0";
@@ -257,6 +272,9 @@ export class AgentBrowserRuntime {
   private readonly headed: boolean;
   private readonly timeoutMs: number;
   private readonly environment: NodeJS.ProcessEnv;
+  private daemon: { pid: number; identity: ProcessIdentity | null } | null = null;
+  private readonly ownerNonce = randomUUID();
+  private readonly daemonExitWaitMs: number;
   private connection: CdpConnection | null = null;
   private page: CdpSession | null = null;
   private targetId: string | null = null;
@@ -277,8 +295,12 @@ export class AgentBrowserRuntime {
     onError: () => console.warn("Shared Browser could not retire unused JPEG capture"),
   });
   private heldButtons = new Set<MouseButton>();
+  /** Last native pointer position sent, so cancelled drags release where they were. */
+  private lastMousePoint = { x: 0, y: 0 };
   private heldKeys = new Map<string, { key: string; code: string }>();
   private heldTouches = false;
+  /** Attachment on which the current held state was published; cleanup never targets another. */
+  private heldOwner: CdpSession | null = null;
   private activeTouches = new Map<number, { x: number; y: number; id: number }>();
   private documentGeneration = 0;
   private liveInput: {
@@ -291,6 +313,11 @@ export class AgentBrowserRuntime {
     timer: ReturnType<typeof setTimeout> | null;
   } | null = null;
   private stopping = false;
+  private shutdownInFlight: Promise<void> | null = null;
+  private shutDown = false;
+  /** A daemon was launched for this session, so absence of evidence is not proof of exit. */
+  private daemonLaunched = false;
+  private readonly nativeVideo: boolean;
   private video: NativeVideoCapture | null = null;
   private videoRetirement: Promise<void> | null = null;
   private ownsBrowser = true;
@@ -309,8 +336,14 @@ export class AgentBrowserRuntime {
     this.session = options.session;
     this.headed = options.headed ?? false;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.environment = runtimeEnvironment(this.ipcDirectory, options.launchEnvironment);
+    this.daemonExitWaitMs = options.daemonExitWaitMs ?? DAEMON_EXIT_WAIT_MS;
+    this.environment = runtimeEnvironment(
+      this.ipcDirectory,
+      options.launchEnvironment,
+      this.ownerNonce,
+    );
     this.initialUrl = options.initialUrl ?? "about:blank";
+    this.nativeVideo = options.nativeVideo === true;
   }
 
   async launch(): Promise<void> {
@@ -326,7 +359,11 @@ export class AgentBrowserRuntime {
     this.assertRuntimeOpen();
     await this.assertVersion();
     this.assertRuntimeOpen();
-    const videoExtension = await prepareNativeVideoExtension(this.ipcDirectory);
+    // Image-only sessions never materialize, load or allowlist the capture
+    // extension, so its tabCapture/debugger permissions do not exist in them.
+    const videoExtension = this.nativeVideo
+      ? await prepareNativeVideoExtension(this.ipcDirectory)
+      : null;
     this.assertRuntimeOpen();
     const existingArguments = process.env.PASEO_SHARED_BROWSER_CHROMIUM_ARGS;
     const chromiumArguments = [
@@ -334,11 +371,14 @@ export class AgentBrowserRuntime {
       // agent-browser creates the launch page itself. Chromium's default
       // startup window otherwise leaves an additional chrome://newtab page.
       "--no-startup-window",
-      `--allowlisted-extension-id=${NATIVE_VIDEO_EXTENSION_ID}`,
+      videoExtension ? `--allowlisted-extension-id=${NATIVE_VIDEO_EXTENSION_ID}` : undefined,
     ]
       .filter(Boolean)
       .join(",");
     this.ownsBrowser = true;
+    // From here a nonce-owned daemon may exist even if open rejects (e.g. navigation failure).
+    this.daemonLaunched = true;
+    this.daemon = null;
     const opened = await this.invoke([
       "--session",
       this.session,
@@ -346,8 +386,7 @@ export class AgentBrowserRuntime {
       this.profilePath,
       "--executable-path",
       this.executablePath,
-      "--extension",
-      videoExtension,
+      ...(videoExtension ? ["--extension", videoExtension] : []),
       "--hide-scrollbars",
       "false",
       ...(this.headed ? ["--headed"] : []),
@@ -359,6 +398,7 @@ export class AgentBrowserRuntime {
     this.assertRuntimeOpen();
     const targetId = findString(opened, ["targetId", "target_id"]);
     await this.protectIpcMetadata();
+    await this.captureDaemon();
     this.assertRuntimeOpen();
     await this.connectCdp(targetId);
   }
@@ -523,9 +563,10 @@ export class AgentBrowserRuntime {
       }
     }
   }
-  /** Read fresh metadata concurrently; never combine observations across document changes.
-   * Internal navigation callers can shorten the per-read budget in milliseconds.
-   * Unavailable metadata rejects; it never becomes a fabricated ready receipt. */
+  /** Read fresh metadata concurrently, discarding both replies if the document changes.
+   * One same-attachment reread shares the original monotonic timeout budget in
+   * milliseconds. Failed reads, replacement attachments and repeated document
+   * changes reject; this read-only recovery never repeats a native mutation. */
   async state(options: { timeoutMs?: number } = {}): Promise<RuntimePageState> {
     if (
       options.timeoutMs !== undefined &&
@@ -538,39 +579,52 @@ export class AgentBrowserRuntime {
     const timeoutMs = Math.min(options.timeoutMs ?? this.timeoutMs, this.timeoutMs);
     const page = await this.requirePage();
     const attachmentGeneration = this.attachmentGeneration;
-    const documentGeneration = this.documentGeneration;
-    // Native history and fixed DOM metadata are independent reads. Overlap their
-    // CDP round trips without caching metadata or weakening input attachment checks.
-    const [history, evaluated] = await Promise.all([
-      this.navigationHistory(page, timeoutMs),
-      page.send<{
-        result: { value?: { url?: string; title?: string } };
-      }>(
-        "Runtime.evaluate",
-        {
-          expression: "({url: location.href, title: document.title})",
-          returnByValue: true,
-        },
-        { timeoutMs },
-      ),
-    ]);
-    if (
-      page !== this.page ||
-      attachmentGeneration !== this.attachmentGeneration ||
-      documentGeneration !== this.documentGeneration
-    ) {
-      throw new CdpUnavailableError("Browser metadata changed while being read");
+    const deadline = performance.now() + timeoutMs;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.assertRuntimeOpen();
+      const remaining = attempt === 0 ? timeoutMs : deadline - performance.now();
+      if (remaining <= 0) {
+        throw new CdpUnavailableError("Browser metadata observation timed out");
+      }
+      const documentGeneration = this.documentGeneration;
+      // Both observations must describe the same document. A navigation discards
+      // the entire pair; neither native history nor DOM metadata is cached.
+      const [history, evaluated] = await Promise.all([
+        this.navigationHistory(page, remaining),
+        page.send<{
+          result: { value?: { url?: string; title?: string } };
+        }>(
+          "Runtime.evaluate",
+          {
+            expression: "({url: location.href, title: document.title})",
+            returnByValue: true,
+          },
+          { timeoutMs: remaining },
+        ),
+      ]);
+      this.assertRuntimeOpen();
+      if (page !== this.page || attachmentGeneration !== this.attachmentGeneration) {
+        throw new CdpUnavailableError("Browser metadata changed while being read");
+      }
+      // Successful replies can beat an overdue CDP timer in the event queue.
+      // Their metadata still cannot outlive the original shared phase budget.
+      if (performance.now() >= deadline) {
+        throw new CdpUnavailableError("Browser metadata observation timed out");
+      }
+      if (documentGeneration !== this.documentGeneration) {
+        if (attempt === 0) continue;
+        throw new CdpUnavailableError("Browser metadata changed while being read");
+      }
+      return {
+        url: evaluated.result.value?.url ?? history.entries[history.currentIndex]?.url ?? "",
+        title: evaluated.result.value?.title ?? history.entries[history.currentIndex]?.title ?? "",
+        canGoBack: history.currentIndex > 0,
+        canGoForward: history.currentIndex < history.entries.length - 1,
+        inputGeneration: formatRuntimeInputGeneration(attachmentGeneration, documentGeneration),
+      };
     }
-    return {
-      url: evaluated.result.value?.url ?? history.entries[history.currentIndex]?.url ?? "",
-      title: evaluated.result.value?.title ?? history.entries[history.currentIndex]?.title ?? "",
-      canGoBack: history.currentIndex > 0,
-      canGoForward: history.currentIndex < history.entries.length - 1,
-      inputGeneration: formatRuntimeInputGeneration(
-        this.attachmentGeneration,
-        this.documentGeneration,
-      ),
-    };
+    throw new CdpUnavailableError("Browser metadata changed while being read");
   }
 
   /** Await native ACK and its main-frame commit, without waiting for scripts or
@@ -765,6 +819,11 @@ export class AgentBrowserRuntime {
       { enabled: device.touch, maxTouchPoints: device.touch ? 5 : 1 },
       { mutation: true },
     );
+    // A page controlled through its own session may sit behind another tab in the shared
+    // browser. Chromium holds a hidden page's mouseMoved acknowledgement for ~5 s (equal to the
+    // input idle bound), so every press there failed. Target-scoped focus emulation makes only
+    // this page report visible/focused: no tab is raised and no viewer's selection changes.
+    await page.send("Emulation.setFocusEmulationEnabled", { enabled: true }, { mutation: true });
     if (device.userAgent) {
       await page.send(
         "Emulation.setUserAgentOverride",
@@ -819,6 +878,14 @@ export class AgentBrowserRuntime {
     waitMs?: number;
     requestKeyFrame?: boolean;
   }): Promise<NativeVideoRead & { inputGeneration: string }> {
+    if (!this.nativeVideo) {
+      return {
+        ...this.videoReset(),
+        status: "unsupported",
+        reasonCode: "video-disabled",
+        reason: "Encoded video is not enabled on this host",
+      };
+    }
     const settings = resolveVideoEncoderSettings(input);
     const transitionEpoch = this.videoTransitionEpoch;
     if (!this.videoMayStart(transitionEpoch)) return this.videoReset();
@@ -1226,10 +1293,19 @@ export class AgentBrowserRuntime {
     params: Record<string, unknown>,
     gestureId?: string,
     mouseModifiers?: number,
+    track?: () => void,
   ): Promise<void> {
     try {
       const page = await this.requirePage();
       if (gestureId) await this.assertLiveInput(gestureId);
+      // Authority is validated. Record cleanup intent only now, immediately before
+      // native publication, so rejected unsent packets never alter it while an
+      // uncertain acknowledgement still leaves it in place.
+      if (track) {
+        if (this.heldOwner && this.heldOwner !== page) this.discardHeldState();
+        track();
+        if (this.holdsInput()) this.heldOwner ??= page;
+      }
       const originalInput = gestureId ? this.liveInput : null;
       // A physical DOM mouse event may arrive after Control/Shift was pressed
       // outside this canvas. Explicit zero also overrides a prior held-key mask.
@@ -1275,6 +1351,9 @@ export class AgentBrowserRuntime {
       },
       gestureId,
       modifiers,
+      () => {
+        this.lastMousePoint = { x, y };
+      },
     );
   }
 
@@ -1304,10 +1383,6 @@ export class AgentBrowserRuntime {
   ): Promise<void> {
     this.assertPoint(x, y);
     this.assertMouseModifiers(modifiers);
-    // Publication may succeed before an acknowledgement is lost. Track intent
-    // first so cleanup still releases a possibly held button.
-    if (gestureId) await this.assertLiveInput(gestureId);
-    this.heldButtons.add(button);
     await this.dispatchInput(
       "Input.dispatchMouseEvent",
       {
@@ -1320,6 +1395,12 @@ export class AgentBrowserRuntime {
       },
       gestureId,
       modifiers,
+      () => {
+        // Publication may succeed before an acknowledgement is lost, so a
+        // possibly held button is tracked from the send boundary.
+        this.heldButtons.add(button);
+        this.lastMousePoint = { x, y };
+      },
     );
   }
 
@@ -1345,6 +1426,9 @@ export class AgentBrowserRuntime {
       },
       gestureId,
       modifiers,
+      () => {
+        this.lastMousePoint = { x, y };
+      },
     );
     this.heldButtons.delete(button);
   }
@@ -1391,11 +1475,16 @@ export class AgentBrowserRuntime {
       );
     }
     if (parsed.type === "up" && !held) throw new Error("Key release has no matching press");
-    if (parsed.type === "down") {
-      this.assertHeldKeyCapacity(parsed.code);
-      this.heldKeys.set(parsed.code, { key: parsed.key, code: parsed.code });
-    }
-    await this.dispatchInput("Input.dispatchKeyEvent", nativeKeyEvent(parsed), gestureId);
+    if (parsed.type === "down") this.assertHeldKeyCapacity(parsed.code);
+    await this.dispatchInput(
+      "Input.dispatchKeyEvent",
+      nativeKeyEvent(parsed),
+      gestureId,
+      undefined,
+      parsed.type === "down"
+        ? () => this.heldKeys.set(parsed.code, { key: parsed.key, code: parsed.code })
+        : undefined,
+    );
     if (parsed.type === "up") this.heldKeys.delete(parsed.code);
   }
 
@@ -1404,7 +1493,6 @@ export class AgentBrowserRuntime {
   async keyDown(key: string, code = key, gestureId?: string): Promise<void> {
     if (gestureId) await this.assertLiveInput(gestureId);
     this.assertHeldKeyCapacity(code);
-    this.heldKeys.set(code, { key, code });
     await this.dispatchInput(
       "Input.dispatchKeyEvent",
       {
@@ -1414,6 +1502,8 @@ export class AgentBrowserRuntime {
         text: key.length === 1 ? key : undefined,
       },
       gestureId,
+      undefined,
+      () => this.heldKeys.set(code, { key, code }),
     );
   }
 
@@ -1442,18 +1532,24 @@ export class AgentBrowserRuntime {
       type === "touchMove"
         ? [...this.activeTouches.values()].filter((point) => !activeIds.has(point.id))
         : [];
-    this.heldTouches = true;
+    const hold = () => {
+      this.heldTouches = true;
+    };
     if (removed.length > 0) {
       await this.dispatchInput(
         "Input.dispatchTouchEvent",
         { type: "touchEnd", touchPoints: removed },
         gestureId,
+        undefined,
+        hold,
       );
     }
     await this.dispatchInput(
       "Input.dispatchTouchEvent",
       { type, touchPoints: contacts },
       gestureId,
+      undefined,
+      hold,
     );
     // Navigation cleanup already discarded this channel's contacts. Do not
     // recreate held-touch state after its acknowledged start caused navigation.
@@ -1565,15 +1661,32 @@ export class AgentBrowserRuntime {
     }
   }
 
+  private holdsInput(): boolean {
+    return this.heldButtons.size > 0 || this.heldKeys.size > 0 || this.heldTouches;
+  }
+
+  /** Forget held state whose attachment is gone; it is never replayed on a replacement. */
+  private discardHeldState(): void {
+    this.heldButtons.clear();
+    this.heldKeys.clear();
+    this.heldTouches = false;
+    this.activeTouches.clear();
+    this.heldOwner = null;
+  }
+
+  /**
+   * Release only what `page` itself holds. State published on another attachment
+   * is left to that attachment's own cleanup, never retargeted here.
+   */
   async releaseHeldInput(page = this.page): Promise<void> {
     if (!page) {
-      this.heldButtons.clear();
-      this.heldKeys.clear();
-      this.heldTouches = false;
-      this.activeTouches.clear();
+      this.discardHeldState();
       return;
     }
+    if (this.heldOwner && this.heldOwner !== page) return;
+    this.heldOwner = null;
     const buttons = [...this.heldButtons];
+    const { x, y } = this.lastMousePoint;
     const keys = [...this.heldKeys.values()];
     this.heldButtons.clear();
     this.heldKeys.clear();
@@ -1595,8 +1708,8 @@ export class AgentBrowserRuntime {
           "Input.dispatchMouseEvent",
           {
             type: "mouseReleased",
-            x: 0,
-            y: 0,
+            x,
+            y,
             button,
             buttons: 0,
             clickCount: 1,
@@ -1618,8 +1731,24 @@ export class AgentBrowserRuntime {
     ]);
   }
 
+  /**
+   * Concurrent callers share one in-flight shutdown; a failed one is not remembered as
+   * success, so a later call retries and reports the same unconfirmed state.
+   */
   async shutdown(force = false): Promise<void> {
-    if (this.stopping) return;
+    if (this.shutDown) return;
+    if (this.shutdownInFlight) return this.shutdownInFlight;
+    const operation = this.performShutdown(force);
+    this.shutdownInFlight = operation;
+    try {
+      await operation;
+      this.shutDown = true;
+    } finally {
+      if (this.shutdownInFlight === operation) this.shutdownInFlight = null;
+    }
+  }
+
+  private async performShutdown(force: boolean): Promise<void> {
     this.stopping = true;
     this.jpegDemand.close();
     this.screencastActive = false;
@@ -1628,31 +1757,86 @@ export class AgentBrowserRuntime {
       if (this.liveInput) await this.endLiveInput(this.liveInput.id);
       await this.releaseHeldInput();
       this.invalidateScreencastFrame();
-      if (this.ownsBrowser && !force) {
-        try {
-          await this.invoke(["--session", this.session, "--json", "close"]);
-        } catch {
-          this.stopping = false;
-          await this.shutdown(true);
-          return;
-        }
-      } else if (this.ownsBrowser) {
-        const pid = await this.daemonPid();
-        if (pid !== null) {
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-          }
-        }
-        await this.removeIpcMetadata();
-      }
+      // Only the controller that launched the browser owns its session daemon.
+      if (this.ownsBrowser) await this.stopDaemon(force);
       this.connection?.close();
       this.connection = null;
       this.page = null;
       this.targetId = null;
       this.invalidateScreencastFrame();
     });
+  }
+
+  /** Close, then require observed exit; escalate to a verified-owned SIGKILL and observe that too. */
+  private async stopDaemon(force: boolean): Promise<void> {
+    let forced = force;
+    if (!forced) {
+      try {
+        await this.invoke(["--session", this.session, "--json", "close"]);
+      } catch {
+        forced = true;
+      }
+      // close returns before the session daemon exits. A same-session relaunch would reach
+      // that daemon with its original launch environment (e.g. a stopped private display).
+      if (!forced && !(await this.daemonExited())) forced = true;
+    }
+    if (forced) await this.terminateDaemon();
+    if (forced || this.daemonLaunched) await this.removeIpcMetadata();
+    this.daemonLaunched = false;
+    this.daemon = null;
+  }
+
+  /**
+   * Records the PID-file daemon. Only a PID whose environment carries this runtime's own
+   * nonce gets a verified identity; anything else is observable but never signalled.
+   */
+  private async captureDaemon(): Promise<void> {
+    const pid = await this.daemonPid();
+    if (pid === null) return;
+    const probe = await probeProcess(pid, this.ownerNonce);
+    this.daemon = { pid, identity: probe.status === "owned" ? probe.identity : null };
+  }
+
+  /**
+   * Observes the daemon this runtime launched. Only `gone` is a positive exit; `unknown`
+   * (no PID record, unreadable identity) is never success and never authorises a signal.
+   */
+  private async daemonState(): Promise<"gone" | "owned" | "alive" | "unknown"> {
+    if (!this.daemonLaunched) return "gone";
+    if (!this.daemon) {
+      await this.captureDaemon();
+      if (!this.daemon) return "unknown";
+    }
+    const { pid, identity } = this.daemon;
+    if (!identity) return processExists(pid) ? "alive" : "gone";
+    const probe = await probeProcess(pid, this.ownerNonce);
+    if (probe.status === "absent" || probe.status === "foreign") return "gone";
+    if (probe.status === "owned")
+      return probe.identity.startTicks === identity.startTicks ? "owned" : "gone";
+    return processExists(pid) ? "unknown" : "gone";
+  }
+
+  /** True only after positive observation of exit, within the bound. */
+  private async daemonExited(): Promise<boolean> {
+    for (const deadline = Date.now() + this.daemonExitWaitMs; Date.now() < deadline; ) {
+      if ((await this.daemonState()) === "gone") return true;
+      await new Promise((resolve) => setTimeout(resolve, SCREENCAST_SETUP_RETRY_MS));
+    }
+    return (await this.daemonState()) === "gone";
+  }
+
+  /** Signals only a daemon freshly re-verified as owned, then confirms its exit. */
+  private async terminateDaemon(): Promise<void> {
+    if ((await this.daemonState()) === "owned" && this.daemon) {
+      try {
+        process.kill(this.daemon.pid, "SIGKILL");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    // Unverified or unknown daemons are never signalled, but exit must still be observed.
+    if (!(await this.daemonExited()))
+      throw new AgentBrowserUnavailableError("agent-browser daemon exit was not confirmed");
   }
 
   private async assertVersion(): Promise<void> {
@@ -1897,6 +2081,9 @@ export class AgentBrowserRuntime {
       this.assertAttachmentCurrent(connection, attachmentGeneration);
 
       this.invalidateScreencastFrame();
+      // Detaching drops the session that holds any pressed button; release there first.
+      if (this.liveInput) await this.endLiveInput(this.liveInput.id);
+      await this.releaseHeldInput(previous);
       this.page = null;
       this.emulationAppliedPage = null;
       // Detach first: the former session can otherwise clear the newly applied override.

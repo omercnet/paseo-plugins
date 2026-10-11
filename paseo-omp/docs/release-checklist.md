@@ -7,7 +7,7 @@ This checklist prepares a `paseo-omp` release. It does not authorize publication
 - [ ] Release Please proposes the expected next stable version from the previous release.
 - [ ] Package and tag names are `@omercnet/paseo-omp` and `paseo-omp-v<version>`.
 - [ ] Provider identity remains `omp-plugin`; bundled `omp` remains independent and enabled or disabled by the user.
-- [ ] Paseo requirement remains the reviewed range, currently `^0.9.2 || ^0.10.0 || ^0.11.0`.
+- [ ] Paseo requirement remains the reviewed range, currently `^0.11.0`.
 - [ ] Minimum tested OMP version, checksum, CI job, README, SUPPORT, and TESTING agree.
 
 ## Required gates

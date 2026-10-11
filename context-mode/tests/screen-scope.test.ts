@@ -1,9 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import {
-  knowledgeProvider,
-  parseScreenParams,
-  resolveKnowledgeScope,
-} from "../client/screen-scope";
+import { parseScreenParams, resolveKnowledgeScope } from "../client/screen-scope";
 
 describe("screen scope", () => {
   test("accepts sections and IDs, ignoring URL paths and search text", () => {
@@ -19,20 +15,14 @@ describe("screen scope", () => {
     expect(parseScreenParams({ section: "unknown", agentId: "" }).section).toBe("savings");
     expect(parseScreenParams({ section: "setup" }).section).toBe("setup");
   });
-  test("maps only exact RPC providers, never named/custom aliases", () => {
-    for (const provider of [
-      "claude",
-      "codex",
-      "copilot",
-      "cursor",
-      "opencode",
-      "pi",
-      "omp",
-      "omp-plugin",
-    ])
-      expect(knowledgeProvider(provider)).toBe(provider);
-    for (const provider of ["claude-work", "omp-plugin-work", "custom", "claude/model", "Claude"])
-      expect(knowledgeProvider(provider)).toBeNull();
+  test("passes the agent's Paseo provider id through, including configured providers", async () => {
+    const refresh = vi
+      .fn()
+      .mockResolvedValue({ agent: { provider: "claude-work", cwd: "/p", workspaceId: "w" } });
+    const paseo = { agents: { ref: vi.fn(() => ({ refresh })) } };
+    expect(
+      await resolveKnowledgeScope(paseo as never, { section: "knowledge", agentId: "a" }),
+    ).toEqual({ provider: "claude-work", projectPath: "/p" });
   });
   test("resolves from the selected host, not caller supplied paths", async () => {
     const refresh = vi.fn().mockResolvedValue({
@@ -46,16 +36,6 @@ describe("screen scope", () => {
         workspaceId: "w",
       }),
     ).toEqual({ provider: "codex", projectPath: "/selected-host/project" });
-    refresh.mockResolvedValue({
-      agent: { provider: "codex-work", cwd: "/selected-host/project", workspaceId: "w" },
-    });
-    expect(
-      await resolveKnowledgeScope(paseo as never, { section: "knowledge", agentId: "a" }),
-    ).toMatchObject({
-      provider: null,
-      projectPath: "/selected-host/project",
-      note: expect.stringContaining("Select one explicitly"),
-    });
     refresh.mockResolvedValue(null);
     await expect(
       resolveKnowledgeScope(paseo as never, { section: "knowledge", agentId: "missing" }),

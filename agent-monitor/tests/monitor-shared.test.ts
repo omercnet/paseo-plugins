@@ -13,9 +13,11 @@ import {
   type MonitorDirectory,
   matches,
   PARENT_AGENT_ID_LABEL,
+  parentAgentId,
   parseBucketParam,
   placement,
   shouldCollapseWorkspace,
+  sortEntries,
   stateLabel,
   title,
   type WorkspaceSummary,
@@ -240,6 +242,39 @@ describe("project grouping", () => {
       entry({ id: "child-2", labels: { [PARENT_AGENT_ID_LABEL]: "parent" } }),
     ];
     expect(childCounts(children).get("parent")).toBe(2);
+  });
+
+  describe("parent agent id", () => {
+    const withParent = (parentAgentId: unknown, labels: Record<string, string> = {}) =>
+      entry({ id: "c", labels, parentAgentId } as AgentOverrides).agent;
+
+    test("prefers the first-class field over the legacy label", () => {
+      const agent = withParent(" root ", { [PARENT_AGENT_ID_LABEL]: "other" });
+      expect(parentAgentId(agent)).toBe("root");
+    });
+
+    test("falls back to the legacy label when the field is missing, null or blank", () => {
+      const labels = { [PARENT_AGENT_ID_LABEL]: " legacy " };
+      expect(parentAgentId(entry({ labels }).agent)).toBe("legacy");
+      expect(parentAgentId(withParent(null, labels))).toBe("legacy");
+      expect(parentAgentId(withParent("  ", labels))).toBe("legacy");
+    });
+
+    test("is null without a usable parent", () => {
+      expect(parentAgentId(entry().agent)).toBeNull();
+      expect(parentAgentId(withParent("", { [PARENT_AGENT_ID_LABEL]: "" }))).toBeNull();
+    });
+
+    test("counts, sorts and styles children by the first-class field and the label alike", () => {
+      const firstClass = entry({ id: "a", parentAgentId: "parent" } as AgentOverrides);
+      const legacy = entry({ id: "b", labels: { [PARENT_AGENT_ID_LABEL]: "parent" } });
+      const root = entry({ id: "z", parentAgentId: "  " } as AgentOverrides);
+      expect(childCounts([firstClass, legacy, root]).get("parent")).toBe(2);
+      expect(childCounts([firstClass, legacy, root]).size).toBe(1);
+      const sorted = [firstClass, legacy, root];
+      sortEntries(sorted, "title");
+      expect(sorted.map((item) => item.agent.id)).toEqual(["z", "a", "b"]);
+    });
   });
 
   test("floatPinned false does not put pinned projects first", () => {

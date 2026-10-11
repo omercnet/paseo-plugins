@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BrowserGestureEvent } from "../shared/browser";
 import { createBrowserCanvasInput } from "./browser-canvas-input";
 
@@ -24,6 +24,91 @@ function fixture() {
 }
 
 describe("natural canvas input", () => {
+  it("quarantines a refused touch start until all physical contacts are released", () => {
+    const enqueue = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const activity = vi.fn();
+    const cancel = vi.fn();
+    const input = createBrowserCanvasInput({
+      enabled: () => true,
+      viewport: () => ({ width: 800, height: 600 }),
+      enqueue,
+      finish: vi.fn(),
+      cancel,
+      onPoint: vi.fn(),
+      onActivity: activity,
+    });
+    const first = { ...point, id: 7 };
+    const second = { ...point, id: 9 };
+    expect(input.touch("start", [first])).toBe(false);
+    expect(input.isTouchQuarantined()).toBe(true);
+    expect(activity).not.toHaveBeenCalledWith(true);
+    // A fresh decoded frame must not turn this held contact into an orphan move.
+    input.touch("move", [{ ...first, x: 60 }]);
+    input.touch("start", [first, second]);
+    input.touch("end", [second]);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    input.touch("end", []);
+    expect(input.isTouchQuarantined()).toBe(false);
+    expect(input.touch("start", [first])).toBe(true);
+    expect(enqueue).toHaveBeenLastCalledWith({ kind: "touch", type: "start", points: [first] });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("does not restore held touch state after a synchronous queue failure resets the model", () => {
+    const events: BrowserGestureEvent[] = [];
+    let reject = false;
+    const input = createBrowserCanvasInput({
+      enabled: () => true,
+      viewport: () => ({ width: 800, height: 600 }),
+      enqueue: (event) => {
+        events.push(event);
+        if (reject) {
+          input.reset();
+          return false;
+        }
+        return true;
+      },
+      finish: vi.fn(),
+      cancel: vi.fn(),
+      onPoint: vi.fn(),
+      onActivity: vi.fn(),
+    });
+    const first = { ...point, id: 7 };
+    input.touch("start", [first]);
+    reject = true;
+    expect(input.touch("move", [{ ...first, x: 60 }])).toBe(false);
+    expect(input.isTouchQuarantined()).toBe(true);
+    reject = false;
+    input.touch("move", [{ ...first, x: 100 }]);
+    expect(events).toHaveLength(2);
+    input.touch("end", []);
+    input.touch("start", [first]);
+    expect(events.at(-1)).toEqual({ kind: "touch", type: "start", points: [first] });
+  });
+
+  it("allows a new physical touch after a refused final release", () => {
+    const enqueue = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false)
+      .mockReturnValue(true);
+    const input = createBrowserCanvasInput({
+      enabled: () => true,
+      viewport: () => ({ width: 800, height: 600 }),
+      enqueue,
+      finish: vi.fn(),
+      cancel: vi.fn(),
+      onPoint: vi.fn(),
+      onActivity: vi.fn(),
+    });
+    const contact = { ...point, id: 7 };
+    input.touch("start", [contact]);
+    expect(input.touch("end", [])).toBe(false);
+    expect(input.isTouchQuarantined()).toBe(false);
+    expect(input.touch("start", [contact])).toBe(true);
+    expect(enqueue).toHaveBeenLastCalledWith({ kind: "touch", type: "start", points: [contact] });
+  });
+
   it("keeps actual right, middle and double-click edges without a mode override", () => {
     const f = fixture();
     for (const [button, clickCount] of [

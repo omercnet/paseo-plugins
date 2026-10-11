@@ -318,6 +318,30 @@ describe("trusted exact-tab capture", () => {
     await capture.stop();
     expect((await waiting).packets).toEqual([]);
   });
+  it("waits for the helper document to load before invoking its capture entry point", async () => {
+    const { capture, helper } = setup();
+    await capture.read({ quality: "high", waitMs: 0 });
+    const ready = helper.expressions.findIndex(
+      (value) => value.includes("startCapture") && value.includes("load"),
+    );
+    const start = helper.expressions.findIndex((value) => value.startsWith("startCapture("));
+    expect(ready).toBeGreaterThanOrEqual(0);
+    expect(start).toBeGreaterThan(ready);
+    await capture.stop();
+  });
+  it("does not call a capture entry point the helper document never defined", async () => {
+    const { capture, helper } = setup();
+    const original = helper.send.bind(helper);
+    helper.send = async (method, params = {}) => {
+      if (method === "Runtime.evaluate" && String(params.expression).includes("addEventListener"))
+        return { result: { value: false } } as never;
+      return original(method, params);
+    };
+    expect((await capture.read({ quality: "high", waitMs: 0 })).status).toBe("unsupported");
+    expect(capture.sourceFailure).toBe("startup");
+    expect(helper.expressions.some((value) => value.startsWith("startCapture("))).toBe(false);
+    await capture.stop();
+  });
   it("cleanup still closes the owned target when acquisition fails", async () => {
     const { capture, helper, commands } = setup();
     helper.send = async (method) => {

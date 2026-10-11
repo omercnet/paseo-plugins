@@ -1,10 +1,12 @@
 /** Deliberately defer React commits to exercise canvas paint and RPC replacement windows. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BrowserState } from "../shared/browser";
 import type {
   BrowserVideoPacket,
   BrowserVideoReadInput,
   BrowserVideoReadReply,
 } from "../shared/browser-video";
+import { isVideoSourceCurrent } from "./browser-video-currency";
 import type { BrowserVideoDecodeEnvironment } from "./browser-video-decoder";
 
 interface HookSlot {
@@ -211,11 +213,30 @@ function setup(retainDocumentDisplay = false) {
       fps,
       epoch: () => mutationEpoch,
       viewport: () => ({ width: 1280, height: 800 }),
+      // The mounted panel's real source predicate, fed a fake panel context, so a drift
+      // in what the panel decides (for example consulting the input-only actionable flag)
+      // fails here instead of in a copied predicate.
       isCurrent: (value, epoch) =>
         current &&
-        epoch === mutationEpoch &&
-        Object.entries(identity).every(
-          ([key, expected]) => value.frame[key as keyof typeof identity] === expected,
+        isVideoSourceCurrent(
+          {
+            mounted: true,
+            viewerActive: true,
+            epoch: mutationEpoch,
+            committedViewport: {
+              sessionId: identity.sessionId,
+              generation: identity.viewportGeneration,
+            },
+            state: {
+              sessionId: identity.sessionId,
+              runtimeId: identity.runtimeId,
+              bridgeEpoch: identity.captureEpoch,
+              navigationGeneration: identity.navigationGeneration,
+              viewportGeneration: identity.viewportGeneration,
+            } as unknown as BrowserState,
+          },
+          value,
+          epoch,
         ),
       ...(retainDocumentDisplay
         ? {
@@ -277,6 +298,29 @@ function setup(retainDocumentDisplay = false) {
         state: {},
         packets: [{ ...packet(sequence), type: keyFrame ? "key" : "delta" }],
       } as BrowserVideoReadReply);
+    },
+    replyPackets(index: number, sequences: number[], display: number[] = []) {
+      harness.reads[index]!.resolve({
+        status: "ready",
+        streamId: "s".repeat(32),
+        state: {},
+        packets: sequences.map((sequence) => ({
+          ...packet(sequence),
+          type: sequence === 1 ? "key" : "delta",
+          // The host paints these but refuses them as input receipts.
+          ...(display.includes(sequence) ? { actionable: false } : { actionable: true }),
+        })),
+      } as BrowserVideoReadReply);
+    },
+    disabled(index: number) {
+      harness.reads[index]!.resolve({
+        status: "unsupported",
+        state: {},
+        streamId: null,
+        packets: [],
+        reasonCode: "video-disabled",
+        reason: "Encoded video is not enabled on this host",
+      } as unknown as BrowserVideoReadReply);
     },
     capacity(index: number) {
       harness.reads[index]!.resolve({
@@ -510,6 +554,53 @@ describe("video presentation lifecycle", () => {
     f.commit();
     expect(result.error).toBeNull();
     expect(result.frontRef.current).not.toBeNull();
+  });
+  it("decodes and paints a same-source display-only packet without breaking the delta chain or granting input", async () => {
+    const f = setup();
+    const front: (number | null)[] = [];
+    for (const sequence of [1, 2, 3]) {
+      f.replyPackets(sequence - 1, [sequence], [2]);
+      await drain();
+      f.paint();
+      const result = f.render();
+      f.commit();
+      front.push(result.frontRef.current?.sequence ?? null);
+      await vi.advanceTimersByTimeAsync(41);
+    }
+    // All three packets paint, so the codec chain 1 -> 2 -> 3 is intact.
+    expect(f.drawn).toEqual([1000, 2000, 3000]);
+    // The display-only packet never publishes input authority and does not leave the
+    // older actionable receipt current; the next actionable packet does.
+    expect(f.presented).not.toContain(2);
+    expect(f.presented).toContain(3);
+    expect(front).toEqual([1, null, 3]);
+    // Each read continued the same stream without asking for a recovery keyframe.
+    expect(harness.reads.slice(1, 4).map((read) => read.input.requestKeyFrame)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+  });
+  it("still drops wrong-document display-only packets without decoding or painting them", async () => {
+    const f = setup();
+    f.identity("navigationGeneration", 2);
+    f.replyPackets(0, [1, 2], [2]);
+    await drain();
+    f.paint();
+    expect(f.drawn).toEqual([]);
+    expect(f.presented).toEqual([]);
+  });
+  it("a host that disabled video stops reads and releases the decoder without an error", async () => {
+    const f = setup();
+    f.disabled(0);
+    await drain();
+    const result = f.render();
+    f.commit();
+    expect(result.front).toBeNull();
+    expect(result.error).toBeNull();
+    expect(harness.disposals).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(harness.reads).toHaveLength(1);
   });
   it("hidden/unmounted viewers cancel the capacity retry timer and cannot restart background reads", async () => {
     const f = setup();

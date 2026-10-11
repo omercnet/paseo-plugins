@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_JPEG_QUALITY } from "../shared/capture-settings";
 import { AgentBrowserRuntime } from "./agent-browser-runtime";
 
 /** Header fixture exercises actual bounded JPEG validation without launching Chromium. */
@@ -38,6 +39,7 @@ afterEach(() => vi.restoreAllMocks());
 
 function fixture() {
   const runtime = new AgentBrowserRuntime({
+    nativeVideo: true,
     binaryPath: "/tmp/unlaunched-browser",
     executablePath: "/tmp/unlaunched-chromium",
     profilePath: "/tmp/uncreated-profile",
@@ -99,7 +101,7 @@ describe("runtime capture hysteresis", () => {
       expect(params.clip).toEqual({ x: 0, y: 0, width: 1280, height: 800, scale: 1 });
       return { data: jpeg() };
     });
-    expect((await runtime.frame(100, 95, 0)).transport).toBe("screenshot");
+    expect((await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).transport).toBe("screenshot");
   });
 
   it("does not bounce to CDP after a screenshot-induced event; reuses only fresh exact-request pixels", async () => {
@@ -108,13 +110,13 @@ describe("runtime capture hysteresis", () => {
       emit(clock);
       return { data: jpeg() };
     });
-    const first = await runtime.frame(100, 95, 0);
+    const first = await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
     expect(first.transport).toBe("screenshot");
     clock += 250;
-    expect(await runtime.frame(100, 95, 0)).toBe(first);
+    expect(await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).toBe(first);
     expect(calls.filter((method) => method === "Page.captureScreenshot")).toHaveLength(1);
     clock += 751;
-    expect(await runtime.frame(100, 95, 0)).not.toBe(first);
+    expect(await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).not.toBe(first);
     expect(calls.filter((method) => method === "Page.captureScreenshot")).toHaveLength(2);
     await runtime.frame(100, 90, 0);
     await runtime.frame(101, 90, 0);
@@ -123,21 +125,21 @@ describe("runtime capture hysteresis", () => {
 
   it("only sustained valid current-session events recover CDP after dwell", async () => {
     const { runtime, page, emit } = fixture();
-    await runtime.frame(100, 95, 0);
+    await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
     clock += 1100;
     emit(1);
     clock += 250;
     emit(2);
     clock += 250;
     emit(3, { ...page });
-    expect((await runtime.frame(100, 95, 0)).transport).toBe("screenshot");
+    expect((await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).transport).toBe("screenshot");
     clock += 300;
     emit(3);
     clock += 250;
     emit(4);
     clock += 250;
     emit(5);
-    expect((await runtime.frame(100, 95, 0)).transport).toBe("cdp-screencast");
+    expect((await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).transport).toBe("cdp-screencast");
   });
 
   it("late screenshot completion after input cannot return or restore old cached pixels", async () => {
@@ -148,17 +150,17 @@ describe("runtime capture hysteresis", () => {
       started.resolve();
       return shot.promise;
     });
-    const pending = runtime.frame(100, 95, 0);
+    const pending = runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
     await started.promise;
     await runtime.insertText("owned-fixture");
     shot.resolve({ data: jpeg() });
     await expect(pending).rejects.toThrow("capture was invalidated");
     setCapture(async () => ({ data: jpeg(3) }));
-    const fresh = await runtime.frame(100, 95, 0);
+    const fresh = await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
     expect(fresh.dataBase64).toBe(jpeg(3));
     control.invalidateScreencastFrame();
     setCapture(async () => ({ data: jpeg(4) }));
-    expect((await runtime.frame(100, 95, 0)).dataBase64).toBe(jpeg(4));
+    expect((await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).dataBase64).toBe(jpeg(4));
   });
 
   it("late screenshot completion from a replaced page cannot authorize a frame", async () => {
@@ -169,7 +171,7 @@ describe("runtime capture hysteresis", () => {
       started.resolve();
       return shot.promise;
     });
-    const pending = runtime.frame(100, 95, 0);
+    const pending = runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
     await started.promise;
     control.page = { ...page };
     control.invalidateScreencastFrame();
@@ -186,13 +188,13 @@ it("honors low/medium quality independently while high viewers keep the shared s
     return { data: jpeg() };
   });
   emit(1);
-  expect((await runtime.frame(100, 95, 0)).transport).toBe("cdp-screencast");
+  expect((await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).transport).toBe("cdp-screencast");
   const low = await runtime.frame(100, 70, 0);
   expect(low.transport).toBe("screenshot");
   expect(await runtime.frame(100, 70, 0)).toBe(low);
-  expect((await runtime.frame(100, 95, 0)).transport).toBe("cdp-screencast");
+  expect((await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).transport).toBe("cdp-screencast");
   expect((await runtime.frame(100, 90, 0)).transport).toBe("screenshot");
-  expect((await runtime.frame(100, 95, 0)).transport).toBe("cdp-screencast");
+  expect((await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0)).transport).toBe("cdp-screencast");
   expect(qualities).toEqual([70, 90]);
   expect(calls).not.toContain("Page.startScreencast");
   expect(calls).not.toContain("Page.stopScreencast");
@@ -205,7 +207,7 @@ it("reduces quality only to satisfy the byte cap and never substitutes a cached 
     qualities.push(params.quality);
     return { data: params.quality === 70 ? jpeg() + "AAAA".repeat(50) : jpeg() };
   });
-  await runtime.frame(100, 95, 0);
+  await runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
   expect((await runtime.frame(100, 70, 0)).transport).toBe("screenshot");
-  expect(qualities).toEqual([95, 70, 65]);
+  expect(qualities).toEqual([DEFAULT_JPEG_QUALITY, 70, 65]);
 });

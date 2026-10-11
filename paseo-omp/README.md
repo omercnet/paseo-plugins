@@ -24,7 +24,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `^0.9.2 || ^0.10.0 || ^0.11.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Paseo 0.9.2 is required for reliable plugin-provider request failure containment, reload cleanup, and daemon shutdown ordering; 0.10.1 is verified against the same public plugin contracts.
+Requirements: Paseo `^0.11.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. The config screen and Hub row use the 0.11 screen and sidebar APIs, so Paseo 0.9 and 0.10 hosts are no longer supported.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
@@ -40,7 +40,7 @@ Open the **OMP** sidebar to review the provider-profile contract, choose which c
 - [Core-provider issue and parity audit](docs/core-provider-issue-audit.md)
 - [Release checklist](docs/release-checklist.md)
 
-The plugin uses public Paseo 0.9 and 0.10 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
+The plugin uses public Paseo 0.11 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
 
 ## Named OMP profiles
 
@@ -54,8 +54,8 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-The capability inventory is pinned to `@getpaseo/plugin` 0.11.0-beta.3 (PR #251), with nightly
-compatibility checks against supported 0.9 and 0.10 hosts. Provider capability scoring still covers
+The capability inventory is pinned to `@getpaseo/plugin` 0.11.1, with nightly compatibility checks
+against the latest and beta channels. Provider capability scoring covers
 all 17 entries in the SDK's `PROVIDER_CAPABILITIES`; the separate provider/client SDK table below
 also tracks the 0.11 registration, screen, and sidebar APIs. This measures strict SDK surface
 coverage, not general product quality.
@@ -79,7 +79,7 @@ Scoring is deliberately mechanical so releases remain comparable:
 | `session.archive` | **0%** | Not advertised. Paseo may archive its agent record, but OMP has no native transcript archive operation. |
 | `session.configure` | **50%** | Live model and thinking changes commit and republish native state. Live approval-mode changes require a new session, and non-empty SDK `settings` are rejected. |
 | `session.list` | **100%** | Bounded host-wide and cwd-scoped discovery, search, previews, profile-specific session roots, and cleanup-reservation guards. |
-| `session.persistence` | **100%** | Versioned opaque handles, exact resume, import, replay-before-ready, runtime recovery, and cleanup quarantine. |
+| `session.persistence` | **100%** | Versioned opaque handles, exact resume, import, replay-before-ready, runtime recovery, and cleanup quarantine. Archived agents whose recorded workspace has been removed load read-only from their authorized transcript when Paseo opens them with its `history` purpose, without spawning OMP or connecting MCP servers; interactive create and resume still require the workspace. |
 | `session.revert.both` | **0%** | Not advertised because OMP cannot atomically rewind conversation and workspace files. |
 | `session.revert.conversation` | **100%** | Native branch-based conversation rewind, replay deduplication, ownership transfer, and failure quarantine. |
 | `session.revert.files` | **0%** | Not advertised because OMP does not expose a native file-only rewind contract. |
@@ -95,7 +95,7 @@ Provider functionality outside the capability flags is tracked separately:
 | --- | ---: | --- |
 | Registration metadata and sanitized SVG icon | **100%** | Stable `omp-plugin` identity, label, description, and bundled icon. |
 | Strict `providerOptionsSchema` | **100%** | Command, literal environment, names-only profile inherited environment, output-redaction mode, session directory, RPC timeout, and role-model options are validated and normalized. Host-wide inherited names are separately persisted and merged at launch. |
-| Availability diagnostics | **50%** | The plugin implements a `checkAvailability` hook with bounded checks that distinguish missing, unrunnable, incompatible, and available OMP runtimes, but no released daemon calls it (no upstream reference at v0.10.2 or v0.11.0-beta.3). Hosts treat the provider as available when a connection opens, and launch failures surface at session start. |
+| Availability diagnostics | **50%** | The plugin implements a `checkAvailability` hook with bounded checks that distinguish missing, unrunnable, incompatible, and available OMP runtimes, but Paseo 0.10.2 and 0.11.1 do not call it. Hosts treat the provider as available when a connection opens, and launch failures surface at session start. |
 | Catalog cache identity | **100%** | Hash includes effective options, merged host/profile inherited-environment names, settings, scope, cwd, and default command, but never resolves or fingerprints inherited values. |
 | Models, modes, and thinking catalog | **100%** | Native catalog is mapped to opaque public model IDs with committed defaults and permission-gated modes. |
 | Connection `send` / `onEvent` / `close` lifecycle | **100%** | Request correlation, multi-session ownership, process recovery, teardown, and provider reload/removal are covered. |
@@ -106,7 +106,7 @@ Provider functionality outside the capability flags is tracked separately:
 | Built-in timeline snapshots | **100%** | Assistant, reasoning, tools, todos, notifications, errors, compaction, and friendly MCP labels use stable IDs and complete snapshots. OMP emits client-safe PNG/JPEG when possible; validated legacy WebP images render on capable clients with an explicit per-image fallback elsewhere. |
 | Usage reporting | **100%** | Periodic, post-compaction, fallback, terminal, timeout, and recovered-runtime samples publish `session.usage`. |
 | 0.11 provider `status()` | **0%** | Not registered. Its request carries only an optional daemon-resolved `launch`; the daemon supplies one only when a registration declares `command`, which would move launch ownership to the daemon. Without that, status cannot see per-agent `providerOptions.command`, so probing a guessed default could wrongly mark a valid custom-command provider unavailable. |
-| 0.11 screens and sidebar items | **100%** | The global config surface migrates to `addScreen({ id: "config" })`, preserving legacy links and encoding profile selection in screen params. The Hub status row uses `addSidebarHeaderItem` + `SidebarRow`, lists processes and tails logs in a reusable popover. Hosts without the 0.11 APIs retain the static config row/surface; the Hub row is 0.11-only. |
+| 0.11 screens and sidebar items | **100%** | The global config surface migrates to `addScreen({ id: "config" })`, preserving legacy links and encoding profile selection in screen params. The Hub status row uses `addSidebarHeaderItem` + `SidebarRow`, lists processes and tails logs in a reusable popover. The legacy static config row and surface were removed with the 0.11 floor. |
 | 0.11 usage source | **0%** | Not registered. `server/quota.ts` reads OMP's recorded `usage_history`, not live quota, so there is no live fetcher to register. Upstream Claude and Codex sources fetch live quota for the Anthropic and Codex OAuth credentials in the daemon's default or `OMP_PROFILE` store; other providers and named profiles remain covered only by this plugin's historical quota pill. |
 
 Tracking rules:
@@ -124,7 +124,7 @@ Existing agents whose provider is `omp` remain owned by the bundled provider. Ne
 
 OMP `18.1.15` is the oldest version tested end to end. The direct provider's hard compatibility gate is `rpc-ui` protocol v2: metadata-free legacy ready frames and v1-only runtimes are rejected before a provider session opens because they cannot support the advertised persistence and conversation-rewind capabilities. Typed tool approvals remain capability-gated and fall back as described above. For terminal completion, a matching `agent_end.requestId` is authoritative and mismatches are ignored before state changes. Released OMP 18.2.x builds that omit that field use an ordered fallback requiring a fresh correlated native user entry followed by current-turn assistant activity, an idle non-compacting runtime, and no conflicting permission, tool, steer, or child-session work. Ambiguous events while OMP is active are ignored; unresolved ambiguity after confirmed idle fails only the Paseo turn. This trades a bounded residual same-agent stale-event risk for compatibility with released OMP instead of terminating and lazily restarting the runtime after every later prompt. Paseo clients, including mobile clients inside reconnect grace, do not own or terminate the daemon-managed OMP session.
 
-Paseo 0.9.2 is the minimum supported stable release, and 0.10.1 is supported. The controlled Docker canary remains pinned to official 0.9.2; nightly SDK checks cover the newest 0.9, 0.10, and latest releases. The canary preserves nested provider-subagent ancestry and spawning-tool links, and validates npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping.
+Paseo 0.11 is the minimum supported release. The controlled Docker canary is pinned to official 0.11.1; nightly SDK checks cover the latest and beta channels. The canary preserves nested provider-subagent ancestry and spawning-tool links, and validates npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping.
 
 Install, update, disable, or remove `paseo-omp` independently of the bundled provider. Verify the provider snapshot contains `omp-plugin` after installation; a bundled `omp` entry may remain present and is not modified by this plugin.
 

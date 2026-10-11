@@ -3,6 +3,7 @@ import { SessionManager } from "../server/browser";
 import type { JsonValue } from "../server/runtime-protocol";
 import { RuntimeProtocolError } from "../server/runtime-protocol";
 import type { SupervisorClient } from "../server/supervisor-client";
+import { FRAME_MAX_BYTES, JPEG_QUALITY } from "../shared/capture-settings";
 
 interface FakeWorkspace {
   url: string;
@@ -280,8 +281,8 @@ describe("SessionManager control leases", () => {
     expect(
       client.operations.filter((call) => call.operation === "frame").map((call) => call.input),
     ).toEqual([
-      { maxBytes: 4 * 1024 * 1024, quality: 95, waitMs: 500 },
-      { maxBytes: 4 * 1024 * 1024, quality: 90, waitMs: 500 },
+      { maxBytes: FRAME_MAX_BYTES, quality: JPEG_QUALITY.high, waitMs: 500 },
+      { maxBytes: FRAME_MAX_BYTES, quality: JPEG_QUALITY.medium, waitMs: 500 },
     ]);
     await manager.detach(desktop.viewerToken);
     expect(client.operations.filter((call) => call.operation === "screencast.stop")).toEqual([]);

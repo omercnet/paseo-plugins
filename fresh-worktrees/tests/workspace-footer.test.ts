@@ -15,16 +15,12 @@ const summary = createWorkspaceSummary({
   recheck: async () => {},
 });
 
-describe("footer feature detection", () => {
-  test("registers on a host that has footer items, even when SidebarRow is an object component", () => {
+describe("workspace footer", () => {
+  test("registers the footer row, even when SidebarRow is an object component", () => {
     const addSidebarFooterItem = vi.fn(() => () => {});
     registerWorkspaceFooter({ addSidebarFooterItem } as unknown as PluginClientContext, summary);
     expect(addSidebarFooterItem).toHaveBeenCalledWith(
       expect.objectContaining({ id: "workspace-freshness" }),
     );
-  });
-
-  test("registers nothing on a 0.9/0.10 host without addSidebarFooterItem", () => {
-    expect(registerWorkspaceFooter({} as unknown as PluginClientContext, summary)).toBeUndefined();
   });
 });

@@ -127,3 +127,28 @@ it("drops viewport recovery after a mutation supersedes capture", async () => {
   await expect(runtime.frame(1000000, 65, 1)).rejects.toThrow("invalidated");
   expect(calls.filter((method) => method === "Page.captureScreenshot")).toHaveLength(1);
 });
+
+it("captures the requested viewer quality instead of reusing a different-quality stream", async () => {
+  const { runtime, calls, page } = fakeRuntime([800]);
+  Object.assign(runtime, {
+    screencastFrame: {
+      dataBase64: jpeg(1280, 800),
+      byteLength: Buffer.byteLength(jpeg(1280, 800), "base64"),
+      width: 1280,
+      height: 800,
+      transport: "cdp-screencast",
+      capturedAt: new Date().toISOString(),
+    },
+  });
+  let requestedQuality: unknown;
+  const send = page.send;
+  page.send = async (method: string, ...args: unknown[]) => {
+    if (method === "Page.captureScreenshot") {
+      requestedQuality = (args[0] as { quality: number }).quality;
+    }
+    return send(method);
+  };
+  expect((await runtime.frame(1_000_000, 40, 0)).transport).toBe("screenshot");
+  expect(requestedQuality).toBe(40);
+  expect(calls.filter((method) => method === "Page.captureScreenshot")).toHaveLength(1);
+});

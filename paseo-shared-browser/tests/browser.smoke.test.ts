@@ -32,6 +32,15 @@ function target(frame: BrowserFrame) {
   };
 }
 
+/** The runtime bounds each browser launch (cold start) by a 15 s command timeout. This test
+ * performs two real launches, the initial attach and the explicit reopen after close, so a slow
+ * runner (Windows CI cold start is ~14 s) legitimately spends ~29 s in launches alone. Budget both
+ * launches at their product bound plus the remaining operations; a hung launch still fails first
+ * with the runtime's own named timeout error rather than waiting for this budget. */
+const BROWSER_LAUNCH_BOUND_MS = 15_000;
+const SMOKE_BUDGET_MS = 2 * BROWSER_LAUNCH_BOUND_MS + 15_000;
+vi.setConfig({ testTimeout: SMOKE_BUDGET_MS });
+
 it("shares and persists a production agent-browser runtime across supervisor clients", async () => {
   const preparedHome = process.env.PASEO_HOME ?? join(homedir(), ".paseo");
   const runtimeRoot = resolveBrowserRuntimeRoot(preparedHome);
@@ -113,7 +122,13 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       setTimeout(() => response.end(page), 100);
       return;
     }
-    response.end(page);
+    // Stream recovery after fallback needs sustained paint events, which a static
+    // page never produces. The cookie page animates so recovery is observable.
+    response.end(
+      url.pathname === "/set-cookie"
+        ? `${page}<style>@keyframes pulse{50%{opacity:.5}}</style><div style="width:8px;height:8px;background:#0a0;animation:pulse .1s infinite"></div>`
+        : page,
+    );
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -272,6 +287,56 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       },
     });
     await vi.waitFor(() => expect(clicked).toBe(1));
+
+    // Two consecutive human presses on the JPEG path, each from its own freshly
+    // decoded receipt. An acknowledged press spends the receipt it used.
+    const humanPress = async (frame: BrowserFrame, state: BrowserState) => {
+      const context = {
+        viewerToken: first.viewerToken,
+        controlToken: firstControl.controlToken,
+        expected: {
+          ...expected(state),
+          runtimeId: state.runtimeId!,
+          bridgeEpoch: state.bridgeEpoch!,
+        },
+      };
+      const begun = await manager.beginGesture({
+        ...context,
+        target: target(frame),
+        pointerKind: "mouse",
+      });
+      if (!("gestureId" in begun) || typeof begun.nextSequence !== "number") return false;
+      const point = { x: 370, y: 46, width: 1280, height: 800 };
+      const down = await manager.updateGesture({
+        ...context,
+        gestureId: begun.gestureId,
+        sequence: begun.nextSequence,
+        target: target(frame),
+        event: { kind: "down", point, button: "left", clickCount: 1 },
+      });
+      const up = await manager.updateGesture({
+        ...context,
+        gestureId: begun.gestureId,
+        sequence: down.nextSequence,
+        event: { kind: "up", point, button: "left", clickCount: 1 },
+      });
+      await manager.endGesture({
+        ...context,
+        gestureId: begun.gestureId,
+        sequence: up.nextSequence,
+        cancel: false,
+      });
+      return true;
+    };
+    const pressFrameOne = await manager.capture(first.viewerToken, "medium", null);
+    expect(await humanPress(pressFrameOne.frame!, pressFrameOne.state)).toBe(true);
+    await vi.waitFor(() => expect(clicked).toBe(2));
+    expect(await humanPress(pressFrameOne.frame!, pressFrameOne.state)).toBe(false);
+    expect(clicked).toBe(2);
+    const pressFrameTwo = await manager.capture(first.viewerToken, "medium", null);
+    expect(pressFrameTwo.frame?.frameId).not.toBe(pressFrameOne.frame?.frameId);
+    expect(await humanPress(pressFrameTwo.frame!, pressFrameTwo.state)).toBe(true);
+    await vi.waitFor(() => expect(clicked).toBe(3));
     console.log("browser-smoke: input");
 
     const afterNavigation = await manager.navigate({
@@ -318,16 +383,20 @@ it("shares and persists a production agent-browser runtime across supervisor cli
       action: { kind: "goto", url: `${origin}/set-cookie` },
     });
     await vi.waitFor(() => expect(lastUserAgent).toContain("Pixel 7"));
-    await vi.waitFor(async () => {
-      // Only the default quality requests the shared CDP stream. Other viewer
-      // qualities intentionally use screenshots without restarting that stream.
-      const resumedCapture = await manager.capture(
-        resumed.viewerToken,
-        DEFAULT_CAPTURE_QUALITY,
-        null,
-      );
-      expect(resumedCapture.frame?.transport).toBe("cdp-screencast");
-    });
+    await vi.waitFor(
+      async () => {
+        // Only the default quality requests the shared CDP stream. Other viewer
+        // qualities intentionally use screenshots without restarting that stream.
+        // Leaving fallback needs a 1.5s dwell plus sustained paint events.
+        const resumedCapture = await manager.capture(
+          resumed.viewerToken,
+          DEFAULT_CAPTURE_QUALITY,
+          null,
+        );
+        expect(resumedCapture.frame?.transport).toBe("cdp-screencast");
+      },
+      { timeout: 10_000, interval: 250 },
+    );
     console.log("browser-smoke: emulated");
 
     manager.disconnect();

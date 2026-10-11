@@ -1,6 +1,7 @@
 /** Actual runtime JPEG path, fake CDP only. Swap time must survive transport delay. */
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { DEFAULT_JPEG_QUALITY } from "../shared/capture-settings";
 import { AgentBrowserRuntime } from "./agent-browser-runtime";
 
 function jpeg(tag: number): string {
@@ -43,6 +44,7 @@ afterEach(() => {
 
 function fixture() {
   const runtime = new AgentBrowserRuntime({
+    nativeVideo: true,
     binaryPath: "/tmp/unlaunched",
     executablePath: "/tmp/unlaunched",
     profilePath: "/tmp/uncreated",
@@ -92,7 +94,7 @@ function fixture() {
 /** Zero-wait stream polling still uses a native timer; settle that fake timer
  * without advancing the source clock or extending the freshness assertion. */
 async function readFrame(runtime: AgentBrowserRuntime) {
-  const pending = runtime.frame(100, 95, 0);
+  const pending = runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
   await vi.advanceTimersByTimeAsync(0);
   return pending;
 }

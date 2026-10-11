@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-context-mode",
-  "version": "1.2.0",
+  "version": "1.2.4",
   "type": "module",
   "description": "Provider-aware Context Mode health, savings, and MCP activation for Paseo.",
   "license": "MIT",
@@ -37,10 +37,12 @@
     "client",
     "server",
     "shared",
-    "paseo-plugin.json"
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
-    "check": "biome check .",
+    "check": "biome check . && node ../scripts/shrinkwrap.mjs --check .",
     "check:write": "biome check --write .",
     "test": "vitest run",
     "test:unit": "vitest run",

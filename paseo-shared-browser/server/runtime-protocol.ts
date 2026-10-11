@@ -37,7 +37,6 @@ export type AgentBrowserOperation =
   | "navigate"
   | "input"
   | "viewport"
-  | "device"
   | "tabs.list"
   | "tabs.create"
   | "tabs.select"
@@ -118,6 +117,7 @@ export type RuntimeErrorCode =
   | "WORKSPACE_NOT_FOUND"
   | "RUNTIME_BUSY"
   | "UNKNOWN_OUTCOME"
+  | "RUNTIME_LOST"
   | "RUNTIME_FAILURE";
 
 export class RuntimeProtocolError extends Error {
@@ -127,6 +127,14 @@ export class RuntimeProtocolError extends Error {
     super(message);
     this.name = "RuntimeProtocolError";
     this.code = code;
+  }
+}
+
+/** The owned runtime can never serve again; the next explicit attach must replace it. */
+export class RuntimeLostError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RuntimeLostError";
   }
 }
 
@@ -289,8 +297,7 @@ function requireAgentOperation(value: unknown): AgentBrowserOperation {
     value === "release-control" ||
     value === "navigate" ||
     value === "input" ||
-    value === "viewport" ||
-    value === "device"
+    value === "viewport"
   )
     return value;
   throw new RuntimeProtocolError("INVALID_REQUEST", "Unknown agent browser operation");

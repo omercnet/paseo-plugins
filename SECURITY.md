@@ -16,4 +16,4 @@ The maintainer will acknowledge and triage reports on a best-effort basis, coord
 
 ## Release verification
 
-Release ZIPs have GitHub build-provenance attestations signed through GitHub's OIDC and Sigstore integration. Verify provenance with `gh attestation verify <archive> --repo omercnet/paseo-plugins`. The adjacent SHA-256 file detects accidental corruption only and is not an independent authenticity proof.
+Releases publish to npm with provenance attestations from the release workflow. Verify them with `npm audit signatures`.

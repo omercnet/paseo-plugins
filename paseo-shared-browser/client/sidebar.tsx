@@ -123,9 +123,8 @@ function createSidebarItem(client: PluginClientContext) {
   };
 }
 
-/** Sidebar footer row listing open sessions. Hosts before 0.11 lack the API and get no row. */
+/** Sidebar footer row listing open sessions. */
 export function contributeSharedBrowserSidebar(client: PluginClientContext): () => void {
-  if (typeof client.addSidebarFooterItem !== "function") return () => {};
   return client.addSidebarFooterItem({
     id: "shared-browser-sessions",
     title: "Shared Browser",

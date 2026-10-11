@@ -4,9 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { browserTabIdSchema } from "../shared/browser";
-import { DEFAULT_CAPTURE_QUALITY } from "../shared/capture-settings";
-import { DEVICE_PRESET_IDS } from "../shared/device-presets";
-import { MAX_VIEWPORT, MIN_VIEWPORT } from "../shared/viewport-limits";
+import { MAX_AGENT_VIEWPORT as MAX_VIEWPORT, MIN_VIEWPORT } from "../shared/viewport-limits";
 import type { JsonValue } from "./runtime-protocol";
 import { resolveSupervisorPaths } from "./supervisor";
 import { AgentSupervisorClient } from "./supervisor-client";
@@ -108,7 +106,7 @@ async function main(): Promise<void> {
       description:
         "Capture the current shared browser frame and state. Capture before sending input.",
       inputSchema: z.object({
-        quality: z.enum(["low", "medium", "high"]).default(DEFAULT_CAPTURE_QUALITY),
+        quality: z.enum(["low", "medium", "high"]).default("medium"),
       }),
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -267,17 +265,6 @@ async function main(): Promise<void> {
           viewport: viewport as unknown as JsonValue,
         }),
       ),
-  );
-
-  server.registerTool(
-    "shared_browser_device",
-    {
-      description:
-        "Apply the same device or display preset as the human picker, including sharper Pixel capture. Requires control and reloads the current page.",
-      inputSchema: z.object({ presetId: z.enum(DEVICE_PRESET_IDS) }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    },
-    async ({ presetId }) => textResult(await client.request("device", { presetId })),
   );
 
   const transport = new StdioServerTransport();

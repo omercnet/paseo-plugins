@@ -13,13 +13,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { MAX_VIEWPORT } from "../shared/viewport-limits";
+import { RuntimeLostError } from "./runtime-protocol";
 
 const AUTH_NAME = "MIT-MAGIC-COOKIE-1";
 const STARTUP_MS = 5_000;
 
+/** Fixed-text startup failure; safe to show operators because it never embeds paths or secrets. */
+export class PrivateDisplayError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PrivateDisplayError";
+  }
+}
+
 export interface PrivateVirtualDisplay {
   readonly launchEnvironment: Readonly<{ DISPLAY: string; XAUTHORITY: string }>;
-  /** Refuses work after the display exits; it never creates a replacement display. */
+  /** Throws RuntimeLostError after the display exits; it never creates a replacement display. */
   assertAvailable(): void;
   /** Idempotently terminates only the owned child and removes its private auth file. */
   stop(): Promise<void>;
@@ -28,7 +37,7 @@ export interface PrivateVirtualDisplay {
 /** Serializes a FamilyWild Xauthority record, scoped to this display and cookie. */
 export function encodeDisplayAuthority(display: string, cookie: Buffer): Buffer {
   if (!/^\d{4,5}$/.test(display) || Number(display) > 65_535 || cookie.length !== 16) {
-    throw new Error("Invalid private display authority");
+    throw new PrivateDisplayError("Invalid private display authority");
   }
   const fields = [Buffer.alloc(0), Buffer.from(display), Buffer.from(AUTH_NAME), cookie];
   const family = Buffer.alloc(2);
@@ -97,19 +106,24 @@ async function waitDisplayReady(
       if (error) reject(error);
       else resolve();
     };
-    const onError = () => finish(new Error("Private browser display failed to start"));
-    const onExit = () => finish(new Error("Private browser display ended before readiness"));
+    const onError = () =>
+      finish(new PrivateDisplayError("Private browser display failed to start"));
+    const onExit = () =>
+      finish(new PrivateDisplayError("Private browser display ended before readiness"));
     const onData = (chunk: Buffer) => {
       response += chunk.toString("ascii");
-      if (response.length > 16) return finish(new Error("Invalid private display readiness"));
+      if (response.length > 16)
+        return finish(new PrivateDisplayError("Invalid private display readiness"));
       if (response.includes("\n")) {
         finish(
-          response === `${display}\n` ? undefined : new Error("Private display identity changed"),
+          response === `${display}\n`
+            ? undefined
+            : new PrivateDisplayError("Private display identity changed"),
         );
       }
     };
     const timer = setTimeout(
-      () => finish(new Error("Private browser display was not ready")),
+      () => finish(new PrivateDisplayError("Private browser display was not ready")),
       timeoutMs,
     );
     ready.on("data", onData);
@@ -136,7 +150,7 @@ async function stopDisplayChild(child: ChildProcess): Promise<void> {
  * Starts Xvfb only for Linux hidden browsers when the existing executable exists.
  * Absence returns null. Present-but-broken Xvfb fails closed with bounded cleanup.
  * No process.env mutation, network listener, host display, or dependency install.
- * One 2560x2560x24 framebuffer is bounded at about 25 MiB before server overhead;
+ * One 3840x3840x24 framebuffer is bounded at about 57 MiB before server overhead;
  * Chromium CPU/memory costs remain those of the existing browser runtime.
  */
 export async function createPrivateVirtualDisplay(
@@ -148,7 +162,7 @@ export async function createPrivateVirtualDisplay(
     await access(executable, constants.X_OK);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw new Error("Private browser display executable is not usable");
+    throw new PrivateDisplayError("Private browser display executable is not usable");
   }
   const display = String(randomInt(20_000, 60_000));
   const directory = await mkdtemp(join(tmpdir(), "paseo-browser-display-"));
@@ -202,16 +216,16 @@ export async function createPrivateVirtualDisplay(
       Math.min(STARTUP_MS, Math.max(1, options.timeoutMs ?? STARTUP_MS)),
     );
     if (exited || !(await authenticateDisplay(display, cookie))) {
-      throw new Error("Private browser display authentication failed");
+      throw new PrivateDisplayError("Private browser display authentication failed");
     }
     if (await authenticateDisplay(display, Buffer.alloc(0))) {
-      throw new Error("Private browser display accepted an unauthenticated client");
+      throw new PrivateDisplayError("Private browser display accepted an unauthenticated client");
     }
-    if (exited) throw new Error("Private browser display ended");
+    if (exited) throw new PrivateDisplayError("Private browser display ended");
     return {
       launchEnvironment: Object.freeze({ DISPLAY: `:${display}`, XAUTHORITY: authPath }),
       assertAvailable() {
-        if (exited) throw new Error("Private browser display ended");
+        if (exited) throw new RuntimeLostError("Private browser display ended");
       },
       stop,
     };

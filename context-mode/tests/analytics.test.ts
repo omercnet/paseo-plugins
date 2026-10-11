@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, test } from "vitest";
-import { collectContextModeAnalytics } from "../server/analytics";
+import {
+  collectContextModeAnalytics,
+  createContextModeAnalyticsHandler,
+} from "../server/analytics";
 import {
   discoverContextModeStorageRoots,
   listRegularContextModeDatabases,
@@ -381,6 +384,91 @@ describe("structured Context Mode analytics", () => {
       expect.objectContaining({ provider: "claude-code", sessions: 1, savedTokens: 4 }),
       expect.objectContaining({ provider: "codex", sessions: 1, savedTokens: 4 }),
     ]);
+  });
+
+  test("the handler reads providers from the Paseo config", async () => {
+    const home = await temporaryHome();
+    await createMinimalSessionDatabase(home, ".claude_work", "profile-session", "/work/b");
+    const paseo = {
+      config: {
+        get: async () => ({
+          config: {
+            providers: {
+              "claude-work": {
+                extends: "claude",
+                env: { CLAUDE_CONFIG_DIR: join(home, ".claude_work") },
+              },
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await createContextModeAnalyticsHandler({ home, env: {} })({}, { paseo });
+
+    expect(result.byProvider).toEqual([
+      expect.objectContaining({ provider: "claude-work", sessions: 1 }),
+    ]);
+  });
+
+  test("aggregates storage of configured providers under their own ids", async () => {
+    const home = await temporaryHome();
+    await createMinimalSessionDatabase(home, ".claude", "daemon-session", "/work/a");
+    await createMinimalSessionDatabase(home, ".claude_work", "profile-session", "/work/b");
+    await createMinimalSessionDatabase(home, ".codex_work", "codex-session", "/work/c");
+
+    const result = await collectContextModeAnalytics({
+      home,
+      env: {},
+      providers: {
+        "claude-work": {
+          extends: "claude",
+          env: { CLAUDE_CONFIG_DIR: join(home, ".claude_work") },
+        },
+        "codex-work": { extends: "codex", env: { CODEX_HOME: join(home, ".codex_work") } },
+        "claude-default": { extends: "claude" },
+        "unsupported-work": { extends: "not-a-builtin" },
+      },
+    });
+
+    expect(result.totals).toMatchObject({
+      providers: 3,
+      databases: 3,
+      sessions: 3,
+      savedTokens: 12,
+    });
+    expect(result.byProvider.map((entry) => entry.provider)).toEqual([
+      "claude-code",
+      "claude-work",
+      "codex-work",
+    ]);
+  });
+
+  test("lists a built-in provider id with its own env override as a separate row", async () => {
+    const home = await temporaryHome();
+    await createMinimalSessionDatabase(home, ".claude", "daemon-session", "/work/a");
+    await createMinimalSessionDatabase(home, ".claude_override", "override-session", "/work/b");
+
+    const result = await collectContextModeAnalytics({
+      home,
+      env: {},
+      providers: { claude: { env: { CLAUDE_CONFIG_DIR: join(home, ".claude_override") } } },
+    });
+
+    expect(result.byProvider.map((entry) => entry.provider)).toEqual(["claude-code", "claude"]);
+  });
+
+  test("discovers configured provider roots without double counting shared storage", async () => {
+    const home = await temporaryHome();
+    await createMinimalSessionDatabase(home, ".claude", "shared", "/work/a");
+
+    const result = await discoverContextModeStorageRoots({
+      home,
+      env: {},
+      providers: { "claude-shared": { extends: "claude" } },
+    });
+
+    expect(result.roots.map((root) => root.provider)).toEqual(["claude-code"]);
   });
 
   test("leaves database bytes and directory contents unchanged", async () => {

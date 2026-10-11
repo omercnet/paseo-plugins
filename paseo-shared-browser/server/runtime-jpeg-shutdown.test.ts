@@ -1,6 +1,7 @@
 /** Real acquisition methods with fake CDP; shutdown never waits for uncertain image work. */
 import { EventEmitter } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
+import { DEFAULT_JPEG_QUALITY } from "../shared/capture-settings";
 import { AgentBrowserRuntime } from "./agent-browser-runtime";
 import { CdpConnection } from "./cdp";
 
@@ -16,6 +17,7 @@ class Connection extends EventEmitter {
 /** Replace external process operations only, retaining real page/start/capture guards. */
 function fixture() {
   const runtime = new AgentBrowserRuntime({
+    nativeVideo: true,
     binaryPath: "/tmp/unlaunched-browser",
     executablePath: "/tmp/unlaunched-chromium",
     profilePath: "/tmp/uncreated-profile",
@@ -92,7 +94,7 @@ it("optional frame startup rejects shutdown without attempting screenshot fallba
     return {};
   });
   const fallback = vi.spyOn(control, "captureScreenshot");
-  const result = runtime.frame(1024, 95, 0).catch((error: unknown) => error);
+  const result = runtime.frame(1024, DEFAULT_JPEG_QUALITY, 0).catch((error: unknown) => error);
   await entered.promise;
   await runtime.shutdown();
   blocked.resolve();
@@ -203,6 +205,6 @@ it("shutdown still releases original held input, then all fresh acquisition stay
   );
   await expect(runtime.reconnect()).rejects.toThrow("shutting down");
   await expect(runtime.launch()).rejects.toThrow("shutting down");
-  await expect(runtime.frame(1024, 95, 0)).rejects.toThrow("closed");
+  await expect(runtime.frame(1024, DEFAULT_JPEG_QUALITY, 0)).rejects.toThrow("closed");
   expect(control.invoke).toHaveBeenCalledTimes(1);
 });

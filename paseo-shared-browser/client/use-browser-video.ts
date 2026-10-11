@@ -1,7 +1,7 @@
 /**
  * Single-flight encoded-video reader. RPC waits never overlap per viewer; canceled
- * replies are discarded and cannot restore input against old pixels. Android uses
- * the host video surface; other native hosts keep the existing image path.
+ * replies are discarded and cannot restore input against old pixels. Only web
+ * clients decode video, and only when the host enabled it; others use the image path.
  * Document/AppState suspension releases the decoder and stops reads. A bounded
  * in-flight SDK read cannot be aborted; its result is discarded before resuming.
  * Read failures get three delayed attempts, with failure cleared only by paint.
@@ -71,6 +71,13 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
     fallbackRef.current = ++fallbackCounter.current;
     setFallbackRevision(fallbackRef.current);
   };
+  /** Source/document/geometry validity: enough to decode and paint a packet. */
+  const sourceCurrent = (packet: BrowserVideoPacket, epoch: number) =>
+    latest.current.isCurrent(packet, epoch);
+  /** Input eligibility: source validity plus a host receipt. A display-only packet
+   * (actionable === false) may be decoded and painted but never admits a press. */
+  const inputCurrent = (packet: BrowserVideoPacket, epoch: number) =>
+    packet.actionable !== false && sourceCurrent(packet, epoch);
   const displayCurrent = (packet: BrowserVideoPacket) =>
     latest.current.isDisplayCurrent
       ? latest.current.isDisplayCurrent(packet)
@@ -78,7 +85,7 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
   const front = presentation?.packet ?? null;
   const setFront = (value: BrowserVideoPacket | null, epoch = 0) => {
     displayedPacket.current = value;
-    if (!value || latest.current.isCurrent(value, epoch)) {
+    if (!value || inputCurrent(value, epoch)) {
       fallbackRef.current = 0;
       setFallbackRevision(0);
     }
@@ -121,7 +128,7 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
       if (
         !fallbackRef.current &&
         presentation.authorityRevision === authorityRevision.current &&
-        latest.current.isCurrent(presentation.packet, presentation.epoch)
+        inputCurrent(presentation.packet, presentation.epoch)
       ) {
         frontRef.current = presentation.packet;
         latest.current.onPresented(presentation.packet, presentation.epoch);
@@ -148,12 +155,7 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
     let applicationActive = AppState.currentState == null || AppState.currentState === "active";
     const start = () => {
       videoGeneration.current += 1;
-      const target = createBrowserVideoEnvironment(node, () => {
-        // Native pixels may change before the bridge acknowledgement arrives.
-        // Revoke the old receipt before sending any asynchronous draw command.
-        authorityRevision.current += 1;
-        frontRef.current = null;
-      });
+      const target = createBrowserVideoEnvironment(node);
       if (!target) return null;
       let stopped = false;
       let readExhausted = false;
@@ -172,9 +174,9 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
         isCurrent: (packet, epoch) => !stopped && latest.current.isCurrent(packet, epoch),
         // Same source/document packets preserve the codec's dependency chain,
         // including a reply that began before a local press. They carry that old
-        // read epoch through paint and cannot authorize another press.
-        isSourceCurrent: (packet) =>
-          !stopped && latest.current.isCurrent(packet, latest.current.epoch()),
+        // read epoch through paint and cannot authorize another press. A display-only
+        // (non-actionable) packet is still source-valid and must keep decoding.
+        isSourceCurrent: (packet) => !stopped && sourceCurrent(packet, latest.current.epoch()),
         onPresented(packet, epoch) {
           if (stopped) return;
           lastPaintedAt = Date.now();
@@ -182,7 +184,7 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
           setError(null);
           // Once this canvas is visible, its pixels change before React commits.
           // Publish authority synchronously with that draw, never the old front.
-          if (visible.current && latest.current.isCurrent(packet, epoch)) {
+          if (visible.current && inputCurrent(packet, epoch)) {
             frontRef.current = packet;
             latest.current.onPresented(packet, epoch);
           } else {
@@ -336,6 +338,17 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
               lastQuietReadAt = Date.now();
             }
             if (reply.status === "unsupported") {
+              if (reply.reasonCode === "video-disabled") {
+                // Host policy, not a failure: stop reading, release the decoder and
+                // canvas, and leave presentation to the ordinary image path.
+                stopped = true;
+                clearInterval(watchdog);
+                visible.current = false;
+                frontRef.current = null;
+                setFront(null);
+                target.dispose();
+                break;
+              }
               if (reply.reasonCode === "encoder-capacity") {
                 // Capacity is a typed, viewing-only soft failure. Keep JPEG
                 // fallback visible while old idle cohorts can release their slot.
@@ -446,7 +459,6 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
   return {
     active,
     canvasRef,
-    surfaceError: (error: unknown) => setFailure({ error, viewerToken: options.viewerToken }),
     front,
     frontViewport: presentation?.viewport ?? null,
     frontRef,

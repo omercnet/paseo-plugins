@@ -10,9 +10,12 @@ interface Contribution {
   title?: unknown;
 }
 
-// The client APIs each host gives this entry. 0.10 already has the deprecated sidebar APIs.
-const PASEO_0_10 = ["addWorkspacePanel", "addCommandCenterItem", "addSurface", "addSidebarItem"];
-const PASEO_0_11 = [...PASEO_0_10, "addScreen", "addSidebarHeaderItem", "addSidebarFooterItem"];
+const HOST_METHODS = [
+  "addWorkspacePanel",
+  "addCommandCenterItem",
+  "addScreen",
+  "addSidebarHeaderItem",
+];
 
 function hostClient(methods: readonly string[]) {
   const registered: { method: string; contribution: Contribution }[] = [];
@@ -38,18 +41,8 @@ const PANEL_AND_COMMANDS = [
 ];
 
 describe("client entry", () => {
-  test("keeps only the panel and commands on Paseo 0.10", () => {
-    const { client, registeredIds, removed } = hostClient(PASEO_0_10);
-
-    const cleanup = contribute(client);
-    expect(registeredIds()).toEqual(PANEL_AND_COMMANDS);
-
-    cleanup();
-    expect(removed.sort()).toEqual([...PANEL_AND_COMMANDS].sort());
-  });
-
-  test("adds the bead screen, titled from its params, and the ready beads row on Paseo 0.11", () => {
-    const { client, registered, registeredIds } = hostClient(PASEO_0_11);
+  test("adds the bead screen, titled from its params, and the ready beads row", () => {
+    const { client, registered, registeredIds } = hostClient(HOST_METHODS);
 
     contribute(client);
     expect(registeredIds()).toEqual([
@@ -62,5 +55,12 @@ describe("client entry", () => {
     const title = screen?.title as (params: Record<string, string>) => string;
     expect(title({ workspace: "ws-1", bead: "demo-d4f" })).toBe("demo-d4f");
     expect(title({ bead: "--help" })).toBe("Bead");
+  });
+
+  test("removes every registration on cleanup", () => {
+    const { client, registeredIds, removed } = hostClient(HOST_METHODS);
+
+    contribute(client)();
+    expect(removed.sort()).toEqual(registeredIds().sort());
   });
 });

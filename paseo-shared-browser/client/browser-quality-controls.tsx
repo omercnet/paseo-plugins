@@ -3,9 +3,9 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { BrowserDisplayPreferences } from "../shared/browser-display-preferences";
-import type { CaptureDensity } from "../shared/capture-density";
-import { JPEG_QUALITY } from "../shared/capture-settings";
+import { DEFAULT_CAPTURE_QUALITY, JPEG_QUALITY } from "../shared/capture-settings";
 import { VIDEO_BITRATES, VIDEO_FRAME_RATES } from "../shared/video-settings";
+import type { CaptureDensityMode } from "./browser-auto-capture-density";
 import { BrowserCaptureDensityControls } from "./browser-capture-density-controls";
 
 const styles = StyleSheet.create({
@@ -28,9 +28,10 @@ interface Props {
   theme: PluginHostProps["theme"];
   disabled: boolean;
   density: number;
+  densityMode: CaptureDensityMode;
   viewport: { width: number; height: number } | null;
   densityDisabled: boolean;
-  onDensityChange(value: CaptureDensity): void;
+  onDensityChange(value: CaptureDensityMode): void;
   captureQuality: BrowserDisplayPreferences["captureQuality"];
   videoBitrate: BrowserDisplayPreferences["videoBitrate"];
   videoFps: BrowserDisplayPreferences["videoFps"];
@@ -82,21 +83,25 @@ function Choices<T extends string | number>(props: {
   );
 }
 /** Explicit values describe the actual JPEG encoder and independently bounded video cohorts. */
-export function BrowserQualityControls(props: Props) {
-  const jpeg = (["low", "medium", "high", "maximum"] as const).map((value) => ({
+export function jpegQualityOptions() {
+  return (["low", "medium", "high", "maximum"] as const).map((value) => ({
     value,
     label: `${JPEG_QUALITY[value]}%`,
-    ...(value === "maximum"
-      ? { detail: "Largest JPEGs" }
-      : value === "high"
-        ? { detail: "Default" }
+    ...(value === DEFAULT_CAPTURE_QUALITY
+      ? { detail: "Default" }
+      : value === "maximum"
+        ? { detail: "Largest JPEGs" }
         : {}),
   }));
+}
+export function BrowserQualityControls(props: Props) {
+  const jpeg = jpegQualityOptions();
   return (
     <View style={{ gap: 12 }}>
       <BrowserCaptureDensityControls
         theme={props.theme}
         density={props.density}
+        mode={props.densityMode}
         viewport={props.viewport}
         disabled={props.densityDisabled}
         onChange={props.onDensityChange}

@@ -33,7 +33,7 @@ export interface NativeVideoRead {
   streamId: string | null;
   packets: RuntimeVideoPacket[];
   reason?: string;
-  reasonCode?: "encoder-capacity";
+  reasonCode?: "encoder-capacity" | "video-disabled";
 }
 interface EncoderState {
   streamId: string;
@@ -60,6 +60,11 @@ export interface NativeVideoCaptureOptions {
   /** Local monotonic time for cohort expiry, separate from native frame timestamps. */
   now?(): number;
 }
+const HELPER_READY_EXPRESSION = `new Promise((resolve) => {
+  if (document.readyState === "complete") resolve();
+  else addEventListener("load", () => resolve(), { once: true });
+}).then(() => typeof startCapture === "function")`;
+
 export class NativeVideoCapture {
   private helper: CdpSession | null = null;
   private helperTargetId: string | null = null;
@@ -178,6 +183,11 @@ export class NativeVideoCapture {
         sourceMs: timestamp * 1000,
         monotonicMs: (before + after) / 2,
       };
+      // The recorder is a classic script in the helper document. Runtime.evaluate can
+      // arrive while that document is still loading, before startCapture exists;
+      // wait for the document's own load event instead of failing acquisition.
+      const loaded = await this.evaluate<boolean>(HELPER_READY_EXPRESSION);
+      if (!loaded) throw new Error("Native video helper did not load");
       await this.evaluate(
         `startCapture(${JSON.stringify(this.options.targetId)},${this.options.width},${this.options.height},${this.generation})`,
       );

@@ -8,7 +8,12 @@ import type {
   IntegrationAudit,
 } from "../shared";
 import { type BinaryResolution, type LaunchDescriptor, resolveContextModeBinary } from "./binary";
-import { createIntegrationAudit } from "./integration";
+import {
+  createIntegrationAudit,
+  type IntegrationDependencies,
+  type ProviderConfigSource,
+  readProviderOverrides,
+} from "./integration";
 import {
   callContextModeTool,
   inspectContextMode,
@@ -28,6 +33,7 @@ export interface ContextModeHandlerDependencies {
   createAudit?: (
     settings: ContextModeSettings,
     runtime: { path: string; version: string | null },
+    dependencies?: IntegrationDependencies,
   ) => Promise<IntegrationAudit>;
 }
 
@@ -35,7 +41,10 @@ export interface ContextModeHandlers {
   status(input: ContextModeRefreshInput): Promise<BinaryStatus>;
   doctor(input: ContextModeRefreshInput): Promise<CommandReport>;
   stats(input: ContextModeRefreshInput): Promise<CommandReport>;
-  audit(input: ContextModeRefreshInput): Promise<IntegrationAudit>;
+  audit(
+    input: ContextModeRefreshInput,
+    context?: { paseo?: ProviderConfigSource },
+  ): Promise<IntegrationAudit>;
 }
 
 interface CacheEntry<T> {
@@ -170,7 +179,10 @@ export function createContextModeHandlers(
     });
   }
 
-  async function audit(_input: ContextModeRefreshInput): Promise<IntegrationAudit> {
+  async function audit(
+    _input: ContextModeRefreshInput,
+    context?: { paseo?: ProviderConfigSource },
+  ): Promise<IntegrationAudit> {
     const resolved = await settingsAndBinary();
     if (resolved.state === "unavailable") {
       return {
@@ -185,10 +197,11 @@ export function createContextModeHandlers(
       version: null,
       tools: [],
     }));
-    return buildAudit(resolved.settings, {
-      path: resolved.binary.path,
-      version: inspection.version,
-    });
+    return buildAudit(
+      resolved.settings,
+      { path: resolved.binary.path, version: inspection.version },
+      { providers: await readProviderOverrides(context?.paseo) },
+    );
   }
 
   return {

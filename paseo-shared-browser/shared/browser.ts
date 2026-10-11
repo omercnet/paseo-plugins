@@ -83,6 +83,7 @@ export const browserStateSchema = z.object({
   controllerExpiresAt: z.string().datetime().nullable(),
   viewerCount: z.number().int().nonnegative(),
   error: z.string().max(2_048).nullable(),
+  notice: z.string().max(256).optional(),
   runtimeId: runtimeIdSchema.optional(),
   tabId: browserTabIdSchema.optional(),
   runtimeCreatedAt: epochSchema.optional(),
@@ -240,6 +241,10 @@ export const resizeBrowserRpc = defineRpc({
     controlToken: opaqueTokenSchema,
     expected: expectedStateSchema,
     viewport: viewportSchema,
+    /** Panel following changes layout size without resetting device behavior or density. */
+    preserveEmulation: z.boolean().optional(),
+    /** Resolve automatic density and panel geometry in one controlled transition. */
+    captureDensity: captureDensitySchema.optional(),
   }),
   output: z.object({ state: browserStateSchema }),
 });
@@ -479,11 +484,7 @@ const gestureContinuationSchema = gestureContextSchema.extend({
   gestureId: opaqueTokenSchema,
   sequence: z.number().int().positive().max(100_000),
 });
-/**
- * Admit one human channel from decoded geometry without publishing physical input.
- * The server can reuse an acknowledged admission for the same controller, native
- * document and geometry after normal idle closure. Keyboard shares the channel.
- */
+/** Begin pins a decoded recent frame but sends no physical input. One live channel per controller. Keyboard events may share either pointer channel. */
 export const beginBrowserGestureRpc = defineRpc({
   name: "shared-browser.gesture.begin",
   input: gestureContextSchema.extend({
@@ -501,10 +502,9 @@ export const beginBrowserGestureRpc = defineRpc({
   ]),
 });
 /**
- * Strict sequence continues the admitted human geometry independently of video
- * refresh. Each update checks the exact controller and native document/attachment.
- * The optional target is retained for compatibility, not required for a new press.
- * Discrete agent input retains its separate strict frame-targeting contract.
+ * Strict sequence continues the original frame context despite this channel's
+ * input invalidations. Independent mouse down/initial touch start require target;
+ * additional contacts in a held touch gesture continue its pinned geometry.
  */
 export const updateBrowserGestureRpc = defineRpc({
   name: "shared-browser.gesture.update",

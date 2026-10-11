@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.3.3](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.3.2...paseo-omp-v1.3.3) (2026-10-09)
+
+
+### Bug Fixes
+
+* **packaging:** lock npm runtime dependencies with npm-shrinkwrap.json ([#300](https://github.com/omercnet/paseo-plugins/issues/300)) ([1b0755c](https://github.com/omercnet/paseo-plugins/commit/1b0755c9097681cdc167fb26bd2d1c3cc5e72830))
+
+## [1.3.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.3.1...paseo-omp-v1.3.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **paseo-omp:** support Paseo 0.11.1 and archived history ([#296](https://github.com/omercnet/paseo-plugins/issues/296)) ([c89ea55](https://github.com/omercnet/paseo-plugins/commit/c89ea55d148c09250202506218fc940d37459ae2))
+
+## [1.3.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.3.0...paseo-omp-v1.3.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **plugins:** ship OVERVIEW.md in published packages ([640f9a4](https://github.com/omercnet/paseo-plugins/commit/640f9a4d7bd6dbad226c4ee1ebaa199abfc62776))
+
+## [1.3.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.2.0...paseo-omp-v1.3.0) (2026-10-07)
+
+
+### Features
+
+* **paseo-omp:** explain tool access boundary and mark quotas as recorded usage ([#277](https://github.com/omercnet/paseo-plugins/issues/277)) ([a479d4a](https://github.com/omercnet/paseo-plugins/commit/a479d4ab7c15f91dd37c2f30c102c0ed4b063f68))
+
+
+### Bug Fixes
+
+* **paseo-omp:** await permission acknowledgement in canary smoke ([#289](https://github.com/omercnet/paseo-plugins/issues/289)) ([f503485](https://github.com/omercnet/paseo-plugins/commit/f5034853d13f0dc5aeec15e4959a35f801a8e3a1))
+* **paseo-omp:** raise catalog budgets for large OMP registries ([#276](https://github.com/omercnet/paseo-plugins/issues/276)) ([61abe50](https://github.com/omercnet/paseo-plugins/commit/61abe5099557afb4e1e94d1dfd9cae6639aba408))
+
 ## [1.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.1.0...paseo-omp-v1.2.0) (2026-10-03)
 
 

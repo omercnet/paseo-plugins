@@ -15,7 +15,12 @@ const QuotaRowSchema = z.object({
   recordedAt: z.number().int(),
 });
 
-export function listOmpQuotasFrom(path: string): OmpQuota[] {
+// Reset-less rows (no resets_at) refresh on every OMP poll, so one this old is an inactive provider.
+const ABANDONED_AFTER_MS = 30 * 86_400_000;
+
+// Only live windows are returned: a series whose newest row already reset (or never resets and was
+// abandoned) would otherwise pin the pill at its last exhausted value and bloat the popover.
+export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
   try {
     const database = new DatabaseSync(path, { readOnly: true, timeout: 500 });
     try {
@@ -33,9 +38,10 @@ export function listOmpQuotasFrom(path: string): OmpQuota[] {
              FROM usage_history
            )
            WHERE position = 1
+             AND (resets_at > ? OR (resets_at IS NULL AND recorded_at > ?))
            ORDER BY COALESCE(usedFraction, -1) DESC, provider, label`,
         )
-        .all();
+        .all(now, now - ABANDONED_AFTER_MS);
       return rows.flatMap((row) => {
         const parsed = QuotaRowSchema.safeParse(row);
         return parsed.success ? [parsed.data] : [];

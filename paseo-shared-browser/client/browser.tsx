@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { type LayoutChangeEvent, Text, View } from "react-native";
+import { type LayoutChangeEvent, Text, useWindowDimensions, View } from "react-native";
 import {
   acquireControlRpc,
   applyDevicePresetRpc,
@@ -49,6 +49,10 @@ import {
 } from "../shared/browser";
 import type { BrowserFrameAuthority } from "../shared/browser-video";
 import { groupResolutionPresets } from "../shared/resolution-menu";
+import {
+  type CaptureDensityMode,
+  getAutomaticCaptureDensity,
+} from "./browser-auto-capture-density";
 import { type BrowserCanvasDisplayMode, getBrowserCanvasLayout } from "./browser-canvas-layout";
 import { BrowserCanvasViewport } from "./browser-canvas-viewport";
 import {
@@ -58,6 +62,7 @@ import {
   ErrorNotice,
   Field,
 } from "./browser-chrome";
+import { ComposeTextControls } from "./browser-compose-controls";
 import { BrowserControlDialog } from "./browser-control-dialog";
 import {
   type ControlRequest,
@@ -67,9 +72,9 @@ import {
 } from "./browser-control-request";
 import { BrowserDialogBody } from "./browser-dialog-body";
 import { type EmulationSelection, matchingResolutionPresetId } from "./browser-emulation-mode";
+import { getFillViewportResolution } from "./browser-fill-viewport";
 import type { FrameCandidate } from "./browser-frame-buffer";
 import { BrowserFrameImage } from "./browser-frame-image";
-import { NativeKeyboardControls } from "./browser-native-keyboard-controls";
 import { createStyles, DIMENSION, SPACE } from "./browser-panel-styles";
 import { BrowserResolutionPicker } from "./browser-resolution-picker";
 import { BrowserTabs } from "./browser-tabs";
@@ -79,12 +84,15 @@ import {
   BrowserMenuSeparator,
   BrowserToolbarMenu,
 } from "./browser-toolbar-menu";
+import { isFrameCurrent, isVideoSourceCurrent } from "./browser-video-currency";
 import { BrowserVideoSurface } from "./browser-video-surface";
 import { isBrowserClosedError, isExpiredBrowserViewerError } from "./browser-viewer-recovery";
 import { createFrameLifecycle } from "./frame-lifecycle";
+import { useBrowserAutoCaptureDensity } from "./use-browser-auto-capture-density";
 import { useBrowserCanvasInput } from "./use-browser-canvas-input";
 import { useBrowserCaptureDensity } from "./use-browser-capture-density";
 import { useBrowserEmulationMode } from "./use-browser-emulation-mode";
+import { useBrowserFillViewport } from "./use-browser-fill-viewport";
 import { useBrowserFrameBuffer } from "./use-browser-frame-buffer";
 import { useBrowserImageCapture } from "./use-browser-image-capture";
 import { useBrowserScopedMutation } from "./use-browser-scoped-mutation";
@@ -109,11 +117,12 @@ interface Size {
 interface ControlledActions {
   navigate(action: "back" | "forward" | "reload" | "goto", url?: string): void;
   applyViewport(): void;
+  fillViewport(): void;
   selectDevicePreset(id: DevicePresetId): void;
-  changeDensity(value: 1 | 2): void;
+  changeDensity(value: CaptureDensityMode): void;
   toggleEmulation(): void;
   sendKey(key: SpecialKey): void;
-  openNativeKeyboard(kind: "keyboard" | "compose" | "commit"): void;
+  openCompose(kind: "compose" | "commit"): void;
   closeTab(): void;
   closeBrowser(): void;
   confirmCloseTab(): void;
@@ -174,27 +183,15 @@ function isFrameDisplayCurrent(frame: BrowserFrameAuthority, state: BrowserState
   );
 }
 
-function isFrameCurrent(frame: BrowserFrameAuthority, state: BrowserState): boolean {
-  return (
-    frame.sessionId === state.sessionId &&
-    (!frame.runtimeId || !state.runtimeId || frame.runtimeId === state.runtimeId) &&
-    (frame.captureEpoch === undefined ||
-      state.bridgeEpoch === undefined ||
-      frame.captureEpoch === state.bridgeEpoch) &&
-    frame.navigationGeneration === state.navigationGeneration &&
-    frame.viewportGeneration === state.viewportGeneration
-  );
-}
-
 export function SharedBrowserPanel({
   theme,
   host,
   layout,
   workspaceId,
-  active = true,
 }: PluginWorkspacePanelProps) {
   const queryClient = useQueryClient();
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
+  const { scale: screenPixelRatio } = useWindowDimensions();
   const viewerLabel = useState(() =>
     `Paseo ${layout.platform} · ${host.label} · ${Date.now().toString(36)}${Math.random()
       .toString(36)
@@ -277,6 +274,23 @@ export function SharedBrowserPanel({
   const actionsAnchorRef = useRef<View | null>(null);
   const [paneSize, setPaneSize] = useState<Size>({ width: 0, height: 0 });
   const panelScope = `${host.id}/${workspaceId}`;
+  const [fillViewportScope, setFillViewportScope] = useState<string | null>(null);
+  const fillViewportEnabled = fillViewportScope === panelScope;
+  const [densitySelection, setDensitySelection] = useState<{
+    scope: string;
+    mode: CaptureDensityMode;
+  }>({ scope: panelScope, mode: "auto" });
+  const densityMode = densitySelection.scope === panelScope ? densitySelection.mode : "auto";
+  const [automaticDensityFailureScope, setAutomaticDensityFailureScope] = useState<string | null>(
+    null,
+  );
+  const automaticDensityEnabled =
+    densityMode === "auto" && automaticDensityFailureScope !== panelScope;
+  useEffect(() => {
+    setFillViewportScope(null);
+    setDensitySelection({ scope: panelScope, mode: "auto" });
+    setAutomaticDensityFailureScope(null);
+  }, [panelScope]);
   const panelScopeRef = useRef(panelScope);
   panelScopeRef.current = panelScope;
   const menuRestoreFocus = useRef(true);
@@ -290,13 +304,19 @@ export function SharedBrowserPanel({
     setKeysSubmenuOpen(false);
     setToolbarMenu((current) => (current === menu ? null : menu));
   };
-  const [nativeRequest, setNativeRequest] = useState<{
+  const [composeRequest, setComposeRequest] = useState<{
     id: number;
-    kind: "keyboard" | "compose" | "commit";
+    kind: "compose" | "commit";
     ownershipKey: string;
   } | null>(null);
-  const nextNativeRequest = useRef(0);
+  const nextComposeRequest = useRef(0);
   const [activeInput, setActiveInput] = useState(false);
+  const activeInputRef = useRef(false);
+  /** Fence automatic timers immediately, before React commits a new physical press. */
+  const handleInputActivity = useCallback((active: boolean) => {
+    activeInputRef.current = active;
+    setActiveInput(active);
+  }, []);
   const [containerSize, setContainerSize] = useState<Size>({ width: 0, height: 0 });
 
   useEffect(() => {
@@ -391,7 +411,7 @@ export function SharedBrowserPanel({
   const tabsQuery = useQuery({
     queryKey: tabsQueryKey,
     queryFn: () => listTabs({ viewerToken: viewerToken! }),
-    enabled: Boolean(viewerToken) && active,
+    enabled: Boolean(viewerToken),
     refetchInterval: 2_000,
   });
 
@@ -467,7 +487,6 @@ export function SharedBrowserPanel({
   }, [state?.sessionId, state?.viewportGeneration]);
 
   const video = useBrowserVideo({
-    active,
     viewerToken,
     quality: "high",
     bitrate: preferences.videoBitrate,
@@ -475,13 +494,17 @@ export function SharedBrowserPanel({
     epoch: () => inputLifecycle.epoch,
     viewport: () => stateRef.current?.viewport ?? null,
     isCurrent: (packet, epoch) =>
-      mountedRef.current &&
-      activeViewerTokenRef.current === viewerToken &&
-      epoch === inputLifecycle.epoch &&
-      committedViewport.current?.sessionId === packet.frame.sessionId &&
-      committedViewport.current?.generation === packet.frame.viewportGeneration &&
-      stateRef.current !== null &&
-      isFrameCurrent(packet.frame, stateRef.current),
+      isVideoSourceCurrent(
+        {
+          mounted: mountedRef.current,
+          viewerActive: activeViewerTokenRef.current === viewerToken,
+          epoch: inputLifecycle.epoch,
+          committedViewport: committedViewport.current,
+          state: stateRef.current,
+        },
+        packet,
+        epoch,
+      ),
     isDisplayCurrent: (packet) => {
       const current = stateRef.current;
       return (
@@ -504,7 +527,7 @@ export function SharedBrowserPanel({
     refreshCapture,
     retryFrameCapture,
   } = useBrowserImageCapture({
-    active: active && (!video.supported || video.active),
+    active: !video.supported || video.active,
     viewerToken,
     quality: preferences.captureQuality,
     activeInput,
@@ -644,7 +667,11 @@ export function SharedBrowserPanel({
       setDevicePickerOpen(false);
       mutationSucceeded(result.state);
     },
-    onError: mutationFailed,
+    onError: (error) => {
+      setFillViewportScope(null);
+      setAutomaticDensityFailureScope(panelScope);
+      mutationFailed(error);
+    },
   });
   const deviceMutation = useBrowserScopedMutation({
     identity: mutationIdentity,
@@ -698,7 +725,11 @@ export function SharedBrowserPanel({
     change: setCaptureDensity,
     beforeChange: () => inputLifecycle.bump(),
     onSuccess: mutationSucceeded,
-    onError: mutationFailed,
+    onError: (error) => {
+      setAutomaticDensityFailureScope(panelScope);
+      setFillViewportScope(null);
+      mutationFailed(error);
+    },
   });
 
   const anyMutationPending =
@@ -923,13 +954,18 @@ export function SharedBrowserPanel({
     onPoint: (point) => {
       lastPointRef.current = { x: point.x, y: point.y };
     },
-    onActivity: setActiveInput,
+    onActivity: handleInputActivity,
+    onInputAcknowledged: () => {
+      // Pixels requested before the host acknowledged this input cannot authorize
+      // the next press, even when their request began after the local press.
+      inputLifecycle.bump();
+    },
     onInputBoundary: () => {
       inputLifecycle.bump();
     },
   });
 
-  const nativeOwnershipKey = JSON.stringify([
+  const composeOwnershipKey = JSON.stringify([
     viewerToken,
     controlToken,
     state?.sessionId,
@@ -938,7 +974,7 @@ export function SharedBrowserPanel({
     state?.navigationGeneration,
     state?.viewportGeneration,
   ]);
-  const nativeDocumentKey = JSON.stringify([
+  const composeDocumentKey = JSON.stringify([
     viewerToken,
     state?.sessionId,
     state?.runtimeId,
@@ -946,14 +982,16 @@ export function SharedBrowserPanel({
     state?.navigationGeneration,
     state?.viewportGeneration,
   ]);
-  const requestNativeKeyboard = (kind: "keyboard" | "compose" | "commit") => {
+  // Touch-first surfaces (native and compact web) get the explicit draft; desktop web types on the canvas.
+  const composeAvailable = layout.platform !== "web" || layout.compact;
+  const requestCompose = (kind: "compose" | "commit") => {
     if (!canSendInput) return;
-    nextNativeRequest.current += 1;
+    nextComposeRequest.current += 1;
     closeToolbarMenu(false);
-    setNativeRequest({ id: nextNativeRequest.current, kind, ownershipKey: nativeOwnershipKey });
+    setComposeRequest({ id: nextComposeRequest.current, kind, ownershipKey: composeOwnershipKey });
   };
-  const nativeRequestHandled = useCallback((id: number) => {
-    setNativeRequest((current) => (current?.id === id ? null : current));
+  const composeRequestHandled = useCallback((id: number) => {
+    setComposeRequest((current) => (current?.id === id ? null : current));
   }, []);
 
   const handleCanvasLayout = useCallback((event: LayoutChangeEvent) => {
@@ -1149,14 +1187,86 @@ export function SharedBrowserPanel({
       return;
     }
     inputLifecycle.bump();
+    setFillViewportScope(null);
     resizeMutation.mutate({ ...context, viewport: { width, height } });
   }, [requireControlContext, resizeMutation, viewportHeight, viewportWidth]);
+
+  const fillViewportLimitDensity = densityMode === "auto" ? 1 : (state?.captureScale ?? 1);
+  const fillTarget = getFillViewportResolution(containerSize, fillViewportLimitDensity);
+
+  /** Enable following and resize using current geometry after control acquisition. */
+  const fillViewport = useCallback(() => {
+    const context = requireControlContext();
+    if (!context || resizeMutation.isPending) return;
+    const viewport = fillTarget;
+    if (!viewport) {
+      setOperationError(
+        "The visible browser area is outside the supported resolution range at the current capture density.",
+      );
+      return;
+    }
+    inputLifecycle.bump();
+    setFillViewportScope(panelScope);
+    setScaleMode("fit");
+    const captureDensity =
+      densityMode === "auto"
+        ? getAutomaticCaptureDensity(viewport, containerSize, screenPixelRatio, "fit")
+        : null;
+    resizeMutation.mutate({
+      ...context,
+      viewport,
+      preserveEmulation: true,
+      ...(captureDensity === null ? {} : { captureDensity }),
+    });
+  }, [
+    requireControlContext,
+    resizeMutation,
+    containerSize,
+    inputLifecycle,
+    panelScope,
+    fillTarget,
+    densityMode,
+    screenPixelRatio,
+  ]);
+
+  useBrowserFillViewport({
+    identity: mutationIdentity,
+    enabled: fillViewportEnabled,
+    canResize: canControl && !activeInput && !anyMutationPending && state?.status === "ready",
+    target: fillTarget,
+    viewport: state?.viewport ?? null,
+    apply: () => {
+      if (!activeInputRef.current) fillViewport();
+    },
+  });
+
+  const followingNeedsResize =
+    fillViewportEnabled &&
+    (fillTarget?.width !== state?.viewport.width || fillTarget?.height !== state?.viewport.height);
+  useBrowserAutoCaptureDensity({
+    identity: mutationIdentity,
+    enabled: automaticDensityEnabled,
+    canChange:
+      canControl &&
+      !activeInput &&
+      !anyMutationPending &&
+      !followingNeedsResize &&
+      state?.status === "ready",
+    target: state
+      ? getAutomaticCaptureDensity(state.viewport, containerSize, screenPixelRatio, scaleMode)
+      : null,
+    currentDensity: state?.captureScale ?? 1,
+    apply: (density) => {
+      if (!activeInputRef.current) densityControl.select(density);
+    },
+  });
 
   const selectDevicePreset = useCallback(
     (presetId: DevicePresetId) => {
       const context = requireControlContext();
       if (!context || deviceMutation.isPending) return;
       inputLifecycle.bump();
+      setFillViewportScope(null);
       setDevicePickerOpen(false);
       deviceMutation.mutate({ ...context, presetId });
     },
@@ -1292,11 +1402,16 @@ export function SharedBrowserPanel({
   controlledActionsRef.current = {
     navigate,
     applyViewport,
+    fillViewport,
     selectDevicePreset,
-    changeDensity: (value) => densityControl.select(value),
+    changeDensity: (value) => {
+      setDensitySelection({ scope: panelScope, mode: value });
+      setAutomaticDensityFailureScope(null);
+      if (value !== "auto") densityControl.select(value);
+    },
     toggleEmulation: emulation.toggle,
     sendKey: (key) => sendEvent({ kind: "key", key }),
-    openNativeKeyboard: requestNativeKeyboard,
+    openCompose: requestCompose,
     closeTab: () => setTabCloseConfirmationOpen(true),
     closeBrowser: () => setCloseConfirmationOpen(true),
     confirmCloseTab: () => void confirmCloseSelectedTab(),
@@ -1354,10 +1469,17 @@ export function SharedBrowserPanel({
   const activeDevicePreset = state?.devicePresetId
     ? DEVICE_PRESETS.find(({ id }) => id === state.devicePresetId)
     : null;
-  const selectedResolutionPresetId = matchingResolutionPresetId(state);
-  const deviceLabel = selectedResolutionPresetId
-    ? (activeDevicePreset?.label ?? "Custom display")
-    : `${emulation.mode === "mobile" ? "Mobile" : "Desktop"} · custom display`;
+  const selectedResolutionPresetId = fillViewportEnabled ? null : matchingResolutionPresetId(state);
+  const fillViewportResolution = fillTarget;
+  const fillViewportDetail = fillViewportResolution
+    ? `${fillViewportResolution.width} × ${fillViewportResolution.height}`
+    : `Requires ${MIN_VIEWPORT.width}–${Math.floor(MAX_VIEWPORT.width / fillViewportLimitDensity)} × ${MIN_VIEWPORT.height}–${Math.floor(MAX_VIEWPORT.height / fillViewportLimitDensity)} at current capture density`;
+  let deviceLabel = `${emulation.mode === "mobile" ? "Mobile" : "Desktop"} · custom display`;
+  if (fillViewportEnabled) {
+    deviceLabel = "Fill viewport";
+  } else if (selectedResolutionPresetId) {
+    deviceLabel = activeDevicePreset?.label ?? "Custom display";
+  }
   const transportLabel =
     video.front && video.fallbackRevision
       ? "Updating video"
@@ -1587,11 +1709,11 @@ export function SharedBrowserPanel({
         </View>
       </View>
 
-      {runtimeNotice || visibleError ? (
+      {runtimeNotice || visibleError || state?.notice ? (
         <ErrorNotice
           styles={styles}
           theme={theme}
-          message={runtimeNotice ?? visibleError ?? ""}
+          message={runtimeNotice ?? visibleError ?? state?.notice ?? ""}
           action={connectionError || reconnecting ? "Reconnect" : undefined}
           onAction={connectionError || reconnecting ? reconnect : undefined}
           actionDisabled={attachQuery.isFetching}
@@ -1636,7 +1758,6 @@ export function SharedBrowserPanel({
           {video.supported ? (
             <BrowserVideoSurface
               canvasRef={video.canvasRef}
-              onError={video.surfaceError}
               style={{
                 position: "absolute",
                 left: displayRect?.x ?? 0,
@@ -1702,21 +1823,22 @@ export function SharedBrowserPanel({
         </View>
       </View>
 
-      {layout.platform !== "web" ? (
-        <NativeKeyboardControls
+      {composeAvailable ? (
+        <ComposeTextControls
           styles={styles}
           theme={theme}
-          relay={canvasInput.nativeKeyboard}
+          composeText={canvasInput.composeText}
+          cancelInput={canvasInput.cancel}
           enabled={canSendInput}
-          ownershipKey={nativeOwnershipKey}
-          documentKey={nativeDocumentKey}
-          request={nativeRequest}
-          onRequestHandled={nativeRequestHandled}
+          ownershipKey={composeOwnershipKey}
+          documentKey={composeDocumentKey}
+          request={composeRequest}
+          onRequestHandled={composeRequestHandled}
           canRequestControl={Boolean(viewerToken) && !canControl}
           onRequestControlForCompose={() =>
             requestControlled(
               "insert the composed text",
-              () => controlledActionsRef.current?.openNativeKeyboard("commit"),
+              () => controlledActionsRef.current?.openCompose("commit"),
               true,
             )
           }
@@ -1735,10 +1857,19 @@ export function SharedBrowserPanel({
               theme={theme}
               groups={groupResolutionPresets()}
               selectedPresetId={selectedResolutionPresetId}
+              fillViewportResolution={fillViewportResolution}
+              fillViewportSelected={fillViewportEnabled}
+              fillViewportDetail={fillViewportDetail}
+              onFillViewport={() =>
+                requestControlled("fill the browser viewport", () =>
+                  controlledActionsRef.current?.fillViewport(),
+                )
+              }
               favoritePresetIds={preferences.favoritePresetIds}
               selectDisabled={!viewerToken || anyMutationPending}
               favoriteDisabled={preferences.disabled}
               density={state?.captureScale ?? 1}
+              densityMode={densityMode}
               viewport={state?.viewport ?? null}
               onDensityChange={(density) => {
                 requestControlled("change capture density", () =>
@@ -1935,9 +2066,9 @@ export function SharedBrowserPanel({
           preferredHeight={
             toolbarMenu === "display"
               ? 300 + preferences.favoritePresetIds.length * (layout.compact ? 44 : 36)
-              : layout.platform === "web"
-                ? 132
-                : 220
+              : composeAvailable
+                ? 220
+                : 132
           }
           onClose={() => closeToolbarMenu()}
           shouldRestoreFocus={() => menuRestoreFocus.current}
@@ -1959,7 +2090,6 @@ export function SharedBrowserPanel({
                       label={label}
                       disabled={!viewerToken || (canControl && !canSendInput)}
                       onPress={() => {
-                        canvasInput.nativeKeyboard.reset();
                         closeToolbarMenu();
                         requestControlled(
                           `send ${label}`,
@@ -2006,6 +2136,26 @@ export function SharedBrowserPanel({
                 </Text>
               ) : null}
               <BrowserMenuSeparator theme={theme} />
+              <BrowserMenuItem
+                theme={theme}
+                compact={layout.compact}
+                label="Fill viewport"
+                icon="Maximize"
+                selected={fillViewportEnabled}
+                disabled={!viewerToken || anyMutationPending || !fillViewportResolution}
+                onPress={() => {
+                  closeToolbarMenu();
+                  requestControlled("fill the browser viewport", () =>
+                    controlledActionsRef.current?.fillViewport(),
+                  );
+                }}
+              />
+              <Text
+                style={[styles.devicePresetDetail, { paddingHorizontal: 12, paddingVertical: 4 }]}
+              >
+                {fillViewportDetail}
+              </Text>
+              <BrowserMenuSeparator theme={theme} />
               <BrowserMenuHeading theme={theme}>Favorite resolutions</BrowserMenuHeading>
               {preferences.favoritePresetIds.length === 0 ? (
                 <Text
@@ -2049,39 +2199,22 @@ export function SharedBrowserPanel({
             </>
           ) : (
             <>
-              {layout.platform !== "web" ? (
-                <>
-                  <BrowserMenuItem
-                    theme={theme}
-                    compact={layout.compact}
-                    label="Keyboard"
-                    icon="Keyboard"
-                    disabled={!viewerToken || (canControl && !canSendInput)}
-                    onPress={() => {
-                      closeToolbarMenu();
-                      requestControlled(
-                        "open the browser keyboard",
-                        () => controlledActionsRef.current?.openNativeKeyboard("keyboard"),
-                        true,
-                      );
-                    }}
-                  />
-                  <BrowserMenuItem
-                    theme={theme}
-                    compact={layout.compact}
-                    label="Compose text"
-                    icon="Pencil"
-                    disabled={!viewerToken || (canControl && !canSendInput)}
-                    onPress={() => {
-                      closeToolbarMenu();
-                      requestControlled(
-                        "compose browser text",
-                        () => controlledActionsRef.current?.openNativeKeyboard("compose"),
-                        true,
-                      );
-                    }}
-                  />
-                </>
+              {composeAvailable ? (
+                <BrowserMenuItem
+                  theme={theme}
+                  compact={layout.compact}
+                  label="Compose text"
+                  icon="Pencil"
+                  disabled={!viewerToken || (canControl && !canSendInput)}
+                  onPress={() => {
+                    closeToolbarMenu();
+                    requestControlled(
+                      "compose browser text",
+                      () => controlledActionsRef.current?.openCompose("compose"),
+                      true,
+                    );
+                  }}
+                />
               ) : null}
               <View ref={keysAnchorRef}>
                 <BrowserMenuItem

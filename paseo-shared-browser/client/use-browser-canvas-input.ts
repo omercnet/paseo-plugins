@@ -19,13 +19,13 @@ import { createBrowserCanvasInput } from "./browser-canvas-input";
 import type { CanvasKeyboardEvent } from "./browser-canvas-keyboard";
 import { bindBrowserCanvasKeyboard, type KeyboardCanvasNode } from "./browser-canvas-keyboard-web";
 import {
+  BROWSER_INPUT_IDLE_MS,
   type BrowserGestureAuthority,
   type BrowserGesturePoint,
   type BrowserGestureTransport,
   type BrowserTouchPoint,
   createBrowserInputQueue,
 } from "./browser-input-queue";
-import { useBrowserNativeKeyboard } from "./use-browser-native-keyboard";
 import { type BrowserCanvasNode, bindBrowserCanvasWeb, setBrowserCanvasCursor } from "./web";
 
 interface CanvasOptions {
@@ -45,6 +45,8 @@ interface CanvasOptions {
   onPoint(point: BrowserGesturePoint): void;
   onActivity(active: boolean): void;
   onInputBoundary(): void;
+  /** The host acknowledged an input that revoked every earlier frame receipt. */
+  onInputAcknowledged?(): void;
 }
 
 /** Native touch coordinates are relative to the controlled overlay, with stable ID mapping. */
@@ -79,7 +81,6 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
   const alive = useRef(true);
   const inputModel = useRef<ReturnType<typeof createBrowserCanvasInput> | null>(null);
   const keyboard = useRef<ReturnType<typeof bindBrowserCanvasKeyboard> | null>(null);
-  const nativeRelay = useRef<{ reset(): void } | null>(null);
   const cursorVisible = useRef(false);
   const frameWaiters = useRef(
     new Set<{
@@ -116,18 +117,19 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
         // Queue owns cleanup; reset local contacts without recursively cancelling.
         inputModel.current?.reset();
         keyboard.current?.reset();
-        nativeRelay.current?.reset();
         cursorVisible.current = false;
         setBrowserCanvasCursor(nodeRef.current, null);
         clearIdle();
         if (alive.current) current.current.onError(error);
+      },
+      onAcknowledged: () => {
+        if (alive.current) current.current.onInputAcknowledged?.();
       },
       onNavigationComplete: () => {
         // Server already closed the acknowledged channel. Quarantine local
         // holds before state projection; never replay their old-page release.
         inputModel.current?.reset();
         keyboard.current?.reset();
-        nativeRelay.current?.reset();
         cursorVisible.current = false;
         setBrowserCanvasCursor(nodeRef.current, null);
         clearIdle();
@@ -178,9 +180,6 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
       viewport: () => current.current.viewport,
       enqueue(event) {
         clearIdle();
-        if (event.kind === "down" || (event.kind === "touch" && event.type === "start")) {
-          nativeRelay.current?.reset();
-        }
         // Queue snapshots the actual decoded admission before a local epoch bump.
         // Already admitted edges continue on their opaque channel independently.
         const accepted = queue.enqueue(event);
@@ -197,7 +196,7 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
               current.current.onActivity(false);
               queue.finish();
             }
-          }, 4_000);
+          }, BROWSER_INPUT_IDLE_MS);
         }
         return accepted;
       },
@@ -205,12 +204,11 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
         clearIdle();
         // Release was enqueued immediately. Keep the empty exact channel for
         // ordinary repeat input, closing before the server's five-second idle bound.
-        idleTimer.current = setTimeout(() => queue.finish(), 4_000);
+        idleTimer.current = setTimeout(() => queue.finish(), BROWSER_INPUT_IDLE_MS);
       },
       cancel: () => {
         clearIdle();
         keyboard.current?.reset();
-        nativeRelay.current?.reset();
         cursorVisible.current = false;
         setBrowserCanvasCursor(nodeRef.current, null);
         queue.cancel();
@@ -244,19 +242,24 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
     // Keep one channel through ordinary inter-key gaps. New typing clears this
     // timer, while blur/control loss cancels immediately through the input model.
     clearIdle();
-    idleTimer.current = setTimeout(() => queue.finish(), 4_000);
+    idleTimer.current = setTimeout(() => queue.finish(), BROWSER_INPUT_IDLE_MS);
   }, [queue]);
-  const nativeKeyboard = useBrowserNativeKeyboard({
-    enabled: () => alive.current && current.current.enabled,
-    ownershipKey: options.ownershipKey,
-    enqueue: enqueueKeyboard,
-    finish: finishKeyboard,
-    cancel: input.cancel,
-    onError: (error) => {
-      if (alive.current) current.current.onError(error);
+  /** Insert an explicitly committed draft once; false means nothing was admitted. */
+  const composeText = useCallback(
+    (text: string): boolean => {
+      if (!alive.current || !current.current.enabled || !text) return false;
+      if (text.length > 16_000) {
+        current.current.onError(
+          new Error("Text is too long. Send up to 16,000 characters at once."),
+        );
+        return false;
+      }
+      const accepted = enqueueKeyboard({ kind: "text", text });
+      if (accepted) finishKeyboard();
+      return accepted;
     },
-  });
-  nativeRelay.current = nativeKeyboard;
+    [enqueueKeyboard, finishKeyboard],
+  );
 
   const previousOwnership = useRef(options.ownershipKey);
   useLayoutEffect(() => {
@@ -367,6 +370,6 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
     canvasRef,
     panHandlers: Platform.OS === "web" ? {} : panResponder.panHandlers,
     cancel: input.cancel,
-    nativeKeyboard,
+    composeText,
   };
 }

@@ -1,0 +1,1 @@
+Adds two themes to Paseo's Appearance settings: Dracula, a dark theme, and Alucard, a light theme with a cream background and purple accent. Code syntax highlighting is a separate Appearance preference and does not change with the theme.

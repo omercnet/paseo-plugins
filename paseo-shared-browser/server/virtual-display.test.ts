@@ -1,7 +1,12 @@
 import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createPrivateVirtualDisplay, encodeDisplayAuthority } from "./virtual-display";
+
+/** Host-native path: production joins with the platform separator. */
+const fixtureDirectory = join(tmpdir(), "private-display-fixture");
 
 const fake = vi.hoisted(() => ({
   access: vi.fn(),
@@ -28,7 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   fake.access.mockResolvedValue(undefined);
   fake.chmod.mockResolvedValue(undefined);
-  fake.mkdtemp.mockResolvedValue("/tmp/private-display-fixture");
+  fake.mkdtemp.mockResolvedValue(fixtureDirectory);
   fake.writeFile.mockResolvedValue(undefined);
   fake.rm.mockResolvedValue(undefined);
   ready = new Readable({ read() {} });
@@ -81,18 +86,18 @@ it("uses an authenticated private high abstract-only display and idempotent clea
     args[0],
     "-screen",
     "0",
-    "2560x2560x24",
+    "3840x3840x24",
     "-nolisten",
     "unix",
     "-nolisten",
     "tcp",
     "-nolock",
     "-auth",
-    "/tmp/private-display-fixture/authority",
+    join(fixtureDirectory, "authority"),
     "-displayfd",
     "3",
   ]);
-  expect(fake.chmod).toHaveBeenCalledWith("/tmp/private-display-fixture", 0o700);
+  expect(fake.chmod).toHaveBeenCalledWith(fixtureDirectory, 0o700);
   expect(fake.writeFile.mock.calls[0]![2]).toEqual({ mode: 0o600, flag: "wx" });
   expect(fake.connect).toHaveBeenCalledTimes(2); // Authorized and anonymous denial.
   expect(fake.connect.mock.calls[0]![0].path).toBe(`\0/tmp/.X11-unix/X${args[0]!.slice(1)}`);
@@ -110,7 +115,9 @@ it("refuses a changed readiness identity before transmitting the secret", async 
     queueMicrotask(() => ready.push("0\n"));
     return child;
   });
-  await expect(createPrivateVirtualDisplay()).rejects.toThrow("identity changed");
+  await expect(createPrivateVirtualDisplay({ platform: "linux" })).rejects.toThrow(
+    "identity changed",
+  );
   expect(fake.connect).not.toHaveBeenCalled();
   expect(child.kill).toHaveBeenCalledTimes(1);
   expect(fake.rm).toHaveBeenCalledTimes(1);
@@ -118,7 +125,9 @@ it("refuses a changed readiness identity before transmitting the secret", async 
 
 it("bounds a never-ready child and removes its authority file", async () => {
   fake.spawn.mockReturnValue(child);
-  await expect(createPrivateVirtualDisplay({ timeoutMs: 5 })).rejects.toThrow("not ready");
+  await expect(createPrivateVirtualDisplay({ platform: "linux", timeoutMs: 5 })).rejects.toThrow(
+    "not ready",
+  );
   expect(child.kill).toHaveBeenCalledTimes(1);
   expect(fake.rm).toHaveBeenCalledTimes(1);
 });
@@ -128,7 +137,9 @@ it("handles spawn failure and prevents silent headless fallback", async () => {
     queueMicrotask(() => child.emit("error", new Error("fixture spawn failure")));
     return child;
   });
-  await expect(createPrivateVirtualDisplay()).rejects.toThrow("failed to start");
+  await expect(createPrivateVirtualDisplay({ platform: "linux" })).rejects.toThrow(
+    "failed to start",
+  );
   expect(fake.rm).toHaveBeenCalledTimes(1);
 });
 
@@ -146,12 +157,14 @@ it("refuses a display which accepts clients without the private cookie", async (
     queueMicrotask(() => socket.emit("connect"));
     return socket;
   });
-  await expect(createPrivateVirtualDisplay()).rejects.toThrow("unauthenticated");
+  await expect(createPrivateVirtualDisplay({ platform: "linux" })).rejects.toThrow(
+    "unauthenticated",
+  );
   expect(child.kill).toHaveBeenCalledTimes(1);
 });
 
 it("invalidates on unexpected child exit without starting a replacement", async () => {
-  const display = await createPrivateVirtualDisplay();
+  const display = await createPrivateVirtualDisplay({ platform: "linux" });
   child.exitCode = 1;
   child.emit("exit", 1);
   expect(() => display!.assertAvailable()).toThrow("ended");

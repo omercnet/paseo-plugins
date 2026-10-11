@@ -39,7 +39,7 @@ const source = `<!doctype html><meta name=viewport content='width=device-width,i
 html,body{margin:0;height:100%;overflow:hidden;background:#243448}.corner{position:fixed;width:24px;height:24px}
 #a{top:0;left:0;background:red}#b{top:0;right:0;background:lime}#c{bottom:0;left:0;background:blue}#d{bottom:0;right:0;background:yellow}
 #moving{position:fixed;top:50%;width:30px;height:30px;background:white}</style>
-<button style="position:fixed;left:300px;top:300px;width:100px;height:40px" onclick="a.style.background='cyan'">Change view</button><div id=a class=corner></div><div id=b class=corner></div><div id=c class=corner></div><div id=d class=corner></div><div id=moving></div>
+<button style="position:fixed;left:300px;top:300px;width:100px;height:40px" onclick="a.style.background='cyan';window.humanClicks=(window.humanClicks||0)+1">Change view</button><div id=a class=corner></div><div id=b class=corner></div><div id=c class=corner></div><div id=d class=corner></div><div id=moving></div>
 <div style="position:fixed;left:100px;top:100px;width:32px;height:8px;background:repeating-linear-gradient(to right,#f00 0px 1px,#00f 1px 2px)"></div>
 <div style="position:fixed;left:100px;top:112px;width:32px;height:8px;background:repeating-linear-gradient(to right,#f00 0px .5px,#00f .5px 1px)"></div>
 <script>function tick(t){moving.style.left=((t/5)%200)+'px';requestAnimationFrame(tick)}requestAnimationFrame(tick)</script>`;
@@ -197,6 +197,7 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
     vi.stubEnv("PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE", executablePath);
     const owner = await createRuntimeOwner({
       initialUrl: `${origin}/source`,
+      nativeVideo: true,
       headed: process.platform === "win32",
     });
     let owned: Awaited<ReturnType<typeof owner.create>> | null = null;
@@ -500,59 +501,125 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
       navigationGeneration: clickedPacket.frame.navigationGeneration,
       viewportGeneration: clickedPacket.frame.viewportGeneration,
     };
-    // Exercise the human pane's admitted down/up channel, rather than the
-    // discrete legacy click RPC, so metadata stalls in its hot path are covered.
-    const gesture = await client.requestBrowser<{
-      gestureId: string;
-      nextSequence: number;
-    }>("gesture.begin", { ...clickContext, target: clickTarget, pointerKind });
-    expect(gesture.gestureId).toBeDefined();
-    const pressed = await client.requestBrowser<{ state: BrowserState; nextSequence: number }>(
-      "gesture.update",
-      {
+    // Exercise the human pane's down/up channel, rather than the discrete legacy
+    // click RPC. Every independent press carries its own decoded receipt.
+    const press = async (target: typeof clickTarget) => {
+      const gesture = await client!.requestBrowser<
+        { gestureId: string; nextSequence: number } | { admission: "stale-frame" }
+      >("gesture.begin", { ...clickContext, target, pointerKind });
+      if (!("gestureId" in gesture)) return { admitted: false as const };
+      const pressed = await client!.requestBrowser<{ state: BrowserState; nextSequence: number }>(
+        "gesture.update",
+        {
+          ...clickContext,
+          gestureId: gesture.gestureId,
+          sequence: gesture.nextSequence,
+          target,
+          event:
+            pointerKind === "touch"
+              ? {
+                  kind: "touch",
+                  type: "start",
+                  points: [{ id: 0, x: 350, y: 320, width: 1280, height: 800 }],
+                }
+              : {
+                  kind: "down",
+                  point: { x: 350, y: 320, width: 1280, height: 800 },
+                  button: "left",
+                  clickCount: 1,
+                },
+        },
+      );
+      const released = await client!.requestBrowser<{ state: BrowserState; nextSequence: number }>(
+        "gesture.update",
+        {
+          ...clickContext,
+          gestureId: gesture.gestureId,
+          sequence: pressed.nextSequence,
+          event:
+            pointerKind === "touch"
+              ? { kind: "touch", type: "end", points: [] }
+              : {
+                  kind: "up",
+                  point: { x: 350, y: 320, width: 1280, height: 800 },
+                  button: "left",
+                  clickCount: 1,
+                },
+        },
+      );
+      const ended = await client!.requestBrowser<{ state: BrowserState }>("gesture.end", {
         ...clickContext,
         gestureId: gesture.gestureId,
-        sequence: gesture.nextSequence,
-        target: clickTarget,
-        event:
-          pointerKind === "touch"
-            ? {
-                kind: "touch",
-                type: "start",
-                points: [{ id: 0, x: 350, y: 320, width: 1280, height: 800 }],
-              }
-            : {
-                kind: "down",
-                point: { x: 350, y: 320, width: 1280, height: 800 },
-                button: "left",
-                clickCount: 1,
-              },
-      },
-    );
-    const released = await client.requestBrowser<{ state: BrowserState; nextSequence: number }>(
-      "gesture.update",
-      {
-        ...clickContext,
-        gestureId: gesture.gestureId,
-        sequence: pressed.nextSequence,
-        event:
-          pointerKind === "touch"
-            ? { kind: "touch", type: "end", points: [] }
-            : {
-                kind: "up",
-                point: { x: 350, y: 320, width: 1280, height: 800 },
-                button: "left",
-                clickCount: 1,
-              },
-      },
-    );
-    const ended = await client.requestBrowser<{ state: BrowserState }>("gesture.end", {
-      ...clickContext,
-      gestureId: gesture.gestureId,
-      sequence: released.nextSequence,
-      cancel: false,
-    });
-    state = ended.state;
+        sequence: released.nextSequence,
+        cancel: false,
+      });
+      return { admitted: true as const, state: ended.state };
+    };
+    const clicksSoFar = async () =>
+      (
+        await runtime.page.send<{ result: { value: number } }>("Runtime.evaluate", {
+          expression: "window.humanClicks||0",
+          returnByValue: true,
+        })
+      ).result.value;
+    const first = await press(clickTarget);
+    expect(first.admitted).toBe(true);
+    if (!first.admitted) throw new Error("First press was not admitted");
+    const firstAcknowledgedAt = Date.now();
+    state = first.state;
+    await vi.waitFor(async () => expect(await clicksSoFar()).toBe(1), { timeout: 2000 });
+
+    // The acknowledged press spent its receipt: the still-painted pixels cannot press again.
+    const spent = await press(clickTarget);
+    expect(spent.admitted).toBe(false);
+    expect(await clicksSoFar()).toBe(1);
+
+    // A newer genuinely decoded packet (captured after the first press) is a fresh receipt.
+    let secondTarget: typeof clickTarget | null = null;
+    for (let attempt = 0; attempt < 30 && !secondTarget; attempt++) {
+      const reply: BrowserVideoReadReply = await client.requestBrowser<BrowserVideoReadReply>(
+        "video.read",
+        {
+          viewerToken: attached.viewerToken,
+          quality: "high",
+          streamId: navigationStreamId,
+          afterSequence: navigationSequence,
+          waitMs: 250,
+          requestKeyFrame: false,
+        },
+      );
+      expect(reply.status).not.toBe("unsupported");
+      if (reply.streamId !== navigationStreamId) navigationSequence = 0;
+      navigationStreamId = reply.streamId;
+      if (reply.packets.length) navigationSequence = reply.packets.at(-1)!.sequence;
+      for (const packet of reply.packets) navigationPackets.set(packet.frame.frameId, packet);
+      await consumer.send("Runtime.evaluate", {
+        expression: `consumeVideo(${JSON.stringify(reply)})`,
+      });
+      const observation = await consumer.send<{ result: { value: Readback } }>("Runtime.evaluate", {
+        expression: "({presented,failures,needsKey})",
+        returnByValue: true,
+      });
+      expect(observation.result.value.failures).toEqual([]);
+      const painted = observation.result.value.presented.at(-1);
+      const packet = painted ? navigationPackets.get(painted.frameId) : undefined;
+      if (
+        packet &&
+        Date.parse(packet.capturedAt) > firstAcknowledgedAt + VIDEO_SOURCE_CLOCK_TOLERANCE_MS
+      ) {
+        secondTarget = {
+          frameId: packet.frame.frameId,
+          navigationGeneration: packet.frame.navigationGeneration,
+          viewportGeneration: packet.frame.viewportGeneration,
+        };
+      }
+    }
+    expect(secondTarget).not.toBeNull();
+    const secondPress = await press(secondTarget!);
+    expect(secondPress.admitted).toBe(true);
+    if (!secondPress.admitted) throw new Error("Second press was not admitted");
+    state = secondPress.state;
+    await vi.waitFor(async () => expect(await clicksSoFar()).toBe(2), { timeout: 2000 });
     expect(state.url).toBe(`${origin}/pending-dom`);
     let ordinaryClickPainted = false;
     for (let attempt = 0; attempt < 20 && !ordinaryClickPainted; attempt++) {

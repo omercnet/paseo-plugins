@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-agent-monitor",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "type": "module",
   "description": "A Paseo plugin that provides a host-wide agent triage roster.",
   "license": "MIT",
@@ -34,7 +34,8 @@
     "shared",
     "paseo-plugin.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "OVERVIEW.md"
   ],
   "scripts": {
     "check": "biome check .",
@@ -54,7 +55,6 @@
     "@types/react": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "esbuild": "catalog:",
-    "fflate": "catalog:",
     "react": "catalog:",
     "react-native": "catalog:",
     "typescript": "catalog:",

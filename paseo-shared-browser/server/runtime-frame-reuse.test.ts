@@ -1,6 +1,7 @@
 /** Exact fresh runtime receipts avoid resending cached JPEGs without reviving invalidated input. */
 import { describe, expect, it } from "vitest";
 import type { BrowserFrame, BrowserState } from "../shared/browser";
+import { DEFAULT_CAPTURE_QUALITY } from "../shared/capture-settings";
 import { type BrowserRuntimeClient, SessionManager } from "./browser-policy";
 import type { JsonValue } from "./runtime-protocol";
 
@@ -101,7 +102,7 @@ describe("exact runtime receipt reuse across policy cache expiry", () => {
         f.advance();
         const repeated = await f.manager.capture(
           f.viewer.viewerToken,
-          "high",
+          DEFAULT_CAPTURE_QUALITY,
           first.frame!.frameId,
         );
         expect(repeated.frame).toBeNull();
@@ -133,7 +134,11 @@ describe("exact runtime receipt reuse across policy cache expiry", () => {
         f.advance();
         f.raw[field] = value;
         if (field === "byteLength") f.raw.dataBase64 = "eA==";
-        const next = await f.manager.capture(f.viewer.viewerToken, "high", first.frame!.frameId);
+        const next = await f.manager.capture(
+          f.viewer.viewerToken,
+          DEFAULT_CAPTURE_QUALITY,
+          first.frame!.frameId,
+        );
         expect(next.frame?.frameId).not.toBe(first.frame!.frameId);
       } finally {
         f.manager.disconnect();
@@ -165,7 +170,11 @@ describe("exact runtime receipt reuse across policy cache expiry", () => {
         event: { kind: "type", text: "x" },
       });
       f.advance();
-      const next = await f.manager.capture(f.viewer.viewerToken, "high", first.frame!.frameId);
+      const next = await f.manager.capture(
+        f.viewer.viewerToken,
+        DEFAULT_CAPTURE_QUALITY,
+        first.frame!.frameId,
+      );
       expect(next.frame?.frameId).not.toBe(first.frame!.frameId);
       await expect(
         f.manager.beginGesture({
@@ -191,7 +200,11 @@ describe("exact runtime receipt reuse across policy cache expiry", () => {
         expected: f.expected(first.state),
         viewport: { width: 1920, height: 1200 },
       });
-      const next = await f.manager.capture(f.viewer.viewerToken, "high", first.frame!.frameId);
+      const next = await f.manager.capture(
+        f.viewer.viewerToken,
+        DEFAULT_CAPTURE_QUALITY,
+        first.frame!.frameId,
+      );
       expect(next.frame).toMatchObject({ width: 1920, height: 1200 });
       expect(next.frame!.frameId).not.toBe(first.frame!.frameId);
       f.advance();
@@ -210,7 +223,11 @@ describe("exact runtime receipt reuse across policy cache expiry", () => {
         f.advance();
         if (field === "runtimeId") f.session().runtimeId = "runtime-two";
         else f.session().bridgeEpoch = 2;
-        const next = await f.manager.capture(f.viewer.viewerToken, "high", first.frame!.frameId);
+        const next = await f.manager.capture(
+          f.viewer.viewerToken,
+          DEFAULT_CAPTURE_QUALITY,
+          first.frame!.frameId,
+        );
         expect(next.frame!.frameId).not.toBe(first.frame!.frameId);
       } finally {
         f.manager.disconnect();
@@ -225,7 +242,11 @@ describe("exact runtime receipt reuse across policy cache expiry", () => {
         delete f.raw[field];
         const first = await f.manager.capture(f.viewer.viewerToken);
         f.advance();
-        const next = await f.manager.capture(f.viewer.viewerToken, "high", first.frame!.frameId);
+        const next = await f.manager.capture(
+          f.viewer.viewerToken,
+          DEFAULT_CAPTURE_QUALITY,
+          first.frame!.frameId,
+        );
         expect(next.frame!.frameId).not.toBe(first.frame!.frameId);
       } finally {
         f.manager.disconnect();
@@ -237,7 +258,11 @@ describe("exact runtime receipt reuse across policy cache expiry", () => {
       f.documentChange();
       await f.manager.status(f.viewer.viewerToken);
       f.advance();
-      const next = await f.manager.capture(f.viewer.viewerToken, "high", first.frame!.frameId);
+      const next = await f.manager.capture(
+        f.viewer.viewerToken,
+        DEFAULT_CAPTURE_QUALITY,
+        first.frame!.frameId,
+      );
       expect(next.frame!.frameId).not.toBe(first.frame!.frameId);
       expect(next.state.navigationGeneration).toBeGreaterThan(first.state.navigationGeneration);
     } finally {
@@ -253,7 +278,11 @@ describe("exact runtime receipt reuse across policy cache expiry", () => {
       let after = before;
       for (let index = 0; index < 3; index++) {
         f.advance();
-        const reply = await f.manager.capture(f.viewer.viewerToken, "high", first.frame!.frameId);
+        const reply = await f.manager.capture(
+          f.viewer.viewerToken,
+          DEFAULT_CAPTURE_QUALITY,
+          first.frame!.frameId,
+        );
         after += JSON.stringify(reply).length;
         before += JSON.stringify({ state: reply.state, frame: first.frame }).length;
       }

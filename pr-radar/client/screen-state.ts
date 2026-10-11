@@ -50,15 +50,3 @@ export function needsYouSummary(
   const items = rows.filter((row) => row.bucket === "needs-you");
   return { items, label: loading ? "…" : `${items.length}${warnings.length ? "+" : ""}` };
 }
-
-export function supportsRadarScreen(
-  client: { addScreen?: unknown; addSidebarHeaderItem?: unknown; openScreen?: unknown },
-  sidebarRow: unknown,
-) {
-  return (
-    typeof client.addScreen === "function" &&
-    typeof client.addSidebarHeaderItem === "function" &&
-    typeof client.openScreen === "function" &&
-    typeof sidebarRow === "function"
-  );
-}

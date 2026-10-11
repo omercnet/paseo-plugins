@@ -81,13 +81,13 @@ async function supportReportFromBundle(entryPath: string): Promise<string> {
 }
 
 describe("plugin server bundle", () => {
-  test("declares the supported Paseo 0.9.2, 0.10, and 0.11 manifest contract", async () => {
+  test("declares the Paseo 0.11 manifest contract", async () => {
     const manifest = JSON.parse(await readFile(join(pluginRoot, "paseo-plugin.json"), "utf8"));
     expect(manifest).toEqual({
       id: "paseo-omp",
       description:
         "Paseo integration for OMP, including its direct provider and workspace tooling.",
-      requirements: { paseo: "^0.9.2 || ^0.10.0 || ^0.11.0" },
+      requirements: { paseo: "^0.11.0" },
       build: [["node", "scripts/prepare-dependencies.mjs"]],
     });
     const packageManifest = JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8"));
@@ -98,9 +98,7 @@ describe("plugin server bundle", () => {
       await readFile(join(pluginRoot, "server", "provider", "omp-rpc.ts"), "utf8"),
     ).not.toContain("@oh-my-pi/");
     expect(packageManifest.files).not.toContain("tests");
-    expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain(
-      "Paseo `^0.9.2 || ^0.10.0 || ^0.11.0`",
-    );
+    expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain("Paseo `^0.11.0`");
     const releaseConfig = JSON.parse(
       await readFile(join(pluginRoot, "..", "release-please-config.json"), "utf8"),
     ) as { packages: Record<string, { "extra-files"?: unknown }> };
@@ -204,6 +202,8 @@ describe("plugin server bundle", () => {
               workspaceId: string | null;
               provider: string;
               cwd: string;
+              reason?: string;
+              purpose?: string;
               env: Record<string, string>;
             };
           }) => unknown,
@@ -225,6 +225,46 @@ describe("plugin server bundle", () => {
               PASEO_AGENT_ID: "plugin-agent",
               PASEO_WORKSPACE_ID: "plugin-workspace",
             },
+          }),
+        );
+        // The same registered hook derives the history marker from the host's purpose only, and
+        // discards any caller-supplied value otherwise.
+        const identity = {
+          agentId: "plugin-agent",
+          workspaceId: "plugin-workspace",
+          provider: "omp-plugin",
+          cwd: "/workspace",
+        };
+        expect(
+          hook({
+            request: {
+              ...identity,
+              reason: "resume",
+              purpose: "history",
+              env: { PASEO_OMP_SESSION_PURPOSE: "spoofed" },
+            },
+          }),
+        ).toEqual(
+          expect.objectContaining({
+            env: {
+              PASEO_AGENT_ID: "plugin-agent",
+              PASEO_WORKSPACE_ID: "plugin-workspace",
+              PASEO_OMP_SESSION_PURPOSE: "history",
+            },
+          }),
+        );
+        expect(
+          hook({
+            request: {
+              ...identity,
+              reason: "resume",
+              purpose: "interactive",
+              env: { PASEO_OMP_SESSION_PURPOSE: "history" },
+            },
+          }),
+        ).toEqual(
+          expect.objectContaining({
+            env: { PASEO_AGENT_ID: "plugin-agent", PASEO_WORKSPACE_ID: "plugin-workspace" },
           }),
         );
         expect(

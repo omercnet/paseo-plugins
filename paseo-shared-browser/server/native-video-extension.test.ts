@@ -1,4 +1,5 @@
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { prepareNativeVideoExtension } from "./native-video-extension";
@@ -6,7 +7,7 @@ import { NATIVE_VIDEO_EXTENSION_SOURCE } from "./native-video-extension-source";
 
 describe("immutable trusted native video helper", () => {
   it("concurrent workspace starts publish complete files once without in-place truncation", async () => {
-    const directory = await mkdtemp("/tmp/owned-extension-");
+    const directory = await mkdtemp(join(tmpdir(), "owned-extension-"));
     try {
       const paths = await Promise.all(
         Array.from({ length: 12 }, () => prepareNativeVideoExtension(directory)),
@@ -26,7 +27,7 @@ describe("immutable trusted native video helper", () => {
     }
   });
   it("a failed publication does not poison future startup", async () => {
-    const directory = await mkdtemp("/tmp/owned-extension-retry-");
+    const directory = await mkdtemp(join(tmpdir(), "owned-extension-retry-"));
     const blocked = join(directory, "initially-file");
     try {
       await writeFile(blocked, "occupied");

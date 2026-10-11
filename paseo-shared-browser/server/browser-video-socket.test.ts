@@ -174,16 +174,25 @@ it("keeps video past unrelated teardown and input past video on the authenticate
       },
       event: { kind: "move", point: { x: 10, y: 20, width: 1280, height: 800 } },
     });
+    // Discrete input first reconciles the captured document, so a stalled metadata
+    // read must hold back every native primitive rather than let one reach an
+    // unobserved page. The pending video read must not be what delays it.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(calls).not.toContain("mouse.move");
+    expect(calls).not.toContain("input.begin");
+    stateGate.resolve();
     const accepted = await Promise.race([
       inputPublished.promise.then(() => true),
       new Promise<boolean>((resolve) => {
         timeout = setTimeout(() => resolve(false), 1000);
       }),
     ]);
+    // Published through a pinned channel while the video read is still pending.
     expect(accepted).toBe(true);
-    expect(calls).toContain("mouse.move");
-    stateGate.resolve();
+    expect(calls.indexOf("input.begin")).toBeGreaterThan(-1);
+    expect(calls.indexOf("input.begin")).toBeLessThan(calls.indexOf("mouse.move"));
     await mutation;
+    expect(calls).toContain("input.end");
     const finalStateReads = calls.filter((call) => call === "state").length;
     release();
     expect((await pending).packets).toEqual([]);

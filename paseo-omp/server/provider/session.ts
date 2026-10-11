@@ -93,6 +93,23 @@ type RewindCleanupQuarantine = (cleanup: Promise<void>) => void;
 type RewindSessionRetirement = () => void;
 type SessionPermissionInput = Extract<ProviderInput, { type: "session.permission" }>;
 type Emit = (event: ProviderEvent) => void;
+
+/** The surface a connection drives for every opened session, live or history-only. */
+export interface OmpOpenedSession {
+  readonly persistenceSessionId: string | undefined;
+  openPaseoBrowser(url: string): Promise<void>;
+  setBrowserAuthorizationIssuer(issue: ((url: string) => string | undefined) | null): void;
+  publishOpened(requestId: string): Promise<void>;
+  prompt(input: SessionPromptInput): Promise<void>;
+  permission(input: SessionPermissionInput): Promise<void>;
+  configure(input: SessionConfigureInput): Promise<void>;
+  revert(input: SessionRevertInput): Promise<void>;
+  interrupt(input: SessionInterruptInput): Promise<void>;
+  close(input?: SessionCloseInput): Promise<void>;
+  abortOpen(): Promise<void>;
+  beginConnectionShutdown(): void;
+}
+
 const LOCAL_ONLY_SETTLE_MS = 5_000;
 const AGENT_END_STATE_TIMEOUT_MS = 2_000;
 const AGENT_END_HISTORY_TIMEOUT_MS = 2_000;
@@ -119,7 +136,7 @@ const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
 const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
 class OmpCatalogEscape extends OmpPublicError {}
 const MAX_REPLAY_MESSAGES = 100_000;
-const REPLAY_TIMEOUT_MS = 20_000;
+export const REPLAY_TIMEOUT_MS = 20_000;
 const _OMP_ASK_USER_FREEFORM_SENTINEL = "✏️ Type custom response...";
 const _MAX_FREEFORM_RESPONSE_BYTES = 64 * 1024;
 const OMP_BUILTIN_COMMANDS: readonly OmpAvailableCommand[] = [
@@ -162,7 +179,7 @@ function applicableThinkingLevel(
   return model?.reasoning === false ? undefined : level;
 }
 
-function fixedSessionMode(modeId = "full") {
+export function fixedSessionMode(modeId = "full") {
   const mode = OMP_MODES.find((candidate) => candidate.id === modeId);
   if (!mode) throw new OmpPublicError("OMP mode is unavailable");
   return {
@@ -194,7 +211,7 @@ export function ompPersistenceSessionId(input: SessionOpenInput): string | undef
   }
 }
 
-async function authorizeNativeSession(
+export async function authorizeNativeSession(
   runtime: OmpRuntime,
   sessionId: string,
   cwd: string,
@@ -228,7 +245,7 @@ function retainedBytes(values: readonly unknown[], maxBytes: number): number {
   return total;
 }
 
-async function waitForReplay<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+export async function waitForReplay<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
   const aborted = Promise.withResolvers<never>();
   const onAbort = () => aborted.reject(signal.reason);
@@ -271,7 +288,7 @@ async function settleSessionCleanup(promises: readonly Promise<void>[]): Promise
     throw new AggregateError(failures, "OMP session initialization cleanup failed");
   }
 }
-export class OmpProviderSession {
+export class OmpProviderSession implements OmpOpenedSession {
   readonly id: string;
   readonly cwd: string;
 

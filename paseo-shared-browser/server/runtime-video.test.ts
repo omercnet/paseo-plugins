@@ -33,6 +33,7 @@ import { AgentBrowserRuntime } from "./agent-browser-runtime";
 function setup() {
   fixture.captures = [];
   const runtime = new AgentBrowserRuntime({
+    nativeVideo: true,
     binaryPath: "/tmp/owned-bin",
     executablePath: "/tmp/owned-chrome",
     profilePath: "/tmp/owned-profile",

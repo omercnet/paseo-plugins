@@ -2,41 +2,11 @@ import type { HubProcess } from "../shared/hub";
 import { isOmpProfileName, type OmpStore } from "../shared/omp-store";
 import { hubProcessTone } from "./hub-status";
 
-/** The sidebar id the 0.10 `addSidebarItem` used; the 0.11 screen keeps it so saved links work. */
+/** The config screen keeps the id of the retired 0.10 sidebar item so saved links work. */
 export const CONFIG_SCREEN_ID = "config";
 export const HUB_SIDEBAR_ITEM_ID = "hub";
 
 type ScreenParams = Readonly<Record<string, string>>;
-
-/**
- * The 0.11 screen/sidebar-item API, typed structurally so 0.9/0.10 SDK typechecks still compile.
- * On 0.10 hosts these members are absent at runtime.
- */
-export interface ScreenCapableClient {
-  addScreen(contribution: {
-    id: string;
-    title: string | ((params: ScreenParams) => string);
-    Component: (props: never) => unknown;
-  }): () => void;
-  addSidebarHeaderItem(contribution: {
-    id: string;
-    title: string;
-    Component: (props: never) => unknown;
-  }): () => void;
-  openScreen(input: { screenId: string; params?: Record<string, string> }): void;
-}
-
-/** True only on Paseo 0.11+ hosts, which provide screens, header items, and `openScreen`. */
-export function supportsScreens<Client extends object>(
-  client: Client,
-): client is Client & ScreenCapableClient {
-  const candidate = client as Partial<Record<keyof ScreenCapableClient, unknown>>;
-  return (
-    typeof candidate.addScreen === "function" &&
-    typeof candidate.addSidebarHeaderItem === "function" &&
-    typeof candidate.openScreen === "function"
-  );
-}
 
 /** A `profile` screen param selects that store; anything invalid falls back to the default. */
 export function configStoreFromParams(params: ScreenParams | undefined): OmpStore | undefined {

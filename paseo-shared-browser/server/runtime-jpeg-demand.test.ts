@@ -1,5 +1,6 @@
 /** Actual runtime entry points with owned fake CDP, no Chromium/process fixture. */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { DEFAULT_JPEG_QUALITY } from "../shared/capture-settings";
 import { AgentBrowserRuntime, type RuntimeFrame } from "./agent-browser-runtime";
 import { JPEG_CAPTURE_IDLE_MS } from "./jpeg-capture-demand";
 
@@ -40,6 +41,7 @@ afterEach(() => {
 });
 function setup() {
   const runtime = new AgentBrowserRuntime({
+    nativeVideo: true,
     binaryPath: "/tmp/unlaunched",
     executablePath: "/tmp/unlaunched-chrome",
     profilePath: "/tmp/uncreated-p",
@@ -86,7 +88,7 @@ function setup() {
 }
 /** A restored stream's first swap can fall inside the conservative source
  * margin. Settle zero-wait polling so the honest screenshot fallback can finish. */
-async function readFrame(runtime: AgentBrowserRuntime, quality = 95) {
+async function readFrame(runtime: AgentBrowserRuntime, quality: number = DEFAULT_JPEG_QUALITY) {
   const pending = runtime.frame(100, quality, 0);
   await vi.advanceTimersByTimeAsync(0);
   return pending;
@@ -134,7 +136,7 @@ it("stream startup and screenshot completion both pin retirement beyond the idle
     await startup.promise;
     emit();
   });
-  const read = runtime.frame(100, 95, 0);
+  const read = runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
   await vi.advanceTimersByTimeAsync(10000);
   expect(page.send).not.toHaveBeenCalledWith("Page.stopScreencast", {}, { mutation: true });
   startup.resolve();
@@ -164,7 +166,7 @@ it("renewed read waits for exact old stop acknowledgment before restarting", asy
     method === "Page.stopScreencast" ? await stop.promise : {},
   );
   await vi.advanceTimersByTimeAsync(JPEG_CAPTURE_IDLE_MS);
-  const renewed = runtime.frame(100, 95, 0);
+  const renewed = runtime.frame(100, DEFAULT_JPEG_QUALITY, 0);
   await vi.advanceTimersByTimeAsync(100);
   expect(internal.startScreencastSession).toHaveBeenCalledTimes(1);
   stop.resolve({});

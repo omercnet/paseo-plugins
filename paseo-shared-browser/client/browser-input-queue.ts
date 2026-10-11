@@ -1,8 +1,9 @@
 /**
  * Ordered, bounded live browser input. A channel starts from decoded front-frame
- * authority. All subsequent physical edges continue on exact control/document/
- * geometry with opaque server identity/sequence. A successful admission basis
- * survives normal idle closure for same-context reopening, never errors or drift.
+ * authority and continues held motion, releases and keys on exact control/document/
+ * geometry with opaque server identity/sequence. Every independent press carries
+ * the frame receipt visible when it was made, or waits a bounded time for a newer
+ * one; no earlier admission is retained across idle closure.
  * Only replaceable motion with unchanged pressed identities and wheel deltas coalesce.
  * Press/release and touch identity changes remain ordered. No uncertain mutation is replayed.
  */
@@ -43,7 +44,7 @@ export interface BrowserGestureTransport {
 interface QueueOptions {
   transport: BrowserGestureTransport;
   authority(): BrowserGestureAuthority | null;
-  /** Exact channel/grant continuity. First admission requires authority(); only an ACKed same-context basis can reopen. */
+  /** Exact channel/grant continuity. Every admission and press still requires a decoded authority(). */
   controlAuthority?(): BrowserGestureControl | null;
   onState(state: BrowserState): void;
   onCursor(cursor: BrowserCursor | null): void;
@@ -51,6 +52,13 @@ interface QueueOptions {
   onFinish(): void;
   /** Reset local held contacts after an acknowledged navigation, without cancelling this queue again. */
   onNavigationComplete?(): void;
+  /**
+   * Called after the host acknowledges a non-hover event. Receipts decoded from
+   * anything requested before this point predate the input's effect, so the viewer
+   * must stop treating them as actionable even if they were requested after the
+   * local press began.
+   */
+  onAcknowledged?(): void;
   /** Resolves only after a different actionable decoded receipt commits, never visual-only pixels or a timer. */
   waitForFrame?(afterFrameId: string, maxWaitMs?: number): Promise<void>;
 }
@@ -63,7 +71,11 @@ interface Channel {
   heldButtons: Set<string>;
   heldKeys: Set<string>;
   touchCount: number;
+  /** Conservative monotonic deadline measured before the last acknowledged RPC started. */
+  idleNotAfter: number;
 }
+/** Retire empty client channels before the native service's five-second idle bound. */
+export const BROWSER_INPUT_IDLE_MS = 4_000;
 const MAX_QUEUED_COMMANDS = 64;
 const MAX_WHEEL_DELTA = 4_000;
 const MAX_FRAME_ADMISSION_ATTEMPTS = 3;
@@ -82,12 +94,24 @@ function sameAuthority(a: BrowserGestureControl, b: BrowserGestureControl | null
       a.expected.viewportGeneration === b.expected.viewportGeneration,
   );
 }
+/** A new independent press needs its own decoded receipt; held contacts continue theirs. */
+function needsFreshPress(event: BrowserGestureEvent, channel: Channel): boolean {
+  return (
+    event.kind === "down" ||
+    (event.kind === "touch" && event.type === "start" && channel.touchCount === 0)
+  );
+}
 function transportContext(authority: BrowserGestureAuthority) {
   return {
     viewerToken: authority.viewerToken,
     controlToken: authority.controlToken,
     expected: authority.expected,
   };
+}
+
+/** An idle channel can reopen only after every physical press has been acknowledged as released. */
+function hasHeldInput(channel: Channel): boolean {
+  return channel.heldButtons.size > 0 || channel.heldKeys.size > 0 || channel.touchCount > 0;
 }
 /** A qualified reply completes old input; it never authorizes input on the new page. */
 function isAcknowledgedNavigation(original: BrowserGestureAuthority, state: BrowserState): boolean {
@@ -108,15 +132,14 @@ export function createBrowserInputQueue(options: QueueOptions) {
   let running = false;
   let channel: Channel | null = null;
   let commands: Command[] = [];
-  // Only an acknowledged begin grants this geometry basis. Visual pixels never
-  // renew it; normal idle closure retains it for same-document channel reopening.
-  let admittedBasis: BrowserGestureAuthority | null = null;
+  // Receipt used by the last acknowledged input. The server revokes it, so the
+  // next press needs a different decoded frame even while the old one is displayed.
+  let invalidatedFrameId: string | null = null;
   // Buffer real physical edges while begin is pending. This context grants no
   // reusable admission and publishes nothing until the server acknowledges it.
   let pendingAdmission: { authority: BrowserGestureAuthority; epoch: number } | null = null;
 
   const cancelChannel = async (old: Channel) => {
-    admittedBasis = null;
     try {
       await options.transport.end({
         ...transportContext(old.authority),
@@ -132,7 +155,7 @@ export function createBrowserInputQueue(options: QueueOptions) {
   const cancel = () => {
     epoch += 1;
     commands = [];
-    admittedBasis = null;
+    invalidatedFrameId = null;
     pendingAdmission = null;
     const old = channel;
     channel = null;
@@ -146,16 +169,11 @@ export function createBrowserInputQueue(options: QueueOptions) {
     return options.authority();
   };
 
+  /** Decoded authority only counts while it is the same control incarnation. */
   const admissionAuthority = () => {
     const control = currentControl();
-    if (!control) {
-      admittedBasis = null;
-      return null;
-    }
-    if (admittedBasis && sameAuthority(admittedBasis, control)) return admittedBasis;
-    admittedBasis = null;
     const decoded = options.authority();
-    return decoded && sameAuthority(decoded, control) ? decoded : null;
+    return control && decoded && sameAuthority(decoded, control) ? decoded : null;
   };
 
   const drain = async () => {
@@ -167,10 +185,23 @@ export function createBrowserInputQueue(options: QueueOptions) {
       while (commands.length && currentEpoch === epoch) {
         const command = commands.shift();
         if (!command) break;
+        if (
+          owned &&
+          performance.now() >= owned.idleNotAfter &&
+          !hasHeldInput(owned) &&
+          sameAuthority(owned.authority, currentControl())
+        ) {
+          // Background suspension can delay the hook's idle timer beyond native
+          // expiry. Never send an unsent event or a late normal end to that ID;
+          // beginGesture cancels the old channel and needs a fresh decoded receipt.
+          owned = null;
+          channel = null;
+          options.onFinish();
+        }
         if ("end" in command) {
           if (!owned) continue;
           // A pointer release must not release a still-held keyboard chord.
-          if (owned.heldKeys.size || owned.heldButtons.size || owned.touchCount) continue;
+          if (hasHeldInput(owned)) continue;
           const ending = owned;
           if (!sameAuthority(ending.authority, currentControl())) {
             throw new Error("Browser input context changed. Release the gesture and try again.");
@@ -210,7 +241,7 @@ export function createBrowserInputQueue(options: QueueOptions) {
         if (owned && owned.pointerKind !== pointerKind) {
           // Changing input devices is ordinary on touch laptops. Close only this
           // exact old channel before sending the still-unsent event on a new one.
-          if (owned.heldButtons.size || owned.heldKeys.size || owned.touchCount) {
+          if (hasHeldInput(owned)) {
             await cancelChannel(owned);
           } else {
             // Empty mouse/touch modality changes retain only ACKed same-context
@@ -238,9 +269,21 @@ export function createBrowserInputQueue(options: QueueOptions) {
           const pending = { authority: current, epoch: currentEpoch };
           pendingAdmission = pending;
           try {
+            if (invalidatedFrameId === current.target.frameId && options.waitForFrame) {
+              // The visible receipt was spent by earlier input. Beginning on it can
+              // only return stale-frame, so wait (bounded) for newer decoded pixels.
+              const waitingAuthority = current;
+              await options.waitForFrame(current.target.frameId, FRAME_ADMISSION_WAIT_MS);
+              if (currentEpoch !== epoch) break;
+              // Replacement control during the wait ends this attempt without begin.
+              const after = options.authority();
+              if (!after || !sameAuthority(waitingAuthority, after)) break;
+              current = after;
+            }
             for (let attempt = 0; attempt < MAX_FRAME_ADMISSION_ATTEMPTS; attempt += 1) {
               if (Date.now() >= admissionDeadline) break;
               const sentAuthority = current;
+              const startedAt = performance.now();
               const result = await options.transport.begin({ ...sentAuthority, pointerKind });
               if (!("admission" in result)) {
                 owned = {
@@ -251,6 +294,7 @@ export function createBrowserInputQueue(options: QueueOptions) {
                   heldButtons: new Set(),
                   heldKeys: new Set(),
                   touchCount: 0,
+                  idleNotAfter: startedAt + BROWSER_INPUT_IDLE_MS,
                 };
               }
               if (currentEpoch !== epoch || !sameAuthority(sentAuthority, currentControl())) break;
@@ -258,7 +302,6 @@ export function createBrowserInputQueue(options: QueueOptions) {
               if (!sameAuthority(sentAuthority, currentControl())) break;
               if (owned) {
                 channel = owned;
-                admittedBasis = sentAuthority;
                 break;
               }
               // Only this validated non-publication receipt permits another begin.
@@ -297,6 +340,38 @@ export function createBrowserInputQueue(options: QueueOptions) {
         if (!sameAuthority(owned.authority, currentControl())) {
           throw new Error("Browser input context changed. Release the gesture and try again.");
         }
+        let pressTarget: BrowserGestureAuthority["target"] | undefined;
+        if (needsFreshPress(command.event, owned)) {
+          let fresh = options.authority();
+          // Video revokes its receipt as soon as input is acknowledged, leaving no
+          // actionable authority until the next frame paints; JPEG keeps the spent
+          // frame visible. Both mean this press needs a newer decoded receipt.
+          const visibleId = fresh?.target.frameId ?? owned.authority.target.frameId;
+          const spent = fresh
+            ? invalidatedFrameId === fresh.target.frameId
+            : invalidatedFrameId !== null;
+          if (spent && options.waitForFrame) {
+            // Wait a bounded time; elapsed time alone never admits a press, and the
+            // server refuses a spent or expired receipt regardless.
+            await options.waitForFrame(visibleId);
+            if (currentEpoch !== epoch) break;
+            fresh = options.authority();
+          }
+          if (fresh) {
+            if (!sameAuthority(owned.authority, fresh)) {
+              throw new Error("Browser input context changed. Release the gesture and try again.");
+            }
+            pressTarget = fresh.target;
+          } else if (!spent) {
+            // Display was revoked after admission but before this first press; the
+            // receipt begin just validated is still unspent. The server re-checks it.
+            pressTarget = owned.authority.target;
+          } else {
+            throw new Error(
+              "Waiting for a current decoded frame. Release the gesture and try again.",
+            );
+          }
+        }
         if (command.event.kind === "key" && command.event.type === "down")
           owned.heldKeys.add(command.event.code);
         if (command.event.kind === "key" && command.event.type === "up")
@@ -304,14 +379,25 @@ export function createBrowserInputQueue(options: QueueOptions) {
         if (command.event.kind === "touch") owned.touchCount = command.event.points.length;
         if (command.event.kind === "down") owned.heldButtons.add(command.event.button);
         if (command.event.kind === "up") owned.heldButtons.delete(command.event.button);
+        // Mirror the server: everything except hover revokes the visible receipt.
+        const revokesReceipts =
+          (command.event.kind !== "move" && command.event.kind !== "leave") ||
+          owned.heldButtons.size > 0;
+        if (revokesReceipts) {
+          invalidatedFrameId =
+            options.authority()?.target.frameId ?? owned.authority.target.frameId;
+        }
         const expectedNextSequence = owned.sequence + 1;
+        const startedAt = performance.now();
         const result = await options.transport.update({
           ...transportContext(owned.authority),
           gestureId: owned.gestureId,
           sequence: owned.sequence,
           event: command.event,
+          ...(pressTarget ? { target: pressTarget } : {}),
         });
         owned.sequence = result.nextSequence;
+        owned.idleNotAfter = startedAt + BROWSER_INPUT_IDLE_MS;
         if (currentEpoch !== epoch || !sameAuthority(owned.authority, currentControl())) break;
         if (result.gestureId !== owned.gestureId)
           throw new Error("Browser gesture identity changed.");
@@ -327,7 +413,7 @@ export function createBrowserInputQueue(options: QueueOptions) {
           // new state, which intentionally invalidates the old decoded frame.
           epoch += 1;
           commands = [];
-          admittedBasis = null;
+          invalidatedFrameId = null;
           channel = null;
           owned = null;
           options.onCursor(null);
@@ -340,6 +426,7 @@ export function createBrowserInputQueue(options: QueueOptions) {
         if (!sameAuthority(owned.authority, currentControl())) {
           throw new Error("Browser input context changed. Release the gesture and try again.");
         }
+        if (revokesReceipts) options.onAcknowledged?.();
         options.onCursor(result.cursor);
       }
     } catch (error) {
@@ -347,7 +434,7 @@ export function createBrowserInputQueue(options: QueueOptions) {
         epoch += 1;
         commands = [];
         channel = null;
-        admittedBasis = null;
+        invalidatedFrameId = null;
         options.onCursor(null);
         options.onError(error);
       }

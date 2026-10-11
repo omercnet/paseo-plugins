@@ -1,14 +1,17 @@
 /** Controller-only physical capture density, independent of CSS resolution and emulation. */
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { type CaptureDensity, canUseCaptureDensity } from "../shared/browser";
+import { canUseCaptureDensity } from "../shared/browser";
+import { MAX_VIEWPORT } from "../shared/viewport-limits";
+import type { CaptureDensityMode } from "./browser-auto-capture-density";
 
 interface Props {
   theme: PluginHostProps["theme"];
   density: number;
+  mode: CaptureDensityMode;
   viewport: { width: number; height: number } | null;
   disabled: boolean;
-  onChange(value: CaptureDensity): void;
+  onChange(value: CaptureDensityMode): void;
 }
 const styles = StyleSheet.create({
   group: { gap: 8 },
@@ -24,15 +27,21 @@ export function BrowserCaptureDensityControls(props: Props) {
   return (
     <View style={styles.group}>
       <Text style={[styles.heading, { color: colors.foregroundMuted }]}>Capture density</Text>
-      {([1, 2] as const).map((density) => {
-        const supported = props.viewport !== null && canUseCaptureDensity(props.viewport, density);
+      {(["auto", 1, 2] as const).map((density) => {
+        const supported =
+          props.viewport !== null &&
+          (density === "auto" || canUseCaptureDensity(props.viewport, density));
         const disabled = props.disabled || !supported;
-        const selected = props.density === density;
+        const selected = props.mode === density;
+        let label = `${density}×`;
+        if (density === "auto") {
+          label = selected ? `Auto (${props.density}×)` : "Auto";
+        }
         return (
           <Pressable
             key={density}
             accessibilityRole="button"
-            accessibilityLabel={`Capture density: ${density}×`}
+            accessibilityLabel={`Capture density: ${label}`}
             accessibilityState={{ selected, disabled }}
             disabled={disabled}
             onPress={() => {
@@ -47,13 +56,18 @@ export function BrowserCaptureDensityControls(props: Props) {
               },
             ]}
           >
-            <Text style={[styles.label, { color: colors.foreground }]}>{density}×</Text>
+            <Text style={[styles.label, { color: colors.foreground }]}>{label}</Text>
           </Pressable>
         );
       })}
+      <Text style={[styles.detail, { color: colors.foregroundMuted }]}>
+        Auto matches the displayed size and screen density up to 2× while controlling. Higher
+        density uses more bandwidth.
+      </Text>
       {props.viewport && !canUseCaptureDensity(props.viewport, 2) ? (
         <Text style={[styles.detail, { color: colors.foregroundMuted }]}>
-          2× requires a page width and height of 1280 or less.
+          2× requires a page width of {Math.floor(MAX_VIEWPORT.width / 2)} or less and a height of{" "}
+          {Math.floor(MAX_VIEWPORT.height / 2)} or less.
         </Text>
       ) : null}
     </View>

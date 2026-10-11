@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import type { PluginSettings } from "@getpaseo/plugin/server";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { resolveContextModeBinary } from "../server/binary";
 import { createContextModeHandlers } from "../server/handlers";
 import {
@@ -573,6 +573,40 @@ describe("RPC behavior", () => {
     await expect(handlers.audit({ fresh: false })).resolves.toMatchObject({
       runtimeVersion: null,
       injectionEnabled: true,
+    });
+  });
+
+  test("audits providers configured in the daemon through the RPC context", async () => {
+    const settings = ContextModeSettingsSchema.parse({});
+    const createAudit = vi.fn(async () => ({
+      runtimePath: "/bin/context-mode",
+      runtimeVersion: null,
+      injectionEnabled: true,
+      providers: [],
+      checkedAt: "2026-09-20T00:00:00.000Z",
+    }));
+    const handlers = createContextModeHandlers(settingsHandle(settings), {
+      resolveBinary: async () => ({
+        state: "found",
+        path: "/bin/context-mode",
+        source: "path",
+        launch: launch("/bin/context-mode"),
+      }),
+      inspect: async () => ({ version: null, tools: [] }),
+      createAudit,
+    });
+    const paseo = {
+      config: {
+        get: async () => ({
+          config: { providers: { "claude-work": { extends: "claude", env: { A: "1" } } } },
+        }),
+      },
+    };
+
+    await handlers.audit({ fresh: false }, { paseo });
+
+    expect(createAudit).toHaveBeenCalledWith(settings, expect.anything(), {
+      providers: { "claude-work": { extends: "claude", env: { A: "1" } } },
     });
   });
 

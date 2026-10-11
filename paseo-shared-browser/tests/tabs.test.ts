@@ -237,3 +237,84 @@ it("does not publish a late tab attachment after closing the whole browser", asy
   await expect(late).rejects.toThrow("Browser is closed");
   expect(await manager.listOpenWorkspaceIds()).toEqual([]);
 });
+
+/** Manager with an injected clock so leases can lapse without any unrelated pruning call. */
+function createClockManager(options: { viewerTtlMs?: number } = {}) {
+  let counter = 0;
+  let clock = 1_000;
+  const client = new TabRuntimeClient();
+  const manager = new SessionManager({
+    client,
+    validateWorkspace: async () => true,
+    issueToken: () => `token_${String(++counter).padStart(40, "0")}`,
+    now: () => clock,
+    viewerTtlMs: options.viewerTtlMs ?? 10,
+  });
+  managers.push(manager);
+  return {
+    client,
+    manager,
+    advance: (milliseconds: number) => {
+      clock += milliseconds;
+    },
+  };
+}
+
+it("rejects tab listing and creation for an expired but unpruned viewer, like status", async () => {
+  const { client, manager, advance } = createClockManager();
+  const viewer = await manager.attach("workspace-one", "Lapsing viewer");
+  advance(11);
+
+  await expect(manager.status(viewer.viewerToken)).rejects.toThrow(
+    "Viewer token is invalid or expired",
+  );
+  // status pruned this token; a second viewer isolates the unpruned case for the tab APIs.
+  const second = await manager.attach("workspace-one", "Second viewer");
+  advance(11);
+  const pagesBefore = client.pages.size;
+  await expect(manager.createTab(second.viewerToken)).rejects.toThrow(
+    "Viewer token is invalid or expired",
+  );
+  await expect(manager.listTabsForViewer(second.viewerToken)).rejects.toThrow(
+    "Viewer token is invalid or expired",
+  );
+  expect(client.pages.size).toBe(pagesBefore);
+});
+
+it("still serves a live viewer's tab APIs without renewing its lease", async () => {
+  const { manager, advance } = createClockManager({ viewerTtlMs: 100 });
+  const viewer = await manager.attach("workspace-one", "Live viewer");
+  advance(60);
+  const created = await manager.createTab(viewer.viewerToken);
+  expect(created.tabId).toMatch(/^page-/);
+  await expect(manager.listTabsForViewer(viewer.viewerToken)).resolves.toMatchObject({
+    tabs: expect.arrayContaining([expect.objectContaining({ id: "page-one" })]),
+  });
+  // Neither tab call renewed the lease: it still lapses 100ms after attach.
+  advance(41);
+  await expect(manager.listTabsForViewer(viewer.viewerToken)).rejects.toThrow(
+    "Viewer token is invalid or expired",
+  );
+});
+
+it("withholds tab metadata and reports a distinct error when the lease lapses during the request", async () => {
+  const { client, manager, advance } = createClockManager({ viewerTtlMs: 100 });
+  const viewer = await manager.attach("workspace-one", "Lapsing during list");
+  const original = client.requestWorkspace.bind(client);
+  client.requestWorkspace = async (workspaceId, operation, input) => {
+    const result = await original(workspaceId, operation, input);
+    if (operation === "tabs.list" || operation === "tabs.create") advance(101);
+    return result;
+  };
+  await expect(manager.listTabsForViewer(viewer.viewerToken)).rejects.toThrow(
+    "attachment changed while listing tabs",
+  );
+
+  const creator = await manager.attach("workspace-one", "Lapsing during create");
+  const pagesBefore = client.pages.size;
+  await expect(manager.createTab(creator.viewerToken)).rejects.toThrow(
+    "attachment changed during tab creation",
+  );
+  // The page was created exactly once and the failure is not a pre-dispatch refusal.
+  expect(client.pages.size).toBe(pagesBefore + 1);
+});

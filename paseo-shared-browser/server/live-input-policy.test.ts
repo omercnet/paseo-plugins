@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type BrowserGestureEvent, MAX_HELD_BROWSER_KEYS } from "../shared/browser";
+import {
+  type BrowserGestureEvent,
+  type BrowserInputEvent,
+  MAX_HELD_BROWSER_KEYS,
+} from "../shared/browser";
+import { JPEG_QUALITY } from "../shared/capture-settings";
 import { type BrowserRuntimeClient, SessionManager } from "./browser-policy";
 
 /** Exercise the real policy with a deterministic owned runtime; no browser or services are started. */
-async function fixture() {
+async function fixture(
+  timing: { now?: () => number; viewerTtlMs?: number; controlLeaseMs?: number } = {},
+) {
   let counter = 0;
   let url = "https://fixture.invalid/";
   let inputGeneration = "0:0";
@@ -57,6 +64,7 @@ async function fixture() {
     validateWorkspace: async () => true,
     client,
     issueToken: () => (++counter).toString().padStart(32, "0"),
+    ...timing,
   });
   await manager.connect();
   const { viewerToken } = await manager.attach("owned-workspace", "Viewer");
@@ -176,6 +184,102 @@ describe("owned ordered live input", () => {
       expect(released).toBeGreaterThan(-1);
       expect(emulated).toBeGreaterThan(released);
       await expect(state.update({ kind: "move", point: point(90, 60) })).rejects.toThrow();
+    } finally {
+      await state.manager.disconnect();
+    }
+  });
+
+  it("fills the panel while preserving mobile behavior and sharp capture density", async () => {
+    const state = await fixture();
+    try {
+      const mobile = await state.manager.applyDevicePreset({
+        ...state.context,
+        presetId: "pixel-7-sharp",
+      });
+      const context = {
+        ...state.context,
+        expected: {
+          ...state.context.expected,
+          viewportGeneration: mobile.state.viewportGeneration,
+        },
+      };
+      const viewport = { width: 1000, height: 700 };
+      const resized = await state.manager.resize({ ...context, viewport, preserveEmulation: true });
+      expect(resized.state.viewport).toEqual(viewport);
+      expect(resized.state.devicePresetId).toBe("pixel-7-sharp");
+      expect(resized.state.captureScale).toBe(2);
+      expect(resized.state.userAgent).toBe(mobile.state.userAgent);
+      expect(
+        state.calls.filter(({ operation }) => operation === "emulate").at(-1)?.input,
+      ).toMatchObject({
+        ...viewport,
+        captureScale: 2,
+        mobile: true,
+        touch: true,
+        userAgent: mobile.state.userAgent,
+      });
+
+      const resizedContext = {
+        ...context,
+        expected: { ...context.expected, viewportGeneration: resized.state.viewportGeneration },
+      };
+      await expect(
+        state.manager.resize({
+          ...resizedContext,
+          viewport: { width: 2000, height: 700 },
+          preserveEmulation: true,
+        }),
+      ).rejects.toThrow("capture density");
+      // Automatic following lowers density together with a larger CSS viewport.
+      const large = await state.manager.resize({
+        ...resizedContext,
+        viewport: { width: 2400, height: 2000 },
+        preserveEmulation: true,
+        captureDensity: 1,
+      });
+      expect(large.state.viewport).toEqual({ width: 2400, height: 2000 });
+      expect(large.state.captureScale).toBe(1);
+      expect(large.state.devicePresetId).toBe("pixel-7-sharp");
+      expect(large.state.userAgent).toBe(mobile.state.userAgent);
+      expect(
+        state.calls.filter(({ operation }) => operation === "emulate").at(-1)?.input,
+      ).toMatchObject({
+        width: 2400,
+        height: 2000,
+        captureScale: 1,
+        mobile: true,
+        touch: true,
+      });
+      const sharp = await state.manager.resize({
+        ...resizedContext,
+        expected: {
+          ...resizedContext.expected,
+          viewportGeneration: large.state.viewportGeneration,
+        },
+        viewport,
+        preserveEmulation: true,
+        captureDensity: 2,
+      });
+      expect(sharp.state.captureScale).toBe(2);
+      expect(sharp.state.devicePresetId).toBe("pixel-7-sharp");
+      // Explicit custom dimensions retain their established desktop reset behavior.
+      const custom = await state.manager.resize({
+        ...resizedContext,
+        expected: {
+          ...resizedContext.expected,
+          viewportGeneration: sharp.state.viewportGeneration,
+        },
+        viewport,
+      });
+      expect(custom.state.devicePresetId).toBeNull();
+      expect(custom.state.captureScale).toBe(1);
+      expect(
+        state.calls.filter(({ operation }) => operation === "emulate").at(-1)?.input,
+      ).toMatchObject({
+        mobile: false,
+        touch: false,
+        captureScale: 1,
+      });
     } finally {
       await state.manager.disconnect();
     }
@@ -392,19 +496,23 @@ describe("owned ordered live input", () => {
     state.manager.disconnect();
   });
 
-  it("admits repeated human clicks without new media while discrete input still requires a fresh receipt", async () => {
+  it("every independent press needs a fresh decoded receipt; the receipt a press used is spent", async () => {
     const state = await fixture();
     try {
       await state.begin();
-      const capturesBefore = state.calls.filter((call) => call.operation === "frame").length;
-      for (let click = 0; click < 2; click += 1) {
-        await state.update({ kind: "down", button: "left", clickCount: 1, point: point() });
-        await state.update({ kind: "up", button: "left", clickCount: 1, point: point() });
-      }
-      expect(state.calls.filter((call) => call.operation === "frame")).toHaveLength(capturesBefore);
-      expect(state.calls.filter((call) => call.operation === "mouse.down")).toHaveLength(2);
-      expect(state.calls.filter((call) => call.operation === "mouse.up")).toHaveLength(2);
-      const beforeDiscrete = state.calls.length;
+      await expect(
+        state.update({ kind: "down", button: "left", clickCount: 1, point: point() }),
+      ).rejects.toThrow("current frame");
+      expect(state.calls.some((call) => call.operation === "mouse.down")).toBe(false);
+      await state.begin();
+      await state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true);
+      await state.update({ kind: "up", button: "left", clickCount: 1, point: point() });
+      // Held release reuses its channel, but the same visible receipt cannot press again.
+      await expect(
+        state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true),
+      ).rejects.toThrow("frame is stale");
+      expect(state.calls.filter((call) => call.operation === "mouse.down")).toHaveLength(1);
+      // A discrete agent press stays strict as well.
       await expect(
         state.manager.sendInput({
           ...state.context,
@@ -412,10 +520,64 @@ describe("owned ordered live input", () => {
           event: { kind: "click", point: point(), button: "left", clickCount: 1 },
         }),
       ).rejects.toThrow("frame is stale");
-      expect(state.calls).toHaveLength(beforeDiscrete);
-      // Lost-reply cancellation remains exact-channel cleanup, not a replay.
-      await state.end(true, 1);
-      expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
+      expect(state.calls.filter((call) => call.operation === "mouse.down")).toHaveLength(1);
+    } finally {
+      await state.manager.disconnect();
+    }
+  });
+
+  it("a stalled presentation cannot admit a press after its receipt expires, however long control is held", async () => {
+    vi.useFakeTimers();
+    const state = await fixture();
+    try {
+      await state.begin();
+      // Hover keeps the channel and lease alive without revoking the receipt.
+      for (let elapsed = 0; elapsed < 6_000; elapsed += 2_000) {
+        await vi.advanceTimersByTimeAsync(2_000);
+        await state.update({ kind: "move", point: point() });
+      }
+      await expect(
+        state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true),
+      ).rejects.toThrow("frame is stale");
+      expect(state.calls.some((call) => call.operation === "mouse.down")).toBe(false);
+    } finally {
+      await state.manager.disconnect();
+    }
+  });
+
+  it("an expired or spent receipt cannot reopen a channel, with or without prior admission", async () => {
+    vi.useFakeTimers();
+    const state = await fixture();
+    try {
+      await state.begin();
+      await state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true);
+      await state.update({ kind: "up", button: "left", clickCount: 1, point: point() });
+      await state.end();
+      const beforeReopen = state.calls.length;
+      const spent = await state.manager.beginGesture({
+        ...state.context,
+        target: state.target,
+        pointerKind: "mouse",
+      });
+      expect(spent).toHaveProperty("admission", "stale-frame");
+      expect(state.calls.slice(beforeReopen).some((call) => call.operation === "input.begin")).toBe(
+        false,
+      );
+      const fresh = await state.manager.capture(state.context.viewerToken, "low");
+      const freshTarget = {
+        frameId: fresh.frame!.frameId,
+        navigationGeneration: fresh.frame!.navigationGeneration,
+        viewportGeneration: fresh.frame!.viewportGeneration,
+      };
+      await vi.advanceTimersByTimeAsync(5_001);
+      const expired = await state.manager.beginGesture({
+        ...state.context,
+        target: freshTarget,
+        pointerKind: "mouse",
+      });
+      expect(expired).toHaveProperty("admission", "stale-frame");
+      expect(state.calls.some((call) => call.operation === "mouse.down")).toBe(true);
+      expect(state.calls.filter((call) => call.operation === "mouse.down")).toHaveLength(1);
     } finally {
       await state.manager.disconnect();
     }
@@ -450,7 +612,7 @@ describe("owned ordered live input", () => {
     state.manager.disconnect();
   });
 
-  it("accepts staggered fingers and a later independent touch within the admitted channel without new media", async () => {
+  it("accepts a staggered second finger within one held gesture, but refuses a new independent start from an old frame", async () => {
     const state = await fixture();
     await state.begin("touch");
     await state.update({ kind: "touch", type: "start", points: [{ ...point(), id: 1 }] }, true);
@@ -463,40 +625,11 @@ describe("owned ordered live input", () => {
       ],
     });
     await state.update({ kind: "touch", type: "end", points: [] });
-    await state.update({ kind: "touch", type: "start", points: [{ ...point(), id: 3 }] });
-    await state.update({ kind: "touch", type: "end", points: [] });
-    expect(state.calls.filter((call) => call.operation === "touch")).toHaveLength(5);
+    await expect(
+      state.update({ kind: "touch", type: "start", points: [{ ...point(), id: 3 }] }, true),
+    ).rejects.toThrow("frame");
+    expect(state.calls.filter((call) => call.operation === "touch")).toHaveLength(3);
     state.manager.disconnect();
-  });
-
-  it("refuses a later press after controller, document, viewport or native attachment replacement", async () => {
-    for (const replacement of ["controller", "document", "viewport", "attachment"] as const) {
-      const state = await fixture();
-      try {
-        await state.begin();
-        await state.update({ kind: "down", button: "left", clickCount: 1, point: point() });
-        await state.update({ kind: "up", button: "left", clickCount: 1, point: point() });
-
-        if (replacement === "controller") {
-          const other = await state.manager.attach("owned-workspace", "Other");
-          await state.manager.acquireControl(other.viewerToken, true);
-        } else if (replacement === "document") {
-          state.reloadSameUrl();
-        } else if (replacement === "viewport") {
-          await state.manager.applyDevicePreset({ ...state.context, presetId: "pixel-7" });
-        } else {
-          state.replaceTarget();
-        }
-
-        await expect(
-          state.update({ kind: "down", button: "left", clickCount: 1, point: point() }),
-        ).rejects.toThrow();
-        expect(state.calls.filter((call) => call.operation === "mouse.down")).toHaveLength(1);
-        expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
-      } finally {
-        await state.manager.disconnect();
-      }
-    }
   });
 
   it("never replays an uncertain press and revokes its earlier discrete observation", async () => {
@@ -507,10 +640,10 @@ describe("owned ordered live input", () => {
         if (operation === "mouse.down") throw new Error("Unknown publication outcome");
       });
       await expect(
-        state.update({ kind: "down", button: "left", clickCount: 1, point: point() }),
+        state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true),
       ).rejects.toThrow("Unknown publication");
       await expect(
-        state.update({ kind: "down", button: "left", clickCount: 1, point: point() }),
+        state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true),
       ).rejects.toThrow("unavailable");
       expect(state.calls.filter((call) => call.operation === "mouse.down")).toHaveLength(1);
       expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
@@ -528,132 +661,98 @@ describe("owned ordered live input", () => {
     }
   });
 
-  it("reopens the original admitted geometry after idle retirement and receipt expiry with media blocked", async () => {
-    vi.useFakeTimers();
-    const state = await fixture();
-    try {
-      await state.begin();
-      await state.update({ kind: "down", button: "left", clickCount: 1, point: point() });
-      await state.update({ kind: "up", button: "left", clickCount: 1, point: point() });
-      const capturesBefore = state.calls.filter((call) => call.operation === "frame").length;
-      await vi.advanceTimersByTimeAsync(5_001);
-      expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
-      const beforeBegin = state.calls.length;
-      state.intercept(async (operation) => {
-        if (operation === "state" || operation === "frame")
-          throw new Error("Media and metadata are blocked");
-      });
-      const readmission = await state.manager.beginGesture({
-        ...state.context,
-        target: state.target,
-        pointerKind: "mouse",
-      });
-      expect(readmission).toHaveProperty("gestureId");
-      expect(
-        state.calls.slice(beforeBegin).filter((call) => call.operation === "input.begin"),
-      ).toHaveLength(1);
-      if (
-        typeof readmission.gestureId !== "string" ||
-        typeof readmission.nextSequence !== "number"
-      ) {
-        throw new Error("Expected retained geometry admission");
-      }
-      await state.manager.updateGesture({
-        ...state.context,
-        gestureId: readmission.gestureId,
-        sequence: readmission.nextSequence,
-        event: { kind: "down", button: "left", clickCount: 1, point: point() },
-      });
-      expect(state.calls.filter((call) => call.operation === "mouse.down")).toHaveLength(2);
-      expect(state.calls.filter((call) => call.operation === "frame")).toHaveLength(capturesBefore);
-    } finally {
-      await state.manager.disconnect();
-    }
-  });
-
-  it("only reopens from the server-admitted original receipt, never an arbitrary caller frame", async () => {
-    const state = await fixture();
-    try {
-      await state.begin();
-      await state.update({ kind: "down", button: "left", clickCount: 1, point: point() });
-      await state.update({ kind: "up", button: "left", clickCount: 1, point: point() });
-      await state.end();
-      const beforeBegin = state.calls.length;
-      const reply = await state.manager.beginGesture({
-        ...state.context,
-        target: { ...state.target, frameId: "z".repeat(32) },
-        pointerKind: "mouse",
-      });
-      expect(reply).toHaveProperty("admission", "stale-frame");
-      expect(state.calls.slice(beforeBegin).some((call) => call.operation === "input.begin")).toBe(
-        false,
-      );
-    } finally {
-      await state.manager.disconnect();
-    }
-  });
-
-  it("does not carry admitted geometry into a new controller lease or a replaced native document", async () => {
-    for (const replacement of ["controller", "document", "attachment"] as const) {
-      const state = await fixture();
-      try {
-        await state.begin();
-        await state.update({ kind: "down", button: "left", clickCount: 1, point: point() });
-        await state.update({ kind: "up", button: "left", clickCount: 1, point: point() });
-        await state.end();
-        const beforeReopen = state.calls.length;
-        if (replacement === "controller") {
-          await state.manager.releaseControl(state.context.viewerToken, state.context.controlToken);
-          const renewed = await state.manager.acquireControl(state.context.viewerToken);
-          const reply = await state.manager.beginGesture({
-            ...state.context,
-            controlToken: renewed.controlToken,
-            target: state.target,
-            pointerKind: "mouse",
-          });
-          expect(reply).toHaveProperty("admission", "stale-frame");
-          expect(
-            state.calls.slice(beforeReopen).some((call) => call.operation === "input.begin"),
-          ).toBe(false);
-        } else {
-          if (replacement === "document") state.reloadSameUrl();
-          else state.replaceTarget();
-          await expect(state.begin()).rejects.toThrow("attachment changed before binding");
-        }
-        expect(
-          state.calls.slice(beforeReopen).some((call) => call.operation === "mouse.down"),
-        ).toBe(false);
-      } finally {
-        await state.manager.disconnect();
-      }
-    }
-  });
-
   it("rejects document replacement between policy preflight and native binding without pressing the replacement", async () => {
-    for (const retained of [false, true]) {
+    const state = await fixture();
+    try {
+      state.intercept(async (operation) => {
+        if (operation === "input.begin") state.reloadSameUrl();
+      });
+      await expect(state.begin()).rejects.toThrow("attachment changed before binding");
+      expect(state.calls.some((call) => call.operation === "mouse.down")).toBe(false);
+      const beginCall = state.calls.find((call) => call.operation === "input.begin");
+      expect(beginCall?.input).toMatchObject({ expectedInputGeneration: "0:0" });
+    } finally {
+      await state.manager.disconnect();
+    }
+  });
+
+  it("discrete input refuses a document that navigated after capture before any native primitive", async () => {
+    const events: BrowserInputEvent[] = [
+      { kind: "type", text: "secret" },
+      { kind: "key", key: "Enter" },
+      { kind: "move", point: point() },
+      { kind: "scroll", point: point(), deltaX: 0, deltaY: 40 },
+      { kind: "click", point: point(), button: "left", clickCount: 1 },
+    ];
+    for (const event of events) {
       const state = await fixture();
       try {
-        if (retained) {
-          await state.begin();
-          await state.update({ kind: "down", button: "left", clickCount: 1, point: point() });
-          await state.update({ kind: "up", button: "left", clickCount: 1, point: point() });
-          await state.end();
-        }
-        state.intercept(async (operation) => {
-          if (operation === "input.begin") state.reloadSameUrl();
-        });
-        const beforeBegin = state.calls.length;
-        await expect(state.begin()).rejects.toThrow("attachment changed before binding");
-        expect(state.calls.slice(beforeBegin).some((call) => call.operation === "mouse.down")).toBe(
-          false,
-        );
-        const beginCall = state.calls
-          .slice(beforeBegin)
-          .find((call) => call.operation === "input.begin");
-        expect(beginCall?.input).toMatchObject({ expectedInputGeneration: "0:0" });
+        state.changeUrl("https://fixture.invalid/autonomous-navigation");
+        state.reloadSameUrl();
+        const before = state.calls.length;
+        await expect(
+          state.manager.sendInput({ ...state.context, target: state.target, event }),
+        ).rejects.toThrow("stale");
+        expect(
+          state.calls
+            .slice(before)
+            .filter((call) => /^(text|key|mouse|input\.begin)/.test(call.operation)),
+        ).toEqual([]);
       } finally {
         await state.manager.disconnect();
       }
+    }
+  });
+
+  it("pins the reconciled document at native begin, so a replacement racing the check publishes nothing", async () => {
+    const state = await fixture();
+    try {
+      state.intercept(async (operation) => {
+        if (operation === "input.begin") state.reloadSameUrl();
+      });
+      const before = state.calls.length;
+      await expect(
+        state.manager.sendInput({
+          ...state.context,
+          target: state.target,
+          event: { kind: "type", text: "secret" },
+        }),
+      ).rejects.toThrow("attachment changed before binding");
+      const calls = state.calls.slice(before);
+      expect(calls.find((call) => call.operation === "input.begin")?.input).toMatchObject({
+        expectedInputGeneration: "0:0",
+      });
+      expect(calls.some((call) => call.operation === "text.insert")).toBe(false);
+      expect(calls.some((call) => call.operation === "input.end")).toBe(true);
+    } finally {
+      await state.manager.disconnect();
+    }
+  });
+
+  it("spends the capture when admitted discrete input fails partway, so it cannot be reused", async () => {
+    const state = await fixture();
+    try {
+      state.intercept(async (operation) => {
+        if (operation === "mouse.up") throw new Error("Runtime failure after press");
+      });
+      await expect(
+        state.manager.sendInput({
+          ...state.context,
+          target: state.target,
+          event: { kind: "click", point: point(), button: "left", clickCount: 1 },
+        }),
+      ).rejects.toThrow("Runtime failure");
+      state.intercept(async () => {});
+      await expect(
+        state.manager.sendInput({
+          ...state.context,
+          target: state.target,
+          event: { kind: "type", text: "again" },
+        }),
+      ).rejects.toThrow("frame is stale");
+      expect(state.calls.filter((call) => call.operation === "text.insert")).toEqual([]);
+    } finally {
+      await state.manager.disconnect();
     }
   });
 
@@ -734,6 +833,30 @@ describe("owned ordered live input", () => {
       else
         await state.manager.releaseControl(state.context.viewerToken, state.context.controlToken);
       expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
+      state.manager.disconnect();
+    }
+  });
+
+  it("viewer or lease expiry releases the held gesture and rejects its late events", async () => {
+    for (const expiry of ["lease", "viewer"] as const) {
+      let now = 1_000;
+      const state = await fixture({
+        now: () => now,
+        ...(expiry === "lease" ? { controlLeaseMs: 1_000 } : { viewerTtlMs: 1_000 }),
+      });
+      await state.begin();
+      await state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true);
+      now += 1_001;
+      // Another viewer's request is what observes the expiry; no request of the holder is needed.
+      await state.manager.attach("owned-workspace", "Other");
+      await vi.waitFor(() =>
+        expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1),
+      );
+      const before = state.calls.length;
+      await expect(state.update({ kind: "move", point: point(60, 50) })).rejects.toThrow();
+      expect(
+        state.calls.slice(before).filter((call) => call.operation.startsWith("mouse.")),
+      ).toEqual([]);
       state.manager.disconnect();
     }
   });
@@ -819,14 +942,15 @@ it("threads actual click modifier snapshots through the owned gesture without ke
   }
 });
 
-it("requests JPEG100 independently from the cached default JPEG95", async () => {
+it("requests JPEG100 and JPEG85 independently from the default-quality stream", async () => {
   const f = await fixture();
   try {
     await f.manager.capture(f.context.viewerToken, "maximum");
     await f.manager.capture(f.context.viewerToken, "high");
     expect(f.calls.filter((call) => call.operation === "frame").map((call) => call.input)).toEqual([
-      expect.objectContaining({ quality: 95 }),
-      expect.objectContaining({ quality: 100 }),
+      expect.objectContaining({ quality: JPEG_QUALITY.medium }),
+      expect.objectContaining({ quality: JPEG_QUALITY.maximum }),
+      expect.objectContaining({ quality: JPEG_QUALITY.high }),
     ]);
   } finally {
     f.manager.disconnect();
