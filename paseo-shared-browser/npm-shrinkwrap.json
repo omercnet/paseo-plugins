@@ -10,15 +10,15 @@
       "dependencies": {
         "@getpaseo/plugin": "0.11.1",
         "@modelcontextprotocol/sdk": "1.30.0",
-        "agent-browser": "0.37.1",
+        "agent-browser": "0.38.2",
         "esbuild": "0.28.2",
         "zod": "4.4.3"
       }
     },
     "node_modules/@agentclientprotocol/sdk": {
-      "version": "1.7.0",
-      "resolved": "https://registry.npmjs.org/@agentclientprotocol/sdk/-/sdk-1.7.0.tgz",
-      "integrity": "sha512-ZORuxsuEnLjRly7t6Ad7zAsWitjWsyprswyPUHz/yycPb+tTm3DGa8XheaHhRXqX8LS9snuxaYavXSRA50TlHw==",
+      "version": "1.8.0",
+      "resolved": "https://registry.npmjs.org/@agentclientprotocol/sdk/-/sdk-1.8.0.tgz",
+      "integrity": "sha512-fbP7qHZsFyTJVT0/RPrcWJ8An26qLXHEuGCHHEKDyxD1xpXV+Ejyh2LAE6vBAFePkpVjZeeohnbgvuEhZ7wLMg==",
       "license": "Apache-2.0",
       "peerDependencies": {
         "zod": "^3.25.0 || ^4.0.0"
@@ -559,9 +559,9 @@
       }
     },
     "node_modules/agent-browser": {
-      "version": "0.37.1",
-      "resolved": "https://registry.npmjs.org/agent-browser/-/agent-browser-0.37.1.tgz",
-      "integrity": "sha512-NDojTSXrIq7zS090T0VwI1uzBryZWvewgxXvS0swj8/5GGnziBZLmyhEkfETO8n4n3DsJpZbZkq9F/MV2rIQKw==",
+      "version": "0.38.2",
+      "resolved": "https://registry.npmjs.org/agent-browser/-/agent-browser-0.38.2.tgz",
+      "integrity": "sha512-b/7hvo2RrqocvybjB9kwpX12kGkxkFvtdJ4XPDoott5TLK2n3aPX+lYg7ALd+2YvPi2LrTKGzQYu/rxZC2Y7ZA==",
       "hasInstallScript": true,
       "license": "Apache-2.0",
       "bin": {
