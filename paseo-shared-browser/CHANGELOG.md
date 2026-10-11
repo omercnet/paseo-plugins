@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v1.2.2...shared-browser-v2.0.0) (2026-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* the affected plugins no longer load on Paseo 0.9 or 0.10. Screen and sidebar IDs, params and settings are unchanged.
+
+### Features
+
+* **paseo-shared-browser:** add tab-scoped input and opt-in video ([#274](https://github.com/omercnet/paseo-plugins/issues/274)) (@RyanEwen) ([ba97d79](https://github.com/omercnet/paseo-plugins/commit/ba97d794d4c82f3ccd38c102e05d797874c75ddd))
+* require Paseo 0.11 and drop legacy surface navigation ([#286](https://github.com/omercnet/paseo-plugins/issues/286)) ([a46fe9e](https://github.com/omercnet/paseo-plugins/commit/a46fe9ee910c2cc485043d53c67dacf49bab402b))
+
+
+### Bug Fixes
+
+* **paseo-shared-browser:** preserve tab order and confirm closes ([#280](https://github.com/omercnet/paseo-plugins/issues/280)) (@RyanEwen) ([ac7ca1c](https://github.com/omercnet/paseo-plugins/commit/ac7ca1c918785f00ded17af43cb09657b232ff56))
+* **paseo-shared-browser:** preserve video input freshness and decoding ([#275](https://github.com/omercnet/paseo-plugins/issues/275)) (@RyanEwen) ([4a5c74e](https://github.com/omercnet/paseo-plugins/commit/4a5c74e943d485a3872fcf8466ef86f79daea1f4))
+* **paseo-shared-browser:** regenerate npm-shrinkwrap for agent-browser 0.38.2 ([#314](https://github.com/omercnet/paseo-plugins/issues/314)) ([54f64d8](https://github.com/omercnet/paseo-plugins/commit/54f64d8941147ab35f5587192dd72ab5e3be5cb0))
+
 ## [1.2.2](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v1.2.1...shared-browser-v1.2.2) (2026-10-09)
 
 

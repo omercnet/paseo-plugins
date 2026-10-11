@@ -6,6 +6,17 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v1.2.2...pr-radar-v2.0.0) (2026-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* the affected plugins no longer load on Paseo 0.9 or 0.10. Screen and sidebar IDs, params and settings are unchanged.
+
+### Features
+
+* require Paseo 0.11 and drop legacy surface navigation ([#286](https://github.com/omercnet/paseo-plugins/issues/286)) ([a46fe9e](https://github.com/omercnet/paseo-plugins/commit/a46fe9ee910c2cc485043d53c67dacf49bab402b))
+
 ## [1.2.2](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v1.2.1...pr-radar-v1.2.2) (2026-10-08)
 
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.3.3...paseo-omp-v2.0.0) (2026-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **paseo-omp:** on Paseo 0.11 hosts a missing default OMP executable blocks create, resume, and draft operations, including agents configured with a per-agent command.
+* the affected plugins no longer load on Paseo 0.9 or 0.10. Screen and sidebar IDs, params and settings are unchanged.
+
+### Features
+
+* **paseo-omp:** gate provider operations on default OMP detection ([#287](https://github.com/omercnet/paseo-plugins/issues/287)) ([e8fc770](https://github.com/omercnet/paseo-plugins/commit/e8fc770e8cfbf2113fb2ef72be90590c778e3d88))
+* require Paseo 0.11 and drop legacy surface navigation ([#286](https://github.com/omercnet/paseo-plugins/issues/286)) ([a46fe9e](https://github.com/omercnet/paseo-plugins/commit/a46fe9ee910c2cc485043d53c67dacf49bab402b))
+
+
+### Bug Fixes
+
+* **paseo-omp:** drop expired and abandoned quota windows ([#313](https://github.com/omercnet/paseo-plugins/issues/313)) ([bcd991e](https://github.com/omercnet/paseo-plugins/commit/bcd991e05714743103a86bd7a6b234f0f984a460))
+
 ## [1.3.3](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.3.2...paseo-omp-v1.3.3) (2026-10-09)
 
 

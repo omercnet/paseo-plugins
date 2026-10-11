@@ -10,6 +10,17 @@
 - add an explicit pending-permission modal with Allow and Deny actions
 - pin Paseo plugin packages to `0.8.0-beta.1`
 
+## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v1.2.1...agent-crew-v2.0.0) (2026-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* the affected plugins no longer load on Paseo 0.9 or 0.10. Screen and sidebar IDs, params and settings are unchanged.
+
+### Features
+
+* require Paseo 0.11 and drop legacy surface navigation ([#286](https://github.com/omercnet/paseo-plugins/issues/286)) ([a46fe9e](https://github.com/omercnet/paseo-plugins/commit/a46fe9ee910c2cc485043d53c67dacf49bab402b))
+
 ## [1.2.1](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v1.2.0...agent-crew-v1.2.1) (2026-10-08)
 
 
