@@ -1,4 +1,4 @@
-Shared Browser runs one real Chromium browser per workspace on the daemon host and shows that same live page to every connected Paseo client, so viewers and agents act on one page with one set of cookies and logins. Many viewers can watch, and one human at a time holds control. Open it from the Command Center, the **Shared Browser** composer pill, or, on Paseo 0.11 and newer, the sidebar footer.
+Shared Browser runs one real Chromium browser per workspace on the daemon host and shows that same live page to every connected Paseo client, so viewers and agents act on one page with one set of cookies and logins. Many viewers can watch, and one human at a time holds control. Open it from the Command Center, the **Shared Browser** composer pill, or the sidebar footer.
 
 ## How it works
 
@@ -13,7 +13,7 @@ New agents whose provider accepts external MCP servers receive a local MCP serve
 
 ## Setup
 
-- Paseo 0.9, 0.10 or 0.11, and Node.js 24 or newer on the daemon host.
+- Paseo ^0.11.0, and Node.js 24 or newer on the daemon host.
 - Chromium is downloaded when the plugin is installed and stored in the Paseo data directory. On Linux ARM64 nothing is downloaded, and you install a non-Snap Chromium at `/usr/bin/chromium` first. `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` points the plugin at a different Chromium.
 
 ## Limits

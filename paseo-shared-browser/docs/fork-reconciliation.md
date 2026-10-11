@@ -7,5 +7,5 @@ Transport defaults, caching, the agent device tool and encoded video are coordin
 The streaming branch merges those prerequisite branches while preserving its existing
 video, Android presentation and human-input work. No changes to the Paseo app are included here.
 
-The upstream 0.9/0.10/0.11 manifest ranges remain, with the tested 0.11.0-beta.3 allowance.
+The manifest requires Paseo ^0.11.0.
 Older runtime combinations and wide/compact visual acceptance still need qualification.

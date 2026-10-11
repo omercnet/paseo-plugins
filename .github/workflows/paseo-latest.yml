@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        channel: [beta]
+        channel: [latest, beta]
     defaults:
       run:
         working-directory: paseo-omp
