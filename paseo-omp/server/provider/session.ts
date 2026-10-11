@@ -2274,7 +2274,10 @@ export class OmpProviderSession implements OmpOpenedSession {
     if (
       event.type === "config_warnings_changed" ||
       event.type === "advisor_cost_changed" ||
-      event.type === "ttsr_triggered"
+      event.type === "ttsr_triggered" ||
+      event.type === "cache_warming_start" ||
+      event.type === "cache_warming_end" ||
+      event.type === "queue_update"
     ) {
       return;
     }

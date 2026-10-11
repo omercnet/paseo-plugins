@@ -237,6 +237,9 @@ describe("OMP RPC transport", () => {
     child.write({ type: "config_warnings_changed" });
     child.write({ type: "advisor_cost_changed" });
     child.write({ type: "ttsr_triggered", rules: [{ id: "rule", content: "safe" }] });
+    child.write({ type: "cache_warming_start" });
+    child.write({ type: "cache_warming_end" });
+    child.write({ type: "queue_update", steering: [], followUp: [] });
     child.write({
       type: "irc_message",
       message: { role: "custom", customType: "irc", content: "hello", display: true },
@@ -263,6 +266,9 @@ describe("OMP RPC transport", () => {
       "config_warnings_changed",
       "advisor_cost_changed",
       "ttsr_triggered",
+      "cache_warming_start",
+      "cache_warming_end",
+      "queue_update",
       "irc_message",
       "message_start",
       "tool_stream_update",

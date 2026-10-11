@@ -80,6 +80,9 @@ export const OMP_SESSION_EVENT_POLICIES = {
   advisor_cost_changed: "ignore",
   advisor_yielded: "normalize",
   ttsr_triggered: "ignore",
+  cache_warming_start: "ignore",
+  cache_warming_end: "ignore",
+  queue_update: "ignore",
   todo_reminder: "normalize",
   todo_auto_clear: "normalize",
   irc_message: "normalize",
@@ -136,6 +139,26 @@ export const OMP_RPC_COMMAND_POLICIES = {
   get_messages_page: "implemented",
   get_login_providers: "unsupported",
   login: "unsupported",
+  abort_and_restore_queue: "unsupported",
+  btw: "unsupported",
+  btw_cancel: "unsupported",
+  cancel_subagent: "unsupported",
+  fork: "unsupported",
+  get_btw_history: "unsupported",
+  get_logout_accounts: "unsupported",
+  goal: "unsupported",
+  live_mute: "unsupported",
+  live_start: "unsupported",
+  live_stop: "unsupported",
+  logout: "unsupported",
+  predict_word: "unsupported",
+  predict_word_feedback: "unsupported",
+  promote_queued_message: "unsupported",
+  remove_queued_message: "unsupported",
+  set_ask_dialog: "unsupported",
+  set_cache_warming: "unsupported",
+  set_slow_mode: "unsupported",
+  steer_subagent: "unsupported",
 } as const;
 export const OMP_RPC_RESPONSE_POLICIES = OMP_RPC_COMMAND_POLICIES;
 export const OMP_PROTOCOL_VIOLATION_CATEGORIES = [
@@ -218,6 +241,9 @@ export const OMP_PROTOCOL_EVENT_TYPES = [
   "config_warnings_changed",
   "advisor_cost_changed",
   "ttsr_triggered",
+  "cache_warming_start",
+  "cache_warming_end",
+  "queue_update",
   "irc_message",
   "thinking_level_changed",
   "goal_updated",
@@ -374,6 +400,9 @@ function eventSchemaClassification(
     case "config_warnings_changed":
     case "advisor_cost_changed":
     case "ttsr_triggered":
+    case "cache_warming_start":
+    case "cache_warming_end":
+    case "queue_update":
       return { reason: "configuration-event-schema", expected: "valid-configuration-event" };
     case "extension_ui_request":
       return { reason: "extension-ui-schema", expected: "valid-extension-ui-event" };
@@ -1522,6 +1551,9 @@ const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
   ...OmpCoreAgentEventSchema.options,
   z.object({ type: z.literal("config_warnings_changed") }),
   z.object({ type: z.literal("advisor_cost_changed") }),
+  z.object({ type: z.literal("cache_warming_start") }),
+  z.object({ type: z.literal("cache_warming_end") }),
+  z.object({ type: z.literal("queue_update") }),
   z.object({ type: z.literal("advisor_yielded") }),
   z.object({
     type: z.literal("ttsr_triggered"),
