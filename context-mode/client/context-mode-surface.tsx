@@ -13,7 +13,7 @@ import {
 } from "../shared";
 import { ActionsSection } from "./actions-section";
 import { AnalyticsDashboard } from "./analytics-dashboard";
-import { KnowledgeSection } from "./knowledge-section";
+import { BUILTIN_KNOWLEDGE_PROVIDERS, KnowledgeSection } from "./knowledge-section";
 import { ScopedKnowledgeSection } from "./scoped-knowledge-section";
 import { parseScreenParams, type SurfaceTab } from "./screen-scope";
 
@@ -76,6 +76,10 @@ export function ContextModeSurface({
     refetchInterval: refreshInterval,
     enabled: readySettings !== null,
   });
+  const auditedProviders = integration.data?.providers.map(({ provider }) => provider) ?? [];
+  const knowledgeProviders = auditedProviders.length
+    ? auditedProviders
+    : BUILTIN_KNOWLEDGE_PROVIDERS;
   const refresh = useMutation({
     mutationFn: async () => {
       const nextStatus = await loadStatus({ fresh: true });
@@ -280,16 +284,25 @@ export function ContextModeSurface({
         />
       </View>
       <View style={[styles.tabPanel, activeTab === "knowledge" ? null : styles.tabPanelHidden]}>
-        {activeTab !== "knowledge" ? null : screenParams.agentId || screenParams.workspaceId ? (
+        {activeTab !== "knowledge" ? null : integration.isLoading ? (
+          <Text style={{ color: theme.colors.foregroundMuted }}>Loading providers…</Text>
+        ) : screenParams.agentId || screenParams.workspaceId ? (
           <ScopedKnowledgeSection
             key={JSON.stringify([host.id, screenParams.agentId, screenParams.workspaceId])}
             params={screenParams}
             host={host}
             layout={layout}
             theme={theme}
+            providers={knowledgeProviders}
           />
         ) : (
-          <KnowledgeSection key={host.id} host={host} layout={layout} theme={theme} />
+          <KnowledgeSection
+            key={host.id}
+            host={host}
+            layout={layout}
+            theme={theme}
+            providers={knowledgeProviders}
+          />
         )}
       </View>
       <View style={[styles.tabPanel, activeTab === "setup" ? null : styles.tabPanelHidden]}>

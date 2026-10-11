@@ -7,7 +7,7 @@ import { resolveKnowledgeScope, type ScreenParams } from "./screen-scope";
 export function ScopedKnowledgeSection({
   params,
   ...props
-}: PluginSurfaceProps & { params: ScreenParams }) {
+}: PluginSurfaceProps & { params: ScreenParams; providers: readonly string[] }) {
   const paseo = usePaseo();
   const scope = useQuery({
     queryKey: [

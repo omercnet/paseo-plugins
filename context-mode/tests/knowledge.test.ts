@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { contextModeEnvironmentFor, createContextModeKnowledgeHandlers } from "../server/knowledge";
 import { callContextModeTool } from "../server/mcp-process";
 import {
@@ -21,6 +21,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
   );
@@ -51,7 +52,7 @@ function settingsHandle(
 }
 
 describe("knowledge RPC contracts", () => {
-  test("accepts bounded search input and rejects unknown providers or excess results", () => {
+  test("accepts bounded search input and rejects invalid provider ids or excess results", () => {
     expect(
       SearchKnowledgeInputSchema.parse({
         provider: "codex",
@@ -65,13 +66,22 @@ describe("knowledge RPC contracts", () => {
       limit: 3,
       sort: "relevance",
     });
+    for (const provider of ["", "  ", "x".repeat(129)]) {
+      expect(
+        SearchKnowledgeInputSchema.safeParse({
+          provider,
+          projectPath: "/repo",
+          queries: ["cache"],
+        }).success,
+      ).toBe(false);
+    }
     expect(
-      SearchKnowledgeInputSchema.safeParse({
-        provider: "unknown",
+      SearchKnowledgeInputSchema.parse({
+        provider: " claude-work ",
         projectPath: "/repo",
         queries: ["cache"],
-      }).success,
-    ).toBe(false);
+      }).provider,
+    ).toBe("claude-work");
     expect(
       SearchKnowledgeInputSchema.safeParse({
         provider: "codex",
@@ -324,6 +334,58 @@ describe("knowledge handlers", () => {
       } as never),
     ).rejects.toThrow("exactly one scope");
     expect(calls).toBe(0);
+  });
+
+  test("scopes a configured provider to its own storage root and rejects unsupported ids", async () => {
+    vi.stubEnv("CONTEXT_MODE_DIR", undefined);
+    vi.stubEnv("CONTEXT_MODE_DATA_DIR", undefined);
+    const envs: Array<NodeJS.ProcessEnv | undefined> = [];
+    const handlers = createContextModeKnowledgeHandlers(
+      settingsHandle(ContextModeSettingsSchema.parse({})),
+      {
+        resolveBinary: async () => ({
+          state: "found",
+          path: "/bin/context-mode",
+          source: "path",
+          launch: { program: "/bin/context-mode", args: [] },
+        }),
+        callTool: async (_launch, _name, _arguments, dependencies) => {
+          envs.push(dependencies.env);
+          return "ok";
+        },
+      },
+    );
+    const paseo = {
+      config: {
+        get: async () => ({
+          config: {
+            providers: {
+              "claude-work": {
+                extends: "claude",
+                env: { CLAUDE_CONFIG_DIR: "/srv/claude-work" },
+              },
+              "mystery-work": { extends: "not-a-builtin" },
+            },
+          },
+        }),
+      },
+    };
+    const scope = { projectPath: "/repo", queries: ["q"], limit: 3, sort: "relevance" as const };
+
+    await expect(
+      handlers.search({ provider: "claude-work", ...scope }, { paseo }),
+    ).resolves.toMatchObject({ provider: "claude-work" });
+    expect(envs[0]).toMatchObject({
+      CONTEXT_MODE_PLATFORM: "claude-code",
+      CONTEXT_MODE_DIR: join("/srv/claude-work", "context-mode"),
+    });
+    await expect(
+      handlers.search({ provider: "mystery-work", ...scope }, { paseo }),
+    ).rejects.toThrow("does not support provider mystery-work");
+    await expect(handlers.search({ provider: "claude-work", ...scope })).rejects.toThrow(
+      "does not support provider claude-work",
+    );
+    expect(envs).toHaveLength(1);
   });
 
   test("serializes typed tool arguments into tools/call", async () => {

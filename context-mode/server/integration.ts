@@ -296,7 +296,7 @@ function providerPolicy(provider: string): ProviderPolicy | null {
  * Mirrors Paseo's single-level `extends`: a derived provider uses its parent's policy, and its
  * effective env is the parent's override env overlaid with its own.
  */
-function resolveProvider(
+export function resolveProvider(
   id: string,
   providers: ProviderOverrides = {},
 ): { base: string; policy: ProviderPolicy | null; env: Record<string, string> } {

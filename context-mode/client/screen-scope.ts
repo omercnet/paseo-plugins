@@ -1,11 +1,10 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { type ContextModeProvider, ContextModeProviderSchema } from "../shared/knowledge";
 
 type PaseoApi = PluginClientContext["paseo"];
 
 export type SurfaceTab = "savings" | "knowledge" | "setup";
 export type KnowledgeScope = {
-  provider: ContextModeProvider | null;
+  provider: string | null;
   projectPath: string;
   note?: string;
 };
@@ -21,11 +20,6 @@ export function parseScreenParams(params: Record<string, string>): ScreenParams 
   };
 }
 
-export function knowledgeProvider(provider: string): ContextModeProvider | null {
-  const parsed = ContextModeProviderSchema.safeParse(provider);
-  return parsed.success ? parsed.data : null;
-}
-
 export async function resolveKnowledgeScope(
   paseo: PaseoApi,
   params: ScreenParams,
@@ -39,16 +33,7 @@ export async function resolveKnowledgeScope(
         "Agent no longer belongs to this workspace. Select a provider and project explicitly.",
       );
     }
-    const provider = knowledgeProvider(result.agent.provider);
-    return {
-      provider,
-      projectPath: result.agent.cwd,
-      ...(!provider
-        ? {
-            note: `Provider ${result.agent.provider} cannot be mapped to a knowledge store. Select one explicitly.`,
-          }
-        : {}),
-    };
+    return { provider: result.agent.provider, projectPath: result.agent.cwd };
   }
   const workspace = params.workspaceId
     ? await paseo.workspaces.ref(params.workspaceId).refresh()
