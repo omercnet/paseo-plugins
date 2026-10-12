@@ -2,6 +2,10 @@
 
 A Paseo plugin that shows CPU, memory, disk and disk I/O of a host in the sidebar footer, and which agent sessions are responsible. See [OVERVIEW.md](OVERVIEW.md) for behavior.
 
+## Screenshots
+
+![Top screen with host resource gauges and per-session load](https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-top/top-screen.jpg)
+
 ## Develop
 
 ```sh
