@@ -89,6 +89,8 @@ const DEFAULT_CALL_SCHEDULER: OmpHostToolScheduler = {
 
 export interface OmpHostToolsOpenOptions {
   connectMcp?: OmpMcpConnector;
+  /** Per-server cap for non-Paseo servers. Defaults to 10 s. */
+  optionalServerTimeoutMs?: number;
   signal?: AbortSignal;
   initializationTimeoutMs?: number;
   callTimeoutMs?: number;
@@ -580,9 +582,15 @@ export class OmpHostToolsBridge {
         initialization.signal.throwIfAborted();
         // Only Paseo-owned servers are required. Any other server that fails is skipped whole.
         const optional = !server.internal;
-        const timeout = optional ? AbortSignal.timeout(OPTIONAL_MCP_SERVER_TIMEOUT_MS) : undefined;
+        const timeout = optional ? new AbortController() : undefined;
+        const timer = timeout
+          ? setTimeout(
+              () => timeout.abort(),
+              options.optionalServerTimeoutMs ?? OPTIONAL_MCP_SERVER_TIMEOUT_MS,
+            )
+          : undefined;
         const signal = timeout
-          ? AbortSignal.any([initialization.signal, timeout])
+          ? AbortSignal.any([initialization.signal, timeout.signal])
           : initialization.signal;
         const connectionCount = connections.length;
         const definitionCount = definitions.length;
@@ -600,7 +608,8 @@ export class OmpHostToolsBridge {
             if (connectMcp !== connectMcpServer && signal.aborted) {
               const cleanup = connecting.then(
                 (lateConnection) => lateConnection.close(),
-                () => undefined,
+                (rejection) =>
+                  rejection instanceof OmpCleanupFailure ? rejection.cleanup : undefined,
               );
               throw new OmpCleanupFailure(
                 "OMP MCP connection initialization was interrupted",
@@ -681,15 +690,20 @@ export class OmpHostToolsBridge {
             const failed = connections.pop() as OmpMcpConnection;
             const closing = Promise.resolve().then(() => failed.close());
             try {
-              await closing;
+              await abortable(closing, initialization.signal);
             } catch {
               throw new OmpCleanupFailure("OMP MCP host tool cleanup failed", closing);
             }
           }
           definitions.length = definitionCount;
           for (const name of added) targets.delete(name);
-          degraded.push({ name: server.name, reason: timeout?.aborted ? "timed-out" : reason });
+          degraded.push({
+            name: server.name,
+            reason: timeout?.signal.aborted ? "timed-out" : reason,
+          });
           report({ category: "session-open", stage: "optional-mcp" });
+        } finally {
+          clearTimeout(timer);
         }
       }
       return new OmpHostToolsBridge(

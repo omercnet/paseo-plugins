@@ -1032,7 +1032,7 @@ describe("OMP host tool bridge", () => {
     const invalid = new FakeConnection(
       [
         { name: "fine", inputSchema: { type: "object" } },
-        { name: "bad", inputSchema: [] as unknown as Record<string, unknown> },
+        { name: "zbad", inputSchema: [] as unknown as Record<string, unknown> },
       ],
       { content: [] },
     );
@@ -1120,6 +1120,91 @@ describe("OMP host tool bridge", () => {
         },
       }),
     ).rejects.toThrow("could not initialize configured MCP host tools");
+  });
+
+  test("honors cancellation while closing a skipped optional server", async () => {
+    const closing = Promise.withResolvers<void>();
+    const closeStarted = Promise.withResolvers<void>();
+    const stuck = new FakeConnection([], { content: [] });
+    stuck.listTools = async () => {
+      throw new Error("list failed");
+    };
+    stuck.close = async () => {
+      stuck.closes += 1;
+      closeStarted.resolve();
+      await closing.promise;
+    };
+    const caller = new AbortController();
+    const opening = OmpHostToolsBridge.open(
+      sessionConfig({ mcpServers: { stuck: { type: "stdio", command: "stuck" } } }),
+      { connectMcp: async () => stuck, signal: caller.signal },
+    );
+    const outcome = opening.then(
+      () => "opened",
+      (error: unknown) => (error instanceof OmpCleanupFailure ? "cleanup-pending" : "failed"),
+    );
+    await closeStarted.promise;
+    caller.abort(new Error("canceled"));
+
+    expect(await outcome).toBe("cleanup-pending");
+    expect(stuck.closes).toBe(1);
+    closing.resolve();
+  });
+
+  test("degrades a hung optional server at its own cap and keeps the rest", async () => {
+    const healthy = new FakeConnection([{ name: "read", inputSchema: { type: "object" } }], {
+      content: [],
+    });
+    const bridge = await OmpHostToolsBridge.open(
+      sessionConfig({
+        mcpServers: {
+          hung: { type: "stdio", command: "hung" },
+          ok: { type: "stdio", command: "ok" },
+        },
+      }),
+      {
+        connectMcp: (name, _config, _cwd, signal) => {
+          if (name !== "hung") return Promise.resolve(healthy);
+          const connecting = Promise.withResolvers<OmpMcpConnection>();
+          signal.addEventListener("abort", () => connecting.reject(new Error("aborted")), {
+            once: true,
+          });
+          return connecting.promise;
+        },
+        optionalServerTimeoutMs: 5,
+      },
+    );
+    const runtime = new FakeRuntime();
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+
+    expect(bridge.degraded).toEqual([{ name: "hung", reason: "timed-out" }]);
+    expect(runtime.catalogs[0]?.map(({ name }) => name)).toEqual(["mcp__ok_read"]);
+    await bridge.close();
+  });
+
+  test("keeps nested transport cleanup ownership when an optional server times out", async () => {
+    const transportCleanup = Promise.reject<void>(new Error("transport still running"));
+    transportCleanup.catch(() => undefined);
+    await expect(
+      OmpHostToolsBridge.open(
+        sessionConfig({ mcpServers: { slow: { type: "stdio", command: "slow" } } }),
+        {
+          optionalServerTimeoutMs: 5,
+          connectMcp: (_name, _config, _cwd, signal) => {
+            const connecting = Promise.withResolvers<OmpMcpConnection>();
+            signal.addEventListener(
+              "abort",
+              () =>
+                connecting.reject(
+                  new OmpCleanupFailure("transport cleanup pending", transportCleanup),
+                ),
+              { once: true },
+            );
+            return connecting.promise;
+          },
+        },
+      ),
+    ).rejects.toBeInstanceOf(OmpCleanupFailure);
   });
 
   test("keeps cleanup ownership when a skipped optional server cannot close", async () => {
