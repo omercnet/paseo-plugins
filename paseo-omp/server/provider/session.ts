@@ -24,7 +24,13 @@ import {
   type OmpRecoveryOptions,
   withCommittedOmpSelection,
 } from "./config-normalization";
-import { OmpHostToolsBridge, type OmpMcpConnector, validateOmpHostToolConfig } from "./host-tools";
+import {
+  describeDegradedMcpServers,
+  type OmpDegradedMcpServer,
+  OmpHostToolsBridge,
+  type OmpMcpConnector,
+  validateOmpHostToolConfig,
+} from "./host-tools";
 import { isOmpImageMimeType, OmpImageMaterializer } from "./image";
 import type { OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
 import { buildOmpSpawnRequest, type OmpStartOptions } from "./omp-rpc-environment";
@@ -331,6 +337,7 @@ export class OmpProviderSession implements OmpOpenedSession {
   private readonly permissions: OmpSessionPermissions;
   private unsupportedThinkingNoticePending = false;
   private unsupportedThinkingNoticePublished = false;
+  private degradedMcpServers: readonly OmpDegradedMcpServer[] = [];
 
   private constructor(
     id: string,
@@ -685,6 +692,7 @@ export class OmpProviderSession implements OmpOpenedSession {
         scheduler,
       );
       session.unsupportedThinkingNoticePending = unsupportedThinkingLevel;
+      session.degradedMcpServers = hostTools.degraded;
 
       if (bootstrapConfigRevision !== reconciledConfigRevision) {
         session.configRefreshDirty = true;
@@ -744,6 +752,7 @@ export class OmpProviderSession implements OmpOpenedSession {
       ...(this.config.title ? { title: this.dataFilter.text(this.config.title, 256) } : {}),
     });
     this.publishUnsupportedThinkingNotice();
+    this.publishDegradedMcpNotice();
     this.emit({ type: "session.config", sessionId: this.id, config: this.configState });
     if (this.replayHistoryOnOpen) await this.replayHistory(true);
     this.publishCommands(this.commandCatalog);
@@ -764,6 +773,19 @@ export class OmpProviderSession implements OmpOpenedSession {
         title: "OMP thinking level unavailable",
         description:
           "OMP reported a thinking level that the active model does not advertise. Paseo omitted it from the session configuration.",
+      },
+    });
+  }
+  private publishDegradedMcpNotice(): void {
+    if (this.degradedMcpServers.length === 0) return;
+    this.emit({
+      type: "session.notice",
+      sessionId: this.id,
+      notice: {
+        id: "omp:mcp-servers-unavailable",
+        severity: "warning",
+        title: "MCP servers unavailable",
+        description: describeDegradedMcpServers(this.degradedMcpServers),
       },
     });
   }

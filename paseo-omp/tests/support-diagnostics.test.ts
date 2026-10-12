@@ -257,7 +257,7 @@ describe("operational failure aggregation", () => {
     for (const failure of OMP_OPERATIONAL_FAILURES) collector.report(failure);
 
     const snapshot = collector.snapshot();
-    expect(snapshot).toHaveLength(15);
+    expect(snapshot).toHaveLength(16);
     expect(snapshot.map(({ category, stage }) => ({ category, stage }))).toEqual(
       OMP_OPERATIONAL_FAILURES,
     );
@@ -282,7 +282,7 @@ describe("operational failure aggregation", () => {
     }
     collector.report({ category: "unsafe", stage: "payload" } as never);
 
-    expect(collector.snapshot()).toHaveLength(15);
+    expect(collector.snapshot()).toHaveLength(16);
     expect(
       collector
         .snapshot()

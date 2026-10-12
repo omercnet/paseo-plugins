@@ -271,6 +271,62 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("opens with healthy MCP servers and publishes one notice for a skipped server", async () => {
+    const failures: Array<{ category: string; stage: string }> = [];
+    const connection = await createOmpProvider({
+      runtime: new FakeOmpRuntime(),
+      timelineScheduler: new ManualScheduler(),
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async (name) => {
+        if (name === "broken") throw new Error("secret-value refused");
+        return {
+          listTools: async () => ({ tools: [{ name: "read", inputSchema: { type: "object" } }] }),
+          callTool: async () => ({ content: [] }),
+          close: async () => {},
+        };
+      },
+      reportOperationalFailure: (failure) => failures.push(failure),
+    }).connect({
+      versions: [1],
+      capabilities: ["prompt.message", "session.configure", "permission"],
+    });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await connection.send({
+      type: "session.open",
+      requestId: "degraded-open",
+      sessionId: "session-1",
+      config: {
+        cwd: "/repo",
+        env: {},
+        mcpServers: {
+          broken: { type: "stdio", command: "broken" },
+          repo: { type: "stdio", command: "repo" },
+        },
+        model: MODEL_PUBLIC_ID,
+        mode: "full",
+        thinkingOption: "medium",
+        settings: {},
+        persist: false,
+      },
+      history: "skip",
+    });
+    await events.waitFor((event) => event.type === "session.ready");
+
+    const notices = events.flatMap((event) => (event.type === "session.notice" ? [event] : []));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.notice).toEqual(
+      expect.objectContaining({
+        id: "omp:mcp-servers-unavailable",
+        severity: "warning",
+        description: expect.stringContaining("broken (unavailable)"),
+      }),
+    );
+    expect(JSON.stringify(notices)).not.toContain("secret-value");
+    expect(failures).toEqual([{ category: "session-open", stage: "optional-mcp" }]);
+    await connection.close();
+  });
+
   test("routes one host-tool result while initial host tools bind", async () => {
     const runtime = new FakeOmpRuntime();
     const bindGate = Promise.withResolvers<void>();

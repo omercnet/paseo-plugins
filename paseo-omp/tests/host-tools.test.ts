@@ -2,6 +2,7 @@ import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import {
+  describeDegradedMcpServers,
   type OmpHostToolScheduler,
   OmpHostToolsBridge,
   type OmpMcpConnection,
@@ -26,6 +27,19 @@ function sessionConfig(overrides: Partial<ProviderSessionConfig> = {}): Provider
     persist: false,
     ...overrides,
   };
+}
+
+/** The Paseo-owned endpoint is the only required server. */
+function requiredServerConfig(
+  extra: ProviderSessionConfig["mcpServers"] = {},
+): ProviderSessionConfig {
+  return sessionConfig({
+    env: { PASEO_AGENT_ID: "agent-1", PASEO_WORKSPACE_ID: "workspace-1" },
+    mcpServers: {
+      paseo: { type: "http", url: "http://127.0.0.1:4567/mcp/agents?callerAgentId=agent-1" },
+      ...extra,
+    },
+  });
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -965,10 +979,7 @@ describe("OMP host tool bridge", () => {
     const repeated = new FakeConnection([], { content: [] });
     repeated.listTools = async () => ({ tools: [], nextCursor: "same" });
     await expect(
-      OmpHostToolsBridge.open(
-        sessionConfig({ mcpServers: { repeated: { type: "stdio", command: "repeat" } } }),
-        { connectMcp: async () => repeated },
-      ),
+      OmpHostToolsBridge.open(requiredServerConfig(), { connectMcp: async () => repeated }),
     ).rejects.toThrow("repeated a tool-list cursor");
     expect(repeated.closes).toBe(1);
   });
@@ -987,10 +998,7 @@ describe("OMP host tool bridge", () => {
       };
     };
     await expect(
-      OmpHostToolsBridge.open(
-        sessionConfig({ mcpServers: { overflow: { type: "stdio", command: "overflow" } } }),
-        { connectMcp: async () => overflow },
-      ),
+      OmpHostToolsBridge.open(requiredServerConfig(), { connectMcp: async () => overflow }),
     ).rejects.toThrow("tool count exceeds");
     expect(overflow.closes).toBe(1);
 
@@ -1003,12 +1011,168 @@ describe("OMP host tool bridge", () => {
       { content: [] },
     );
     await expect(
-      OmpHostToolsBridge.open(
-        sessionConfig({ mcpServers: { large: { type: "stdio", command: "large" } } }),
-        { connectMcp: async () => largeCatalog },
-      ),
+      OmpHostToolsBridge.open(requiredServerConfig(), { connectMcp: async () => largeCatalog }),
     ).rejects.toThrow("catalog exceeds the RPC frame limit");
     expect(largeCatalog.closes).toBe(1);
+  });
+
+  test("skips an optional server that fails to connect, list, or validate and keeps the rest", async () => {
+    const failures: OmpOperationalFailure[] = [];
+    const healthy = new FakeConnection([{ name: "read", inputSchema: { type: "object" } }], {
+      content: [],
+    });
+    const required = new FakeConnection(
+      [{ name: "create_agent", inputSchema: { type: "object" } }],
+      { content: [] },
+    );
+    const listFails = new FakeConnection([], { content: [] });
+    listFails.listTools = async () => {
+      throw new Error("supervisor token abc123 is missing");
+    };
+    const invalid = new FakeConnection(
+      [
+        { name: "fine", inputSchema: { type: "object" } },
+        { name: "bad", inputSchema: [] as unknown as Record<string, unknown> },
+      ],
+      { content: [] },
+    );
+    const connections: Record<string, OmpMcpConnection> = {
+      paseo: required,
+      healthy,
+      "list-fails": listFails,
+      invalid,
+    };
+    const bridge = await OmpHostToolsBridge.open(
+      requiredServerConfig({
+        "connect-fails": { type: "stdio", command: "a" },
+        healthy: { type: "stdio", command: "b" },
+        "list-fails": { type: "stdio", command: "c" },
+        invalid: { type: "stdio", command: "d" },
+      }),
+      {
+        connectMcp: async (name) => {
+          const connection = connections[name];
+          if (!connection) throw new Error("connect refused: secret-value");
+          return connection;
+        },
+        reportOperationalFailure: (failure) => failures.push(failure),
+      },
+    );
+    const runtime = new FakeRuntime();
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+
+    expect(runtime.catalogs[0]?.map(({ name }) => name)).toEqual([
+      "create_agent",
+      "mcp__healthy_read",
+    ]);
+    expect(bridge.degraded).toEqual([
+      { name: "connect-fails", reason: "unavailable" },
+      { name: "invalid", reason: "invalid-tools" },
+      { name: "list-fails", reason: "unavailable" },
+    ]);
+    expect(failures).toEqual(
+      Array.from({ length: 3 }, () => ({ category: "session-open", stage: "optional-mcp" })),
+    );
+    expect(JSON.stringify(bridge.degraded)).not.toMatch(/secret|token|abc123/u);
+    // The invalid server's accepted-looking tool must not leak into the catalog.
+    expect(runtime.catalogs[0]?.some(({ name }) => name.includes("fine"))).toBe(false);
+    expect(listFails.closes).toBe(1);
+    expect(invalid.closes).toBe(1);
+    await bridge.close();
+    expect(healthy.closes).toBe(1);
+    expect(invalid.closes).toBe(1);
+  });
+
+  test("keeps tool names stable when an earlier optional server is skipped", async () => {
+    const tools = [{ name: "read", inputSchema: { type: "object" } }];
+    const open = async (broken: boolean) => {
+      const bridge = await OmpHostToolsBridge.open(
+        sessionConfig({
+          mcpServers: {
+            alpha: { type: "stdio", command: "alpha" },
+            beta: { type: "stdio", command: "beta" },
+          },
+        }),
+        {
+          connectMcp: async (name) => {
+            if (broken && name === "alpha") throw new Error("down");
+            return new FakeConnection(tools, { content: [] });
+          },
+        },
+      );
+      const runtime = new FakeRuntime();
+      await bridge.bind(runtime as unknown as OmpRuntimeSession);
+      await bridge.close();
+      return runtime.catalogs[0]?.map(({ name }) => name) ?? [];
+    };
+
+    expect(await open(true)).toEqual(["mcp__beta_read"]);
+    expect(await open(false)).toEqual(["mcp__alpha_read", "mcp__beta_read"]);
+  });
+
+  test("fails the open when the required Paseo server cannot connect", async () => {
+    const optional = new FakeConnection([], { content: [] });
+    await expect(
+      OmpHostToolsBridge.open(requiredServerConfig({ optional: { type: "stdio", command: "o" } }), {
+        connectMcp: async (name) => {
+          if (name === "paseo") throw new Error("daemon unreachable");
+          return optional;
+        },
+      }),
+    ).rejects.toThrow("could not initialize configured MCP host tools");
+  });
+
+  test("keeps cleanup ownership when a skipped optional server cannot close", async () => {
+    const stuck = new FakeConnection([], { content: [] });
+    stuck.closeError = new Error("close failed");
+    stuck.listTools = async () => {
+      throw new Error("list failed");
+    };
+    await expect(
+      OmpHostToolsBridge.open(
+        sessionConfig({ mcpServers: { stuck: { type: "stdio", command: "stuck" } } }),
+        { connectMcp: async () => stuck },
+      ),
+    ).rejects.toBeInstanceOf(OmpCleanupFailure);
+    expect(stuck.closes).toBe(1);
+  });
+
+  test("retries a previously skipped server on the next open", async () => {
+    let attempts = 0;
+    const connector: OmpMcpConnector = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("not ready");
+      return new FakeConnection([{ name: "read", inputSchema: { type: "object" } }], {
+        content: [],
+      });
+    };
+    const config = sessionConfig({ mcpServers: { repo: { type: "stdio", command: "repo" } } });
+    const first = await OmpHostToolsBridge.open(config, { connectMcp: connector });
+    const second = await OmpHostToolsBridge.open(config, { connectMcp: connector });
+
+    expect(first.degraded).toEqual([{ name: "repo", reason: "unavailable" }]);
+    expect(second.degraded).toEqual([]);
+    await first.close();
+    await second.close();
+  });
+
+  test("describes skipped servers with bounded names and a fixed reason vocabulary", () => {
+    const text = describeDegradedMcpServers([
+      { name: "bad\nname\u0000".repeat(30), reason: "timed-out" },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        name: `server-${index}`,
+        reason: "unavailable" as const,
+      })),
+    ]);
+
+    expect(text).toContain("7 MCP servers were skipped");
+    expect(text).toContain("(timed out)");
+    expect(text).toContain("and 2 more");
+    expect(text.includes("\n") || text.includes("\u0000")).toBe(false);
+    expect(text).not.toContain("server-5");
+    expect(describeDegradedMcpServers([{ name: "solo", reason: "invalid-tools" }])).toBe(
+      "1 MCP server was skipped: solo (invalid tool list). Their tools are missing from this session. Reopen the agent after fixing them.",
+    );
   });
 
   test("preserves Windows and WSL workspace paths at the host connector boundary", async () => {

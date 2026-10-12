@@ -58,6 +58,10 @@ const RESULT_TRUNCATED_NOTICE = "[MCP content truncated; details omitted]";
 const MAX_PENDING_HOST_TOOL_CALLS = 64;
 const MAX_PENDING_HOST_TOOL_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 20_000;
+// Cold npx-style servers can take several seconds; 10 s leaves headroom under the 20 s ceiling.
+const OPTIONAL_MCP_SERVER_TIMEOUT_MS = 10_000;
+const MAX_DEGRADED_NOTICE_NAMES = 5;
+const MAX_DEGRADED_NAME_BYTES = 64;
 const DEFAULT_MCP_CALL_LIFETIME_MS = 5 * 60 * 1000;
 const MAX_DIRECT_BROWSER_CALLS = 4;
 const BROWSER_CALL_TIMEOUT_MS = 20_000;
@@ -90,6 +94,33 @@ export interface OmpHostToolsOpenOptions {
   callTimeoutMs?: number;
   callScheduler?: OmpHostToolScheduler;
   reportOperationalFailure?: OmpOperationalFailureReporter;
+}
+
+export type OmpDegradedMcpServer = {
+  name: string;
+  reason: "unavailable" | "timed-out" | "invalid-tools";
+};
+
+const DEGRADED_REASON_TEXT: Record<OmpDegradedMcpServer["reason"], string> = {
+  unavailable: "unavailable",
+  "timed-out": "timed out",
+  "invalid-tools": "invalid tool list",
+};
+
+/** Fixed reason vocabulary and bounded names only: never raw error text. */
+export function describeDegradedMcpServers(degraded: readonly OmpDegradedMcpServer[]): string {
+  const shown = degraded.slice(0, MAX_DEGRADED_NOTICE_NAMES).map((server) => {
+    const name = boundedText(
+      server.name.replace(/[^\p{L}\p{N}_.:@/ -]/gu, ""),
+      MAX_DEGRADED_NAME_BYTES,
+      "server",
+    );
+    return `${name} (${DEGRADED_REASON_TEXT[server.reason]})`;
+  });
+  const more = degraded.length - shown.length;
+  const list = more > 0 ? `${shown.join(", ")}, and ${more} more` : shown.join(", ");
+  const noun = degraded.length === 1 ? "server was" : "servers were";
+  return `${degraded.length} MCP ${noun} skipped: ${list}. Their tools are missing from this session. Reopen the agent after fixing them.`;
 }
 
 type ClassifiedServer = {
@@ -508,6 +539,7 @@ export class OmpHostToolsBridge {
     private readonly callTimeoutMs: number,
     private readonly callScheduler: OmpHostToolScheduler,
     private readonly reportOperationalFailure: OmpOperationalFailureReporter,
+    readonly degraded: readonly OmpDegradedMcpServer[],
   ) {
     this.labels = new Map(definitions.map(({ name, label }) => [name, label ?? name]));
   }
@@ -535,88 +567,130 @@ export class OmpHostToolsBridge {
     const connections: OmpMcpConnection[] = [];
     const definitions: OmpHostToolDefinition[] = [];
     const targets = new Map<string, ToolTarget>();
+    const degraded: OmpDegradedMcpServer[] = [];
+    const report = (failure: OmpOperationalFailure) => {
+      try {
+        options.reportOperationalFailure?.(failure);
+      } catch {
+        // Diagnostics must never affect session open.
+      }
+    };
     try {
       for (const server of servers) {
         initialization.signal.throwIfAborted();
-        const connecting = connectMcp(
-          server.name,
-          server.config,
-          config.cwd,
-          initialization.signal,
-        );
-        let connection: OmpMcpConnection;
+        // Only Paseo-owned servers are required. Any other server that fails is skipped whole.
+        const optional = !server.internal;
+        const timeout = optional ? AbortSignal.timeout(OPTIONAL_MCP_SERVER_TIMEOUT_MS) : undefined;
+        const signal = timeout
+          ? AbortSignal.any([initialization.signal, timeout])
+          : initialization.signal;
+        const connectionCount = connections.length;
+        const definitionCount = definitions.length;
+        const added: string[] = [];
+        let reason: OmpDegradedMcpServer["reason"] = "unavailable";
         try {
-          connection =
-            connectMcp === connectMcpServer
-              ? await connecting
-              : await abortable(connecting, initialization.signal);
-        } catch (error) {
-          if (connectMcp !== connectMcpServer && initialization.signal.aborted) {
-            const cleanup = connecting.then(
-              (lateConnection) => lateConnection.close(),
-              () => undefined,
-            );
-            throw new OmpCleanupFailure(
-              "OMP MCP connection initialization was interrupted",
-              cleanup,
-            );
+          const connecting = connectMcp(server.name, server.config, config.cwd, signal);
+          let connection: OmpMcpConnection;
+          try {
+            connection =
+              connectMcp === connectMcpServer
+                ? await connecting
+                : await abortable(connecting, signal);
+          } catch (error) {
+            if (connectMcp !== connectMcpServer && signal.aborted) {
+              const cleanup = connecting.then(
+                (lateConnection) => lateConnection.close(),
+                () => undefined,
+              );
+              throw new OmpCleanupFailure(
+                "OMP MCP connection initialization was interrupted",
+                cleanup,
+              );
+            }
+            throw error;
           }
-          throw error;
-        }
-        connections.push(connection);
-        const tools = (await discoverMcpTools(connection, initialization.signal)).sort(
-          (left, right) => left.name.localeCompare(right.name),
-        );
-        const namespace = namespaces.get(server.name);
-        if (!namespace) throw new Error("MCP server namespace is unavailable");
-        for (const tool of tools) {
+          connections.push(connection);
+          const tools = (await discoverMcpTools(connection, signal)).sort((left, right) =>
+            left.name.localeCompare(right.name),
+          );
+          reason = "invalid-tools";
+          const namespace = namespaces.get(server.name);
+          if (!namespace) throw new Error("MCP server namespace is unavailable");
+          for (const tool of tools) {
+            if (
+              !tool.name ||
+              utf8Bytes(tool.name) > MAX_HOST_TOOL_NAME_BYTES ||
+              utf8Bytes(tool.description ?? "") > MAX_HOST_TOOL_DESCRIPTION_BYTES ||
+              !tool.inputSchema ||
+              typeof tool.inputSchema !== "object" ||
+              Array.isArray(tool.inputSchema) ||
+              boundedJsonBytes(tool.inputSchema, MAX_HOST_TOOL_SCHEMA_BYTES) ===
+                Number.POSITIVE_INFINITY
+            ) {
+              throw new Error("MCP server exposed an invalid host tool definition");
+            }
+            if (definitions.length >= MAX_HOST_TOOLS) {
+              throw new Error("MCP servers exposed too many host tools");
+            }
+            let name = exposedToolName(server, namespace, tool.name);
+            if (targets.has(name)) {
+              const suffix = digest(`${server.name}\0${tool.name}`);
+              name = `${name.slice(0, MAX_HOST_TOOL_NAME_BYTES - suffix.length - 1)}_${suffix}`;
+            }
+            if (targets.has(name)) throw new Error("MCP host tool names collide");
+            const normalizedServerName = safeName(server.name, "server");
+            const normalizedToolName = safeName(tool.name, "tool");
+            const friendlyToolName = normalizedToolName.startsWith(`${normalizedServerName}_`)
+              ? normalizedToolName.slice(normalizedServerName.length + 1)
+              : tool.name;
+            const fallbackLabel = `${humanizeName(server.name)}: ${humanizeName(friendlyToolName)}`;
+            definitions.push({
+              name,
+              label: boundedText(tool.title ?? fallbackLabel, MAX_HOST_TOOL_LABEL_BYTES, name),
+              description: boundedText(
+                tool.description ?? `MCP tool from ${server.name}`,
+                MAX_HOST_TOOL_DESCRIPTION_BYTES,
+                "MCP tool",
+              ),
+              loadMode:
+                server.internal || server.config.alwaysLoad === true ? "essential" : "discoverable",
+              parameters: structuredClone(tool.inputSchema),
+            });
+            targets.set(name, { toolName: tool.name, connection });
+            added.push(name);
+          }
           if (
-            !tool.name ||
-            utf8Bytes(tool.name) > MAX_HOST_TOOL_NAME_BYTES ||
-            utf8Bytes(tool.description ?? "") > MAX_HOST_TOOL_DESCRIPTION_BYTES ||
-            !tool.inputSchema ||
-            typeof tool.inputSchema !== "object" ||
-            Array.isArray(tool.inputSchema) ||
-            boundedJsonBytes(tool.inputSchema, MAX_HOST_TOOL_SCHEMA_BYTES) ===
-              Number.POSITIVE_INFINITY
+            boundedJsonBytes(
+              definitions,
+              MAX_HOST_TOOL_CATALOG_BYTES,
+              MAX_HOST_TOOLS,
+              64 * 1024,
+            ) === Number.POSITIVE_INFINITY
           ) {
-            throw new Error("MCP server exposed an invalid host tool definition");
+            throw new OmpPublicError("OMP host tool catalog exceeds the RPC frame limit");
           }
-          if (definitions.length >= MAX_HOST_TOOLS) {
-            throw new Error("MCP servers exposed too many host tools");
+        } catch (error) {
+          if (!optional || initialization.signal.aborted) throw error;
+          if (error instanceof OmpCleanupFailure) {
+            try {
+              await abortable(error.cleanup, initialization.signal);
+            } catch {
+              throw error;
+            }
+          } else if (connections.length > connectionCount) {
+            const failed = connections.pop() as OmpMcpConnection;
+            const closing = Promise.resolve().then(() => failed.close());
+            try {
+              await closing;
+            } catch {
+              throw new OmpCleanupFailure("OMP MCP host tool cleanup failed", closing);
+            }
           }
-          let name = exposedToolName(server, namespace, tool.name);
-          if (targets.has(name)) {
-            const suffix = digest(`${server.name}\0${tool.name}`);
-            name = `${name.slice(0, MAX_HOST_TOOL_NAME_BYTES - suffix.length - 1)}_${suffix}`;
-          }
-          if (targets.has(name)) throw new Error("MCP host tool names collide");
-          const normalizedServerName = safeName(server.name, "server");
-          const normalizedToolName = safeName(tool.name, "tool");
-          const friendlyToolName = normalizedToolName.startsWith(`${normalizedServerName}_`)
-            ? normalizedToolName.slice(normalizedServerName.length + 1)
-            : tool.name;
-          const fallbackLabel = `${humanizeName(server.name)}: ${humanizeName(friendlyToolName)}`;
-          definitions.push({
-            name,
-            label: boundedText(tool.title ?? fallbackLabel, MAX_HOST_TOOL_LABEL_BYTES, name),
-            description: boundedText(
-              tool.description ?? `MCP tool from ${server.name}`,
-              MAX_HOST_TOOL_DESCRIPTION_BYTES,
-              "MCP tool",
-            ),
-            loadMode:
-              server.internal || server.config.alwaysLoad === true ? "essential" : "discoverable",
-            parameters: structuredClone(tool.inputSchema),
-          });
-          targets.set(name, { toolName: tool.name, connection });
+          definitions.length = definitionCount;
+          for (const name of added) targets.delete(name);
+          degraded.push({ name: server.name, reason: timeout?.aborted ? "timed-out" : reason });
+          report({ category: "session-open", stage: "optional-mcp" });
         }
-      }
-      if (
-        boundedJsonBytes(definitions, MAX_HOST_TOOL_CATALOG_BYTES, MAX_HOST_TOOLS, 64 * 1024) ===
-        Number.POSITIVE_INFINITY
-      ) {
-        throw new OmpPublicError("OMP host tool catalog exceeds the RPC frame limit");
       }
       return new OmpHostToolsBridge(
         connections,
@@ -625,6 +699,7 @@ export class OmpHostToolsBridge {
         callTimeoutMs,
         callScheduler,
         options.reportOperationalFailure ?? (() => {}),
+        degraded,
       );
     } catch (error) {
       const cleanupTasks = [
