@@ -77,6 +77,18 @@ describe("omp hub state reader", () => {
     expect(processes[1]?.exitCode).toBe(0);
   });
 
+  test("reads the spec from spec.json when meta.json has none (omp 18.8+)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-"));
+    temporaryDirectories.push(root);
+    const { spec, ...withoutSpec } = meta("running", 5);
+    await createProcess(root, "split", "/workspace", "split", withoutSpec);
+    await writeFile(join(root, "split", "daemons", "split", "spec.json"), JSON.stringify(spec));
+
+    expect(await listHubProcessesFrom(root, "/workspace")).toMatchObject([
+      { name: "split", application: "node", args: ["server.js"], cwd: "/workspace" },
+    ]);
+  });
+
   test("ignores malformed scope and process files", async () => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-"));
     temporaryDirectories.push(root);

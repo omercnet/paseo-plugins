@@ -17,7 +17,7 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 ## Supported versions
 
 - Paseo: `^0.11.0` on both the daemon and every app loading the client entry. The config screen and Hub row use the 0.11 screen and sidebar APIs.
-- OMP: `18.1.15` is the oldest supported release. The required full Docker canary passes with 18.1.15 and 18.2.0; the hard runtime contract remains `rpc-ui` protocol v2, not the version string alone.
+- OMP: `18.1.15` is the oldest supported release. The required full Docker canary passes with 18.1.15 and 18.8.4; the hard runtime contract remains `rpc-ui` protocol v2, not the version string alone.
 - Plugin release channel: stable. Every known migration requirement must be stated in the release notes; review them before upgrading.
 - Typed approvals: optional. When both peers negotiate `typedToolApprovals: 1`, the plugin uses typed tool permissions. Otherwise it retains the bounded generic extension-question flow.
 

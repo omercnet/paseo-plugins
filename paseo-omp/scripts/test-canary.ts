@@ -28,13 +28,13 @@ const releaseChecksums: Record<string, { amd64: string; arm64: string }> = {
     amd64: "747518a41fbb32ac47491b4677a7a921d0d9e5977ae006c358d6836813149adc",
     arm64: "2e1142ccd4bb76413b63a05711ac51c7b95551f36387ef295661bb86f0576189",
   },
-  "18.1.22": {
-    amd64: "9ccddf1091e01e08fea1f8e1208f8901cc90d5d098b16581672eeab03f118b81",
-    arm64: "62433d49063eed2e90d3cb14729b3a608d6665348f9fdddb8757680b026059ec",
-  },
   "18.2.0": {
     amd64: "41b67a43f18a7cd33cc0dd772a4fa042cd20ab6c57e6bd451ff6dbe55a7978d8",
     arm64: "afd6884b192290d02ff79008e891cabee326dea23e853af549aff8ce88064566",
+  },
+  "18.8.4": {
+    amd64: "b2dba223fbdae27acbd99be2f3e76ba10baae1768f9c57cee30c440f308dea4e",
+    arm64: "e12983d063a1946d7aa20b9fa402c0a4ac65eefa26c3168c502c4f28a04cd3bd",
   },
 };
 

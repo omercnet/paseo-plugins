@@ -180,7 +180,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ["18.1.15", "18.2.0"]
+        version: ["18.1.15", "18.8.4"]
     defaults:
       run:
         working-directory: paseo-omp
@@ -225,10 +225,10 @@ jobs:
             sha256: "e91d5598ee47e1d4099fd8686dc9f61c9b755f2ea077d5f1774aba1072321f9e"
           - version: "18.1.15"
             sha256: "747518a41fbb32ac47491b4677a7a921d0d9e5977ae006c358d6836813149adc"
-          - version: "18.1.22"
-            sha256: "9ccddf1091e01e08fea1f8e1208f8901cc90d5d098b16581672eeab03f118b81"
           - version: "18.2.0"
             sha256: "41b67a43f18a7cd33cc0dd772a4fa042cd20ab6c57e6bd451ff6dbe55a7978d8"
+          - version: "18.8.4"
+            sha256: "b2dba223fbdae27acbd99be2f3e76ba10baae1768f9c57cee30c440f308dea4e"
     defaults:
       run:
         working-directory: paseo-omp

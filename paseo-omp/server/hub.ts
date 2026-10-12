@@ -8,6 +8,13 @@ import type { HubProcess, listHubProcesses, tailHubLog } from "../shared/hub";
 const MAX_LOG_BYTES = 64 * 1024;
 
 const ScopeFileSchema = z.object({ projectDir: z.string() });
+// omp 18.8 moved the spec from meta.json to a sibling spec.json; older releases embed it in meta.json.
+const SpecSchema = z.object({
+  application: z.string(),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+});
+
 const MetaFileSchema = z.object({
   daemon: z.object({
     state: z.string(),
@@ -21,11 +28,7 @@ const MetaFileSchema = z.object({
     exitedAt: z.number().optional(),
     exitCode: z.number().optional(),
   }),
-  spec: z.object({
-    application: z.string(),
-    args: z.array(z.string()).optional(),
-    cwd: z.string().optional(),
-  }),
+  spec: SpecSchema.optional(),
 });
 
 /**
@@ -71,10 +74,12 @@ async function findProjectDaemonRoots(root: string, cwd: string): Promise<string
   return matches;
 }
 
-function toHubProcess(name: string, value: unknown): HubProcess | undefined {
+function toHubProcess(name: string, value: unknown, specFile: unknown): HubProcess | undefined {
   const parsed = MetaFileSchema.safeParse(value);
   if (!parsed.success) return undefined;
-  const { daemon, spec } = parsed.data;
+  const { daemon } = parsed.data;
+  const spec = parsed.data.spec ?? SpecSchema.safeParse(specFile).data;
+  if (!spec) return undefined;
   return {
     name,
     application: spec.application,
@@ -101,8 +106,12 @@ export async function listHubProcessesFrom(root: string, cwd: string): Promise<H
       const names = await listDirNames(join(projectRoot, "daemons"));
       await Promise.all(
         names.map(async (name) => {
-          const meta = await readJsonFile(join(projectRoot, "daemons", name, "meta.json"));
-          const process = toHubProcess(name, meta);
+          const dir = join(projectRoot, "daemons", name);
+          const [meta, spec] = await Promise.all([
+            readJsonFile(join(dir, "meta.json")),
+            readJsonFile(join(dir, "spec.json")),
+          ]);
+          const process = toHubProcess(name, meta, spec);
           if (process) processes.push(process);
         }),
       );
