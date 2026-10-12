@@ -51,7 +51,7 @@
     },
     "context-mode": {
       "name": "@omercnet/paseo-context-mode",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "dependencies": {
         "context-mode": "1.0.169",
       },
@@ -244,6 +244,25 @@
         "react-native": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
+      },
+    },
+    "top": {
+      "name": "@omercnet/paseo-top",
+      "version": "0.0.1-alpha",
+      "devDependencies": {
+        "@biomejs/biome": "catalog:",
+        "@getpaseo/cli": "catalog:",
+        "@getpaseo/client": "catalog:",
+        "@getpaseo/plugin": "catalog:",
+        "@getpaseo/protocol": "catalog:",
+        "@tanstack/react-query": "catalog:",
+        "@types/node": "catalog:",
+        "@types/react": "catalog:",
+        "react": "catalog:",
+        "react-native": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+        "zod": "catalog:",
       },
     },
   },
@@ -697,6 +716,8 @@
     "@omercnet/paseo-shared-browser": ["@omercnet/paseo-shared-browser@workspace:paseo-shared-browser"],
 
     "@omercnet/paseo-tell-agent": ["@omercnet/paseo-tell-agent@workspace:tell-agent"],
+
+    "@omercnet/paseo-top": ["@omercnet/paseo-top@workspace:top"],
 
     "@opencode-ai/sdk": ["@opencode-ai/sdk@1.14.46", "", { "dependencies": { "cross-spawn": "7.0.6" } }, "sha512-7KOMuoCkNI+bLOw3GCg0nWZ5m7A/MzNsyLfTbZYmE/DIaUqkV2LNRULtrW6PHL1WtYVmJEFPws4dbw/4dVxjzA=="],
 

@@ -1,0 +1,62 @@
+{
+  "name": "@omercnet/paseo-top",
+  "version": "0.0.1-alpha",
+  "type": "module",
+  "description": "A Paseo plugin that shows host CPU, memory and disk usage in the sidebar footer.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "top"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/top#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "bun@1.4.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "author": "Omer Cohen",
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "top",
+    "host-monitor"
+  ],
+  "files": [
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "server",
+    "shared",
+    "paseo-plugin.json",
+    "README.md",
+    "LICENSE",
+    "OVERVIEW.md"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@getpaseo/cli": "catalog:",
+    "@getpaseo/client": "catalog:",
+    "@getpaseo/plugin": "catalog:",
+    "@getpaseo/protocol": "catalog:",
+    "@tanstack/react-query": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "react": "catalog:",
+    "react-native": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  }
+}

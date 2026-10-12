@@ -1,0 +1,5 @@
+{
+  "id": "top",
+  "description": "CPU, memory and disk usage of the selected host in the sidebar footer.",
+  "requirements": { "paseo": "^0.11.0" }
+}

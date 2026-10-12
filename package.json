@@ -15,7 +15,8 @@
     "paseo-shared-browser",
     "pr-radar",
     "queens",
-    "tell-agent"
+    "tell-agent",
+    "top"
   ],
   "catalog": {
     "@biomejs/biome": "^2.5.10",
