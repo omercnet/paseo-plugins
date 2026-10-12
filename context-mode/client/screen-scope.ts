@@ -20,14 +20,22 @@ export function parseScreenParams(params: Record<string, string>): ScreenParams 
   };
 }
 
+// Screen params survive the host switcher and shared links, so the id may belong to another host.
+function notOnThisHost(kind: "agent" | "workspace"): KnowledgeScope {
+  return {
+    provider: null,
+    projectPath: "",
+    note: `The ${kind} this screen was opened from is not on this host. Select a provider and project.`,
+  };
+}
+
 export async function resolveKnowledgeScope(
   paseo: PaseoApi,
   params: ScreenParams,
 ): Promise<KnowledgeScope> {
   if (params.agentId) {
     const result = await paseo.agents.ref(params.agentId).refresh();
-    if (!result)
-      throw new Error("Agent not found on this host. Select a provider and project explicitly.");
+    if (!result) return notOnThisHost("agent");
     if (params.workspaceId && result.agent.workspaceId !== params.workspaceId) {
       throw new Error(
         "Agent no longer belongs to this workspace. Select a provider and project explicitly.",
@@ -38,8 +46,7 @@ export async function resolveKnowledgeScope(
   const workspace = params.workspaceId
     ? await paseo.workspaces.ref(params.workspaceId).refresh()
     : null;
-  if (!workspace)
-    throw new Error("Workspace not found on this host. Select a provider and project explicitly.");
+  if (!workspace) return notOnThisHost("workspace");
   return {
     provider: null,
     projectPath: workspace.workspaceDirectory,

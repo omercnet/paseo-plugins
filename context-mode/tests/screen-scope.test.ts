@@ -37,9 +37,13 @@ describe("screen scope", () => {
       }),
     ).toEqual({ provider: "codex", projectPath: "/selected-host/project" });
     refresh.mockResolvedValue(null);
-    await expect(
-      resolveKnowledgeScope(paseo as never, { section: "knowledge", agentId: "missing" }),
-    ).rejects.toThrow("not found on this host");
+    expect(
+      await resolveKnowledgeScope(paseo as never, { section: "knowledge", agentId: "missing" }),
+    ).toEqual({
+      provider: null,
+      projectPath: "",
+      note: "The agent this screen was opened from is not on this host. Select a provider and project.",
+    });
   });
   test("rejects mismatched workspace and requires provider selection for workspace-only links", async () => {
     const paseo = {
@@ -63,10 +67,14 @@ describe("screen scope", () => {
       await resolveKnowledgeScope(paseo as never, { section: "knowledge", workspaceId: "w" }),
     ).toMatchObject({ provider: null, projectPath: "/workspace" });
   });
-  test("a workspace-only link to a missing workspace requires explicit selection", async () => {
+  test("a workspace-only link to a workspace on another host falls back to the unscoped view", async () => {
     const paseo = { workspaces: { ref: () => ({ refresh: async () => null }) } };
-    await expect(
-      resolveKnowledgeScope(paseo as never, { section: "knowledge", workspaceId: "gone" }),
-    ).rejects.toThrow("Workspace not found");
+    expect(
+      await resolveKnowledgeScope(paseo as never, { section: "knowledge", workspaceId: "gone" }),
+    ).toEqual({
+      provider: null,
+      projectPath: "",
+      note: "The workspace this screen was opened from is not on this host. Select a provider and project.",
+    });
   });
 });
