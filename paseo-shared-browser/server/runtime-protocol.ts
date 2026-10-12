@@ -1,4 +1,4 @@
-export const RUNTIME_PROTOCOL_VERSION = 2 as const;
+export const RUNTIME_PROTOCOL_VERSION = 3 as const;
 export const DEFAULT_ORPHAN_GRACE_MS = 120_000;
 export const DEFAULT_BRIDGE_HEARTBEAT_MS = 10_000;
 export const DEFAULT_BRIDGE_TIMEOUT_MS = 30_000;
