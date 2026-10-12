@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v2.0.0...paseo-context-mode-v2.0.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* **context-mode:** treat agent or workspace from another host as unscoped ([#318](https://github.com/omercnet/paseo-plugins/issues/318)) ([0b17694](https://github.com/omercnet/paseo-plugins/commit/0b17694a87cc2eb5ad631d65e2e8f05561d90503))
+
 ## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v1.2.4...paseo-context-mode-v2.0.0) (2026-10-11)
 
 
