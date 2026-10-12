@@ -120,9 +120,37 @@ describe("sidebar footer", () => {
     expect(leafText(tree)).toBe("10%75%95%1.5M/s");
   });
 
+  it("labels every reading in words, with the level spelled out for screen readers", () => {
+    mockUsage(usage({ sessions: [session({ heavy: true })] }));
+    const labels = elements(footer())
+      .map((el) => el.props.accessibilityLabel)
+      .filter(Boolean);
+    expect(labels).toEqual([
+      "1 heavy session",
+      "CPU 10%",
+      "Memory 75%, high",
+      "Disk 95%, critical",
+      "Disk I/O 1.5M/s",
+    ]);
+  });
+
+  it("labels an unknown reading as unavailable, memory included", () => {
+    mockUsage(usage({ cpu: null, memory: null, disk: null, io: null }));
+    const tree = footer();
+    expect(elements(tree).map((el) => el.props.accessibilityLabel)).toEqual(
+      expect.arrayContaining([
+        "CPU unavailable",
+        "Memory unavailable",
+        "Disk unavailable",
+        "Disk I/O unavailable",
+      ]),
+    );
+    expect(leafText(tree)).toBe("--------");
+  });
+
   it("shows placeholders for a reading the host cannot give yet", () => {
     mockUsage(usage({ cpu: null, disk: null, io: null }));
-    expect(leafText(footer())).toBe("--75%--" + "--");
+    expect(leafText(footer())).toBe("--75%----");
   });
 
   it("shows nothing but the host while loading, and says so when it cannot be reached", () => {
@@ -176,6 +204,21 @@ describe("Top screen", () => {
     const tree = screen({ host: { id: "b", label: "Box B" } });
     expect(useUsage).toHaveBeenLastCalledWith("b");
     expect(leafText(tree)).toContain("Box B");
+  });
+
+  it("says in words whether usage is live, and shows no value for an unknown memory", () => {
+    const statusLabel = () =>
+      elements(screen())
+        .map((el) => el.props.accessibilityLabel)
+        .find((label) => typeof label === "string" && label.startsWith("Usage"));
+    mockUsage(undefined);
+    expect(statusLabel()).toBe("Usage loading");
+    mockUsage(usage({ memory: null }));
+    expect(statusLabel()).toBe("Usage live");
+    const memory = elements(screen()).find((el) => el.type === Dial && el.props.label === "MEMORY");
+    expect([memory?.props.value, memory?.props.text]).toEqual([null, "--"]);
+    mockUsage(usage(), true);
+    expect(statusLabel()).toBe("Usage unavailable");
   });
 
   it("gives each dial its reading, with a placeholder for an unknown one", () => {

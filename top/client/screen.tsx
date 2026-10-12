@@ -68,6 +68,10 @@ export function TopScreen({ theme, layout, host, navigation }: PluginScreenProps
           {host.label}
         </Text>
         <View
+          accessible
+          accessibilityLabel={
+            usage.isError ? "Usage unavailable" : usage.data ? "Usage live" : "Usage loading"
+          }
           style={{
             width: 8,
             height: 8,

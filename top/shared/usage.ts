@@ -10,7 +10,7 @@ const percent = z.number().min(0).max(100);
 /** Usage of the daemon host. Percentages are 0-100; `null` means the host cannot report it yet. */
 const sample = z.object({
   cpu: percent.nullable(),
-  memory: percent,
+  memory: percent.nullable(),
   disk: percent.nullable(),
   /** Disk read plus write throughput in bytes per second. */
   io: z.number().min(0).nullable(),

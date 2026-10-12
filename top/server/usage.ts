@@ -18,10 +18,11 @@ export function readCpuTimes(cpus: ReadonlyArray<Pick<os.CpuInfo, "times">> = os
   return { idle, total };
 }
 
-/** Busy share between two readings, or null when no time elapsed or the counters went backwards. */
+/** Busy share between two readings, or null when no time elapsed, the counters went backwards or are not numbers. */
 export function cpuPercent(previous: CpuTimes, current: CpuTimes): number | null {
   const total = current.total - previous.total;
   const idle = current.idle - previous.idle;
+  if (!Number.isFinite(total) || !Number.isFinite(idle)) return null;
   if (total <= 0 || idle < 0 || idle > total) return null;
   return (1 - idle / total) * 100;
 }
@@ -35,13 +36,18 @@ export function diskPercent(
     const { blocks, bfree, bavail } = stat(path);
     const used = blocks - bfree;
     const usable = used + bavail;
-    return usable > 0 ? (used / usable) * 100 : null;
+    const percent = (used / usable) * 100;
+    return usable > 0 && Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : null;
   } catch {
     return null;
   }
 }
 
-/** Whole-disk bytes read plus written since boot (Linux only); null where /proc is unavailable. */
+/**
+ * Whole-disk bytes read plus written since boot (Linux only). Null where /proc is unavailable, and
+ * when any whole disk has a malformed counter: a partial total would show up as a throughput spike
+ * once the counter reads again.
+ */
 export function readDiskBytes(
   sysBlock = "/sys/block",
   diskstats = "/proc/diskstats",
@@ -52,31 +58,53 @@ export function readDiskBytes(
       readdirSync(sysBlock).filter((name) => !/^(loop|ram|dm-|zram|md)/.test(name)),
     );
     let sectors = 0;
+    let matched = false;
     for (const line of readFileSync(diskstats, "utf8").split("\n")) {
       const fields = line.trim().split(/\s+/);
-      if (disks.has(fields[2] ?? "")) sectors += Number(fields[5]) + Number(fields[9]);
+      if (!disks.has(fields[2] ?? "")) continue;
+      const read = Number(fields[5]);
+      const written = Number(fields[9]);
+      if (!(Number.isFinite(read) && read >= 0 && Number.isFinite(written) && written >= 0)) {
+        return null;
+      }
+      sectors += read + written;
+      matched = true;
     }
-    return sectors * 512;
+    return matched && Number.isFinite(sectors) ? sectors * 512 : null;
   } catch {
     return null;
   }
 }
 
-/** Bytes per second between two readings, or null when the counter is missing or went backwards. */
+/** Bytes per second between two readings, or null when a counter is missing, not finite, or went backwards. */
 export function bytesPerSecond(
   previous: number | null,
   current: number | null,
   elapsedMs: number,
 ): number | null {
-  if (previous === null || current === null || current < previous || elapsedMs <= 0) return null;
-  return ((current - previous) * 1000) / elapsedMs;
+  if (previous === null || current === null) return null;
+  if (!(Number.isFinite(previous) && Number.isFinite(current) && Number.isFinite(elapsedMs))) {
+    return null;
+  }
+  if (current < previous || elapsedMs <= 0) return null;
+  const rate = ((current - previous) * 1000) / elapsedMs;
+  return Number.isFinite(rate) ? rate : null;
+}
+
+/**
+ * Used share of memory, clamped to 0-100; null when the host reports no usable total. Linux reports
+ * reclaimable cache as free, so this is memory programs cannot get back.
+ */
+export function memoryPercent(total = os.totalmem(), free = os.freemem()): number | null {
+  if (!Number.isFinite(total) || !Number.isFinite(free) || total <= 0) return null;
+  return Math.min(100, Math.max(0, (1 - free / total) * 100));
 }
 
 interface SamplerOptions {
   intervalMs?: number;
   readCpu?: () => CpuTimes;
   readIo?: () => number | null;
-  readMemory?: () => number;
+  readMemory?: () => number | null;
   readDisk?: () => number | null;
   /** Lists processes, or returns null where that is not possible. */
   scan?: () => ProcInfo[] | null;
@@ -92,8 +120,7 @@ export function startSampler({
   intervalMs = 2000,
   readCpu = readCpuTimes,
   readIo = readDiskBytes,
-  // Linux reports reclaimable cache as free, so this is memory programs cannot get back.
-  readMemory = () => (1 - os.freemem() / os.totalmem()) * 100,
+  readMemory = memoryPercent,
   readDisk = diskPercent,
   scan = defaultScan(),
   totalMemory = os.totalmem,
@@ -136,12 +163,11 @@ export function startSampler({
   };
 }
 
-/** Reads /proc; the environment cache lives as long as the sampler. */
+/** Reads /proc; returns null for a scan where it cannot be listed. */
 function defaultScan(): () => ProcInfo[] | null {
-  const agentIds = new Map<string, string | null>();
   return () => {
     try {
-      return readProcs(agentIds);
+      return readProcs();
     } catch {
       return null;
     }

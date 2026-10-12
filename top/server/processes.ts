@@ -68,7 +68,7 @@ export function parseStat(text: string): Stat | null {
   return { comm: text.slice(open + 1, close), ...numbers, rss: Math.max(0, numbers.rss) };
 }
 
-/** Only the agent id is read out of the environment; the rest of it can hold secrets and is dropped. */
+/** The whole environment is read, but only the agent id is kept; the rest can hold secrets and is dropped. */
 export function parseAgentId(environ: string): string | null {
   for (const entry of environ.split("\0")) {
     if (entry.startsWith("PASEO_AGENT_ID=")) return entry.slice("PASEO_AGENT_ID=".length) || null;
@@ -77,34 +77,29 @@ export function parseAgentId(environ: string): string | null {
 }
 
 /**
- * Every process the daemon's user can see. A process's environment never changes after it starts, so
- * it is read once and remembered in `agentIds`; entries for processes that are gone are dropped.
+ * Every process listed under /proc, which includes other users' that are readable. The environment
+ * is read whole but only `PASEO_AGENT_ID` is kept, and it is read again on every scan, because a
+ * process can replace its environment when it execs without changing its pid or start time. A
+ * process whose environment cannot be read (another user's) has no agent.
  */
-export function readProcs(agentIds: Map<string, string | null>, root = "/proc"): ProcInfo[] {
+export function readProcs(root = "/proc"): ProcInfo[] {
   const procs: ProcInfo[] = [];
-  const seen = new Set<string>();
   for (const name of readdirSync(root)) {
     if (!/^\d+$/.test(name)) continue;
     try {
       const stat = parseStat(readFileSync(`${root}/${name}/stat`, "utf8"));
       if (!stat) continue;
-      const key = `${name}:${stat.start}`;
-      seen.add(key);
-      let agentId = agentIds.get(key);
-      if (agentId === undefined) {
-        try {
-          agentId = parseAgentId(readFileSync(`${root}/${name}/environ`, "utf8"));
-        } catch {
-          agentId = null; // another user's process
-        }
-        agentIds.set(key, agentId);
+      let agentId: string | null;
+      try {
+        agentId = parseAgentId(readFileSync(`${root}/${name}/environ`, "utf8"));
+      } catch {
+        agentId = null;
       }
-      procs.push({ key, pid: Number(name), agentId, ...stat });
+      procs.push({ key: `${name}:${stat.start}`, pid: Number(name), agentId, ...stat });
     } catch {
       // The process exited while it was being read.
     }
   }
-  for (const key of agentIds.keys()) if (!seen.has(key)) agentIds.delete(key);
   return procs;
 }
 

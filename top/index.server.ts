@@ -11,5 +11,8 @@ export default function contribute(server: PluginServerContext) {
     if (!usage.sessions) return usage;
     return { ...usage, ...(await ownSessions(paseo, usage.sessions, usage.other)) };
   });
-  return sampler.stop;
+  return () => {
+    sampler.stop();
+    ownSessions.stop();
+  };
 }

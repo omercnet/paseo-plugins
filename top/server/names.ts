@@ -7,6 +7,8 @@ const FULL_REFRESH_MS = 30_000;
 const EARLY_REFRESH_MS = 5000;
 /** Only the first ever fetch is waited for, and not forever. */
 const FIRST_FETCH_TIMEOUT_MS = 3000;
+/** A read that has not settled by now is abandoned and cancelled, so a hung daemon cannot block later reads. */
+const REFRESH_LIFETIME_MS = 20_000;
 const PAGE_SIZE = 200;
 export const MAX_PAGES = 25;
 export const MAX_SESSIONS = 10;
@@ -26,12 +28,23 @@ interface Page<T> {
   pageInfo: { hasMore: boolean; nextCursor: string | null };
 }
 
-/** The daemon pages its lists, and an agent left off the first page must still be recognised. */
-async function collect<T>(fetchPage: (cursor: string | undefined) => Promise<Page<T>>) {
+/**
+ * The daemon pages its lists, and an agent left off the first page must still be recognised. Aborting
+ * ends the read even when the daemon never answers the page in flight, which is then ignored.
+ */
+async function collect<T>(
+  signal: AbortSignal,
+  fetchPage: (cursor: string | undefined) => Promise<Page<T>>,
+) {
+  const aborted = new Promise<never>((_, reject) => {
+    const cancel = () => reject(new Error("Daemon read cancelled"));
+    if (signal.aborted) cancel();
+    else signal.addEventListener("abort", cancel, { once: true });
+  });
   const entries: T[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const result = await fetchPage(cursor);
+    const result = await Promise.race([fetchPage(cursor), aborted]);
     entries.push(...result.entries);
     if (!result.pageInfo.hasMore || !result.pageInfo.nextCursor) break;
     cursor = result.pageInfo.nextCursor;
@@ -40,7 +53,7 @@ async function collect<T>(fetchPage: (cursor: string | undefined) => Promise<Pag
 }
 
 /**
- * The process scan sees every process the daemon's user owns, including agents that belong to other
+ * The process scan sees every readable process /proc lists, including agents that belong to other
  * daemons on the same machine. This keeps only the sessions of agents this daemon knows, names them
  * with the user's own agent and workspace names, and folds everything else into `other` so the
  * numbers still add up to the processes that were scanned.
@@ -48,34 +61,48 @@ async function collect<T>(fetchPage: (cursor: string | undefined) => Promise<Pag
  * The daemon's lists are read in the background and shared between callers, so a slow daemon never
  * holds up the readings. Only the very first read is waited for, for a few seconds at most. Until
  * then, and whenever the lists have never been available, no session can be shown as this host's and
- * all of its load is reported as other load. Once read, a failed refresh keeps the last lists.
+ * all of its load is reported as other load. Once read, a failed refresh keeps the last lists. A read
+ * that outlives `REFRESH_LIFETIME_MS` is cancelled and replaced by the next one, and whatever the
+ * abandoned read later returns is discarded. `stop` cancels the read in flight.
  */
 export function createOwnership(now = Date.now, firstFetchTimeoutMs = FIRST_FETCH_TIMEOUT_MS) {
   let known: Known | null = null;
   /** Agents confirmed absent from the latest read, so they do not trigger another one. */
   let foreign = new Set<string>();
   let fetchedAt = Number.NEGATIVE_INFINITY;
-  let inflight: Promise<void> | null = null;
+  let inflight: { done: Promise<void>; startedAt: number; abort: AbortController } | null = null;
 
   const refresh = (paseo: PaseoApi, candidates: string[]) => {
-    if (inflight) return inflight;
+    if (inflight && now() - inflight.startedAt >= REFRESH_LIFETIME_MS) {
+      inflight.abort.abort();
+      inflight = null;
+    }
+    if (inflight) return inflight.done;
     fetchedAt = now();
-    inflight = (async () => {
+    const abort = new AbortController();
+    const { signal } = abort;
+    const run = { done: Promise.resolve(), startedAt: fetchedAt, abort };
+    inflight = run;
+    run.done = (async () => {
       try {
         const [agents, workspaces] = await Promise.all([
-          collect((cursor) =>
+          collect(signal, (cursor) =>
             paseo.agents.list({
               filter: { includeArchived: true },
               // Oldest first: an agent's creation time never changes, so paging cannot skip one that
               // is busy and being updated while the pages are read.
               sort: [{ key: "created_at", direction: "asc" }],
               page: { limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) },
+              signal,
             }),
           ),
-          collect((cursor) =>
+          // The SDK's workspace list takes no signal; the abort stops the paging between pages.
+          collect(signal, (cursor) =>
             paseo.workspaces.list({ page: { limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) } }),
           ),
         ]);
+        // An abandoned read must not overwrite what a newer one stored.
+        if (inflight !== run) return;
         const next: Known = {
           agents: new Map(
             agents.map(({ agent }) => [
@@ -91,14 +118,14 @@ export function createOwnership(now = Date.now, firstFetchTimeoutMs = FIRST_FETC
         foreign = new Set(candidates.filter((id) => !next.agents.has(id)));
       } catch {
         // Keep the previous lists.
+      } finally {
+        if (inflight === run) inflight = null;
       }
-    })().finally(() => {
-      inflight = null;
-    });
-    return inflight;
+    })();
+    return run.done;
   };
 
-  return async (paseo: PaseoApi, sessions: Session[], other: Load) => {
+  const ownership = async (paseo: PaseoApi, sessions: Session[], other: Load) => {
     if (sessions.length === 0) return { sessions, other };
 
     const ids = sessions.map((session) => session.agentId);
@@ -107,7 +134,7 @@ export function createOwnership(now = Date.now, firstFetchTimeoutMs = FIRST_FETC
     const pending =
       age >= FULL_REFRESH_MS || (unseen && age >= EARLY_REFRESH_MS)
         ? refresh(paseo, ids)
-        : inflight;
+        : inflight?.done;
     if (known === null && pending) {
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, firstFetchTimeoutMs);
@@ -140,4 +167,11 @@ export function createOwnership(now = Date.now, firstFetchTimeoutMs = FIRST_FETC
     }
     return { sessions: own.slice(0, MAX_SESSIONS), other: rest };
   };
+
+  return Object.assign(ownership, {
+    stop: () => {
+      inflight?.abort.abort();
+      inflight = null;
+    },
+  });
 }

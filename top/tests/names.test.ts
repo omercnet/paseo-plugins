@@ -291,18 +291,120 @@ describe("createOwnership: a slow or hung daemon", () => {
     expect((await own(paseo, [session("a1")], NONE)).sessions).toHaveLength(1);
   });
 
-  it("does not start another read while one is still hanging", async () => {
+  it("does not start another read while one is still within its lifetime", async () => {
     let clock = 0;
     const { paseo, state, agents } = fakeDaemon();
     const own = createOwnership(() => clock);
     await own(paseo, [session("a1")], NONE);
     state.gate = new Promise<void>(() => {}); // the next read never returns
-    for (const at of [30_000, 60_000, 90_000]) {
+    for (const at of [30_000, 40_000, 59_999]) {
       clock = at;
       await own(paseo, [session("a1")], NONE);
     }
     await settle();
     expect(agents).toHaveBeenCalledTimes(2); // the first read, plus the one that is hanging
+  });
+
+  describe("a read that never answers, and ignores cancellation", () => {
+    const reply = (id: string, title: string) => ({
+      entries: [{ agent: { id, title, workspaceId: null } }],
+      pageInfo: { hasMore: false, nextCursor: null },
+    });
+
+    /** Every agents read stays pending until the test settles it; the abort signal is only recorded. */
+    function deferredDaemon() {
+      const reads: Array<{ signal: AbortSignal | undefined; resolve: (page: unknown) => void }> =
+        [];
+      const paseo = {
+        agents: {
+          list: vi.fn((options: { signal?: AbortSignal }) => {
+            const { promise, resolve } = Promise.withResolvers<unknown>();
+            reads.push({ signal: options.signal, resolve });
+            return promise;
+          }),
+        },
+        workspaces: {
+          list: vi.fn(async () => ({
+            entries: [],
+            pageInfo: { hasMore: false, nextCursor: null },
+          })),
+        },
+      } as unknown as PaseoApi;
+      return { paseo, reads };
+    }
+
+    it("is cancelled after its lifetime, and the next caller reads again instead of waiting on it", async () => {
+      let clock = 0;
+      const { paseo, reads } = deferredDaemon();
+      const own = createOwnership(() => clock, 10);
+      await own(paseo, [session("a1")], NONE);
+      expect(reads).toHaveLength(1);
+      expect(reads[0]?.signal?.aborted).toBe(false);
+
+      clock = 40_000;
+      const result = await own(paseo, [session("a1", 2, 5)], NONE);
+      expect(reads[0]?.signal?.aborted).toBe(true);
+      expect(reads).toHaveLength(2);
+      expect(result).toEqual({ sessions: [], other: { cores: 2, rss: 5 } });
+
+      reads[1]?.resolve(reply("a1", "Fresh"));
+      await settle();
+      clock = 40_001;
+      expect((await own(paseo, [session("a1")], NONE)).sessions).toMatchObject([
+        { title: "Fresh" },
+      ]);
+    });
+
+    it("cannot publish a stale result, nor release the read that replaced it", async () => {
+      let clock = 0;
+      const { paseo, reads } = deferredDaemon();
+      const own = createOwnership(() => clock, 10);
+      await own(paseo, [session("a1")], NONE);
+      clock = 40_000;
+      await own(paseo, [session("a1")], NONE); // abandons the first read, starts a second
+
+      reads[0]?.resolve(reply("a1", "Stale"));
+      await settle();
+      // The second read is still in flight, so a caller that wants a new read shares it.
+      clock = 46_000;
+      const during = await own(paseo, [session("a1"), session("a2")], NONE);
+      expect(during.sessions).toEqual([]); // nothing was published by the stale read
+      expect(reads).toHaveLength(2);
+
+      reads[1]?.resolve(reply("a1", "Fresh"));
+      await settle();
+      clock = 46_001;
+      expect((await own(paseo, [session("a1")], NONE)).sessions).toMatchObject([
+        { title: "Fresh" },
+      ]);
+    });
+
+    it("cannot overwrite a newer result when it answers last", async () => {
+      let clock = 0;
+      const { paseo, reads } = deferredDaemon();
+      const own = createOwnership(() => clock, 10);
+      await own(paseo, [session("a1")], NONE);
+      clock = 40_000;
+      await own(paseo, [session("a1")], NONE);
+      reads[1]?.resolve(reply("a1", "Fresh"));
+      await settle();
+      reads[0]?.resolve(reply("a1", "Stale"));
+      await settle();
+      clock = 40_001;
+      expect((await own(paseo, [session("a1")], NONE)).sessions).toMatchObject([
+        { title: "Fresh" },
+      ]);
+    });
+
+    it("is cancelled when the plugin stops, and releases a caller still waiting for it", async () => {
+      const { paseo, reads } = deferredDaemon();
+      const own = createOwnership(Date.now, 60_000);
+      const waiting = own(paseo, [session("a1", 2, 5)], NONE);
+      await settle();
+      own.stop();
+      expect(reads[0]?.signal?.aborted).toBe(true);
+      expect(await waiting).toEqual({ sessions: [], other: { cores: 2, rss: 5 } });
+    });
   });
 
   it("never holds up a reading once it has the lists, however slow a refresh is", async () => {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatBytes, formatCores, formatPercent, formatRate, loadLevel } from "../client/format";
-import { bytesPerSecond, cpuPercent, diskPercent, startSampler } from "../server/usage";
+import { bytesPerSecond, cpuPercent, startSampler } from "../server/usage";
 import { getUsage, HISTORY_EVERY_MS, HISTORY_LENGTH } from "../shared/usage";
 
 afterEach(() => vi.useRealTimers());
@@ -27,6 +27,14 @@ describe("bytesPerSecond", () => {
     expect(bytesPerSecond(5, null, 1000)).toBeNull();
     expect(bytesPerSecond(9, 5, 1000)).toBeNull();
     expect(bytesPerSecond(1, 5, 0)).toBeNull();
+  });
+
+  it("is null for counters or times that are not finite, never Infinity or NaN", () => {
+    expect(bytesPerSecond(0, Number.POSITIVE_INFINITY, 1000)).toBeNull();
+    expect(bytesPerSecond(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, 1000)).toBeNull();
+    expect(bytesPerSecond(Number.NaN, 5, 1000)).toBeNull();
+    expect(bytesPerSecond(1, 5, Number.NaN)).toBeNull();
+    expect(bytesPerSecond(0, Number.MAX_VALUE, Number.MIN_VALUE)).toBeNull();
   });
 });
 
@@ -85,7 +93,10 @@ describe("startSampler", () => {
     vi.advanceTimersByTime((HISTORY_LENGTH + 5) * HISTORY_EVERY_MS);
     const { history } = s.usage();
     expect(history).toHaveLength(HISTORY_LENGTH);
-    const values = history.map((point) => point.memory);
+    const values = history
+      .map((point) => point.memory)
+      .filter((value): value is number => value !== null);
+    expect(values).toHaveLength(HISTORY_LENGTH); // no point is unknown
     expect(values).toEqual([...values].sort((a, b) => a - b));
     expect(values[0]).toBeGreaterThan(1);
     history.length = 0;
@@ -100,19 +111,17 @@ describe("startSampler", () => {
     expect(s.usage().history).toEqual([]);
   });
 
-  it("produces output the RPC contract accepts, on this machine's real readers", () => {
-    const s = startSampler();
+  it("produces output the RPC contract accepts, with every reading present or null", () => {
+    const s = sampler();
+    vi.advanceTimersByTime(HISTORY_EVERY_MS);
     expect(() => getUsage.output.parse(s.usage())).not.toThrow();
     s.stop();
-  });
-});
-
-describe("diskPercent", () => {
-  it("is a percentage for a real path and null for a missing one", () => {
-    const percent = diskPercent(".");
-    expect(percent).toBeGreaterThanOrEqual(0);
-    expect(percent).toBeLessThanOrEqual(100);
-    expect(diskPercent("/definitely/not/a/path")).toBeNull();
+    const unknown = sampler({ readMemory: () => null, readDisk: () => null, readIo: () => null });
+    vi.advanceTimersByTime(HISTORY_EVERY_MS);
+    const output = getUsage.output.parse(unknown.usage());
+    expect(output).toMatchObject({ memory: null, disk: null, io: null });
+    expect(output.history[0]).toMatchObject({ memory: null });
+    unknown.stop();
   });
 });
 

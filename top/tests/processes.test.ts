@@ -161,37 +161,49 @@ describe("readProcs", () => {
       "11": { stat: statLine(11, "other-user", 1, 5) }, // environ is unreadable
       self: { stat: "ignored" },
     });
-    const procs = readProcs(new Map(), root);
+    const procs = readProcs(root);
     expect(procs.map((p) => [p.pid, p.agentId]).sort()).toEqual([
       [10, "a1"],
       [11, null],
     ]);
   });
 
-  it("reads each environment once and forgets processes that exited", () => {
+  it("reads the agent id again on every scan, so an exec that replaced the environment is seen", () => {
+    const root = fakeProc({
+      "10": { stat: statLine(10, "a", 1, 5, 100), environ: "PASEO_AGENT_ID=old\0SECRET=hunter2" },
+    });
+    expect(readProcs(root)[0]).toMatchObject({ key: "10:100", agentId: "old" });
+    // Same pid and start time: exec keeps both and swaps the environment.
+    writeFileSync(join(root, "10", "environ"), "PASEO_AGENT_ID=new");
+    expect(readProcs(root)[0]).toMatchObject({ key: "10:100", agentId: "new" });
+    writeFileSync(join(root, "10", "environ"), "PATH=/bin");
+    expect(readProcs(root)[0]?.agentId).toBeNull();
+  });
+
+  it("keeps nothing of the environment but the agent id", () => {
+    const root = fakeProc({
+      "10": { stat: statLine(10, "a", 1, 5), environ: "PASEO_AGENT_ID=a1\0SECRET=hunter2" },
+    });
+    expect(JSON.stringify(readProcs(root))).not.toContain("hunter2");
+  });
+
+  it("forgets processes that exited", () => {
     const root = fakeProc({
       "10": { stat: statLine(10, "a", 1, 5), environ: "PASEO_AGENT_ID=a1" },
       "11": { stat: statLine(11, "b", 1, 5), environ: "PASEO_AGENT_ID=a2" },
     });
-    const cache = new Map<string, string | null>();
-    readProcs(cache, root);
-    writeFileSync(join(root, "10", "environ"), "PASEO_AGENT_ID=changed");
     rmSync(join(root, "11"), { recursive: true });
-    const again = readProcs(cache, root);
-    expect(again.find((p) => p.pid === 10)?.agentId).toBe("a1");
-    expect([...cache.keys()]).toEqual(["10:1"]);
+    expect(readProcs(root).map((p) => p.pid)).toEqual([10]);
   });
 
   it("does not confuse a reused pid with the process that had it before", () => {
     const root = fakeProc({
       "10": { stat: statLine(10, "a", 1, 5, 100), environ: "PASEO_AGENT_ID=old" },
     });
-    const cache = new Map<string, string | null>();
-    readProcs(cache, root);
+    expect(readProcs(root)[0]).toMatchObject({ key: "10:100", agentId: "old" });
     writeFileSync(join(root, "10", "stat"), statLine(10, "b", 1, 5, 200));
     writeFileSync(join(root, "10", "environ"), "PASEO_AGENT_ID=new");
-    expect(readProcs(cache, root)[0]?.agentId).toBe("new");
-    expect([...cache.keys()]).toEqual(["10:200"]);
+    expect(readProcs(root)[0]).toMatchObject({ key: "10:200", agentId: "new" });
   });
 });
 

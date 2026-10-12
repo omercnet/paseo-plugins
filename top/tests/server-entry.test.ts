@@ -88,4 +88,16 @@ describe("server entry", () => {
     cleanup();
     expect(stop).toHaveBeenCalledOnce();
   });
+
+  it("cancels a daemon read that is still in flight when the plugin is torn down", async () => {
+    const { cleanup, call, list } = setup([session]);
+    list.mockImplementation(() => new Promise(() => {})); // the daemon never answers
+    const answered = call();
+    await Promise.resolve();
+    const options = list.mock.calls[0]?.[0] as { signal: AbortSignal };
+    expect(options.signal.aborted).toBe(false);
+    cleanup();
+    expect(options.signal.aborted).toBe(true);
+    expect(await answered).toMatchObject({ sessions: [], other: { cores: 1, rss: 1 } });
+  });
 });

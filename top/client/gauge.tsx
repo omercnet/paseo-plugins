@@ -31,12 +31,14 @@ export function Dial({ theme, size, icon, label, value, text }: DialProps) {
   const needleLength = radius * 0.72;
   const degrees = useRef(new Animated.Value(needleDegrees(value))).current;
   useEffect(() => {
-    Animated.timing(degrees, {
+    const animation = Animated.timing(degrees, {
       toValue: needleDegrees(value),
       duration: 700,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
-    }).start();
+    });
+    animation.start();
+    return () => animation.stop();
   }, [degrees, value]);
   const rotate = degrees.interpolate({
     inputRange: [-SWEEP / 2, SWEEP / 2],
