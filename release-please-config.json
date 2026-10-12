@@ -69,6 +69,11 @@
       "release-type": "node",
       "package-name": "queens",
       "include-component-in-tag": true
+    },
+    "top": {
+      "release-type": "node",
+      "package-name": "top",
+      "include-component-in-tag": true
     }
   }
 }

@@ -10,5 +10,6 @@
   "paseo-gas-city": "2.0.0",
   "context-mode": "2.0.1",
   "pr-radar": "2.0.0",
-  "queens": "3.0.0"
+  "queens": "3.0.0",
+  "top": "0.0.1-alpha"
 }
