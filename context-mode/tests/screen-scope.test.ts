@@ -77,4 +77,12 @@ describe("screen scope", () => {
       note: "The workspace this screen was opened from is not on this host. Select a provider and project.",
     });
   });
+  test("a failed lookup still surfaces as an error", async () => {
+    const paseo = {
+      agents: { ref: () => ({ refresh: async () => Promise.reject(new Error("boom")) }) },
+    };
+    await expect(
+      resolveKnowledgeScope(paseo as never, { section: "knowledge", agentId: "a" }),
+    ).rejects.toThrow("boom");
+  });
 });
