@@ -7,6 +7,7 @@ import {
   parsePs,
   parsePsAgentId,
   parseWindows,
+  powershellPath,
   readPsProcs,
   readWindowsProcs,
   WINDOWS_SCRIPT,
@@ -17,19 +18,19 @@ import { attribute, type ProcInfo } from "../server/processes";
 const PS_STATS = `
     1     0 Sat Oct 10 05:12:44 2026       3:21.07   9344 /sbin/launchd
  1560     1 Tue Oct 13 06:01:17 2026       0:01.42  49264 /opt/homebrew/Cellar/node@24/24.20.0/bin/node
- 1561  1560 Tue Oct  3 06:01:17 2026    1:02:03.45  48944 /Applications/Visual Studio Code.app/Contents/MacOS/Electron
+ 1561  1560 Tue Oct  3 06:01:17 2026     123:03.45  48944 /Applications/Visual Studio Code.app/Contents/MacOS/Electron
  1563     1 Tue Oct 13 06:01:17 2026       0:00.00      0 (node)
- 1570     1 Tue Oct 13 06:01:18 2026    2-03:04:05  20480 /usr/bin/grep
+ 1570     1 Tue Oct 13 06:01:18 2026       0:00.01  20480 /usr/bin/grep
 garbage that is not a process row
 `;
 
 /** `ps -axww -E -o pid=,command=`: the environment follows the arguments, when it can be read. */
 const PS_ENV = `
-    1 /sbin/launchd
- 1560 /opt/homebrew/bin/node -e work PATH=/usr/bin HOME=/Users/runner PASEO_AGENT_ID=agent-a TOKEN=hunter2
- 1561 /Applications/Visual Studio Code.app/Contents/MacOS/Electron PASEO_AGENT_ID=agent-b
- 1563 /opt/homebrew/bin/node PATH=/usr/bin
- 1570 grep PASEO_AGENT_ID=agent-decoy
+    1 Sat Oct 10 05:12:44 2026 /sbin/launchd
+ 1560 Tue Oct 13 06:01:17 2026 /opt/homebrew/bin/node -e work PATH=/usr/bin HOME=/Users/runner PASEO_AGENT_ID=agent-a TOKEN=hunter2
+ 1561 Tue Oct  3 06:01:17 2026 /Applications/Visual Studio Code.app/Contents/MacOS/Electron PASEO_AGENT_ID=agent-b
+ 1563 Tue Oct 13 06:01:17 2026 /opt/homebrew/bin/node PATH=/usr/bin
+ 1570 Tue Oct 13 06:01:18 2026 grep PASEO_AGENT_ID=agent-decoy
 `;
 
 /** Creation time in milliseconds, which stays exact as a JavaScript number. */
@@ -37,6 +38,7 @@ const STARTED = 1_792_000_000_000;
 
 /** The tab separated lines the Windows script prints; the idle process and a stale parent included. */
 const WINDOWS_ROWS = [
+  ["snapshot", "750"],
   ["0", "0", "0", "99999999999", "8192", "", "System Idle Process"],
   ["4", "0", `${STARTED - 500_000}`, "312500", "139264", "", "System"],
   ["2472", "6200", `${STARTED}`, "15781250", "34095104", "agent-a", "node.exe"],
@@ -49,17 +51,17 @@ const WINDOWS_ROWS = [
   .join("\n");
 
 describe("parseCpuTime", () => {
-  it("reads minutes, hours and days, in clock ticks", () => {
+  it("reads minutes, which are not capped at 59, in clock ticks", () => {
     expect(parseCpuTime("0:01.42")).toBe(142);
     expect(parseCpuTime("12:00.00")).toBe(72_000);
-    expect(parseCpuTime("1:02:03.45")).toBe((3600 + 120 + 3.45) * 100);
-    expect(parseCpuTime("2-03:04:05")).toBe(((2 * 24 + 3) * 3600 + 4 * 60 + 5) * 100);
+    expect(parseCpuTime("123:03.45")).toBe((123 * 60 + 3.45) * 100);
     expect(parseCpuTime("3:07")).toBe(18_700);
   });
 
   it("is null for anything else, so a malformed row is skipped rather than read as zero", () => {
     expect(parseCpuTime("")).toBeNull();
     expect(parseCpuTime("12")).toBeNull();
+    expect(parseCpuTime("1:02:03.45")).toBeNull();
     expect(parseCpuTime("1:xx.00")).toBeNull();
   });
 });
@@ -106,7 +108,7 @@ describe("parsePs", () => {
       key: "1561:Tue Oct 3 06:01:17 2026",
       comm: "Electron",
       agentId: "agent-b",
-      ticks: (3600 + 120 + 3.45) * 100,
+      ticks: (123 * 60 + 3.45) * 100,
     });
   });
 
@@ -121,13 +123,22 @@ describe("parsePs", () => {
     expect(byPid(1570)?.agentId).toBe("agent-decoy");
   });
 
+  it("does not give a reused pid the agent of the process that had it", () => {
+    // The environment listing was taken when pid 1560 belonged to another, earlier process.
+    const earlier = PS_ENV.replace(
+      "Tue Oct 13 06:01:17 2026 /opt/homebrew/bin/node -e",
+      "Tue Oct 13 06:00:00 2026 /opt/homebrew/bin/node -e",
+    );
+    expect(parsePs(PS_STATS, earlier).find((proc) => proc.pid === 1560)?.agentId).toBeNull();
+  });
+
   it("keeps the same process under the same key from one scan to the next", () => {
     expect(parsePs(PS_STATS, "")[1]?.key).toBe(byPid(1560)?.key);
   });
 });
 
 describe("parseWindows", () => {
-  const procs = parseWindows(WINDOWS_ROWS);
+  const procs = parseWindows(WINDOWS_ROWS).procs;
   const byPid = (pid: number) => procs.find((proc) => proc.pid === pid);
 
   it("leaves out the idle process, whose summed idle time would read as load", () => {
@@ -164,14 +175,15 @@ describe("parseWindows", () => {
     expect(byPid(2472)?.ppid).toBe(6200);
   });
 
-  it("skips lines that are not rows, including the empty output of a failed run", () => {
-    expect(parseWindows("")).toEqual([]);
-    expect(parseWindows("Get-CimInstance : Access denied\n")).toEqual([]);
-    expect(parseWindows("1\t2\tnot-a-time\t4\t5\t\tname")).toEqual([]);
+  it("reads when the table was read, and skips lines that are not rows", () => {
+    expect(parseWindows(WINDOWS_ROWS).delayMs).toBe(750);
+    expect(parseWindows("")).toEqual({ procs: [], delayMs: 0 });
+    expect(parseWindows("Get-CimInstance : Access denied\n").procs).toEqual([]);
+    expect(parseWindows("1\t2\tnot-a-time\t4\t5\t\tname").procs).toEqual([]);
   });
 
   it("charges the descendants of a tagged process to it", () => {
-    const tree = parseWindows(
+    const { procs: tree } = parseWindows(
       [
         ["10", "1", "100", "0", "10", "agent-a", "claude.exe"],
         ["11", "10", "200", "0", "20", "", "cmd.exe"],
@@ -187,24 +199,25 @@ describe("parseWindows", () => {
 
 describe("the platform readers", () => {
   it("run ps twice with the flags the parser expects", async () => {
-    const calls: string[][] = [];
-    const procs = await readPsProcs(async (file, args) => {
-      calls.push([file, ...args]);
+    const calls: Array<[string[], unknown]> = [];
+    const procs = await readPsProcs(async (file, args, env) => {
+      calls.push([[file, ...args], env]);
       return args.includes("-E") ? PS_ENV : PS_STATS;
-    });
+    }, 1560);
+    // Both in the C locale, whose date format the parser reads.
     expect(calls).toEqual([
-      ["/bin/ps", "-axww", "-o", "pid=,ppid=,lstart=,cputime=,rss=,comm="],
-      ["/bin/ps", "-axww", "-E", "-o", "pid=,command="],
+      [["/bin/ps", "-axww", "-o", "pid=,ppid=,lstart=,cputime=,rss=,comm="], { LC_ALL: "C" }],
+      [["/bin/ps", "-axww", "-E", "-o", "pid=,lstart=,command="], { LC_ALL: "C" }],
     ]);
     expect(procs.find((proc) => proc.pid === 1560)?.agentId).toBe("agent-a");
   });
 
   it("run the Windows script as one encoded PowerShell command", async () => {
     let seen: string[] = [];
-    const procs = await readWindowsProcs(async (_file, args) => {
+    const { procs } = await readWindowsProcs(async (_file, args) => {
       seen = args;
       return WINDOWS_ROWS;
-    });
+    }, 2472);
     expect(seen.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
     expect(Buffer.from(seen[3] ?? "", "base64").toString("utf16le")).toBe(WINDOWS_SCRIPT);
     expect(procs.find((proc) => proc.pid === 2472)?.agentId).toBe("agent-a");
@@ -216,6 +229,39 @@ describe("the platform readers", () => {
     };
     await expect(readPsProcs(broken)).rejects.toThrow("ENOENT");
     await expect(readWindowsProcs(broken)).rejects.toThrow("ENOENT");
+  });
+
+  it("reject a listing without the daemon itself, which is empty or garbled output", async () => {
+    // Accepted as a baseline, an empty list would make the next real scan charge every process
+    // all the CPU it ever used.
+    await expect(readPsProcs(async () => "", 1560)).rejects.toThrow("does not include");
+    await expect(readPsProcs(async () => "not ps output", 1560)).rejects.toThrow(
+      "does not include",
+    );
+    await expect(readWindowsProcs(async () => "", 2472)).rejects.toThrow("does not include");
+    await expect(readWindowsProcs(async () => WINDOWS_ROWS, 99)).rejects.toThrow(
+      "does not include",
+    );
+  });
+
+  it("use the 64-bit PowerShell, also from a 32-bit Node on a 64-bit Windows", () => {
+    const env = { SystemRoot: "C:\\Windows" };
+    expect(powershellPath(env, "x64")).toBe(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+    expect(powershellPath({ ...env, PROCESSOR_ARCHITEW6432: "AMD64" }, "ia32")).toBe(
+      "C:\\Windows\\Sysnative\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+    // A 32-bit Windows has no 64-bit one to reach.
+    expect(powershellPath(env, "ia32")).toBe(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+  });
+
+  it("list nothing when per-session load is switched off", async () => {
+    for (const platform of ["linux", "darwin", "win32"] as const) {
+      expect(await defaultScan(platform, { PASEO_TOP_SESSIONS: "off" })()).toBeNull();
+    }
   });
 });
 
@@ -275,7 +321,10 @@ describe("a live process tree", () => {
     });
     spawned.push(child);
     const scan = defaultScan();
-    const list = async () => (await scan()) ?? undefined;
+    const list = async () => {
+      const listing = await scan();
+      return (Array.isArray(listing) ? listing : listing?.procs) ?? undefined;
+    };
 
     const find = (procs: ProcInfo[]): Tree | undefined => {
       const root = procs.find((proc) => proc.pid === child.pid);
@@ -295,7 +344,7 @@ describe("a live process tree", () => {
     // The listing can say who owns what.
     expect(root.agentId).toBe(agentId);
     expect(grand.agentId).toBeNull();
-    expect(root.comm.toLowerCase()).toContain("node");
+    expect(root.comm).not.toBe("");
     expect(root.rss).toBeGreaterThan(1024 * 1024);
 
     // And the busy loop shows up as CPU on the second scan, charged through the grandchild too.

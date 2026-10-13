@@ -8,7 +8,7 @@ const specializedPlugins = new Map([
   ["paseo-shared-browser", "shared-browser"],
 ]);
 // Plugins that define a `test:platform` script also run it on these runners.
-const platformRunners = ["macos-latest", "windows-latest"];
+const platformRunners = ["macos-latest", "macos-15-intel", "windows-latest", "windows-11-arm"];
 const runAllPaths = ["package.json", "bun.lock", ".github/workflows/ci.yml", ".github/scripts/"];
 const workflowPaths = [".github/workflows/", ".github/actions/", ".github/scripts/"];
 export function discoverPlugins(root = process.cwd()) {

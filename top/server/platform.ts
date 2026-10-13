@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { type ProcInfo, readProcs, type Scan } from "./processes";
+import { type Listing, type ProcInfo, readProcs, type Scan } from "./processes";
 
 const TIMEOUT_MS = 15_000;
 const MAX_OUTPUT_BYTES = 64 * 1024 ** 2;
@@ -7,31 +7,40 @@ const CLOCK_TICKS = 100;
 /** Windows counts CPU time in 100 ns units. */
 const FILETIME_PER_TICK = 100_000;
 const AGENT_ID_VARIABLE = "PASEO_AGENT_ID=";
+/** First line of the Windows output: when the process table was read, in ms after the script started. */
+const SNAPSHOT_MARK = "snapshot";
 
-type Run = (file: string, args: string[]) => Promise<string>;
+type Run = (file: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<string>;
 
-const run: Run = (file, args) => {
+const run: Run = (file, args, env) => {
   const { promise, resolve, reject } = Promise.withResolvers<string>();
   execFile(
     file,
     args,
-    { timeout: TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true, encoding: "utf8" },
+    {
+      timeout: TIMEOUT_MS,
+      maxBuffer: MAX_OUTPUT_BYTES,
+      windowsHide: true,
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    },
     (error, stdout) => (error ? reject(error) : resolve(stdout)),
   );
   return promise;
 };
 
-/** `[[d-][h:]m:]s[.cc]` as `ps` prints CPU time, in clock ticks. */
+/** `m:ss.cc` as `ps` prints CPU time (minutes are not capped at 59), in clock ticks. */
 export function parseCpuTime(text: string): number | null {
-  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/.exec(text);
-  if (!match) return null;
-  const [, days = "0", hours = "0", minutes = "0", seconds = "0"] = match;
-  const total = ((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds);
-  return Math.round(total * CLOCK_TICKS);
+  const match = /^(\d+):(\d+(?:\.\d+)?)$/.exec(text);
+  return match ? Math.round((Number(match[1]) * 60 + Number(match[2])) * CLOCK_TICKS) : null;
 }
 
-// pid ppid lstart ("Tue Oct 13 06:01:17 2026", the day is space padded) cputime rss comm
-const PS_ROW = /^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(\S+)\s+(\d+)\s+(.+?)\s*$/;
+// "Tue Oct 13 06:01:17 2026": `lstart`, whose day is space padded. Pinned to the C locale by the caller.
+const LSTART = String.raw`(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)`;
+// pid ppid lstart cputime rss comm
+const PS_ROW = new RegExp(String.raw`^\s*(\d+)\s+(\d+)\s+${LSTART}\s+(\S+)\s+(\d+)\s+(.+?)\s*$`);
+// pid lstart command-and-environment
+const PS_ENV_ROW = new RegExp(String.raw`^\s*(\d+)\s+${LSTART}\s(.*)$`);
 
 /**
  * The agent id in one `ps -E` line. The environment follows the arguments, so the last occurrence
@@ -44,17 +53,20 @@ export function parsePsAgentId(line: string): string | null {
   return id;
 }
 
+const psKey = (pid: string, started: string) => `${pid}:${started.replace(/\s+/g, " ")}`;
+
 /**
  * macOS: `stats` is `ps -axww -o pid=,ppid=,lstart=,cputime=,rss=,comm=`, `environment` is
- * `ps -axww -E -o pid=,command=`. They are separate listings because `-E` appends the environment
- * to the command column only, and a command path may hold spaces.
+ * `ps -axww -E -o pid=,lstart=,command=`. They are separate listings because `-E` appends the
+ * environment to the command column only, and a command may hold spaces. Rows are joined on pid
+ * and start time, so a pid reused between the two listings is not given the old process's agent.
  */
 export function parsePs(stats: string, environment: string): ProcInfo[] {
-  const agents = new Map<number, string>();
+  const agents = new Map<string, string>();
   for (const line of environment.split("\n")) {
-    const match = /^\s*(\d+)\s(.*)$/.exec(line);
-    const id = match && parsePsAgentId(match[2] ?? "");
-    if (match && id) agents.set(Number(match[1]), id);
+    const match = PS_ENV_ROW.exec(line);
+    const id = match && parsePsAgentId(match[3] ?? "");
+    if (match && id) agents.set(psKey(match[1] ?? "", match[2] ?? ""), id);
   }
   const procs: ProcInfo[] = [];
   for (const line of stats.split("\n")) {
@@ -63,25 +75,38 @@ export function parsePs(stats: string, environment: string): ProcInfo[] {
     const [, pid = "", ppid = "", started = "", cpu = "", rssKib = "", path = ""] = match;
     const ticks = parseCpuTime(cpu);
     if (ticks === null) continue;
+    const key = psKey(pid, started);
     procs.push({
-      key: `${pid}:${started.replace(/\s+/g, " ")}`,
+      key,
       pid: Number(pid),
       ppid: Number(ppid),
       ticks,
       rss: Number(rssKib) * 1024,
       comm: path.slice(path.lastIndexOf("/") + 1),
-      agentId: agents.get(Number(pid)) ?? null,
+      agentId: agents.get(key) ?? null,
     });
   }
   return procs;
 }
 
-export async function readPsProcs(exec: Run = run): Promise<ProcInfo[]> {
+/**
+ * The daemon is always in its own host's process list, so a listing without it is not one: empty
+ * or garbled output must fail the scan, not read as a host where nothing is running.
+ */
+function ownListing<T extends { pid: number }>(procs: T[], self: number): T[] {
+  if (!procs.some((proc) => proc.pid === self))
+    throw new Error("process list does not include this process");
+  return procs;
+}
+
+export async function readPsProcs(exec: Run = run, self = process.pid): Promise<ProcInfo[]> {
+  // `lstart` follows the locale; the parser reads the C one.
+  const env = { LC_ALL: "C" };
   const [stats, environment] = await Promise.all([
-    exec("/bin/ps", ["-axww", "-o", "pid=,ppid=,lstart=,cputime=,rss=,comm="]),
-    exec("/bin/ps", ["-axww", "-E", "-o", "pid=,command="]),
+    exec("/bin/ps", ["-axww", "-o", "pid=,ppid=,lstart=,cputime=,rss=,comm="], env),
+    exec("/bin/ps", ["-axww", "-E", "-o", "pid=,lstart=,command="], env),
   ]);
-  return parsePs(stats, environment);
+  return ownListing(parsePs(stats, environment), self);
 }
 
 /**
@@ -94,6 +119,7 @@ export async function readPsProcs(exec: Run = run): Promise<ProcInfo[]> {
  */
 export const WINDOWS_SCRIPT = `
 $ErrorActionPreference = 'Stop'
+$clock = [Diagnostics.Stopwatch]::StartNew()
 if (-not [Environment]::Is64BitProcess) { exit 3 }
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $type = [AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object System.Reflection.AssemblyName 'TopNative'), 'Run').DefineDynamicModule('m').DefineType('N', 'Public,Class')
@@ -128,25 +154,33 @@ function AgentId([int]$id) {
     if (-not $block) { return }
     $found = [regex]::Match([Text.Encoding]::Unicode.GetString($block), '(?:^|\\0)${AGENT_ID_VARIABLE}([^\\0]+)')
     if ($found.Success) { $found.Groups[1].Value }
-  } finally { [void]$native::CloseHandle($handle) }
+  } catch { return } finally { [void]$native::CloseHandle($handle) }
 }
-$lines = foreach ($p in Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,KernelModeTime,UserModeTime,WorkingSetSize,Name) {
+$all = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,KernelModeTime,UserModeTime,WorkingSetSize,Name
+$snapshotMs = $clock.ElapsedMilliseconds
+$lines = foreach ($p in $all) {
   if ($p.ProcessId -eq 0) { continue }
   try {
     @($p.ProcessId, $p.ParentProcessId, ([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds(), ([uint64]$p.KernelModeTime + [uint64]$p.UserModeTime), $p.WorkingSetSize, [string](AgentId $p.ProcessId), $p.Name) -join [char]9
   } catch { continue }
 }
-[Console]::Out.Write(($lines -join [char]10))
+[Console]::Out.Write((@('${SNAPSHOT_MARK}' + [char]9 + $snapshotMs) + $lines) -join [char]10)
 `;
 
 /**
- * Windows keeps a dead parent's pid on its children, and the number may since belong to an
+ * The listing also says when it was read, so the slow start of PowerShell does not skew the CPU
+ * rates. Windows keeps a dead parent's pid on its children, and the number may since belong to an
  * unrelated process. A parent that started after its child cannot be its parent.
  */
-export function parseWindows(text: string): ProcInfo[] {
+export function parseWindows(text: string): Listing {
   const rows: Array<ProcInfo & { started: number }> = [];
+  let delayMs = 0;
   for (const line of text.split("\n")) {
     const [pid, ppid, started, cpu, workingSet, agentId, name] = line.trimEnd().split("\t");
+    if (pid === SNAPSHOT_MARK) {
+      delayMs = Number(ppid) || 0;
+      continue;
+    }
     const numbers = [pid, ppid, started, cpu, workingSet].map(Number);
     if (name === undefined || !numbers.every(Number.isFinite) || Number(pid) === 0) continue;
     rows.push({
@@ -161,27 +195,50 @@ export function parseWindows(text: string): ProcInfo[] {
     });
   }
   const started = new Map(rows.map((row) => [row.pid, row.started]));
-  return rows.map(({ started: at, ...proc }) => {
+  const procs = rows.map(({ started: at, ...proc }) => {
     const parent = started.get(proc.ppid);
     return parent !== undefined && parent > at ? { ...proc, ppid: 0 } : proc;
   });
+  return { procs, delayMs };
 }
 
-export async function readWindowsProcs(exec: Run = run): Promise<ProcInfo[]> {
-  const root = process.env.SystemRoot ?? "C:\\Windows";
-  const output = await exec(`${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`, [
+/**
+ * Windows PowerShell 5.1, which every Windows has. A 32-bit Node on a 64-bit Windows would get the
+ * 32-bit one from System32, which cannot read 64-bit processes; Sysnative reaches the real one.
+ */
+export function powershellPath(env: NodeJS.ProcessEnv = process.env, arch = process.arch): string {
+  const root = env.SystemRoot ?? "C:\\Windows";
+  const folder = arch === "ia32" && env.PROCESSOR_ARCHITEW6432 ? "Sysnative" : "System32";
+  return `${root}\\${folder}\\WindowsPowerShell\\v1.0\\powershell.exe`;
+}
+
+export async function readWindowsProcs(
+  exec: Run = run,
+  self = process.pid,
+  powershell = powershellPath(),
+): Promise<Listing> {
+  const output = await exec(powershell, [
     "-NoProfile",
     "-NonInteractive",
     "-EncodedCommand",
     Buffer.from(WINDOWS_SCRIPT, "utf16le").toString("base64"),
   ]);
-  return parseWindows(output);
+  const listing = parseWindows(output);
+  ownListing(listing.procs, self);
+  return listing;
 }
 
-/** The process lister for this platform. A scan that fails rejects, or returns null. */
-export function defaultScan(platform: NodeJS.Platform = process.platform): Scan {
-  if (platform === "darwin") return readPsProcs;
-  if (platform === "win32") return readWindowsProcs;
+/**
+ * The process lister for this platform. A scan that fails rejects, or returns null. Set
+ * `PASEO_TOP_SESSIONS=off` to not list processes at all, which turns per-session load off.
+ */
+export function defaultScan(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): Scan {
+  if (env.PASEO_TOP_SESSIONS === "off") return () => null;
+  if (platform === "darwin") return () => readPsProcs();
+  if (platform === "win32") return () => readWindowsProcs();
   return () => {
     try {
       return readProcs();

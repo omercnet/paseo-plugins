@@ -198,17 +198,30 @@ export const HEAVY_CORES = 1;
 export const HEAVY_SCANS = 3;
 export const HEAVY_MEMORY_SHARE = 0.25;
 
-/** Lists processes; null for a scan that failed. macOS and Windows listers run a command, so they are async. */
-export type Scan = () => ProcInfo[] | null | Promise<ProcInfo[] | null>;
+/** A process list read some time after the scan started, which a lister that knows says. */
+export interface Listing {
+  procs: ProcInfo[];
+  delayMs: number;
+}
+
+/**
+ * Lists processes; null for a scan that failed, and a throw or rejection counts as one. macOS and
+ * Windows listers run a command, so they are async.
+ */
+export type Scan = () => ProcInfo[] | Listing | null | Promise<ProcInfo[] | Listing | null>;
 
 const NO_LOAD = { cores: 0, rss: 0 };
+/** After this many failures in a row the retries slow down, doubling up to the cap. */
+const MAX_RETRY_MS = 5 * 60_000;
 
 /**
  * Rescans every `SCAN_EVERY_MS` and remembers a short window of each session's CPU, so a one-scan
  * spike does not flag it. Until a scan has worked there is nothing to diff against, so sessions are
- * unavailable (null) once a scan has failed, and keep being retried; a failed scan after that
- * keeps the last readings for a while. One scan runs at a time. Each is timed from when it was
- * started, so slow listers stay consistent as long as they are consistently slow.
+ * unavailable (null) once a scan has failed; they are also unavailable after a lasting failure,
+ * never an empty list, which would claim that nothing is running. A failed scan after a good one
+ * keeps the last readings for a while. Failures are retried ever more slowly, since a lister that
+ * fails three times in a row is usually blocked, not unlucky. One scan runs at a time, timed from
+ * when it started plus the delay its lister reports.
  */
 export function trackSessions(scan: Scan, startedAt: number) {
   let previous: Map<string, number> | null = null;
@@ -220,21 +233,23 @@ export function trackSessions(scan: Scan, startedAt: number) {
   let unavailable = false;
   let recent = new Map<string, number[]>();
 
-  const settle = (procs: ProcInfo[] | null, at: number) => {
-    if (!procs) {
+  const settle = (result: ProcInfo[] | Listing | null, at: number) => {
+    if (!result) {
       // Keep the last readings through a hiccup, but not through a lasting failure. The next
       // good scan diffs against the last good one, over the longer interval.
-      if (!previous) unavailable = true;
-      else if (++failures >= HEAVY_SCANS) {
+      if (++failures >= HEAVY_SCANS) {
+        unavailable = true;
         latest = { sessions: [], other: NO_LOAD };
         recent = new Map();
-      }
+      } else if (!previous) unavailable = true;
       return;
     }
     failures = 0;
     unavailable = false;
-    const next = attribute(procs, previous, (at - scannedAt) / 1000);
-    scannedAt = at;
+    const { procs, delayMs } = Array.isArray(result) ? { procs: result, delayMs: 0 } : result;
+    const readAt = at + delayMs;
+    const next = attribute(procs, previous, (readAt - scannedAt) / 1000);
+    scannedAt = readAt;
     // The first good scan is only a baseline: it has no earlier counters to diff.
     if (!previous) {
       previous = next.ticks;
@@ -252,21 +267,31 @@ export function trackSessions(scan: Scan, startedAt: number) {
 
   const start = (at: number) => {
     triedAt = at;
-    const result = scan();
+    let result: ReturnType<Scan>;
+    try {
+      result = scan();
+    } catch {
+      result = null;
+    }
     if (!(result instanceof Promise)) return settle(result, at);
     pending = true;
     result
       .catch(() => null)
-      .then((procs) => {
+      .then((procs) => settle(procs, at))
+      .catch(() => {})
+      .finally(() => {
         pending = false;
-        settle(procs, at);
       });
   };
   start(startedAt);
 
   return {
     update(at: number) {
-      if (!pending && at - triedAt >= SCAN_EVERY_MS) start(at);
+      const wait =
+        failures < HEAVY_SCANS
+          ? SCAN_EVERY_MS
+          : Math.min(SCAN_EVERY_MS * 2 ** (failures - HEAVY_SCANS + 1), MAX_RETRY_MS);
+      if (!pending && at - triedAt >= wait) start(at);
     },
     read(totalMemory: number): {
       sessions: Session[] | null;

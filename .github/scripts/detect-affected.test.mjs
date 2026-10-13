@@ -62,7 +62,9 @@ test("plugins with a test:platform script also run on macOS and Windows", (t) =>
   assert.equal(changed.platformAffected, true);
   assert.deepEqual(changed.platformMatrix.include, [
     { plugin: "with-platform", os: "macos-latest" },
+    { plugin: "with-platform", os: "macos-15-intel" },
     { plugin: "with-platform", os: "windows-latest" },
+    { plugin: "with-platform", os: "windows-11-arm" },
   ]);
 
   const other = detectAffected(["without/index.ts"], plugins);
