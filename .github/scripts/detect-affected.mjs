@@ -7,6 +7,8 @@ const specializedPlugins = new Map([
   ["paseo-omp", "omp"],
   ["paseo-shared-browser", "shared-browser"],
 ]);
+// Plugins that define a `test:platform` script also run it on these runners.
+const platformRunners = ["macos-latest", "windows-latest"];
 const runAllPaths = ["package.json", "bun.lock", ".github/workflows/ci.yml", ".github/scripts/"];
 const workflowPaths = [".github/workflows/", ".github/actions/", ".github/scripts/"];
 export function discoverPlugins(root = process.cwd()) {
@@ -39,6 +41,7 @@ export function discoverPlugins(root = process.cwd()) {
         test:
           !coverage && !testUnit && typeof scripts.test === "string",
         verify_package: typeof scripts["verify:package"] === "string",
+        platform: typeof scripts["test:platform"] === "string",
       };
 
       if (
@@ -73,9 +76,17 @@ export function detectAffected(files, plugins = discoverPlugins()) {
     .filter(({ kind }) => kind === "npm")
     .map(({ kind: _, ...plugin }) => plugin);
 
+  const platformPlugins = npmPlugins.filter(({ platform }) => platform);
+
   return {
     npmMatrix: { include: npmPlugins },
     npmAffected: npmPlugins.length > 0,
+    platformMatrix: {
+      include: platformPlugins.flatMap(({ plugin }) =>
+        platformRunners.map((os) => ({ plugin, os })),
+      ),
+    },
+    platformAffected: platformPlugins.length > 0,
     ompAffected: affectedPlugins.some(({ kind }) => kind === "omp"),
     sharedBrowserAffected: affectedPlugins.some(
       ({ kind }) => kind === "shared-browser",
@@ -109,6 +120,8 @@ function writeOutputs(result, outputPath) {
   const outputs = {
     npm_matrix: JSON.stringify(result.npmMatrix),
     npm_affected: String(result.npmAffected),
+    platform_matrix: JSON.stringify(result.platformMatrix),
+    platform_affected: String(result.platformAffected),
     omp_affected: String(result.ompAffected),
     shared_browser_affected: String(result.sharedBrowserAffected),
     workflow_affected: String(result.workflowAffected),

@@ -42,6 +42,7 @@
     "check": "biome check .",
     "check:write": "biome check --write .",
     "test": "vitest run",
+    "test:platform": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

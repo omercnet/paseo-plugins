@@ -44,7 +44,7 @@ export const getUsage = defineRpc({
     /** Earlier samples, oldest first, `HISTORY_EVERY_MS` apart, so a fresh client has a timeline. */
     history: z.array(sample).max(HISTORY_LENGTH),
     totalMemory: z.number().positive(),
-    /** Busiest first. `null` where the host cannot attribute processes (anything but Linux). */
+    /** Busiest first. `null` where the host cannot attribute processes (where the process list cannot be read). */
     sessions: z.array(session).nullable(),
     /**
      * Everything scanned that is not listed in `sessions`: processes of no agent, of other daemons'

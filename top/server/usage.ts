@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync, statfsSync } from "node:fs";
 import os from "node:os";
 import { HISTORY_EVERY_MS, HISTORY_LENGTH, type Sample } from "../shared/usage";
-import { type ProcInfo, readProcs, trackSessions } from "./processes";
+import { defaultScan } from "./platform";
+import { type Scan, trackSessions } from "./processes";
 
 export interface CpuTimes {
   idle: number;
@@ -107,7 +108,7 @@ interface SamplerOptions {
   readMemory?: () => number | null;
   readDisk?: () => number | null;
   /** Lists processes, or returns null where that is not possible. */
-  scan?: () => ProcInfo[] | null;
+  scan?: Scan;
   totalMemory?: () => number;
   now?: () => number;
 }
@@ -160,16 +161,5 @@ export function startSampler({
       return { ...current(), history: [...history], totalMemory: total, ...sessions.read(total) };
     },
     stop: () => clearInterval(timer),
-  };
-}
-
-/** Reads /proc; returns null for a scan where it cannot be listed. */
-function defaultScan(): () => ProcInfo[] | null {
-  return () => {
-    try {
-      return readProcs();
-    } catch {
-      return null;
-    }
   };
 }

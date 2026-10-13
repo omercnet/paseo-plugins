@@ -302,7 +302,7 @@ describe("sessions list", () => {
     Sessions({ theme, sessions: list, other, onOpenAgent });
 
   it("says why there is no list on a host that cannot attribute processes", () => {
-    expect(leafText(sessions(null))).toContain("needs a Linux host");
+    expect(leafText(sessions(null))).toContain("not available on this host");
   });
 
   it("says when no agent is running anything", () => {

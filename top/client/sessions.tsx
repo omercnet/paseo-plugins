@@ -28,7 +28,7 @@ export function Sessions({ theme, sessions, other, onOpenAgent }: SessionsProps)
   if (sessions === null) {
     rows.push(
       <Text key="unsupported" style={muted}>
-        Per-session load needs a Linux host.
+        Per-session load is not available on this host.
       </Text>,
     );
   } else if (sessions.length === 0) {

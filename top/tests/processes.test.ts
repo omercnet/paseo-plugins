@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attribute,
   HEAVY_MEMORY_SHARE,
@@ -376,14 +376,26 @@ describe("trackSessions", () => {
     expect(heavy()).toBe(true);
   });
 
-  it("is unsupported for good when processes cannot be listed from the start", () => {
+  it("has no sessions until a scan has worked, then recovers", () => {
     let listable = false;
     const tracker = trackSessions(() => (listable ? [proc(1, 0, "a1", 0)] : null), 0);
-    tracker.update(SCAN_EVERY_MS);
     expect(tracker.read(GIB)).toEqual({ sessions: null, other: { cores: 0, rss: 0 } });
-    listable = true;
-    tracker.update(2 * SCAN_EVERY_MS);
+    tracker.update(SCAN_EVERY_MS);
     expect(tracker.read(GIB).sessions).toBeNull();
+    listable = true;
+    tracker.update(2 * SCAN_EVERY_MS); // the baseline
+    expect(tracker.read(GIB).sessions).toEqual([]);
+    tracker.update(3 * SCAN_EVERY_MS);
+    expect(tracker.read(GIB).sessions).toHaveLength(1);
+  });
+
+  it("does not retry a failing lister on every tick", () => {
+    const scan = vi.fn(() => null);
+    const tracker = trackSessions(scan, 0);
+    for (let at = 1000; at < SCAN_EVERY_MS; at += 1000) tracker.update(at);
+    expect(scan).toHaveBeenCalledTimes(1);
+    tracker.update(SCAN_EVERY_MS);
+    expect(scan).toHaveBeenCalledTimes(2);
   });
 
   it("keeps its readings through one failed scan and measures the longer gap on recovery", () => {
@@ -453,5 +465,63 @@ describe("trackSessions", () => {
       "small-cpu-big-mem",
       "small-cpu-small-mem",
     ]);
+  });
+
+  describe("with a lister that takes time", () => {
+    const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    /** A lister whose every call stays pending until it is released with a result. */
+    function slow() {
+      const calls: Array<(procs: ProcInfo[] | null | Error) => void> = [];
+      const scan = vi.fn(() => {
+        const { promise, resolve, reject } = Promise.withResolvers<ProcInfo[] | null>();
+        calls.push((result) => (result instanceof Error ? reject(result) : resolve(result)));
+        return promise;
+      });
+      return { scan, finish: (n: number, result: ProcInfo[] | null | Error) => calls[n]?.(result) };
+    }
+
+    it("reports an empty list, not unavailable, while the first scan is running", () => {
+      const { scan } = slow();
+      const tracker = trackSessions(scan, 0);
+      expect(tracker.read(GIB).sessions).toEqual([]);
+    });
+
+    it("never runs two scans at once, however many ticks pass", async () => {
+      const { scan, finish } = slow();
+      const tracker = trackSessions(scan, 0);
+      tracker.update(SCAN_EVERY_MS);
+      tracker.update(5 * SCAN_EVERY_MS);
+      expect(scan).toHaveBeenCalledTimes(1);
+      finish(0, [proc(1, 0, "a1", 0)]);
+      await settled();
+      tracker.update(5 * SCAN_EVERY_MS);
+      expect(scan).toHaveBeenCalledTimes(2);
+    });
+
+    it("times each scan from when it started, not from when it finished", async () => {
+      const { scan, finish } = slow();
+      const tracker = trackSessions(scan, 0);
+      finish(0, [proc(1, 0, "a1", 0)]);
+      await settled();
+      tracker.update(SCAN_EVERY_MS);
+      // The lister is slow: it answers long after the next scan was due.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      finish(1, [proc(1, 0, "a1", 1000)]);
+      await settled();
+      expect(tracker.read(GIB).sessions?.[0]?.cores).toBeCloseTo(1); // 1000 ticks over 10 s
+    });
+
+    it("treats a rejected scan as a failed one", async () => {
+      const { scan, finish } = slow();
+      const tracker = trackSessions(scan, 0);
+      finish(0, new Error("ps is missing"));
+      await settled();
+      expect(tracker.read(GIB).sessions).toBeNull();
+      tracker.update(SCAN_EVERY_MS);
+      finish(1, [proc(1, 0, "a1", 0)]);
+      await settled();
+      expect(tracker.read(GIB).sessions).toEqual([]);
+    });
   });
 });

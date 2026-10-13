@@ -198,53 +198,81 @@ export const HEAVY_CORES = 1;
 export const HEAVY_SCANS = 3;
 export const HEAVY_MEMORY_SHARE = 0.25;
 
+/** Lists processes; null for a scan that failed. macOS and Windows listers run a command, so they are async. */
+export type Scan = () => ProcInfo[] | null | Promise<ProcInfo[] | null>;
+
+const NO_LOAD = { cores: 0, rss: 0 };
+
 /**
  * Rescans every `SCAN_EVERY_MS` and remembers a short window of each session's CPU, so a one-scan
- * spike does not flag it. `scan` returns null where processes cannot be listed: for good on a host
- * that cannot do it at all (not Linux), and for one scan on a host that failed once.
+ * spike does not flag it. Until a scan has worked there is nothing to diff against, so sessions are
+ * unavailable (null) once a scan has failed, and keep being retried; a failed scan after that
+ * keeps the last readings for a while. One scan runs at a time. Each is timed from when it was
+ * started, so slow listers stay consistent as long as they are consistently slow.
  */
-export function trackSessions(scan: () => ProcInfo[] | null, startedAt: number) {
-  const first = scan();
-  const supported = first !== null;
-  let previous = first ? attribute(first, null, 0).ticks : new Map<string, number>();
-  let latest: Pick<Attribution, "sessions" | "other"> = {
-    sessions: [],
-    other: { cores: 0, rss: 0 },
-  };
+export function trackSessions(scan: Scan, startedAt: number) {
+  let previous: Map<string, number> | null = null;
+  let latest: Pick<Attribution, "sessions" | "other"> = { sessions: [], other: NO_LOAD };
   let scannedAt = startedAt;
+  let triedAt = startedAt;
   let failures = 0;
+  let pending = false;
+  let unavailable = false;
   let recent = new Map<string, number[]>();
+
+  const settle = (procs: ProcInfo[] | null, at: number) => {
+    if (!procs) {
+      // Keep the last readings through a hiccup, but not through a lasting failure. The next
+      // good scan diffs against the last good one, over the longer interval.
+      if (!previous) unavailable = true;
+      else if (++failures >= HEAVY_SCANS) {
+        latest = { sessions: [], other: NO_LOAD };
+        recent = new Map();
+      }
+      return;
+    }
+    failures = 0;
+    unavailable = false;
+    const next = attribute(procs, previous, (at - scannedAt) / 1000);
+    scannedAt = at;
+    // The first good scan is only a baseline: it has no earlier counters to diff.
+    if (!previous) {
+      previous = next.ticks;
+      return;
+    }
+    previous = next.ticks;
+    latest = { sessions: next.sessions, other: next.other };
+    recent = new Map(
+      next.sessions.map(({ agentId, cores }) => [
+        agentId,
+        [...(recent.get(agentId) ?? []), cores].slice(-HEAVY_SCANS),
+      ]),
+    );
+  };
+
+  const start = (at: number) => {
+    triedAt = at;
+    const result = scan();
+    if (!(result instanceof Promise)) return settle(result, at);
+    pending = true;
+    result
+      .catch(() => null)
+      .then((procs) => {
+        pending = false;
+        settle(procs, at);
+      });
+  };
+  start(startedAt);
 
   return {
     update(at: number) {
-      if (!supported || at - scannedAt < SCAN_EVERY_MS) return;
-      const procs = scan();
-      if (!procs) {
-        // Keep the last readings through a hiccup, but not through a lasting failure. The next
-        // good scan diffs against the last good one, over the longer interval.
-        if (++failures >= HEAVY_SCANS) {
-          latest = { sessions: [], other: { cores: 0, rss: 0 } };
-          recent = new Map();
-        }
-        return;
-      }
-      failures = 0;
-      const next = attribute(procs, previous, (at - scannedAt) / 1000);
-      previous = next.ticks;
-      scannedAt = at;
-      latest = { sessions: next.sessions, other: next.other };
-      recent = new Map(
-        next.sessions.map(({ agentId, cores }) => [
-          agentId,
-          [...(recent.get(agentId) ?? []), cores].slice(-HEAVY_SCANS),
-        ]),
-      );
+      if (!pending && at - triedAt >= SCAN_EVERY_MS) start(at);
     },
     read(totalMemory: number): {
       sessions: Session[] | null;
       other: { cores: number; rss: number };
     } {
-      if (!supported) return { sessions: null, other: { cores: 0, rss: 0 } };
+      if (unavailable) return { sessions: null, other: NO_LOAD };
       const sessions = latest.sessions
         .map((session): Session => {
           const window = recent.get(session.agentId) ?? [];

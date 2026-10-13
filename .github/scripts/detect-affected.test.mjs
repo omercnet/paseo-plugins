@@ -37,8 +37,37 @@ test("discovers new plugins and derives their checks from package scripts", (t) 
       test_unit: false,
       test: false,
       verify_package: true,
+      platform: false,
     },
   ]);
+});
+
+test("plugins with a test:platform script also run on macOS and Windows", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "paseo-plugins-"));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  for (const [name, scripts] of [
+    ["with-platform", { "test:platform": "vitest run" }],
+    ["without", {}],
+  ]) {
+    mkdirSync(join(root, name));
+    writeFileSync(join(root, name, "paseo-plugin.json"), "{}");
+    writeFileSync(
+      join(root, name, "package.json"),
+      JSON.stringify({ scripts: { typecheck: "tsc", test: "vitest run", ...scripts } }),
+    );
+  }
+  const plugins = discoverPlugins(root);
+
+  const changed = detectAffected(["with-platform/index.ts"], plugins);
+  assert.equal(changed.platformAffected, true);
+  assert.deepEqual(changed.platformMatrix.include, [
+    { plugin: "with-platform", os: "macos-latest" },
+    { plugin: "with-platform", os: "windows-latest" },
+  ]);
+
+  const other = detectAffected(["without/index.ts"], plugins);
+  assert.equal(other.platformAffected, false);
+  assert.deepEqual(other.platformMatrix, { include: [] });
 });
 
 test("selects only changed npm plugins", () => {
