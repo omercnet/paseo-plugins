@@ -321,8 +321,11 @@ describe("a live process tree", () => {
     });
     spawned.push(child);
     const scan = defaultScan();
+    let listedAt = 0;
     const list = async () => {
-      const listing = await scan();
+      const began = Date.now();
+      const listing = await Promise.resolve(scan()).catch(() => null);
+      listedAt = began;
       return (Array.isArray(listing) ? listing : listing?.procs) ?? undefined;
     };
 
@@ -337,7 +340,7 @@ describe("a live process tree", () => {
       const tree = procs && find(procs);
       return procs && tree ? { procs, tree } : undefined;
     }, "the process tree to be listed");
-    const firstAt = Date.now();
+    const firstAt = listedAt;
     const first = found.procs;
     const { root, grand } = found.tree;
 

@@ -270,10 +270,10 @@ export function trackSessions(scan: Scan, startedAt: number) {
     let result: ReturnType<Scan>;
     try {
       result = scan();
+      if (!(result instanceof Promise)) return settle(result, at);
     } catch {
-      result = null;
+      return settle(null, at);
     }
-    if (!(result instanceof Promise)) return settle(result, at);
     pending = true;
     result
       .catch(() => null)

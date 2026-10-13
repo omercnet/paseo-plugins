@@ -152,7 +152,7 @@ function AgentId([int]$id) {
     if ($size -le 0) { return }
     $block = ReadMemory $handle ([BitConverter]::ToInt64($start, 0)) $size
     if (-not $block) { return }
-    $found = [regex]::Match([Text.Encoding]::Unicode.GetString($block), '(?:^|\\0)${AGENT_ID_VARIABLE}([^\\0]+)')
+    $found = [regex]::Match([Text.Encoding]::Unicode.GetString($block), '(?:^|\\0)${AGENT_ID_VARIABLE}([^\\0\\t\\r\\n]+)')
     if ($found.Success) { $found.Groups[1].Value }
   } catch { return } finally { [void]$native::CloseHandle($handle) }
 }
@@ -168,8 +168,8 @@ $lines = foreach ($p in $all) {
 `;
 
 /**
- * The listing also says when it was read, so the slow start of PowerShell does not skew the CPU
- * rates. Windows keeps a dead parent's pid on its children, and the number may since belong to an
+ * The listing also says how long after the script started the table was read, so a slower start
+ * of PowerShell on one scan than on the last does not skew the CPU rates. Windows keeps a dead parent's pid on its children, and the number may since belong to an
  * unrelated process. A parent that started after its child cannot be its parent.
  */
 export function parseWindows(text: string): Listing {
