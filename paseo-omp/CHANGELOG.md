@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v2.0.0...paseo-omp-v2.0.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **paseo-omp:** read hub process spec from spec.json and extend OMP matrix to 18.8.4 ([#320](https://github.com/omercnet/paseo-plugins/issues/320)) ([5b0e17b](https://github.com/omercnet/paseo-plugins/commit/5b0e17b808515dd60a7eb25f32db668d4866fd75))
+* **paseo-omp:** skip failing optional MCP servers on session open ([#325](https://github.com/omercnet/paseo-plugins/issues/325)) ([7c47aa1](https://github.com/omercnet/paseo-plugins/commit/7c47aa14dfc6eda9ae550c7376a22103d1d73beb))
+
 ## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v1.3.3...paseo-omp-v2.0.0) (2026-10-11)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v2.0.0...shared-browser-v2.0.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **paseo-shared-browser:** bump runtime protocol so stale supervisors are not reused ([#323](https://github.com/omercnet/paseo-plugins/issues/323)) ([581b135](https://github.com/omercnet/paseo-plugins/commit/581b135f13d4c58a30bb25136115a57d1b3415c6))
+
 ## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v1.2.2...shared-browser-v2.0.0) (2026-10-11)
 
 
