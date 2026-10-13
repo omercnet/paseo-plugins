@@ -1,0 +1,35 @@
+name: top-probe
+
+# Temporary: records how macOS and Windows runners report processes, to settle the design of the
+# top plugin's per-session load. Removed before the feature merges.
+on:
+  push:
+    branches: [feat/top-macos-windows-agent-load]
+    paths:
+      - .github/workflows/top-probe.yml
+      - .github/top-probe/**
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel, windows-latest, windows-11-arm]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Probe macOS
+        if: ${{ runner.os == 'macOS' }}
+        run: bash .github/top-probe/mac.sh
+      - name: Probe Windows
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./.github/top-probe/win.ps1
