@@ -22,7 +22,7 @@ These previews were captured from an isolated Paseo test daemon with Context Mod
 
 - Bundles Context Mode as a runtime dependency; a separately installed global executable remains optional.
 - Resolves a configured absolute executable first, then the daemon's `PATH`, then the bundled runtime.
-- Shows Context Mode version, structured diagnostics, provider activation, storage roots, lifetime savings, activity, categories, and indexed sources. Savings lists the built-in harness storage plus the storage of every provider configured in Paseo (including ones derived with `extends`), the latter under its Paseo provider id and the root its own `env` resolves to. `ctx_stats` and the Setup tab report the daemon's storage only.
+- Shows Context Mode version, structured diagnostics, provider activation, storage roots, lifetime savings, activity, categories, and indexed sources. Savings lists the built-in harness storage plus the storage of every provider configured in Paseo (including ones derived with `extends`), the latter under its Paseo provider id and the root its own `env` resolves to. `ctx_stats` and the Setup tab run against a plugin-owned probe store (`<PASEO_HOME>/plugin-data/context-mode/probe`) so they never write into a provider root; it starts empty.
 - Reads Context Mode 1.0.169 SQLite databases in query-only mode, honors active WAL state, isolates corrupt databases, and reports partial coverage instead of mutating schemas.
 - Injects the bundled stdio MCP server into new supported agents through Paseo's `agent.create` hook.
 - Injects provider identity and an existing provider-specific storage root on create, resume, refresh, and import.

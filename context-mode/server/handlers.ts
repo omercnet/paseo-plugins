@@ -35,7 +35,7 @@ interface ProbeOptions {
  * Panel probes belong to no provider. Without an explicit storage root Context Mode falls back to
  * whichever provider config directory exists, and writes its sidecar and content store there.
  */
-export function contextModeProbeOptions(env: NodeJS.ProcessEnv = process.env): ProbeOptions {
+function contextModeProbeOptions(env: NodeJS.ProcessEnv = process.env): ProbeOptions {
   const home = env.PASEO_HOME?.trim() || join(homedir(), ".paseo");
   return { env: { CONTEXT_MODE_DIR: join(home, "plugin-data", "context-mode", "probe") } };
 }
