@@ -23,6 +23,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
   );
@@ -454,6 +455,43 @@ describe("RPC behavior", () => {
     expect(refreshedStats).toMatchObject({ state: "ready", output: "stats" });
     expect(inspections).toBe(2);
     expect(calls).toEqual(["ctx_doctor", "ctx_stats", "ctx_stats"]);
+  });
+
+  test("runs every panel probe against a plugin-owned storage root, never a provider root", async () => {
+    vi.stubEnv("PASEO_HOME", "/srv/paseo");
+    const settings = ContextModeSettingsSchema.parse({});
+    const environments: Array<NodeJS.ProcessEnv | undefined> = [];
+    const handlers = createContextModeHandlers(settingsHandle(settings), {
+      resolveBinary: async () => ({
+        state: "found",
+        path: "/bin/context-mode",
+        source: "path",
+        launch: launch("/bin/context-mode"),
+      }),
+      inspect: async (_launch, options) => {
+        environments.push(options?.env);
+        return { version: "2.0.5", tools: ["ctx_doctor", "ctx_stats"] };
+      },
+      callTool: async (_launch, _name, _arguments, options) => {
+        environments.push(options?.env);
+        return "report";
+      },
+      createAudit: async () => ({
+        runtimePath: "",
+        runtimeVersion: null,
+        injectionEnabled: false,
+        providers: [],
+        checkedAt: "2026-09-20T00:00:00.000Z",
+      }),
+    });
+
+    await handlers.status({ fresh: true });
+    await handlers.doctor({ fresh: true });
+    await handlers.stats({ fresh: true });
+    await handlers.audit({ fresh: true });
+
+    const probeRoot = join("/srv/paseo", "plugin-data", "context-mode", "probe");
+    expect(environments).toEqual(Array(4).fill({ CONTEXT_MODE_DIR: probeRoot }));
   });
 
   test("maps settings read failures to invalid settings reports", async () => {
