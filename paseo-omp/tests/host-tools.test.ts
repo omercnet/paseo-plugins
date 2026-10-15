@@ -4,7 +4,6 @@ import type { OmpOperationalFailure } from "../server/operational-failure-diagno
 import {
   describeDegradedMcpServers,
   HOST_TOOL_NAME_PREFIX,
-  LEGACY_HOST_TOOL_NAME_PREFIX,
   type OmpHostToolScheduler,
   OmpHostToolsBridge,
   type OmpMcpConnection,
@@ -1422,8 +1421,12 @@ describe("OMP host tool bridge", () => {
   });
 
   test("keeps registered host tools out of the namespace OMP reclaims", async () => {
+    const longToolName = `search_${"x".repeat(245)}`;
     const repo = new FakeConnection(
-      [{ name: "search", description: "Search", inputSchema: { type: "object" } }],
+      [
+        { name: "search", description: "Search", inputSchema: { type: "object" } },
+        { name: longToolName, description: "Long", inputSchema: { type: "object" } },
+      ],
       { content: [] },
     );
     const connector: OmpMcpConnector = async (name) =>
@@ -1440,9 +1443,17 @@ describe("OMP host tool bridge", () => {
     // `refreshMCPTools` deletes it before rebuilding from manager- and
     // extension-owned tools. A host tool named that way is accepted by
     // `set_host_tools` and then silently dropped, so it must never be used.
+    // The literal prefix is OMP's contract, so it is spelled out rather than
+    // imported from the constant this plugin controls.
     const registered = (runtime.catalogs[0] ?? []).map(({ name }) => name);
     expect(registered).not.toEqual([]);
-    expect(registered.some((name) => name.startsWith(LEGACY_HOST_TOOL_NAME_PREFIX))).toBe(false);
+    expect(registered.some((name) => name.startsWith("mcp__"))).toBe(false);
     expect(registered).toContain(`${HOST_TOOL_NAME_PREFIX}repo_search`);
+    // Truncated names keep the prefix, stay unique, and stay within bounds.
+    expect(new Set(registered).size).toBe(registered.length);
+    for (const name of registered.filter((entry) => entry !== "create_agent")) {
+      expect(name.startsWith(HOST_TOOL_NAME_PREFIX)).toBe(true);
+      expect(Buffer.byteLength(name, "utf8")).toBeLessThanOrEqual(256);
+    }
   });
 });

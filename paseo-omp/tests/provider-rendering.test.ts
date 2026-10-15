@@ -183,6 +183,28 @@ describe("OMP direct provider", () => {
       name: "Paseo list providers",
       status: "completed",
     });
+    // Timelines persisted before the namespace rename still carry `mcp__`
+    // names, so replaying them must keep humanizing rather than show the raw
+    // wire name.
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "legacy-mcp",
+      toolName: "mcp__paseo_list_sessions",
+      args: {},
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "legacy-mcp",
+      toolName: "mcp__paseo_list_sessions",
+      result: { content: [{ type: "text", text: "session-1" }] },
+    });
+    const legacyMcpSnapshot = events.findLast(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "Paseo list sessions",
+    );
+    expect(legacyMcpSnapshot).toBeDefined();
     session.emit({
       type: "tool_execution_start",
       toolCallId: "preserved-fetch",
