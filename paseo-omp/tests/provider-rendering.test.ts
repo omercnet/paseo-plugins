@@ -204,7 +204,9 @@ describe("OMP direct provider", () => {
         event.item.type === "tool_call" &&
         event.item.name === "Paseo list sessions",
     );
-    expect(legacyMcpSnapshot).toBeDefined();
+    expect(legacyMcpSnapshot).toMatchObject({
+      item: { name: "Paseo list sessions", status: "completed" },
+    });
     session.emit({
       type: "tool_execution_start",
       toolCallId: "preserved-fetch",

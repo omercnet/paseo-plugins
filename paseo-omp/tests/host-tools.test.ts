@@ -1421,11 +1421,16 @@ describe("OMP host tool bridge", () => {
   });
 
   test("keeps registered host tools out of the namespace OMP reclaims", async () => {
-    const longToolName = `search_${"x".repeat(245)}`;
+    // Two names that are valid at the source (within the 256-byte limit) but
+    // overflow once namespaced, and that stay identical past the truncation
+    // cut. Uniqueness then holds only because the truncated form carries a
+    // per-tool digest.
+    const sharedLongPrefix = `search_${"x".repeat(240)}`;
     const repo = new FakeConnection(
       [
         { name: "search", description: "Search", inputSchema: { type: "object" } },
-        { name: longToolName, description: "Long", inputSchema: { type: "object" } },
+        { name: `${sharedLongPrefix}a`, description: "Long A", inputSchema: { type: "object" } },
+        { name: `${sharedLongPrefix}b`, description: "Long B", inputSchema: { type: "object" } },
       ],
       { content: [] },
     );
@@ -1446,12 +1451,12 @@ describe("OMP host tool bridge", () => {
     // The literal prefix is OMP's contract, so it is spelled out rather than
     // imported from the constant this plugin controls.
     const registered = (runtime.catalogs[0] ?? []).map(({ name }) => name);
-    expect(registered).not.toEqual([]);
+    expect(registered).toHaveLength(3);
     expect(registered.some((name) => name.startsWith("mcp__"))).toBe(false);
     expect(registered).toContain(`${HOST_TOOL_NAME_PREFIX}repo_search`);
     // Truncated names keep the prefix, stay unique, and stay within bounds.
     expect(new Set(registered).size).toBe(registered.length);
-    for (const name of registered.filter((entry) => entry !== "create_agent")) {
+    for (const name of registered) {
       expect(name.startsWith(HOST_TOOL_NAME_PREFIX)).toBe(true);
       expect(Buffer.byteLength(name, "utf8")).toBeLessThanOrEqual(256);
     }

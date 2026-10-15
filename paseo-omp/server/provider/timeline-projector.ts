@@ -191,10 +191,10 @@ function xdeviceToolName(nativeName: string, input: JsonValue): string | undefin
   return match?.[1];
 }
 function hostToolPrefixOf(name: string): string | undefined {
+  if (name.startsWith(HOST_TOOL_NAME_PREFIX)) return HOST_TOOL_NAME_PREFIX;
   // Timelines persisted before the rename still carry the legacy prefix.
-  return [HOST_TOOL_NAME_PREFIX, LEGACY_HOST_TOOL_NAME_PREFIX].find((prefix) =>
-    name.startsWith(prefix),
-  );
+  if (name.startsWith(LEGACY_HOST_TOOL_NAME_PREFIX)) return LEGACY_HOST_TOOL_NAME_PREFIX;
+  return undefined;
 }
 function friendlyXdeviceToolName(name: string): string {
   const prefix = hostToolPrefixOf(name);
