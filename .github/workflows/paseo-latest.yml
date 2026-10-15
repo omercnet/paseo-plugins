@@ -79,7 +79,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          first_error() { [ -f "$1" ] && grep -m1 -E '^[[:space:]]*(Error:|error TS|FAIL )' "$1" || true; }
+          first_error() {
+            [ -f "$1" ] || { printf '(no log captured)'; return 0; }
+            line="$(grep -E 'error TS[0-9]+|^[[:space:]]*(Error:|FAIL )' "$1" | grep -v 'Command failed' | head -1 | tr -d '`' | cut -c1-300 || true)"
+            printf '%s' "${line:-(no error line captured; see the run log)}"
+          }
           if [ "$INSTALL_OUTCOME" = success ] && [ "$TYPECHECK_OUTCOME" = success ] && [ "$TEST_OUTCOME" = success ]; then
             COMPAT_STATE=passing
             COMPAT_TITLE="Paseo ${PASEO_CHANNEL} compatibility"
