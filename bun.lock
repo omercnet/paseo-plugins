@@ -144,7 +144,7 @@
     },
     "paseo-omp": {
       "name": "@omercnet/paseo-omp",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "dependencies": {
         "@getpaseo/protocol": "catalog:",
         "@modelcontextprotocol/sdk": "catalog:",
@@ -174,7 +174,7 @@
     },
     "paseo-shared-browser": {
       "name": "@omercnet/paseo-shared-browser",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "dependencies": {
         "@getpaseo/plugin": "catalog:",
         "@modelcontextprotocol/sdk": "catalog:",
@@ -248,7 +248,7 @@
     },
     "top": {
       "name": "@omercnet/paseo-top",
-      "version": "0.0.1-alpha",
+      "version": "0.1.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/cli": "catalog:",

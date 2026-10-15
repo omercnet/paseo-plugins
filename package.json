@@ -2,7 +2,7 @@
   "name": "@omercnet/paseo-plugins",
   "private": true,
   "version": "0.0.0",
-  "packageManager": "bun@1.4.2",
+  "packageManager": "bun@1.4.3",
   "workspaces": [
     "agent-crew",
     "agent-monitor",
