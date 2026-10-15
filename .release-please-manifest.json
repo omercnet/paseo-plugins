@@ -4,11 +4,11 @@
   "agent-monitor": "2.0.0",
   "fresh-worktrees": "3.0.0",
   "paseo-beads": "2.0.0",
-  "paseo-omp": "2.0.1",
+  "paseo-omp": "2.0.2",
   "paseo-dracula": "1.2.1",
   "paseo-shared-browser": "2.0.1",
   "paseo-gas-city": "2.0.0",
-  "context-mode": "2.0.1",
+  "context-mode": "2.0.2",
   "pr-radar": "2.0.0",
   "queens": "3.0.0",
   "top": "0.1.0"

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v2.0.1...paseo-omp-v2.0.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **paseo-omp:** keep forwarded MCP tools out of OMP's reclaimed namespace ([cc73a03](https://github.com/omercnet/paseo-plugins/commit/cc73a03fee48e2eabf8c908a1ac4f2cc1b96ba31))
+
 ## [2.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v2.0.0...paseo-omp-v2.0.1) (2026-10-13)
 
 

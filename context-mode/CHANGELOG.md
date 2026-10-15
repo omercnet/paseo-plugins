@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v2.0.1...paseo-context-mode-v2.0.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **context-mode:** run panel probes against a plugin-owned storage root ([#334](https://github.com/omercnet/paseo-plugins/issues/334)) ([344001e](https://github.com/omercnet/paseo-plugins/commit/344001e424d58aac79e2fa7f869ef465ca8070be))
+
 ## [2.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v2.0.0...paseo-context-mode-v2.0.1) (2026-10-12)
 
 
