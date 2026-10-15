@@ -256,7 +256,14 @@ try {
     `Configured MCP tool did not complete; observed tool calls: ${JSON.stringify(
       mcpTimeline.entries.flatMap(({ item }) =>
         item.type === "tool_call"
-          ? [{ name: item.name, status: item.status, detail: item.detail.type }]
+          ? [
+              {
+                name: item.name,
+                status: item.status,
+                detail: item.detail.type,
+                error: item.error,
+              },
+            ]
           : [],
       ),
     )}`,
