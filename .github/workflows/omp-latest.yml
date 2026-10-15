@@ -41,7 +41,9 @@ jobs:
       - name: Check latest OMP SDK contract
         id: sdk-contract
         continue-on-error: true
-        run: bunx --no-install tsc --noEmit -p tsconfig.tests.json
+        run: |
+          set -o pipefail
+          bunx --no-install tsc --noEmit -p tsconfig.tests.json 2>&1 | tee "$RUNNER_TEMP/sdk.log"
       - name: Resolve latest OMP release
         id: omp
         run: |
@@ -75,26 +77,43 @@ jobs:
           PASEO_CANARY_OMP_VERSION: ${{ steps.omp.outputs.version }}
           PASEO_CANARY_OMP_SHA256_AMD64: ${{ steps.omp.outputs.amd64 }}
           PASEO_CANARY_OMP_SHA256_ARM64: ${{ steps.omp.outputs.arm64 }}
-        run: npm run test:integration:canary
-      - name: Open latest OMP compatibility failure issue
-        if: ${{ always() && (steps.sdk-contract.outcome != 'success' || steps.canary.outcome != 'success') }}
+        run: |
+          set -o pipefail
+          npm run test:integration:canary 2>&1 | tee "$RUNNER_TEMP/canary.log"
+      - name: Record latest OMP compatibility result
+        if: ${{ always() }}
         working-directory: .
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          COMPAT_LABEL: compat-omp-latest
           OMP_VERSION: ${{ steps.omp.outputs.version || 'unresolved' }}
           SDK_OUTCOME: ${{ steps.sdk-contract.outcome }}
           CANARY_OUTCOME: ${{ steps.canary.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          title="OMP latest compatibility ${OMP_VERSION}: sdk=${SDK_OUTCOME}, canary=${CANARY_OUTCOME}"
-          existing="$(gh api -X GET search/issues -f "q=repo:${GITHUB_REPOSITORY} is:issue in:title \"${title}\"" --jq '.items[] | .title + "\t" + (.number | tostring)' | node -e 'const title = process.argv[1]; const rows = require("node:fs").readFileSync(0, "utf8").trim().split("\n").filter(Boolean); for (const row of rows) { const [candidate, number] = row.split("\t"); if (candidate === title) { process.stdout.write(number); break; } }' "$title")"
-          if [ -n "$existing" ]; then
-            echo "Compatibility result already recorded in #$existing"
-            exit 0
+          first_error() { [ -f "$1" ] && grep -m1 -E '^[[:space:]]*(Error:|error TS)' "$1" || true; }
+          if [ "$SDK_OUTCOME" = success ] && [ "$CANARY_OUTCOME" = success ]; then
+            COMPAT_STATE=passing
+            COMPAT_TITLE="OMP latest compatibility"
+            printf '%s\n' "Latest OMP \`${OMP_VERSION}\` passes the SDK contract and the Docker canary. Run: ${RUN_URL}" > "$RUNNER_TEMP/compat-body.md"
+          else
+            COMPAT_STATE=failing
+            COMPAT_TITLE="OMP latest compatibility: failing on ${OMP_VERSION}"
+            {
+              echo "## OMP latest compatibility drift"
+              echo
+              echo "Latest OMP: \`${OMP_VERSION}\`. SDK contract: \`${SDK_OUTCOME}\`. Docker canary: \`${CANARY_OUTCOME}\`. Run: ${RUN_URL}"
+              echo
+              echo "First SDK error: \`$(first_error "$RUNNER_TEMP/sdk.log")\`"
+              echo
+              echo "First canary error: \`$(first_error "$RUNNER_TEMP/canary.log")\`"
+              echo
+              echo "This single issue tracks the lane. It is updated nightly while failing and closed automatically when the lane passes. Pinned-matrix CI is unaffected."
+            } > "$RUNNER_TEMP/compat-body.md"
           fi
-          body="$(printf '%s\n' "## OMP latest compatibility result" "" "- OMP version: \`${OMP_VERSION}\`" "- Latest SDK contract: \`${SDK_OUTCOME}\`" "- Full Docker canary: \`${CANARY_OUTCOME}\`" "- Workflow run: ${RUN_URL}" "" "Automated nightly result. The issue title is an idempotency key for this exact version and outcome pair.")"
-          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          export COMPAT_STATE COMPAT_TITLE COMPAT_BODY_FILE="$RUNNER_TEMP/compat-body.md"
+          node .github/scripts/report-compat.mjs
       - name: Fail on latest OMP compatibility drift
         if: ${{ steps.sdk-contract.outcome == 'failure' || steps.canary.outcome == 'failure' }}
         run: exit 1

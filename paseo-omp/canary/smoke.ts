@@ -253,7 +253,13 @@ try {
         entry.item.status === "completed" &&
         JSON.stringify(entry.item).includes("xd://mcp__canary_echo_marker"),
     ),
-    "Configured MCP tool did not complete",
+    `Configured MCP tool did not complete; observed tool calls: ${JSON.stringify(
+      mcpTimeline.entries.flatMap(({ item }) =>
+        item.type === "tool_call"
+          ? [{ name: item.name, status: item.status, detail: item.detail.type }]
+          : [],
+      ),
+    )}`,
   );
   const mcpSnapshot = await client.fetchAgent(mcpAgent.id);
   const mcpPersistence = mcpSnapshot?.agent.persistence;

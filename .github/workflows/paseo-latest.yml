@@ -55,17 +55,22 @@ jobs:
         id: typecheck
         if: ${{ steps.sdk-install.outcome == 'success' }}
         continue-on-error: true
-        run: npm run typecheck
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee "$RUNNER_TEMP/typecheck.log"
       - name: Test selected Paseo SDK compatibility
         id: test
         if: ${{ steps.sdk-install.outcome == 'success' }}
         continue-on-error: true
-        run: npm test
-      - name: Open Paseo SDK compatibility failure issue
-        if: ${{ always() && (steps.sdk-install.outcome != 'success' || steps.typecheck.outcome != 'success' || steps.test.outcome != 'success') }}
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Record Paseo SDK compatibility result
+        if: ${{ always() }}
         working-directory: .
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          COMPAT_LABEL: compat-paseo-${{ matrix.channel }}
           PASEO_CHANNEL: ${{ matrix.channel }}
           PASEO_VERSION: ${{ steps.paseo.outputs.version || 'unresolved' }}
           INSTALL_OUTCOME: ${{ steps.sdk-install.outcome }}
@@ -74,14 +79,28 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          title="Paseo ${PASEO_CHANNEL} compatibility ${PASEO_VERSION}: install=${INSTALL_OUTCOME}, typecheck=${TYPECHECK_OUTCOME}, test=${TEST_OUTCOME}"
-          existing="$(gh api -X GET search/issues -f "q=repo:${GITHUB_REPOSITORY} is:issue in:title \"${title}\"" --jq '.items[] | .title + "\t" + (.number | tostring)' | node -e 'const title = process.argv[1]; const rows = require("node:fs").readFileSync(0, "utf8").trim().split("\n").filter(Boolean); for (const row of rows) { const [candidate, number] = row.split("\t"); if (candidate === title) { process.stdout.write(number); break; } }' "$title")"
-          if [ -n "$existing" ]; then
-            echo "Compatibility result already recorded in #$existing"
-            exit 0
+          first_error() { [ -f "$1" ] && grep -m1 -E '^[[:space:]]*(Error:|error TS|FAIL )' "$1" || true; }
+          if [ "$INSTALL_OUTCOME" = success ] && [ "$TYPECHECK_OUTCOME" = success ] && [ "$TEST_OUTCOME" = success ]; then
+            COMPAT_STATE=passing
+            COMPAT_TITLE="Paseo ${PASEO_CHANNEL} compatibility"
+            printf '%s\n' "Paseo SDK \`${PASEO_VERSION}\` (${PASEO_CHANNEL}) passes typecheck and the unit suite. Run: ${RUN_URL}" > "$RUNNER_TEMP/compat-body.md"
+          else
+            COMPAT_STATE=failing
+            COMPAT_TITLE="Paseo ${PASEO_CHANNEL} compatibility: failing on ${PASEO_VERSION}"
+            {
+              echo "## Paseo SDK compatibility drift (${PASEO_CHANNEL})"
+              echo
+              echo "SDK \`${PASEO_VERSION}\`. Install: \`${INSTALL_OUTCOME}\`. Typecheck: \`${TYPECHECK_OUTCOME}\`. Unit suite: \`${TEST_OUTCOME}\`. Run: ${RUN_URL}"
+              echo
+              echo "First typecheck error: \`$(first_error "$RUNNER_TEMP/typecheck.log")\`"
+              echo
+              echo "First test failure: \`$(first_error "$RUNNER_TEMP/test.log")\`"
+              echo
+              echo "This single issue tracks the ${PASEO_CHANNEL} channel. It is updated nightly while failing and closed automatically when the channel passes."
+            } > "$RUNNER_TEMP/compat-body.md"
           fi
-          body="$(printf '%s\n' "## Paseo SDK compatibility result" "" "- SDK channel: \`${PASEO_CHANNEL}\`" "- Paseo SDK version: \`${PASEO_VERSION}\`" "- SDK installation: \`${INSTALL_OUTCOME}\`" "- Typecheck: \`${TYPECHECK_OUTCOME}\`" "- Full unit suite: \`${TEST_OUTCOME}\`" "- Workflow run: ${RUN_URL}" "" "Automated nightly result. The issue title is an idempotency key for this exact channel, version, and outcome tuple.")"
-          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          export COMPAT_STATE COMPAT_TITLE COMPAT_BODY_FILE="$RUNNER_TEMP/compat-body.md"
+          node .github/scripts/report-compat.mjs
       - name: Fail on Paseo SDK compatibility drift
         if: ${{ steps.sdk-install.outcome == 'failure' || steps.typecheck.outcome == 'failure' || steps.test.outcome == 'failure' }}
         run: exit 1
