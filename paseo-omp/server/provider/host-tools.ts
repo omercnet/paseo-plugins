@@ -259,11 +259,26 @@ function serverNamespaces(servers: readonly ClassifiedServer[]): ReadonlyMap<str
   );
 }
 
+/**
+ * Namespace prefix for tools this plugin registers through `set_host_tools`.
+ *
+ * It deliberately avoids OMP's `mcp__` prefix. OMP treats that prefix as its own
+ * MCP manager's namespace (`isMCPToolName`), and every `refreshMCPTools` deletes
+ * the whole namespace from the session tool registry before rebuilding it from
+ * manager- and extension-owned tools only. Host tools registered over RPC are in
+ * neither set, so an `mcp__` name is accepted and then dropped once OMP's own
+ * deferred MCP discovery completes, leaving the tool callable from nowhere.
+ */
+export const HOST_TOOL_NAME_PREFIX = "mcpx__";
+
+/** Prefix used before {@link HOST_TOOL_NAME_PREFIX}; still rendered in persisted timelines. */
+export const LEGACY_HOST_TOOL_NAME_PREFIX = "mcp__";
+
 function exposedToolName(server: ClassifiedServer, namespace: string, toolName: string): string {
   const tool = safeName(toolName, "tool");
   if (server.canonical) return tool;
   const unprefixed = tool.startsWith(`${namespace}_`) ? tool.slice(namespace.length + 1) : tool;
-  const base = `mcp__${namespace}_${unprefixed}`;
+  const base = `${HOST_TOOL_NAME_PREFIX}${namespace}_${unprefixed}`;
   if (utf8Bytes(base) <= MAX_HOST_TOOL_NAME_BYTES) return base;
   const suffix = digest(`${server.name}\0${toolName}`);
   return `${base.slice(0, MAX_HOST_TOOL_NAME_BYTES - suffix.length - 1)}_${suffix}`;

@@ -975,7 +975,7 @@ describe("OMP RPC transport", () => {
           id: command.id,
           command: "set_host_tools",
           success: true,
-          data: { toolNames: ["mcp__paseo_read"] },
+          data: { toolNames: ["mcpx__paseo_read"] },
         });
       }
     });
@@ -986,14 +986,14 @@ describe("OMP RPC transport", () => {
     await expect(
       session.setHostTools([
         {
-          name: "mcp__paseo_read",
+          name: "mcpx__paseo_read",
           label: "Read",
           description: "Read a caller-scoped workspace file",
           loadMode: "essential",
           parameters: { type: "object", properties: { path: { type: "string" } } },
         },
       ]),
-    ).resolves.toEqual(["mcp__paseo_read"]);
+    ).resolves.toEqual(["mcpx__paseo_read"]);
     session.sendHostToolUpdate({
       type: "host_tool_update",
       id: "host-call-1",
@@ -1008,7 +1008,7 @@ describe("OMP RPC transport", () => {
 
     expect(commands).toContainEqual({
       type: "set_host_tools",
-      tools: [expect.objectContaining({ name: "mcp__paseo_read", loadMode: "essential" })],
+      tools: [expect.objectContaining({ name: "mcpx__paseo_read", loadMode: "essential" })],
       id: expect.any(String),
     });
     expect(commands).toContainEqual({

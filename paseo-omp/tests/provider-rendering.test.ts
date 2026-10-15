@@ -133,7 +133,7 @@ describe("OMP direct provider", () => {
       type: "tool_execution_start",
       toolCallId: "mcp-route",
       toolName: "write",
-      args: { path: "xd://mcp__paseo_list_agents", content: "{}" },
+      args: { path: "xd://mcpx__paseo_list_agents", content: "{}" },
     });
     session.emit({
       type: "tool_execution_end",
@@ -155,20 +155,20 @@ describe("OMP direct provider", () => {
       status: "completed",
       detail: {
         type: "unknown",
-        input: { path: "xd://mcp__paseo_list_agents", content: "{}" },
+        input: { path: "xd://mcpx__paseo_list_agents", content: "{}" },
         output: { content: [{ type: "text", text: "agent-1" }] },
       },
     });
     session.emit({
       type: "tool_execution_start",
       toolCallId: "direct-mcp",
-      toolName: "mcp__paseo_list_providers",
+      toolName: "mcpx__paseo_list_providers",
       args: {},
     });
     session.emit({
       type: "tool_execution_end",
       toolCallId: "direct-mcp",
-      toolName: "mcp__paseo_list_providers",
+      toolName: "mcpx__paseo_list_providers",
       result: { content: [{ type: "text", text: "provider-1" }] },
     });
     const directMcpSnapshots = events.flatMap((event) =>

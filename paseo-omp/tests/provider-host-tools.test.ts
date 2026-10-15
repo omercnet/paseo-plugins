@@ -252,8 +252,8 @@ describe("OMP direct provider", () => {
     const session = sessionAt(runtime);
     await startPrompt(connection, events, "host-tool-label-turn", "read");
     for (const [toolCallId, toolName, args] of [
-      ["direct-host-tool", "mcp__repo_read", {}],
-      ["routed-host-tool", "write", { path: "xd://mcp__repo_read", content: "{}" }],
+      ["direct-host-tool", "mcpx__repo_read", {}],
+      ["routed-host-tool", "write", { path: "xd://mcpx__repo_read", content: "{}" }],
     ] as const) {
       session.emit({ type: "tool_execution_start", toolCallId, toolName, args });
       session.emit({ type: "tool_execution_end", toolCallId, toolName, result: { ok: true } });
@@ -345,7 +345,7 @@ describe("OMP direct provider", () => {
       type: "host_tool_call",
       id: "open-bind-cancelled",
       toolCallId: "open-bind-cancelled-tool-call",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: {},
     });
     session.emit({
@@ -455,7 +455,7 @@ describe("OMP direct provider", () => {
       type: "host_tool_call",
       id: "recovery-write-failure-call",
       toolCallId: "recovery-write-failure-tool-call",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: {},
     });
     await writeAttempted.promise;
@@ -524,7 +524,7 @@ describe("OMP direct provider", () => {
       type: "host_tool_call",
       id: "host-result-call",
       toolCallId: "host-result-tool-call",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: {},
     });
     await closed.promise;

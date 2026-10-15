@@ -251,7 +251,7 @@ try {
         entry.item.name === "Canary: Echo marker" &&
         entry.item.detail.type === "unknown" &&
         entry.item.status === "completed" &&
-        JSON.stringify(entry.item).includes("xd://mcp__canary_echo_marker"),
+        JSON.stringify(entry.item).includes("xd://mcpx__canary_echo_marker"),
     ),
     `Configured MCP tool did not complete; observed tool calls: ${JSON.stringify(
       mcpTimeline.entries.flatMap(({ item }) =>

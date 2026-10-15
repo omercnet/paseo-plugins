@@ -1018,7 +1018,7 @@ export async function expectBootstrapHostToolTerminal(
     type: "host_tool_call",
     id,
     toolCallId: `${id}-tool-call`,
-    toolName: "mcp__repo_read",
+    toolName: "mcpx__repo_read",
     arguments: { phase: id },
   });
   await observed.promise;

@@ -36,6 +36,10 @@ const releaseChecksums: Record<string, { amd64: string; arm64: string }> = {
     amd64: "b2dba223fbdae27acbd99be2f3e76ba10baae1768f9c57cee30c440f308dea4e",
     arm64: "e12983d063a1946d7aa20b9fa402c0a4ac65eefa26c3168c502c4f28a04cd3bd",
   },
+  "18.10.1": {
+    amd64: "9798d22d518b23342b4cadf57672b276ef09e756c1832adc6571b04b26ad4f1b",
+    arm64: "5cad38a8edee60cec9c0ce91810eba38bda0efe349562157023810343dacb8d5",
+  },
 };
 
 async function freePort(): Promise<number> {

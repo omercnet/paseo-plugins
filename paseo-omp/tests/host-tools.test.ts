@@ -3,6 +3,8 @@ import { describe, expect, test } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import {
   describeDegradedMcpServers,
+  HOST_TOOL_NAME_PREFIX,
+  LEGACY_HOST_TOOL_NAME_PREFIX,
   type OmpHostToolScheduler,
   OmpHostToolsBridge,
   type OmpMcpConnection,
@@ -205,12 +207,12 @@ describe("OMP host tool bridge", () => {
         loadMode: "essential",
       }),
       expect.objectContaining({
-        name: "mcp__daemon_sibling_status",
+        name: "mcpx__daemon_sibling_status",
         label: "Daemon sibling: Status",
         loadMode: "essential",
       }),
       expect.objectContaining({
-        name: "mcp__repo_search",
+        name: "mcpx__repo_search",
         label: "Repo: Search",
         loadMode: "discoverable",
       }),
@@ -218,8 +220,8 @@ describe("OMP host tool bridge", () => {
     expect(bridge.labels).toEqual(
       new Map([
         ["create_agent", "Create agent"],
-        ["mcp__daemon_sibling_status", "Daemon sibling: Status"],
-        ["mcp__repo_search", "Repo: Search"],
+        ["mcpx__daemon_sibling_status", "Daemon sibling: Status"],
+        ["mcpx__repo_search", "Repo: Search"],
       ]),
     );
 
@@ -335,7 +337,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "structured-result",
       toolCallId: "tool-structured-result",
-      toolName: "mcp__repo_inspect",
+      toolName: "mcpx__repo_inspect",
       arguments: {},
     });
     await flushMicrotasks();
@@ -372,7 +374,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "oversized-details",
       toolCallId: "tool-oversized-details",
-      toolName: "mcp__repo_inspect",
+      toolName: "mcpx__repo_inspect",
       arguments: {},
     });
     await flushMicrotasks();
@@ -413,7 +415,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "frame-details",
       toolCallId: "tool-frame-details",
-      toolName: "mcp__repo_inspect",
+      toolName: "mcpx__repo_inspect",
       arguments: {},
     });
     await flushMicrotasks();
@@ -449,7 +451,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id,
       toolCallId: "tool-minimum-frame",
-      toolName: "mcp__repo_inspect",
+      toolName: "mcpx__repo_inspect",
       arguments: {},
     });
     await flushMicrotasks();
@@ -481,7 +483,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "multibyte-text",
       toolCallId: "tool-multibyte-text",
-      toolName: "mcp__repo_inspect",
+      toolName: "mcpx__repo_inspect",
       arguments: {},
     });
     await flushMicrotasks();
@@ -522,7 +524,7 @@ describe("OMP host tool bridge", () => {
         type: "host_tool_call",
         id: `oversized-content-${index}`,
         toolCallId: `tool-oversized-content-${index}`,
-        toolName: "mcp__repo_inspect",
+        toolName: "mcpx__repo_inspect",
         arguments: {},
       });
       await flushMicrotasks();
@@ -597,7 +599,7 @@ describe("OMP host tool bridge", () => {
     expect(observed[0]).toBe("paseo");
     expect(names.filter((name) => name === "create_agent")).toEqual(["create_agent"]);
     expect(new Set(names).size).toBe(3);
-    expect(names.slice(1).every((name) => name.startsWith("mcp__external_paseo_"))).toBe(true);
+    expect(names.slice(1).every((name) => name.startsWith("mcpx__external_paseo_"))).toBe(true);
     await bridge.close();
   });
 
@@ -723,7 +725,7 @@ describe("OMP host tool bridge", () => {
         type: "host_tool_call",
         id: `call-${index}`,
         toolCallId: `tool-${index}`,
-        toolName: "mcp__repo_read",
+        toolName: "mcpx__repo_read",
         arguments: { key: `first-${index}` },
       });
     }
@@ -731,7 +733,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "saturated",
       toolCallId: "tool-saturated",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: { key: "saturated" },
     });
     expect(connection.calls).toHaveLength(64);
@@ -744,7 +746,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "call-0",
       toolCallId: "tool-reused",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: { key: "replacement" },
     });
     await flushMicrotasks();
@@ -759,7 +761,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "oversized",
       toolCallId: "tool-oversized",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: { payload: "x".repeat(8 * 1024 * 1024) },
     });
     expect(runtime.results.at(-1)).toEqual(
@@ -805,7 +807,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "absolute-timeout",
       toolCallId: "tool-absolute-timeout",
-      toolName: "mcp__repo_long",
+      toolName: "mcpx__repo_long",
       arguments: {},
     });
     progressCallbacks[0]?.({ progress: 1 });
@@ -831,7 +833,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "after-timeout",
       toolCallId: "tool-after-timeout",
-      toolName: "mcp__repo_long",
+      toolName: "mcpx__repo_long",
       arguments: {},
     });
     expect(connection.calls).toHaveLength(2);
@@ -886,7 +888,7 @@ describe("OMP host tool bridge", () => {
         type: "host_tool_call",
         id: "malformed",
         toolCallId: "tool-malformed",
-        toolName: "mcp__repo_read",
+        toolName: "mcpx__repo_read",
         arguments: {},
       });
       await flushMicrotasks();
@@ -933,7 +935,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "rejected-call",
       toolCallId: "tool-rejected-call",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: {},
     });
     await flushMicrotasks();
@@ -971,8 +973,8 @@ describe("OMP host tool bridge", () => {
     await bridge.bind(runtime as unknown as OmpRuntimeSession);
     expect(cursors).toEqual([undefined, "page-2"]);
     expect(runtime.catalogs[0]?.map(({ name }) => name)).toEqual([
-      "mcp__repo_one",
-      "mcp__repo_two",
+      "mcpx__repo_one",
+      "mcpx__repo_two",
     ]);
     await bridge.close();
 
@@ -1063,7 +1065,7 @@ describe("OMP host tool bridge", () => {
 
     expect(runtime.catalogs[0]?.map(({ name }) => name)).toEqual([
       "create_agent",
-      "mcp__healthy_read",
+      "mcpx__healthy_read",
     ]);
     expect(bridge.degraded).toEqual([
       { name: "connect-fails", reason: "unavailable" },
@@ -1106,8 +1108,8 @@ describe("OMP host tool bridge", () => {
       return runtime.catalogs[0]?.map(({ name }) => name) ?? [];
     };
 
-    expect(await open(true)).toEqual(["mcp__beta_read"]);
-    expect(await open(false)).toEqual(["mcp__alpha_read", "mcp__beta_read"]);
+    expect(await open(true)).toEqual(["mcpx__beta_read"]);
+    expect(await open(false)).toEqual(["mcpx__alpha_read", "mcpx__beta_read"]);
   });
 
   test("fails the open when the required Paseo server cannot connect", async () => {
@@ -1178,7 +1180,7 @@ describe("OMP host tool bridge", () => {
     await bridge.bind(runtime as unknown as OmpRuntimeSession);
 
     expect(bridge.degraded).toEqual([{ name: "hung", reason: "timed-out" }]);
-    expect(runtime.catalogs[0]?.map(({ name }) => name)).toEqual(["mcp__ok_read"]);
+    expect(runtime.catalogs[0]?.map(({ name }) => name)).toEqual(["mcpx__ok_read"]);
     await bridge.close();
   });
 
@@ -1297,7 +1299,7 @@ describe("OMP host tool bridge", () => {
         type: "host_tool_call",
         id,
         toolCallId: `tool-${id}`,
-        toolName: "mcp__repo_read",
+        toolName: "mcpx__repo_read",
         arguments: {},
       });
       await flushMicrotasks();
@@ -1337,7 +1339,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "saturated-result",
       toolCallId: "tool-saturated-result",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: {},
     });
     await expect(failed.promise).resolves.toEqual(
@@ -1352,7 +1354,7 @@ describe("OMP host tool bridge", () => {
       type: "host_tool_call",
       id: "after-drain",
       toolCallId: "tool-after-drain",
-      toolName: "mcp__repo_read",
+      toolName: "mcpx__repo_read",
       arguments: {},
     });
     await flushMicrotasks();
@@ -1417,5 +1419,30 @@ describe("OMP host tool bridge", () => {
         env: { PASEO_AGENT_ID: "spoofed", PASEO_WORKSPACE_ID: "spoofed" },
       }).env,
     ).toEqual({ PASEO_AGENT_ID: "agent-legacy" });
+  });
+
+  test("keeps registered host tools out of the namespace OMP reclaims", async () => {
+    const repo = new FakeConnection(
+      [{ name: "search", description: "Search", inputSchema: { type: "object" } }],
+      { content: [] },
+    );
+    const connector: OmpMcpConnector = async (name) =>
+      name === "repo" ? repo : new FakeConnection([], { content: [] });
+    const config = requiredServerConfig({
+      repo: { type: "stdio", command: "repo-mcp" },
+    });
+
+    const bridge = await OmpHostToolsBridge.open(config, { connectMcp: connector });
+    const runtime = new FakeRuntime();
+    await bridge.bind(runtime as unknown as OmpRuntimeSession);
+
+    // OMP's `isMCPToolName` claims the whole `mcp__` namespace, and every
+    // `refreshMCPTools` deletes it before rebuilding from manager- and
+    // extension-owned tools. A host tool named that way is accepted by
+    // `set_host_tools` and then silently dropped, so it must never be used.
+    const registered = (runtime.catalogs[0] ?? []).map(({ name }) => name);
+    expect(registered).not.toEqual([]);
+    expect(registered.some((name) => name.startsWith(LEGACY_HOST_TOOL_NAME_PREFIX))).toBe(false);
+    expect(registered).toContain(`${HOST_TOOL_NAME_PREFIX}repo_search`);
   });
 });

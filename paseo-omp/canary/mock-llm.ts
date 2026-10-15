@@ -112,7 +112,7 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
   if (!hasToolResult && hasTool(tools, "write") && prompt.includes("CANARY_MCP")) {
     return toolCallResponse(base, "call_canary_mcp", "write", {
       i: "Calling canary MCP echo",
-      path: "xd://mcp__canary_echo_marker",
+      path: "xd://mcpx__canary_echo_marker",
       content: JSON.stringify({ value: "CANARY_MCP_OK" }),
     });
   }
