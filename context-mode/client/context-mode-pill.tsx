@@ -75,7 +75,7 @@ export function contributeContextModeComposerPills(client: PluginClientContext):
 
   void client.paseo.agents
     .list({
-      filter: { includeArchived: false },
+      filter: { includeArchived: false, includeBackground: true },
       subscribe: {},
       signal: lifetime.signal,
     })

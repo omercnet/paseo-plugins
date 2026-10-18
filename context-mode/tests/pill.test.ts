@@ -77,6 +77,18 @@ const flush = async () => {
 const upsert = (agent: Agent) => ({ type: "agent_update", payload: { kind: "upsert", agent } });
 
 describe("pill lifecycle", () => {
+  test("observes agents in background workspaces too", async () => {
+    const list = vi.fn(async (_options: unknown) => ({
+      subscription: { subscribe: vi.fn(), release: vi.fn() },
+    }));
+    const h = harness(list);
+    contributeContextModeComposerPills(h.client as never);
+    await flush();
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ filter: { includeArchived: false, includeBackground: true } }),
+    );
+  });
+
   test("moving an agent to another workspace re-scopes the pill", async () => {
     const h = harness();
     contributeContextModeComposerPills(h.client as never);
