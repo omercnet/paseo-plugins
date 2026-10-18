@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { DaemonClient, type WaitForFinishResult } from "@getpaseo/client/internal/daemon-client";
+import {
+  DaemonClient,
+  type ProviderSubagentTimelinePayload,
+  type WaitForFinishResult,
+} from "@getpaseo/client/internal/daemon-client";
 
 const url = process.env.PASEO_CANARY_URL ?? "ws://127.0.0.1:6768/ws";
 const password = process.env.PASEO_CANARY_PASSWORD;
@@ -12,6 +16,20 @@ if (!password) throw new Error("PASEO_CANARY_PASSWORD is required");
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+type SubagentRows = ProviderSubagentTimelinePayload["rows"];
+
+// OMP <= 18.10.1 reports a task subagent's result as a `yield` call. Since 18.10.2 the setting
+// `task.structured` defaults to off: subagents have no `yield` and return their final message.
+function reportsSubagentResult(rows: SubagentRows, marker: string): boolean {
+  return rows.some(
+    (row) =>
+      (row.item.type === "tool_call" &&
+        row.item.name === "yield" &&
+        JSON.stringify(row.item.detail).includes(marker)) ||
+      (row.item.type === "assistant_message" && row.item.text.includes(marker)),
+  );
 }
 
 function assertFinished(result: WaitForFinishResult, expected: string): void {
@@ -605,13 +623,8 @@ try {
       `Nested subagent ended as ${nestedChild.status}: ${JSON.stringify(nestedChildTimeline.rows)}`,
     );
     assert(
-      directTimeline.rows.some(
-        (row) =>
-          row.item.type === "tool_call" &&
-          row.item.name === "yield" &&
-          JSON.stringify(row.item.detail).includes("CANARY_NESTED_CHILD_OK"),
-      ),
-      `Direct subagent yield is missing from its timeline: ${JSON.stringify(directTimeline.rows)}`,
+      reportsSubagentResult(directTimeline.rows, "CANARY_NESTED_CHILD_OK"),
+      `Direct subagent result is missing from its timeline: ${JSON.stringify(directTimeline.rows)}`,
     );
     assert(
       !nestedChildTimeline.rows.some(
@@ -622,13 +635,8 @@ try {
       `Direct yield leaked into the nested subagent timeline: ${JSON.stringify(nestedChildTimeline.rows)}`,
     );
     assert(
-      nestedChildTimeline.rows.some(
-        (row) =>
-          row.item.type === "tool_call" &&
-          row.item.name === "yield" &&
-          JSON.stringify(row.item.detail).includes("CANARY_NESTED_LEAF_OK"),
-      ),
-      `Nested subagent yield is missing from its timeline: ${JSON.stringify(nestedChildTimeline.rows)}`,
+      reportsSubagentResult(nestedChildTimeline.rows, "CANARY_NESTED_LEAF_OK"),
+      `Nested subagent result is missing from its timeline: ${JSON.stringify(nestedChildTimeline.rows)}`,
     );
     summary.subagents = {
       passed: true,

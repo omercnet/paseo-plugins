@@ -1337,11 +1337,13 @@ describe("OMP direct provider", () => {
     }
   });
 
-  test("derives pending cold async outcomes from terminal yield payloads", async () => {
+  test("derives pending cold async outcomes from terminal yield payloads or final prose", async () => {
     for (const { outcome, yieldStatus } of [
       { outcome: "canceled" as const, yieldStatus: "aborted" },
       { outcome: "failed" as const, yieldStatus: "failed" },
       { outcome: "completed" as const, yieldStatus: "success" },
+      // OMP >= 18.10.2 task subagents have no `yield`; the final assistant message is the result.
+      { outcome: "completed" as const, yieldStatus: undefined },
     ]) {
       const runtime = new FakeOmpRuntime();
       runtime.descriptors.push({
@@ -1390,13 +1392,17 @@ describe("OMP direct provider", () => {
             content: `${outcome} output`,
             stopReason: "stop",
           },
-          {
-            role: "toolResult",
-            toolCallId: `pending-${outcome}-yield`,
-            toolName: "yield",
-            content: [{ type: "text", text: "Result submitted." }],
-            details: { status: yieldStatus },
-          },
+          ...(yieldStatus
+            ? [
+                {
+                  role: "toolResult" as const,
+                  toolCallId: `pending-${outcome}-yield`,
+                  toolName: "yield",
+                  content: [{ type: "text" as const, text: "Result submitted." }],
+                  details: { status: yieldStatus },
+                },
+              ]
+            : []),
         ],
       });
       const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
@@ -1434,6 +1440,15 @@ describe("OMP direct provider", () => {
           state: outcome,
         }),
       );
+      if (!yieldStatus) {
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: "timeline.item",
+            sessionId: child.sessionId,
+            item: expect.objectContaining({ type: "assistant_message", text: "completed output" }),
+          }),
+        );
+      }
       await connection.close();
     }
   });

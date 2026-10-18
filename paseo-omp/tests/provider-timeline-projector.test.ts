@@ -85,6 +85,72 @@ describe("OMP direct provider", () => {
       output && typeof output === "object" && !Array.isArray(output) ? output.content : null,
     ).toMatch(/^\0+<truncated>$/u);
   });
+  test("projects a prose subagent result with its async-result notice and no yield", () => {
+    const events: ProviderEvent[] = [];
+    const projector = new OmpTimelineProjector(
+      "prose-subagent-session",
+      (event) => events.push(event),
+      new ManualScheduler(),
+    );
+    const turnId = "prose-subagent-turn";
+    const spawnLog = "Spawned agent `Leaf` (job `Leaf`).";
+    const notice =
+      '<system-notice>\nBackground job Leaf has completed.\n<task-result id="Leaf" status="completed">\n<output>\nLEAF_OK\n</output>\n</task-result>\n</system-notice>';
+
+    projector.project(
+      { type: "tool_execution_start", toolCallId: "task-call", toolName: "task", args: {} },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "tool_execution_end",
+        toolCallId: "task-call",
+        toolName: "task",
+        result: { content: [{ type: "text", text: spawnLog }] },
+      },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          responseId: "prose-response",
+          content: [{ type: "text", text: "CHILD_OK" }],
+        },
+      },
+      turnId,
+    );
+    projector.project(
+      {
+        type: "message_end",
+        message: { role: "custom", customType: "async-result", display: true, content: notice },
+      },
+      turnId,
+    );
+    projector.flush();
+
+    const items = events.flatMap((event) => (event.type === "timeline.item" ? [event.item] : []));
+    expect(items.findLast((item) => item.type === "tool_call" && item.name === "task")).toEqual(
+      expect.objectContaining({
+        status: "completed",
+        detail: expect.objectContaining({ type: "sub_agent", log: spawnLog }),
+      }),
+    );
+    expect(items).toContainEqual(
+      expect.objectContaining({ type: "assistant_message", text: "CHILD_OK" }),
+    );
+    expect(items).toContainEqual(
+      expect.objectContaining({
+        type: "tool_call",
+        name: "async-result",
+        status: "completed",
+        detail: expect.objectContaining({ type: "plain_text", text: notice }),
+      }),
+    );
+    expect(items.some((item) => item.type === "tool_call" && item.name === "yield")).toBe(false);
+  });
+
   test("applies the latest pre-execution stream preview when the tool starts", () => {
     const events: ProviderEvent[] = [];
     const projector = new OmpTimelineProjector(
