@@ -183,7 +183,10 @@ function padLineNumber(lineNumber: number | null): string {
 }
 
 export function promptPayload(input: SessionPromptInput): OmpPromptPayload {
-  if (input.prompt.outputSchema !== undefined || input.prompt.clearPendingPermissions) {
+  if (
+    input.prompt.outputSchema !== undefined ||
+    (input.prompt.clearPendingPermissions && input.prompt.delivery !== "steer")
+  ) {
     throw new OmpPublicError("OMP does not support structured output or permission controls");
   }
   if (input.prompt.input.type === "command") {

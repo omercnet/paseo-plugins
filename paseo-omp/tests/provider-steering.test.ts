@@ -1,5 +1,5 @@
 import { AgentPermissionRequestPayloadSchema } from "@getpaseo/protocol/messages";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { createOmpProvider } from "../server/provider/registration";
 import { FakeRpcChild, observeCommands, READY_FRAME, runtimeFor } from "./helpers/omp-rpc-harness";
 import {
@@ -364,6 +364,72 @@ describe("OMP direct provider", () => {
       },
     });
     expect(session.steers).toEqual([]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("cancels the turn's pending permissions when a steer asks to clear them", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+    session.emit({
+      type: "extension_ui_request",
+      id: "native-steer-clear",
+      method: "confirm",
+      title: "Continue",
+      message: "Proceed?",
+    });
+    const permission = await events.waitFor((event) => event.type === "session.permission");
+    if (permission.type !== "session.permission") throw new Error("Expected permission");
+    const prompt = (delivery: "auto" | "steer") => ({
+      type: "session.prompt" as const,
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: `clear-${delivery}`,
+        delivery,
+        clearPendingPermissions: true,
+        input: {
+          type: "message" as const,
+          content: [{ type: "text" as const, text: "never mind" }],
+        },
+      },
+    });
+
+    await connection.send(prompt("auto"));
+    expect(
+      await events.waitFor(
+        (event) => event.type === "session.prompt_result" && event.clientMessageId === "clear-auto",
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        result: {
+          type: "failed",
+          error: { message: "OMP does not support structured output or permission controls" },
+        },
+      }),
+    );
+    expect(session.steers).toEqual([]);
+    expect(session.extensionUiResponses).toEqual([]);
+
+    await connection.send(prompt("steer"));
+    const result = await events.waitFor(
+      (event) => event.type === "session.prompt_result" && event.clientMessageId === "clear-steer",
+    );
+
+    expect(result).toEqual(expect.objectContaining({ result: { type: "steer", turnId } }));
+    expect(session.steers).toEqual(["never mind"]);
+    expect(session.aborts).toBe(0);
+    expect(events).toContainEqual({
+      type: "session.permission_resolved",
+      sessionId: "session-1",
+      permissionId: permission.request.id,
+    });
+    await vi.waitFor(() =>
+      expect(session.extensionUiResponses).toEqual([
+        { type: "extension_ui_response", id: "native-steer-clear", cancelled: true },
+      ]),
+    );
     await finishTurn(events, session, turnId);
     await connection.close();
   });

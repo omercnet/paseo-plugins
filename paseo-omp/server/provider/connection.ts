@@ -166,7 +166,10 @@ function preflightProviderInput(input: unknown): void {
     ) {
       throw new OmpPublicError("Prompt output schema is too large");
     }
-    if (prompt?.outputSchema !== undefined || prompt?.clearPendingPermissions === true) {
+    if (
+      prompt?.outputSchema !== undefined ||
+      (prompt?.clearPendingPermissions === true && prompt.delivery !== "steer")
+    ) {
       throw new OmpPublicError("OMP does not support structured output or permission controls");
     }
   }

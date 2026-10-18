@@ -1073,7 +1073,12 @@ export class OmpProviderSession implements OmpOpenedSession {
     }
 
     if (input.prompt.delivery === "steer") {
-      await this.steer(input.prompt.clientMessageId, payload);
+      await this.steer(
+        input.prompt.clientMessageId,
+        payload,
+        undefined,
+        input.prompt.clearPendingPermissions === true,
+      );
       return;
     }
     if (
@@ -2130,6 +2135,7 @@ export class OmpProviderSession implements OmpOpenedSession {
     clientMessageId: string,
     payload: OmpPromptPayload,
     expectedTurn = this.activeTurn,
+    clearPendingPermissions = false,
   ): Promise<void> {
     const turn = expectedTurn;
     if (!this.isSteerableTurn(turn)) {
@@ -2204,6 +2210,10 @@ export class OmpProviderSession implements OmpOpenedSession {
       this.cancelAmbiguousTerminal(turn);
       turn.deferredAgentEnd = undefined;
       this.acceptPendingUser(turn, pending);
+      if (clearPendingPermissions) {
+        turn.awaitingPermissionEvidence = false;
+        this.permissions.resolveTurnPermissions(turn.turnId);
+      }
       this.emit({
         type: "session.prompt_result",
         sessionId: this.id,
