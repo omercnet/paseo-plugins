@@ -43,6 +43,7 @@ describe("Queens composer pills", () => {
         }
       | undefined;
     const release = vi.fn().mockResolvedValue(undefined);
+    const filters: unknown[] = [];
     const firstPage = {
       entries: [{ agent: { id: "active", workspaceId: "workspace-a", status: "idle" } }],
       pageInfo: { hasMore: true, nextCursor: "page-2" },
@@ -55,7 +56,12 @@ describe("Queens composer pills", () => {
       },
       paseo: {
         agents: {
-          async list(options?: { page?: { cursor?: string }; subscribe?: object }) {
+          async list(options?: {
+            filter?: unknown;
+            page?: { cursor?: string };
+            subscribe?: object;
+          }) {
+            filters.push(options?.filter);
             if (options?.subscribe) {
               return {
                 ...firstPage,
@@ -103,6 +109,8 @@ describe("Queens composer pills", () => {
         "new-agent",
       ]),
     );
+
+    expect(filters).toEqual([{ includeBackground: true }, { includeBackground: true }]);
 
     cleanup();
     await flushBootstrap();

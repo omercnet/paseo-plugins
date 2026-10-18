@@ -59,6 +59,7 @@ export function observeRunningAgentCount(
           page === 0 && firstPage
             ? firstPage
             : await paseo.agents.list({
+                filter: { includeBackground: true },
                 sort: [{ key: "updated_at", direction: "desc" }],
                 page: { limit: AGENT_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
               });
@@ -78,6 +79,7 @@ export function observeRunningAgentCount(
 
   void paseo.agents
     .list({
+      filter: { includeBackground: true },
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: AGENT_PAGE_LIMIT },
       subscribe: {},

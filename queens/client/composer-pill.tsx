@@ -72,6 +72,7 @@ export function registerQueensComposerPills(client: PluginClientContext) {
       : undefined;
     for (let page = 1; page < MAX_PAGES && cursor; page += 1) {
       const result = await client.paseo.agents.list({
+        filter: { includeBackground: true },
         sort: [{ key: "updated_at", direction: "desc" }],
         page: { limit: PAGE_LIMIT, cursor },
       });
@@ -99,6 +100,7 @@ export function registerQueensComposerPills(client: PluginClientContext) {
   void client.paseo.agents
     .list({
       signal: lifetime.signal,
+      filter: { includeBackground: true },
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: PAGE_LIMIT },
       subscribe: {},

@@ -47,13 +47,15 @@ describe("Queens running agent count", () => {
         }
       | undefined;
     const release = vi.fn().mockResolvedValue(undefined);
+    const filters: unknown[] = [];
     const firstPage = {
       entries: agents,
       pageInfo: { hasMore: false, nextCursor: null },
     };
     const paseo = {
       agents: {
-        async list(options?: { subscribe?: object }) {
+        async list(options?: { filter?: unknown; subscribe?: object }) {
+          filters.push(options?.filter);
           if (options?.subscribe) {
             return {
               ...firstPage,
@@ -93,6 +95,8 @@ describe("Queens running agent count", () => {
     await flushBootstrap();
 
     expect(counts).toEqual([0, 1]);
+    expect(filters).toHaveLength(2);
+    expect(filters).toEqual([{ includeBackground: true }, { includeBackground: true }]);
 
     cleanup();
     await flushBootstrap();
