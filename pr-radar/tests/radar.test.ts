@@ -290,6 +290,22 @@ describe("directory requests", () => {
       expect.objectContaining({ subscribe: {}, includeBackground: true }),
     );
   });
+
+  test("pages agents by a stable created_at key and follows the cursor", async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [], pageInfo: { hasMore: true, nextCursor: "c1" } })
+      .mockResolvedValueOnce(page);
+    const paseo = { agents: { list } } as unknown as PaseoApi;
+
+    await loadAgents(paseo);
+
+    expect(list).toHaveBeenCalledTimes(2);
+    for (const [options] of list.mock.calls) {
+      expect(options.sort).toEqual([{ key: "created_at", direction: "desc" }]);
+    }
+    expect(list.mock.calls[1]?.[0].page.cursor).toBe("c1");
+  });
 });
 
 describe("directory invalidation observations", () => {
