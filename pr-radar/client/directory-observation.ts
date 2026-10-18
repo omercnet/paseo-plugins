@@ -35,11 +35,11 @@ export function observeDirectoryInvalidation(
   };
 
   void paseo.agents
-    .list({ subscribe: {}, signal: lifetime.signal })
+    .list({ subscribe: {}, includeBackground: true, signal: lifetime.signal })
     .then(({ subscription }) => attach(subscription))
     .catch(() => undefined);
   void paseo.workspaces
-    .list({ subscribe: {} })
+    .list({ subscribe: {}, includeBackground: true })
     .then(({ subscription }) => attach(subscription))
     .catch(() => undefined);
 

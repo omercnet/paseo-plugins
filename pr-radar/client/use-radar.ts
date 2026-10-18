@@ -2,52 +2,10 @@ import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import { viewerScope } from "../shared/viewer-scope";
+import { loadAgents, loadWorkspaces } from "./directory-load";
 import { observeDirectoryInvalidation } from "./directory-observation";
-import {
-  type AgentEntry,
-  applyViewerScope,
-  buildRadarSnapshot,
-  mergeInboxRows,
-  type PaseoApi,
-  type PaseoWorkspace,
-} from "./radar";
+import { applyViewerScope, buildRadarSnapshot, mergeInboxRows } from "./radar";
 import { radarWarnings, VIEWER_URL_LIMIT } from "./screen-state";
-
-const PAGE_LIMIT = 200;
-const MAX_PAGES = 10;
-
-async function loadAgents(paseo: PaseoApi) {
-  const entries: AgentEntry[] = [];
-  let cursor: string | undefined;
-  let truncated = false;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const result = await paseo.agents.list({
-      sort: [{ key: "updated_at", direction: "desc" }],
-      page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-    });
-    entries.push(...result.entries);
-    truncated = result.pageInfo.hasMore;
-    cursor = result.pageInfo.nextCursor ?? undefined;
-    if (!truncated || !cursor) break;
-  }
-  return { entries, truncated };
-}
-
-async function loadWorkspaces(paseo: PaseoApi) {
-  const entries: PaseoWorkspace[] = [];
-  let cursor: string | undefined;
-  let truncated = false;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const result = await paseo.workspaces.list({
-      page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-    });
-    entries.push(...result.entries);
-    truncated = result.pageInfo.hasMore;
-    cursor = result.pageInfo.nextCursor ?? undefined;
-    if (!truncated || !cursor) break;
-  }
-  return { entries, truncated };
-}
 
 // `live` owns the refresh timers. The sidebar is live unless the screen is open (the screen is
 // then live); popovers only observe the cache.
