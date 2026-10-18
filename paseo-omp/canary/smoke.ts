@@ -475,7 +475,23 @@ try {
   createdAgentIds.push(steered.id);
   await sleep(500);
   await client.sendAgentMessage(steered.id, "STEERED", { activeTurnBehavior: "steer" });
-  assertFinished(await client.waitForFinish(steered.id, 120_000), "CANARY_MOCK_OK");
+  const steeredResult = await client.waitForFinish(steered.id, 120_000);
+  assert(steeredResult.status === "idle", `Steered agent ended as ${steeredResult.status}`);
+  assert(steeredResult.error === null, `Steered agent failed: ${steeredResult.error}`);
+  const steeredTimeline = await client.fetchAgentTimeline(steered.id, {
+    direction: "tail",
+    limit: 200,
+    projection: "projected",
+  });
+  const userTurns = steeredTimeline.entries.flatMap((entry) =>
+    entry.item.type === "user_message" ? [{ text: entry.item.text, turnId: entry.turnId }] : [],
+  );
+  const initialTurn = userTurns.find((entry) => entry.text === "CANARY_DELAY");
+  const steerTurn = userTurns.find((entry) => entry.text === "STEERED");
+  assert(
+    initialTurn?.turnId && initialTurn.turnId === steerTurn?.turnId,
+    "Steer replaced the turn",
+  );
   summary.steer = true;
 
   const interrupted = await client.createAgent({
