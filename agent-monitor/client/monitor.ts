@@ -64,7 +64,7 @@ export type Roster =
 
 export const PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
 
-/** Prefers the first-class snapshot field; older hosts only carry the legacy label. */
+/** Prefers the first-class snapshot field; falls back to the parent label when it is empty. */
 export function parentAgentId(agent: AgentSnapshot): string | null {
   const firstClass = "parentAgentId" in agent ? agent.parentAgentId : null;
   if (typeof firstClass === "string" && firstClass.trim()) return firstClass.trim();

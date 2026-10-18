@@ -73,7 +73,7 @@ background workspaces are included.
 
 Interrupting a turn is not part of `PaseoApi`, so archive is the only lifecycle action here.
 
-The sidebar popover lists agents but cannot open them: Paseo 0.11 gives popovers no navigation.
+The sidebar popover lists agents but cannot open them: Paseo 0.12 gives popovers no navigation.
 Open the monitor and select the agent there.
 
 ## Install
