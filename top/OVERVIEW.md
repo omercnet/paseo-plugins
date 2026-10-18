@@ -12,4 +12,4 @@ CPU is the share of non-idle time over the last couple of seconds. Memory exclud
 
 The plugin only reads usage counters and process tables. It has no settings. On Linux it reads `/proc`. On macOS it runs `ps` twice every ten seconds, and on Windows it runs one PowerShell command, to list processes and read the Paseo identifier from each one's environment; it changes nothing and runs nothing else. On Windows that command declares native functions and reads other processes' memory, which endpoint-security tools on managed machines may flag. Set `PASEO_TOP_SESSIONS=off` in the daemon's environment to list no processes on any platform; the rest of Top is unaffected.
 
-Requires Paseo ^0.11.0 || ^0.12.0.
+Requires Paseo ^0.12.0.

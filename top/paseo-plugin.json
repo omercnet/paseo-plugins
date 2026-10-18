@@ -4,5 +4,5 @@
   "media": [
     "https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-top/top-screen.jpg"
   ],
-  "requirements": { "paseo": "^0.11.0 || ^0.12.0" }
+  "requirements": { "paseo": "^0.12.0" }
 }

@@ -89,6 +89,7 @@ export function createOwnership(now = Date.now, firstFetchTimeoutMs = FIRST_FETC
           collect(signal, (cursor) =>
             paseo.agents.list({
               filter: { includeArchived: true },
+              includeBackground: true,
               // Oldest first: an agent's creation time never changes, so paging cannot skip one that
               // is busy and being updated while the pages are read.
               sort: [{ key: "created_at", direction: "asc" }],
@@ -98,7 +99,10 @@ export function createOwnership(now = Date.now, firstFetchTimeoutMs = FIRST_FETC
           ),
           // The SDK's workspace list takes no signal; the abort stops the paging between pages.
           collect(signal, (cursor) =>
-            paseo.workspaces.list({ page: { limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) } }),
+            paseo.workspaces.list({
+              includeBackground: true,
+              page: { limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) },
+            }),
           ),
         ]);
         // An abandoned read must not overwrite what a newer one stored.

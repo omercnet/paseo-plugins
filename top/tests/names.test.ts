@@ -140,6 +140,7 @@ describe("createOwnership: reading the daemon's lists", () => {
     for (const [options] of agents.mock.calls) {
       expect(options).toMatchObject({
         filter: { includeArchived: true },
+        includeBackground: true,
         sort: [{ key: "created_at", direction: "asc" }],
       });
     }
@@ -161,6 +162,9 @@ describe("createOwnership: reading the daemon's lists", () => {
       undefined,
       "1",
     ]);
+    for (const [options] of workspaces.mock.calls) {
+      expect(options).toMatchObject({ includeBackground: true });
+    }
   });
 
   it("stops after a bounded number of pages, and when a page promises more but gives no cursor", async () => {
