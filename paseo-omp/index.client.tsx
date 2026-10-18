@@ -99,6 +99,7 @@ async function loadAgents(paseo: PaseoApi): Promise<AgentEntry[]> {
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await paseo.agents.list({
+      filter: { includeBackground: true },
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
@@ -137,7 +138,8 @@ export function registerConfigAndHub(
   }
   const { HubSidebarItem } = createHubSidebar(() =>
     loadHubSnapshot(
-      () => client.paseo.workspaces.list({ page: { limit: 200 } }),
+      () =>
+        client.paseo.workspaces.list({ filter: { includeBackground: true }, page: { limit: 200 } }),
       async (cwd) => (await client.rpc(listHubProcesses, { cwd })).processes,
     ),
   );
@@ -504,7 +506,7 @@ export default function contribute(client: PluginClientContext) {
   let unsubscribeAgentDirectory = () => {};
   let releaseAgentDirectory: (() => Promise<void>) | undefined;
   void client.paseo.agents
-    .list({ subscribe: {} })
+    .list({ subscribe: {}, filter: { includeBackground: true } })
     .then(({ subscription }) => {
       if (!subscription) return;
       if (disposed) {

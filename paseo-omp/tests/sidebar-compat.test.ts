@@ -114,6 +114,10 @@ describe("config and hub navigation", () => {
       [listHubProcesses, { cwd: "/a" }],
       [listHubProcesses, { cwd: "/b" }],
     ]);
+    expect(host.paseo.workspaces.list).toHaveBeenCalledWith({
+      filter: { includeBackground: true },
+      page: { limit: 200 },
+    });
   });
 
   test("store changes open the screen with params, except re-selecting the current store", () => {
