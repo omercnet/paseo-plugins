@@ -40,7 +40,7 @@ organization names.
   controller when a takeover is needed, and continues the selected action after control is granted.
   Closing a tab or browser still requires its own confirmation. Actions that need a fresh frame wait
   for one before sending input.
-- The plugin owns `agent-browser` version `0.38.2`, its IPC directory, and the Chromium executable.
+- The plugin owns `agent-browser` version `0.39.1`, its IPC directory, and the Chromium executable.
   It strips inherited `AGENT_BROWSER_*` variables and sets `AGENT_BROWSER_SOCKET_DIR`,
   `AGENT_BROWSER_IDLE_TIMEOUT_MS=0`, `AGENT_BROWSER_STREAM_PORT=0`, and
   `AGENT_BROWSER_NO_AUTO_DIALOG=1` itself.
