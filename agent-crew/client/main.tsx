@@ -65,6 +65,7 @@ async function loadAgents(paseo: PaseoApi): Promise<{ entries: AgentEntry[]; tru
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await paseo.agents.list({
+      filter: { includeBackground: true },
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
@@ -80,6 +81,7 @@ async function loadWorkspaces(paseo: PaseoApi): Promise<PaseoWorkspace[]> {
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await paseo.workspaces.list({
+      filter: { includeBackground: true },
       page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
     workspaces.push(...result.entries);

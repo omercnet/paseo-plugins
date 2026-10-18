@@ -264,8 +264,14 @@ describe("listenToCrewDirectory", () => {
       expect(workspaces.subscribe).toHaveBeenCalledOnce();
     });
 
-    expect(agents.list).toHaveBeenCalledWith({ subscribe: {} });
-    expect(workspaces.list).toHaveBeenCalledWith({ subscribe: {} });
+    expect(agents.list).toHaveBeenCalledWith({
+      filter: { includeBackground: true },
+      subscribe: {},
+    });
+    expect(workspaces.list).toHaveBeenCalledWith({
+      filter: { includeBackground: true },
+      subscribe: {},
+    });
     expect(invalidate).toHaveBeenCalledTimes(2);
 
     agents.update();

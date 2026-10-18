@@ -13,7 +13,7 @@ export function listenToCrewDirectory(paseo: PaseoApi, invalidate: () => void): 
   let releaseWorkspaceSubscription: (() => Promise<void>) | undefined;
 
   void paseo.agents
-    .list({ subscribe: {} })
+    .list({ filter: { includeBackground: true }, subscribe: {} })
     .then(({ subscription }) => {
       if (closed) return subscription.release();
       releaseAgentSubscription = () => subscription.release();
@@ -27,7 +27,7 @@ export function listenToCrewDirectory(paseo: PaseoApi, invalidate: () => void): 
     });
 
   void paseo.workspaces
-    .list({ subscribe: {} })
+    .list({ filter: { includeBackground: true }, subscribe: {} })
     .then(({ subscription }) => {
       if (closed) return subscription.release();
       releaseWorkspaceSubscription = () => subscription.release();
