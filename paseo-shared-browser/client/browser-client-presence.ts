@@ -123,6 +123,7 @@ export function contributeSharedBrowserClient(client: PluginClientContext) {
       let cursor = snapshot.pageInfo.hasMore ? snapshot.pageInfo.nextCursor : null;
       while (cursor) {
         const page = await client.paseo.agents.list({
+          includeBackground: true,
           scope: "active",
           page: { limit: AGENT_DIRECTORY_PAGE_LIMIT, cursor },
           signal: lifetime.signal,
@@ -146,6 +147,7 @@ export function contributeSharedBrowserClient(client: PluginClientContext) {
 
   void client.paseo.agents
     .list({
+      includeBackground: true,
       scope: "active",
       page: { limit: AGENT_DIRECTORY_PAGE_LIMIT },
       subscribe: {},

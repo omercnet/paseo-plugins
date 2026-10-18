@@ -98,8 +98,15 @@ describe("Shared Browser composer pills", () => {
     await settle();
 
     expect(harness.list).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ includeBackground: true, subscribe: {} }),
+    );
+    expect(harness.list).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ page: { cursor: "next-page", limit: 200 } }),
+      expect.objectContaining({
+        includeBackground: true,
+        page: { cursor: "next-page", limit: 200 },
+      }),
     );
     expect(harness.addComposerPill).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "agent-one", workspaceId: "workspace-one" }),
