@@ -59,7 +59,7 @@ export function observeDirectoryInvalidation(paseo: PaseoApi, invalidate: () => 
   let stopped = false;
 
   const attachAgents = async () => {
-    const { subscription } = await paseo.agents.list({ subscribe: {} });
+    const { subscription } = await paseo.agents.list({ subscribe: {}, includeBackground: true });
     if (stopped) {
       await subscription.release().catch((error: unknown) => {
         console.error("Agent Monitor agent observation cleanup failed", error);
@@ -74,7 +74,10 @@ export function observeDirectoryInvalidation(paseo: PaseoApi, invalidate: () => 
   };
 
   const attachWorkspaces = async () => {
-    const { subscription } = await paseo.workspaces.list({ subscribe: {} });
+    const { subscription } = await paseo.workspaces.list({
+      subscribe: {},
+      includeBackground: true,
+    });
     if (stopped) {
       await subscription.release().catch((error: unknown) => {
         console.error("Agent Monitor workspace observation cleanup failed", error);

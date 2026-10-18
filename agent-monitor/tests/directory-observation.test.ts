@@ -82,8 +82,14 @@ describe("directory invalidation observations", () => {
     const stop = observeDirectoryInvalidation(harness.paseo, invalidate);
     await settleObservations();
 
-    expect(harness.paseo.agents.list).toHaveBeenCalledWith({ subscribe: {} });
-    expect(harness.paseo.workspaces.list).toHaveBeenCalledWith({ subscribe: {} });
+    expect(harness.paseo.agents.list).toHaveBeenCalledWith({
+      subscribe: {},
+      includeBackground: true,
+    });
+    expect(harness.paseo.workspaces.list).toHaveBeenCalledWith({
+      subscribe: {},
+      includeBackground: true,
+    });
     expect(invalidate).toHaveBeenCalledTimes(2);
 
     harness.agents.emitUpdate();

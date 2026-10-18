@@ -66,7 +66,8 @@ agent whose workspace is beyond the paged workspace list still lands under its r
 refresh from agent, workspace, and project subscription deltas, debounced 750ms, with a 30s
 backstop refetch. The screen, the sidebar row, and its popover share that query, subscription set,
 and backstop; on web and desktop, refreshes pause while the window is hidden and catch up when it returns. The plugin
-borrows the selected host's connection; it opens no socket of its own.
+borrows the selected host's connection; it opens no socket of its own. Agents and workspaces in
+background workspaces are included.
 
 ## Limits
 
@@ -77,7 +78,7 @@ Open the monitor and select the agent there.
 
 ## Install
 
-Requires Paseo `^0.11.0 || ^0.12.0`. Development uses the 0.12 SDK line from the workspace catalog.
+Requires Paseo `^0.12.0`, whose background workspaces the monitor lists. Development uses the 0.12 SDK line from the workspace catalog.
 
 Install the published package on the daemon host:
 
@@ -99,7 +100,7 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The project supports Paseo `^0.11.0 || ^0.12.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
+The project supports Paseo `^0.12.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
 `@getpaseo/protocol`, and `@getpaseo/cli` to the 0.12 SDK line through the workspace catalog. Renovate groups `@getpaseo/*`
 updates so the SDKs move together.
 
