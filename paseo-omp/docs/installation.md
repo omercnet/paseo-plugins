@@ -4,7 +4,7 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its package 
 
 ## Requirements
 
-- Paseo daemon and apps: `^0.11.0`; the config screen and Hub row use the 0.11 screen and sidebar APIs
+- Paseo daemon and apps: `^0.11.0 || ^0.12.0`; the config screen and Hub row use the 0.11 screen and sidebar APIs
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 

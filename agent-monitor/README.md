@@ -77,7 +77,7 @@ Open the monitor and select the agent there.
 
 ## Install
 
-Requires Paseo `^0.11.0`. Development uses the 0.11 SDK line from the workspace catalog.
+Requires Paseo `^0.11.0 || ^0.12.0`. Development uses the 0.12 SDK line from the workspace catalog.
 
 Install the published package on the daemon host:
 
@@ -99,8 +99,8 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The project supports Paseo `^0.11.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
-`@getpaseo/protocol`, and `@getpaseo/cli` to the 0.11 SDK line through the workspace catalog. Renovate groups `@getpaseo/*`
+The project supports Paseo `^0.11.0 || ^0.12.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
+`@getpaseo/protocol`, and `@getpaseo/cli` to the 0.12 SDK line through the workspace catalog. Renovate groups `@getpaseo/*`
 updates so the SDKs move together.
 
 React `19.1` and React Native `0.81` intentionally match the versions supplied by Paseo.

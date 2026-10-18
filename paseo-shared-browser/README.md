@@ -422,7 +422,7 @@ runs the actual Paseo compiler on both plugin entries.
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-Both the Paseo daemon and app must satisfy `^0.11.0`. Encoded video is opt-in on the daemon and
+Both the Paseo daemon and app must satisfy `^0.11.0 || ^0.12.0`. Encoded video is opt-in on the daemon and
 requires WebCodecs in a web client; JPEG is always available. The client surface uses React
 Native primitives and works in desktop, web, iOS, and Android Paseo clients.
 

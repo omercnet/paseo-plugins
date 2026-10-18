@@ -4,4 +4,4 @@ Before the worktree is created, the plugin runs `git fetch --prune` against the 
 
 It also shows `Behind · N` in the workspace header when a worktree is behind its source branch's remote. A sidebar footer lists behind workspaces and offers **Refresh all**, which fast-forwards each clean source checkout and skips dirty or diverged ones. It never modifies worktree branches.
 
-Setup: `git` on the daemon host. The plugin runs `git` there with the daemon's environment and contacts the repository's remote on each fetch. Requires Paseo ^0.11.0.
+Setup: `git` on the daemon host. The plugin runs `git` there with the daemon's environment and contacts the repository's remote on each fetch. Requires Paseo ^0.11.0 || ^0.12.0.

@@ -24,7 +24,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `^0.11.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. The config screen and Hub row use the 0.11 screen and sidebar APIs, so Paseo 0.9 and 0.10 hosts are no longer supported.
+Requirements: Paseo `^0.11.0 || ^0.12.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. The config screen and Hub row use the 0.11 screen and sidebar APIs, so Paseo 0.9 and 0.10 hosts are no longer supported.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
@@ -54,7 +54,7 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-The capability inventory is pinned to `@getpaseo/plugin` 0.11.1, with nightly compatibility checks
+The capability inventory is pinned to `@getpaseo/plugin` 0.12.0-beta.2, with nightly compatibility checks
 against the latest and beta channels. Provider capability scoring covers
 all 17 entries in the SDK's `PROVIDER_CAPABILITIES`; the separate provider/client SDK table below
 also tracks the 0.11 registration, screen, and sidebar APIs. This measures strict SDK surface

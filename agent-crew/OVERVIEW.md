@@ -13,4 +13,4 @@ The plugin reads the daemon's agent and workspace lists through the plugin SDK, 
 - Managed Paseo agents only. A provider's own subagents are not visible to plugins.
 - Past 2,000 agents the panel warns that agents may be missing. Agents with no workspace appear only under a visible parent.
 
-Supports Paseo ^0.11.0.
+Supports Paseo ^0.11.0 || ^0.12.0.
