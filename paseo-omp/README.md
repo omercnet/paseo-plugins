@@ -24,7 +24,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `^0.12.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. The config screen and Hub row use the 0.11 screen and sidebar APIs, so Paseo 0.11 and older hosts are no longer supported.
+Requirements: Paseo `^0.12.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Workspace discovery passes `includeBackground`, which throws on hosts that do not advertise `features.backgroundWorkspaces` (new in 0.12), so older hosts are not supported.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>

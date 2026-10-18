@@ -4,7 +4,7 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its package 
 
 ## Requirements
 
-- Paseo daemon and apps: `^0.12.0`; the config screen and Hub row use the 0.11 screen and sidebar APIs
+- Paseo daemon and apps: `^0.12.0`; background-workspace discovery (`includeBackground`) requires the `features.backgroundWorkspaces` host feature, which first ships in 0.12
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 
@@ -12,7 +12,7 @@ The plugin is stable. Review the release notes for any migration requirements be
 
 ## Install or update from npm
 
-Paseo 0.11 can acquire the published package directly from npm on the daemon host:
+Paseo can acquire the published package directly from npm on the daemon host:
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
