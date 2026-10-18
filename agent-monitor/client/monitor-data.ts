@@ -35,7 +35,7 @@ export async function loadAgents(
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await paseo.agents.list({
       includeBackground: true,
-      sort: [{ key: "updated_at", direction: "desc" }],
+      sort: [{ key: "created_at", direction: "desc" }],
       page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
     entries.push(...result.entries);

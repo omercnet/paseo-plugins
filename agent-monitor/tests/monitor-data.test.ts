@@ -54,6 +54,17 @@ describe("directory loaders", () => {
     expect(list.mock.calls[1]?.[0]).toMatchObject({ page: { cursor: "cursor-0" } });
   });
 
+  test("agent pages use a key an update cannot reorder, newest first", async () => {
+    const list = pagedList([{ id: "a" }]);
+    const paseo = { agents: { list } } as unknown as PaseoApi;
+
+    await loadAgents(paseo);
+
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ sort: [{ key: "created_at", direction: "desc" }] }),
+    );
+  });
+
   test("workspace pages include background workspaces", async () => {
     const list = pagedList([{ id: "w" }]);
     const paseo = { workspaces: { list } } as unknown as PaseoApi;
