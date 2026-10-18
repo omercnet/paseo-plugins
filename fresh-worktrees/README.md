@@ -35,6 +35,8 @@ Before Paseo creates a branch-off worktree, the plugin:
 4. Leaves the workspace request unchanged, so Paseo forks from the local branch.
 5. Rechecks active worktrees every five minutes and shows `Behind · N` in the workspace header when
    their `HEAD` is behind the source branch's remote-tracking ref. Select the indicator to recheck it.
+   Paseo 0.12 does not render plugin header buttons in the compact workspace header (phones and
+   narrow windows), so the indicator is not shown there; use the sidebar footer row below.
 
 Explicit checkout and change-request workspaces are unchanged. Explicit remote bases are fetched
 but do not mutate a local branch. Repositories without remotes are unchanged. A dirty source
