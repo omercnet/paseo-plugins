@@ -56,6 +56,8 @@ The target can match an active agent's title or ID, or its project or workspace 
 
 `tell-agent` only searches agents connected to the same Paseo daemon host. It does not discover or contact agents on other hosts.
 
+On Paseo 0.12 and later, agents in background workspaces are hidden from discovery. They do not appear as targets and do not get the Tell agent button.
+
 The plugin asks the source agent to forward the message to the resolved target. The source agent remains responsible for executing that instruction; the plugin does not inject the text directly into the target session.
 
 If the source agent is busy, `/tell` and the Tell agent panel send that instruction with `activeTurnBehavior: "steer"`. Paseo tries to add it to the running turn instead of interrupting it, and the agent picks it up at its next step, which can be after its current tool call finishes. Steering is best effort: Paseo still replaces the turn when the provider cannot steer. Put `--interrupt` first to replace the source agent's current turn instead:
@@ -64,7 +66,7 @@ If the source agent is busy, `/tell` and the Tell agent panel send that instruct
 /tell --interrupt Payments :: Stop and review the authentication change.
 ```
 
-Either choice only applies to the source agent. Its later message to the target is a separate send and can still interrupt the target. Paseo 0.9 and later hosts accept both behaviors.
+Either choice only applies to the source agent. Its later message to the target is a separate send. On Paseo 0.12 and later, an agent's send steers a running target by default and falls back to interrupting when the provider cannot steer. The target shows it as a message from the source agent. Tell the source agent to use `interrupt` if you want the target's turn replaced. Paseo 0.9 and later hosts accept both behaviors.
 
 ## Trust
 
