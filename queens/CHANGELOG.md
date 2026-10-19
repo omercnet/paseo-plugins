@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/queens-v3.0.0...queens-v4.0.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **queens:** requires Paseo ^0.12.0. The includeBackground option throws on older hosts.
+
+### Bug Fixes
+
+* **queens:** include background workspaces ([#350](https://github.com/omercnet/paseo-plugins/issues/350)) ([af6be35](https://github.com/omercnet/paseo-plugins/commit/af6be35fd495d0437f8fa623daca2cdb8639d8d1))
+
 ## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/queens-v2.2.1...queens-v3.0.0) (2026-10-11)
 
 

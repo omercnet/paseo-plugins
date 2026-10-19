@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v2.0.2...paseo-context-mode-v3.0.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **context-mode:** requires Paseo ^0.12.0. The includeBackground option throws on older hosts.
+
+### Bug Fixes
+
+* **context-mode:** show the composer pill in background workspaces ([#349](https://github.com/omercnet/paseo-plugins/issues/349)) ([605b573](https://github.com/omercnet/paseo-plugins/commit/605b573fff8d6b15a6033bcfd4e464dcdb7b8a97))
+
 ## [2.0.2](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v2.0.1...paseo-context-mode-v2.0.2) (2026-10-15)
 
 

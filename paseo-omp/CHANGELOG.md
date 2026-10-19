@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v2.0.2...paseo-omp-v3.0.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **paseo-omp:** requires Paseo ^0.12.0. The includeBackground option throws on older hosts.
+
+### Bug Fixes
+
+* **paseo-omp:** include background workspaces in composer pills and Hub ([#353](https://github.com/omercnet/paseo-plugins/issues/353)) ([5136da8](https://github.com/omercnet/paseo-plugins/commit/5136da8b7a8d9d7aa6ca8f508579b85d7e6a443f))
+* **paseo-omp:** steer running turns when permissions are cleared ([#351](https://github.com/omercnet/paseo-plugins/issues/351)) ([03ed477](https://github.com/omercnet/paseo-plugins/commit/03ed477cbf85295fb01b5128e8bd4a82af3f1b03))
+
 ## [2.0.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v2.0.1...paseo-omp-v2.0.2) (2026-10-15)
 
 

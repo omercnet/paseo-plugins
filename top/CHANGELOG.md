@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0](https://github.com/omercnet/paseo-plugins/compare/top-v0.1.0...top-v1.0.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **top:** requires Paseo ^0.12.0. The includeBackground option throws on older hosts.
+
+### Bug Fixes
+
+* **top:** attribute agents in background workspaces ([#345](https://github.com/omercnet/paseo-plugins/issues/345)) ([fee66d6](https://github.com/omercnet/paseo-plugins/commit/fee66d64cf46cd3a07351d9308ff017e9d62d38b))
+* **top:** derive PaseoApi type from plugin SDK so npm installs build ([#358](https://github.com/omercnet/paseo-plugins/issues/358)) ([477b85d](https://github.com/omercnet/paseo-plugins/commit/477b85d478d1e1fdc7a26795ae121b0312ee6462))
+
 ## [0.1.0](https://github.com/omercnet/paseo-plugins/compare/top-v0.0.1-alpha...top-v0.1.0) (2026-10-13)
 
 

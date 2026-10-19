@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-shared-browser",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "description": "One real Chromium session per Paseo workspace, shared live across every connected client.",
   "keywords": [
     "browser",

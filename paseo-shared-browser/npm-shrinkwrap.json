@@ -1,12 +1,12 @@
 {
   "name": "@omercnet/paseo-shared-browser",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@omercnet/paseo-shared-browser",
-      "version": "2.0.1",
+      "version": "3.0.0",
       "dependencies": {
         "@getpaseo/plugin": "0.12.0",
         "@modelcontextprotocol/sdk": "1.30.0",

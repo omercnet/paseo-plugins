@@ -6,6 +6,17 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v2.0.0...pr-radar-v3.0.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pr-radar:** requires Paseo ^0.12.0. The includeBackground option throws on older hosts.
+
+### Bug Fixes
+
+* **pr-radar:** include background workspaces and page agents stably ([#347](https://github.com/omercnet/paseo-plugins/issues/347)) ([8d8897b](https://github.com/omercnet/paseo-plugins/commit/8d8897ba6de2029bdb96eeb603db6214e41f72ae))
+
 ## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v1.2.2...pr-radar-v2.0.0) (2026-10-11)
 
 

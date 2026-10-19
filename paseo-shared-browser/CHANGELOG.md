@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v2.0.1...shared-browser-v3.0.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **paseo-shared-browser:** requires Paseo ^0.12.0. The includeBackground option throws on older hosts.
+
+### Bug Fixes
+
+* **deps:** update dependency agent-browser to v0.39.1 ([#328](https://github.com/omercnet/paseo-plugins/issues/328)) ([ff5a9d9](https://github.com/omercnet/paseo-plugins/commit/ff5a9d977e40abfbf4762f791f8ede37d1cb5d9f))
+* **paseo-shared-browser:** show the composer pill in background workspaces ([#352](https://github.com/omercnet/paseo-plugins/issues/352)) ([dc1cfda](https://github.com/omercnet/paseo-plugins/commit/dc1cfdaa7af6ffc0a8a5e22c53e869df7f5a37d6))
+
 ## [2.0.1](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v2.0.0...shared-browser-v2.0.1) (2026-10-13)
 
 

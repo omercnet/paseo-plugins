@@ -10,6 +10,17 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v2.0.0...agent-monitor-v3.0.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **agent-monitor:** requires Paseo ^0.12.0. The includeBackground option throws on older hosts.
+
+### Bug Fixes
+
+* **agent-monitor:** include background workspaces and page agents stably ([#346](https://github.com/omercnet/paseo-plugins/issues/346)) ([731b6f6](https://github.com/omercnet/paseo-plugins/commit/731b6f62626030e18987d690b5549e423cf2d6f7))
+
 ## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v1.2.2...agent-monitor-v2.0.0) (2026-10-11)
 
 
