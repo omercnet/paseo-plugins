@@ -36,11 +36,12 @@ shopt -u nullglob
 [ -n "$cli" ] || { echo "paseo CLI not found: run bun install at the repo root" >&2; exit 1; }
 
 # Ambient agent, daemon and provider variables must not leak into the dev daemon or its agents.
+# PASEO_DEV_DAEMON_STATE marks everything launched here; `down` uses it to find leftovers by ownership.
 clean() {
   env -u PASEO_AGENT_ID -u PASEO_AGENT_CWD -u PASEO_WORKSPACE_ID -u PASEO_HOST -u PASEO_HOME \
     -u CONTEXT_MODE_DIR -u CONTEXT_MODE_DATA_DIR -u CONTEXT_MODE_PLATFORM \
     -u CLAUDE_CONFIG_DIR -u CODEX_HOME -u COPILOT_HOME -u XDG_CONFIG_HOME -u PI_CODING_AGENT_DIR \
-    HOME="$state/fakehome" "$@"
+    HOME="$state/fakehome" PASEO_DEV_DAEMON_STATE="$state" "$@"
 }
 
 dev_host() {
@@ -81,19 +82,29 @@ case "$cmd" in
     ;;
   down)
     clean "$cli" daemon stop --home "$home" || true
-    # Plugin supervisors and browsers can outlive the daemon. Stop only processes whose cwd or argv
-    # point inside this state dir (the dir name is unique per plugin).
-    for sig in TERM KILL; do
-      for p in /proc/[0-9]*; do
-        pid=${p#/proc/}
-        [ "$pid" != "$$" ] || continue
-        { cwd=$(readlink "$p/cwd"); args=$(tr '\0' ' ' < "$p/cmdline"); } 2>/dev/null || continue
-        case "$cwd/ $args" in
-          "$state"/*|*"$state"/*) kill -"$sig" "$pid" 2>/dev/null || true ;;
-        esac
+    # Plugin supervisors and browsers can outlive the daemon. Stop only processes whose environment
+    # carries this exact marker, never this script or its ancestors. Needs /proc: without it (macOS)
+    # only the daemon stop above runs.
+    if [ -d /proc/self ] && [[ $state == /*/deliver-* && ${state##*/} == deliver-[!/]* ]]; then
+      keep=" "; p=$$
+      while [ "${p:-0}" -gt 1 ]; do
+        keep+="$p "
+        p=$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$p/status" 2>/dev/null) || true
       done
-      [ "$sig" = TERM ] && sleep 2
-    done
+      pids=()
+      for e in /proc/[0-9]*/environ; do
+        pid=${e#/proc/}; pid=${pid%/environ}
+        [[ $keep != *" $pid "* ]] || continue
+        grep -qzxF "PASEO_DEV_DAEMON_STATE=$state" "$e" 2>/dev/null || continue
+        pids+=("$pid")
+        echo "stopping leftover $pid $(cat "/proc/$pid/comm" 2>/dev/null)"
+      done
+      if [ ${#pids[@]} -gt 0 ]; then
+        kill -TERM "${pids[@]}" 2>/dev/null || true
+        sleep 2
+        kill -KILL "${pids[@]}" 2>/dev/null || true
+      fi
+    fi
     rm -rf "$state"
     ;;
   *)
