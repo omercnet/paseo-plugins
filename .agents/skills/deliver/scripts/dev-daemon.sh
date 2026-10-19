@@ -8,6 +8,7 @@
 #   dev-daemon.sh down <plugin>                     stop the daemon and delete its state
 #
 # State lives in ${TMPDIR:-/tmp}/deliver-<plugin>. paseo-omp is refused: follow paseo-omp/AGENTS.md.
+# The CLI comes from the plugin, the repo root, the bun store, or the first plugin that has it.
 set -euo pipefail
 
 cmd=${1:?usage: dev-daemon.sh up|reload|cli|agents|down <plugin> ...}
@@ -21,9 +22,18 @@ dir="$root/$plugin"
 
 state="${TMPDIR:-/tmp}/deliver-$plugin"
 home="$state/home"
-cli="$dir/node_modules/.bin/paseo"
-[ -x "$cli" ] || cli="$root/node_modules/.bin/paseo"
-[ -x "$cli" ] || { echo "paseo CLI missing: run bun install at the repo root" >&2; exit 1; }
+id=$(jq -er .id "$dir/paseo-plugin.json")
+
+# `bun install` links the CLI into the plugins that depend on it, not the repo root.
+cli=
+shopt -s nullglob
+for c in "$dir/node_modules/.bin/paseo" "$root/node_modules/.bin/paseo" \
+  "$root"/node_modules/.bun/@getpaseo+cli@*/node_modules/@getpaseo/cli/bin/paseo \
+  "$root"/*/node_modules/.bin/paseo; do
+  [ -x "$c" ] && { cli=$c; break; }
+done
+shopt -u nullglob
+[ -n "$cli" ] || { echo "paseo CLI not found: run bun install at the repo root" >&2; exit 1; }
 
 # Ambient agent, daemon and provider variables must not leak into the dev daemon or its agents.
 clean() {
@@ -58,7 +68,7 @@ case "$cmd" in
     echo "WORK_DIR=$state/work"
     ;;
   reload)
-    clean "$cli" plugin reload "$plugin" --host "$(dev_host)"
+    clean "$cli" plugin reload "$id" --host "$(dev_host)"
     ;;
   cli)
     clean "$cli" "$@" --host "$(dev_host)"
@@ -71,6 +81,19 @@ case "$cmd" in
     ;;
   down)
     clean "$cli" daemon stop --home "$home" || true
+    # Plugin supervisors and browsers can outlive the daemon. Stop only processes whose cwd or argv
+    # point inside this state dir (the dir name is unique per plugin).
+    for sig in TERM KILL; do
+      for p in /proc/[0-9]*; do
+        pid=${p#/proc/}
+        [ "$pid" != "$$" ] || continue
+        { cwd=$(readlink "$p/cwd"); args=$(tr '\0' ' ' < "$p/cmdline"); } 2>/dev/null || continue
+        case "$cwd/ $args" in
+          "$state"/*|*"$state"/*) kill -"$sig" "$pid" 2>/dev/null || true ;;
+        esac
+      done
+      [ "$sig" = TERM ] && sleep 2
+    done
     rm -rf "$state"
     ;;
   *)

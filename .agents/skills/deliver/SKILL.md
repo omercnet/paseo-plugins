@@ -37,7 +37,7 @@ Write the smallest scenario that fails, on the dev daemon:
 ```sh
 S=.agents/skills/deliver/scripts/dev-daemon.sh
 $S up <plugin> [extra-config.json]    # prints DEV_HOST, DEV_HOME, WORK_DIR
-$S cli <plugin> run -d --provider <id> --cwd "$WORK_DIR" --title repro "say hi"
+$S cli <plugin> run --no-wait --provider <id> --cwd "$WORK_DIR" --title repro "say hi"
 $S agents <plugin>                    # recorded agent configs, e.g. config.mcpServers
 ```
 
