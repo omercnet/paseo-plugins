@@ -1,5 +1,8 @@
-import type { PaseoApi } from "@getpaseo/client";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { Session } from "../shared/usage";
+
+/** The client package is a development dependency, so the host's own SDK entry supplies the type. */
+type PaseoApi = PluginHandlerContext["paseo"];
 
 /** Re-reading every agent, archived ones included, is not free, so it is done sparingly. */
 const FULL_REFRESH_MS = 30_000;
