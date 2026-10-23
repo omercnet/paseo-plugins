@@ -248,6 +248,10 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
       { timeout: 5000 },
     );
     await connection.send("Target.activateTarget", { targetId: created.targetId });
+    // The runtime re-activates its source page for capture, which hides this consumer and
+    // suspends requestAnimationFrame, so decoded frames are never presented. Focus emulation
+    // keeps only this page visible without raising any tab.
+    await consumer.send("Emulation.setFocusEmulationEnabled", { enabled: true });
     const presets: readonly { id: DevicePresetId; width: number; height: number }[] = [
       { id: "desktop-1280x800", width: 1280, height: 800 },
       { id: "pixel-7", width: 412, height: 839 },
