@@ -166,6 +166,7 @@ export class OmpRpcProcess {
   private readonly activeToolCallIds = new Set<string>();
   private readonly announcedToolCallIds = new Set<string>();
   // Detached background tools keep streaming updates after they return and after turn_end.
+  // FIFO-capped: an update for an id evicted after MAX_ENDED_TOOL_IDS later calls is flagged again.
   private readonly endedToolCallIds = new Set<string>();
   private pendingWriteBytes = 0;
   private commandTextLength = 0;
