@@ -2,7 +2,7 @@ OMP adds an agent provider for the OMP coding agent, plus an OMP sidebar and wor
 
 ## Setup
 
-- Paseo ^0.12.0.
+- Paseo ^0.12.0 || ^0.13.0.
 - OMP 18.1.15 or newer on the daemon host, speaking RPC protocol v2. Older runtimes are rejected.
 - Provider options let you change the OMP command, set environment values, choose an output redaction mode and set a session directory and timeout. Named OMP profiles appear as separate `OMP · <profile>` providers.
 

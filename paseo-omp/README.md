@@ -24,7 +24,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `^0.12.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Workspace discovery passes `includeBackground`, which throws on hosts that do not advertise `features.backgroundWorkspaces` (new in 0.12), so older hosts are not supported.
+Requirements: Paseo `^0.12.0 || ^0.13.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Workspace discovery passes `includeBackground`, which throws on hosts that do not advertise `features.backgroundWorkspaces` (new in 0.12), so older hosts are not supported.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
@@ -54,7 +54,7 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-The capability inventory is pinned to `@getpaseo/plugin` 0.12.0, with nightly compatibility checks
+The capability inventory is pinned to `@getpaseo/plugin` 0.13.0-beta.2, with nightly compatibility checks
 against the latest and beta channels. Provider capability scoring covers
 all 17 entries in the SDK's `PROVIDER_CAPABILITIES`; the separate provider/client SDK table below
 also tracks the registration, screen, and sidebar APIs introduced in 0.11. This measures strict SDK surface

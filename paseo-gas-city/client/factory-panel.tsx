@@ -83,11 +83,6 @@ function ReadyFactoryPanel({
     return (
       <FactoryState
         theme={theme}
-        layout={layout}
-        host={host}
-        navigation={navigation}
-        context="workspace"
-        workspaceId={workspaceId}
         title="Mapping workspace"
         body="Resolving this workspace to a Gas City rig."
         loading
@@ -98,11 +93,6 @@ function ReadyFactoryPanel({
     return (
       <FactoryState
         theme={theme}
-        layout={layout}
-        host={host}
-        navigation={navigation}
-        context="workspace"
-        workspaceId={workspaceId}
         title="Could not map workspace"
         body={errorMessage(mapping.error)}
         onRetry={retryMapping}
@@ -113,11 +103,6 @@ function ReadyFactoryPanel({
     return (
       <FactoryState
         theme={theme}
-        layout={layout}
-        host={host}
-        navigation={navigation}
-        context="workspace"
-        workspaceId={workspaceId}
         title="No workspace mapping"
         body="The supervisor returned no usable mapping result."
         onRetry={retryMapping}
@@ -127,18 +112,7 @@ function ReadyFactoryPanel({
 
   const resolved = mapping.data;
   if (resolved.state !== "mapped" || !resolved.cityName || !resolved.rigName) {
-    return (
-      <MappingState
-        theme={theme}
-        layout={layout}
-        host={host}
-        navigation={navigation}
-        context="workspace"
-        workspaceId={workspaceId}
-        mapping={resolved}
-        onRetry={retryMapping}
-      />
-    );
+    return <MappingState theme={theme} layout={layout} mapping={resolved} onRetry={retryMapping} />;
   }
 
   return (
@@ -186,12 +160,12 @@ function ReadyFactoryPanel({
 function MappingState({
   theme,
   layout,
-  host,
-  navigation,
-  workspaceId,
   mapping,
   onRetry,
-}: PluginWorkspacePanelProps & { mapping: WorkspaceRigMapping; onRetry: () => void }) {
+}: Pick<PluginWorkspacePanelProps, "theme" | "layout"> & {
+  mapping: WorkspaceRigMapping;
+  onRetry: () => void;
+}) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
   const title =
     mapping.state === "ambiguous"
@@ -206,17 +180,7 @@ function MappingState({
       : "No Gas City rig contains this workspace path. Add an explicit override in Gas City settings.");
   return (
     <View style={styles.mappingStateScreen}>
-      <FactoryState
-        theme={theme}
-        layout={layout}
-        host={host}
-        navigation={navigation}
-        context="workspace"
-        workspaceId={workspaceId}
-        title={title}
-        body={body}
-        onRetry={onRetry}
-      />
+      <FactoryState theme={theme} title={title} body={body} onRetry={onRetry} />
       {mapping.candidates.length > 0 ? (
         <ScrollView style={styles.candidates} contentContainerStyle={styles.candidatesContent}>
           <Text accessibilityRole="header" style={styles.candidatesTitle}>
@@ -247,7 +211,7 @@ function FactoryState({
   body,
   loading,
   onRetry,
-}: PluginWorkspacePanelProps & {
+}: Pick<PluginWorkspacePanelProps, "theme"> & {
   title: string;
   body: string;
   loading?: boolean;

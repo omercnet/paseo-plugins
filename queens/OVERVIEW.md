@@ -2,7 +2,7 @@ Queens is a logic puzzle you can play while agents work. Place one queen in ever
 
 ## Setup and network
 
-Requires Paseo ^0.12.0, and the package declares Node 24 or later for the daemon host.
+Requires Paseo ^0.12.0 || ^0.13.0, and the package declares Node 24 or later for the daemon host.
 
 Puzzle data is fetched from a revision-pinned GitHub Gist on `gist.githubusercontent.com`. The daemon downloads only the size and difficulty you open, verifies it against a SHA-256 digest and keeps it for the session. The first open of each puzzle group needs network access. The fetched content is puzzle data, not code.
 
