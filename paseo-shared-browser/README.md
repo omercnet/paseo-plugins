@@ -183,7 +183,9 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
   within the pane, scroll long lists, and dismiss with an outside press, Escape or native Back.
 - The monitor menu offers **Fit to panel** (default) and **Actual size (100%)**. Actual size
   uses browser layout pixels, not the larger JPEG dimensions of sharper phone captures.
-  This choice affects only the current viewer, without resizing the shared browser.
+  This choice affects only the current viewer, without resizing the shared browser. Each
+  Shared Browser tab remembers its choice and its selected browser page across app reloads;
+  a remembered page that no longer exists falls back to the default page.
   Desktop local scrollbars reveal overflow while wheel events on a controlled frame go to
   the remote page. Phone viewers can pan while observing; controlling sends swipes to the
   page instead. Fitting images stay centered without empty scroll ranges; a scrollbar on
@@ -422,7 +424,7 @@ runs the actual Paseo compiler on both plugin entries.
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-Both the Paseo daemon and app must satisfy `^0.12.0 || ^0.13.0`. Encoded video is opt-in on the daemon and
+Both the Paseo daemon and app must satisfy `^0.13.0`. Encoded video is opt-in on the daemon and
 requires WebCodecs in a web client; JPEG is always available. The client surface uses React
 Native primitives and works in desktop, web, iOS, and Android Paseo clients.
 

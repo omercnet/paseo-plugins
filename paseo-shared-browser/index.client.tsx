@@ -7,7 +7,6 @@ export default function contribute(client: PluginClientContext) {
     id: "shared-browser",
     title: "Shared Browser",
     icon: "PanelsTopLeft",
-    context: "workspace",
     locations: ["workspace", "explorer"],
     Component: SharedBrowserPanel,
   });

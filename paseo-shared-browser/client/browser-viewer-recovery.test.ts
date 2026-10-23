@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createBrowserViewerRecovery,
   isBrowserClosedError,
+  isBrowserTabUnavailableError,
   isExpiredBrowserViewerError,
 } from "./browser-viewer-recovery";
 
@@ -108,4 +109,22 @@ it("the actual capture query observer discards old token errors when its token k
     unsubscribe();
     client.clear();
   }
+});
+
+describe("remembered tab recovery", () => {
+  it("recognizes only the unavailable-tab rejection", () => {
+    const unavailable = Object.assign(
+      new Error(
+        "Request failed: Workspace runtime identity failed: Browser tab is no longer available requestType=plugin.rpc.invoke.request code=handler_error",
+      ),
+      { code: "handler_error" },
+    );
+    expect(isBrowserTabUnavailableError(unavailable)).toBe(true);
+    expect(isBrowserTabUnavailableError(new Error("Browser tab is no longer available"))).toBe(
+      true,
+    );
+    expect(isBrowserTabUnavailableError(expired)).toBe(false);
+    expect(isBrowserTabUnavailableError(new Error("Browser is closed"))).toBe(false);
+    expect(isBrowserTabUnavailableError(null)).toBe(false);
+  });
 });

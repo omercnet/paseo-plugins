@@ -1,6 +1,6 @@
 /** Public themed panel controls and notices. Leaves own only focus/hover styling, never browser authority. */
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon, TextInput } from "@getpaseo/plugin/client/ui";
 import { type ReactNode, useCallback, useState } from "react";
 import {
   ActivityIndicator,

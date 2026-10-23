@@ -1,5 +1,5 @@
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useCallback, useState } from "react";
 import { Pressable, Text, type TextStyle, type ViewStyle } from "react-native";
 

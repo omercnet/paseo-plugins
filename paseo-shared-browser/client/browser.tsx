@@ -4,8 +4,8 @@
  * presentation models live in focused counterpart hooks; this module never
  * replays published mutations or substitutes visible pixels for input authority.
  */
-import { type PluginWorkspacePanelProps, useRpc } from "@getpaseo/plugin/client";
-import { Icon, Modal } from "@getpaseo/plugin/client/react-native";
+import { type PluginWorkspacePanelProps, useRpc, useTabState } from "@getpaseo/plugin/client";
+import { Icon, Modal } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -53,7 +53,7 @@ import {
   type CaptureDensityMode,
   getAutomaticCaptureDensity,
 } from "./browser-auto-capture-density";
-import { type BrowserCanvasDisplayMode, getBrowserCanvasLayout } from "./browser-canvas-layout";
+import { getBrowserCanvasLayout } from "./browser-canvas-layout";
 import { BrowserCanvasViewport } from "./browser-canvas-viewport";
 import {
   CanvasPlaceholder,
@@ -75,6 +75,7 @@ import { type EmulationSelection, matchingResolutionPresetId } from "./browser-e
 import { getFillViewportResolution } from "./browser-fill-viewport";
 import type { FrameCandidate } from "./browser-frame-buffer";
 import { BrowserFrameImage } from "./browser-frame-image";
+import { browserPanelStateSchema, DEFAULT_BROWSER_PANEL_STATE } from "./browser-panel-state";
 import { createStyles, DIMENSION, SPACE } from "./browser-panel-styles";
 import { BrowserResolutionPicker } from "./browser-resolution-picker";
 import { BrowserTabs } from "./browser-tabs";
@@ -86,7 +87,11 @@ import {
 } from "./browser-toolbar-menu";
 import { isFrameCurrent, isVideoSourceCurrent } from "./browser-video-currency";
 import { BrowserVideoSurface } from "./browser-video-surface";
-import { isBrowserClosedError, isExpiredBrowserViewerError } from "./browser-viewer-recovery";
+import {
+  isBrowserClosedError,
+  isBrowserTabUnavailableError,
+  isExpiredBrowserViewerError,
+} from "./browser-viewer-recovery";
 import { createFrameLifecycle } from "./frame-lifecycle";
 import { useBrowserAutoCaptureDensity } from "./use-browser-auto-capture-density";
 import { useBrowserCanvasInput } from "./use-browser-canvas-input";
@@ -188,6 +193,7 @@ export function SharedBrowserPanel({
   host,
   layout,
   workspaceId,
+  tab,
 }: PluginWorkspacePanelProps) {
   const queryClient = useQueryClient();
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
@@ -245,7 +251,38 @@ export function SharedBrowserPanel({
   const [operationError, setOperationError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [browserClosed, setBrowserClosed] = useState(false);
-  const [selectedTabId, setSelectedTabId] = useState<string | null>(null);
+  const [panelState, writePanelState] = useTabState(
+    tab,
+    browserPanelStateSchema,
+    DEFAULT_BROWSER_PANEL_STATE,
+  );
+  // Writes replace the whole persisted value; merge into the latest one so two
+  // updates in the same tick (e.g. Fill viewport) cannot drop each other.
+  const panelStateRef = useRef(panelState);
+  panelStateRef.current = panelState;
+  const updatePanelState = useCallback(
+    (patch: Partial<typeof panelState>) => {
+      const next = { ...panelStateRef.current, ...patch };
+      if (
+        next.scaleMode === panelStateRef.current.scaleMode &&
+        next.selectedTabId === panelStateRef.current.selectedTabId
+      ) {
+        return;
+      }
+      panelStateRef.current = next;
+      writePanelState(next);
+    },
+    [writePanelState],
+  );
+  const { selectedTabId, scaleMode } = panelState;
+  const setSelectedTabId = useCallback(
+    (tabId: string | null) => updatePanelState({ selectedTabId: tabId }),
+    [updatePanelState],
+  );
+  const setScaleMode = useCallback(
+    (mode: typeof scaleMode) => updatePanelState({ scaleMode: mode }),
+    [updatePanelState],
+  );
   const selectedTabIdRef = useRef(selectedTabId);
   selectedTabIdRef.current = selectedTabId;
   const [tabMutationPending, setTabMutationPending] = useState(false);
@@ -268,7 +305,6 @@ export function SharedBrowserPanel({
   const [keysSubmenuOpen, setKeysSubmenuOpen] = useState(false);
   const keysAnchorRef = useRef<View | null>(null);
   const [toolbarMenu, setToolbarMenu] = useState<"display" | "actions" | null>(null);
-  const [scaleMode, setScaleMode] = useState<BrowserCanvasDisplayMode>("fit");
   const paneRef = useRef<View | null>(null);
   const displayAnchorRef = useRef<View | null>(null);
   const actionsAnchorRef = useRef<View | null>(null);
@@ -426,6 +462,12 @@ export function SharedBrowserPanel({
     if (isBrowserClosedError(attachQuery.error)) setBrowserClosed(true);
   }, [attachQuery.error]);
 
+  // A restored selection can name a page that no longer exists; without the
+  // attach there is no viewer to list tabs with, so fall back to the default page.
+  useEffect(() => {
+    if (selectedTabId && isBrowserTabUnavailableError(attachQuery.error)) setSelectedTabId(null);
+  }, [attachQuery.error, selectedTabId, setSelectedTabId]);
+
   useEffect(() => {
     if (!closedView) return;
     setControlRequest(null);
@@ -457,12 +499,20 @@ export function SharedBrowserPanel({
     setOperationError(null);
     setRuntimeNotice(null);
     setBrowserClosed(false);
-    setSelectedTabId(null);
     setTabCloseConfirmationOpen(false);
     setControlRequest(null);
     setPendingControlAction(null);
     setCloseConfirmationOpen(false);
   }, [reset, workspaceId, host.id, inputLifecycle]);
+
+  // The remembered tab belongs to this host and workspace. Keep it on mount,
+  // where it was just restored, and clear it only when the scope really changes.
+  const selectionScopeRef = useRef(panelScope);
+  useEffect(() => {
+    if (selectionScopeRef.current === panelScope) return;
+    selectionScopeRef.current = panelScope;
+    setSelectedTabId(null);
+  }, [panelScope, setSelectedTabId]);
 
   useEffect(() => {
     // A tab selection changes the viewer's page and frame authority, even

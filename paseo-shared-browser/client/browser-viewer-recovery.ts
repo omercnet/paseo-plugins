@@ -5,6 +5,7 @@
  */
 const VIEWER_EXPIRED_MESSAGE = "Viewer token is invalid or expired";
 const BROWSER_CLOSED_MESSAGE = "Browser is closed";
+const BROWSER_TAB_UNAVAILABLE_MESSAGE = "Browser tab is no longer available";
 
 /** Recognize the server's explicit close fence without confusing it with a transport failure. */
 export function isBrowserClosedError(error: unknown): boolean {
@@ -75,4 +76,16 @@ export function createBrowserViewerRecovery() {
     attemptedToken = token;
     return true;
   };
+}
+
+/**
+ * A remembered tab can outlive its page; the server then rejects attaching to it. The runtime
+ * wraps that rejection ("Workspace runtime identity failed: ..."), so match the phrase.
+ */
+export function isBrowserTabUnavailableError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { message?: unknown; code?: unknown };
+  if (typeof value.message !== "string") return false;
+  if (value.code !== undefined && value.code !== "handler_error") return false;
+  return value.message.includes(BROWSER_TAB_UNAVAILABLE_MESSAGE);
 }

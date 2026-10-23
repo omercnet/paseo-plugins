@@ -33,7 +33,7 @@ vi.mock("react", () => ({
     hooks.effects.push(effect);
   },
 }));
-vi.mock("@getpaseo/plugin/client/react-native", () => {
+vi.mock("@getpaseo/plugin/client/ui", () => {
   const Modal = Object.assign(() => null, { Content: () => null });
   return { Modal, TextInput: () => null };
 });

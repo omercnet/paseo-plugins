@@ -1,6 +1,6 @@
 /** Grouped resolution choices with independent host favorites and capture quality. */
 import type { PluginHostProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { BrowserDisplayPreferences } from "../shared/browser-display-preferences";
 import type { DevicePresetId } from "../shared/device-presets";

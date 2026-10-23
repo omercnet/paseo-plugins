@@ -172,7 +172,7 @@ const native = await readFile(
 await writeFile(
   join(out, "sdk.cjs"),
   native +
-    `\nmodule.exports.useRpc=c=>globalThis.panelFixture.rpc(c);module.exports.useSettings=()=>({status:'loading',saving:false});\nmodule.exports.Image=props=>{React.useEffect(()=>{globalThis.panelFixture.imageLoads.push(()=>props.onLoad?.())},[props.source?.uri]);return React.createElement('img',{'data-image':'yes',style:rnStyle(props.style),src:props.source?.uri})};\nmodule.exports.AppState.currentState='active';`,
+    `\nmodule.exports.useRpc=c=>globalThis.panelFixture.rpc(c);module.exports.useSettings=()=>({status:'loading',saving:false});module.exports.useTabState=(tab,schema,fallback)=>{const parsed=schema.safeParse(tab.state);return [parsed.success?parsed.data:fallback,tab.setState]};\nmodule.exports.Image=props=>{React.useEffect(()=>{globalThis.panelFixture.imageLoads.push(()=>props.onLoad?.())},[props.source?.uri]);return React.createElement('img',{'data-image':'yes',style:rnStyle(props.style),src:props.source?.uri})};\nmodule.exports.AppState.currentState='active';`,
 );
 await writeFile(
   join(out, "web.ts"),
@@ -198,10 +198,9 @@ await build({
     {
       name: "fixture",
       setup(b) {
-        b.onResolve(
-          { filter: /^(react-native|@getpaseo\/plugin(?:\/client(?:\/react-native)?)?)$/ },
-          () => ({ path: join(out, "sdk.cjs") }),
-        );
+        b.onResolve({ filter: /^(react-native|@getpaseo\/plugin(?:\/client(?:\/ui)?)?)$/ }, () => ({
+          path: join(out, "sdk.cjs"),
+        }));
         b.onResolve({ filter: /^\.\/web$/ }, () => ({ path: join(out, "web.ts") }));
       },
     },
@@ -209,6 +208,18 @@ await build({
 });
 const { SharedBrowserPanel } = createRequire(import.meta.url)(join(out, "panel.cjs"));
 const root = createRoot(document.getElementById("root"));
+// Stand-in for the host's persisted tab state: writes re-render the panel.
+function PanelHost() {
+  const [state, setState] = React.useState(undefined);
+  const tab = React.useMemo(() => ({ state, setState, setModified() {} }), [state]);
+  return React.createElement(SharedBrowserPanel, {
+    theme: { colors: new Proxy({}, { get: () => "#777" }) },
+    host: { id: "fixture", label: "Fixture" },
+    layout: { compact: values.compact, platform: "web" },
+    workspaceId: "workspace",
+    tab,
+  });
+}
 const query = new QueryClient({
   defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
 });
@@ -243,16 +254,7 @@ async function flush(ms = 0) {
 try {
   await React.act(async () =>
     root.render(
-      React.createElement(
-        QueryClientProvider,
-        { client: query },
-        React.createElement(SharedBrowserPanel, {
-          theme: { colors: new Proxy({}, { get: () => "#777" }) },
-          host: { id: "fixture", label: "Fixture" },
-          layout: { compact: values.compact, platform: "web" },
-          workspaceId: "workspace",
-        }),
-      ),
+      React.createElement(QueryClientProvider, { client: query }, React.createElement(PanelHost)),
     ),
   );
   await flush(30);

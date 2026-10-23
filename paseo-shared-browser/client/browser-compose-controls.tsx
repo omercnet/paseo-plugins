@@ -1,6 +1,6 @@
 /** Explicit Compose draft UI, with original control/document ownership pinned until Done. */
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { Modal, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Modal, TextInput } from "@getpaseo/plugin/client/ui";
 import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { ControlButton } from "./browser-chrome";

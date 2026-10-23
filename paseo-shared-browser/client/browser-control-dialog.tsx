@@ -1,6 +1,6 @@
 /** Confirm a one-time control request before the selected tab action continues. */
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { Icon, Modal } from "@getpaseo/plugin/client/react-native";
+import { Icon, Modal } from "@getpaseo/plugin/client/ui";
 import type { BrowserState } from "../shared/browser";
 import { ControlButton } from "./browser-chrome";
 import type { ControlRequest } from "./browser-control-request";

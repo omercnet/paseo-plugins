@@ -4,7 +4,7 @@
  * host internals. Placement stays inside the pane, including compact clients.
  */
 import type { PluginHostProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import {
   type ReactNode,
   type RefObject,
