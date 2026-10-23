@@ -479,6 +479,25 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
         returnByValue: true,
       });
       expect(observation.result.value.failures).toEqual([]);
+      {
+        const vis = async (s: { send: CdpSession["send"] }) =>
+          (await s.send<{ result: { value: unknown } }>("Runtime.evaluate", { expression: "JSON.stringify([document.visibilityState, document.hasFocus(), location.pathname, Math.round(performance.now())])", returnByValue: true })).result.value;
+        console.log(
+          "NAVDBG",
+          JSON.stringify({
+            attempt,
+            status: reply.status,
+            n: reply.packets.length,
+            types: reply.packets.map((p) => p.type[0]).join(""),
+            capturedMinusAck: reply.packets.map((p) => Date.parse(p.capturedAt) - navigationAcknowledgedAt),
+            nowMinusAck: Date.now() - navigationAcknowledgedAt,
+            presented: observation.result.value.presented.length,
+            needsKey: observation.result.value.needsKey,
+            src: await vis(runtime.page),
+            consumer: await vis(consumer),
+          }),
+        );
+      }
       navigationFront = observation.result.value.presented.at(-1) ?? null;
       const packet = navigationFront ? navigationPackets.get(navigationFront.frameId) : null;
       // The first post-navigation frame can be display-only within the existing
