@@ -68,6 +68,10 @@ If the source agent is busy, `/tell` and the Tell agent panel send that instruct
 
 Either choice only applies to the source agent. Its later message to the target is a separate send. On Paseo 0.12 and later, an agent's send steers a running target by default and falls back to interrupting when the provider cannot steer. The target shows it as a message from the source agent. Tell the source agent to use `interrupt` if you want the target's turn replaced. Before 0.12, an agent's send always interrupts a running target.
 
+On Paseo 0.13, an agent's send to another agent is queued instead of dispatched at once. Paseo delivers it after about two seconds with no further agent messages for that target, and merges the messages that arrive in that window into one prompt with one block per message. The target's completion notice back to the source agent is batched the same way, so a report and a finish notice can arrive together. Expect the target to receive a `/tell` roughly two seconds after the source agent forwards it. Messages with conflicting steer or interrupt behavior are delivered separately, in order. The pending window is kept in memory: a clean daemon shutdown flushes it, but a crash can lose it. The `/tell` instruction to the source agent is a user prompt and is not delayed.
+
+On Paseo 0.13, a daemon restart marks agents that were running as closed. Closed agents are not offered as targets.
+
 ## Trust
 
 Paseo plugins run as trusted, unsandboxed code. Installing this package trusts its code, dependencies, and future updates. Review the package and update preview before approving an installation or update.

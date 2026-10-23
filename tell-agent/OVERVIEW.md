@@ -2,7 +2,7 @@ Tell Agent lets one agent pass a message to another agent on the same Paseo host
 
 ## How it works
 
-The plugin does not write into the target's session. It asks the agent you are typing in (the source agent) to forward your message to the target, and the source agent carries that out. If the source agent is busy, the request is added to its running turn. Put `--interrupt` first to replace its current turn instead.
+The plugin does not write into the target's session. It asks the agent you are typing in (the source agent) to forward your message to the target, and the source agent carries that out. If the source agent is busy, the request is added to its running turn. Put `--interrupt` first to replace its current turn instead. On Paseo 0.13, the source agent's forward to the target is queued and delivered after about two seconds with no other agent messages for that target, merged with any that arrive in that window. The target's completion notice is batched the same way.
 
 ## Reads and sends
 
