@@ -1,5 +1,5 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
-import { TextInput } from "@getpaseo/plugin/client/react-native";
+import { TextInput } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";

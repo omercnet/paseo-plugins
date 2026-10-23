@@ -1,5 +1,5 @@
 import type { PluginButtonIconProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import type { ComponentType } from "react";
 import { View } from "react-native";
 import { type QuotaSeverity, quotaProviderIconName } from "./quota-state";

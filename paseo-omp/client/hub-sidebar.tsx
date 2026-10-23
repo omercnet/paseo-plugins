@@ -2,6 +2,7 @@ import type { PluginPopoverProps, PluginSidebarItemProps } from "@getpaseo/plugi
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Text, View } from "react-native";
+import { OMP_ICON } from "./hub-icon";
 import { HubProcessList } from "./hub-popover";
 import { CONFIG_SCREEN_ID, type HubSnapshot, hubTrailing } from "./sidebar-compat";
 
@@ -12,7 +13,7 @@ const HUB_SIDEBAR_QUERY_KEY = ["paseo-omp", "hub-sidebar"] as const;
 export function ConfigSidebarItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
   return (
     <SidebarRow
-      icon="Settings"
+      icon={OMP_ICON}
       label="OMP"
       active={currentScreen?.screenId === CONFIG_SCREEN_ID}
       onPress={() => openScreen({ screenId: CONFIG_SCREEN_ID })}

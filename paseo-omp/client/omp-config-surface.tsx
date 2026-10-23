@@ -5,8 +5,7 @@ import {
   useRpc,
   useWorkspace,
 } from "@getpaseo/plugin/client";
-import { copyText, Icon, TextInput } from "@getpaseo/plugin/client/react-native";
-import { ExternalLink } from "@getpaseo/plugin/client/ui";
+import { copyText, ExternalLink, Icon, TextInput } from "@getpaseo/plugin/client/ui";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";

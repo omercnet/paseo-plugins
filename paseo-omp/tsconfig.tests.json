@@ -4,5 +4,5 @@
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node", "vitest/globals"]
   },
-  "include": ["canary/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx"]
+  "include": ["client/svg.d.ts", "canary/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx"]
 }

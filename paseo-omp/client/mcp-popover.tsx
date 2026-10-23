@@ -1,5 +1,5 @@
 import { type PluginButtonContentProps, useAgent, usePaseo } from "@getpaseo/plugin/client";
-import { TextInput } from "@getpaseo/plugin/client/react-native";
+import { TextInput } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { buildOmpMcpServerCommand, type OmpMcpServerAction } from "../shared/mcp";

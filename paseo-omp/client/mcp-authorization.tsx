@@ -1,5 +1,5 @@
 import { type PluginTimelineItemProps, useRpc } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {

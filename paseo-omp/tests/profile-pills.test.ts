@@ -1,7 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { afterEach, expect, test, vi } from "vitest";
 
-vi.mock("../client/hub-icon", () => ({ OmpIcon: () => null }));
+vi.mock("../client/hub-icon", () => ({ OMP_ICON: { svg: "<svg></svg>" } }));
 vi.mock("../client/hub-popover", () => ({ HubPopover: () => null }));
 vi.mock("../client/hub-sidebar", () => ({
   ConfigSidebarItem: () => null,

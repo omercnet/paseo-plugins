@@ -3,7 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { HubProcess } from "../shared/hub";
 
 const hubLoaders: Array<() => Promise<unknown>> = [];
-vi.mock("../client/hub-icon", () => ({ OmpIcon: () => null }));
+vi.mock("../client/hub-icon", () => ({ OMP_ICON: { svg: "<svg></svg>" } }));
 vi.mock("../client/hub-popover", () => ({ HubPopover: () => null }));
 vi.mock("../client/hub-sidebar", () => ({
   ConfigSidebarItem: () => null,

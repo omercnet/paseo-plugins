@@ -173,7 +173,7 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
     id: "omp-plugin",
     label: "OMP Plugin",
     description: "Direct plugin provider for OMP's rpc-ui protocol",
-    icon: "server/provider/omp.svg",
+    icon: "shared/omp.svg",
     providerOptionsSchema: OmpProviderOptionsSchema,
     async getCatalogCacheKey(catalogOptions) {
       const providerOptions = parseOmpProviderOptions(catalogOptions.providerOptions);

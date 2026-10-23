@@ -633,6 +633,49 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("steers a batched agent-message prompt verbatim as one native steer", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const session = sessionAt(runtime);
+    // Paseo batches agent reports into one prompt: envelopes joined by a blank line.
+    const batched = [
+      '<paseo-system version="1" kind="agent-message" message-id="m-1" source-agent-id="agent-a" source-agent-title="Reviewer">\nfirst &amp; second\n</paseo-system>',
+      '<paseo-system version="1" kind="agent-notification" message-id="m-2" source-agent-id="agent-b" event="finished">\nagent-b finished\n</paseo-system>',
+    ].join("\n\n");
+    const baseline = events.length;
+
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "session-1",
+      prompt: {
+        clientMessageId: "batched-steer",
+        delivery: "steer",
+        input: { type: "message", content: [{ type: "text", text: batched }] },
+      },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.prompt_result" && event.clientMessageId === "batched-steer",
+    );
+
+    expect(session.steers).toEqual([batched]);
+    expect(session.promptCount).toBe(1);
+    expect(session.aborts).toBe(0);
+    expect(
+      events.slice(baseline).filter((event) => event.type === "session.prompt_result"),
+    ).toEqual([
+      {
+        type: "session.prompt_result",
+        sessionId: "session-1",
+        clientMessageId: "batched-steer",
+        result: { type: "steer", turnId },
+      },
+    ]);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
   test("keeps accepted steer work after an earlier agent_end", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);

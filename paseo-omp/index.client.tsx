@@ -4,7 +4,7 @@ import type {
   PluginClientContext,
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
-import { OmpIcon } from "./client/hub-icon";
+import { OMP_ICON } from "./client/hub-icon";
 import { HubPopover } from "./client/hub-popover";
 import { ConfigSidebarItem, createHubSidebar } from "./client/hub-sidebar";
 import { summarizeHubProcesses } from "./client/hub-status";
@@ -184,7 +184,6 @@ export default function contribute(client: PluginClientContext) {
     id: "memory",
     title: "OMP Memory",
     icon: "Brain",
-    context: "workspace",
     locations: ["explorer"],
     Component: OmpMemoryPanel,
   });
@@ -202,7 +201,6 @@ export default function contribute(client: PluginClientContext) {
     id: "workspace",
     title: "OMP",
     icon: "Settings",
-    context: "workspace",
     locations: ["workspace", "explorer"],
     Component: OmpWorkspacePanel,
   });
@@ -279,7 +277,7 @@ export default function contribute(client: PluginClientContext) {
         agentId: agent.id,
         button: {
           title: "Hub processes",
-          icon: OmpIcon,
+          icon: OMP_ICON,
           label: "Hub",
           visible: false,
           behavior: { kind: "popover", Content: HubPopover },

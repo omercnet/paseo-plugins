@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; 18.2.0; 18.8.4; and 18.10.1, the newest release covered end to end. The full controlled canary is pinned to official Paseo image `0.12.0@sha256:0d17dd75a51c591907a4bbcd505013102048246a0cd6e824de3b38a6057ff862`; the required canary matrix validates OMP 18.1.15, 18.8.4, and 18.10.1.
+Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; 18.2.0; 18.8.4; and 18.10.1, the newest release covered end to end. The full controlled canary is pinned to official Paseo image `0.13.0-beta.2@sha256:faebc693fd50610470dc7402025a765e327777d1cbc5be355b26f6b8d79eb75c`; the required canary matrix validates OMP 18.1.15, 18.8.4, and 18.10.1.
 
 Classifications:
 
@@ -13,7 +13,7 @@ Classifications:
 
 | Inventory behavior | Classification | Evidence |
 | --- | --- | --- |
-| Binary availability and version diagnostics | **Partial** | The plugin's bounded `checkAvailability` hook (`server/provider-diagnostics.ts`) distinguishes missing, unrunnable, incompatible, and available runtimes without exposing probe output, but Paseo 0.12 does not call it and uses the `status()` hook instead. The `status()` hook reports only a missing default executable as unavailable, and `command` is deliberately not declared; `tests/provider-conformance.test.ts` runs the real host registry to pin both (see README). |
+| Binary availability and version diagnostics | **Partial** | The plugin's bounded `checkAvailability` hook (`server/provider-diagnostics.ts`) distinguishes missing, unrunnable, incompatible, and available runtimes without exposing probe output, but Paseo 0.13 does not call it and uses the `status()` hook instead. The `status()` hook reports only a missing default executable as unavailable, and `command` is deliberately not declared; `tests/provider-conformance.test.ts` runs the real host registry to pin both (see README). |
 | Catalog discovery | **Equivalent** | `server/provider/catalog.ts::discoverOmpCatalog` launches with the normalized profile command, merged host/profile environment policy, parameters, workspace, and timeout settings; selected daemon values are resolved only when the catalog child spawns. |
 | Catalog cache identity | **Equivalent** | `getCatalogCacheKey` hashes merged host/profile `inheritEnv` names but never their values or secret-derived fingerprints, plus normalized profile options, profile `settings`, scope, working directory, and the effective default command. Core applies configured `models` and `additionalModels` per profile. |
 | Default mode | **Equivalent** | Catalog reports `defaultMode: full`; `full` is always available, while bundled `write`/`ask` modes are advertised only after `permission` negotiation. Covered by `tests/provider-catalog.test.ts` and `tests/provider-options.test.ts`. |
