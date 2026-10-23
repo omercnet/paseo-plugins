@@ -304,25 +304,17 @@ jobs:
   shared-browser:
     needs: changes
     if: ${{ needs.changes.outputs.shared_browser_affected == 'true' }}
-    name: paseo-shared-browser (${{ matrix.os }})
+    name: paseo-shared-browser (${{ matrix.os }}) ${{ matrix.rep }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         include:
           - os: ubuntu-latest
-            agent_browser: agent-browser
-            chromium: chrome
             chromium_args: --no-sandbox
-          - os: macos-latest
-            agent_browser: agent-browser
-            chromium: chrome
-            chromium_args: ""
-          - os: windows-latest
-            agent_browser: agent-browser.exe
-            chromium: chrome.exe
-            chromium_args: ""
     defaults:
       run:
         working-directory: paseo-shared-browser
@@ -367,7 +359,7 @@ jobs:
         env:
           PASEO_HOME: ${{ runner.temp }}/paseo-home
           PASEO_SHARED_BROWSER_CHROMIUM_ARGS: ${{ matrix.chromium_args }}
-        run: for i in 1 2 3 4 5 6; do echo "ITER $i"; npm run test:video || true; done
+        run: nproc; lscpu | grep -E "Model name|MHz"; free -m | head -2; for i in 1 2 3; do echo "ITER $i"; npm run test:video || true; done
 
   wsl-host-tools:
     needs: changes
