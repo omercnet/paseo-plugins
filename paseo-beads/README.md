@@ -31,7 +31,10 @@ verified the rendered page contained no private organization names.
 - Lane totals, text search over ID, title, assignee, and labels, and **All**, **P0–P1**, and
   **Assigned** filters.
 - A detail view with status, readiness, priority, type, assignee, parent, labels, description,
-  acceptance criteria, design, notes, dependencies, dependents, and update time.
+  acceptance criteria, design, notes, dependencies, dependents, and update time. Description,
+  acceptance criteria, design, and notes render as Markdown.
+- Search text, the active filter, and the selected bead are kept per panel tab, so they survive a
+  tab restore.
 - A side-by-side list and detail view when space permits, with list/detail navigation in compact
   layouts.
 - A virtualized issue list, descriptive accessibility labels, and focus restoration when navigating
@@ -81,7 +84,7 @@ still running starts no further workspace reads.
 
 ## Limits
 
-- Paseo `^0.11.0 || ^0.12.0 || ^0.13.0` with plugins enabled is required.
+- Paseo `^0.13.0` with plugins enabled is required.
 - Beads `bd` 1.0 or newer must be available on the Paseo daemon's `PATH`.
 - A Beads project must be initialized in the workspace for issue data to appear.
 - CLI calls time out after 10 seconds and accept at most 8 MiB of output. Unexpected CLI details stay

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { type BeadSummary, type BeadsSnapshot, getWorkspaceBead } from "../shared/beads";
 
 export const BEAD_LANES = ["ready", "in_progress", "blocked", "other"] as const;
@@ -15,7 +16,24 @@ export const BEAD_LANE_METADATA: readonly { id: BeadLane; title: string }[] = BE
   (id) => ({ id, title: BEAD_LANE_TITLES[id] }),
 );
 
-export type BeadsFilter = "all" | "high_priority" | "assigned";
+export const BEADS_FILTERS = ["all", "high_priority", "assigned"] as const;
+
+export type BeadsFilter = (typeof BEADS_FILTERS)[number];
+
+/** Search, filter and selected bead that survive a panel tab restore. */
+export const beadsPanelStateSchema = z.object({
+  search: z.string(),
+  filter: z.enum(BEADS_FILTERS),
+  selectedId: z.string().nullable(),
+});
+
+export type BeadsPanelState = z.infer<typeof beadsPanelStateSchema>;
+
+export const DEFAULT_BEADS_PANEL_STATE: BeadsPanelState = {
+  search: "",
+  filter: "all",
+  selectedId: null,
+};
 
 export interface BeadsViewOptions {
   query?: string;

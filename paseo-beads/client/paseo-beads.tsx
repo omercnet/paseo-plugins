@@ -2,11 +2,12 @@ import {
   type PluginScreenProps,
   type PluginWorkspacePanelProps,
   useRpc,
+  useTabState,
   useWorkspace,
 } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon, Markdown } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -35,9 +36,11 @@ import {
   type BeadLane,
   type BeadSection,
   type BeadsFilter,
+  beadsPanelStateSchema,
   beadsSnapshotQueryKey,
   buildBeadSections,
   buildBeadsView,
+  DEFAULT_BEADS_PANEL_STATE,
   issueAccessibilityLabel,
   parseBeadScreenParams,
 } from "./beads-view";
@@ -169,9 +172,11 @@ function TextSection({
   return (
     <View style={styles.detailSection}>
       <Text style={styles.sectionTitle}>{title}</Text>
-      <Text selectable style={content?.trim() ? styles.sectionCopy : styles.sectionEmpty}>
-        {content?.trim() || "Not provided."}
-      </Text>
+      {content?.trim() ? (
+        <Markdown>{content}</Markdown>
+      ) : (
+        <Text style={styles.sectionEmpty}>Not provided.</Text>
+      )}
     </View>
   );
 }
@@ -480,14 +485,20 @@ export function BeadScreen({ theme, layout, host, params }: PluginScreenProps) {
   );
 }
 
-function WorkspaceBeads({ theme, layout, host, workspaceId }: PluginWorkspacePanelProps) {
+function WorkspaceBeads({ theme, layout, host, workspaceId, tab }: PluginWorkspacePanelProps) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
   const workspaceTitle = useWorkspace(workspaceId, ({ name, title }) => title?.trim() || name);
   const loadSnapshot = useRpc(getWorkspaceBeads);
   const loadDetail = useRpc(getWorkspaceBead);
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<BeadsFilter>("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [panelState, setPanelState] = useTabState(
+    tab,
+    beadsPanelStateSchema,
+    DEFAULT_BEADS_PANEL_STATE,
+  );
+  const { search, filter, selectedId } = panelState;
+  const setSearch = (next: string) => setPanelState({ ...panelState, search: next });
+  const setFilter = (next: BeadsFilter) => setPanelState({ ...panelState, filter: next });
+  const setSelectedId = (next: string | null) => setPanelState({ ...panelState, selectedId: next });
   const detailFocusRef = useRef<View | null>(null);
   const issueRowRefs = useRef(new Map<string, View>());
   const originatingIssueIdRef = useRef<string | null>(null);

@@ -8,7 +8,6 @@ export default function contribute(client: PluginClientContext) {
     id: "beads",
     title: "Beads",
     icon: "CircleDot",
-    context: "workspace",
     locations: ["workspace", "explorer"],
     Component: PaseoBeads,
   });

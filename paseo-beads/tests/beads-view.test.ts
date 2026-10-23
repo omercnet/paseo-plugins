@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
   type BeadsView,
+  beadsPanelStateSchema,
   buildBeadSections,
   buildBeadsView,
+  DEFAULT_BEADS_PANEL_STATE,
   describeReadyBeads,
   issueAccessibilityLabel,
   parseBeadScreenParams,
@@ -409,5 +411,30 @@ describe("bead screen params", () => {
     ];
 
     for (const params of invalid) expect(parseBeadScreenParams(params)).toBeNull();
+  });
+});
+
+describe("panel tab state", () => {
+  // useTabState returns the parsed state on success and the default otherwise.
+  const restore = (state: unknown) => {
+    const parsed = beadsPanelStateSchema.safeParse(state);
+    return parsed.success ? parsed.data : DEFAULT_BEADS_PANEL_STATE;
+  };
+
+  test("starts from the empty list when nothing was persisted", () => {
+    expect(restore(undefined)).toEqual({ search: "", filter: "all", selectedId: null });
+  });
+
+  test("restores search, filter and selected bead", () => {
+    const saved = { search: "auth", filter: "assigned", selectedId: "demo-d4f" };
+    expect(restore(saved)).toEqual(saved);
+  });
+
+  test("falls back to the default for unknown filters and malformed state", () => {
+    expect(restore({ search: "", filter: "closed", selectedId: null })).toBe(
+      DEFAULT_BEADS_PANEL_STATE,
+    );
+    expect(restore({ search: "x" })).toBe(DEFAULT_BEADS_PANEL_STATE);
+    expect(restore("selected")).toBe(DEFAULT_BEADS_PANEL_STATE);
   });
 });
