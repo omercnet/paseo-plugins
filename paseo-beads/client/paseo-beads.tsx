@@ -7,7 +7,7 @@ import {
 } from "@getpaseo/plugin/client";
 import { Icon, Markdown } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -47,6 +47,7 @@ import {
 import { focusWebElement } from "./web";
 
 const REFRESH_INTERVAL_MS = 10_000;
+const SEARCH_PERSIST_DELAY_MS = 300;
 const BACK_BUTTON_NATIVE_ID = "paseo-beads-back";
 const ISSUE_ROW_NATIVE_ID_PREFIX = "paseo-beads-issue-";
 export const ID_FONT_FAMILY = Platform.select({ ios: "Menlo", default: "monospace" });
@@ -495,8 +496,17 @@ function WorkspaceBeads({ theme, layout, host, workspaceId, tab }: PluginWorkspa
     beadsPanelStateSchema,
     DEFAULT_BEADS_PANEL_STATE,
   );
-  const { search, filter, selectedId } = panelState;
-  const setSearch = (next: string) => setPanelState({ ...panelState, search: next });
+  const { filter, selectedId } = panelState;
+  // The input edits a local draft; only the settled text is written to the persisted tab state.
+  const [search, setSearch] = useState(panelState.search);
+  useEffect(() => {
+    if (search === panelState.search) return;
+    const timer = setTimeout(
+      () => setPanelState({ ...panelState, search }),
+      SEARCH_PERSIST_DELAY_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [search, panelState, setPanelState]);
   const setFilter = (next: BeadsFilter) => setPanelState({ ...panelState, filter: next });
   const setSelectedId = (next: string | null) => setPanelState({ ...panelState, selectedId: next });
   const detailFocusRef = useRef<View | null>(null);
