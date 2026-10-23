@@ -71,6 +71,7 @@ const CHUNK_STALE_MS = 30_000;
 const MAX_PHYSICAL_FRAME_BYTES = 1024 * 1024;
 const MAX_STREAM_TEXT_LENGTH = 4 * 1024 * 1024;
 const MAX_ACTIVE_TOOLS = 64;
+const MAX_ENDED_TOOL_IDS = 1_024;
 const MAX_PENDING_REQUESTS = 256;
 const MAX_PENDING_ONE_WAY_WRITES = 256;
 const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
@@ -164,6 +165,8 @@ export class OmpRpcProcess {
   private readonly streamedBlocks = new Map<number, string>();
   private readonly activeToolCallIds = new Set<string>();
   private readonly announcedToolCallIds = new Set<string>();
+  // Detached background tools keep streaming updates after they return and after turn_end.
+  private readonly endedToolCallIds = new Set<string>();
   private pendingWriteBytes = 0;
   private commandTextLength = 0;
   private lineParts: Buffer[] = [];
@@ -1081,6 +1084,8 @@ export class OmpRpcProcess {
       });
       return;
     }
+    // Emitted once the session has no live or background work. Nothing consumes it yet.
+    if (type === "session_settled") return;
     if (type === "ready") {
       if (this.readyReceived) {
         this.recordProtocolViolation("duplicate-ready", {
@@ -1119,6 +1124,12 @@ export class OmpRpcProcess {
         ...invalidEventDiagnosticMetadata(safeFrame, type),
         maxByteSize: rawByteLength,
       });
+      return;
+    }
+    if (
+      event.data.type === "tool_execution_update" &&
+      this.endedToolCallIds.has(event.data.toolCallId)
+    ) {
       return;
     }
     if (!this.acceptEventState(event.data)) {
@@ -1188,6 +1199,7 @@ export class OmpRpcProcess {
         return false;
       }
       this.activeToolCallIds.add(event.toolCallId);
+      this.endedToolCallIds.delete(event.toolCallId);
       return true;
     }
     if (event.type === "tool_stream_update") {
@@ -1203,6 +1215,10 @@ export class OmpRpcProcess {
       if (!this.activeToolCallIds.has(event.toolCallId)) return false;
       this.activeToolCallIds.delete(event.toolCallId);
       this.announcedToolCallIds.delete(event.toolCallId);
+      if (this.endedToolCallIds.size >= MAX_ENDED_TOOL_IDS) {
+        this.endedToolCallIds.delete(this.endedToolCallIds.values().next().value as string);
+      }
+      this.endedToolCallIds.add(event.toolCallId);
       return true;
     }
     if (

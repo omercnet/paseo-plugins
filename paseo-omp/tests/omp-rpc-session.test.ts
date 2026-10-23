@@ -317,6 +317,101 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("ignores the session_settled frame without a protocol violation", async () => {
+    const child = new FakeRpcChild();
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    const opening = runtimeFor(child, [], undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    }).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    session.onEvent((event) => events.push(event));
+
+    child.write({ type: "session_settled" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events).toEqual([]);
+    expect(diagnostics).toEqual([]);
+    await session.close();
+  });
+
+  test("drops late background progress for an ended tool call without a violation", async () => {
+    const child = new FakeRpcChild();
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    const opening = runtimeFor(child, [], undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    }).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    session.onEvent((event) => events.push(event));
+
+    child.write({ type: "turn_start" });
+    child.write({ type: "tool_execution_start", toolCallId: "job", toolName: "bash", args: {} });
+    child.write({
+      type: "tool_execution_end",
+      toolCallId: "job",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "started in background" }] },
+    });
+    child.write({ type: "turn_end" });
+    child.write({
+      type: "tool_execution_update",
+      toolCallId: "job",
+      toolName: "bash",
+      args: {},
+      partialResult: { content: [{ type: "text", text: "progress" }] },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(diagnostics).toEqual([]);
+
+    child.write({
+      type: "tool_execution_update",
+      toolCallId: "never-started",
+      toolName: "bash",
+      args: {},
+      partialResult: { content: [{ type: "text", text: "progress" }] },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events.map((event) => event.type)).toEqual([
+      "turn_start",
+      "tool_execution_start",
+      "tool_execution_end",
+      "turn_end",
+    ]);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        category: "invalid-event-state",
+        reason: "event-state-transition",
+        eventType: "tool_execution_update",
+      }),
+    ]);
+    await session.close();
+  });
+
   test("rejects incomplete ready metadata instead of guessing v1", async () => {
     const child = new FakeRpcChild();
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });
