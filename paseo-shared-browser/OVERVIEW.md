@@ -19,3 +19,4 @@ New agents whose provider accepts external MCP servers receive a local MCP serve
 ## Limits
 
 Downloads, uploads, clipboard sync, media permissions, extensions and passkeys are not available. Viewers who are paired with the same daemon can see and control the browser, and the browser runs with the daemon user's file and network access.
+
