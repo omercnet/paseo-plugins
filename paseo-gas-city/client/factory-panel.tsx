@@ -56,7 +56,6 @@ function ReadyFactoryPanel({
   theme,
   layout,
   host,
-  navigation,
   workspaceId,
   settings,
 }: PluginWorkspacePanelProps & { settings: GasCitySettings }) {
