@@ -35,8 +35,8 @@ Before Paseo creates a branch-off worktree, the plugin:
 4. Leaves the workspace request unchanged, so Paseo forks from the local branch.
 5. Rechecks active worktrees every five minutes and shows `Behind · N` in the workspace header when
    their `HEAD` is behind the source branch's remote-tracking ref. Select the indicator to recheck it.
-   On phones and narrow windows, Paseo 0.13 lists the indicator as a row of the compact workspace
-   menu (`···`). Paseo 0.12 does not render plugin header buttons in the compact workspace header,
+   On phones and narrow windows, Paseo 0.13 lists it as a row of the compact workspace
+   menu (`···`), worded as "Worktree is N commits behind its source branch". Paseo 0.12 does not render plugin header buttons in the compact workspace header,
    so there the indicator is not shown; use the sidebar footer row below.
 
 Explicit checkout and change-request workspaces are unchanged. Explicit remote bases are fetched
