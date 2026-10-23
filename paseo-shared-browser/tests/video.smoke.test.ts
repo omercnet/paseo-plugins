@@ -450,6 +450,7 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
     await consumer.send("Runtime.evaluate", {
       expression: `prepareVideo(${JSON.stringify(state)})`,
     });
+    const navigationLog: unknown[] = [];
     let navigationPainted = false;
     let navigationFront: Presentation | null = null;
     const navigationPackets = new Map<string, BrowserVideoPacket>();
@@ -479,33 +480,21 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
         returnByValue: true,
       });
       expect(observation.result.value.failures).toEqual([]);
-      {
-        const vis = async (s: { send: CdpSession["send"] }) =>
-          (
-            await s.send<{ result: { value: unknown } }>("Runtime.evaluate", {
-              expression:
-                "JSON.stringify([document.visibilityState, document.hasFocus(), location.pathname, Math.round(performance.now())])",
-              returnByValue: true,
-            })
-          ).result.value;
-        console.log(
-          "NAVDBG",
-          JSON.stringify({
-            attempt,
-            status: reply.status,
-            n: reply.packets.length,
-            types: reply.packets.map((p) => p.type[0]).join(""),
-            capturedMinusAck: reply.packets.map(
-              (p) => Date.parse(p.capturedAt) - navigationAcknowledgedAt,
-            ),
-            nowMinusAck: Date.now() - navigationAcknowledgedAt,
-            presented: observation.result.value.presented.length,
-            needsKey: observation.result.value.needsKey,
-            src: await vis(runtime.page),
-            consumer: await vis(consumer),
-          }),
-        );
-      }
+      navigationLog.push({
+        a: attempt,
+        st: reply.status,
+        n: reply.packets.length,
+        t: reply.packets.map((p) => p.type[0]).join(""),
+        cap: reply.packets.map((p) => Date.parse(p.capturedAt) - navigationAcknowledgedAt),
+        now: Date.now() - navigationAcknowledgedAt,
+        pres: observation.result.value.presented.length,
+        nk: observation.result.value.needsKey,
+        presCap: observation.result.value.presented.map(
+          (x) =>
+            Date.parse(navigationPackets.get(x.frameId)?.capturedAt ?? "") -
+            navigationAcknowledgedAt,
+        ),
+      });
       navigationFront = observation.result.value.presented.at(-1) ?? null;
       const packet = navigationFront ? navigationPackets.get(navigationFront.frameId) : null;
       // The first post-navigation frame can be display-only within the existing
@@ -516,6 +505,7 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
             navigationAcknowledgedAt + VIDEO_SOURCE_CLOCK_TOLERANCE_MS,
       );
     }
+    console.log("NAVLOG", pointerKind, JSON.stringify(navigationLog));
     expect(navigationPainted).toBe(true);
 
     // A same-document click must reach Chromium once, then fresh video must
