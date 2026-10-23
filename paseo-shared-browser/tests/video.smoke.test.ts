@@ -115,6 +115,13 @@ function ownedIpcDirectory(home: string): string {
   return join("/tmp", `paseo-shared-browser-${hash}`);
 }
 
+/**
+ * Wall-clock budget for polling a decoded frame. Each video.read returns at once while
+ * packets are queued, so an attempt count measures RPCs (about 40 ms each), not time,
+ * and a slow runner's decoder warm-up outlasted it. One attempt is budgeted its 250 ms wait.
+ */
+const pollDeadline = (attempts: number) => Date.now() + attempts * 250;
+
 /** Prove mouse and native touch acknowledgements retain fresh encoded playback. */
 async function proveNativeVideo(pointerKind: "mouse" | "touch") {
   const preparedHome = process.env.PASEO_HOME ?? join(homedir(), ".paseo");
@@ -275,7 +282,8 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
       let sequence = 0;
       let readback: Readback = { presented: [], failures: [], needsKey: false };
       const start = Date.now();
-      for (let attempt = 0; attempt < 30 && !readback.presented.length; attempt++) {
+      const deadline = pollDeadline(30);
+      for (let attempt = 0; Date.now() < deadline && !readback.presented.length; attempt++) {
         const reply: BrowserVideoReadReply = await client.requestBrowser<BrowserVideoReadReply>(
           "video.read",
           {
@@ -455,7 +463,8 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
     const navigationPackets = new Map<string, BrowserVideoPacket>();
     let navigationSequence = 0;
     let navigationStreamId: string | null = null;
-    for (let attempt = 0; attempt < 15 && !navigationPainted; attempt++) {
+    const navigationDeadline = pollDeadline(15);
+    for (let attempt = 0; Date.now() < navigationDeadline && !navigationPainted; attempt++) {
       const reply: BrowserVideoReadReply = await client.requestBrowser<BrowserVideoReadReply>(
         "video.read",
         {
@@ -580,7 +589,8 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
 
     // A newer genuinely decoded packet (captured after the first press) is a fresh receipt.
     let secondTarget: typeof clickTarget | null = null;
-    for (let attempt = 0; attempt < 30 && !secondTarget; attempt++) {
+    const secondTargetDeadline = pollDeadline(30);
+    for (let attempt = 0; Date.now() < secondTargetDeadline && !secondTarget; attempt++) {
       const reply: BrowserVideoReadReply = await client.requestBrowser<BrowserVideoReadReply>(
         "video.read",
         {
@@ -626,7 +636,8 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
     await vi.waitFor(async () => expect(await clicksSoFar()).toBe(2), { timeout: 2000 });
     expect(state.url).toBe(`${origin}/pending-dom`);
     let ordinaryClickPainted = false;
-    for (let attempt = 0; attempt < 20 && !ordinaryClickPainted; attempt++) {
+    const clickDeadline = pollDeadline(20);
+    for (let attempt = 0; Date.now() < clickDeadline && !ordinaryClickPainted; attempt++) {
       const reply = await client.requestBrowser<BrowserVideoReadReply>("video.read", {
         viewerToken: attached.viewerToken,
         quality: "high",
