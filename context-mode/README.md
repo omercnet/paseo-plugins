@@ -57,7 +57,7 @@ Update an npm installation to the latest published release:
 paseo plugin update context-mode
 ```
 
-The npm install and update flow requires Paseo `^0.12.0` with npm available on the daemon host.
+The npm install and update flow requires Paseo `^0.12.0 || ^0.13.0` with npm available on the daemon host.
 
 
 ## Commands and limits

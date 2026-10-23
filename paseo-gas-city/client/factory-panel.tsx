@@ -17,6 +17,12 @@ import {
 import { CityOperations } from "./city-operations";
 import { dismissSlingIntent, useSlingIntent } from "./dispatch-intent";
 
+// The states render the panel chrome only; they never read the per-tab params, revision or tab.
+type PanelBaseProps = Pick<
+  PluginWorkspacePanelProps,
+  "theme" | "layout" | "host" | "navigation" | "workspaceId"
+>;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An unexpected error occurred.";
 }
@@ -59,7 +65,7 @@ function ReadyFactoryPanel({
   navigation,
   workspaceId,
   settings,
-}: PluginWorkspacePanelProps & { settings: GasCitySettings }) {
+}: PanelBaseProps & { settings: GasCitySettings }) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
   const workspace = useWorkspace(workspaceId, ({ directory, name, title }) => ({
     directory,
@@ -86,7 +92,6 @@ function ReadyFactoryPanel({
         layout={layout}
         host={host}
         navigation={navigation}
-        context="workspace"
         workspaceId={workspaceId}
         title="Mapping workspace"
         body="Resolving this workspace to a Gas City rig."
@@ -101,7 +106,6 @@ function ReadyFactoryPanel({
         layout={layout}
         host={host}
         navigation={navigation}
-        context="workspace"
         workspaceId={workspaceId}
         title="Could not map workspace"
         body={errorMessage(mapping.error)}
@@ -116,7 +120,6 @@ function ReadyFactoryPanel({
         layout={layout}
         host={host}
         navigation={navigation}
-        context="workspace"
         workspaceId={workspaceId}
         title="No workspace mapping"
         body="The supervisor returned no usable mapping result."
@@ -133,7 +136,6 @@ function ReadyFactoryPanel({
         layout={layout}
         host={host}
         navigation={navigation}
-        context="workspace"
         workspaceId={workspaceId}
         mapping={resolved}
         onRetry={retryMapping}
@@ -191,7 +193,7 @@ function MappingState({
   workspaceId,
   mapping,
   onRetry,
-}: PluginWorkspacePanelProps & { mapping: WorkspaceRigMapping; onRetry: () => void }) {
+}: PanelBaseProps & { mapping: WorkspaceRigMapping; onRetry: () => void }) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
   const title =
     mapping.state === "ambiguous"
@@ -211,7 +213,6 @@ function MappingState({
         layout={layout}
         host={host}
         navigation={navigation}
-        context="workspace"
         workspaceId={workspaceId}
         title={title}
         body={body}
@@ -247,7 +248,7 @@ function FactoryState({
   body,
   loading,
   onRetry,
-}: PluginWorkspacePanelProps & {
+}: PanelBaseProps & {
   title: string;
   body: string;
   loading?: boolean;
