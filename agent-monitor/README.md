@@ -41,6 +41,7 @@ no private organization names remained in the rendered page.
   running agents (success), state and wait age on a right-aligned rail (`attentionTimestamp`,
   falling back to `updatedAt`), model, and `lastError` inline.
 - Parent rows show their subagent count; child rows use a left indent guide.
+- Agents delegated from another host (`paseo.parent-server-id` names a different host) are listed as top-level rows with a "Delegated from <host>" hint. They are never counted under, or indented below, a local agent that happens to share the parent id.
 - Text filter over title, agent id, provider, model, cwd, project, and workspace.
 - Select an agent row to open that agent, or select a workspace header (or its folder button when
   collapsed) to open its workspace through Paseo's cross-platform navigation API.
@@ -73,12 +74,12 @@ background workspaces are included.
 
 Interrupting a turn is not part of `PaseoApi`, so archive is the only lifecycle action here.
 
-The sidebar popover lists agents but cannot open them: Paseo 0.12 gives popovers no navigation.
+The sidebar popover lists agents but cannot open them: Paseo gives popovers no navigation.
 Open the monitor and select the agent there.
 
 ## Install
 
-Requires Paseo `^0.12.0 || ^0.13.0`, whose background workspaces the monitor lists. Development uses the 0.13 SDK line from the workspace catalog.
+Requires Paseo `^0.13.0`, whose background workspaces the monitor lists. Development uses the 0.13 SDK line from the workspace catalog.
 
 Install the published package on the daemon host:
 
@@ -100,7 +101,7 @@ bun run typecheck
 Release Please maintains the version, changelog, component tag, and GitHub release from
 Conventional Commits in the monorepo.
 
-The project supports Paseo `^0.12.0 || ^0.13.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
+The project supports Paseo `^0.13.0` and pins `@getpaseo/plugin`, `@getpaseo/client`,
 `@getpaseo/protocol`, and `@getpaseo/cli` to the 0.13 SDK line through the workspace catalog. Renovate groups `@getpaseo/*`
 updates so the SDKs move together.
 

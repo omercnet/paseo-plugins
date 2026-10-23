@@ -1,5 +1,5 @@
-import { type PluginSurfaceProps, usePaseo, useSettings } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { type PluginSurfaceProps, useHosts, usePaseo, useSettings } from "@getpaseo/plugin/client";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, Pressable, Text, TextInput, View } from "react-native";
@@ -14,6 +14,7 @@ import {
   bucketOf,
   buildRoster,
   childCounts,
+  delegatedFromServerId,
   type MonitorDirectory,
   matches,
   type ProjectGroup,
@@ -178,7 +179,8 @@ function AgentMonitorRoster({
     for (const entry of entries) totals[bucketOf(entry.agent)] += 1;
     return totals;
   }, [entries]);
-  const childrenByParent = useMemo(() => childCounts(entries), [entries]);
+  const childrenByParent = useMemo(() => childCounts(entries, host.id), [entries, host.id]);
+  const hosts = useHosts();
   const closedIds = useMemo(
     () =>
       entries.filter((entry) => bucketOf(entry.agent) === "closed").map((entry) => entry.agent.id),
@@ -195,8 +197,8 @@ function AgentMonitorRoster({
       }
       return matches(entry, search);
     });
-    return buildRoster(filtered, directory, settings);
-  }, [directory, entries, needle, selected, settings]);
+    return buildRoster(filtered, directory, settings, host.id);
+  }, [directory, entries, host.id, needle, selected, settings]);
 
   const styles = useMemo(() => {
     const gutter = layout.compact ? 12 : 20;
@@ -378,6 +380,10 @@ function AgentMonitorRoster({
               ? theme.colors.statusSuccess
               : theme.colors.foregroundMuted;
       const meta = agent.model ?? agent.provider;
+      const delegatedFrom = delegatedFromServerId(agent, host.id);
+      const delegatedFromLabel = delegatedFrom
+        ? (hosts.find((candidate) => candidate.serverId === delegatedFrom)?.label ?? delegatedFrom)
+        : null;
       const showPlacement = settings.grouping === "compact" && settings.showPlacementInCompact;
       const body = (
         <>
@@ -396,6 +402,11 @@ function AgentMonitorRoster({
             {showPlacement ? (
               <Text style={styles.rowMeta} numberOfLines={1} ellipsizeMode="tail">
                 {placement(item)}
+              </Text>
+            ) : null}
+            {delegatedFromLabel ? (
+              <Text style={styles.rowMeta} numberOfLines={1} ellipsizeMode="tail">
+                Delegated from {delegatedFromLabel}
               </Text>
             ) : null}
             {settings.showModel && meta ? (
@@ -449,7 +460,18 @@ function AgentMonitorRoster({
         </View>
       );
     },
-    [archive, childrenByParent, navigation, now, settings, styles, sweepArmed, theme],
+    [
+      archive,
+      childrenByParent,
+      host.id,
+      hosts,
+      navigation,
+      now,
+      settings,
+      styles,
+      sweepArmed,
+      theme,
+    ],
   );
 
   const renderWorkspaceHeader = useCallback(
@@ -509,7 +531,7 @@ function AgentMonitorRoster({
           {group.entries.map((entry) => (
             <View
               key={entry.agent.id}
-              style={parentAgentId(entry.agent) !== null ? styles.childRow : undefined}
+              style={parentAgentId(entry.agent, host.id) !== null ? styles.childRow : undefined}
             >
               {renderRow({ item: entry })}
             </View>
@@ -517,7 +539,13 @@ function AgentMonitorRoster({
         </View>
       );
     },
-    [renderRow, renderWorkspaceHeader, settings.collapseMatchingWorkspace, styles.childRow],
+    [
+      host.id,
+      renderRow,
+      renderWorkspaceHeader,
+      settings.collapseMatchingWorkspace,
+      styles.childRow,
+    ],
   );
 
   const renderProject = useCallback(

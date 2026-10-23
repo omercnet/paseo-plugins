@@ -63,13 +63,38 @@ export type Roster =
   | { kind: "project"; projects: ProjectGroup[] };
 
 export const PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
+export const PARENT_SERVER_ID_LABEL = "paseo.parent-server-id";
 
-/** Prefers the first-class snapshot field; falls back to the parent label when it is empty. */
-export function parentAgentId(agent: AgentSnapshot): string | null {
-  const firstClass = "parentAgentId" in agent ? agent.parentAgentId : null;
-  if (typeof firstClass === "string" && firstClass.trim()) return firstClass.trim();
-  const legacy = agent.labels?.[PARENT_AGENT_ID_LABEL];
-  return typeof legacy === "string" && legacy.trim() ? legacy.trim() : null;
+function trimmed(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * The agent's parent as a (host, agent) pair, or null for a root. The agent id prefers the
+ * first-class snapshot field and falls back to the parent label. An absent server label means the
+ * parent lives on `hostId`, the host being monitored.
+ */
+export function parentAddress(
+  agent: AgentSnapshot,
+  hostId: string,
+): { serverId: string; agentId: string } | null {
+  const agentId =
+    trimmed("parentAgentId" in agent ? agent.parentAgentId : null) ??
+    trimmed(agent.labels?.[PARENT_AGENT_ID_LABEL]);
+  if (!agentId) return null;
+  return { serverId: trimmed(agent.labels?.[PARENT_SERVER_ID_LABEL]) ?? hostId, agentId };
+}
+
+/** The parent's id when it is an agent on this host; null for roots and for cross-host children. */
+export function parentAgentId(agent: AgentSnapshot, hostId: string): string | null {
+  const parent = parentAddress(agent, hostId);
+  return parent?.serverId === hostId ? parent.agentId : null;
+}
+
+/** The other host that delegated this agent, or null when it has no parent or a local one. */
+export function delegatedFromServerId(agent: AgentSnapshot, hostId: string): string | null {
+  const parent = parentAddress(agent, hostId);
+  return parent && parent.serverId !== hostId ? parent.serverId : null;
 }
 
 export type Bucket = "attention" | "running" | "idle" | "closed";
@@ -84,7 +109,10 @@ export const BUCKET_TITLES: Record<Bucket, string> = {
 
 const BUCKET_ORDER: Record<Bucket, number> = { attention: 0, running: 1, idle: 2, closed: 3 };
 
-export type GroupOptions = Pick<MonitorSettings, "floatPinned" | "agentSort">;
+export type GroupOptions = Pick<MonitorSettings, "floatPinned" | "agentSort"> & {
+  /** The monitored host; parent links to any other host do not resolve against local agents. */
+  hostId: string;
+};
 
 export function bucketOf(agent: AgentSnapshot): Bucket {
   if (agent.status === "closed") return "closed";
@@ -205,10 +233,10 @@ function compareBySort(left: AgentEntry, right: AgentEntry, agentSort: AgentSort
   return byBucket === 0 ? waitingSince(right.agent) - waitingSince(left.agent) : byBucket;
 }
 
-export function sortEntries(entries: AgentEntry[], agentSort: AgentSort): void {
+export function sortEntries(entries: AgentEntry[], agentSort: AgentSort, hostId: string): void {
   entries.sort((left, right) => {
-    const leftChild = parentAgentId(left.agent) !== null;
-    const rightChild = parentAgentId(right.agent) !== null;
+    const leftChild = parentAgentId(left.agent, hostId) !== null;
+    const rightChild = parentAgentId(right.agent, hostId) !== null;
     if (leftChild !== rightChild) return leftChild ? 1 : -1;
     return compareBySort(left, right, agentSort);
   });
@@ -297,7 +325,7 @@ function workspaceGroups(
     else groups.set(workspace.id, { workspace, entries: [entry] });
   }
   const result = [...groups.values()];
-  for (const group of result) sortEntries(group.entries, options.agentSort);
+  for (const group of result) sortEntries(group.entries, options.agentSort, options.hostId);
   sortWorkspaces(result, options);
   return result;
 }
@@ -376,10 +404,12 @@ export function buildRoster(
   entries: readonly AgentEntry[],
   directory: MonitorDirectory,
   settings: Pick<MonitorSettings, "grouping" | "floatPinned" | "agentSort">,
+  hostId: string,
 ): Roster {
   const options: GroupOptions = {
     floatPinned: settings.floatPinned,
     agentSort: settings.agentSort,
+    hostId,
   };
   if (settings.grouping === "compact") {
     const pinned: AgentEntry[] = [];
@@ -391,8 +421,8 @@ export function buildRoster(
         rest.push(entry);
       }
     }
-    sortEntries(pinned, settings.agentSort);
-    sortEntries(rest, settings.agentSort);
+    sortEntries(pinned, settings.agentSort, hostId);
+    sortEntries(rest, settings.agentSort, hostId);
     return { kind: "compact", entries: [...pinned, ...rest] };
   }
   if (settings.grouping === "workspace") {
@@ -401,10 +431,13 @@ export function buildRoster(
   return { kind: "project", projects: groupByProject(entries, directory, options) };
 }
 
-export function childCounts(entries: readonly AgentEntry[]): ReadonlyMap<string, number> {
+export function childCounts(
+  entries: readonly AgentEntry[],
+  hostId: string,
+): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
   for (const entry of entries) {
-    const parentId = parentAgentId(entry.agent);
+    const parentId = parentAgentId(entry.agent, hostId);
     if (parentId) counts.set(parentId, (counts.get(parentId) ?? 0) + 1);
   }
   return counts;

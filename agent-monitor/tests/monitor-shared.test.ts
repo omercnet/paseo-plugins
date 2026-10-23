@@ -7,12 +7,14 @@ import {
   bucketOf,
   buildRoster,
   childCounts,
+  delegatedFromServerId,
   type GroupOptions,
   groupByProject,
   indexProjects,
   type MonitorDirectory,
   matches,
   PARENT_AGENT_ID_LABEL,
+  PARENT_SERVER_ID_LABEL,
   parentAgentId,
   parseBucketParam,
   placement,
@@ -24,7 +26,8 @@ import {
   waitingSince,
 } from "../client/monitor";
 
-const TRIAGE: GroupOptions = { floatPinned: true, agentSort: "triage" };
+const HOST = "host-local";
+const TRIAGE: GroupOptions = { floatPinned: true, agentSort: "triage", hostId: HOST };
 
 function directory(
   workspaces: readonly WorkspaceSummary[] = [],
@@ -241,7 +244,7 @@ describe("project grouping", () => {
       entry({ id: "child-1", labels: { [PARENT_AGENT_ID_LABEL]: "parent" } }),
       entry({ id: "child-2", labels: { [PARENT_AGENT_ID_LABEL]: "parent" } }),
     ];
-    expect(childCounts(children).get("parent")).toBe(2);
+    expect(childCounts(children, HOST).get("parent")).toBe(2);
   });
 
   describe("parent agent id", () => {
@@ -250,30 +253,83 @@ describe("project grouping", () => {
 
     test("prefers the first-class field over the legacy label", () => {
       const agent = withParent(" root ", { [PARENT_AGENT_ID_LABEL]: "other" });
-      expect(parentAgentId(agent)).toBe("root");
+      expect(parentAgentId(agent, HOST)).toBe("root");
     });
 
     test("falls back to the legacy label when the field is missing, null or blank", () => {
       const labels = { [PARENT_AGENT_ID_LABEL]: " legacy " };
-      expect(parentAgentId(entry({ labels }).agent)).toBe("legacy");
-      expect(parentAgentId(withParent(null, labels))).toBe("legacy");
-      expect(parentAgentId(withParent("  ", labels))).toBe("legacy");
+      expect(parentAgentId(entry({ labels }).agent, HOST)).toBe("legacy");
+      expect(parentAgentId(withParent(null, labels), HOST)).toBe("legacy");
+      expect(parentAgentId(withParent("  ", labels), HOST)).toBe("legacy");
     });
 
     test("is null without a usable parent", () => {
-      expect(parentAgentId(entry().agent)).toBeNull();
-      expect(parentAgentId(withParent("", { [PARENT_AGENT_ID_LABEL]: "" }))).toBeNull();
+      expect(parentAgentId(entry().agent, HOST)).toBeNull();
+      expect(parentAgentId(withParent("", { [PARENT_AGENT_ID_LABEL]: "" }), HOST)).toBeNull();
     });
 
     test("counts, sorts and styles children by the first-class field and the label alike", () => {
       const firstClass = entry({ id: "a", parentAgentId: "parent" } as AgentOverrides);
       const legacy = entry({ id: "b", labels: { [PARENT_AGENT_ID_LABEL]: "parent" } });
       const root = entry({ id: "z", parentAgentId: "  " } as AgentOverrides);
-      expect(childCounts([firstClass, legacy, root]).get("parent")).toBe(2);
-      expect(childCounts([firstClass, legacy, root]).size).toBe(1);
+      expect(childCounts([firstClass, legacy, root], HOST).get("parent")).toBe(2);
+      expect(childCounts([firstClass, legacy, root], HOST).size).toBe(1);
       const sorted = [firstClass, legacy, root];
-      sortEntries(sorted, "title");
+      sortEntries(sorted, "title", HOST);
       expect(sorted.map((item) => item.agent.id)).toEqual(["z", "a", "b"]);
+    });
+
+    describe("parent server label", () => {
+      const local = (labels: Record<string, string>) => entry({ id: "c", labels });
+
+      test("a label naming this host, or none at all, is a local parent", () => {
+        const named = local({
+          [PARENT_AGENT_ID_LABEL]: "p",
+          [PARENT_SERVER_ID_LABEL]: ` ${HOST} `,
+        });
+        const bare = local({ [PARENT_AGENT_ID_LABEL]: "p" });
+        for (const item of [named, bare]) {
+          expect(parentAgentId(item.agent, HOST)).toBe("p");
+          expect(delegatedFromServerId(item.agent, HOST)).toBeNull();
+        }
+      });
+
+      test("a label naming another host is not resolved against local agents", () => {
+        const remote = local({ [PARENT_AGENT_ID_LABEL]: "p", [PARENT_SERVER_ID_LABEL]: "host-b" });
+        expect(parentAgentId(remote.agent, HOST)).toBeNull();
+        expect(delegatedFromServerId(remote.agent, HOST)).toBe("host-b");
+        const firstClass = entry({
+          id: "d",
+          parentAgentId: "p",
+          labels: { [PARENT_SERVER_ID_LABEL]: "host-b" },
+        } as AgentOverrides);
+        expect(parentAgentId(firstClass.agent, HOST)).toBeNull();
+        expect(delegatedFromServerId(firstClass.agent, HOST)).toBe("host-b");
+      });
+
+      test("a server label without a parent agent id is not a delegation", () => {
+        const orphan = local({ [PARENT_SERVER_ID_LABEL]: "host-b" });
+        expect(parentAgentId(orphan.agent, HOST)).toBeNull();
+        expect(delegatedFromServerId(orphan.agent, HOST)).toBeNull();
+      });
+
+      test("cross-host children do not count under, or sort behind, a local agent with the same id", () => {
+        const parent = entry({ id: "p", title: "Parent" });
+        const localChild = entry({
+          id: "local-child",
+          title: "A local child",
+          labels: { [PARENT_AGENT_ID_LABEL]: "p", [PARENT_SERVER_ID_LABEL]: HOST },
+        });
+        const remoteChild = entry({
+          id: "remote-child",
+          title: "Z remote child",
+          labels: { [PARENT_AGENT_ID_LABEL]: "p", [PARENT_SERVER_ID_LABEL]: "host-b" },
+        });
+        const entries = [localChild, remoteChild, parent];
+        expect(childCounts(entries, HOST).get("p")).toBe(1);
+        sortEntries(entries, "title", HOST);
+        expect(entries.map((item) => item.agent.id)).toEqual(["p", "remote-child", "local-child"]);
+      });
     });
   });
 
@@ -289,6 +345,7 @@ describe("project grouping", () => {
     const projects = groupByProject([pinned, attention], directory([pinnedWorkspace]), {
       floatPinned: false,
       agentSort: "triage",
+      hostId: HOST,
     });
 
     expect(projects.map((project) => project.id)).toEqual(["project-2", "project-1"]);
@@ -306,6 +363,7 @@ describe("project grouping", () => {
     const projects = groupByProject([zebra, alpha], directory(), {
       floatPinned: true,
       agentSort: "title",
+      hostId: HOST,
     });
 
     expect(projects.map((project) => project.name)).toEqual(["Alpha", "Zebra"]);
@@ -324,6 +382,7 @@ describe("project grouping", () => {
     const projects = groupByProject([older, newer], directory(), {
       floatPinned: false,
       agentSort: "updated",
+      hostId: HOST,
     });
 
     expect(projects.map((project) => project.id)).toEqual(["project-new", "project-old"]);
@@ -419,11 +478,16 @@ describe("buildRoster", () => {
   test("compact returns flat entries", () => {
     const older = entry({ id: "older", updatedAt: "2026-08-25T10:00:00.000Z" });
     const newer = entry({ id: "newer", updatedAt: "2026-08-25T11:00:00.000Z", status: "running" });
-    const roster = buildRoster([older, newer], directory(), {
-      grouping: "compact",
-      floatPinned: true,
-      agentSort: "triage",
-    });
+    const roster = buildRoster(
+      [older, newer],
+      directory(),
+      {
+        grouping: "compact",
+        floatPinned: true,
+        agentSort: "triage",
+      },
+      HOST,
+    );
 
     expect(roster.kind).toBe("compact");
     if (roster.kind !== "compact") throw new Error("expected compact roster");
@@ -466,6 +530,7 @@ describe("buildRoster", () => {
         },
       ]),
       { grouping: "workspace", floatPinned: true, agentSort: "title" },
+      HOST,
     );
 
     expect(roster.kind).toBe("workspace");
