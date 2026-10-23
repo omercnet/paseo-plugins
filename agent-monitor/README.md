@@ -41,7 +41,7 @@ no private organization names remained in the rendered page.
   running agents (success), state and wait age on a right-aligned rail (`attentionTimestamp`,
   falling back to `updatedAt`), model, and `lastError` inline.
 - Parent rows show their subagent count; child rows use a left indent guide.
-- Agents delegated from another host (`paseo.parent-server-id` names a different host) are listed as top-level rows with a "Delegated from <host>" hint. They are never counted under, or indented below, a local agent that happens to share the parent id.
+- Agents delegated from another host (`paseo.parent-server-id` names a different host) are listed as top-level rows with a "Delegated from `<host>`" hint. They are never counted under, or indented below, a local agent that happens to share the parent id.
 - Text filter over title, agent id, provider, model, cwd, project, and workspace.
 - Select an agent row to open that agent, or select a workspace header (or its folder button when
   collapsed) to open its workspace through Paseo's cross-platform navigation API.
