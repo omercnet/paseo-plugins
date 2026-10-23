@@ -125,6 +125,11 @@ describe("remembered tab recovery", () => {
     );
     expect(isBrowserTabUnavailableError(expired)).toBe(false);
     expect(isBrowserTabUnavailableError(new Error("Browser is closed"))).toBe(false);
+    expect(
+      isBrowserTabUnavailableError(
+        new Error("Could not parse: Browser tab is no longer available"),
+      ),
+    ).toBe(false);
     expect(isBrowserTabUnavailableError(null)).toBe(false);
   });
 });

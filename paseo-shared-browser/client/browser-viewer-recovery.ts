@@ -6,6 +6,10 @@
 const VIEWER_EXPIRED_MESSAGE = "Viewer token is invalid or expired";
 const BROWSER_CLOSED_MESSAGE = "Browser is closed";
 const BROWSER_TAB_UNAVAILABLE_MESSAGE = "Browser tab is no longer available";
+// The supervisor wraps runtime rejections as "Workspace runtime <operation> failed: <message>".
+const UNAVAILABLE_TAB_PATTERN = new RegExp(
+  `^(?:Workspace runtime \\w+ failed: )?${BROWSER_TAB_UNAVAILABLE_MESSAGE}(?: requestType=|$)`,
+);
 
 /** Recognize the server's explicit close fence without confusing it with a transport failure. */
 export function isBrowserClosedError(error: unknown): boolean {
@@ -87,5 +91,8 @@ export function isBrowserTabUnavailableError(error: unknown): boolean {
   const value = error as { message?: unknown; code?: unknown };
   if (typeof value.message !== "string") return false;
   if (value.code !== undefined && value.code !== "handler_error") return false;
-  return value.message.includes(BROWSER_TAB_UNAVAILABLE_MESSAGE);
+  const message = value.message.startsWith("Request failed: ")
+    ? value.message.slice("Request failed: ".length)
+    : value.message;
+  return UNAVAILABLE_TAB_PATTERN.test(message);
 }
