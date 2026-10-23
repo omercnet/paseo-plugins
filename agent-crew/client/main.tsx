@@ -36,6 +36,7 @@ const MAX_PAGES = 10;
 const REFRESH_DEBOUNCE_MS = 500;
 const BACKSTOP_REFRESH_MS = 30_000;
 const CLOCK_INTERVAL_MS = 15_000;
+const QUERY_PERSIST_DELAY_MS = 300;
 
 type CrewData = {
   entries: AgentEntry[];
@@ -224,13 +225,19 @@ export function AgentCrew({
   const { data, error, isPending, isFetching, refetch } = useCrewDirectory(host.id);
 
   const [panelState, setPanelState] = useTabState(tab, panelStateSchema, DEFAULT_PANEL_STATE);
-  const { state: selectedState, query } = panelState;
+  const { state: selectedState } = panelState;
   const collapsedAgentIds = useMemo(
     () => new Set(panelState.collapsedAgentIds),
     [panelState.collapsedAgentIds],
   );
   const setSelectedState = (state: CrewState | null) => setPanelState({ ...panelState, state });
-  const setQuery = (nextQuery: string) => setPanelState({ ...panelState, query: nextQuery });
+  // The input edits a local draft; only the settled text is written to the persisted tab state.
+  const [query, setQuery] = useState(panelState.query);
+  useEffect(() => {
+    if (query === panelState.query) return;
+    const timer = setTimeout(() => setPanelState({ ...panelState, query }), QUERY_PERSIST_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [query, panelState, setPanelState]);
   const [now, setNow] = useState(() => Date.now());
   const [dialog, setDialog] = useState<DialogState>(null);
   const [permissionDialog, setPermissionDialog] = useState<PermissionDialogState>(null);
