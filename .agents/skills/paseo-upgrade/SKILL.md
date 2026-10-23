@@ -92,3 +92,7 @@ For the user: target and supported versions; the commit-impact summary by plugin
 - Scouts running concurrently with your edits will cite your uncommitted changes as if they were `HEAD`. Commit early or say so in the brief.
 - A line-anchored edit with stale tags can silently mangle a file. Re-read after every edit, or script multi-site changes and review `git diff`.
 - `bun install` dirties `bun.lock`; revert it unless dependencies changed. CI uses `--frozen-lockfile`.
+- Stage by path (`git add <dir>`), never `git add -A`, while workers run: a worker that edits through a relative path writes into your checkout and your next commit ships it. Tell workers to use absolute paths inside their own worktree.
+- `/tmp` is tmpfs and each bun-installed worktree is about 2.3G. Put worker worktrees under `$HOME` (for example `~/wt/<plugin>`) and remove them when done.
+- Before blaming the SDK for a red CI job, run the same job on an untouched `origin/main` (throwaway draft PR that edits one line in that plugin, close it after). In 0.13 the `paseo-shared-browser` ubuntu native-video smoke failed on `main` too, so it was not caused by the upgrade.
+- Check `gh pr list` for another session already working the same upgrade (same author, `fix: support Paseo X`, extra worktrees under `~/.paseo/worktrees`). Duplicate broad PRs conflict on `package.json`, `bun.lock`, and every manifest; say which one is canonical.
