@@ -412,6 +412,69 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
+  test("forwards updates for a restarted tool id and flags ids evicted from the ended set", async () => {
+    const child = new FakeRpcChild();
+    const diagnostics: OmpProtocolViolationDiagnostic[] = [];
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    const opening = runtimeFor(child, [], undefined, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    }).startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+    const events: OmpRpcEvent[] = [];
+    session.onEvent((event) => events.push(event));
+    const frame = (type: string, toolCallId: string) => ({
+      type,
+      toolCallId,
+      toolName: "bash",
+      args: {},
+      partialResult: {},
+      result: {},
+    });
+
+    child.write(frame("tool_execution_start", "reused"));
+    child.write(frame("tool_execution_end", "reused"));
+    child.write(frame("tool_execution_start", "reused"));
+    child.write(frame("tool_execution_update", "reused"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events.map((event) => event.type)).toEqual([
+      "tool_execution_start",
+      "tool_execution_end",
+      "tool_execution_start",
+      "tool_execution_update",
+    ]);
+    expect(diagnostics).toEqual([]);
+
+    child.write(frame("tool_execution_end", "reused"));
+    for (let index = 0; index < 1_025; index += 1) {
+      child.write(frame("tool_execution_start", `call-${index}`));
+      child.write(frame("tool_execution_end", `call-${index}`));
+    }
+    child.write(frame("tool_execution_update", "call-1024"));
+    child.write(frame("tool_execution_update", "call-0"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        category: "invalid-event-state",
+        reason: "event-state-transition",
+        eventType: "tool_execution_update",
+        occurrenceCount: 1,
+      }),
+    ]);
+    await session.close();
+  });
+
   test("rejects incomplete ready metadata instead of guessing v1", async () => {
     const child = new FakeRpcChild();
     const opening = runtimeFor(child).startSession({ cwd: "/repo", mode: "full" });

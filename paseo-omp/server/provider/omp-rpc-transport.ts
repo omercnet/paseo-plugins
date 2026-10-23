@@ -1217,7 +1217,8 @@ export class OmpRpcProcess {
       this.activeToolCallIds.delete(event.toolCallId);
       this.announcedToolCallIds.delete(event.toolCallId);
       if (this.endedToolCallIds.size >= MAX_ENDED_TOOL_IDS) {
-        this.endedToolCallIds.delete(this.endedToolCallIds.values().next().value as string);
+        const oldest = this.endedToolCallIds.values().next().value;
+        if (oldest !== undefined) this.endedToolCallIds.delete(oldest);
       }
       this.endedToolCallIds.add(event.toolCallId);
       return true;
