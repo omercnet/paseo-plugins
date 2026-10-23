@@ -3,8 +3,7 @@ import type {
   PluginPopoverProps,
   PluginSidebarItemProps,
 } from "@getpaseo/plugin/client";
-import { useToast } from "@getpaseo/plugin/client/react-native";
-import { SidebarRow } from "@getpaseo/plugin/client/ui";
+import { SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
 import { useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { activeCrews, agentTitle, crewPopoverNotice } from "./crew";

@@ -147,7 +147,7 @@ bun run test:coverage
 bun run typecheck
 ```
 
-The manifest requires Paseo `^0.12.0 || ^0.13.0`. Development pins the 0.13 SDK line through the workspace catalog; nightly compatibility checks run the OMP provider against the beta SDK channel. React 19.1 and React Native 0.81 match the host.
+The manifest requires Paseo `^0.13.0`. Development pins the 0.13 SDK line through the workspace catalog; nightly compatibility checks run the OMP provider against the beta SDK channel. React 19.1 and React Native 0.81 match the host.
 
 Release Please maintains versions, changelog entries, component tags, and GitHub releases from
 Conventional Commits in the monorepo.

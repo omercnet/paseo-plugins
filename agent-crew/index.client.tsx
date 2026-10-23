@@ -22,7 +22,6 @@ export default function contribute(client: PluginClientContext) {
     id: "crew",
     title: "Agent Crew",
     icon: "Network",
-    context: "workspace",
     locations: ["explorer"],
     Component: AgentCrew,
   });
