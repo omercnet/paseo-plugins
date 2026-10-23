@@ -481,7 +481,13 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
       expect(observation.result.value.failures).toEqual([]);
       {
         const vis = async (s: { send: CdpSession["send"] }) =>
-          (await s.send<{ result: { value: unknown } }>("Runtime.evaluate", { expression: "JSON.stringify([document.visibilityState, document.hasFocus(), location.pathname, Math.round(performance.now())])", returnByValue: true })).result.value;
+          (
+            await s.send<{ result: { value: unknown } }>("Runtime.evaluate", {
+              expression:
+                "JSON.stringify([document.visibilityState, document.hasFocus(), location.pathname, Math.round(performance.now())])",
+              returnByValue: true,
+            })
+          ).result.value;
         console.log(
           "NAVDBG",
           JSON.stringify({
@@ -489,7 +495,9 @@ async function proveNativeVideo(pointerKind: "mouse" | "touch") {
             status: reply.status,
             n: reply.packets.length,
             types: reply.packets.map((p) => p.type[0]).join(""),
-            capturedMinusAck: reply.packets.map((p) => Date.parse(p.capturedAt) - navigationAcknowledgedAt),
+            capturedMinusAck: reply.packets.map(
+              (p) => Date.parse(p.capturedAt) - navigationAcknowledgedAt,
+            ),
             nowMinusAck: Date.now() - navigationAcknowledgedAt,
             presented: observation.result.value.presented.length,
             needsKey: observation.result.value.needsKey,
