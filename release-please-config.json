@@ -60,6 +60,12 @@
       "initial-version": "0.1.0",
       "include-component-in-tag": true
     },
+    "connected-hosts": {
+      "release-type": "node",
+      "package-name": "connected-hosts",
+      "initial-version": "0.1.0",
+      "include-component-in-tag": true
+    },
     "pr-radar": {
       "release-type": "node",
       "package-name": "pr-radar",

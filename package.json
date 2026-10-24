@@ -6,6 +6,7 @@
   "workspaces": [
     "agent-crew",
     "agent-monitor",
+    "connected-hosts",
     "context-mode",
     "fresh-worktrees",
     "paseo-beads",

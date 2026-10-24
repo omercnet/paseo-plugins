@@ -1,0 +1,58 @@
+{
+  "name": "@omercnet/paseo-connected-hosts",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "A Paseo plugin that manages the daemon's connected hosts from the UI.",
+  "license": "MIT",
+  "author": "Omer Cohen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "connected-hosts"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/connected-hosts#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "bun@1.4.3",
+  "engines": {
+    "node": ">=24"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "connected-hosts",
+    "hosts"
+  ],
+  "files": [
+    "index.client.tsx",
+    "client",
+    "paseo-plugin.json",
+    "README.md",
+    "LICENSE",
+    "OVERVIEW.md"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@getpaseo/cli": "catalog:",
+    "@getpaseo/client": "catalog:",
+    "@getpaseo/plugin": "catalog:",
+    "@getpaseo/protocol": "catalog:",
+    "@tanstack/react-query": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "react": "catalog:",
+    "react-native": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

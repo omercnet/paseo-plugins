@@ -49,6 +49,24 @@
         "zod": "catalog:",
       },
     },
+    "connected-hosts": {
+      "name": "@omercnet/paseo-connected-hosts",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@biomejs/biome": "catalog:",
+        "@getpaseo/cli": "catalog:",
+        "@getpaseo/client": "catalog:",
+        "@getpaseo/plugin": "catalog:",
+        "@getpaseo/protocol": "catalog:",
+        "@tanstack/react-query": "catalog:",
+        "@types/node": "catalog:",
+        "@types/react": "catalog:",
+        "react": "catalog:",
+        "react-native": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "context-mode": {
       "name": "@omercnet/paseo-context-mode",
       "version": "3.0.0",
@@ -704,6 +722,8 @@
     "@omercnet/paseo-agent-monitor": ["@omercnet/paseo-agent-monitor@workspace:agent-monitor"],
 
     "@omercnet/paseo-beads": ["@omercnet/paseo-beads@workspace:paseo-beads"],
+
+    "@omercnet/paseo-connected-hosts": ["@omercnet/paseo-connected-hosts@workspace:connected-hosts"],
 
     "@omercnet/paseo-context-mode": ["@omercnet/paseo-context-mode@workspace:context-mode"],
 
