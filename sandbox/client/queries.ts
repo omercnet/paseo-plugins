@@ -1,3 +1,4 @@
+import type { RpcOutput } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listCredentials, removeCredential, setCredential } from "../shared/credentials";
@@ -45,7 +46,7 @@ export function useCredentials(hostId: string) {
   const clear = useRpc(removeCredential);
   const key = ["sandbox", hostId, "credentials"];
   const query = useQuery({ queryKey: key, queryFn: () => load({}) });
-  const publish = (data: Awaited<ReturnType<typeof load>>) => {
+  const publish = (data: RpcOutput<typeof listCredentials>) => {
     client.setQueryData(key, data);
     client.invalidateQueries({ queryKey: ["sandbox", hostId, "list"] });
   };

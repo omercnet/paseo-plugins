@@ -230,3 +230,5 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
     },
   };
 }
+
+export type SandboxService = ReturnType<typeof createSandboxService>;

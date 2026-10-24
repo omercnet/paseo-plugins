@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
-import { createSandboxService } from "../../server/service";
+import { createSandboxService, type SandboxService } from "../../server/service";
 import { Store } from "../../server/store";
 import { FakeHosts } from "../support";
 import { docker, leftovers, provider, requireDocker } from "./support";
@@ -10,7 +10,7 @@ import { docker, leftovers, provider, requireDocker } from "./support";
 /** The controller's host registry is faked; everything on the sandbox side is real Docker. */
 const hosts = new FakeHosts();
 let store: Store;
-let service: ReturnType<typeof createSandboxService>;
+let service: SandboxService;
 let id = "";
 
 async function only() {

@@ -10,7 +10,7 @@ import type {
   SandboxSpec,
 } from "../server/provider";
 import { parseRepository } from "../server/repository";
-import { createSandboxService } from "../server/service";
+import { createSandboxService, type SandboxService } from "../server/service";
 import { Store } from "../server/store";
 import { FakeHosts } from "./support";
 
@@ -78,7 +78,7 @@ class FakeProvider implements SandboxProvider {
 }
 
 interface Harness {
-  service: ReturnType<typeof createSandboxService>;
+  service: SandboxService;
   store: Store;
   hosts: FakeHosts;
   provider: FakeProvider;
