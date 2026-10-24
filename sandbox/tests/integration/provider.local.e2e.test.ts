@@ -7,6 +7,7 @@ const first = {
   key,
   revision: "r1",
   env: { PASEO_PASSWORD: "itest-password", GITHUB_TOKEN: "ghp_itest_token" },
+  mounts: [],
 };
 let handle = "";
 

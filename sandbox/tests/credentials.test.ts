@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { credentialSummaries } from "../server/credentials";
+import { credentialSummaries, sandboxEnvironment } from "../server/credentials";
+import type { SandboxRecord, State } from "../server/store";
 import {
   type CredentialSummary,
   credentialNameSchema,
@@ -61,5 +62,36 @@ describe("credential summaries", () => {
     expect(at("2026-12-10T00:00:00.000Z")).toContain("Expires in 22 days");
     expect(at("2027-01-02T00:00:00.000Z")).toMatch(/^Expired\./);
     expect(credentialNotice(undefined).hint).toBe("Not set");
+  });
+});
+
+describe("sandbox environment", () => {
+  const sandbox: SandboxRecord = {
+    id: "a",
+    name: "n",
+    repoUrl: "https://github.com/a/b",
+    handle: null,
+    revision: null,
+    password: "pw",
+    createdAt: "2026-01-01",
+  };
+  const state = (hostLogins: string[]): State => ({
+    credentials: {},
+    hostLogins,
+    sandboxes: { a: sandbox },
+  });
+
+  test("sharing a login changes the revision, so running sandboxes ask for a restart", () => {
+    const off = sandboxEnvironment(state([]), sandbox);
+    const on = sandboxEnvironment(state(["codex"]), sandbox);
+    expect(on.hostLogins).toEqual(["codex"]);
+    expect(on.revision).not.toBe(off.revision);
+  });
+
+  test("the order logins were switched on in does not matter, and unknown ids are ignored", () => {
+    const first = sandboxEnvironment(state(["opencode", "claude", "gone"]), sandbox);
+    const second = sandboxEnvironment(state(["claude", "opencode"]), sandbox);
+    expect(first.hostLogins).toEqual(["claude", "opencode"]);
+    expect(first.revision).toBe(second.revision);
   });
 });

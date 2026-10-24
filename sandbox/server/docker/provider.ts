@@ -16,8 +16,8 @@ function volumeName(container: string) {
 }
 
 /**
- * One container per sandbox and one named volume for /home/paseo. No published ports and no
- * other mounts.
+ * One container per sandbox and one named volume for /home/paseo. No published ports. Host
+ * folders are mounted only when the spec asks for them.
  */
 export function createDockerProvider(docker: DockerCli): SandboxProvider {
   async function inspect(name: string) {
@@ -104,6 +104,11 @@ export function createDockerProvider(docker: DockerCli): SandboxProvider {
           `${REVISION_LABEL}=${spec.revision}`,
           "--volume",
           `${volume}:/home/paseo`,
+          // `--mount` fails on a missing source, where `--volume` would create it on the host.
+          ...spec.mounts.flatMap(({ source, target, readOnly }) => [
+            "--mount",
+            `type=bind,source=${source},target=${target}${readOnly ? ",readonly" : ""}`,
+          ]),
           "--security-opt",
           "no-new-privileges",
           // The image entrypoint starts as root only to prepare the volume and drop to `paseo`.

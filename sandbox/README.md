@@ -38,6 +38,8 @@ Settings are readable by every client, so credentials never go there. `server/st
 | `CODEX_API_KEY` | `codex login --with-api-key` on stdin | Paseo's Codex provider ignores the variable and sends a stored login |
 | `OPENAI_API_KEY`, `GITHUB_TOKEN`, custom | environment | OpenCode lists keys from the environment; Git reads the token through the credential helper |
 
+Shared host logins (`server/host-logins.ts`) are the alternative to saving a value. Claude, Codex and OpenCode are bind-mounted from the host (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `$XDG_DATA_HOME/opencode`) because their logins rotate: one live file keeps one token lineage, where a copy would fork it. Entries a host agent would run or obey (hooks, skills, settings, `config.toml`) are overlaid read-only, which is a best-effort list and not a boundary. GitHub is passed as a value from `gh auth token` because that token is not rotated. A shared login suppresses the matching saved value, since `codex login` or `codex logout` in the sandbox would rewrite the host's `auth.json`. The real-Docker test mutation-checks both the overlay and that suppression.
+
 Nothing here was verified against a paid endpoint; checks used fake keys and observed which one each CLI sent.
 
 ## Develop
@@ -64,5 +66,5 @@ Remove leftovers with `docker rm -f` and `docker volume rm` on names starting `p
 - `shared/`: RPC contracts and the credential presets.
 - `server/provider.ts`: the sandbox-provider interface. `server/docker/`: the Docker implementation (`provider.ts`, `cli.ts`, generated `image.ts`).
 - `server/service.ts`: create, start, stop, remove, pairing, cloning and host registration. `server/hosts.ts` is the slice of connected hosts it uses.
-- `server/credentials.ts`, `server/store.ts`: saved credentials, the sandbox environment and the private state file. `server/pairing.ts`, `server/repository.ts`: relay connection string and project URL parsing.
+- `server/credentials.ts`, `server/store.ts`, `server/host-logins.ts`: saved credentials, shared host logins, the sandbox environment and the private state file. `server/pairing.ts`, `server/repository.ts`: relay connection string and project URL parsing.
 - `client/`: the Sandboxes screen, the credentials section shown in Settings, and the sidebar item.

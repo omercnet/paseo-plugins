@@ -106,6 +106,7 @@ const spec = {
   key: "abc",
   revision: "r1",
   env: { PASEO_PASSWORD: "pw-secret", GITHUB_TOKEN: "gh-secret" },
+  mounts: [],
 };
 const phases = () => undefined;
 
@@ -130,6 +131,31 @@ describe("up", () => {
     expect(argv).toContain("paseo-sandbox-abc-home:/home/paseo");
     expect(argv).not.toMatch(/--publish|-p |--privileged|docker\.sock|--network host/);
     expect(argv.endsWith(IMAGE_TAG)).toBe(true);
+  });
+
+  test("mounts the requested host folders, read-only where asked, and nothing otherwise", async () => {
+    await createDockerProvider(docker.cli).up(
+      {
+        ...spec,
+        mounts: [
+          { source: "/h/.codex", target: "/home/paseo/.codex", readOnly: false },
+          {
+            source: "/h/.codex/config.toml",
+            target: "/home/paseo/.codex/config.toml",
+            readOnly: true,
+          },
+        ],
+      },
+      phases,
+    );
+
+    const argv = docker.calls.find((call) => call.args[0] === "run")?.args ?? [];
+    const mounts = argv.filter((_, index) => argv[index - 1] === "--mount");
+    expect(mounts).toEqual([
+      "type=bind,source=/h/.codex,target=/home/paseo/.codex",
+      "type=bind,source=/h/.codex/config.toml,target=/home/paseo/.codex/config.toml,readonly",
+    ]);
+    expect(argv).not.toContain("--volume-driver");
   });
 
   test("builds the image from stdin only when it is missing", async () => {

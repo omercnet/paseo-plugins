@@ -20,6 +20,8 @@ export type SandboxRecord = z.infer<typeof sandboxRecordSchema>;
 
 const stateSchema = z.object({
   credentials: z.record(z.string(), z.object({ value: z.string(), savedAt: z.string() })),
+  /** Agent logins shared with the host, by `HOST_LOGINS` id. */
+  hostLogins: z.array(z.string()).default([]),
   sandboxes: z.record(z.string(), sandboxRecordSchema),
 });
 export type State = z.infer<typeof stateSchema>;
@@ -55,7 +57,7 @@ export class Store {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(`Sandbox state at ${this.path} is unreadable: ${reason}`);
       }
-      this.state ??= { credentials: {}, sandboxes: {} };
+      this.state ??= { credentials: {}, hostLogins: [], sandboxes: {} };
     }
     return this.state;
   }

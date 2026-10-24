@@ -4,14 +4,16 @@ import {
   SettingsInput,
   type SettingsInputHandle,
   SettingsSection,
+  SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
 import { useRef, useState } from "react";
 import {
   CREDENTIAL_PRESETS,
   type CredentialSummary,
   credentialNotice,
+  HOST_LOGINS,
 } from "../shared/credentials";
-import { useCredentials } from "./queries";
+import { useCredentials, useHostLogins } from "./queries";
 
 const INFO =
   "Sandboxes receive these as environment variables when they start. They stay on this host and are never shown again. Save only what you need, once.";
@@ -119,6 +121,33 @@ function CustomCredential({ hostId }: { hostId: string }) {
   );
 }
 
+const HOST_LOGINS_INFO =
+  "The sandbox and this host then use one login, like two agents on the same machine. A sandbox agent can also read and change that folder, so turn this on only for sandboxes you trust. Hooks, skills and settings are mounted read-only. Linux hosts only.";
+
+function HostLoginsSection({ hostId }: { hostId: string }) {
+  const { query, set } = useHostLogins(hostId);
+  const enabled = new Set(query.data?.hostLogins.filter((l) => l.enabled).map((l) => l.id));
+  return (
+    <SettingsSection title="Shared logins" info={HOST_LOGINS_INFO}>
+      <SettingsCard>
+        {HOST_LOGINS.map((login) => (
+          <SettingsSwitch
+            key={login.id}
+            label={login.label}
+            hint={login.hint}
+            error={
+              set.variables?.id === login.id ? set.error?.message : (query.error?.message ?? null)
+            }
+            value={enabled.has(login.id)}
+            disabled={!query.data || set.isPending}
+            onValueChange={(value) => set.mutate({ id: login.id, enabled: value })}
+          />
+        ))}
+      </SettingsCard>
+    </SettingsSection>
+  );
+}
+
 /** One-time setup: each value is written to the daemon host and never read back by any client. */
 export function CredentialsSection({ hostId }: { hostId: string }) {
   const { query, clear } = useCredentials(hostId);
@@ -126,40 +155,43 @@ export function CredentialsSection({ hostId }: { hostId: string }) {
   const presetNames = new Set<string>(CREDENTIAL_PRESETS.map((preset) => preset.name));
   const custom = saved.filter((entry) => !presetNames.has(entry.name));
   return (
-    <SettingsSection title="Credentials" info={INFO}>
-      {query.error ? (
-        <SettingsCard>
-          <SettingsAction
-            label="Credentials unavailable"
-            hint={query.error.message}
-            actionLabel="Retry"
-            onPress={() => query.refetch()}
+    <>
+      <SettingsSection title="Credentials" info={INFO}>
+        {query.error ? (
+          <SettingsCard>
+            <SettingsAction
+              label="Credentials unavailable"
+              hint={query.error.message}
+              actionLabel="Retry"
+              onPress={() => query.refetch()}
+            />
+          </SettingsCard>
+        ) : null}
+        {CREDENTIAL_PRESETS.map((preset) => (
+          <CredentialRow
+            key={preset.name}
+            hostId={hostId}
+            name={preset.name}
+            label={preset.label}
+            hint={preset.hint.replace(/\.$/, "")}
+            summary={saved.find((entry) => entry.name === preset.name)}
           />
-        </SettingsCard>
-      ) : null}
-      {CREDENTIAL_PRESETS.map((preset) => (
-        <CredentialRow
-          key={preset.name}
-          hostId={hostId}
-          name={preset.name}
-          label={preset.label}
-          hint={preset.hint.replace(/\.$/, "")}
-          summary={saved.find((entry) => entry.name === preset.name)}
-        />
-      ))}
-      {custom.map((entry) => (
-        <SettingsCard key={entry.name}>
-          <SettingsAction
-            label={entry.name}
-            hint={`Saved ${new Date(entry.savedAt).toLocaleDateString()}`}
-            error={clear.variables?.name === entry.name ? clear.error?.message : null}
-            actionLabel={clear.isPending ? "Removing..." : "Remove"}
-            disabled={clear.isPending}
-            onPress={() => clear.mutate({ name: entry.name })}
-          />
-        </SettingsCard>
-      ))}
-      <CustomCredential hostId={hostId} />
-    </SettingsSection>
+        ))}
+        {custom.map((entry) => (
+          <SettingsCard key={entry.name}>
+            <SettingsAction
+              label={entry.name}
+              hint={`Saved ${new Date(entry.savedAt).toLocaleDateString()}`}
+              error={clear.variables?.name === entry.name ? clear.error?.message : null}
+              actionLabel={clear.isPending ? "Removing..." : "Remove"}
+              disabled={clear.isPending}
+              onPress={() => clear.mutate({ name: entry.name })}
+            />
+          </SettingsCard>
+        ))}
+        <CustomCredential hostId={hostId} />
+      </SettingsSection>
+      <HostLoginsSection hostId={hostId} />
+    </>
   );
 }

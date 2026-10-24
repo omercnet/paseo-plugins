@@ -3,6 +3,15 @@
  * nothing else: pairing, credentials and host registration stay in the plugin. Handles are
  * opaque to everything outside the provider that issued them.
  */
+/** A host path made visible inside the sandbox. A provider that cannot mount rejects the spec. */
+export interface HostMount {
+  /** Absolute path on the machine running the provider. */
+  source: string;
+  /** Absolute path inside the sandbox. */
+  target: string;
+  readOnly: boolean;
+}
+
 export interface SandboxSpec {
   /** Stable, unique per sandbox; the provider derives resource names from it. */
   key: string;
@@ -10,6 +19,8 @@ export interface SandboxSpec {
   revision: string;
   /** Becomes the daemon's environment, so every agent, terminal and git command inherits it. */
   env: Readonly<Record<string, string>>;
+  /** Host folders to share. Changing them changes `revision`. */
+  mounts: readonly HostMount[];
 }
 
 export type SandboxRuntimeStatus = "running" | "stopped" | "missing";

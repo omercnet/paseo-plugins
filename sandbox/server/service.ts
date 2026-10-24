@@ -6,7 +6,7 @@ import type { createSandbox, Sandbox } from "../shared/sandbox";
 import { sandboxEnvironment } from "./credentials";
 import type { SandboxHosts } from "./hosts";
 import { relayConnection } from "./pairing";
-import type { SandboxProvider } from "./provider";
+import type { HostMount, SandboxProvider } from "./provider";
 import { parseRepository } from "./repository";
 import type { Store } from "./store";
 
@@ -17,10 +17,22 @@ function messageOf(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** What the host contributes when its agent logins are shared. Each rejects with what to fix. */
+export interface HostLogins {
+  mounts(enabled: readonly string[]): Promise<HostMount[]>;
+  githubToken(): Promise<string>;
+}
+
 /** Lifecycle of project sandboxes. Long operations run in the background and report through `list`. */
-export function createSandboxService(provider: SandboxProvider, store: Store) {
+export function createSandboxService(
+  provider: SandboxProvider,
+  store: Store,
+  hostLogins: HostLogins,
+) {
   const busy = new Map<string, string>();
   const failures = new Map<string, string>();
+  /** Tokens read from the host. They are in no saved state, so redaction must be told. */
+  const hostTokens = new Set<string>();
 
   /** Failure text is logged and shown to every client, so no saved value may appear in it. */
   async function redact(id: string, message: string) {
@@ -28,6 +40,7 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
     const secrets = [
       state.sandboxes[id]?.password,
       ...Object.values(state.credentials).map((credential) => credential.value),
+      ...hostTokens,
     ].filter((secret): secret is string => Boolean(secret) && secret.length >= 8);
     return secrets.reduce((text, secret) => text.split(secret).join("***"), message);
   }
@@ -77,8 +90,14 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
     // saved meanwhile is reported as stale instead of being half applied.
     const state = await store.read();
     const current = await record(id);
-    const { env, revision } = sandboxEnvironment(state, current);
-    const handle = await provider.up({ key: id, revision, env }, setPhase);
+    const { env, hostLogins: shared, revision } = sandboxEnvironment(state, current);
+    const mounts = await hostLogins.mounts(shared);
+    if (shared.includes("github")) {
+      const token = await hostLogins.githubToken();
+      hostTokens.add(token);
+      env.GITHUB_TOKEN = token;
+    }
+    const handle = await provider.up({ key: id, revision, env, mounts }, setPhase);
     await store.update((draft) => {
       const target = draft.sandboxes[id];
       if (target) target.handle = handle;
@@ -86,6 +105,8 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
     setPhase("Signing in agents");
     for (const preset of CREDENTIAL_PRESETS) {
       if (!("login" in preset)) continue;
+      // A shared login is the host's own file. Signing in or out here would change the host's.
+      if (shared.includes(preset.hostLogin)) continue;
       const saved = state.credentials[preset.name];
       if (saved) await provider.exec({ handle, argv: preset.login, stdin: `${saved.value}\n` });
       else await provider.exec({ handle, argv: preset.logout });

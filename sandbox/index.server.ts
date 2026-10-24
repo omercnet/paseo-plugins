@@ -2,10 +2,17 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { savedCredentials } from "./server/credentials";
 import { execDocker } from "./server/docker/cli";
 import { createDockerProvider } from "./server/docker/provider";
+import { hostGithubToken, hostLoginMounts } from "./server/host-logins";
 import { sandboxHosts } from "./server/hosts";
 import { createSandboxService } from "./server/service";
 import { defaultStatePath, Store } from "./server/store";
-import { listCredentials, removeCredential, setCredential } from "./shared/credentials";
+import {
+  listCredentials,
+  listHostLogins,
+  removeCredential,
+  setCredential,
+  setHostLogin,
+} from "./shared/credentials";
 import {
   createSandbox,
   listSandboxes,
@@ -16,7 +23,10 @@ import {
 
 export default function contribute(server: PluginServerContext) {
   const store = new Store(defaultStatePath());
-  const sandboxes = createSandboxService(createDockerProvider(execDocker), store);
+  const sandboxes = createSandboxService(createDockerProvider(execDocker), store, {
+    mounts: (enabled) => hostLoginMounts({ enabled }),
+    githubToken: () => hostGithubToken(),
+  });
   const credentials = savedCredentials(store);
 
   server.handle(listSandboxes, (_input, { paseo }) => sandboxes.list(sandboxHosts(paseo.hosts)));
@@ -41,6 +51,10 @@ export default function contribute(server: PluginServerContext) {
   }));
   server.handle(removeCredential, async ({ name }) => ({
     credentials: await credentials.remove(name),
+  }));
+  server.handle(listHostLogins, async () => ({ hostLogins: await credentials.hostLogins() }));
+  server.handle(setHostLogin, async ({ id, enabled }) => ({
+    hostLogins: await credentials.setHostLogin(id, enabled),
   }));
   return () => {};
 }

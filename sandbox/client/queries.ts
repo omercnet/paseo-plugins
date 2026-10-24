@@ -1,7 +1,13 @@
 import type { RpcOutput } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { listCredentials, removeCredential, setCredential } from "../shared/credentials";
+import {
+  listCredentials,
+  listHostLogins,
+  removeCredential,
+  setCredential,
+  setHostLogin,
+} from "../shared/credentials";
 import {
   createSandbox,
   listSandboxes,
@@ -54,5 +60,23 @@ export function useCredentials(hostId: string) {
     query,
     save: useMutation({ mutationFn: save, onSuccess: publish }),
     clear: useMutation({ mutationFn: clear, onSuccess: publish }),
+  };
+}
+
+export function useHostLogins(hostId: string) {
+  const client = useQueryClient();
+  const load = useRpc(listHostLogins);
+  const set = useRpc(setHostLogin);
+  const key = ["sandbox", hostId, "hostLogins"];
+  const query = useQuery({ queryKey: key, queryFn: () => load({}) });
+  return {
+    query,
+    set: useMutation({
+      mutationFn: set,
+      onSuccess: (data) => {
+        client.setQueryData(key, data);
+        client.invalidateQueries({ queryKey: ["sandbox", hostId, "list"] });
+      },
+    }),
   };
 }

@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { CREDENTIAL_PRESETS, type CredentialSummary } from "../shared/credentials";
+import {
+  CREDENTIAL_PRESETS,
+  type CredentialSummary,
+  HOST_LOGINS,
+  type HostLoginId,
+} from "../shared/credentials";
 import type { SandboxRecord, State, Store } from "./store";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -33,8 +38,14 @@ function sortedEntries(values: Record<string, string>) {
   return Object.entries(values).sort(([a], [b]) => a.localeCompare(b));
 }
 
+/** The shared host logins, in a stable order. Unknown ids in an old state file are dropped. */
+export function enabledHostLogins(state: State): HostLoginId[] {
+  return HOST_LOGINS.map((login) => login.id).filter((id) => state.hostLogins.includes(id));
+}
+
 export interface SandboxEnvironment {
   env: Record<string, string>;
+  hostLogins: HostLoginId[];
   /** Changes when the environment or any applied credential does. */
   revision: string;
 }
@@ -46,24 +57,39 @@ export function sandboxEnvironment(state: State, sandbox: SandboxRecord): Sandbo
     applied[name] = value;
     if (!isLoginCredential(name)) env[name] = value;
   }
+  const hostLogins = enabledHostLogins(state);
   const revision = createHash("sha256")
-    .update(JSON.stringify([sortedEntries(env), sortedEntries(applied)]))
+    .update(JSON.stringify([sortedEntries(env), sortedEntries(applied), hostLogins]))
     .digest("hex");
-  return { env, revision };
+  return { env, hostLogins, revision };
 }
 
 export interface SavedCredentials {
   list(): Promise<CredentialSummary[]>;
   save(name: string, value: string): Promise<CredentialSummary[]>;
   remove(name: string): Promise<CredentialSummary[]>;
+  hostLogins(): Promise<{ id: HostLoginId; enabled: boolean }[]>;
+  setHostLogin(id: HostLoginId, enabled: boolean): Promise<{ id: HostLoginId; enabled: boolean }[]>;
 }
 
 export function savedCredentials(store: Store): SavedCredentials {
   async function list() {
     return credentialSummaries((await store.read()).credentials);
   }
+  async function hostLogins() {
+    const enabled = enabledHostLogins(await store.read());
+    return HOST_LOGINS.map(({ id }) => ({ id, enabled: enabled.includes(id) }));
+  }
   return {
     list,
+    hostLogins,
+    async setHostLogin(id, enabled) {
+      await store.update((draft) => {
+        draft.hostLogins = draft.hostLogins.filter((entry) => entry !== id);
+        if (enabled) draft.hostLogins.push(id);
+      });
+      return hostLogins();
+    },
     async save(name, value) {
       await store.update((draft) => {
         draft.credentials[name] = { value, savedAt: new Date().toISOString() };

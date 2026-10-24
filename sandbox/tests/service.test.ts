@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type {
   ExecRequest,
+  HostMount,
   SandboxProvider,
   SandboxRef,
   SandboxRuntimeStatus,
@@ -79,10 +80,18 @@ class FakeProvider implements SandboxProvider {
 
 interface Harness {
   service: SandboxService;
+  /** What the host-mount resolver was asked for, and the failure it should give instead. */
+  mounts: { requests: (readonly string[])[]; error: string | null; githubToken: string };
   store: Store;
   hosts: FakeHosts;
   provider: FakeProvider;
 }
+
+const SHARED_CODEX: HostMount = {
+  source: "/host/.codex",
+  target: "/home/paseo/.codex",
+  readOnly: false,
+};
 
 async function harness(): Promise<Harness> {
   const store = new Store(join(await mkdtemp(join(tmpdir(), "sandbox-service-")), "state.json"));
@@ -91,8 +100,19 @@ async function harness(): Promise<Harness> {
     const password = Object.values(state.sandboxes)[0]?.password;
     return `fatal: auth ${state.credentials.GITHUB_TOKEN?.value} ${password}`;
   });
+  const mounts: Harness["mounts"] = { requests: [], error: null, githubToken: "gho_host_token" };
   return {
-    service: createSandboxService(provider, store),
+    service: createSandboxService(provider, store, {
+      async mounts(enabled) {
+        mounts.requests.push(enabled);
+        if (mounts.error) throw new Error(mounts.error);
+        return enabled.includes("codex") ? [SHARED_CODEX] : [];
+      },
+      async githubToken() {
+        return mounts.githubToken;
+      },
+    }),
+    mounts,
     store,
     hosts: new FakeHosts(),
     provider,
@@ -161,6 +181,52 @@ describe("sandbox lifecycle", () => {
       "mv -T /home/paseo/Hello-World.partial /home/paseo/Hello-World",
     );
     expect(h.hosts.opened).toEqual(["/home/paseo/Hello-World"]);
+  });
+
+  test("a shared login is mounted, replaces the Codex sign-in, and marks a running sandbox stale", async () => {
+    await saveCredential("CODEX_API_KEY", "sk-codex");
+    const { id } = await create();
+    await settle(id);
+    expect(h.provider.commands()).toContain("codex login --with-api-key");
+
+    await h.store.update((draft) => {
+      draft.hostLogins = ["codex"];
+    });
+    expect((await settle(id))?.stale).toBe(true);
+    h.provider.execs.length = 0;
+    await h.service.start(h.hosts, id);
+
+    expect((await settle(id))?.stale).toBe(false);
+    expect(h.mounts.requests.at(-1)).toEqual(["codex"]);
+    expect(h.provider.ups.at(-1)?.mounts).toEqual([SHARED_CODEX]);
+    // Signing in or out would rewrite the host's own auth.json.
+    expect(h.provider.commands().filter((command) => command.startsWith("codex"))).toEqual([]);
+  });
+
+  test("a shared GitHub login replaces the saved token, and the host's token is kept out of failures", async () => {
+    await saveCredential("GITHUB_TOKEN", "ghp_saved_token");
+    await h.store.update((draft) => {
+      draft.hostLogins = ["github"];
+    });
+    h.provider.failOn = { match: "git clone", message: "fatal: bad credentials gho_host_token" };
+    const { id } = await create();
+
+    const failed = await settle(id);
+
+    expect(h.provider.ups[0]?.env.GITHUB_TOKEN).toBe("gho_host_token");
+    expect(failed?.error).toContain("fatal: bad credentials ***");
+    expect(failed?.error).not.toContain("gho_host_token");
+  });
+
+  test("a login that cannot be shared stops the start with the reason and changes nothing", async () => {
+    await h.store.update((draft) => {
+      draft.hostLogins = ["claude"];
+    });
+    h.mounts.error = "Cannot share the claude login: /h/.claude does not exist";
+    const { id } = await create();
+
+    expect((await settle(id))?.error).toContain("does not exist");
+    expect(h.provider.ups).toEqual([]);
   });
 
   test("a listing never carries the daemon password or a credential value", async () => {

@@ -27,6 +27,7 @@ export const CREDENTIAL_PRESETS = [
     hint: "An OpenAI Platform key. Codex ignores OPENAI_API_KEY, so the sandbox signs Codex in with it.",
     kind: "model",
     lifetimeDays: null,
+    hostLogin: "codex",
     login: ["codex", "login", "--with-api-key"],
     logout: ["sh", "-c", 'test ! -f "$CODEX_HOME/auth.json" || codex logout'],
   },
@@ -45,6 +46,54 @@ export const CREDENTIAL_PRESETS = [
     lifetimeDays: null,
   },
 ] as const;
+
+/**
+ * Agent logins that can be shared with this host instead of saved here. The sandbox mounts the
+ * host's own folder, so the sandbox and the host are one client of one login.
+ */
+export const HOST_LOGINS = [
+  {
+    id: "claude",
+    label: "Use this host's Claude login",
+    hint: "Mounts the Claude config folder (CLAUDE_CONFIG_DIR, default ~/.claude)",
+  },
+  {
+    id: "codex",
+    label: "Use this host's Codex login",
+    hint: "Mounts the Codex home folder (CODEX_HOME, default ~/.codex). A saved Codex API key is ignored while this is on",
+  },
+  {
+    id: "opencode",
+    label: "Use this host's OpenCode login",
+    hint: "Mounts the OpenCode data folder (default ~/.local/share/opencode)",
+  },
+  {
+    id: "github",
+    label: "Use this host's GitHub login",
+    hint: "Reads the token from `gh auth token` each time a sandbox starts. It carries all the access your gh login has. A saved GitHub token is ignored while this is on",
+  },
+] as const;
+
+export type HostLoginId = (typeof HOST_LOGINS)[number]["id"];
+
+const hostLoginIds = HOST_LOGINS.map((login) => login.id) as [HostLoginId, ...HostLoginId[]];
+
+export const hostLoginSchema = z.object({ id: z.enum(hostLoginIds), enabled: z.boolean() });
+
+const hostLoginList = z.object({ hostLogins: z.array(hostLoginSchema) });
+
+export const listHostLogins = defineRpc({
+  name: "sandbox.host-logins.list",
+  input: z.object({}),
+  output: hostLoginList,
+});
+
+/** Takes effect when a sandbox next starts; running ones show as needing a restart. */
+export const setHostLogin = defineRpc({
+  name: "sandbox.host-logins.set",
+  input: hostLoginSchema,
+  output: hostLoginList,
+});
 
 export type CredentialKind = (typeof CREDENTIAL_PRESETS)[number]["kind"] | "other";
 
