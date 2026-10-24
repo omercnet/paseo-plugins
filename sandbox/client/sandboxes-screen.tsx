@@ -67,6 +67,11 @@ function SandboxCard({ hostId, theme, sandbox }: SandboxCardProps) {
             Remove {sandbox.name}? This deletes the container and everything stored in it, including
             the project checkout and any agent logins.
           </Text>
+          {actions.remove.error ? (
+            <Text accessibilityRole="alert" style={{ color: theme.colors.statusDanger }}>
+              {actions.remove.error.message}
+            </Text>
+          ) : null}
           <SettingsCard>
             <SettingsAction
               label="Remove sandbox"
@@ -79,7 +84,10 @@ function SandboxCard({ hostId, theme, sandbox }: SandboxCardProps) {
             <SettingsAction
               label="Keep the sandbox"
               actionLabel="Cancel"
-              onPress={() => setConfirming(false)}
+              onPress={() => {
+                actions.remove.reset();
+                setConfirming(false);
+              }}
             />
           </SettingsCard>
         </Modal.Content>

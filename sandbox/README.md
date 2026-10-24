@@ -50,7 +50,7 @@ npm run check && npm run typecheck && npm test
 
 `npm test` runs the unit tests against in-memory fakes. `npm run test:e2e:local` runs `tests/integration/*.local.e2e.test.ts` against real Docker: it builds the runtime image on first use (a few minutes, needs network), then starts, restarts, recreates and removes real containers and clones a public project. It fails, rather than skips, when Docker is unavailable. CI does not run it.
 
-Verify against an isolated daemon, never the default one:
+Verify against an isolated daemon, never the default one, from the repository root:
 
 ```sh
 .agents/skills/deliver/scripts/dev-daemon.sh up sandbox

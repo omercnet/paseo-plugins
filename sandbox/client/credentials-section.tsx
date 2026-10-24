@@ -152,6 +152,7 @@ export function CredentialsSection({ hostId }: { hostId: string }) {
           <SettingsAction
             label={entry.name}
             hint={`Saved ${new Date(entry.savedAt).toLocaleDateString()}`}
+            error={clear.variables?.name === entry.name ? clear.error?.message : null}
             actionLabel={clear.isPending ? "Removing..." : "Remove"}
             disabled={clear.isPending}
             onPress={() => clear.mutate({ name: entry.name })}
