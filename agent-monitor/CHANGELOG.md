@@ -10,6 +10,13 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [4.1.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.0.0...agent-monitor-v4.1.0) (2026-10-24)
+
+
+### Features
+
+* **agent-monitor:** add an interactive agent graph ([#364](https://github.com/omercnet/paseo-plugins/issues/364)) ([@andresantoniuk](https://github.com/andresantoniuk)) ([4e99d73](https://github.com/omercnet/paseo-plugins/commit/4e99d73da8f874b9385a35fa342ce3daabac8537))
+
 ## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v3.0.0...agent-monitor-v4.0.0) (2026-10-24)
 
 

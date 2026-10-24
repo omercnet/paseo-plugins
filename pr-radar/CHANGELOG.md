@@ -6,6 +6,18 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.1.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.0.1...pr-radar-v3.1.0) (2026-10-24)
+
+
+### Features
+
+* **pr-radar:** add copy-link button to PR cards ([#369](https://github.com/omercnet/paseo-plugins/issues/369)) ([@g0rdon](https://github.com/g0rdon)L) ([090dfd2](https://github.com/omercnet/paseo-plugins/commit/090dfd2a7dc529b68830519e8ab9b04d960cc7ea))
+* **pr-radar:** add sort options to the radar ([#374](https://github.com/omercnet/paseo-plugins/issues/374)) ([@g0rdon](https://github.com/g0rdon)L) ([188859b](https://github.com/omercnet/paseo-plugins/commit/188859b71b0384e565966ca2fcf4c0deed5d1d25))
+* **pr-radar:** collapse flip-flopping PR changes into their net change ([#373](https://github.com/omercnet/paseo-plugins/issues/373)) ([@g0rdon](https://github.com/g0rdon)L) ([d0ce35d](https://github.com/omercnet/paseo-plugins/commit/d0ce35d63abdfb68639807974e98c7f456e66b66))
+* **pr-radar:** keep filter chips on one horizontally scrolling line ([#371](https://github.com/omercnet/paseo-plugins/issues/371)) ([@g0rdon](https://github.com/g0rdon)L) ([1b6f357](https://github.com/omercnet/paseo-plugins/commit/1b6f357863077dad2245a15efe4302bd9b83b6d9))
+* **pr-radar:** refresh GitHub data in the background, answer from memory ([#375](https://github.com/omercnet/paseo-plugins/issues/375)) ([@g0rdon](https://github.com/g0rdon)L) ([f212e49](https://github.com/omercnet/paseo-plugins/commit/f212e49ce2d619af7480481c013fce1740f30060))
+* **pr-radar:** use the compact card layout in narrow panes ([#370](https://github.com/omercnet/paseo-plugins/issues/370)) ([@g0rdon](https://github.com/g0rdon)L) ([169276f](https://github.com/omercnet/paseo-plugins/commit/169276f596a2a923e899fa0d894f75fe974db75e))
+
 ## [3.0.1](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.0.0...pr-radar-v3.0.1) (2026-10-24)
 
 
