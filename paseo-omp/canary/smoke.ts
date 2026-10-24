@@ -50,7 +50,7 @@ async function connectCanaryClient(): Promise<DaemonClient> {
       password,
       clientId: `paseo-omp-canary-${randomUUID()}`,
       clientType: "cli",
-      appVersion: "0.13.0-beta.2",
+      appVersion: "0.13.0",
       reconnect: { enabled: false },
     });
     try {
