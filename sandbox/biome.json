@@ -6,7 +6,7 @@
       "!!node_modules",
       "!!coverage",
       "!!paseo-plugin.d.ts",
-      "!!server/docker-image.ts"
+      "!!server/docker/image.ts"
     ]
   },
   "formatter": {

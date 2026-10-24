@@ -46,11 +46,10 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "verify:package": "npm pack --dry-run",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:e2e:local": "vitest run --config vitest.e2e.config.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
-    "@getpaseo/client": "catalog:",
     "@getpaseo/plugin": "catalog:",
     "@getpaseo/protocol": "catalog:",
     "@tanstack/react-query": "catalog:",

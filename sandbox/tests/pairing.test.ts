@@ -10,7 +10,9 @@ const offer = {
   minimumSecurityMode: "protected" as const,
 };
 const link = (value: unknown) =>
-  `https://app.paseo.sh/#offer=${Buffer.from(JSON.stringify(value)).toString("base64url")}`;
+  JSON.stringify({
+    url: `https://app.paseo.sh/#offer=${Buffer.from(JSON.stringify(value)).toString("base64url")}`,
+  });
 
 describe("relayConnection", () => {
   test("matches Paseo's own serializer, with TLS and protected security pinned", () => {
@@ -30,6 +32,8 @@ describe("relayConnection", () => {
   });
 
   test("refuses a link that carries no offer", () => {
-    expect(() => relayConnection("https://app.paseo.sh/", "pw")).toThrow("without an offer");
+    expect(() => relayConnection(JSON.stringify({ url: "https://app.paseo.sh/" }), "pw")).toThrow(
+      "without an offer",
+    );
   });
 });

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { DOCKERFILE, IMAGE_TAG } from "../server/docker-image";
+import { DOCKERFILE, IMAGE_TAG } from "../server/docker/image";
 
 const file = readFileSync(join(import.meta.dirname, "../runtime/Dockerfile"), "utf8");
 

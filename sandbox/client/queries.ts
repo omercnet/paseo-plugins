@@ -10,6 +10,7 @@ import {
 } from "../shared/sandbox";
 
 export const SCREEN_ID = "sandboxes";
+export const SETTINGS_ID = "sandbox";
 export const POLL_MS = 3000;
 
 /** The host id keys every cache so switching hosts never shows another host's sandboxes. */

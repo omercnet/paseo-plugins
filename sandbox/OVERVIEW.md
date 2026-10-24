@@ -1,6 +1,6 @@
 Sandbox runs one project in its own Docker container. The container holds a complete Paseo daemon, so the project's workspaces, agents, terminals and Git commands all execute inside it instead of on your machine. Paseo shows the project in the normal sidebar as a connected host, and its agents appear under the Subagents track of any agent that starts them.
 
-Open **Sandboxes** in the sidebar, enter a repository (`owner/repo` on GitHub or an https URL) and press Create. The plugin builds the runtime image the first time, starts the container, clones the repository inside it, registers the container as a host and opens the project. Stop keeps the project data. Remove deletes the container and everything stored in it.
+Open **Sandboxes** in the sidebar, enter a project (`owner/repo` on GitHub or an https URL) and press Create. The plugin builds the runtime image the first time, starts the container, clones the project inside it, registers the container as a host and opens the project. Stop keeps the project data. Remove deletes the container and everything stored in it.
 
 The plugin only provisions. Each sandbox is saved as an ordinary connected host, so its connection status, label and metadata can be inspected and edited in the Connected hosts plugin, or with `paseo host`. Starting a sandbox refreshes only its connection and re-enables it; it never rewrites a label or metadata you changed.
 
@@ -8,7 +8,7 @@ The plugin only provisions. Each sandbox is saved as an ordinary connected host,
 
 Requires Paseo 0.13 and Docker on the machine that runs the Paseo daemon. The daemon user must be able to run `docker`. The first sandbox builds a runtime image of about 2.6 GB from the official Paseo image plus the Claude Code, Codex and OpenCode CLIs, so it needs network access and a few minutes.
 
-Credentials are a one-time setup. Save what your agents need under **Credentials** on the Sandboxes screen, or under Settings, Sandbox credentials:
+Credentials are a one-time setup. Save what your agents need under Settings, Sandbox credentials (the Sandboxes screen links there):
 
 - **Claude subscription token** from `claude setup-token`. It is valid for one year, and the plugin warns 30 days before it expires.
 - **Anthropic API key**, **OpenAI API key for Codex** and **OpenAI API key for OpenCode**.

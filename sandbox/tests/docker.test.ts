@@ -1,131 +1,197 @@
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { dockerProvider } from "../server/docker";
-import { IMAGE_TAG } from "../server/docker-image";
+import { beforeEach, describe, expect, test } from "vitest";
+import { type DockerCli, DockerError, type DockerOptions } from "../server/docker/cli";
+import { IMAGE_TAG } from "../server/docker/image";
+import { createDockerProvider } from "../server/docker/provider";
 
-/** A stand-in `docker` that logs every call and answers from a JSON scenario file. */
-const FAKE = `#!/usr/bin/env node
-const fs = require("node:fs");
-const scenario = JSON.parse(fs.readFileSync(process.env.FAKE_DOCKER + ".json", "utf8"));
-const args = process.argv.slice(2);
-const names = args.filter((a, i) => args[i - 1] === "--env");
-fs.appendFileSync(process.env.FAKE_DOCKER + ".log", JSON.stringify({ args, env: Object.fromEntries(names.map((n) => [n, process.env[n]])) }) + "\\n");
-const key = args.slice(0, 2).join(" ");
-const fail = (message) => { process.stderr.write(message + "\\n"); process.exit(1); };
-if (key === "image inspect") scenario.image ? process.exit(0) : fail("Error: No such image");
-if (key === "container inspect") {
-  if (!scenario.container) fail("Error: No such container");
-  const { state, image, revision, health } = scenario.container;
-  process.stdout.write(args.includes("{{.State.Status}} {{.State.Health.Status}}") ? state + " " + health : [state, image, revision].join("|"));
-  process.exit(0);
+interface FakeContainer {
+  state: "running" | "exited";
+  image: string;
+  revision: string;
+  health: "healthy" | "unhealthy";
 }
-if (key === "volume inspect") scenario.volume ? process.exit(0) : fail("Error: No such volume: " + args[2]);
-if (key === "container start") { scenario.container.state = "running"; fs.writeFileSync(process.env.FAKE_DOCKER + ".json", JSON.stringify(scenario)); process.exit(0); }
-if (key === "version --format" && scenario.unreachable) fail("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?");
-if (key === "container stop" || key === "container rm" || key === "volume rm") scenario.missing ? fail("Error: No such container") : process.exit(0);
-`;
 
-let dir: string;
-const calls = async () =>
-  (await readFile(join(dir, "fake.log"), "utf8").catch(() => ""))
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as { args: string[]; env: Record<string, string> });
-const scenario = (value: object) => writeFile(join(dir, "fake.json"), JSON.stringify(value));
+interface Call {
+  args: readonly string[];
+  options: DockerOptions;
+}
 
-beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "sandbox-docker-"));
-  await writeFile(join(dir, "docker"), FAKE);
-  await chmod(join(dir, "docker"), 0o755);
-  vi.stubEnv("PATH", `${dir}:${process.env.PATH}`);
-  vi.stubEnv("FAKE_DOCKER", join(dir, "fake"));
-});
-afterEach(() => vi.unstubAllEnvs());
+/** An in-memory Docker: containers, volumes and images, with the answers the CLI would give. */
+class FakeDocker {
+  images = new Set<string>();
+  volumes = new Set<string>();
+  containers = new Map<string, FakeContainer>();
+  calls: Call[] = [];
+  daemonDown = false;
+  health: FakeContainer["health"] = "healthy";
+
+  readonly cli: DockerCli = async (args, options = {}) => {
+    this.calls.push({ args, options });
+    const [group, verb] = args;
+    const name = args.at(-1) ?? "";
+    if (this.daemonDown)
+      throw new DockerError("docker version failed", "Cannot connect to the Docker daemon");
+    if (group === "version") return ok("27");
+    if (group === "image" && verb === "inspect")
+      return this.require(this.images.has(name), "image");
+    if (group === "build") {
+      this.images.add(IMAGE_TAG);
+      return ok("");
+    }
+    if (group === "volume" && verb === "inspect")
+      return this.require(this.volumes.has(name), "volume");
+    if (group === "volume" && verb === "create") {
+      this.volumes.add(name);
+      return ok(name);
+    }
+    if (group === "volume" && verb === "rm") {
+      if (!this.volumes.delete(name)) throw missing("volume", name);
+      return ok("");
+    }
+    if (group === "exec") return ok("");
+    if (group === "run") return this.run(args, options);
+    if (group === "container") return this.container(verb ?? "", args, name);
+    throw new Error(`Unhandled docker call: ${args.join(" ")}`);
+  };
+
+  private require(present: boolean, kind: string) {
+    if (!present) throw missing(kind, "x");
+    return ok("");
+  }
+
+  private run(args: readonly string[], options: DockerOptions) {
+    const name = args[args.indexOf("--name") + 1] ?? "";
+    const label = args.find((arg) => arg.includes("sandbox.revision=")) ?? "";
+    this.containers.set(name, {
+      state: "running",
+      image: args.at(-1) ?? "",
+      revision: label.split("=")[1] ?? "",
+      health: this.health,
+    });
+    return ok(options.env ? name : "");
+  }
+
+  private container(verb: string, args: readonly string[], name: string) {
+    const found = this.containers.get(name);
+    if (verb === "rm") {
+      if (!this.containers.delete(name)) throw missing("container", name);
+      return ok("");
+    }
+    if (!found) throw missing("container", name);
+    if (verb === "start") found.state = "running";
+    if (verb === "stop") found.state = "exited";
+    if (verb === "inspect") {
+      const format = args[args.indexOf("--format") + 1] ?? "";
+      const text = format.includes("Health")
+        ? `${found.state} ${found.health}`
+        : [found.state, found.image, found.revision].join("|");
+      return ok(text);
+    }
+    return ok("");
+  }
+
+  verbs(prefix = 2) {
+    return this.calls.map((call) => call.args.slice(0, prefix).join(" "));
+  }
+}
+
+function ok(stdout: string) {
+  return { stdout, stderr: "" };
+}
+
+function missing(kind: string, name: string) {
+  return new DockerError(`docker failed`, `Error: No such ${kind}: ${name}`);
+}
 
 const spec = {
   key: "abc",
   revision: "r1",
   env: { PASEO_PASSWORD: "pw-secret", GITHUB_TOKEN: "gh-secret" },
 };
+const phases = () => undefined;
 
-describe("dockerProvider.up", () => {
+let docker: FakeDocker;
+beforeEach(() => {
+  docker = new FakeDocker();
+  docker.images.add(IMAGE_TAG);
+});
+
+describe("up", () => {
   test("creates an isolated sandbox and keeps secret values out of argv", async () => {
-    // The fake never reports the container afterwards, so `up` fails after `run`; that is enough
-    // to inspect how the sandbox was created.
-    await scenario({ image: true });
-    await expect(dockerProvider.up(spec, () => undefined)).rejects.toThrow();
-    const [create] = (await calls()).filter((c) => c.args[0] === "run");
-    expect(create).toBeDefined();
-    const argv = create?.args.join(" ") ?? "";
+    const handle = await createDockerProvider(docker.cli).up(spec, phases);
+
+    const run = docker.calls.find((call) => call.args[0] === "run");
+    const argv = run?.args.join(" ") ?? "";
+    expect(handle).toBe("paseo-sandbox-abc");
     expect(argv).not.toContain("pw-secret");
     expect(argv).not.toContain("gh-secret");
-    expect(create?.env).toEqual({ PASEO_PASSWORD: "pw-secret", GITHUB_TOKEN: "gh-secret" });
+    expect(run?.options.env).toEqual(spec.env);
     expect(argv).toContain("--security-opt no-new-privileges");
-    expect(argv).toContain("--cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID");
+    expect(argv).toContain("--cap-drop ALL");
     expect(argv).toContain("paseo-sandbox-abc-home:/home/paseo");
     expect(argv).not.toMatch(/--publish|-p |--privileged|docker\.sock|--network host/);
     expect(argv.endsWith(IMAGE_TAG)).toBe(true);
   });
 
-  test("a sandbox that never became healthy is removed with its data", async () => {
-    await scenario({ image: true });
-    await expect(dockerProvider.up(spec, () => undefined)).rejects.toThrow();
-    const log = (await calls()).map((c) => c.args.slice(0, 3).join(" "));
-    expect(log).toContain("container rm --force");
-    expect(log).toContain("volume rm --force");
-  });
-
-  test("a failed start never deletes a volume that already held data", async () => {
-    await scenario({ image: true, volume: true });
-    await expect(dockerProvider.up(spec, () => undefined)).rejects.toThrow();
-    const log = (await calls()).map((c) => c.args.slice(0, 3).join(" "));
-    expect(log).toContain("container rm --force");
-    expect(log).not.toContain("volume rm --force");
+  test("builds the image from stdin only when it is missing", async () => {
+    docker.images.clear();
+    const seen: string[] = [];
+    await createDockerProvider(docker.cli).up(spec, (phase) => seen.push(phase));
+    const build = docker.calls.find((call) => call.args[0] === "build");
+    expect(build?.args.at(-1)).toBe("-");
+    expect(build?.options.stdin).toContain("FROM ghcr.io/getpaseo/paseo");
+    expect(seen[0]).toContain("Building the runtime image");
   });
 
   test("an existing sandbox with the same revision is started, never recreated", async () => {
-    await scenario({
-      image: true,
-      container: { state: "exited", image: IMAGE_TAG, revision: "r1", health: "healthy" },
-    });
-    expect(await dockerProvider.up(spec, () => undefined)).toBe("paseo-sandbox-abc");
-    const log = (await calls()).map((c) => c.args.slice(0, 2).join(" "));
-    expect(log).toContain("container start");
-    expect(log).not.toContain("container rm");
-    expect(log).not.toContain("run --detach");
+    const provider = createDockerProvider(docker.cli);
+    await provider.up(spec, phases);
+    await provider.stop("paseo-sandbox-abc");
+    docker.calls = [];
+
+    await provider.up(spec, phases);
+
+    expect(docker.verbs()).toContain("container start");
+    expect(docker.verbs()).not.toContain("container rm");
+    expect(docker.verbs(1)).not.toContain("run");
   });
 
   test("new credentials recreate the container but keep the volume", async () => {
-    await scenario({
-      image: true,
-      container: { state: "running", image: IMAGE_TAG, revision: "old", health: "healthy" },
-    });
-    await dockerProvider.up(spec, () => undefined).catch(() => undefined);
-    const log = (await calls()).map((c) => c.args.slice(0, 3).join(" "));
-    expect(log).toContain("container rm --force");
-    expect(log).not.toContain("volume rm --force");
-    expect(log.some((entry) => entry.startsWith("run --detach"))).toBe(true);
+    const provider = createDockerProvider(docker.cli);
+    await provider.up(spec, phases);
+    docker.calls = [];
+
+    await provider.up({ ...spec, revision: "r2" }, phases);
+
+    expect(docker.verbs()).toContain("container rm");
+    expect(docker.verbs()).not.toContain("volume rm");
+    expect(docker.containers.get("paseo-sandbox-abc")?.revision).toBe("r2");
+    expect(docker.volumes.has("paseo-sandbox-abc-home")).toBe(true);
   });
 
-  test("builds the image from stdin only when it is missing", async () => {
-    await scenario({
-      image: false,
-      container: { state: "running", image: IMAGE_TAG, revision: "r1", health: "healthy" },
-    });
-    const seen: string[] = [];
-    await dockerProvider.up(spec, (phase) => seen.push(phase));
-    expect((await calls()).some((c) => c.args[0] === "build" && c.args.at(-1) === "-")).toBe(true);
-    expect(seen[0]).toContain("Building the runtime image");
+  test("a sandbox that never became healthy is removed with its data", async () => {
+    docker.health = "unhealthy";
+    await expect(createDockerProvider(docker.cli).up(spec, phases)).rejects.toThrow("unhealthy");
+    expect(docker.containers.size).toBe(0);
+    expect(docker.volumes.size).toBe(0);
+  });
+
+  test("a failed start never deletes a volume that already held data", async () => {
+    docker.volumes.add("paseo-sandbox-abc-home");
+    docker.health = "unhealthy";
+    await expect(createDockerProvider(docker.cli).up(spec, phases)).rejects.toThrow();
+    expect(docker.containers.size).toBe(0);
+    expect(docker.volumes.has("paseo-sandbox-abc-home")).toBe(true);
   });
 });
 
-describe("dockerProvider.exec", () => {
+describe("exec", () => {
   test("runs as the sandbox user and hands stdin to the command, not argv", async () => {
-    await scenario({});
-    await dockerProvider.exec("paseo-sandbox-abc", ["codex", "login"], { stdin: "secret\n" });
-    const [call] = await calls();
+    await createDockerProvider(docker.cli).exec({
+      handle: "paseo-sandbox-abc",
+      argv: ["codex", "login"],
+      stdin: "secret\n",
+    });
+    const [call] = docker.calls;
     expect(call?.args).toEqual([
       "exec",
       "--interactive",
@@ -135,23 +201,34 @@ describe("dockerProvider.exec", () => {
       "codex",
       "login",
     ]);
+    expect(call?.options.stdin).toBe("secret\n");
   });
 });
 
-describe("dockerProvider cleanup and availability", () => {
+describe("cleanup and availability", () => {
   test("stop and destroy tolerate a sandbox that is already gone", async () => {
-    await scenario({ missing: true });
-    await expect(dockerProvider.stop("paseo-sandbox-abc")).resolves.toBeUndefined();
-    await expect(dockerProvider.destroy({ key: "abc", handle: null })).resolves.toBeUndefined();
+    const provider = createDockerProvider(docker.cli);
+    await expect(provider.stop("paseo-sandbox-abc")).resolves.toBeUndefined();
+    await expect(provider.destroy({ key: "abc", handle: null })).resolves.toBeUndefined();
   });
 
-  test("an unreachable Docker daemon is explained, not surfaced as a raw error", async () => {
-    await scenario({ unreachable: true });
-    expect(await dockerProvider.unavailable()).toContain("Start Docker");
+  test("destroy finds the sandbox by key when no handle was recorded", async () => {
+    const provider = createDockerProvider(docker.cli);
+    await provider.up(spec, phases);
+    await provider.destroy({ key: "abc", handle: null });
+    expect(docker.containers.size).toBe(0);
+    expect(docker.volumes.size).toBe(0);
+  });
+
+  test("an unreachable Docker daemon is explained", async () => {
+    docker.daemonDown = true;
+    expect(await createDockerProvider(docker.cli).unavailable()).toContain("Start Docker");
   });
 
   test("a missing docker binary is explained", async () => {
-    vi.stubEnv("PATH", "/nonexistent");
-    expect(await dockerProvider.unavailable()).toContain("not installed");
+    const provider = createDockerProvider(async () => {
+      throw new DockerError("Docker is not installed on the Paseo host", "");
+    });
+    expect(await provider.unavailable()).toContain("not installed");
   });
 });

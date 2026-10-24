@@ -253,7 +253,6 @@
       "version": "0.0.0",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
-        "@getpaseo/client": "catalog:",
         "@getpaseo/plugin": "catalog:",
         "@getpaseo/protocol": "catalog:",
         "@tanstack/react-query": "catalog:",

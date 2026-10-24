@@ -24,6 +24,10 @@ const stateSchema = z.object({
 });
 export type State = z.infer<typeof stateSchema>;
 
+function isMissingFile(error: unknown) {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
 export function defaultStatePath(env: NodeJS.ProcessEnv = process.env) {
   const home = env.PASEO_HOME?.trim() || join(homedir(), ".paseo");
   return join(home, "plugin-data", "sandbox", "state.json");
@@ -46,9 +50,10 @@ export class Store {
       // An update may have published newer state while this read was in flight.
       this.state ??= parsed;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      if (!isMissingFile(error)) {
         // Never start from empty over a file we could not read: that would discard credentials.
-        throw new Error(`Sandbox state at ${this.path} is unreadable: ${(error as Error).message}`);
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`Sandbox state at ${this.path} is unreadable: ${reason}`);
       }
       this.state ??= { credentials: {}, sandboxes: {} };
     }

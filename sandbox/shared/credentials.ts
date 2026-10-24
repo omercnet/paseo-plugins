@@ -28,7 +28,7 @@ export const CREDENTIAL_PRESETS = [
     kind: "model",
     lifetimeDays: null,
     login: ["codex", "login", "--with-api-key"],
-    logout: ["codex", "logout"],
+    logout: ["sh", "-c", 'test ! -f "$CODEX_HOME/auth.json" || codex logout'],
   },
   {
     name: "OPENAI_API_KEY",

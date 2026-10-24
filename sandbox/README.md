@@ -14,9 +14,9 @@ controller daemon                          sandbox container (one per project)
 
 ## Sandbox providers
 
-`server/provider.ts` is the whole interface. A provider turns a `SandboxSpec` (key, env, revision) into a running daemon and answers `status`, `exec`, `stop` and `destroy`. Handles are opaque strings that only the issuing provider reads, so `server/service.ts`, the store and the UI never see a container id. `server/docker.ts` is the only implementation.
+`server/provider.ts` is the whole interface. A provider turns a `SandboxSpec` (key, env, revision) into a running daemon and answers `status`, `exec`, `stop` and `destroy`. Handles are opaque strings that only the issuing provider reads, so `server/service.ts`, the store and the UI never see a container id. `server/docker/provider.ts` is the only implementation; it reaches Docker through an injected `DockerCli`, so its unit tests run against an in-memory Docker. One implementation is a deliberate seam, requested ahead of the E2B provider.
 
-To add a provider, implement the interface and pass it to `createHandlers` in `index.server.ts`. Its contract:
+To add a provider, implement the interface and pass it to `createSandboxService` in `index.server.ts`. Its contract:
 
 - `up` is idempotent, resolves once the daemon answers, and recreates the sandbox when `spec.revision` changed while keeping stored data.
 - `exec` runs as the unprivileged sandbox user and accepts stdin.
@@ -26,7 +26,7 @@ To add a provider, implement the interface and pass it to `createHandlers` in `i
 
 `runtime/Dockerfile` adds only the agent CLIs and a Git credential helper to the official `ghcr.io/getpaseo/paseo` image, pinned by version and digest. A standalone base cannot be smaller: the Paseo daemon package alone is about 600 MB. The file's header lists the runtime contract any other sandbox format must meet. No secret is baked in; credentials arrive through the environment, and Codex is signed in through stdin.
 
-The plugin bundle cannot read sibling files, so `server/docker-image.ts` embeds the Dockerfile. After editing it, run `npm run embed:dockerfile`; a test fails when they differ. The image tag is derived from the file, so an updated plugin builds a new image once.
+The plugin bundle cannot read sibling files, so `server/docker/image.ts` embeds the Dockerfile. After editing it, run `npm run embed:dockerfile`; a test fails when they differ. The image tag is derived from the file, so an updated plugin builds a new image once.
 
 ## Credentials
 
@@ -48,7 +48,7 @@ cd sandbox
 npm run check && npm run typecheck && npm test
 ```
 
-`npm test` runs the unit tests with fakes. `npm run test:integration` runs `tests/integration/*.itest.ts` against real Docker: it builds the runtime image on first use (a few minutes, needs network), then starts, restarts, recreates and removes real containers and clones a public repository. It fails, rather than skips, when Docker is unavailable. CI does not run it.
+`npm test` runs the unit tests against in-memory fakes. `npm run test:e2e:local` runs `tests/integration/*.local.e2e.test.ts` against real Docker: it builds the runtime image on first use (a few minutes, needs network), then starts, restarts, recreates and removes real containers and clones a public project. It fails, rather than skips, when Docker is unavailable. CI does not run it.
 
 Verify against an isolated daemon, never the default one:
 
@@ -62,7 +62,7 @@ Remove leftovers with `docker rm -f` and `docker volume rm` on names starting `p
 ## Layout
 
 - `shared/`: RPC contracts and the credential presets.
-- `server/provider.ts`, `server/docker.ts`: provider interface and Docker implementation.
-- `server/service.ts`: create, start, stop, remove, pairing, cloning and host registration.
-- `server/store.ts`, `server/pairing.ts`: private state file and relay connection string.
-- `client/`: the Sandboxes screen, the credentials section and the sidebar item.
+- `server/provider.ts`: the sandbox-provider interface. `server/docker/`: the Docker implementation (`provider.ts`, `cli.ts`, generated `image.ts`).
+- `server/service.ts`: create, start, stop, remove, pairing, cloning and host registration. `server/hosts.ts` is the slice of connected hosts it uses.
+- `server/credentials.ts`, `server/store.ts`: saved credentials, the sandbox environment and the private state file. `server/pairing.ts`, `server/repository.ts`: relay connection string and project URL parsing.
+- `client/`: the Sandboxes screen, the credentials section shown in Settings, and the sidebar item.

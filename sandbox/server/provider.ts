@@ -14,6 +14,21 @@ export interface SandboxSpec {
 
 export type SandboxRuntimeStatus = "running" | "stopped" | "missing";
 
+export interface ExecRequest {
+  handle: string;
+  argv: readonly string[];
+  /** Keeps secrets out of argv and the environment. */
+  stdin?: string;
+  /** Defaults to two minutes. */
+  timeoutMs?: number;
+}
+
+/** `handle` is null when `up` never returned one, for example after a crash. */
+export interface SandboxRef {
+  key: string;
+  handle: string | null;
+}
+
 export interface SandboxProvider {
   readonly id: string;
   /** Why this provider cannot run on this machine, or null when it can. */
@@ -24,21 +39,10 @@ export interface SandboxProvider {
    */
   up(spec: SandboxSpec, onPhase: (phase: string) => void): Promise<string>;
   status(handle: string): Promise<SandboxRuntimeStatus>;
-  /**
-   * Runs argv as the unprivileged sandbox user and returns stdout. `stdin` keeps secrets out of
-   * argv and environment. Rejects on a non-zero exit or when `timeoutMs` (default two minutes)
-   * passes.
-   */
-  exec(
-    handle: string,
-    argv: readonly string[],
-    options?: { stdin?: string; timeoutMs?: number },
-  ): Promise<string>;
+  /** Runs argv as the unprivileged sandbox user and returns stdout. Rejects on a non-zero exit. */
+  exec(request: ExecRequest): Promise<string>;
   /** Stops it and keeps its data. */
   stop(handle: string): Promise<void>;
-  /**
-   * Removes the sandbox and its data. Idempotent. `handle` is null when `up` never returned one,
-   * for example after a crash, so providers must also be able to find the sandbox by `key`.
-   */
-  destroy(target: { key: string; handle: string | null }): Promise<void>;
+  /** Removes the sandbox and its data. Idempotent. Finds the sandbox by `key` when it has no handle. */
+  destroy(target: SandboxRef): Promise<void>;
 }

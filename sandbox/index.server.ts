@@ -1,6 +1,9 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { dockerProvider } from "./server/docker";
-import { createHandlers } from "./server/handlers";
+import { savedCredentials } from "./server/credentials";
+import { execDocker } from "./server/docker/cli";
+import { createDockerProvider } from "./server/docker/provider";
+import { sandboxHosts } from "./server/hosts";
+import { createSandboxService } from "./server/service";
 import { defaultStatePath, Store } from "./server/store";
 import { listCredentials, removeCredential, setCredential } from "./shared/credentials";
 import {
@@ -12,14 +15,32 @@ import {
 } from "./shared/sandbox";
 
 export default function contribute(server: PluginServerContext) {
-  const handlers = createHandlers(dockerProvider, new Store(defaultStatePath()));
-  server.handle(listSandboxes, (_input, context) => handlers.list(context));
-  server.handle(createSandbox, handlers.create);
-  server.handle(startSandbox, handlers.start);
-  server.handle(stopSandbox, handlers.stop);
-  server.handle(removeSandbox, handlers.remove);
-  server.handle(listCredentials, handlers.credentials);
-  server.handle(setCredential, handlers.setCredential);
-  server.handle(removeCredential, handlers.removeCredential);
+  const store = new Store(defaultStatePath());
+  const sandboxes = createSandboxService(createDockerProvider(execDocker), store);
+  const credentials = savedCredentials(store);
+
+  server.handle(listSandboxes, (_input, { paseo }) => sandboxes.list(sandboxHosts(paseo.hosts)));
+  server.handle(createSandbox, (input, { paseo }) =>
+    sandboxes.create(sandboxHosts(paseo.hosts), input),
+  );
+  server.handle(startSandbox, async ({ id }, { paseo }) => {
+    await sandboxes.start(sandboxHosts(paseo.hosts), id);
+    return {};
+  });
+  server.handle(stopSandbox, async ({ id }) => {
+    await sandboxes.stop(id);
+    return {};
+  });
+  server.handle(removeSandbox, async ({ id }, { paseo }) => {
+    await sandboxes.remove(sandboxHosts(paseo.hosts), id);
+    return {};
+  });
+  server.handle(listCredentials, async () => ({ credentials: await credentials.list() }));
+  server.handle(setCredential, async ({ name, value }) => ({
+    credentials: await credentials.save(name, value),
+  }));
+  server.handle(removeCredential, async ({ name }) => ({
+    credentials: await credentials.remove(name),
+  }));
   return () => {};
 }

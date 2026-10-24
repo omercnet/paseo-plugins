@@ -10,11 +10,14 @@ const offerSchema = z.object({
   minimumSecurityMode: z.literal("protected").optional(),
 });
 
+const pairingSchema = z.object({ url: z.string() });
+
 /**
- * Turns the pairing link printed by `paseo daemon pair --relay --json` into the connection string
- * `hosts.add` stores. Omitting `ssl=true` downgrades the relay to plaintext, so TLS is required.
+ * Turns the output of `paseo daemon pair --relay --json` into the connection string `hosts.add`
+ * stores. Omitting `ssl=true` downgrades the relay to plaintext, so TLS is required.
  */
-export function relayConnection(pairingUrl: string, password: string): string {
+export function relayConnection(pairingOutput: string, password: string): string {
+  const { url: pairingUrl } = pairingSchema.parse(JSON.parse(pairingOutput));
   const encoded = pairingUrl.split("#offer=")[1]?.trim();
   if (!encoded) throw new Error("The sandbox daemon returned a pairing link without an offer.");
   const offer = offerSchema.parse(JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")));

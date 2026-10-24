@@ -1,74 +1,20 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { PaseoApi } from "@getpaseo/client";
-import { CREDENTIAL_PRESETS, type CredentialSummary } from "../shared/credentials";
-import type { Sandbox } from "../shared/sandbox";
+import { randomBytes, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
+import type { RpcInput } from "@getpaseo/plugin";
+import { CREDENTIAL_PRESETS } from "../shared/credentials";
+import type { createSandbox, Sandbox } from "../shared/sandbox";
+import { sandboxEnvironment } from "./credentials";
+import type { SandboxHosts } from "./hosts";
 import { relayConnection } from "./pairing";
 import type { SandboxProvider } from "./provider";
-import type { SandboxRecord, State, Store } from "./store";
+import { parseRepository } from "./repository";
+import type { Store } from "./store";
 
 const ONLINE_TIMEOUT_MS = 60_000;
 const CLONE_TIMEOUT_MS = 30 * 60_000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** `owner/repo` on GitHub or an https URL, normalized, plus the checkout directory name. */
-export function parseRepository(input: string): { url: string; directory: string } {
-  const trimmed = input.trim();
-  const url = /^[\w.-]+\/[\w.-]+$/.test(trimmed) ? `https://github.com/${trimmed}` : trimmed;
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("Enter a repository as owner/repo or an https URL.");
-  }
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password)
-    throw new Error("Use an https repository URL without a username or password.");
-  const directory = parsed.pathname
-    .split("/")
-    .filter(Boolean)
-    .at(-1)
-    ?.replace(/\.git$/, "")
-    .replace(/[^\w.-]/g, "");
-  if (!directory || directory.startsWith("."))
-    throw new Error("That URL does not name a repository.");
-  return { url: parsed.toString(), directory };
-}
-
-export function credentialSummaries(credentials: State["credentials"]): CredentialSummary[] {
-  return Object.entries(credentials)
-    .map(([name, { savedAt }]) => {
-      const preset = CREDENTIAL_PRESETS.find((candidate) => candidate.name === name);
-      return {
-        name,
-        label: preset?.label ?? name,
-        kind: preset?.kind ?? ("other" as const),
-        savedAt,
-        expiresAt: preset?.lifetimeDays
-          ? new Date(Date.parse(savedAt) + preset.lifetimeDays * DAY_MS).toISOString()
-          : null,
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-function loginPreset(name: string) {
-  return CREDENTIAL_PRESETS.find((preset) => preset.name === name && "login" in preset);
-}
-
-/** What a sandbox starts with: the daemon environment, plus a revision over everything applied. */
-function environment(state: State, record: SandboxRecord) {
-  const env: Record<string, string> = { PASEO_PASSWORD: record.password };
-  for (const [name, { value }] of Object.entries(state.credentials)) {
-    if (!loginPreset(name)) env[name] = value;
-  }
-  const values = Object.fromEntries(
-    Object.entries(state.credentials).map(([name, { value }]) => [name, value]),
-  );
-  const sorted = (record: Record<string, string>) =>
-    Object.entries(record).sort(([a], [b]) => a.localeCompare(b));
-  const revision = createHash("sha256")
-    .update(JSON.stringify([sorted(env), sorted(values)]))
-    .digest("hex");
-  return { env, revision };
+function messageOf(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Lifecycle of project sandboxes. Long operations run in the background and report through `list`. */
@@ -98,7 +44,7 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
     failures.delete(id);
     void work((next) => busy.set(id, next))
       .catch(async (error: unknown) => {
-        const message = await redact(id, error instanceof Error ? error.message : String(error));
+        const message = await redact(id, messageOf(error));
         console.error(`sandbox ${id}: ${phase} failed: ${message}`);
         failures.set(id, message);
       })
@@ -111,26 +57,24 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
     return found;
   }
 
-  async function waitOnline(paseo: PaseoApi, registrationId: string) {
+  async function waitOnline(hosts: SandboxHosts, registrationId: string) {
     const deadline = Date.now() + ONLINE_TIMEOUT_MS;
     for (;;) {
-      const host = (await paseo.hosts.list()).hosts.find(
-        (h) => h.registrationId === registrationId,
-      );
+      const host = (await hosts.list()).find((h) => h.registrationId === registrationId);
       if (host?.status === "online" && host.serverId) return host.serverId;
       if (Date.now() > deadline)
         throw new Error(
           host?.error?.message ??
             "The sandbox started but Paseo could not reach it through the relay.",
         );
-      await new Promise((done) => setTimeout(done, 1000));
+      await sleep(1000);
     }
   }
 
   /** Brings the sandbox up with the current credentials and registers it as a connected host. */
-  async function provision(paseo: PaseoApi, id: string, setPhase: (phase: string) => void) {
+  async function provision(hosts: SandboxHosts, id: string, setPhase: (phase: string) => void) {
     const current = await record(id);
-    const { env, revision } = environment(await store.read(), current);
+    const { env, revision } = sandboxEnvironment(await store.read(), current);
     const handle = await provider.up({ key: id, revision, env }, setPhase);
     await store.update((draft) => {
       const target = draft.sandboxes[id];
@@ -141,40 +85,40 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
     for (const preset of CREDENTIAL_PRESETS) {
       if (!("login" in preset)) continue;
       const saved = state.credentials[preset.name];
-      // A logout with nothing stored may exit non-zero; the end state is what matters.
-      if (saved) await provider.exec(handle, preset.login, { stdin: `${saved.value}\n` });
-      else await provider.exec(handle, preset.logout).catch(() => undefined);
+      if (saved) await provider.exec({ handle, argv: preset.login, stdin: `${saved.value}\n` });
+      else await provider.exec({ handle, argv: preset.logout });
     }
     setPhase("Connecting to the sandbox");
-    const pairing = JSON.parse(
-      await provider.exec(handle, ["paseo", "daemon", "pair", "--relay", "--json"]),
-    );
-    const connection = relayConnection(String(pairing.url), current.password);
+    const pairing = await provider.exec({
+      handle,
+      argv: ["paseo", "daemon", "pair", "--relay", "--json"],
+    });
+    const connection = relayConnection(pairing, current.password);
     // Re-adding a source with a changed connection is a conflict, and an update restarts a
     // connection stuck in error. The container is ours, so a recreated identity is expected.
     // Label and metadata are left alone after the first add: Connected hosts may have edited them.
-    const existing = (await paseo.hosts.list()).hosts.find((h) => h.source.key === id);
+    const existing = (await hosts.list()).find((h) => h.source.key === id);
     const host = existing
-      ? await paseo.hosts.update(existing.registrationId, {
+      ? await hosts.update(existing.registrationId, {
           connection,
           enabled: true,
           replaceIdentity: true,
         })
-      : await paseo.hosts.add({
+      : await hosts.add({
           connection,
           label: current.name,
           metadata: { sandboxId: id },
           sourceKey: id,
         });
-    return waitOnline(paseo, host.registrationId);
+    return waitOnline(hosts, host.registrationId);
   }
 
-  async function checkout(paseo: PaseoApi, id: string, serverId: string) {
+  async function checkout(hosts: SandboxHosts, id: string, serverId: string) {
     const { handle, repoUrl } = await record(id);
     if (!handle) throw new Error("The sandbox has no runtime to clone into.");
     const { url, directory } = parseRepository(repoUrl);
     const cwd = `/home/paseo/${directory}`;
-    const cloned = await provider.exec(handle, ["test", "-d", `${cwd}/.git`]).then(
+    const cloned = await provider.exec({ handle, argv: ["test", "-d", `${cwd}/.git`] }).then(
       () => true,
       () => false,
     );
@@ -182,40 +126,37 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
       // Clone beside the target and rename, so an interrupted clone is never mistaken for a checkout.
       const partial = `${cwd}.partial`;
       try {
-        await provider.exec(handle, ["rm", "-rf", partial]);
-        await provider.exec(handle, ["git", "clone", "--", url, partial], {
+        await provider.exec({ handle, argv: ["rm", "-rf", partial] });
+        await provider.exec({
+          handle,
+          argv: ["git", "clone", "--", url, partial],
           timeoutMs: CLONE_TIMEOUT_MS,
         });
-        await provider.exec(handle, ["mv", "-T", partial, cwd]);
+        await provider.exec({ handle, argv: ["mv", "-T", partial, cwd] });
       } catch (error) {
         throw new Error(
-          `Cloning ${url} failed. For a private repository, save a GitHub token in Sandbox settings and start the sandbox again. ${(error as Error).message}`,
+          `Cloning ${url} failed. For a private project, save a GitHub token in Sandbox settings and start the sandbox again. ${messageOf(error)}`,
         );
       }
     }
-    const remote = await paseo.hosts.client(serverId);
-    try {
-      await remote.workspaces.open({ cwd });
-    } finally {
-      await remote.dispose();
-    }
+    await hosts.openWorkspace(serverId, cwd);
   }
 
-  async function bringUp(paseo: PaseoApi, id: string, setPhase: (phase: string) => void) {
-    const serverId = await provision(paseo, id, setPhase);
+  async function bringUp(hosts: SandboxHosts, id: string, setPhase: (phase: string) => void) {
+    const serverId = await provision(hosts, id, setPhase);
     setPhase("Opening the project");
-    await checkout(paseo, id, serverId);
+    await checkout(hosts, id, serverId);
   }
 
   return {
-    async list(paseo: PaseoApi) {
+    async list(hosts: SandboxHosts) {
       const problem = await provider.unavailable();
       const state = await store.read();
-      const hosts = (await paseo.hosts.list()).hosts;
+      const registered = await hosts.list();
       const sandboxes = await Promise.all(
         Object.values(state.sandboxes).map(async (item): Promise<Sandbox> => {
           const runtime = item.handle && !problem ? await provider.status(item.handle) : "missing";
-          const host = hosts.find((h) => h.source.key === item.id);
+          const host = registered.find((h) => h.source.key === item.id);
           return {
             id: item.id,
             name: item.name,
@@ -225,7 +166,8 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
             host: host
               ? { status: host.status, serverId: host.serverId, error: host.error?.message ?? null }
               : null,
-            stale: runtime === "running" && item.revision !== environment(state, item).revision,
+            stale:
+              runtime === "running" && item.revision !== sandboxEnvironment(state, item).revision,
             busy: busy.get(item.id) ?? null,
             error: failures.get(item.id) ?? null,
           };
@@ -235,7 +177,7 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
       return { runtime: { available: !problem, problem }, sandboxes };
     },
 
-    async create(paseo: PaseoApi, input: { name: string; repoUrl: string }) {
+    async create(hosts: SandboxHosts, input: RpcInput<typeof createSandbox>) {
       const { url } = parseRepository(input.repoUrl);
       const problem = await provider.unavailable();
       if (problem) throw new Error(problem);
@@ -251,13 +193,13 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
           createdAt: new Date().toISOString(),
         };
       });
-      begin(id, "Creating", (setPhase) => bringUp(paseo, id, setPhase));
+      begin(id, "Creating", (setPhase) => bringUp(hosts, id, setPhase));
       return { id };
     },
 
-    async start(paseo: PaseoApi, id: string) {
+    async start(hosts: SandboxHosts, id: string) {
       await record(id);
-      begin(id, "Starting", (setPhase) => bringUp(paseo, id, setPhase));
+      begin(id, "Starting", (setPhase) => bringUp(hosts, id, setPhase));
     },
 
     async stop(id: string) {
@@ -267,12 +209,12 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
       });
     },
 
-    async remove(paseo: PaseoApi, id: string) {
+    async remove(hosts: SandboxHosts, id: string) {
       const { handle } = await record(id);
       begin(id, "Removing", async () => {
         await provider.destroy({ key: id, handle });
-        for (const host of (await paseo.hosts.list()).hosts) {
-          if (host.source.key === id) await paseo.hosts.remove(host.registrationId);
+        for (const host of await hosts.list()) {
+          if (host.source.key === id) await hosts.remove(host.registrationId);
         }
         await store.update((draft) => {
           delete draft.sandboxes[id];

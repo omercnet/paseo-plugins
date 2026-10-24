@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { credentialSummaries } from "../server/service";
+import { credentialSummaries } from "../server/credentials";
 import {
   type CredentialSummary,
   credentialNameSchema,
