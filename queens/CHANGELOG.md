@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/omercnet/paseo-plugins/compare/queens-v4.0.0...queens-v4.0.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **plugins:** accept Paseo 0.13 in the plugin manifest range ([bdb9435](https://github.com/omercnet/paseo-plugins/commit/bdb943595515ab7f21a93c66cffeb6844bacdcdb))
+
 ## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/queens-v3.0.0...queens-v4.0.0) (2026-10-19)
 
 

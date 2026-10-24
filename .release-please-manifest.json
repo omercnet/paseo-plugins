@@ -1,16 +1,17 @@
 {
   "agent-crew": "4.0.0",
-  "tell-agent": "1.2.2",
+  "tell-agent": "1.2.3",
   "agent-monitor": "4.1.0",
-  "fresh-worktrees": "3.0.1",
+  "fresh-worktrees": "3.0.2",
   "paseo-beads": "3.0.0",
   "paseo-omp": "4.0.0",
-  "paseo-dracula": "1.2.2",
+  "paseo-dracula": "1.2.3",
   "paseo-shared-browser": "4.0.0",
-  "paseo-gas-city": "2.0.1",
-  "context-mode": "3.0.0",
+  "paseo-gas-city": "2.0.2",
+  "context-mode": "3.0.1",
   "pr-radar": "3.1.0",
-  "queens": "4.0.0",
-  "top": "1.0.0",
-  "connected-hosts": "0.1.1"
+  "queens": "4.0.1",
+  "top": "1.0.1",
+  "connected-hosts": "0.1.1",
+  "sandbox": "0.1.0"
 }

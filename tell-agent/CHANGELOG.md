@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.3](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v1.2.2...tell-agent-v1.2.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **plugins:** accept Paseo 0.13 in the plugin manifest range ([bdb9435](https://github.com/omercnet/paseo-plugins/commit/bdb943595515ab7f21a93c66cffeb6844bacdcdb))
+
 ## [1.2.2](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v1.2.1...tell-agent-v1.2.2) (2026-10-20)
 
 
