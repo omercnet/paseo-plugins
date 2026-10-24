@@ -1,6 +1,20 @@
-import type { HostAdd, HostDirectory, HostSummary, HostUpdate, PaseoApi } from "@getpaseo/client";
+import type { HostAdd, HostDirectory, HostSummary, HostUpdate } from "@getpaseo/protocol/hosts";
 import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
 import { useCallback, useEffect, useState } from "react";
+
+/** The slice of the plugin's `usePaseo()` client that follows the saved hosts. */
+export interface HostsApi {
+  hosts: {
+    observe(): {
+      subscribe(observer: {
+        snapshot(directory: HostDirectory): void;
+        update(message: SessionOutboundMessage): void;
+        error(cause: unknown): void;
+      }): () => void;
+      release(): Promise<void>;
+    };
+  };
+}
 
 export type Built<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -103,7 +117,7 @@ export interface DirectoryHandlers {
  * Follows the selected daemon's saved hosts and returns the cleanup. `observe()` throws
  * synchronously when the daemon is offline or too old, so that is reported like any other failure.
  */
-export function observeDirectory(paseo: PaseoApi, handlers: DirectoryHandlers): () => void {
+export function observeDirectory(paseo: HostsApi, handlers: DirectoryHandlers): () => void {
   try {
     const subscription = paseo.hosts.observe();
     const stop = subscription.subscribe({
@@ -132,7 +146,7 @@ export interface HostDirectoryState {
 }
 
 /** Live view of the selected daemon's saved hosts. Resets when the selected host changes. */
-export function useHostDirectory(paseo: PaseoApi): HostDirectoryState {
+export function useHostDirectory(paseo: HostsApi): HostDirectoryState {
   const [directory, setDirectory] = useState<HostDirectory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);

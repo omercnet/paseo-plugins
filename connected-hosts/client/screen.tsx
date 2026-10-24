@@ -1,7 +1,7 @@
-import type { HostSummary } from "@getpaseo/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginScreenProps, usePaseo } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/ui";
+import type { HostSummary } from "@getpaseo/protocol/hosts";
 import { useMemo, useState } from "react";
 import { Pressable, Text, type TextStyle, View, type ViewStyle } from "react-native";
 import {
