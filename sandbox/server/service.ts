@@ -73,21 +73,28 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
 
   /** Brings the sandbox up with the current credentials and registers it as a connected host. */
   async function provision(hosts: SandboxHosts, id: string, setPhase: (phase: string) => void) {
+    // One snapshot drives the environment, the logins and the recorded revision, so a credential
+    // saved meanwhile is reported as stale instead of being half applied.
+    const state = await store.read();
     const current = await record(id);
-    const { env, revision } = sandboxEnvironment(await store.read(), current);
+    const { env, revision } = sandboxEnvironment(state, current);
     const handle = await provider.up({ key: id, revision, env }, setPhase);
     await store.update((draft) => {
       const target = draft.sandboxes[id];
-      if (target) Object.assign(target, { handle, revision });
+      if (target) target.handle = handle;
     });
     setPhase("Signing in agents");
-    const state = await store.read();
     for (const preset of CREDENTIAL_PRESETS) {
       if (!("login" in preset)) continue;
       const saved = state.credentials[preset.name];
       if (saved) await provider.exec({ handle, argv: preset.login, stdin: `${saved.value}\n` });
       else await provider.exec({ handle, argv: preset.logout });
     }
+    // Only now are the credentials applied. A failed login or logout leaves the sandbox stale.
+    await store.update((draft) => {
+      const target = draft.sandboxes[id];
+      if (target) target.revision = revision;
+    });
     setPhase("Connecting to the sandbox");
     const pairing = await provider.exec({
       handle,

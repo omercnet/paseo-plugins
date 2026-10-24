@@ -201,6 +201,22 @@ describe("sandbox lifecycle", () => {
     expect(h.hosts.opened).toEqual(["/home/paseo/b"]);
   });
 
+  test("a failed sign-out leaves the sandbox stale, so the removed credential is not reported as applied", async () => {
+    await saveCredential("CODEX_API_KEY", "sk-codex");
+    const { id } = await create();
+    await settle(id);
+    await h.store.update((draft) => {
+      delete draft.credentials.CODEX_API_KEY;
+    });
+    h.provider.failOn = { match: "codex logout", message: "" };
+
+    await h.service.start(h.hosts, id);
+    const failed = await settle(id);
+
+    expect(failed?.error).toContain("exec failed");
+    expect(failed?.stale).toBe(true);
+  });
+
   test("starting again updates the registered host, and leaves its label and metadata alone", async () => {
     const { id } = await create();
     await settle(id);
