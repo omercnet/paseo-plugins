@@ -10,6 +10,17 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v3.0.0...agent-monitor-v4.0.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **agent-monitor:** agent-monitor now requires Paseo 0.13; the manifest range is ^0.13.0 and Paseo 0.12 hosts are no longer supported.
+
+### Features
+
+* **agent-monitor:** require Paseo 0.13 and handle cross-host delegated agents ([#383](https://github.com/omercnet/paseo-plugins/issues/383)) ([3314e99](https://github.com/omercnet/paseo-plugins/commit/3314e99b5ebb2177bea0c20c00a4fee249aab38e))
+
 ## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v2.0.0...agent-monitor-v3.0.0) (2026-10-19)
 
 

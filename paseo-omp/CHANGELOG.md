@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v3.0.0...paseo-omp-v4.0.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **paseo-omp:** paseo-omp now requires Paseo 0.13 (^0.13.0) on the daemon and every app loading the client entry.
+
+### Features
+
+* **paseo-omp:** require Paseo 0.13 ([#385](https://github.com/omercnet/paseo-plugins/issues/385)) ([c7771f8](https://github.com/omercnet/paseo-plugins/commit/c7771f80299f45805cb159ddbd485861d3413346))
+
+
+### Bug Fixes
+
+* **paseo-omp:** stop logging session_settled and late background tool updates as protocol violations ([#367](https://github.com/omercnet/paseo-plugins/issues/367)) ([2f02749](https://github.com/omercnet/paseo-plugins/commit/2f0274905fa81547754ec2032c3c359e74a06f53))
+
 ## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v2.0.2...paseo-omp-v3.0.0) (2026-10-19)
 
 

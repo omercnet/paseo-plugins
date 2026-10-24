@@ -6,6 +6,13 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.0.1](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.0.0...pr-radar-v3.0.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **pr-radar:** limit concurrent GitHub searches to reduce rate-limit bursts ([#372](https://github.com/omercnet/paseo-plugins/issues/372)) ([@g0rdon](https://github.com/g0rdon)L) ([c57a8ed](https://github.com/omercnet/paseo-plugins/commit/c57a8edda6659acb5d179fd9664e2185aebdcb89))
+
 ## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v2.0.0...pr-radar-v3.0.0) (2026-10-19)
 
 

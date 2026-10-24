@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v3.0.0...shared-browser-v4.0.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **paseo-shared-browser:** the plugin now requires Paseo 0.13 (requirements.paseo is ^0.13.0); it no longer loads on Paseo 0.12.
+
+### Features
+
+* **paseo-shared-browser:** require Paseo 0.13 and persist panel state ([#384](https://github.com/omercnet/paseo-plugins/issues/384)) ([9195eec](https://github.com/omercnet/paseo-plugins/commit/9195eecbd4ae8b932aaa6e245519663b4115336d))
+
+
+### Bug Fixes
+
+* **paseo-shared-browser:** bound video smoke polling by time, not RPC count ([#389](https://github.com/omercnet/paseo-plugins/issues/389)) ([1e54070](https://github.com/omercnet/paseo-plugins/commit/1e5407079e2bb993b0f2661b8b1263995ed505aa))
+* **paseo-shared-browser:** keep video smoke consumer visible so frames present ([#387](https://github.com/omercnet/paseo-plugins/issues/387)) ([0e88f0e](https://github.com/omercnet/paseo-plugins/commit/0e88f0e4860e573e584e0a2d923ad1730e7bd8a0))
+
 ## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v2.0.1...shared-browser-v3.0.0) (2026-10-19)
 
 

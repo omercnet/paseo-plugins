@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-agent-monitor",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "type": "module",
   "description": "A Paseo plugin that provides a host-wide agent triage roster.",
   "license": "MIT",

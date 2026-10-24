@@ -10,6 +10,17 @@
 - add an explicit pending-permission modal with Allow and Deny actions
 - pin Paseo plugin packages to `0.8.0-beta.1`
 
+## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v3.0.0...agent-crew-v4.0.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **agent-crew:** agent-crew now requires Paseo 0.13. The manifest range is ^0.13.0 because useTabState and the unified client UI entry do not exist on 0.12.
+
+### Features
+
+* **agent-crew:** require Paseo 0.13 and persist panel state ([#382](https://github.com/omercnet/paseo-plugins/issues/382)) ([04c91a9](https://github.com/omercnet/paseo-plugins/commit/04c91a942f447b2469b759f28720761a64502214))
+
 ## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v2.0.0...agent-crew-v3.0.0) (2026-10-19)
 
 

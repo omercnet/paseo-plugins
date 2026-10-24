@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v2.0.1...paseo-beads-v3.0.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **paseo-beads:** paseo-beads now requires Paseo 0.13. Paseo 0.11 and 0.12 are no longer supported.
+
+### Features
+
+* **paseo-beads:** require Paseo 0.13, render Markdown and persist panel state ([#381](https://github.com/omercnet/paseo-plugins/issues/381)) ([3cb15d1](https://github.com/omercnet/paseo-plugins/commit/3cb15d10c698bfaba4060c1cfb7e7c0b56eec707))
+
 ## [2.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v2.0.0...paseo-beads-v2.0.1) (2026-10-20)
 
 
