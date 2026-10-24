@@ -123,4 +123,11 @@ describe("sandbox environment", () => {
       shared.revision,
     );
   });
+
+  test("sharing OMP tells the sandbox's omp where the host's folder is mounted", () => {
+    const off = sandboxEnvironment(state([]), sandbox);
+    const on = sandboxEnvironment(state(["omp"]), sandbox);
+    expect(off.env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(on.env.PI_CODING_AGENT_DIR).toBe("/home/paseo/.omp-agent");
+  });
 });

@@ -4,6 +4,7 @@ import type { RpcInput } from "@getpaseo/plugin";
 import { CREDENTIAL_PRESETS } from "../shared/credentials";
 import type { createSandbox, Sandbox } from "../shared/sandbox";
 import { sandboxEnvironment } from "./credentials";
+import { ENABLE_OMP } from "./daemon-config";
 import type { SandboxHosts } from "./hosts";
 import { relayConnection } from "./pairing";
 import type { HostMount, SandboxProvider } from "./provider";
@@ -102,6 +103,9 @@ export function createSandboxService(
       const target = draft.sandboxes[id];
       if (target) target.handle = handle;
     });
+    setPhase("Enabling agents");
+    await provider.exec({ handle, argv: ENABLE_OMP });
+    await provider.exec({ handle, argv: ["paseo", "reload"] });
     setPhase("Signing in agents");
     for (const preset of CREDENTIAL_PRESETS) {
       if (!("login" in preset)) continue;

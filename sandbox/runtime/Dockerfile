@@ -7,7 +7,8 @@
 #     runs every launched agent, terminal and git command
 #   - PASEO_PASSWORD from the environment authenticates every daemon client
 #   - /home/paseo is the only persistent path: daemon identity, agent logins, project checkouts
-#   - claude, codex and opencode on PATH; credentials arrive only through the environment
+#   - claude, codex, opencode and omp (which runs on bun) on PATH; credentials arrive only through
+#     the environment, or from a host folder mounted over the tool's own state folder
 #   - git reads GITHUB_TOKEN for github.com over https
 #   - outbound network to the Paseo relay; no inbound port is needed
 ARG PASEO_VERSION=0.13.0
@@ -23,7 +24,9 @@ RUN set -eux; \
     npm install --global --no-audit --no-fund --omit=dev \
       @anthropic-ai/claude-code@2.1.310 \
       @openai/codex@0.164.0 \
-      opencode-ai@1.19.4; \
+      opencode-ai@1.19.4 \
+      bun@1.4.4 \
+      @oh-my-pi/pi-coding-agent@18.12.6; \
     npm cache clean --force; \
     rm -rf /root/.cache /root/.local /root/.npm; \
     git config --system 'credential.https://github.com.helper' \

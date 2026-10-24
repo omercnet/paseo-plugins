@@ -63,11 +63,12 @@ describe("a started sandbox", () => {
       handle,
       "sh",
       "-c",
-      "claude --version; codex --version; opencode --version",
+      "claude --version; codex --version; opencode --version; omp --version",
     );
     expect(versions).toContain("2.1.310");
     expect(versions).toContain("0.164.0");
     expect(versions).toContain("1.19.4");
+    expect(versions).toContain("18.12.6");
   });
 
   test("Git authenticates to github.com from the environment token and nowhere else", async () => {

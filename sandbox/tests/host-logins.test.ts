@@ -59,6 +59,30 @@ describe("host login mounts", () => {
     ]);
   });
 
+  test("OMP shares its agent folder, found the way OMP itself finds it", async () => {
+    const { root } = await fixture();
+    const agent = join(root, "omp-agent");
+    await mkdir(join(agent, "hooks"), { recursive: true });
+    await writeFile(join(agent, "agent.db"), "");
+    await writeFile(join(agent, "mcp.json"), "{}");
+    await writeFile(join(agent, "sessions.txt"), "");
+    const request = { enabled: ["omp"], platform: "linux", sandboxUid: owner } as const;
+
+    expect(await hostLoginMounts({ ...request, env: { PI_CODING_AGENT_DIR: agent } })).toEqual([
+      { source: agent, target: "/home/paseo/.omp-agent", readOnly: false },
+      {
+        source: join(agent, "mcp.json"),
+        target: "/home/paseo/.omp-agent/mcp.json",
+        readOnly: true,
+      },
+      { source: join(agent, "hooks"), target: "/home/paseo/.omp-agent/hooks", readOnly: true },
+    ]);
+    // The login store and sessions stay writable, so a refreshed token reaches the host.
+    await expect(
+      hostLoginMounts({ ...request, env: { PI_CODING_AGENT_DIR: join(root, "none") } }),
+    ).rejects.toThrow("does not exist on this host");
+  });
+
   test("refuse a missing folder instead of letting Docker create it on the host", async () => {
     const { root } = await fixture();
     await expect(

@@ -6,7 +6,7 @@ The plugin only provisions. Each sandbox is saved as an ordinary connected host,
 
 ## Setup
 
-Requires Paseo 0.13 and Docker on the machine that runs the Paseo daemon. The daemon user must be able to run `docker`. The first sandbox builds a runtime image of about 2.6 GB from the official Paseo image plus the Claude Code, Codex and OpenCode CLIs, so it needs network access and a few minutes.
+Requires Paseo 0.13 and Docker on the machine that runs the Paseo daemon. The daemon user must be able to run `docker`. The first sandbox builds a runtime image of about 4.3 GB from the official Paseo image plus the Claude Code, Codex, OpenCode and OMP CLIs (OMP alone is about 1.2 GB with its bundled models and bun runtime), so it needs network access and a few minutes.
 
 Credentials are a one-time setup. Save what your agents need under Settings, Sandbox credentials (the Sandboxes screen links there):
 
@@ -15,9 +15,10 @@ Credentials are a one-time setup. Save what your agents need under Settings, San
 - **GitHub token** for cloning private repositories and pushing over https.
 - Any other environment variable, such as a different provider's key.
 
-Or share this host's own logins instead of saving values (Settings, Shared logins, off by default). Each switch covers one tool: Claude, Codex, OpenCode or GitHub.
+Or share this host's own logins instead of saving values (Settings, Shared logins, off by default). Each switch covers one tool: Claude, Codex, OpenCode, OMP or GitHub.
 
-- **Claude, Codex and OpenCode** mount the tool's folder from this host read-write, so the sandbox and the host are one client of one login, like two agents on the same machine. A refreshed token is written back where the host sees it. Hooks, skills, plugins, commands and settings files that exist in those folders are mounted read-only. That list is best effort, not a boundary: a sandbox agent can still read and change the rest of the folder, including history, and on Claude the MCP tokens kept beside the login. Turn it on only for sandboxes you trust. Linux hosts only, and the folder must be owned by uid 1000, the user agents run as inside the sandbox.
+- **Claude, Codex, OpenCode and OMP** mount the tool's folder from this host read-write, so the sandbox and the host are one client of one login, like two agents on the same machine. A refreshed token is written back where the host sees it. Hooks, skills, plugins, commands and settings files that exist in those folders are mounted read-only. That list is best effort, not a boundary: a sandbox agent can still read and change the rest of the folder, including history, and on Claude the MCP tokens kept beside the login. Turn it on only for sandboxes you trust. Linux hosts only, and the folder must be owned by uid 1000, the user agents run as inside the sandbox.
+- **OMP** shares its agent folder (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`), which holds its stored logins in `agent.db`, its sessions and its config. It is mounted at `/home/paseo/.omp-agent` and the sandbox sets `PI_CODING_AGENT_DIR` to match. Config, MCP, models, hooks, extensions, skills and rules entries are read-only, as a best-effort list. Only the default OMP profile is shared. The sandbox turns the OMP provider on in its own daemon, because Paseo ships it off, so it appears in the agent list of every sandbox. OMP also reads provider keys from the environment, so a saved Anthropic or OpenAI key works there without sharing.
 - **GitHub** runs `gh auth token` on this host when a sandbox starts and passes the result as `GITHUB_TOKEN`. It has every scope your `gh` login has. It is read again at each start but is not watched, so after a new `gh auth login`, restart the sandbox.
 - While a login is shared, the matching saved values are ignored, because the tool would otherwise prefer them to the shared login: the Claude token and Anthropic key for Claude, the OpenAI key for OpenCode, the Codex API key (signing it in would overwrite the host's `auth.json`) and the GitHub token.
 - Folder paths come from the daemon's environment and are fixed when the container is created. After changing `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `XDG_DATA_HOME` and restarting the daemon, remove and recreate the sandbox. Paths with a comma or quote are refused.

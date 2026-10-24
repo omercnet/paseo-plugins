@@ -5,6 +5,7 @@ import {
   HOST_LOGINS,
   type HostLoginId,
 } from "../shared/credentials";
+import { OMP_AGENT_TARGET } from "./host-logins";
 import type { SandboxRecord, State, Store } from "./store";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -60,6 +61,7 @@ export function sandboxEnvironment(state: State, sandbox: SandboxRecord): Sandbo
   const env: Record<string, string> = { PASEO_PASSWORD: sandbox.password };
   const applied: Record<string, string> = {};
   const hostLogins = enabledHostLogins(state);
+  if (hostLogins.includes("omp")) env.PI_CODING_AGENT_DIR = OMP_AGENT_TARGET;
   for (const [name, { value }] of Object.entries(state.credentials)) {
     // A shared login replaces its saved value: the tool would otherwise prefer the saved one.
     if (isSharedInstead(name, hostLogins)) continue;

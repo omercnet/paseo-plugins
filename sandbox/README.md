@@ -8,7 +8,7 @@ Paseo 0.13 connected hosts do the heavy lifting. The plugin starts a container f
 
 ```text
 controller daemon                          sandbox container (one per project)
-  plugin: sandbox  --docker run/exec-->     Paseo daemon + claude, codex, opencode, git
+  plugin: sandbox  --docker run/exec-->     Paseo daemon + claude, codex, opencode, omp, git
   hosts.add(relay link + password)  <--TLS relay, E2EE-->  /home/paseo (named volume)
 ```
 
@@ -38,7 +38,7 @@ Settings are readable by every client, so credentials never go there. `server/st
 | `CODEX_API_KEY` | `codex login --with-api-key` on stdin | Paseo's Codex provider ignores the variable and sends a stored login |
 | `OPENAI_API_KEY`, `GITHUB_TOKEN`, custom | environment | OpenCode lists keys from the environment; Git reads the token through the credential helper |
 
-Shared host logins (`server/host-logins.ts`) are the alternative to saving a value. Claude, Codex and OpenCode are bind-mounted from the host (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `$XDG_DATA_HOME/opencode`) because their logins rotate: one live file keeps one token lineage, where a copy would fork it. Entries a host agent would run or obey (hooks, skills, settings, `config.toml`) are overlaid read-only, which is a best-effort list and not a boundary. GitHub is passed as a value from `gh auth token` because that token is not rotated. A shared login suppresses the matching saved value, since `codex login` or `codex logout` in the sandbox would rewrite the host's `auth.json`. The real-Docker test mutation-checks both the overlay and that suppression.
+Shared host logins (`server/host-logins.ts`) are the alternative to saving a value. Claude, Codex, OpenCode and OMP are bind-mounted from the host (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `$XDG_DATA_HOME/opencode`, `PI_CODING_AGENT_DIR` or `~/.omp/agent`) because their logins rotate: one live file keeps one token lineage, where a copy would fork it. Entries a host agent would run or obey (hooks, skills, settings, `config.toml`) are overlaid read-only, which is a best-effort list and not a boundary. GitHub is passed as a value from `gh auth token` because that token is not rotated. OMP is mounted at `/home/paseo/.omp-agent` with `PI_CODING_AGENT_DIR` pointing there, not at `~/.omp/agent`: Docker creates a missing mount parent as root, and omp could not then write `~/.omp/run`. OMP is a bun program, so the image installs `bun` beside it, and the sandbox daemon enables Paseo's OMP provider, which ships off. The other built-in Paseo providers (Copilot, Pi, Antigravity, Muse) are not installed in the image. A shared login suppresses the matching saved value, since `codex login` or `codex logout` in the sandbox would rewrite the host's `auth.json`. The real-Docker test mutation-checks both the overlay and that suppression.
 
 Nothing here was verified against a paid endpoint; checks used fake keys and observed which one each CLI sent.
 

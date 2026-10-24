@@ -72,6 +72,11 @@ export const HOST_LOGINS = [
     hint: "Mounts the OpenCode data folder (default ~/.local/share/opencode). A saved OpenAI key for OpenCode is ignored while this is on",
   },
   {
+    id: "omp",
+    label: "Use this host's OMP login",
+    hint: "Mounts the OMP agent folder (PI_CODING_AGENT_DIR, default ~/.omp/agent), which holds its stored logins and sessions. The default profile only",
+  },
+  {
     id: "github",
     label: "Use this host's GitHub login",
     hint: "Reads the token from `gh auth token` each time a sandbox starts. It carries all the access your gh login has. A saved GitHub token is ignored while this is on",

@@ -15,6 +15,8 @@ let service: SandboxService;
 let id = "";
 /** A stand-in for the host's ~/.codex: real login sharing would otherwise touch the developer's own. */
 let hostCodex = "";
+/** The same for ~/.omp/agent. */
+let hostOmp = "";
 
 async function only() {
   const [sandbox] = (await service.list(hosts)).sandboxes;
@@ -54,8 +56,16 @@ beforeAll(async () => {
     '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-host"}',
   );
   await writeFile(join(hostCodex, "config.toml"), "# host config\n");
+  hostOmp = join(await mkdtemp(join(tmpdir(), "sandbox-host-")), "agent");
+  await mkdir(hostOmp);
+  await chmod(hostOmp, 0o777);
+  await writeFile(join(hostOmp, "models.yml"), "# host models\n");
   service = createSandboxService(provider, store, {
-    mounts: (enabled) => hostLoginMounts({ enabled, env: { CODEX_HOME: hostCodex } }),
+    mounts: (enabled) =>
+      hostLoginMounts({
+        enabled,
+        env: { CODEX_HOME: hostCodex, PI_CODING_AGENT_DIR: hostOmp },
+      }),
     githubToken: async () => "gho_itest_host_token",
   });
   await saveCredential("GITHUB_TOKEN", "ghp_itest_token");
@@ -76,6 +86,12 @@ test("creating a sandbox provisions a real container, clones the project and reg
     host: { status: "online" },
   });
   expect(inside("cat", "/home/paseo/Hello-World/README")).toContain("Hello World");
+  // Paseo ships the OMP provider off. The sandbox turns it on without losing the daemon's other settings.
+  const providers: { provider: string; enabled: string }[] = JSON.parse(
+    inside("paseo", "provider", "ls", "--json"),
+  );
+  expect(providers.find((entry) => entry.provider === "omp")?.enabled).toBe("Enabled");
+  expect(JSON.parse(inside("cat", "/home/paseo/.paseo/config.json")).daemon.listen).toBeTruthy();
   expect(hosts.opened).toEqual(["/home/paseo/Hello-World"]);
   expect(hosts.rows[0]?.source.key).toBe(id);
 });
@@ -102,7 +118,7 @@ test("a changed credential marks the sandbox stale until it is restarted", async
 
 test("a shared login is one file with the host, and the sandbox cannot rewrite the host's config", async () => {
   await store.update((draft) => {
-    draft.hostLogins = ["codex", "github"];
+    draft.hostLogins = ["codex", "omp", "github"];
   });
   expect((await only())?.stale).toBe(true);
 
@@ -120,6 +136,13 @@ test("a shared login is one file with the host, and the sandbox cannot rewrite t
   // Files the host's agent would obey are read-only inside.
   expect(() => inside("sh", "-c", "echo hook > /home/paseo/.codex/config.toml")).toThrow();
   expect(await readFile(join(hostCodex, "config.toml"), "utf8")).toBe("# host config\n");
+  // The sandbox's omp works in the host's folder: its login store is created there, and the
+  // config files the host's omp would obey cannot be rewritten from inside.
+  expect(inside("printenv", "PI_CODING_AGENT_DIR")).toBe("/home/paseo/.omp-agent");
+  inside("omp", "config", "list");
+  expect((await readFile(join(hostOmp, "agent.db"))).length).toBeGreaterThan(0);
+  expect(() => inside("sh", "-c", "echo hook > /home/paseo/.omp-agent/models.yml")).toThrow();
+  expect(await readFile(join(hostOmp, "models.yml"), "utf8")).toBe("# host models\n");
   expect((await only())?.stale).toBe(false);
 });
 

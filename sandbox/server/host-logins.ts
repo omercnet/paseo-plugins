@@ -1,10 +1,17 @@
 import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { HostLoginId } from "../shared/credentials";
 import { credentialValueSchema } from "../shared/credentials";
 import type { HostMount } from "./provider";
+
+/**
+ * Where the sandbox's omp finds the host's agent folder, announced through PI_CODING_AGENT_DIR.
+ * It is not ~/.omp/agent: Docker creates a missing mount parent as root, which would leave
+ * /home/paseo/.omp unwritable for omp's own state.
+ */
+export const OMP_AGENT_TARGET = "/home/paseo/.omp-agent";
 
 /** The `paseo` user in runtime/Dockerfile. It must be able to write what it is given. */
 const SANDBOX_UID = 1000;
@@ -41,6 +48,41 @@ const FOLDERS: Record<Exclude<HostLoginId, "github">, HostLoginFolder> = {
     source: (env) => env.CODEX_HOME?.trim() || join(homedir(), ".codex"),
     target: "/home/paseo/.codex",
     protect: ["config.toml", "hooks.json", "AGENTS.md", "prompts", "skills"],
+  },
+  omp: {
+    // Mirrors OMP's own lookup, so the folder is the one the host's omp reads.
+    source: (env) =>
+      env.PI_CODING_AGENT_DIR?.trim()
+        ? resolve(env.PI_CODING_AGENT_DIR)
+        : join(homedir(), env.PI_CONFIG_DIR?.trim() || ".omp", "agent"),
+    target: OMP_AGENT_TARGET,
+    protect: [
+      "config.yml",
+      "config.yaml",
+      "settings.json",
+      "models.yml",
+      "models.yaml",
+      "mcp.json",
+      ".mcp.json",
+      "lsp.json",
+      "secrets.yml",
+      ".env",
+      "AGENTS.md",
+      "RULES.md",
+      "SYSTEM.md",
+      "APPEND_SYSTEM.md",
+      "TITLE_SYSTEM.md",
+      "WATCHDOG.md",
+      "commands",
+      "rules",
+      "prompts",
+      "hooks",
+      "tools",
+      "extensions",
+      "skills",
+      "managed-skills",
+      "agents",
+    ],
   },
   opencode: {
     source: (env) =>

@@ -229,6 +229,31 @@ describe("sandbox lifecycle", () => {
     expect(h.provider.ups).toEqual([]);
   });
 
+  test("every start turns the OMP provider on and reloads the daemon before signing agents in", async () => {
+    await saveCredential("CODEX_API_KEY", "sk-codex");
+    const { id } = await create();
+    await settle(id);
+    await h.service.stop(id);
+    await settle(id);
+    await h.service.start(h.hosts, id);
+    await settle(id);
+
+    const commands = h.provider.execs.map((request) =>
+      request.argv[0] === "node" ? "enable-omp" : request.argv.join(" "),
+    );
+    const relevant = commands.filter(
+      (c) => c === "enable-omp" || c === "paseo reload" || c.startsWith("codex login"),
+    );
+    expect(relevant).toEqual([
+      "enable-omp",
+      "paseo reload",
+      "codex login --with-api-key",
+      "enable-omp",
+      "paseo reload",
+      "codex login --with-api-key",
+    ]);
+  });
+
   test("a listing never carries the daemon password or a credential value", async () => {
     await saveCredential("GITHUB_TOKEN", "ghp_secret_value");
     const { id } = await create();
