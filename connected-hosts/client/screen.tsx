@@ -57,7 +57,7 @@ type Styles = Record<StyleKey, ViewStyle & TextStyle>;
 function makeStyles(theme: PluginTheme, compact: boolean): Styles {
   const c = theme.colors;
   const button = {
-    minHeight: 40,
+    minHeight: compact ? 44 : 40,
     paddingHorizontal: 14,
     borderRadius: 10,
     alignItems: "center" as const,
@@ -125,17 +125,20 @@ function Action({
   style,
   textStyle,
   disabled,
+  accessibilityLabel,
 }: {
   label: string;
   onPress(): void;
   style: object;
   textStyle: object;
   disabled?: boolean;
+  /** Defaults to `label`; set it when several buttons share a label. */
+  accessibilityLabel?: string;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel ?? label}
       accessibilityState={{ disabled: !!disabled }}
       disabled={disabled}
       onPress={onPress}
@@ -189,7 +192,7 @@ function HostForm({
   styles: Styles;
   theme: PluginTheme;
   onCancel(): void;
-  onDone(message: string): Promise<void>;
+  onDone(message: string): void;
 }) {
   const paseo = usePaseo();
   const host = target.kind === "edit" ? target.host : null;
@@ -198,7 +201,7 @@ function HostForm({
   const [metadata, setMetadata] = useState(host ? formatMetadata(host.metadata) : "");
   const [sourceKey, setSourceKey] = useState("");
   const mismatch = host?.error?.code === "server_id_mismatch";
-  const [replaceIdentity, setReplaceIdentity] = useState(mismatch);
+  const [replaceIdentity, setReplaceIdentity] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -217,12 +220,12 @@ function HostForm({
     try {
       if (add?.ok) {
         await paseo.hosts.add(add.value);
-        await onDone("Host added");
+        onDone("Host added");
       } else if (host && update?.ok && Object.keys(update.value).length > 0) {
         await paseo.hosts.update(host.registrationId, update.value);
-        await onDone("Host updated");
+        onDone("Host updated");
       } else {
-        await onDone("No changes to save");
+        onCancel();
       }
     } catch (cause) {
       setError(errorMessage(cause));
@@ -245,7 +248,7 @@ function HostForm({
           host
             ? `Currently ${host.targetDescription}. Saved credentials are never shown.${
                 mismatch
-                  ? " This host reached a different daemon. Enter the connection again and accept the new identity to keep it."
+                  ? " This host reached a different daemon. Enter the connection again and tick the box below to accept the new identity."
                   : ""
               }`
             : "Saved on this daemon. Unreachable hosts are kept and retried."
@@ -254,6 +257,7 @@ function HostForm({
       {host && connection.trim() ? (
         <Pressable
           accessibilityRole="checkbox"
+          accessibilityLabel="Accept a different server identity"
           accessibilityState={{ checked: replaceIdentity }}
           onPress={() => setReplaceIdentity((value) => !value)}
           style={styles.row}
@@ -295,7 +299,7 @@ function HostForm({
           value={sourceKey}
           onChangeText={setSourceKey}
           placeholder="Optional"
-          hint="Names this registration so repeating the same add returns the saved entry."
+          hint="Names this registration. Repeating an add with the same connection, label and metadata returns the saved entry."
         />
       )}
       {error ? (
@@ -353,7 +357,7 @@ function HostCard({
       </View>
       <Text style={styles.mono}>{host.targetDescription}</Text>
       <Text style={styles.mono}>
-        Server {host.serverId ?? "not learned yet"} | Source {host.source.key}
+        Server {host.serverId ?? "not learned yet"} | Source {host.source.id}
       </Text>
       {host.lastOnlineAt ? (
         <Text style={styles.muted}>Last online {new Date(host.lastOnlineAt).toLocaleString()}</Text>
@@ -380,6 +384,7 @@ function HostCard({
       <View style={styles.row}>
         <Action
           label={host.enabled ? "Disable" : "Enable"}
+          accessibilityLabel={`${host.enabled ? "Disable" : "Enable"} ${name}`}
           onPress={onToggle}
           disabled={busy}
           style={styles.button}
@@ -387,6 +392,7 @@ function HostCard({
         />
         <Action
           label="Edit"
+          accessibilityLabel={`Edit ${name}`}
           onPress={onEdit}
           disabled={busy}
           style={styles.button}
@@ -394,6 +400,7 @@ function HostCard({
         />
         <Action
           label="Remove"
+          accessibilityLabel={`Remove ${name}`}
           onPress={onRemove}
           disabled={busy}
           style={styles.danger}
@@ -407,7 +414,7 @@ function HostCard({
 export function ConnectedHostsScreen({ theme, layout, host: selected }: PluginScreenProps) {
   const paseo = usePaseo();
   const toast = useToast();
-  const { directory, error, refresh } = useHostDirectory(paseo);
+  const { directory, error, retry } = useHostDirectory(paseo);
   const styles = useMemo(() => makeStyles(theme, layout.compact), [theme, layout.compact]);
   const [form, setForm] = useState<FormTarget | null>(null);
   const [removing, setRemoving] = useState<HostSummary | null>(null);
@@ -418,7 +425,6 @@ export function ConnectedHostsScreen({ theme, layout, host: selected }: PluginSc
     try {
       await action();
       toast.show(done, { variant: "success" });
-      await refresh();
     } catch (cause) {
       toast.error(errorMessage(cause));
     } finally {
@@ -426,10 +432,9 @@ export function ConnectedHostsScreen({ theme, layout, host: selected }: PluginSc
     }
   }
 
-  async function finishForm(message: string) {
+  function finishForm(message: string) {
     toast.show(message, { variant: "success" });
     setForm(null);
-    await refresh();
   }
 
   const hosts = directory?.hosts ?? [];
@@ -456,7 +461,7 @@ export function ConnectedHostsScreen({ theme, layout, host: selected }: PluginSc
           </Text>
           <Action
             label="Retry"
-            onPress={refresh}
+            onPress={retry}
             style={styles.button}
             textStyle={styles.buttonText}
           />
@@ -522,8 +527,9 @@ export function ConnectedHostsScreen({ theme, layout, host: selected }: PluginSc
           <View style={{ gap: 12 }}>
             <Text style={styles.body}>
               Remove {removing?.label ?? removing?.targetDescription} from this daemon? Agents
-              already running on it keep running. If another process registered this host, it can
-              add it again. Disable the host instead to keep it saved and switched off.
+              already running on it keep running on their own daemon, but this daemon can no longer
+              reach them. If another process registered this host, it can add it again. Disable the
+              host instead to keep it saved and switched off.
             </Text>
             <View style={[styles.row, { justifyContent: "flex-end" }]}>
               <Action

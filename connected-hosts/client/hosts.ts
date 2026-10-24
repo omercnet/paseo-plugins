@@ -64,15 +64,23 @@ export interface EditForm {
   replaceIdentity: boolean;
 }
 
-/** Sends only what changed, so an untouched field is never rewritten or erased. */
+/**
+ * Sends only what the user changed. A field still equal to its prefilled text is never parsed or
+ * sent, so values the form cannot round-trip (padding, `=` in a key) are not rewritten and a
+ * label-only edit never asks for metadata permission.
+ */
 export function buildUpdatePatch(host: HostSummary, form: EditForm): Built<HostUpdate> {
   const patch: HostUpdate = {};
-  const label = form.label.trim() || null;
-  if (label !== host.label) patch.label = label;
-  const metadata = parseMetadata(form.metadata);
-  if (!metadata.ok) return metadata;
-  if (formatMetadata(metadata.value) !== formatMetadata(host.metadata)) {
-    patch.metadata = metadata.value;
+  if (form.label !== (host.label ?? "")) {
+    const label = form.label.trim() || null;
+    if (label !== host.label) patch.label = label;
+  }
+  if (form.metadata !== formatMetadata(host.metadata)) {
+    const metadata = parseMetadata(form.metadata);
+    if (!metadata.ok) return metadata;
+    if (formatMetadata(metadata.value) !== formatMetadata(host.metadata)) {
+      patch.metadata = metadata.value;
+    }
   }
   const connection = form.connection.trim();
   if (connection) {
@@ -86,47 +94,61 @@ export function directoryFromMessage(message: SessionOutboundMessage): HostDirec
   return message.type === "hosts.changed" ? message.payload.directory : null;
 }
 
+export interface DirectoryHandlers {
+  onDirectory(directory: HostDirectory): void;
+  onError(message: string): void;
+}
+
+/**
+ * Follows the selected daemon's saved hosts and returns the cleanup. `observe()` throws
+ * synchronously when the daemon is offline or too old, so that is reported like any other failure.
+ */
+export function observeDirectory(paseo: PaseoApi, handlers: DirectoryHandlers): () => void {
+  try {
+    const subscription = paseo.hosts.observe();
+    const stop = subscription.subscribe({
+      snapshot: handlers.onDirectory,
+      update: (message) => {
+        const directory = directoryFromMessage(message);
+        if (directory) handlers.onDirectory(directory);
+      },
+      error: (cause) => handlers.onError(errorMessage(cause)),
+    });
+    return () => {
+      stop();
+      void subscription.release();
+    };
+  } catch (cause) {
+    handlers.onError(errorMessage(cause));
+    return () => {};
+  }
+}
+
 export interface HostDirectoryState {
   directory: HostDirectory | null;
   error: string | null;
-  refresh(): Promise<void>;
+  /** Subscribes again after a failure. */
+  retry(): void;
 }
 
 /** Live view of the selected daemon's saved hosts. Resets when the selected host changes. */
 export function useHostDirectory(paseo: PaseoApi): HostDirectoryState {
   const [directory, setDirectory] = useState<HostDirectory | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     setDirectory(null);
     setError(null);
-    const subscription = paseo.hosts.observe();
-    const stop = subscription.subscribe({
-      snapshot: (snapshot) => {
-        setDirectory(snapshot);
+    return observeDirectory(paseo, {
+      onDirectory: (next) => {
+        setDirectory(next);
         setError(null);
       },
-      update: (message) => {
-        const next = directoryFromMessage(message);
-        if (next) setDirectory(next);
-      },
-      error: (cause) => setError(errorMessage(cause)),
+      onError: setError,
     });
-    subscription.ready.catch((cause) => setError(errorMessage(cause)));
-    return () => {
-      stop();
-      void subscription.release();
-    };
-  }, [paseo]);
+  }, [paseo, attempt]);
 
-  const refresh = useCallback(async () => {
-    try {
-      setDirectory(await paseo.hosts.list());
-      setError(null);
-    } catch (cause) {
-      setError(errorMessage(cause));
-    }
-  }, [paseo]);
-
-  return { directory, error, refresh };
+  const retry = useCallback(() => setAttempt((count) => count + 1), []);
+  return { directory, error, retry };
 }

@@ -1,12 +1,14 @@
-import type { HostSummary } from "@getpaseo/client";
+import type { HostSummary, PaseoApi } from "@getpaseo/client";
+import { HostAddSchema, HostUpdateSchema } from "@getpaseo/protocol/hosts";
 import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildAddInput,
   buildUpdatePatch,
   directoryFromMessage,
   errorMessage,
   formatMetadata,
+  observeDirectory,
   parseMetadata,
 } from "../client/hosts";
 
@@ -100,6 +102,64 @@ describe("buildUpdatePatch", () => {
     });
   });
 
+  it("does not rewrite a stored label the form would trim when only metadata changes", () => {
+    const padded = { ...host, label: " Build box " };
+    expect(
+      buildUpdatePatch(padded, { ...unchanged, label: " Build box ", metadata: "team=ops" }),
+    ).toEqual({ ok: true, value: { metadata: { team: "ops" } } });
+  });
+
+  it("does not rewrite metadata or ask for permission it does not need on a label-only edit", () => {
+    const padded = { ...host, metadata: { team: " infra ", "a=b": "x" } };
+    const text = formatMetadata(padded.metadata);
+    expect(buildUpdatePatch(padded, { ...unchanged, label: "Renamed", metadata: text })).toEqual({
+      ok: true,
+      value: { label: "Renamed" },
+    });
+  });
+
+  it("lets a label change through when the untouched metadata cannot be parsed back", () => {
+    const multiline = { ...host, metadata: { note: "a\nb" } };
+    const result = buildUpdatePatch(multiline, {
+      ...unchanged,
+      label: "Renamed",
+      metadata: formatMetadata(multiline.metadata),
+    });
+    expect(result).toEqual({ ok: true, value: { label: "Renamed" } });
+  });
+
+  it("sends nothing for a host without a label and a blank label field", () => {
+    const unlabeled = { ...host, label: null };
+    expect(buildUpdatePatch(unlabeled, { ...unchanged, label: "" })).toEqual({
+      ok: true,
+      value: {},
+    });
+  });
+
+  it("clears all metadata with an empty map", () => {
+    expect(buildUpdatePatch(host, { ...unchanged, metadata: "" })).toEqual({
+      ok: true,
+      value: { metadata: {} },
+    });
+  });
+
+  it("produces inputs the daemon schemas accept", () => {
+    const add = buildAddInput({
+      connection: "host:6767",
+      label: "Build",
+      metadata: "team=infra",
+      sourceKey: "build",
+    });
+    const update = buildUpdatePatch(host, {
+      label: "",
+      metadata: "team=ops",
+      connection: "ssh://new",
+      replaceIdentity: true,
+    });
+    expect(add.ok && HostAddSchema.safeParse(add.value).success).toBe(true);
+    expect(update.ok && HostUpdateSchema.safeParse(update.value).success).toBe(true);
+  });
+
   it("treats a metadata reorder as unchanged", () => {
     expect(buildUpdatePatch(host, { ...unchanged, metadata: "zone=a\nteam=infra" })).toEqual({
       ok: true,
@@ -150,5 +210,63 @@ describe("directoryFromMessage", () => {
 
   it("ignores every other message", () => {
     expect(directoryFromMessage({ type: "pong" } as unknown as SessionOutboundMessage)).toBeNull();
+  });
+});
+
+describe("observeDirectory", () => {
+  const directory = { self: { serverId: "srv_self", label: "Self" }, hosts: [host] };
+  const changed = {
+    type: "hosts.changed",
+    payload: { subscriptionId: "sub_1", directory },
+  } as SessionOutboundMessage;
+
+  function fakePaseo(observe: () => unknown) {
+    return { hosts: { observe } } as unknown as PaseoApi;
+  }
+
+  it("reports a synchronous observe failure instead of throwing", () => {
+    const onError = vi.fn();
+    const offline = Object.assign(new Error("transport"), {
+      userMessage: "The managing daemon is offline",
+    });
+    const stop = observeDirectory(
+      fakePaseo(() => {
+        throw offline;
+      }),
+      { onDirectory: vi.fn(), onError },
+    );
+    expect(onError).toHaveBeenCalledWith("The managing daemon is offline");
+    expect(() => stop()).not.toThrow();
+  });
+
+  it("forwards snapshots and hosts.changed, ignores other messages, and releases once", () => {
+    const release = vi.fn(async () => {});
+    const unsubscribe = vi.fn();
+    interface Observer {
+      snapshot(value: unknown): void;
+      update(message: SessionOutboundMessage): void;
+      error(cause: unknown): void;
+    }
+    const subscribe = vi.fn((_observer: Observer) => unsubscribe);
+    const subscription = { subscribe, release };
+    const onDirectory = vi.fn();
+    const onError = vi.fn();
+    const stop = observeDirectory(
+      fakePaseo(() => subscription),
+      { onDirectory, onError },
+    );
+
+    const observer = subscribe.mock.calls[0][0];
+    observer.snapshot(directory);
+    observer.update({ type: "pong" } as unknown as SessionOutboundMessage);
+    observer.update(changed);
+    observer.error(new Error("link lost"));
+    expect(onDirectory).toHaveBeenCalledTimes(2);
+    expect(onDirectory).toHaveBeenLastCalledWith(directory);
+    expect(onError).toHaveBeenCalledWith("link lost");
+
+    stop();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
   });
 });
