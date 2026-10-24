@@ -122,7 +122,7 @@ function CustomCredential({ hostId }: { hostId: string }) {
 }
 
 const HOST_LOGINS_INFO =
-  "The sandbox and this host then use one login, like two agents on the same machine. A sandbox agent can also read and change that folder, so turn this on only for sandboxes you trust. Hooks, skills and settings are mounted read-only. Linux hosts only.";
+  "The sandbox and this host then use one login, like two agents on the same machine. A sandbox agent can also read and change that folder, so turn this on only for sandboxes you trust. Known hook, skill, plugin and settings entries in Claude and Codex folders are mounted read-only, as a best-effort list: everything else in the folder stays writable. Linux hosts only.";
 
 function HostLoginsSection({ hostId }: { hostId: string }) {
   const { query, set } = useHostLogins(hostId);

@@ -70,6 +70,22 @@ describe("host login mounts", () => {
     ).rejects.toThrow("does not exist on this host");
   });
 
+  test("refuse a path Docker would misread as several mount options", async () => {
+    const { root } = await fixture();
+    for (const name of ["a,b", 'a"b']) {
+      const dir = join(root, name);
+      await mkdir(dir);
+      await expect(
+        hostLoginMounts({
+          enabled: ["claude"],
+          env: { CLAUDE_CONFIG_DIR: dir },
+          platform: "linux",
+          sandboxUid: owner,
+        }),
+      ).rejects.toThrow("contains a comma or quote");
+    }
+  });
+
   test("refuse a folder the sandbox user could not write", async () => {
     const { codex, env } = await fixture();
     const other = owner + 1;

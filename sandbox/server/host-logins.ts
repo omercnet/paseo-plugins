@@ -87,6 +87,11 @@ export async function hostLoginMounts({
   const mounts: HostMount[] = [];
   for (const [id, folder] of requested) {
     const source = folder.source(env);
+    // Docker splits a --mount value on commas and honors quotes, so such a path would be misread.
+    if (/[,"]/.test(source))
+      throw new Error(
+        `Cannot share the ${id} login: ${source} contains a comma or quote, which a Docker mount cannot carry.`,
+      );
     const info = await stat(source).catch((error: unknown) => {
       if (isMissing(error))
         throw new Error(

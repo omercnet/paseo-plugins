@@ -94,4 +94,33 @@ describe("sandbox environment", () => {
     expect(first.hostLogins).toEqual(["claude", "opencode"]);
     expect(first.revision).toBe(second.revision);
   });
+
+  test("a shared login replaces its saved values and no longer reacts to them", () => {
+    const withCredentials = (hostLogins: string[], token: string): State => ({
+      credentials: {
+        CLAUDE_CODE_OAUTH_TOKEN: { value: token, savedAt: "2026-01-01" },
+        ANTHROPIC_API_KEY: { value: "sk-ant", savedAt: "2026-01-01" },
+        OPENAI_API_KEY: { value: "sk-oc", savedAt: "2026-01-01" },
+        GITHUB_TOKEN: { value: "ghp", savedAt: "2026-01-01" },
+      },
+      hostLogins,
+      sandboxes: { a: sandbox },
+    });
+
+    const own = sandboxEnvironment(withCredentials([], "t1"), sandbox);
+    expect(Object.keys(own.env).sort()).toEqual([
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "GITHUB_TOKEN",
+      "OPENAI_API_KEY",
+      "PASEO_PASSWORD",
+    ]);
+
+    const shared = sandboxEnvironment(withCredentials(["claude", "github"], "t1"), sandbox);
+    expect(Object.keys(shared.env).sort()).toEqual(["OPENAI_API_KEY", "PASEO_PASSWORD"]);
+    // Rotating a value the sandbox no longer uses must not ask for a restart.
+    expect(sandboxEnvironment(withCredentials(["claude", "github"], "t2"), sandbox).revision).toBe(
+      shared.revision,
+    );
+  });
 });

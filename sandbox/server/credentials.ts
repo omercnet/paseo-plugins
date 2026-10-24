@@ -34,6 +34,12 @@ export function isLoginCredential(name: string) {
   return CREDENTIAL_PRESETS.some((preset) => preset.name === name && "login" in preset);
 }
 
+function isSharedInstead(name: string, shared: readonly HostLoginId[]) {
+  return CREDENTIAL_PRESETS.some(
+    (preset) => preset.name === name && "hostLogin" in preset && shared.includes(preset.hostLogin),
+  );
+}
+
 function sortedEntries(values: Record<string, string>) {
   return Object.entries(values).sort(([a], [b]) => a.localeCompare(b));
 }
@@ -53,11 +59,13 @@ export interface SandboxEnvironment {
 export function sandboxEnvironment(state: State, sandbox: SandboxRecord): SandboxEnvironment {
   const env: Record<string, string> = { PASEO_PASSWORD: sandbox.password };
   const applied: Record<string, string> = {};
+  const hostLogins = enabledHostLogins(state);
   for (const [name, { value }] of Object.entries(state.credentials)) {
+    // A shared login replaces its saved value: the tool would otherwise prefer the saved one.
+    if (isSharedInstead(name, hostLogins)) continue;
     applied[name] = value;
     if (!isLoginCredential(name)) env[name] = value;
   }
-  const hostLogins = enabledHostLogins(state);
   const revision = createHash("sha256")
     .update(JSON.stringify([sortedEntries(env), sortedEntries(applied), hostLogins]))
     .digest("hex");

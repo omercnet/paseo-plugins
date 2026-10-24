@@ -19,7 +19,8 @@ Or share this host's own logins instead of saving values (Settings, Shared login
 
 - **Claude, Codex and OpenCode** mount the tool's folder from this host read-write, so the sandbox and the host are one client of one login, like two agents on the same machine. A refreshed token is written back where the host sees it. Hooks, skills, plugins, commands and settings files that exist in those folders are mounted read-only. That list is best effort, not a boundary: a sandbox agent can still read and change the rest of the folder, including history, and on Claude the MCP tokens kept beside the login. Turn it on only for sandboxes you trust. Linux hosts only, and the folder must be owned by uid 1000, the user agents run as inside the sandbox.
 - **GitHub** runs `gh auth token` on this host when a sandbox starts and passes the result as `GITHUB_TOKEN`. It has every scope your `gh` login has. It is read again at each start but is not watched, so after a new `gh auth login`, restart the sandbox.
-- While a login is shared, the matching saved value is ignored: a saved Codex API key is not signed in, because that would overwrite the host's `auth.json`, and a saved GitHub token is replaced.
+- While a login is shared, the matching saved values are ignored, because the tool would otherwise prefer them to the shared login: the Claude token and Anthropic key for Claude, the OpenAI key for OpenCode, the Codex API key (signing it in would overwrite the host's `auth.json`) and the GitHub token.
+- Folder paths come from the daemon's environment and are fixed when the container is created. After changing `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `XDG_DATA_HOME` and restarting the daemon, remove and recreate the sandbox. Paths with a comma or quote are refused.
 
 Every sandbox receives the saved values when it starts. Changing a value marks running sandboxes as using older credentials, and Restart applies it without losing project data.
 

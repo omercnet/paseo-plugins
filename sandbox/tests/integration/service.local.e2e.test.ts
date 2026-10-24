@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
@@ -47,6 +47,8 @@ beforeAll(async () => {
   store = new Store(join(await mkdtemp(join(tmpdir(), "sandbox-e2e-")), "state.json"));
   hostCodex = join(await mkdtemp(join(tmpdir(), "sandbox-host-")), ".codex");
   await mkdir(hostCodex);
+  // The sandbox user is uid 1000. World-writable keeps the fixture usable for any test uid.
+  await chmod(hostCodex, 0o777);
   await writeFile(
     join(hostCodex, "auth.json"),
     '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-host"}',

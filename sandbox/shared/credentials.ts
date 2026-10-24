@@ -9,6 +9,7 @@ import { z } from "zod";
 export const CREDENTIAL_PRESETS = [
   {
     name: "CLAUDE_CODE_OAUTH_TOKEN",
+    hostLogin: "claude",
     label: "Claude subscription token",
     hint: "Run `claude setup-token` once on any machine. Needs a Pro, Max, Team or Enterprise plan. Valid for one year.",
     kind: "model",
@@ -16,6 +17,7 @@ export const CREDENTIAL_PRESETS = [
   },
   {
     name: "ANTHROPIC_API_KEY",
+    hostLogin: "claude",
     label: "Anthropic API key",
     hint: "A Claude Console key. Billed per token.",
     kind: "model",
@@ -33,6 +35,7 @@ export const CREDENTIAL_PRESETS = [
   },
   {
     name: "OPENAI_API_KEY",
+    hostLogin: "opencode",
     label: "OpenAI API key for OpenCode",
     hint: "An OpenAI Platform key for OpenCode models.",
     kind: "model",
@@ -40,6 +43,7 @@ export const CREDENTIAL_PRESETS = [
   },
   {
     name: "GITHUB_TOKEN",
+    hostLogin: "github",
     label: "GitHub token",
     hint: "A fine-grained personal access token with read access to the repositories you clone. Used for git over https on github.com.",
     kind: "git",
@@ -55,7 +59,7 @@ export const HOST_LOGINS = [
   {
     id: "claude",
     label: "Use this host's Claude login",
-    hint: "Mounts the Claude config folder (CLAUDE_CONFIG_DIR, default ~/.claude)",
+    hint: "Mounts the Claude config folder (CLAUDE_CONFIG_DIR, default ~/.claude). A saved Claude token or Anthropic key is ignored while this is on",
   },
   {
     id: "codex",
@@ -65,7 +69,7 @@ export const HOST_LOGINS = [
   {
     id: "opencode",
     label: "Use this host's OpenCode login",
-    hint: "Mounts the OpenCode data folder (default ~/.local/share/opencode)",
+    hint: "Mounts the OpenCode data folder (default ~/.local/share/opencode). A saved OpenAI key for OpenCode is ignored while this is on",
   },
   {
     id: "github",
