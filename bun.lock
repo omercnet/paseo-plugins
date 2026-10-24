@@ -1,4 +1,5 @@
-{
+{    "@omercnet/paseo-sandbox": ["@omercnet/paseo-sandbox@workspace:sandbox"],
+
   "lockfileVersion": 2,
   "configVersion": 1,
   "workspaces": {
@@ -238,6 +239,24 @@
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@getpaseo/plugin": "catalog:",
+        "@types/node": "catalog:",
+        "@types/react": "catalog:",
+        "react": "catalog:",
+        "react-native": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+        "zod": "catalog:",
+      },
+    },
+    "sandbox": {
+      "name": "@omercnet/paseo-sandbox",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@biomejs/biome": "catalog:",
+        "@getpaseo/client": "catalog:",
+        "@getpaseo/plugin": "catalog:",
+        "@getpaseo/protocol": "catalog:",
+        "@tanstack/react-query": "catalog:",
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "react": "catalog:",

@@ -1,0 +1,65 @@
+{
+  "name": "@omercnet/paseo-sandbox",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Run a project's Paseo workspaces, agents and terminals inside an isolated sandbox.",
+  "license": "MIT",
+  "author": "Omer Cohen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omercnet/paseo-plugins.git",
+    "directory": "sandbox"
+  },
+  "homepage": "https://github.com/omercnet/paseo-plugins/tree/main/sandbox#readme",
+  "bugs": {
+    "url": "https://github.com/omercnet/paseo-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "bun@1.4.3",
+  "engines": {
+    "node": ">=24"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "sandbox",
+    "docker",
+    "isolation",
+    "coding-agents"
+  ],
+  "files": [
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "server",
+    "shared",
+    "runtime",
+    "paseo-plugin.json",
+    "OVERVIEW.md"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "embed:dockerfile": "node scripts/embed-dockerfile.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "verify:package": "npm pack --dry-run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@getpaseo/client": "catalog:",
+    "@getpaseo/plugin": "catalog:",
+    "@getpaseo/protocol": "catalog:",
+    "@tanstack/react-query": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "react": "catalog:",
+    "react-native": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  }
+}

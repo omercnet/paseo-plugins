@@ -1,0 +1,5 @@
+{
+  "id": "sandbox",
+  "description": "Run a project's Paseo workspaces, agents and terminals inside an isolated sandbox.",
+  "requirements": { "paseo": "^0.13.0" }
+}

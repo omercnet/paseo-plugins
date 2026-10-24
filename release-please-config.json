@@ -76,6 +76,12 @@
       "package-name": "queens",
       "include-component-in-tag": true
     },
+    "sandbox": {
+      "release-type": "node",
+      "package-name": "sandbox",
+      "initial-version": "0.1.0",
+      "include-component-in-tag": true
+    },
     "top": {
       "release-type": "node",
       "package-name": "top",
