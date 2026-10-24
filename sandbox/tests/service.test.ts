@@ -29,6 +29,7 @@ interface Harness {
     metadata: Record<string, string>;
     source: { key: string };
     connection: string;
+    error?: { code: string; message: string };
   }[];
   updates: { connection: string; replaceIdentity: boolean }[];
   opened: string[];
@@ -297,6 +298,20 @@ describe("sandbox lifecycle", () => {
     await h.service.remove(h.paseo, "orphan");
     await vi.waitFor(async () => expect((await h.service.list(h.paseo)).sandboxes).toEqual([]));
     expect(destroy).toHaveBeenCalledWith({ key: "orphan", handle: null });
+  });
+
+  test("a listing carries the daemon's reason when the host cannot connect", async () => {
+    const { id } = await h.service.create(h.paseo, { name: "n", repoUrl: "a/b" });
+    await settle(h, id);
+    const host = h.hosts[0];
+    if (!host) throw new Error("no host");
+    host.status = "error";
+    host.error = { code: "auth", message: "Authentication failed" };
+    expect((await h.service.list(h.paseo)).sandboxes[0]?.host).toEqual({
+      status: "error",
+      serverId: "srv_box",
+      error: "Authentication failed",
+    });
   });
 
   test("a sandbox refuses a second operation while one is running", async () => {

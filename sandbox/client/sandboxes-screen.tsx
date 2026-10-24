@@ -13,7 +13,7 @@ import { ScrollView, Text } from "react-native";
 import type { Sandbox } from "../shared/sandbox";
 import { CredentialsSection } from "./credentials-section";
 import { useCredentials, useSandboxActions, useSandboxes } from "./queries";
-import { describeSandbox, hasModelCredential, repositoryName } from "./view-model";
+import { describeSandbox, hasModelCredential, needsRestart, repositoryName } from "./view-model";
 
 function SandboxCard({ hostId, sandbox }: { hostId: string; sandbox: Sandbox }) {
   const actions = useSandboxActions(hostId);
@@ -28,10 +28,10 @@ function SandboxCard({ hostId, sandbox }: { hostId: string; sandbox: Sandbox }) 
           hint={describeSandbox(sandbox)}
           error={failure?.error?.message}
         />
-        {sandbox.stale ? (
+        {needsRestart(sandbox) ? (
           <SettingsAction
             label="Restart"
-            hint="Applies the saved credentials. The project data is kept."
+            hint="Applies saved credentials and reconnects the host. The project data is kept."
             actionLabel="Restart"
             disabled={Boolean(sandbox.busy)}
             onPress={() => actions.start.mutate({ id: sandbox.id })}

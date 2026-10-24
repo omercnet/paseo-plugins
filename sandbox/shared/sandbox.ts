@@ -10,7 +10,14 @@ export const sandboxSchema = z.object({
   createdAt: z.string(),
   runtime: z.enum(["running", "stopped", "missing"]),
   /** The connected host Paseo shows in its sidebar, once the sandbox registered one. */
-  host: z.object({ status: hostStatusSchema, serverId: z.string().nullable() }).nullable(),
+  host: z
+    .object({
+      status: hostStatusSchema,
+      serverId: z.string().nullable(),
+      /** The daemon's own explanation for a failed connection. */
+      error: z.string().nullable(),
+    })
+    .nullable(),
   /** Running with older credentials than the ones saved now. Restart to apply. */
   stale: z.boolean(),
   /** Plain-words description of the operation in flight. */

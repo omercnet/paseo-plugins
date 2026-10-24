@@ -222,7 +222,9 @@ export function createSandboxService(provider: SandboxProvider, store: Store) {
             repoUrl: item.repoUrl,
             createdAt: item.createdAt,
             runtime,
-            host: host ? { status: host.status, serverId: host.serverId } : null,
+            host: host
+              ? { status: host.status, serverId: host.serverId, error: host.error?.message ?? null }
+              : null,
             stale: runtime === "running" && item.revision !== environment(state, item).revision,
             busy: busy.get(item.id) ?? null,
             error: failures.get(item.id) ?? null,
