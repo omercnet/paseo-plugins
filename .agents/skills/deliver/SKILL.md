@@ -81,12 +81,15 @@ git fetch origin && git rebase origin/main
 git add -A && git commit -m "fix(<plugin>): <summary>"
 git push -u origin HEAD
 gh pr create -R omercnet/paseo-plugins --base main --head <branch> \
-  --title "fix(<plugin>): <summary>" --body-file <file>
+  --title "fix(<plugin>): <summary>" --body-file <file> \
+  --attach './before.jpg#Before: <state>' --attach './after.jpg#After: <state>'
 ```
 
 PR body: `Fixes #<N>`, problem, change, out of scope, verification (before and after table), and the checks that passed. CI affected-plugin detection keys on the first path segment, so a change under `<plugin>/` runs that plugin's job and changes under `.agents/` run none.
 
-Screenshots: GitHub has no CLI image upload. Push an orphan branch `pr-assets-<N>` containing only the images (use a throwaway `git worktree`, `git checkout --orphan`), and embed `https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-<N>/<name>.jpg`. Keep the branch; deleting it breaks the images in the merged PR.
+Screenshots: attach them with `gh pr create --attach '<file>#<alt text>'` (repeat the flag, up to 50 files; needs gh 2.99 or later). Reference each one in the body as `![alt](./<file>)` where it belongs; `gh` uploads it and rewrites the link, and appends any attachment the body does not mention. Always give alt text after `#`. Add more later with `gh pr comment <N> --attach ...`. Do not hand-write image URLs for a PR.
+
+Only a README image or a `media` entry in `paseo-plugin.json` needs a permanent URL. For those, push an orphan branch `pr-assets-<plugin>` containing only the images (use a throwaway `git worktree`, `git checkout --orphan`) and link `https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-<plugin>/<name>.jpg`. Keep that branch; deleting it breaks the images.
 
 ### 6. Review gate
 
@@ -107,7 +110,7 @@ gh pr merge <N> -R omercnet/paseo-plugins --squash --delete-branch
 ### 8. Cleanup
 
 - `$S down <plugin>` (removes the daemon and its state). Confirm with `ps` that no dev daemon is left running.
-- Remove temp files you created. Keep `pr-assets-<N>`.
+- Remove temp files you created. Keep any `pr-assets-<plugin>` branch that a README or manifest links to.
 - Final report: what was wrong, what changed, how it was verified (commands and results), what Astra changed or approved, and what is explicitly out of scope.
 
 ## Gotchas collected from real runs
