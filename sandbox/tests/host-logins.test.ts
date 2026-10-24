@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { hostGithubToken, hostLoginMounts } from "../server/host-logins";
 
+/** The uid that owns the fixtures, so the ownership check passes on any machine and CI runner. */
+const owner = process.getuid?.() ?? 0;
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "sandbox-logins-"));
   const codex = join(root, "codex");
@@ -16,7 +19,12 @@ async function fixture() {
 describe("host login mounts", () => {
   test("share the folder read-write and the files a host agent would obey read-only", async () => {
     const { codex, env } = await fixture();
-    const mounts = await hostLoginMounts({ enabled: ["codex"], env, platform: "linux" });
+    const mounts = await hostLoginMounts({
+      enabled: ["codex"],
+      env,
+      platform: "linux",
+      sandboxUid: owner,
+    });
 
     expect(mounts).toEqual([
       { source: codex, target: "/home/paseo/.codex", readOnly: false },
@@ -40,6 +48,7 @@ describe("host login mounts", () => {
         enabled: ["opencode"],
         env: { XDG_DATA_HOME: data },
         platform: "linux",
+        sandboxUid: owner,
       }),
     ).toEqual([
       {
@@ -63,7 +72,7 @@ describe("host login mounts", () => {
 
   test("refuse a folder the sandbox user could not write", async () => {
     const { codex, env } = await fixture();
-    const other = (process.getuid?.() ?? 0) + 1;
+    const other = owner + 1;
     await expect(
       hostLoginMounts({ enabled: ["codex"], env, platform: "linux", sandboxUid: other }),
     ).rejects.toThrow(`sandbox agents run as uid ${other}`);
