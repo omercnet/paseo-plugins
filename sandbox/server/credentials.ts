@@ -61,13 +61,14 @@ export function sandboxEnvironment(state: State, sandbox: SandboxRecord): Sandbo
   const env: Record<string, string> = { PASEO_PASSWORD: sandbox.password };
   const applied: Record<string, string> = {};
   const hostLogins = enabledHostLogins(state);
-  if (hostLogins.includes("omp")) env.PI_CODING_AGENT_DIR = OMP_AGENT_TARGET;
   for (const [name, { value }] of Object.entries(state.credentials)) {
     // A shared login replaces its saved value: the tool would otherwise prefer the saved one.
     if (isSharedInstead(name, hostLogins)) continue;
     applied[name] = value;
     if (!isLoginCredential(name)) env[name] = value;
   }
+  // Last, so a saved variable of the same name cannot point omp away from the shared folder.
+  if (hostLogins.includes("omp")) env.PI_CODING_AGENT_DIR = OMP_AGENT_TARGET;
   const revision = createHash("sha256")
     .update(JSON.stringify([sortedEntries(env), sortedEntries(applied), hostLogins]))
     .digest("hex");

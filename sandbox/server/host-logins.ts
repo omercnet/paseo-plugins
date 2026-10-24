@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { HostLoginId } from "../shared/credentials";
@@ -22,32 +22,32 @@ interface HostLoginFolder {
   /** Where the sandbox's tool looks, set by the runtime image. */
   target: string;
   /**
-   * Files and folders the host's agent would run or obey at its next start. The sandbox gets them
-   * read-only, so a compromised sandbox cannot plant a hook that runs on the host. This is a
-   * best-effort list of known entries, not a boundary: the folder as a whole is still writable.
+   * What the host's agent would run or obey at its next start, so the sandbox gets it read-only
+   * and cannot plant a hook that runs on the host. Known entries only, so this is best effort and
+   * not a boundary: the folder as a whole is still writable. A missing folder is created empty on
+   * the host first, because a sandbox could otherwise create it and have it loaded. A missing file
+   * is left alone: an empty one is not a valid settings file for every tool, so create it first
+   * if it should be locked.
    */
-  protect: readonly string[];
+  protect: { files: readonly string[]; dirs: readonly string[] };
 }
 
 const FOLDERS: Record<Exclude<HostLoginId, "github">, HostLoginFolder> = {
   claude: {
     source: (env) => env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"),
     target: "/home/paseo/.claude",
-    protect: [
-      "settings.json",
-      "settings.local.json",
-      "CLAUDE.md",
-      "hooks",
-      "plugins",
-      "skills",
-      "commands",
-      "agents",
-    ],
+    protect: {
+      files: ["settings.json", "settings.local.json", "CLAUDE.md"],
+      dirs: ["hooks", "plugins", "skills", "commands", "agents"],
+    },
   },
   codex: {
     source: (env) => env.CODEX_HOME?.trim() || join(homedir(), ".codex"),
     target: "/home/paseo/.codex",
-    protect: ["config.toml", "hooks.json", "AGENTS.md", "prompts", "skills"],
+    protect: {
+      files: ["config.toml", "hooks.json", "AGENTS.md"],
+      dirs: ["prompts", "skills"],
+    },
   },
   omp: {
     // Mirrors OMP's own lookup, so the folder is the one the host's omp reads.
@@ -56,39 +56,43 @@ const FOLDERS: Record<Exclude<HostLoginId, "github">, HostLoginFolder> = {
         ? resolve(env.PI_CODING_AGENT_DIR)
         : join(homedir(), env.PI_CONFIG_DIR?.trim() || ".omp", "agent"),
     target: OMP_AGENT_TARGET,
-    protect: [
-      "config.yml",
-      "config.yaml",
-      "settings.json",
-      "models.yml",
-      "models.yaml",
-      "mcp.json",
-      ".mcp.json",
-      "lsp.json",
-      "secrets.yml",
-      ".env",
-      "AGENTS.md",
-      "RULES.md",
-      "SYSTEM.md",
-      "APPEND_SYSTEM.md",
-      "TITLE_SYSTEM.md",
-      "WATCHDOG.md",
-      "commands",
-      "rules",
-      "prompts",
-      "hooks",
-      "tools",
-      "extensions",
-      "skills",
-      "managed-skills",
-      "agents",
-    ],
+    protect: {
+      files: [
+        "config.yml",
+        "config.yaml",
+        "settings.json",
+        "models.yml",
+        "models.yaml",
+        "mcp.json",
+        ".mcp.json",
+        "lsp.json",
+        "secrets.yml",
+        ".env",
+        "AGENTS.md",
+        "RULES.md",
+        "SYSTEM.md",
+        "APPEND_SYSTEM.md",
+        "TITLE_SYSTEM.md",
+        "WATCHDOG.md",
+      ],
+      dirs: [
+        "commands",
+        "rules",
+        "prompts",
+        "hooks",
+        "tools",
+        "extensions",
+        "skills",
+        "managed-skills",
+        "agents",
+      ],
+    },
   },
   opencode: {
     source: (env) =>
       join(env.XDG_DATA_HOME?.trim() || join(homedir(), ".local", "share"), "opencode"),
     target: "/home/paseo/.local/share/opencode",
-    protect: [],
+    protect: { files: [], dirs: [] },
   },
 };
 
@@ -147,7 +151,12 @@ export async function hostLoginMounts({
         `Cannot share the ${id} login: ${source} is owned by uid ${info.uid}, but sandbox agents run as uid ${sandboxUid} and could not refresh the login.`,
       );
     mounts.push({ source, target: folder.target, readOnly: false });
-    for (const entry of folder.protect) {
+    for (const entry of folder.protect.dirs) {
+      const path = join(source, entry);
+      await mkdir(path, { recursive: true });
+      mounts.push({ source: path, target: join(folder.target, entry), readOnly: true });
+    }
+    for (const entry of folder.protect.files) {
       const path = join(source, entry);
       if (await exists(path))
         mounts.push({ source: path, target: join(folder.target, entry), readOnly: true });
