@@ -6,6 +6,6 @@ The header switches between the **Roster** and a **Graph** view. The graph group
 
 It reads agent, workspace and project lists through the selected host's existing connection and opens no connection of its own. While the graph is open, it also reads up to 200 timeline entries from each of up to 60 agents, prioritizing open and recently updated agents, four at a time. Readable timelines, including closed agents, contribute message and subagent information. The one lifecycle action it performs is archiving, either a single agent or all closed agents. It cannot interrupt a running turn.
 
-On Paseo 0.14 and later, idle resumable agents are released after about an hour and appear in Closed. They keep their record and resume on the next prompt, so the closed-agent sweep archives them too. The host setting `agents.idleRuntimeCleanup: false` disables the release.
+On Paseo 0.14 and later, eligible idle resumable agents are released after about an hour and appear in Closed (active work, descendants, pending finish notifications and provider safety checks keep a runtime resident). They keep their record and resume on the next prompt, so the closed-agent sweep archives them too. The host setting `agents.idleRuntimeCleanup: false` disables the release.
 
 Requires Paseo ^0.13.0 || ^0.14.0.
