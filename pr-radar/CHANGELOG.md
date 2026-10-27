@@ -6,6 +6,13 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.1.1](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.1.0...pr-radar-v3.1.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.14.0-beta.1 ([0f019e0](https://github.com/omercnet/paseo-plugins/commit/0f019e054992660f589c14894c4382d51325dc31))
+
 ## [3.1.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.0.1...pr-radar-v3.1.0) (2026-10-24)
 
 

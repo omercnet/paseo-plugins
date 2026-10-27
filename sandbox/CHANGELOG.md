@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/omercnet/paseo-plugins/compare/sandbox-v0.2.0...sandbox-v0.2.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.14.0-beta.1 ([0f019e0](https://github.com/omercnet/paseo-plugins/commit/0f019e054992660f589c14894c4382d51325dc31))
+
 ## [0.2.0](https://github.com/omercnet/paseo-plugins/compare/sandbox-v0.1.0...sandbox-v0.2.0) (2026-10-24)
 
 

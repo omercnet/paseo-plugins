@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.4](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v1.2.3...tell-agent-v1.2.4) (2026-10-27)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.14.0-beta.1 ([0f019e0](https://github.com/omercnet/paseo-plugins/commit/0f019e054992660f589c14894c4382d51325dc31))
+* **tell-agent:** allow messaging idle-released closed agents ([#411](https://github.com/omercnet/paseo-plugins/issues/411)) ([373acab](https://github.com/omercnet/paseo-plugins/commit/373acab7f773b67badef1a450d7d5c26a3a88468))
+
 ## [1.2.3](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v1.2.2...tell-agent-v1.2.3) (2026-10-24)
 
 

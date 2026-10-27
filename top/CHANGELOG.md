@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/omercnet/paseo-plugins/compare/top-v1.0.1...top-v1.0.2) (2026-10-27)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.14.0-beta.1 ([0f019e0](https://github.com/omercnet/paseo-plugins/commit/0f019e054992660f589c14894c4382d51325dc31))
+
 ## [1.0.1](https://github.com/omercnet/paseo-plugins/compare/top-v1.0.0...top-v1.0.1) (2026-10-24)
 
 

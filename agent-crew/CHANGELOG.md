@@ -10,6 +10,14 @@
 - add an explicit pending-permission modal with Allow and Deny actions
 - pin Paseo plugin packages to `0.8.0-beta.1`
 
+## [4.0.1](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v4.0.0...agent-crew-v4.0.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **agent-crew:** allow nudging idle-released closed agents ([#413](https://github.com/omercnet/paseo-plugins/issues/413)) ([c81ee3b](https://github.com/omercnet/paseo-plugins/commit/c81ee3b362155e5cb9416b351ecb27a7c1ab7bfb))
+* **deps:** support Paseo 0.14.0-beta.1 ([0f019e0](https://github.com/omercnet/paseo-plugins/commit/0f019e054992660f589c14894c4382d51325dc31))
+
 ## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v3.0.0...agent-crew-v4.0.0) (2026-10-24)
 
 

@@ -1,12 +1,12 @@
 {
   "name": "@omercnet/paseo-context-mode",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@omercnet/paseo-context-mode",
-      "version": "3.0.1",
+      "version": "3.0.2",
       "dependencies": {
         "context-mode": "1.0.169"
       }

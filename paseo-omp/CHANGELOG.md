@@ -1,5 +1,22 @@
 # Changelog
 
+## [5.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v4.0.0...paseo-omp-v5.0.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **paseo-omp:** requires Paseo ^0.14.0
+
+### Features
+
+* **paseo-omp:** veto idle runtime release while OMP work is pending ([#412](https://github.com/omercnet/paseo-plugins/issues/412)) ([3e93ef3](https://github.com/omercnet/paseo-plugins/commit/3e93ef3e74acc543a8e9629124d693752cf81b2e))
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.14.0-beta.1 ([0f019e0](https://github.com/omercnet/paseo-plugins/commit/0f019e054992660f589c14894c4382d51325dc31))
+* **paseo-omp:** render OMP ask as one revisitable card with free-text input ([#407](https://github.com/omercnet/paseo-plugins/issues/407)) ([@ogzerber](https://github.com/ogzerber)) ([57c7ee9](https://github.com/omercnet/paseo-plugins/commit/57c7ee94158272accb00e3b55da1084b3b21eb3c))
+
 ## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v3.0.0...paseo-omp-v4.0.0) (2026-10-24)
 
 

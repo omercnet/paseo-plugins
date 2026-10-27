@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-top",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "A Paseo plugin that shows host CPU, memory and disk usage in the sidebar footer.",
   "license": "MIT",

@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-gas-city",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "type": "module",
   "description": "A Paseo control plane for observing and operating Gas City supervisors.",
   "license": "MIT",
