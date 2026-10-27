@@ -55,7 +55,8 @@ Each row exposes the operations available through the public Paseo SDK:
 
 - **Open** navigates to the selected agent.
 - **Expand or collapse** shows or hides a managed branch without changing agent state.
-- **Nudge** sends a follow-up to an idle or waiting agent.
+- **Nudge** sends a follow-up to an idle, waiting, or closed agent. A closed agent resumes its
+  session when the message arrives.
 - **Interrupt and redirect** sends a new direction to a running agent. The dialog defaults to
   **Interrupt**, which stops the active turn before starting that direction. **Prefer steering**
   asks the provider to deliver the message into the running turn instead; a provider that cannot
@@ -100,6 +101,11 @@ State precedence is:
 4. Ready
 5. Closed
 6. Idle
+
+Closed means the agent has no live runtime. On Paseo 0.14 and later, idle agents are released after
+about an hour and appear as Closed; the agent record and conversation are kept and the next prompt
+resumes the session, which is why Nudge stays available. Setting `agents.idleRuntimeCleanup: false`
+in the host config disables the release.
 
 Failed takes precedence over pending permission state so an errored agent is never presented as an
 agent that can resume normally.

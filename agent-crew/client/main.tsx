@@ -719,17 +719,13 @@ export function AgentCrew({
                   onPress={() => openPermissionDialog(item, pendingPermission)}
                 />
               ) : null}
-              {agent.status !== "closed" ? (
-                <ActionButton
-                  accessibilityLabel={`${isWorking(agent) ? "Interrupt and redirect" : "Nudge"} ${agentTitle(item.entry)}`}
-                  color={
-                    isWorking(agent) ? theme.colors.statusWarning : theme.colors.foregroundMuted
-                  }
-                  disabled={action.isPending}
-                  icon={isWorking(agent) ? "CornerDownRight" : "MessageSquareMore"}
-                  onPress={() => openDialog("message", item)}
-                />
-              ) : null}
+              <ActionButton
+                accessibilityLabel={`${isWorking(agent) ? "Interrupt and redirect" : "Nudge"} ${agentTitle(item.entry)}`}
+                color={isWorking(agent) ? theme.colors.statusWarning : theme.colors.foregroundMuted}
+                disabled={action.isPending}
+                icon={isWorking(agent) ? "CornerDownRight" : "MessageSquareMore"}
+                onPress={() => openDialog("message", item)}
+              />
               {parentAgentId(agent) ? (
                 <ActionButton
                   accessibilityLabel={`Detach ${agentTitle(item.entry)}`}
