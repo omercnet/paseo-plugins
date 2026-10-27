@@ -24,7 +24,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `^0.13.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Workspace discovery passes `includeBackground`, which throws on hosts that do not advertise `features.backgroundWorkspaces`; every 0.13 host does.
+Requirements: Paseo `^0.13.0 || ^0.14.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Workspace discovery passes `includeBackground`, which throws on hosts that do not advertise `features.backgroundWorkspaces`; every 0.13 host does.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>

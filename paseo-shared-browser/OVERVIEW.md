@@ -13,7 +13,7 @@ New agents whose provider accepts external MCP servers receive a local MCP serve
 
 ## Setup
 
-- Paseo ^0.13.0, and Node.js 24 or newer on the daemon host.
+- Paseo ^0.13.0 || ^0.14.0, and Node.js 24 or newer on the daemon host.
 - Chromium is downloaded when the plugin is installed and stored in the Paseo data directory. On Linux ARM64 nothing is downloaded, and you install a non-Snap Chromium at `/usr/bin/chromium` first. `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` points the plugin at a different Chromium.
 
 ## Limits

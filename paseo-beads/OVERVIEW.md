@@ -11,4 +11,4 @@ Limits:
 
 - Shows at most 500 issues per workspace and warns when counts may be incomplete.
 - The **Ready beads** count covers the first 200 workspaces and can lag while the app is in the background.
-- Requires Paseo ^0.13.0.
+- Requires Paseo ^0.13.0 || ^0.14.0.

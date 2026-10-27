@@ -6,4 +6,4 @@ The header switches between the **Roster** and a **Graph** view. The graph group
 
 It reads agent, workspace and project lists through the selected host's existing connection and opens no connection of its own. While the graph is open, it also reads up to 200 timeline entries from each of up to 60 agents, prioritizing open and recently updated agents, four at a time. Readable timelines, including closed agents, contribute message and subagent information. The one lifecycle action it performs is archiving, either a single agent or all closed agents. It cannot interrupt a running turn.
 
-Requires Paseo ^0.13.0.
+Requires Paseo ^0.13.0 || ^0.14.0.

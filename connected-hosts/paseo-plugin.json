@@ -5,5 +5,5 @@
     "https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-connected-hosts/connected-hosts-screen.jpg",
     "https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-connected-hosts/connected-hosts-edit.jpg"
   ],
-  "requirements": { "paseo": "^0.13.0" }
+  "requirements": { "paseo": "^0.13.0 || ^0.14.0" }
 }

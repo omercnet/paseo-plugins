@@ -14,4 +14,4 @@ Who may change what follows the daemon's own rules. Adding, editing and removing
 
 Both daemons need the connected hosts feature, and the link between them needs host multiplexing.
 
-Requires Paseo ^0.13.0.
+Requires Paseo ^0.13.0 || ^0.14.0.
