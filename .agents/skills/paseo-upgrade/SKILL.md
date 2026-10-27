@@ -11,6 +11,7 @@ New Paseo release to merged support PRs, for all plugins. This repo has done it 
 
 - Everything in `deliver` applies: isolated daemon only (`.agents/skills/deliver/scripts/dev-daemon.sh`), `paseo-omp` follows its own `AGENTS.md`, never edit versions or `CHANGELOG.md` or release-please files, Conventional Commits scoped by plugin dir, no em dashes, public repo, never `--admin`.
 - Never merge a floor-raising PR on the user's behalf. Open it, verify it, report it.
+- The broad support PR MUST use a releasing type (`fix(deps): support Paseo <ver>`), never `chore`. A `chore` squash commit leaves every widened plugin unreleased. If it already merged as `chore`, add `BEGIN_COMMIT_OVERRIDE` / `fix(deps): support Paseo <ver>` / `END_COMMIT_OVERRIDE` on separate lines to the merged PR body, then `gh run rerun` the latest `Release Please` run on main; the `chore: release main` PR then lists every plugin (this fixed 0.14).
 - Review upstream by tag, never by the clone's `HEAD`. The clone is `--no-checkout`.
 
 ## Phases
@@ -41,7 +42,7 @@ Treat scout output as leads. The commit count the brief states can be wrong (`re
 
 ### 3. Broad PR: add support
 
-Branch `chore/paseo-<ver>` from `origin/main`. One commit `chore(deps): update paseo sdk to <ver>`:
+Branch `chore/paseo-<ver>` from `origin/main`. One commit and PR title `fix(deps): support Paseo <ver>`. Never `chore`: release-please ignores `chore`, so no plugin would be staged for release and users could not install the new version support. `fix` bumps the patch of every plugin whose files the commit touches (all manifests are touched). Do not scope it to one plugin:
 
 1. Root `package.json` catalog: pin `@getpaseo/{cli,client,plugin,protocol,server}` to the target together.
 2. `bun install`, then `node ../scripts/shrinkwrap.mjs .` in every plugin that ships `npm-shrinkwrap.json` (`context-mode`, `paseo-omp`, `paseo-shared-browser`).
