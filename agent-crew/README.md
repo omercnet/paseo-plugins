@@ -102,8 +102,8 @@ State precedence is:
 5. Closed
 6. Idle
 
-Closed means the agent has no live runtime. On Paseo 0.14 and later, idle agents are released after
-about an hour and appear as Closed; the agent record and conversation are kept and the next prompt
+Closed means the agent has no live runtime. On Paseo 0.14 and later, eligible idle agents are released
+after about an hour and appear as Closed; the agent record and conversation are kept and the next prompt
 resumes the session, which is why Nudge stays available. Setting `agents.idleRuntimeCleanup: false`
 in the host config disables the release.
 
