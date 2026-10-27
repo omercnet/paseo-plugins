@@ -57,6 +57,9 @@ screenshot uses the same synthetic project and agent names.
 - Select an agent row to open that agent, or select a workspace header (or its folder button when
   collapsed) to open its workspace through Paseo's cross-platform navigation API.
 - Archive one agent, or sweep every closed agent (two taps).
+- On Paseo 0.14 and later, idle resumable agents are released after about an hour and appear in
+  Closed. They keep their record and resume on the next prompt, so **Archive N closed** archives
+  them too. Set `agents.idleRuntimeCleanup: false` in the host config to disable the release.
 
 ## Sidebar row
 
