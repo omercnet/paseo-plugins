@@ -70,7 +70,7 @@ Either choice only applies to the source agent. Its later message to the target 
 
 On Paseo 0.13, an agent's send to another agent is queued instead of dispatched at once. Paseo delivers it after about two seconds with no further agent messages for that target, and merges the messages that arrive in that window into one prompt with one block per message. The target's completion notice back to the source agent is batched the same way, so a report and a finish notice can arrive together. Expect the target to receive a `/tell` roughly two seconds after the source agent forwards it. Messages with conflicting steer or interrupt behavior are delivered separately, in order. The pending window is kept in memory: a clean daemon shutdown flushes it, but a crash can lose it. The `/tell` instruction to the source agent is a user prompt and is not delayed.
 
-On Paseo 0.13, a daemon restart marks agents that were running as closed. Closed agents are not offered as targets.
+Closed agents are offered as targets. A closed agent has no live runtime but keeps its record and provider session, and a message to it resumes that session. On Paseo 0.13, a daemon restart marks agents that were running as closed. On Paseo 0.14, an agent that has been idle for an hour is closed automatically; set `agents.idleRuntimeCleanup: false` in the host config to turn that off. Archived agents are never offered.
 
 ## Trust
 

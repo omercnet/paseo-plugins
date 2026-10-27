@@ -70,10 +70,26 @@ describe("cross-session target search", () => {
   });
   const closed = entry({ id: "agent-closed", title: "Payments closed", status: "closed" });
 
-  test("finds active agents in other workspaces and excludes the source", () => {
+  test("finds active and closed agents in other workspaces, excluding the source and archived agents", () => {
     expect(
       messageTargets([source, payments, archived, closed], source.agent.id, "payments"),
-    ).toEqual([payments]);
+    ).toEqual([payments, closed]);
+  });
+
+  test("resolves a closed agent, but not an archived closed one", () => {
+    const archivedClosed = entry({
+      id: "agent-archived-closed",
+      title: "Payments gone",
+      status: "closed",
+      archivedAt: "2026-09-10T12:30:00.000Z",
+    });
+    expect(resolveMessageTarget([source, closed], source.agent.id, "agent-closed")).toEqual({
+      kind: "match",
+      entry: closed,
+    });
+    expect(resolveMessageTarget([source, archivedClosed], source.agent.id, "gone")).toEqual({
+      kind: "none",
+    });
   });
 
   test("resolves unique id prefixes and reports ambiguous workspace searches", () => {

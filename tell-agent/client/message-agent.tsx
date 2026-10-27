@@ -306,10 +306,9 @@ export function contributeAgentMessaging(client: PluginClientContext) {
   function syncAgent(agent: {
     id: string;
     workspaceId?: string | null;
-    status: string;
     archivedAt?: string | null;
   }) {
-    if (!agent.workspaceId || agent.archivedAt || agent.status === "closed") {
+    if (!agent.workspaceId || agent.archivedAt) {
       removePill(agent.id);
       return;
     }

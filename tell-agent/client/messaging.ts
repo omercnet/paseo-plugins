@@ -12,9 +12,11 @@ export type TargetResolution =
   | { kind: "none" }
   | { kind: "ambiguous"; entries: AgentEntry[] };
 
+// A closed agent has no live runtime (idle release on Paseo 0.14, daemon restart on 0.13)
+// but is resumable: a send loads it through ensureAgentLoaded. Archived agents are excluded.
 export function isMessageable(entry: AgentEntry, sourceAgentId: string): boolean {
   const agent = entry.agent;
-  return agent.id !== sourceAgentId && !agent.archivedAt && agent.status !== "closed";
+  return agent.id !== sourceAgentId && !agent.archivedAt;
 }
 
 export function messageTargets(
