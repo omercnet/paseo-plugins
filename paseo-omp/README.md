@@ -24,7 +24,7 @@ before capture.
 
 ## Quick start
 
-Requirements: Paseo `^0.13.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Workspace discovery passes `includeBackground`, which throws on hosts that do not advertise `features.backgroundWorkspaces`; every 0.13 host does.
+Requirements: Paseo `^0.14.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2. Workspace discovery passes `includeBackground`, which throws on hosts that do not advertise `features.backgroundWorkspaces`; every 0.14 host does.
 
 ```bash
 paseo plugin install npm:@omercnet/paseo-omp@<version>
@@ -40,7 +40,7 @@ Open the **OMP** sidebar to review the provider-profile contract, choose which c
 - [Core-provider issue and parity audit](docs/core-provider-issue-audit.md)
 - [Release checklist](docs/release-checklist.md)
 
-The plugin uses public Paseo 0.13 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
+The plugin uses public Paseo 0.14 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
 
 ## Named OMP profiles
 
@@ -54,20 +54,20 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-The capability inventory is pinned to `@getpaseo/plugin` 0.13.0, with nightly compatibility checks
+The capability inventory is pinned to `@getpaseo/plugin` 0.14.0-beta.1, with nightly compatibility checks
 against the latest and beta channels. Provider capability scoring covers
-all 17 entries in the SDK's `PROVIDER_CAPABILITIES`; the separate provider/client SDK table below
+all 18 entries in the SDK's `PROVIDER_CAPABILITIES`; the separate provider/client SDK table below
 also tracks the registration, screen, and sidebar APIs introduced in 0.11. This measures strict SDK surface
 coverage, not general product quality.
 
-**Provider capability completeness: 61.8%.** The provider advertises 11 of 17 capabilities (64.7%); ten are complete and `session.configure` is partial.
+**Provider capability completeness: 63.9%.** The provider advertises 12 of 18 capabilities (66.7%); eleven are complete and `session.configure` is partial.
 
 Scoring is deliberately mechanical so releases remain comparable:
 
 - **100%**: advertised, implemented end to end, and covered by automated provider tests.
 - **50%**: advertised with a meaningful subset, but at least one material SDK operation is rejected.
 - **0%**: not advertised; requests are rejected rather than silently approximated.
-- Overall completeness is the unweighted arithmetic mean of all 17 SDK capability rows.
+- Overall completeness is the unweighted arithmetic mean of all 18 SDK capability rows.
 
 | SDK capability | Completeness | Support and gap |
 | --- | ---: | --- |
@@ -77,6 +77,7 @@ Scoring is deliberately mechanical so releases remain comparable:
 | `prompt.output_schema` | **0%** | Not advertised. OMP has no equivalent structured-output contract; `outputSchema` fails visibly. |
 | `prompt.steer` | **100%** | Native steering with turn ownership, user-message correlation, stale-target rejection, and terminal race handling. |
 | `session.archive` | **0%** | Not advertised. Paseo may archive its agent record, but OMP has no native transcript archive operation. |
+| `session.can_stop_runtime` | **100%** | Answers Paseo's idle-release safety query. Returns `false` while a turn, permission, revert, configuration change, runtime recovery, active subagent, or OMP background async work is pending, and when OMP does not report a settled state; errors and unknown sessions fail the request, which also keeps the runtime. |
 | `session.configure` | **50%** | Live model and thinking changes commit and republish native state. Live approval-mode changes require a new session, and non-empty SDK `settings` are rejected. |
 | `session.list` | **100%** | Bounded host-wide and cwd-scoped discovery, search, previews, profile-specific session roots, and cleanup-reservation guards. |
 | `session.persistence` | **100%** | Versioned opaque handles, exact resume, import, replay-before-ready, runtime recovery, and cleanup quarantine. Archived agents whose recorded workspace has been removed load read-only from their authorized transcript when Paseo opens them with its `history` purpose, without spawning OMP or connecting MCP servers; interactive create and resume still require the workspace. |
@@ -125,7 +126,9 @@ Existing agents whose provider is `omp` remain owned by the bundled provider. Ne
 
 OMP `18.1.15` is the oldest version tested end to end. The direct provider's hard compatibility gate is `rpc-ui` protocol v2: metadata-free legacy ready frames and v1-only runtimes are rejected before a provider session opens because they cannot support the advertised persistence and conversation-rewind capabilities. Typed tool approvals remain capability-gated and fall back as described above. For terminal completion, a matching `agent_end.requestId` is authoritative and mismatches are ignored before state changes. Released OMP 18.2.x builds that omit that field use an ordered fallback requiring a fresh correlated native user entry followed by current-turn assistant activity, an idle non-compacting runtime, and no conflicting permission, tool, steer, or child-session work. Ambiguous events while OMP is active are ignored; unresolved ambiguity after confirmed idle fails only the Paseo turn. This trades a bounded residual same-agent stale-event risk for compatibility with released OMP instead of terminating and lazily restarting the runtime after every later prompt. Paseo clients, including mobile clients inside reconnect grace, do not own or terminate the daemon-managed OMP session.
 
-Paseo 0.13 is the minimum supported release. The controlled Docker canary is pinned to official 0.13.0; nightly SDK checks cover the latest and beta channels. The canary preserves nested provider-subagent ancestry and spawning-tool links, and validates npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping.
+Paseo 0.14 is the minimum supported release. The controlled Docker canary is pinned to official 0.13.0; nightly SDK checks cover the latest and beta channels. The canary preserves nested provider-subagent ancestry and spawning-tool links, and validates npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping.
+
+Paseo releases idle resumable agent runtimes after one hour; the agent stays listed as `closed` and the next prompt resumes the same OMP session. The plugin vetoes that release while the session has a running turn, a pending permission, an active subagent, or OMP background async work, and while OMP does not report a settled state (the plugin needs the `hasPendingAsyncWork` and `isSettled` fields in OMP's `get_state`; builds without them are never released). Set `agents.idleRuntimeCleanup: false` in the Paseo config to disable idle release for every provider.
 
 Install, update, disable, or remove `paseo-omp` independently of the bundled provider. Verify the provider snapshot contains `omp-plugin` after installation; a bundled `omp` entry may remain present and is not modified by this plugin.
 

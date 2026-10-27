@@ -111,6 +111,7 @@ export interface OmpOpenedSession {
   configure(input: SessionConfigureInput): Promise<void>;
   revert(input: SessionRevertInput): Promise<void>;
   interrupt(input: SessionInterruptInput): Promise<void>;
+  canStopRuntime(): Promise<boolean>;
   close(input?: SessionCloseInput): Promise<void>;
   abortOpen(): Promise<void>;
   beginConnectionShutdown(): void;
@@ -1463,6 +1464,28 @@ export class OmpProviderSession implements OmpOpenedSession {
       this.compaction.finish(state, { message: failure.message });
       await this.finishTurn(turn, state, state === "failed" ? failure : undefined, true, true);
     }
+  }
+
+  async canStopRuntime(): Promise<boolean> {
+    const hasLocalWork =
+      this.closed ||
+      this.runtimeDead !== null ||
+      this.recoveryPromise !== null ||
+      this.activeTurn !== null ||
+      this.activeAbort !== null ||
+      this.revertInFlight ||
+      this.configMutationInFlight ||
+      this.permissions.hasPending() ||
+      Boolean(this.subsessions?.hasActiveChildren());
+    if (hasLocalWork) return false;
+    const state = await this.runtime.getState();
+    // OMP builds that predate these fields report neither, which keeps the runtime alive.
+    return (
+      state.isSettled === true &&
+      state.hasPendingAsyncWork === false &&
+      !state.isStreaming &&
+      !state.isCompacting
+    );
   }
 
   async interrupt(input: SessionInterruptInput): Promise<void> {

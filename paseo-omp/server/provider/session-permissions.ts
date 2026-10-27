@@ -1150,6 +1150,16 @@ export class OmpSessionPermissions {
     return this.activeTurn?.turnId === pending.turnId && !this.activeTurn.terminal;
   }
 
+  hasPending(): boolean {
+    return (
+      this.pendingPermissions.size > 0 ||
+      this.inFlightPermissions.size > 0 ||
+      this.pendingToolPermissions.size > 0 ||
+      this.inFlightToolPermissions.size > 0 ||
+      this.pendingFreeformSelection !== null
+    );
+  }
+
   hasForTurn(turnId: string): boolean {
     const ownsTurn = (pending: PendingPermission | PendingToolPermission) =>
       pending.turnId === turnId;

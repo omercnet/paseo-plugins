@@ -48,6 +48,7 @@ const SUPPORTED_CAPABILITIES: Readonly<Record<string, true>> = {
   "prompt.command": true,
   "prompt.image": true,
   "prompt.steer": true,
+  "session.can_stop_runtime": true,
   "session.configure": true,
   "session.list": true,
   "session.persistence": true,
@@ -65,6 +66,7 @@ const SUPPORTED_INPUTS: Readonly<Record<string, true>> = {
   "session.permission": true,
   "session.revert": true,
   "session.interrupt": true,
+  "session.can_stop_runtime": true,
   "session.close": true,
 };
 const MAX_CONNECTION_SESSIONS = 32;
@@ -1133,6 +1135,21 @@ export function createOmpConnection(
           return;
         }
         await session.interrupt(input);
+        return;
+      }
+      case "session.can_stop_runtime": {
+        const session = sessions.get(input.sessionId)?.session;
+        if (!session) {
+          requestFailure(input.requestId, new OmpPublicError("Unknown OMP session"));
+          return;
+        }
+        const canStop = await session.canStopRuntime();
+        emit({
+          type: "session.can_stop_runtime",
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+          canStop,
+        });
         return;
       }
       case "session.close": {

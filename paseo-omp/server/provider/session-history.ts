@@ -301,6 +301,10 @@ export class OmpHistorySession implements OmpOpenedSession {
     return Promise.resolve();
   }
 
+  canStopRuntime(): Promise<boolean> {
+    return Promise.resolve(true);
+  }
+
   beginConnectionShutdown(): void {
     this.lifetime.abort(new Error("OMP provider connection closed"));
   }

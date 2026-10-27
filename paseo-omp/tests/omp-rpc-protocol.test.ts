@@ -60,6 +60,8 @@ describe("OMP RPC transport", () => {
               model: null,
               isStreaming: false,
               isCompacting: false,
+              hasPendingAsyncWork: true,
+              isSettled: false,
               sessionId: "bounded-state",
               systemPrompt: "secret prompt".repeat(200_000),
               dumpTools: Array.from({ length: 10_000 }, (_, index) => ({
@@ -82,6 +84,8 @@ describe("OMP RPC transport", () => {
         model: null,
         isStreaming: false,
         isCompacting: false,
+        hasPendingAsyncWork: true,
+        isSettled: false,
         sessionId: "bounded-state",
       });
       await expect(session.getSessionStats()).rejects.toThrow("response exceeded command limits");

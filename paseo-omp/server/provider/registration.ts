@@ -97,6 +97,7 @@ const CAPABILITIES = [
   "prompt.command",
   "prompt.image",
   "prompt.steer",
+  "session.can_stop_runtime",
   "session.configure",
   "session.list",
   "session.persistence",

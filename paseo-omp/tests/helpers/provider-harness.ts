@@ -390,6 +390,8 @@ export class FakeOmpSession implements OmpRuntimeSession {
   totalCostUsd = 0.25;
   isStreaming = false;
   isCompacting = false;
+  hasPendingAsyncWork: boolean | undefined;
+  isSettled: boolean | undefined;
   thinkingLevel: string | undefined = "medium";
   promptAgentInvoked: boolean | undefined = true;
   promptEvents: OmpRpcEvent[] = [];
@@ -455,6 +457,10 @@ export class FakeOmpSession implements OmpRuntimeSession {
         thinkingLevel: requested.thinkingLevel,
         isStreaming: value.isStreaming,
         isCompacting: value.isCompacting,
+        ...(this.hasPendingAsyncWork === undefined
+          ? {}
+          : { hasPendingAsyncWork: this.hasPendingAsyncWork }),
+        ...(this.isSettled === undefined ? {} : { isSettled: this.isSettled }),
         autoCompactionEnabled: value.autoCompactionEnabled,
         sessionId: this.nativeSessionId,
         ...(value.usageAvailable
