@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v1.2.4...tell-agent-v2.0.0) (2026-10-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **paseo-dracula,tell-agent:** paseo-dracula and tell-agent no longer support Paseo 0.9 or 0.10.
+
+### Features
+
+* **paseo-dracula,tell-agent:** add listing icon ([#419](https://github.com/omercnet/paseo-plugins/issues/419)) ([2262366](https://github.com/omercnet/paseo-plugins/commit/2262366d69b6520752f8988c5fdfe0d0d74d312c))
+
 ## [1.2.4](https://github.com/omercnet/paseo-plugins/compare/tell-agent-v1.2.3...tell-agent-v1.2.4) (2026-10-27)
 
 

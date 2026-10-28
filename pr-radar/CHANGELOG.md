@@ -6,6 +6,13 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.2.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.1.1...pr-radar-v3.2.0) (2026-10-28)
+
+
+### Features
+
+* add listing icon to plugin manifests ([#418](https://github.com/omercnet/paseo-plugins/issues/418)) ([2e7aadd](https://github.com/omercnet/paseo-plugins/commit/2e7aaddac381bb2a5c596f95b1f9b7b8aee89cb2))
+
 ## [3.1.1](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.1.0...pr-radar-v3.1.1) (2026-10-27)
 
 

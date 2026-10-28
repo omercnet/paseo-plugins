@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/omercnet/paseo-plugins/compare/connected-hosts-v0.1.2...connected-hosts-v0.2.0) (2026-10-28)
+
+
+### Features
+
+* add listing icon to plugin manifests ([#418](https://github.com/omercnet/paseo-plugins/issues/418)) ([2e7aadd](https://github.com/omercnet/paseo-plugins/commit/2e7aaddac381bb2a5c596f95b1f9b7b8aee89cb2))
+
 ## [0.1.2](https://github.com/omercnet/paseo-plugins/compare/connected-hosts-v0.1.1...connected-hosts-v0.1.2) (2026-10-27)
 
 

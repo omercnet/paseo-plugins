@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-sandbox",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "Run a project's Paseo workspaces, agents and terminals inside an isolated sandbox.",
   "license": "MIT",

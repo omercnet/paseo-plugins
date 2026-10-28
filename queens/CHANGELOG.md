@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/omercnet/paseo-plugins/compare/queens-v4.0.2...queens-v4.1.0) (2026-10-28)
+
+
+### Features
+
+* add listing icon to plugin manifests ([#418](https://github.com/omercnet/paseo-plugins/issues/418)) ([2e7aadd](https://github.com/omercnet/paseo-plugins/commit/2e7aaddac381bb2a5c596f95b1f9b7b8aee89cb2))
+
 ## [4.0.2](https://github.com/omercnet/paseo-plugins/compare/queens-v4.0.1...queens-v4.0.2) (2026-10-27)
 
 
