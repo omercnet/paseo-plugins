@@ -2359,7 +2359,7 @@ export class OmpProviderSession implements OmpOpenedSession {
       return;
     }
     if (event.type === "process_exit") {
-      this.handleRuntimeFailure(`OMP runtime failed: ${event.error}`);
+      this.handleRuntimeFailure();
       return;
     }
     if (event.type === "retry_fallback_applied" || event.type === "retry_fallback_succeeded") {

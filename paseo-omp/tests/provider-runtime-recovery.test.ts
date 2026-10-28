@@ -272,25 +272,4 @@ describe("OMP direct provider", () => {
     ).toHaveLength(1);
     await connection.close();
   });
-
-  test("reports the transport reason when the runtime fails during a turn", async () => {
-    const { connection, events, runtime } = await createHarness();
-    await openSession(connection, events);
-    const turnId = turnIdFrom(await startPrompt(connection, events, "runtime-exit", "work"));
-
-    sessionAt(runtime).emit({ type: "process_exit", error: "OMP RPC process exited (code 7)" });
-
-    expect(
-      await events.waitFor(
-        (event) =>
-          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
-      ),
-    ).toEqual(
-      expect.objectContaining({
-        state: "failed",
-        error: { message: "OMP runtime failed: OMP RPC process exited (code 7)" },
-      }),
-    );
-    await connection.close();
-  });
 });

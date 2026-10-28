@@ -1356,7 +1356,6 @@ export class OmpRpcProcess {
     }
   }
 
-  // The session shows this message to the user. Pass only plugin-authored text, never OMP output.
   private fail(error: Error): void {
     if (this.fatalError || this.closed) return;
     this.fatalError = error;
