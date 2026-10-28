@@ -1,6 +1,7 @@
 {
   "id": "connected-hosts",
   "description": "Add, edit, disable and remove the hosts connected to this daemon.",
+  "icon": "icon.png",
   "media": [
     "https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-connected-hosts/connected-hosts-screen.jpg",
     "https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-connected-hosts/connected-hosts-edit.jpg"

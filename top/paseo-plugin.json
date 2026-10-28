@@ -1,6 +1,7 @@
 {
   "id": "top",
   "description": "CPU, memory and disk usage of the selected host in the sidebar footer.",
+  "icon": "icon.png",
   "media": [
     "https://raw.githubusercontent.com/omercnet/paseo-plugins/pr-assets-top/top-screen.jpg"
   ],

@@ -35,6 +35,7 @@
     "server",
     "shared",
     "paseo-plugin.json",
+    "icon.png",
     "OVERVIEW.md",
     "npm-shrinkwrap.json"
   ],

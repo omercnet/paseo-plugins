@@ -5,6 +5,7 @@ import { join } from "node:path";
 const packageRoot = join(import.meta.dirname, "..");
 const topLevelFiles = [
   "LICENSE",
+  "icon.png",
   "NOTICE",
   "npm-shrinkwrap.json",
   "OVERVIEW.md",

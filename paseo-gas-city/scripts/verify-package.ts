@@ -6,6 +6,7 @@ import { join } from "node:path";
 const packageRoot = join(import.meta.dirname, "..");
 const requiredFiles = [
   "icon.svg",
+  "icon.png",
   "LICENSE",
   "README.md",
   "index.client.tsx",
@@ -68,7 +69,7 @@ function isNonRuntimeFile(path: string) {
   return (
     isInDirectory(path, "docs") ||
     ["CHANGELOG.md", "INSTALL.md", "SUPPORT.md", "TESTING.md"].includes(path) ||
-    /\.(?:png|webp|jpe?g)$/iu.test(path)
+    (path !== "icon.png" && /\.(?:png|webp|jpe?g)$/iu.test(path))
   );
 }
 

@@ -31,6 +31,7 @@
     "client",
     "shared",
     "paseo-plugin.json",
+    "icon.png",
     "OVERVIEW.md"
   ],
   "version": "3.0.3",

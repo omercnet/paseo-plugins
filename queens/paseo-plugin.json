@@ -1,5 +1,6 @@
 {
   "id": "queens",
   "description": "A cross-platform Queens logic puzzle for Paseo.",
+  "icon": "icon.png",
   "requirements": { "paseo": "^0.12.0 || ^0.13.0 || ^0.14.0" }
 }

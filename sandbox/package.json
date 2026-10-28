@@ -37,6 +37,7 @@
     "shared",
     "runtime",
     "paseo-plugin.json",
+    "icon.png",
     "OVERVIEW.md"
   ],
   "scripts": {

@@ -31,6 +31,7 @@
     "index.client.tsx",
     "client",
     "paseo-plugin.json",
+    "icon.png",
     "README.md",
     "LICENSE",
     "OVERVIEW.md"

@@ -1,5 +1,6 @@
 {
   "id": "paseo-beads",
   "description": "A dependency-aware Beads work queue for each Paseo workspace.",
+  "icon": "icon.png",
   "requirements": { "paseo": "^0.13.0 || ^0.14.0" }
 }

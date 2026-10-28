@@ -38,6 +38,7 @@
     "server",
     "shared",
     "paseo-plugin.json",
+    "icon.png",
     "OVERVIEW.md"
   ],
   "scripts": {
