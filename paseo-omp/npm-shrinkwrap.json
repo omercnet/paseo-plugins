@@ -1,12 +1,12 @@
 {
   "name": "@omercnet/paseo-omp",
-  "version": "5.1.0",
+  "version": "5.1.1",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@omercnet/paseo-omp",
-      "version": "5.1.0",
+      "version": "5.1.1",
       "dependencies": {
         "@getpaseo/protocol": "0.14.0",
         "@modelcontextprotocol/sdk": "1.30.0",

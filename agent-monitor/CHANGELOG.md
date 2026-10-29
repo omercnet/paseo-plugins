@@ -10,6 +10,13 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [4.3.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.2.0...agent-monitor-v4.3.0) (2026-10-29)
+
+
+### Features
+
+* **agent-monitor:** multi-host roster, graph and mission control ([#424](https://github.com/omercnet/paseo-plugins/issues/424)) ([@andresantoniuk](https://github.com/andresantoniuk)) ([60f0ab2](https://github.com/omercnet/paseo-plugins/commit/60f0ab221d26d398123f484e344a027544be51cd))
+
 ## [4.2.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.1.1...agent-monitor-v4.2.0) (2026-10-28)
 
 

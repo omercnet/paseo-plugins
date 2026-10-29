@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.1.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.1.0...paseo-omp-v5.1.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.14.0 ([#429](https://github.com/omercnet/paseo-plugins/issues/429)) ([7d79f4c](https://github.com/omercnet/paseo-plugins/commit/7d79f4cec882888dd48f0674957d3cd8b97a720b))
+* **paseo-omp:** keep the runtime when a nonterminal agent_end exceeds the payload budget ([#422](https://github.com/omercnet/paseo-plugins/issues/422)) ([@georgepullen](https://github.com/georgepullen)) ([a7a922c](https://github.com/omercnet/paseo-plugins/commit/a7a922cce95da8ecc9b3e0c0915d98df8a653cc8)), refs [#421](https://github.com/omercnet/paseo-plugins/issues/421)
+* **paseo-omp:** keep the transport's reason when the OMP runtime fails ([#426](https://github.com/omercnet/paseo-plugins/issues/426)) ([@georgepullen](https://github.com/georgepullen)) ([23a5ae6](https://github.com/omercnet/paseo-plugins/commit/23a5ae6df1c7198170d7539b0a14132146c5b24a))
+
 ## [5.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.0.0...paseo-omp-v5.1.0) (2026-10-28)
 
 

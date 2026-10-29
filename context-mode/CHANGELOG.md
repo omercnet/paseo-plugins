@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v3.1.0...paseo-context-mode-v3.1.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.14.0 ([#429](https://github.com/omercnet/paseo-plugins/issues/429)) ([7d79f4c](https://github.com/omercnet/paseo-plugins/commit/7d79f4cec882888dd48f0674957d3cd8b97a720b))
+
 ## [3.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v3.0.2...paseo-context-mode-v3.1.0) (2026-10-28)
 
 
