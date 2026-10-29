@@ -8,15 +8,15 @@
       "name": "@omercnet/paseo-omp",
       "version": "5.1.0",
       "dependencies": {
-        "@getpaseo/protocol": "0.14.0-beta.1",
+        "@getpaseo/protocol": "0.14.0",
         "@modelcontextprotocol/sdk": "1.30.0",
         "yaml": "^2.9.0"
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.14.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.14.0-beta.1.tgz",
-      "integrity": "sha512-qkZCmLlL5EQ1PkN0Jy8JLIfyqoj34UC2HdJIicERQ/OdrYGQ3krpOfIpYJ3c3BU27GcDL/E4aoA0GbuEVR4qUw==",
+      "version": "0.14.0",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.14.0.tgz",
+      "integrity": "sha512-fF0na1u91sKKgk6R0EKtXQMTJKbqLx8jZ8IuiUcm3jLVOnGruAvPggAQVAzm4MX2mrikesj3immqztHjPNxjTQ==",
       "dependencies": {
         "semver": "^7.8.5",
         "zod": "^4.4.3"
@@ -313,12 +313,16 @@
       "license": "MIT"
     },
     "node_modules/encodeurl": {
-      "version": "2.0.0",
-      "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.0.tgz",
-      "integrity": "sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==",
+      "version": "2.0.1",
+      "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.1.tgz",
+      "integrity": "sha512-Ev/hIyePLZtpL98x562lvPtenrUfGr0lfaf44HFZ+hDEwso7ccV9QAZrEVLg0hxNAzygaAFxy2dYaAKKM0G06A==",
       "license": "MIT",
       "engines": {
         "node": ">= 0.8"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/express"
       }
     },
     "node_modules/es-define-property": {
@@ -687,9 +691,9 @@
       "license": "ISC"
     },
     "node_modules/jose": {
-      "version": "6.2.13",
-      "resolved": "https://registry.npmjs.org/jose/-/jose-6.2.13.tgz",
-      "integrity": "sha512-7TIg10ZE1x82YediN+lcrPNvGMKge9yFHQD+Qho/b8y2adfugU3AsvvHfxV0fzyFllT6l9xCjf4RWY9g/Z9PJQ==",
+      "version": "6.2.14",
+      "resolved": "https://registry.npmjs.org/jose/-/jose-6.2.14.tgz",
+      "integrity": "sha512-3JasLuki1NRLQvY4wCoC37KZk4qxoBx2k2aFqLxT84IezqW0bkJKnNtxnZj/Fu1xsQivoc/lytxaRHJoGLjJ1A==",
       "license": "MIT",
       "funding": {
         "url": "https://github.com/sponsors/panva"
@@ -902,9 +906,9 @@
       }
     },
     "node_modules/qs": {
-      "version": "6.17.0",
-      "resolved": "https://registry.npmjs.org/qs/-/qs-6.17.0.tgz",
-      "integrity": "sha512-5LK5BZ2XDHMvcUJaf0CQ5HL3aVgKbpklvByC7qLSxYkfE8COEEbJg5xCHWCTqzqi0Gs4Jn5Mv5v3R38W6edscA==",
+      "version": "6.17.1",
+      "resolved": "https://registry.npmjs.org/qs/-/qs-6.17.1.tgz",
+      "integrity": "sha512-jd3COkaKVgGUW+ZHyEHCG9bH7RoaaiWuMgzsIBjUMVjLAaWGWpoUAVwljVvBHxRu/2qEHnadLGZrkutYUBPQJA==",
       "license": "BSD-3-Clause",
       "dependencies": {
         "es-define-property": "^1.0.1",

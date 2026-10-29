@@ -54,7 +54,7 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-The capability inventory is pinned to `@getpaseo/plugin` 0.14.0-beta.1, with nightly compatibility checks
+The capability inventory is pinned to `@getpaseo/plugin` 0.14.0, with nightly compatibility checks
 against the latest and beta channels. Provider capability scoring covers
 all 18 entries in the SDK's `PROVIDER_CAPABILITIES`; the separate provider/client SDK table below
 also tracks the registration, screen, and sidebar APIs introduced in 0.11. This measures strict SDK surface
@@ -126,7 +126,7 @@ Existing agents whose provider is `omp` remain owned by the bundled provider. Ne
 
 OMP `18.1.15` is the oldest version tested end to end. The direct provider's hard compatibility gate is `rpc-ui` protocol v2: metadata-free legacy ready frames and v1-only runtimes are rejected before a provider session opens because they cannot support the advertised persistence and conversation-rewind capabilities. Typed tool approvals remain capability-gated and fall back as described above. For terminal completion, a matching `agent_end.requestId` is authoritative and mismatches are ignored before state changes. Released OMP 18.2.x builds that omit that field use an ordered fallback requiring a fresh correlated native user entry followed by current-turn assistant activity, an idle non-compacting runtime, and no conflicting permission, tool, steer, or child-session work. Ambiguous events while OMP is active are ignored; unresolved ambiguity after confirmed idle fails only the Paseo turn. This trades a bounded residual same-agent stale-event risk for compatibility with released OMP instead of terminating and lazily restarting the runtime after every later prompt. Paseo clients, including mobile clients inside reconnect grace, do not own or terminate the daemon-managed OMP session.
 
-Paseo 0.14 is the minimum supported release. The controlled Docker canary is pinned to official 0.14.0-beta.1; nightly SDK checks cover the latest and beta channels. The canary preserves nested provider-subagent ancestry and spawning-tool links, and validates npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping.
+Paseo 0.14 is the minimum supported release. The controlled Docker canary is pinned to official 0.14.0; nightly SDK checks cover the latest and beta channels. The canary preserves nested provider-subagent ancestry and spawning-tool links, and validates npm-managed plugin sources, platform-owned external URL opening, and whole-item timeline transforms before Overview grouping.
 
 Paseo releases idle resumable agent runtimes after one hour; the agent stays listed as `closed` and the next prompt resumes the same OMP session. The plugin vetoes that release while the session has a running turn, a pending permission, an active subagent, or OMP background async work, and while OMP does not report a settled state (the plugin needs the `hasPendingAsyncWork` and `isSettled` fields in OMP's `get_state`; builds without them are never released). Set `agents.idleRuntimeCleanup: false` in the Paseo config to disable idle release for every provider.
 
