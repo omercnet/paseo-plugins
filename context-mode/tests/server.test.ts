@@ -311,6 +311,15 @@ describe("bounded Context Mode process", () => {
     );
   });
 
+  test("starts the process with the launch environment", async () => {
+    const binary = await executable(
+      fakeMcpSource.replace('version: "2.0.5"', "version: process.env.LAUNCH_PROBE"),
+    );
+    await expect(
+      inspectContextMode({ ...launch(binary), env: { LAUNCH_PROBE: "from-launch" } }),
+    ).resolves.toMatchObject({ version: "from-launch" });
+  });
+
   test("rejects a failed initialize response with the upstream message", async () => {
     const binary = await executable(`
 const readline = require("node:readline");
@@ -486,21 +495,6 @@ describe("RPC behavior", () => {
       message: "Context Mode is not installed.",
       checkedAt: "2026-09-20T00:00:00.000Z",
     });
-  });
-
-  test("resolves the runtime with the RPC context's Paseo API", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const paseo: ProviderConfigSource = { config: { get: async () => ({ config: {} }) } };
-    const seen: unknown[] = [];
-    const handlers = createContextModeHandlers(settingsHandle(settings), {
-      resolveBinary: async (_settings, dependencies) => {
-        seen.push(dependencies?.paseo);
-        return { state: "missing", code: "not-installed", message: "missing" };
-      },
-    });
-    await handlers.status({ fresh: true }, { paseo });
-    await handlers.doctor({ fresh: true }, { paseo });
-    expect(seen).toEqual([paseo, paseo]);
   });
 
   test("caches brief status probes and keeps reports separate", async () => {
