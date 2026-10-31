@@ -29,7 +29,7 @@
     "@getpaseo/server": "0.14.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@tanstack/react-query": "^5.102.3",
-    "@types/node": "^24.10.1",
+    "@types/node": "^26.0.0",
     "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^5.0.0",
     "esbuild": "0.28.2",
