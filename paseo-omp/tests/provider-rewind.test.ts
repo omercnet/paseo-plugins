@@ -1223,7 +1223,7 @@ describe("OMP direct provider", () => {
     }
     expect(runtime.starts).toHaveLength(0);
     expect(runtime.sessionListRequests).toEqual([
-      { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2 },
+      { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2, signal: expect.any(AbortSignal) },
     ]);
     await connection.close();
   });

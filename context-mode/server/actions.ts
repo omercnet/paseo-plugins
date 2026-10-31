@@ -6,8 +6,9 @@ import {
   type DoctorReport,
   type DoctorStatusRow,
 } from "../shared/actions";
-import type { ContextModeSettings, contextModeSettings } from "../shared/settings";
+import type { contextModeSettings } from "../shared/settings";
 import { type BinaryResolution, type LaunchDescriptor, resolveContextModeBinary } from "./binary";
+import type { ProviderConfigSource } from "./integration";
 import { contextModeEnvironmentFor, contextModePlatformFor } from "./knowledge";
 import {
   callContextModeTool,
@@ -28,7 +29,7 @@ type ActionToolCaller = (
 
 export interface ActionHandlerDependencies {
   osPlatform?: NodeJS.Platform;
-  resolveBinary?: (settings: ContextModeSettings) => Promise<BinaryResolution>;
+  resolveBinary?: typeof resolveContextModeBinary;
   inspect?: (
     launch: LaunchDescriptor,
     dependencies?: McpProcessDependencies,
@@ -36,10 +37,12 @@ export interface ActionHandlerDependencies {
   callTool?: ActionToolCaller;
 }
 
+type ActionContext = { paseo?: ProviderConfigSource };
+
 export interface ContextModeActionHandlers {
-  doctor(input: ContextModeActionInput): Promise<DoctorReport>;
-  install(input: ContextModeActionInput): Promise<ContextModeAction>;
-  upgrade(input: ContextModeActionInput): Promise<ContextModeAction>;
+  doctor(input: ContextModeActionInput, context?: ActionContext): Promise<DoctorReport>;
+  install(input: ContextModeActionInput, context?: ActionContext): Promise<ContextModeAction>;
+  upgrade(input: ContextModeActionInput, context?: ActionContext): Promise<ContextModeAction>;
 }
 
 export function parseContextModeDoctorOutput(rawOutput: string): DoctorStatusRow[] {
@@ -71,19 +74,24 @@ export function createContextModeActionHandlers(
   const callTool = dependencies.callTool ?? callContextModeTool;
   const osPlatform = dependencies.osPlatform ?? process.platform;
 
-  async function resolvedBinary(): Promise<Extract<BinaryResolution, { state: "found" }>> {
+  async function resolvedBinary(
+    paseo: ProviderConfigSource | undefined,
+  ): Promise<Extract<BinaryResolution, { state: "found" }>> {
     const settings = await settingsHandle.read();
     if (settings.status !== "ready") {
       throw new Error(`Context Mode settings are invalid: ${settings.error}`.slice(0, 4_096));
     }
-    const binary = await resolveBinary(settings.values);
+    const binary = await resolveBinary(settings.values, { paseo });
     if (binary.state === "missing") throw new Error(binary.message.slice(0, 4_096));
     return binary;
   }
 
-  async function currentVersion(input: ContextModeActionInput): Promise<string | null> {
+  async function currentVersion(
+    input: ContextModeActionInput,
+    paseo: ProviderConfigSource | undefined,
+  ): Promise<string | null> {
     try {
-      const binary = await resolvedBinary();
+      const binary = await resolvedBinary(paseo);
       const inspection = await inspect(binary.launch, {
         env: contextModeEnvironmentFor(input.provider),
       });
@@ -94,8 +102,8 @@ export function createContextModeActionHandlers(
   }
 
   return {
-    async doctor(input) {
-      const binary = await resolvedBinary();
+    async doctor(input, context) {
+      const binary = await resolvedBinary(context?.paseo);
       const rawOutput = await callTool(
         binary.launch,
         "ctx_doctor",
@@ -110,7 +118,7 @@ export function createContextModeActionHandlers(
         rawOutput,
       };
     },
-    async install(input) {
+    async install(input, context) {
       const platform = contextModePlatformFor(input.provider);
       return {
         program: osPlatform === "win32" ? "npm.cmd" : "npm",
@@ -121,15 +129,15 @@ export function createContextModeActionHandlers(
           "--no-audit",
           "--no-fund",
         ],
-        currentVersion: await currentVersion(input),
+        currentVersion: await currentVersion(input, context?.paseo),
         targetVersion: CONTEXT_MODE_TARGET_VERSION,
         platform,
         requiresRestart: true,
       };
     },
-    async upgrade(input) {
+    async upgrade(input, context) {
       const platform = contextModePlatformFor(input.provider);
-      const binary = await resolvedBinary();
+      const binary = await resolvedBinary(context?.paseo);
       const inspection = await inspect(binary.launch, {
         env: contextModeEnvironmentFor(input.provider),
       });

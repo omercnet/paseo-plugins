@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import {
   listOmpSessionDescriptors,
@@ -55,6 +55,7 @@ async function writeReplayTranscript(root: string, message: object): Promise<str
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -833,6 +834,73 @@ describe("OMP session descriptor discovery", () => {
       { OMP_SESSION_DIR: sessionRoot },
     );
     expect(found.map(({ id }) => id).sort()).toEqual(ids.sort());
+  });
+
+  test("lists every session however long the scan takes", async () => {
+    const sessionRoot = await temporaryRoot();
+    const ids = Array.from({ length: 20 }, (_, index) => `native-slow-${index}`);
+    await Promise.all(ids.map((id) => writeSession(sessionRoot, `-slow-${id}`, id, "/repo")));
+    // Elapsed time must never truncate results: the clock jumps one second per call.
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => {
+      now += 1_000;
+      return now;
+    });
+
+    const found = await listOmpSessionDescriptors(
+      { cwd: "/repo", limit: 500 },
+      { OMP_SESSION_DIR: sessionRoot },
+    );
+    expect(found.map(({ id }) => id).sort()).toEqual(ids.sort());
+  });
+
+  test("stops scanning when the caller aborts", async () => {
+    const sessionRoot = await temporaryRoot();
+    await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        writeSession(sessionRoot, `-abort-${index}`, `native-abort-${index}`, "/repo"),
+      ),
+    );
+    const closed = new Error("connection closed");
+    const controller = new AbortController();
+    controller.abort(closed);
+
+    await expect(
+      listOmpSessionDescriptors(
+        { cwd: "/repo", signal: controller.signal },
+        { OMP_SESSION_DIR: sessionRoot },
+      ),
+    ).rejects.toBe(closed);
+  });
+
+  // With five files the third check is the second entry; with one it is the check after the scan.
+  test.each([
+    ["while entries are being read", 5],
+    ["after the last entry", 1],
+  ])("stops scanning when the caller aborts %s", async (_label, fileCount) => {
+    const sessionRoot = await temporaryRoot();
+    await Promise.all(
+      Array.from({ length: fileCount }, (_, index) =>
+        writeSession(sessionRoot, "", `native-midscan-${index}`, "/repo"),
+      ),
+    );
+    const closed = new Error("connection closed");
+    const controller = new AbortController();
+    const throwIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
+    let checks = 0;
+    vi.spyOn(controller.signal, "throwIfAborted").mockImplementation(() => {
+      checks += 1;
+      if (checks === 3) controller.abort(closed);
+      throwIfAborted();
+    });
+
+    await expect(
+      listOmpSessionDescriptors(
+        { cwd: "/repo", signal: controller.signal },
+        { OMP_SESSION_DIR: sessionRoot },
+      ),
+    ).rejects.toBe(closed);
+    expect(checks).toBe(3);
   });
 
   test("rejects invalid scoped listing", async () => {

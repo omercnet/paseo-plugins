@@ -125,7 +125,10 @@ async function exchange(
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       cwd: dependencies.cwd,
-      env: dependencies.env ? { ...process.env, ...dependencies.env } : undefined,
+      env:
+        launch.env || dependencies.env
+          ? { ...process.env, ...launch.env, ...dependencies.env }
+          : undefined,
     });
   } catch (error) {
     throw new ProcessFailure(

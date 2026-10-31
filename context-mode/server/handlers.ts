@@ -42,7 +42,7 @@ function contextModeProbeOptions(env: NodeJS.ProcessEnv = process.env): ProbeOpt
 
 export interface ContextModeHandlerDependencies {
   now?: () => Date;
-  resolveBinary?: (settings: ContextModeSettings) => Promise<BinaryResolution>;
+  resolveBinary?: typeof resolveContextModeBinary;
   inspect?: (launch: LaunchDescriptor, options: ProbeOptions) => Promise<McpInspection>;
   callTool?: (
     launch: LaunchDescriptor,
@@ -57,14 +57,13 @@ export interface ContextModeHandlerDependencies {
   ) => Promise<IntegrationAudit>;
 }
 
+type HandlerContext = { paseo?: ProviderConfigSource };
+
 export interface ContextModeHandlers {
-  status(input: ContextModeRefreshInput): Promise<BinaryStatus>;
-  doctor(input: ContextModeRefreshInput): Promise<CommandReport>;
-  stats(input: ContextModeRefreshInput): Promise<CommandReport>;
-  audit(
-    input: ContextModeRefreshInput,
-    context?: { paseo?: ProviderConfigSource },
-  ): Promise<IntegrationAudit>;
+  status(input: ContextModeRefreshInput, context?: HandlerContext): Promise<BinaryStatus>;
+  doctor(input: ContextModeRefreshInput, context?: HandlerContext): Promise<CommandReport>;
+  stats(input: ContextModeRefreshInput, context?: HandlerContext): Promise<CommandReport>;
+  audit(input: ContextModeRefreshInput, context?: HandlerContext): Promise<IntegrationAudit>;
 }
 
 interface CacheEntry<T> {
@@ -93,7 +92,7 @@ export function createContextModeHandlers(
   const cache = new Map<string, CacheEntry<BinaryStatus | CommandReport>>();
   const probe = contextModeProbeOptions();
 
-  async function settingsAndBinary(): Promise<
+  async function settingsAndBinary(paseo: ProviderConfigSource | undefined): Promise<
     | {
         state: "ready";
         settings: ContextModeSettings;
@@ -115,7 +114,7 @@ export function createContextModeHandlers(
           },
         };
       }
-      const binary = await resolveBinary(settings.values);
+      const binary = await resolveBinary(settings.values, { paseo });
       if (binary.state === "missing") {
         return {
           state: "unavailable",
@@ -159,8 +158,11 @@ export function createContextModeHandlers(
     return result;
   }
 
-  async function status({ fresh }: ContextModeRefreshInput): Promise<BinaryStatus> {
-    const resolved = await settingsAndBinary();
+  async function status(
+    { fresh }: ContextModeRefreshInput,
+    context?: HandlerContext,
+  ): Promise<BinaryStatus> {
+    const resolved = await settingsAndBinary(context?.paseo);
     if (resolved.state === "unavailable") return resolved.report;
     const cacheKey = `status:${resolved.binary.source}:${resolved.binary.path}`;
     return cached(cacheKey, 10_000, fresh, async () => {
@@ -182,8 +184,13 @@ export function createContextModeHandlers(
     });
   }
 
-  async function report(name: ToolName, ttlMs: number, fresh: boolean): Promise<CommandReport> {
-    const resolved = await settingsAndBinary();
+  async function report(
+    name: ToolName,
+    ttlMs: number,
+    fresh: boolean,
+    context: HandlerContext | undefined,
+  ): Promise<CommandReport> {
+    const resolved = await settingsAndBinary(context?.paseo);
     if (resolved.state === "unavailable") return resolved.report;
     return cached(`${name}:${resolved.binary.path}`, ttlMs, fresh, async () => {
       const checkedAt = now().toISOString();
@@ -202,9 +209,9 @@ export function createContextModeHandlers(
 
   async function audit(
     _input: ContextModeRefreshInput,
-    context?: { paseo?: ProviderConfigSource },
+    context?: HandlerContext,
   ): Promise<IntegrationAudit> {
-    const resolved = await settingsAndBinary();
+    const resolved = await settingsAndBinary(context?.paseo);
     if (resolved.state === "unavailable") {
       return {
         runtimePath: "",
@@ -227,8 +234,8 @@ export function createContextModeHandlers(
 
   return {
     status,
-    doctor: ({ fresh }) => report("ctx_doctor", 10_000, fresh),
-    stats: ({ fresh }) => report("ctx_stats", 5_000, fresh),
+    doctor: ({ fresh }, context) => report("ctx_doctor", 10_000, fresh, context),
+    stats: ({ fresh }, context) => report("ctx_stats", 5_000, fresh, context),
     audit,
   };
 }

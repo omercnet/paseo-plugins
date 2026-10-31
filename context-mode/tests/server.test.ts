@@ -1,13 +1,14 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { resolveContextModeBinary } from "../server/binary";
 import { createContextModeHandlers } from "../server/handlers";
+import type { ProviderConfigSource } from "../server/integration";
 import {
   CONTEXT_MODE_TOOL_TIMEOUT_MS,
   callContextModeTool,
@@ -163,7 +164,6 @@ describe("external binary resolution", () => {
       env: { PATH: "C:\\npm", PATHEXT: ".CMD" },
       canExecute: async (path) => path.endsWith("context-mode.CMD"),
       isFile: async () => false,
-      bundledCliPath: () => null,
     });
     expect(result).toMatchObject({ state: "missing" });
     if (result.state === "missing")
@@ -205,24 +205,94 @@ describe("external binary resolution", () => {
     },
   );
 
-  test("uses the bundled runtime when no external executable is available", async () => {
+  async function pluginInstall(): Promise<{ paseo: ProviderConfigSource; cli: string }> {
+    const root = await mkdtemp(join(tmpdir(), "paseo-context-mode-install-"));
+    temporaryDirectories.push(root);
+    async function writeJson(path: string, value: unknown) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, JSON.stringify(value));
+    }
+    async function contextModePackage(directory: string) {
+      await writeJson(join(directory, "package.json"), {
+        name: "context-mode",
+        exports: { "./cli": "./cli.bundle.mjs" },
+      });
+      await writeFile(join(directory, "cli.bundle.mjs"), "");
+      return realpath(join(directory, "cli.bundle.mjs"));
+    }
+    // npm layout: the plugin package and its dependencies are siblings under node_modules.
+    const plugin = join(root, "context-mode", "install", "node_modules", "@omercnet", "plugin");
+    await writeJson(join(plugin, "paseo-plugin.json"), { id: "context-mode" });
+    await writeJson(join(plugin, "package.json"), { name: "@omercnet/plugin" });
+    const cli = await contextModePackage(
+      join(root, "context-mode", "install", "node_modules", "context-mode"),
+    );
+    // Another plugin that happens to ship its own Context Mode must not be picked.
+    const other = join(root, "other");
+    await writeJson(join(other, "paseo-plugin.json"), { id: "other" });
+    await writeJson(join(other, "package.json"), { name: "other" });
+    await contextModePackage(join(other, "node_modules", "context-mode"));
+    const paseo: ProviderConfigSource = {
+      config: {
+        get: async () => ({
+          config: {
+            plugins: {
+              other: { source: "directory", path: other },
+              "renamed-context-mode": { source: "directory", path: plugin },
+            },
+          },
+        }),
+      },
+    };
+    return { paseo, cli };
+  }
+
+  test("uses the bundled runtime from the plugin directory in the daemon config", async () => {
+    const { paseo, cli } = await pluginInstall();
     const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
     const result = await resolveContextModeBinary(settings, {
       env: { PATH: "" },
       nodePath: "/usr/bin/node",
+      electron: false,
       canExecute: async () => false,
-      isFile: async (path) => path === "/plugin/node_modules/context-mode/cli.bundle.mjs",
-      bundledCliPath: () => "/plugin/node_modules/context-mode/cli.bundle.mjs",
+      paseo,
     });
     expect(result).toEqual({
       state: "found",
-      path: "/plugin/node_modules/context-mode/cli.bundle.mjs",
+      path: cli,
       source: "bundled",
+      launch: { program: "/usr/bin/node", args: [cli] },
+    });
+  });
+
+  test("launches the bundled runtime as Node when the host is Electron", async () => {
+    const { paseo, cli } = await pluginInstall();
+    const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
+    const result = await resolveContextModeBinary(settings, {
+      env: { PATH: "" },
+      nodePath: "/Applications/Paseo.app/Contents/MacOS/Paseo",
+      electron: true,
+      canExecute: async () => false,
+      paseo,
+    });
+    expect(result).toMatchObject({
+      state: "found",
       launch: {
-        program: "/usr/bin/node",
-        args: ["/plugin/node_modules/context-mode/cli.bundle.mjs"],
+        program: "/Applications/Paseo.app/Contents/MacOS/Paseo",
+        args: [cli],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
       },
     });
+  });
+
+  test("reports not installed when the daemon config lists no Context Mode plugin", async () => {
+    const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
+    const result = await resolveContextModeBinary(settings, {
+      env: { PATH: "" },
+      canExecute: async () => false,
+      paseo: { config: { get: async () => ({ config: { plugins: {} } }) } },
+    });
+    expect(result).toMatchObject({ state: "missing", code: "not-installed" });
   });
 });
 
@@ -239,6 +309,30 @@ describe("bounded Context Mode process", () => {
     await expect(callContextModeTool(launch(binary), "ctx_stats")).resolves.toBe(
       "17.4 MB kept out · 96%",
     );
+  });
+
+  test("starts the process with the launch environment", async () => {
+    const binary = await executable(
+      fakeMcpSource.replace('version: "2.0.5"', "version: process.env.LAUNCH_PROBE"),
+    );
+    await expect(
+      inspectContextMode({ ...launch(binary), env: { LAUNCH_PROBE: "from-launch" } }),
+    ).resolves.toMatchObject({ version: "from-launch" });
+  });
+
+  test("keeps the launch environment when dependencies also supply one", async () => {
+    const binary = await executable(
+      fakeMcpSource.replace(
+        'version: "2.0.5"',
+        'version: process.env.LAUNCH_PROBE + "/" + process.env.DEPENDENCY_PROBE',
+      ),
+    );
+    await expect(
+      inspectContextMode(
+        { ...launch(binary), env: { LAUNCH_PROBE: "from-launch" } },
+        { env: { DEPENDENCY_PROBE: "from-dependencies" } },
+      ),
+    ).resolves.toMatchObject({ version: "from-launch/from-dependencies" });
   });
 
   test("rejects a failed initialize response with the upstream message", async () => {

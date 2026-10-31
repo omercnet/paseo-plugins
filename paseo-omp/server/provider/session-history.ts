@@ -119,6 +119,7 @@ export class OmpHistorySession implements OmpOpenedSession {
     environment?: NodeJS.ProcessEnv,
     hostInheritEnv: readonly string[] = [],
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
+    signal?: AbortSignal,
   ): Promise<OmpHistorySession> {
     const nativeSessionId = ompPersistenceSessionId(input);
     if (!nativeSessionId || input.history !== "replay" || !input.config.persist) {
@@ -141,6 +142,7 @@ export class OmpHistorySession implements OmpOpenedSession {
       nativeSessionId,
       input.config.cwd,
       normalized.sessionDir,
+      signal,
     );
     if (!descriptor.transcriptFile) {
       throw new OmpPublicError("OMP session transcript could not be resolved in this workspace");
