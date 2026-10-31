@@ -57,7 +57,7 @@ import { createScreencastSourceTime } from "./screencast-source-time";
 import { createVideoSourceRecovery } from "./video-source-recovery";
 
 const execFileAsync = promisify(execFile);
-export const AGENT_BROWSER_VERSION = "0.39.4";
+export const AGENT_BROWSER_VERSION = "0.40.0";
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -379,22 +379,30 @@ export class AgentBrowserRuntime {
     // From here a nonce-owned daemon may exist even if open rejects (e.g. navigation failure).
     this.daemonLaunched = true;
     this.daemon = null;
-    const opened = await this.invoke([
-      "--session",
-      this.session,
-      "--profile",
-      this.profilePath,
-      "--executable-path",
-      this.executablePath,
-      ...(videoExtension ? ["--extension", videoExtension] : []),
-      "--hide-scrollbars",
-      "false",
-      ...(this.headed ? ["--headed"] : []),
-      ...(chromiumArguments ? ["--args", chromiumArguments] : []),
-      "--json",
-      "open",
-      this.initialUrl,
-    ]);
+    let opened: unknown;
+    try {
+      opened = await this.invoke([
+        "--session",
+        this.session,
+        "--profile",
+        this.profilePath,
+        "--executable-path",
+        this.executablePath,
+        ...(videoExtension ? ["--extension", videoExtension] : []),
+        "--hide-scrollbars",
+        "false",
+        ...(this.headed ? ["--headed"] : []),
+        ...(chromiumArguments ? ["--args", chromiumArguments] : []),
+        "--json",
+        "open",
+        this.initialUrl,
+      ]);
+    } catch (error) {
+      // Record the daemon a failed open left behind: since agent-browser 0.40.0 `close`
+      // removes the PID file before returning, after which its exit is unobservable.
+      await this.captureDaemon().catch(() => undefined);
+      throw error;
+    }
     this.assertRuntimeOpen();
     const targetId = findString(opened, ["targetId", "target_id"]);
     await this.protectIpcMetadata();
