@@ -1,5 +1,25 @@
 # Changelog
 
+## [5.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.1.1...paseo-omp-v5.2.0) (2026-10-31)
+
+
+### Features
+
+* **paseo-omp:** enlarge OMP tool images on click ([#439](https://github.com/omercnet/paseo-plugins/issues/439)) ([@ogzerber](https://github.com/ogzerber)) ([c734f2b](https://github.com/omercnet/paseo-plugins/commit/c734f2bfcf1c936d9cb7215ec8ea55cb172436d5))
+* **paseo-omp:** make the session limit host-wide and configurable ([#427](https://github.com/omercnet/paseo-plugins/issues/427)) ([@georgepullen](https://github.com/georgepullen)) ([d1e81e1](https://github.com/omercnet/paseo-plugins/commit/d1e81e181876922d8fa8d02988b5b88b4c621b6a))
+* **paseo-omp:** steer and stop OMP subagents from the conversation ([#438](https://github.com/omercnet/paseo-plugins/issues/438)) ([@georgepullen](https://github.com/georgepullen)) ([ec3e271](https://github.com/omercnet/paseo-plugins/commit/ec3e27171f8ed9e59f55cb1c79fc33bdeda96486))
+
+
+### Bug Fixes
+
+* **paseo-omp,paseo-shared-browser:** run npm ci through the shell and drop staged overrides ([#445](https://github.com/omercnet/paseo-plugins/issues/445)) ([d727c7a](https://github.com/omercnet/paseo-plugins/commit/d727c7a7569104f2bcf9ad53d722788296450c65))
+* **paseo-omp:** accept the OMP 18.13 and 18.14 RPC frames ([#435](https://github.com/omercnet/paseo-plugins/issues/435)) ([@georgepullen](https://github.com/georgepullen)) ([0d83549](https://github.com/omercnet/paseo-plugins/commit/0d83549f759ee55bb92fb9ab96c6b725a0b2f9b5))
+* **paseo-omp:** classify OMP get_session_lease RPC command ([#444](https://github.com/omercnet/paseo-plugins/issues/444)) ([50f52b7](https://github.com/omercnet/paseo-plugins/commit/50f52b7524237f9ee91dd70157ffca4eb1c940e9))
+* **paseo-omp:** find OMP via Windows Path and accept taskkill exit 128 ([#446](https://github.com/omercnet/paseo-plugins/issues/446)) ([fb83ef0](https://github.com/omercnet/paseo-plugins/commit/fb83ef065548d1b40b42945148073b912b481832))
+* **paseo-omp:** keep rendering assistant messages in very long turns ([#436](https://github.com/omercnet/paseo-plugins/issues/436)) ([@georgepullen](https://github.com/georgepullen)) ([71553dc](https://github.com/omercnet/paseo-plugins/commit/71553dca35c9f4cb61c1ede06aad298937948d21))
+* **paseo-omp:** show runs that OMP starts without a prompt ([#437](https://github.com/omercnet/paseo-plugins/issues/437)) ([@georgepullen](https://github.com/georgepullen)) ([db02f9a](https://github.com/omercnet/paseo-plugins/commit/db02f9aa887bfb7008dca64226c426f99042b704))
+* **paseo-omp:** stop dropping sessions when the scan takes over one second ([#461](https://github.com/omercnet/paseo-plugins/issues/461)) ([38c8887](https://github.com/omercnet/paseo-plugins/commit/38c88877ac472249f878a013e09791399c62cfb8))
+
 ## [5.1.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.1.0...paseo-omp-v5.1.1) (2026-10-29)
 
 

@@ -10,6 +10,18 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [4.4.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.3.0...agent-monitor-v4.4.0) (2026-10-31)
+
+
+### Features
+
+* **agent-monitor:** group and sort the roster independently ([#433](https://github.com/omercnet/paseo-plugins/issues/433)) ([@andresantoniuk](https://github.com/andresantoniuk)) ([c92938e](https://github.com/omercnet/paseo-plugins/commit/c92938ef61ea56169af06a8d051756bed365210b))
+
+
+### Bug Fixes
+
+* **agent-monitor:** do not call addEventListener where window has none ([#430](https://github.com/omercnet/paseo-plugins/issues/430)) ([@andresantoniuk](https://github.com/andresantoniuk)) ([404656f](https://github.com/omercnet/paseo-plugins/commit/404656ff56707e86f3ae7e0b13f879eaf57b58d0))
+
 ## [4.3.0](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.2.0...agent-monitor-v4.3.0) (2026-10-29)
 
 
