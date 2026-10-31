@@ -28,6 +28,7 @@
         "\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\\n\""
       ],
       "depNameTemplate": "agent-browser",
+      "depTypeTemplate": "dependencies",
       "datasourceTemplate": "npm",
       "versioningTemplate": "npm"
     }
