@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.1.1...paseo-omp-v5.2.0) (2026-10-31)
+
+
+### Features
+
+* **paseo-omp:** make the session limit host-wide and configurable ([#427](https://github.com/omercnet/paseo-plugins/issues/427)) ([@georgepullen](https://github.com/georgepullen)) ([d1e81e1](https://github.com/omercnet/paseo-plugins/commit/d1e81e181876922d8fa8d02988b5b88b4c621b6a))
+* **paseo-omp:** steer and stop OMP subagents from the conversation ([#438](https://github.com/omercnet/paseo-plugins/issues/438)) ([@georgepullen](https://github.com/georgepullen)) ([ec3e271](https://github.com/omercnet/paseo-plugins/commit/ec3e27171f8ed9e59f55cb1c79fc33bdeda96486))
+
+
+### Bug Fixes
+
+* **paseo-omp:** accept the OMP 18.13 and 18.14 RPC frames ([#435](https://github.com/omercnet/paseo-plugins/issues/435)) ([@georgepullen](https://github.com/georgepullen)) ([0d83549](https://github.com/omercnet/paseo-plugins/commit/0d83549f759ee55bb92fb9ab96c6b725a0b2f9b5))
+* **paseo-omp:** keep rendering assistant messages in very long turns ([#436](https://github.com/omercnet/paseo-plugins/issues/436)) ([@georgepullen](https://github.com/georgepullen)) ([71553dc](https://github.com/omercnet/paseo-plugins/commit/71553dca35c9f4cb61c1ede06aad298937948d21))
+* **paseo-omp:** show runs that OMP starts without a prompt ([#437](https://github.com/omercnet/paseo-plugins/issues/437)) ([@georgepullen](https://github.com/georgepullen)) ([db02f9a](https://github.com/omercnet/paseo-plugins/commit/db02f9aa887bfb7008dca64226c426f99042b704))
+
 ## [5.1.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.1.0...paseo-omp-v5.1.1) (2026-10-29)
 
 
