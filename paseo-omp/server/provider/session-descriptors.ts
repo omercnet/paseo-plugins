@@ -509,6 +509,7 @@ export async function listOmpSessionDescriptors(
     },
     options.signal,
   );
+  options.signal?.throwIfAborted();
   return matches;
 }
 

@@ -873,6 +873,36 @@ describe("OMP session descriptor discovery", () => {
     ).rejects.toBe(closed);
   });
 
+  // With five files the third check is the second entry; with one it is the check after the scan.
+  test.each([
+    ["while entries are being read", 5],
+    ["after the last entry", 1],
+  ])("stops scanning when the caller aborts %s", async (_label, fileCount) => {
+    const sessionRoot = await temporaryRoot();
+    await Promise.all(
+      Array.from({ length: fileCount }, (_, index) =>
+        writeSession(sessionRoot, "", `native-midscan-${index}`, "/repo"),
+      ),
+    );
+    const closed = new Error("connection closed");
+    const controller = new AbortController();
+    const throwIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
+    let checks = 0;
+    vi.spyOn(controller.signal, "throwIfAborted").mockImplementation(() => {
+      checks += 1;
+      if (checks === 3) controller.abort(closed);
+      throwIfAborted();
+    });
+
+    await expect(
+      listOmpSessionDescriptors(
+        { cwd: "/repo", signal: controller.signal },
+        { OMP_SESSION_DIR: sessionRoot },
+      ),
+    ).rejects.toBe(closed);
+    expect(checks).toBe(3);
+  });
+
   test("rejects invalid scoped listing", async () => {
     await expect(
       listOmpSessionDescriptors({ cwd: "" }, { OMP_SESSION_DIR: "/tmp/unused" }),
