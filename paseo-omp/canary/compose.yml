@@ -2,7 +2,7 @@ name: paseo-omp-canary
 
 services:
   mock-llm:
-    image: node:22.22.1-bookworm-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d
+    image: node:26.11.1-bookworm-slim@sha256:86f07bc9c5dce4578cf37e5a418b7bfc7f817cda25cde66e2b66e95ed86c4567
     command: ["node", "/app/mock-llm.ts"]
     volumes:
       - ./mock-llm.ts:/app/mock-llm.ts:ro
