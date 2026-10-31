@@ -1,12 +1,14 @@
 import { constants } from "node:fs";
-import { access, realpath, stat } from "node:fs/promises";
+import { access, readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, posix, win32 } from "node:path";
 import type { ContextModeSettings } from "../shared";
+import type { ProviderConfigSource } from "./integration";
 
 export interface LaunchDescriptor {
   program: string;
   args: string[];
+  env?: Record<string, string>;
 }
 
 export type BinaryResolution =
@@ -22,9 +24,32 @@ export interface BinaryResolutionDependencies {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   nodePath?: string;
+  electron?: boolean;
   canExecute?: (path: string) => Promise<boolean>;
   isFile?: (path: string) => Promise<boolean>;
-  bundledCliPath?: () => string | null;
+  paseo?: ProviderConfigSource;
+}
+
+/**
+ * Paseo evaluates the server bundle from the daemon's cwd with an empty `import.meta`, so the
+ * bundled runtime is resolved from this plugin's directory in the daemon config instead.
+ */
+async function findBundledCli(paseo: ProviderConfigSource | undefined): Promise<string | null> {
+  const { config } = (await paseo?.config.get().catch(() => undefined)) ?? {};
+  const plugins = config?.plugins;
+  if (typeof plugins !== "object" || plugins === null) return null;
+  for (const source of Object.values(plugins)) {
+    const directory = (source as { path?: unknown } | null)?.path;
+    if (typeof directory !== "string") continue;
+    try {
+      const manifest = JSON.parse(await readFile(join(directory, "paseo-plugin.json"), "utf8"));
+      if (manifest?.id !== "context-mode") continue;
+      return createRequire(join(directory, "package.json")).resolve("context-mode/cli");
+    } catch {
+      // Not this plugin, or its install has no bundled runtime.
+    }
+  }
+  return null;
 }
 
 async function defaultIsFile(path: string): Promise<boolean> {
@@ -141,25 +166,21 @@ export async function resolveContextModeBinary(
     }
   }
 
-  const bundledCandidates: string[] = [];
-  const injectedBundledPath = dependencies.bundledCliPath?.();
-  if (injectedBundledPath) bundledCandidates.push(injectedBundledPath);
-  if (!dependencies.bundledCliPath) {
-    bundledCandidates.push(join(process.cwd(), "node_modules", "context-mode", "cli.bundle.mjs"));
-    try {
-      bundledCandidates.push(createRequire(import.meta.url).resolve("context-mode/cli"));
-    } catch {
-      // The plugin bundle may run outside the dependency tree; the cwd candidate remains valid.
-    }
-  }
-  for (const bundledCli of new Set(bundledCandidates)) {
-    if (!(await isFile(bundledCli))) continue;
+  const bundledCli = await findBundledCli(dependencies.paseo);
+  if (bundledCli) {
     const canonicalPath = await realpath(bundledCli).catch(() => bundledCli);
+    // Under the desktop app `nodePath` is Electron. Paseo strips this variable from agent
+    // environments, so an injected MCP server needs it to start as Node.
+    const electron = dependencies.electron ?? process.versions.electron !== undefined;
     return {
       state: "found",
       path: canonicalPath,
       source: "bundled",
-      launch: { program: nodePath, args: [canonicalPath] },
+      launch: {
+        program: nodePath,
+        args: [canonicalPath],
+        ...(electron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
+      },
     };
   }
 

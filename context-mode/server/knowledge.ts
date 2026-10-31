@@ -10,8 +10,8 @@ import type {
   PurgeKnowledgeInput,
   SearchKnowledgeInput,
 } from "../shared/knowledge";
-import type { ContextModeSettings, contextModeSettings } from "../shared/settings";
-import { type BinaryResolution, type LaunchDescriptor, resolveContextModeBinary } from "./binary";
+import type { contextModeSettings } from "../shared/settings";
+import { type LaunchDescriptor, resolveContextModeBinary } from "./binary";
 import {
   contextModeStorageRootFor,
   type ProviderConfigSource,
@@ -37,7 +37,7 @@ type KnowledgeToolCaller = (
 
 export interface KnowledgeHandlerDependencies {
   now?: () => Date;
-  resolveBinary?: (settings: ContextModeSettings) => Promise<BinaryResolution>;
+  resolveBinary?: typeof resolveContextModeBinary;
   callTool?: KnowledgeToolCaller;
 }
 
@@ -99,12 +99,14 @@ export function createContextModeKnowledgeHandlers(
   const resolveBinary = dependencies.resolveBinary ?? resolveContextModeBinary;
   const callTool = dependencies.callTool ?? callContextModeTool;
 
-  async function launchDescriptor(): Promise<LaunchDescriptor> {
+  async function launchDescriptor(
+    paseo: ProviderConfigSource | undefined,
+  ): Promise<LaunchDescriptor> {
     const settings = await settingsHandle.read();
     if (settings.status !== "ready") {
       throw new Error(`Context Mode settings are invalid: ${settings.error}`.slice(0, 4_096));
     }
-    const binary = await resolveBinary(settings.values);
+    const binary = await resolveBinary(settings.values, { paseo });
     if (binary.state === "missing") throw new Error(binary.message.slice(0, 4_096));
     return binary.launch;
   }
@@ -117,7 +119,7 @@ export function createContextModeKnowledgeHandlers(
     context: KnowledgeContext | undefined,
     environmentOverrides: NodeJS.ProcessEnv = {},
   ): Promise<KnowledgeToolResult> {
-    const launch = await launchDescriptor();
+    const launch = await launchDescriptor(context?.paseo);
     const providers = await readProviderOverrides(context?.paseo);
     const output = await callTool(launch, name, arguments_, {
       env: {

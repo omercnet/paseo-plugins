@@ -63,7 +63,7 @@ export type ProviderOverrides = Readonly<
 
 /** Structural slice of the hook/RPC `paseo` API; avoids a client-package import. */
 export interface ProviderConfigSource {
-  config: { get(): Promise<{ config: { providers?: unknown } }> };
+  config: { get(): Promise<{ config: { providers?: unknown; plugins?: unknown } }> };
 }
 
 /**
@@ -483,7 +483,7 @@ export async function injectContextModeOnCreate<T extends CreateRequest>(
     type: "stdio",
     command: launch.program,
     args: launch.args,
-    env: serverEnvironment(policy, storageRoot, request.env),
+    env: { ...launch.env, ...serverEnvironment(policy, storageRoot, request.env) },
   };
   return {
     ...request,
