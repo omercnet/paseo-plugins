@@ -82,6 +82,24 @@ describe("provider-aware Context Mode activation", () => {
     });
   });
 
+  test("carries the launch environment into the injected MCP server", async () => {
+    const settings = ContextModeSettingsSchema.parse({});
+    const request = {
+      config: { provider: "cursor", cwd: "/work", mcpServers: {} as Record<string, unknown> },
+    };
+    const result = await injectContextModeOnCreate(
+      request,
+      settings,
+      { ...launch, env: { ELECTRON_RUN_AS_NODE: "1" } },
+      { home: "/home/test", pathExists: async () => false, fileContains: async () => false },
+    );
+
+    expect(result.config.mcpServers["context-mode"]).toMatchObject({
+      command: "/usr/bin/node",
+      env: { ELECTRON_RUN_AS_NODE: "1", CONTEXT_MODE_PLATFORM: "cursor" },
+    });
+  });
+
   test("never replaces an explicitly configured Context Mode MCP server", async () => {
     const settings = ContextModeSettingsSchema.parse({});
     const request = {

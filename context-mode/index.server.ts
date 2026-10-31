@@ -45,7 +45,7 @@ export default function contribute(server: PluginServerContext) {
   server.before("agent.create", async ({ request }, { paseo }) => {
     const current = await settings.read();
     if (current.status !== "ready") return request;
-    const binary = await resolveContextModeBinary(current.values);
+    const binary = await resolveContextModeBinary(current.values, { paseo });
     if (binary.state !== "found") return request;
     const providers = await readProviderOverrides(paseo);
     return injectContextModeOnCreate(request, current.values, binary.launch, { providers });
