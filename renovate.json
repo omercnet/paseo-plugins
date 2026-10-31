@@ -11,6 +11,25 @@
       "matchStrings": ["\"catalog\":\\s*\\{[^}]*\\}", "\"(?<depName>[^\"]+)\":\\s*\"(?<currentValue>[^\"]+)\""],
       "datasourceTemplate": "npm",
       "versioningTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "agent-browser version pins that must match paseo-shared-browser/package.json",
+      "managerFilePatterns": [
+        "/^paseo-shared-browser/README\\.md$/",
+        "/^paseo-shared-browser/scripts/prepare-runtime\\.mjs$/",
+        "/^paseo-shared-browser/server/agent-browser-runtime\\.ts$/",
+        "/^paseo-shared-browser/server/runtime-(launch-environment|video-opt-in)\\.test\\.ts$/"
+      ],
+      "matchStrings": [
+        "AGENT_BROWSER_VERSION = \"(?<currentValue>[^\"]+)\"",
+        "expectedVersion = \"(?<currentValue>[^\"]+)\"",
+        "`agent-browser` version `(?<currentValue>[^`]+)`",
+        "\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\\n\""
+      ],
+      "depNameTemplate": "agent-browser",
+      "datasourceTemplate": "npm",
+      "versioningTemplate": "npm"
     }
   ],
   "packageRules": [
