@@ -135,7 +135,8 @@ async function startCapture(targetId, width, height, generation) {
               // encodeQueueSize drops when the codec dequeues a frame, not when it
               // outputs, so a slow encode keeps more frames in flight than the gate
               // above admits. Bound by one second at the 60fps ceiling, the host's
-              // packet age limit, so an in-flight output never loses its generation.
+              // packet age limit, so an in-flight output keeps its generation
+              // for as long as the host would still accept it.
               while (state.frameGenerations.size > 60)
                 state.frameGenerations.delete(state.frameGenerations.keys().next().value);
               const keyFrame =

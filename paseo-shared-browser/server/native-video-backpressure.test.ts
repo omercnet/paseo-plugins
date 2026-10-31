@@ -50,6 +50,7 @@ async function fixture(failFirstEncoder = false) {
       value.queued = false;
       this.encodeQueueSize--;
     }
+    /** Emits in submission order, as an in-order realtime codec does. */
     output() {
       const value = pending.shift();
       if (!value) throw new Error("No queued fixture frame");
