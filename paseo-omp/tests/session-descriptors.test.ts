@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import {
   listOmpSessionDescriptors,
@@ -55,6 +55,7 @@ async function writeReplayTranscript(root: string, message: object): Promise<str
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -827,6 +828,24 @@ describe("OMP session descriptor discovery", () => {
     await Promise.all(
       ids.map((id) => writeSession(sessionRoot, id.slice("native".length), id, "/repo")),
     );
+
+    const found = await listOmpSessionDescriptors(
+      { cwd: "/repo", limit: 500 },
+      { OMP_SESSION_DIR: sessionRoot },
+    );
+    expect(found.map(({ id }) => id).sort()).toEqual(ids.sort());
+  });
+
+  test("lists every session however long the scan takes", async () => {
+    const sessionRoot = await temporaryRoot();
+    const ids = Array.from({ length: 20 }, (_, index) => `native-slow-${index}`);
+    await Promise.all(ids.map((id) => writeSession(sessionRoot, `-slow-${id}`, id, "/repo")));
+    // Elapsed time must never truncate results: the clock jumps one second per call.
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => {
+      now += 1_000;
+      return now;
+    });
 
     const found = await listOmpSessionDescriptors(
       { cwd: "/repo", limit: 500 },

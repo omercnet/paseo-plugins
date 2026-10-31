@@ -10,12 +10,11 @@ const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
 const MAX_DESCRIPTOR_SUFFIX_BYTES = 64 * 1024;
 const MAX_PROMPT_PREVIEW_CHARS = 160;
 const MAX_DIRECTORY_DEPTH = 8;
-// Count caps only bound memory; the byte and time budgets bound scan work. OMP keeps one
-// directory per workspace, so these must exceed real session trees or lookups silently miss.
+// No wall-clock cutoff: it silently drops sessions on a slow disk. OMP keeps one directory per
+// workspace, so the count caps must exceed real session trees or lookups silently miss.
 const MAX_SCAN_DIRECTORIES = 65_536;
 const MAX_SCAN_FILES = 262_144;
 const MAX_SCAN_BYTES = 16 * 1024 * 1024;
-const MAX_SCAN_MS = 1_000;
 const SCAN_YIELD_INTERVAL = 128;
 const MAX_LIST_RESULTS = 500;
 const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
@@ -62,7 +61,6 @@ export interface OmpSessionListOptions {
 }
 
 interface ScanBudget {
-  startedAt: number;
   directories: number;
   files: number;
   bytes: number;
@@ -155,8 +153,7 @@ function budgetExceeded(budget: ScanBudget): boolean {
     budget.exhausted ||
     budget.directories >= MAX_SCAN_DIRECTORIES ||
     budget.files >= MAX_SCAN_FILES ||
-    budget.bytes >= MAX_SCAN_BYTES ||
-    Date.now() - budget.startedAt >= MAX_SCAN_MS
+    budget.bytes >= MAX_SCAN_BYTES
   );
 }
 
@@ -469,7 +466,6 @@ export async function listOmpSessionDescriptors(
   const query = options.query?.trim().toLowerCase();
   const matches: OmpSessionDescriptor[] = [];
   const budget: ScanBudget = {
-    startedAt: Date.now(),
     directories: 0,
     files: 0,
     bytes: 0,
