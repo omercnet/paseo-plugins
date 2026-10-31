@@ -64,12 +64,15 @@ export async function terminatePosixProcessTree(
 
 export type ProcessTreeCleanup = "verified" | "uncertain" | "failed";
 
-export async function stopWindowsTree(pid: number): Promise<ProcessTreeCleanup> {
+export async function stopWindowsTree(
+  pid: number,
+  spawnTaskkill: typeof spawn = spawn,
+): Promise<ProcessTreeCleanup> {
   const result = Promise.withResolvers<ProcessTreeCleanup>();
   const systemRoot = process.env.SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT;
   let taskkill: ChildProcessWithoutNullStreams;
   try {
-    taskkill = spawn(
+    taskkill = spawnTaskkill(
       join(systemRoot, "System32", "taskkill.exe"),
       ["/PID", String(pid), "/T", "/F"],
       {
@@ -100,7 +103,8 @@ export async function stopWindowsTree(pid: number): Promise<ProcessTreeCleanup> 
   taskkill.once("error", () => finish("failed"));
   taskkill.once("close", (code, signal) => {
     // 128 means taskkill found no such process because it already exited; retrying only repeats
-    // 128. Callers still wait for the child's own exit, so a live OMP process cannot pass.
+    // 128. Callers still wait for the root OMP process's own exit, so a live root cannot pass.
+    // Descendants of an already exited root cannot be enumerated by taskkill and are not checked.
     finish((code === 0 || code === 128) && signal === null ? "verified" : "failed");
   });
   return result.promise;

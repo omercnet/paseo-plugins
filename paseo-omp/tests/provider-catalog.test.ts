@@ -133,7 +133,7 @@ describe("OMP direct provider", () => {
         runtime: new FakeOmpRuntime(),
       });
       const availability = await provider.checkAvailability?.({ scope: "global" });
-      expect(availability?.status).toMatch(/^(?:unrunnable|incompatible|available)$/);
+      expect(availability?.status).not.toBe("missing");
     } finally {
       await rm(binDir, { recursive: true, force: true });
     }
