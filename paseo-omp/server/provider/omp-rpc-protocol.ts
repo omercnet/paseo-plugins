@@ -130,6 +130,7 @@ export const OMP_RPC_COMMAND_POLICIES = {
   bash: "unsupported",
   abort_bash: "unsupported",
   get_session_stats: "implemented",
+  get_session_lease: "unsupported",
   export_html: "unsupported",
   switch_session: "unsupported",
   branch: "implemented",
