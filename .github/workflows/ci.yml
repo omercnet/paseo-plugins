@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Dispatched by renovate-lockfiles.yml after it pushes a lockfile commit.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,9 +34,9 @@ jobs:
       - name: Detect affected plugins
         id: affected
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          DIFF_MODE: ${{ github.event_name == 'pull_request' && 'merge-base' || 'direct' }}
+          DIFF_MODE: ${{ github.event_name == 'push' && 'direct' || 'merge-base' }}
         run: node .github/scripts/detect-affected.mjs
 
   workflow-security:

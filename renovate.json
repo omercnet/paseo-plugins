@@ -1,6 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["local>omercnet/renovate-config"],
+  "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bun catalog in the root package.json, which the bun and npm managers do not read",
+      "managerFilePatterns": ["/^package\\.json$/"],
+      "matchStringsStrategy": "recursive",
+      "matchStrings": ["\"catalog\":\\s*\\{[^}]*\\}", "\"(?<depName>[^\"]+)\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "npm",
+      "versioningTemplate": "npm"
+    }
+  ],
   "packageRules": [
     {
       "description": "Keep Paseo packages on the same release",
@@ -11,6 +23,12 @@
       "description": "Keep OMP SDK packages on the same release",
       "matchPackageNames": ["/^@oh-my-pi\\//"],
       "groupName": "OMP SDK"
+    },
+    {
+      "description": "The Paseo app provides React and React Native; the catalog pins its versions",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["react", "react-native"],
+      "enabled": false
     }
   ]
 }
