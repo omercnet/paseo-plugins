@@ -138,6 +138,7 @@ describe("OMP direct provider", () => {
       cwd: "/repo",
       limit: 2,
       sessionDir: "/sessions/custom",
+      signal: expect.any(AbortSignal),
     });
     const replayEvents = events.slice(replayStart);
     const readyIndex = replayEvents.findIndex((event) => event.type === "session.ready");

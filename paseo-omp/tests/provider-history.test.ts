@@ -199,7 +199,13 @@ describe("OMP history-only sessions", () => {
     // The recorded workspace is compared, never opened, and the original native identity is the
     // only one authorized.
     expect(runtime.sessionListRequests).toEqual([
-      { sessionId: NATIVE_SESSION_ID, cwd: REMOVED_CWD, limit: 2, sessionDir: undefined },
+      {
+        sessionId: NATIVE_SESSION_ID,
+        cwd: REMOVED_CWD,
+        limit: 2,
+        sessionDir: undefined,
+        signal: expect.any(AbortSignal),
+      },
     ]);
     expect(runtime.persistedSessionRequests).toEqual([
       { sessionFile: TRANSCRIPT_FILE, sessionId: NATIVE_SESSION_ID, cwd: REMOVED_CWD },

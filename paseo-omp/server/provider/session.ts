@@ -228,8 +228,9 @@ export async function authorizeNativeSession(
   sessionId: string,
   cwd: string,
   sessionDir?: string,
+  signal?: AbortSignal,
 ): Promise<OmpSessionDescriptor> {
-  const matches = await runtime.listSessions({ sessionId, cwd, limit: 2, sessionDir });
+  const matches = await runtime.listSessions({ sessionId, cwd, limit: 2, sessionDir, signal });
   const descriptor = matches[0];
   if (matches.length !== 1 || descriptor?.id !== sessionId) {
     throw new OmpPublicError("OMP session could not be resolved in this workspace");
@@ -542,6 +543,7 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
           resumeSessionId,
           input.config.cwd,
           normalizedConfig.sessionDir,
+          signal,
         )
       : undefined;
     validateOmpHostToolConfig(effectiveConfig);

@@ -1,7 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
+import type { OmpSessionListOptions } from "../server/provider/session-descriptors";
 import {
   ALTERNATE_MODEL,
   ALTERNATE_MODEL_PUBLIC_ID,
@@ -56,10 +57,39 @@ describe("OMP direct provider", () => {
     );
     expect(runtime.starts).toHaveLength(0);
     expect(runtime.sessionListRequests).toEqual([
-      { query: undefined, limit: undefined, sessionDir: undefined },
-      { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2 },
+      {
+        query: undefined,
+        limit: undefined,
+        sessionDir: undefined,
+        signal: expect.any(AbortSignal),
+      },
+      { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2, signal: expect.any(AbortSignal) },
     ]);
     await connection.close();
+  });
+
+  test("aborts a pending host-wide session listing when the connection closes", async () => {
+    const runtime = new FakeOmpRuntime();
+    let listingSignal: AbortSignal | undefined;
+    runtime.listSessions = (options: OmpSessionListOptions) =>
+      new Promise<never>((_, reject) => {
+        listingSignal = options.signal;
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+          once: true,
+        });
+      });
+    const { connection } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.list",
+      "session.persistence",
+    ]);
+    await connection.send({ type: "sessions", requestId: "pending-list" });
+    await vi.waitFor(() => expect(listingSignal).toBeDefined());
+    expect(listingSignal?.aborted).toBe(false);
+
+    await connection.close();
+
+    expect(listingSignal?.aborted).toBe(true);
   });
 
   test("lists sessions without merging host environment names", async () => {

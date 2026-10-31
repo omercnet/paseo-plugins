@@ -10,12 +10,11 @@ const MAX_DESCRIPTOR_PREFIX_BYTES = 64 * 1024;
 const MAX_DESCRIPTOR_SUFFIX_BYTES = 64 * 1024;
 const MAX_PROMPT_PREVIEW_CHARS = 160;
 const MAX_DIRECTORY_DEPTH = 8;
-// Count caps only bound memory; the byte and time budgets bound scan work. OMP keeps one
-// directory per workspace, so these must exceed real session trees or lookups silently miss.
+// No wall-clock cutoff: it silently drops sessions on a slow disk. OMP keeps one directory per
+// workspace, so the count caps must exceed real session trees or lookups silently miss.
 const MAX_SCAN_DIRECTORIES = 65_536;
 const MAX_SCAN_FILES = 262_144;
 const MAX_SCAN_BYTES = 16 * 1024 * 1024;
-const MAX_SCAN_MS = 1_000;
 const SCAN_YIELD_INTERVAL = 128;
 const MAX_LIST_RESULTS = 500;
 const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
@@ -59,10 +58,10 @@ export interface OmpSessionListOptions {
   limit?: number;
   sessionId?: string;
   sessionDir?: string;
+  signal?: AbortSignal;
 }
 
 interface ScanBudget {
-  startedAt: number;
   directories: number;
   files: number;
   bytes: number;
@@ -155,8 +154,7 @@ function budgetExceeded(budget: ScanBudget): boolean {
     budget.exhausted ||
     budget.directories >= MAX_SCAN_DIRECTORIES ||
     budget.files >= MAX_SCAN_FILES ||
-    budget.bytes >= MAX_SCAN_BYTES ||
-    Date.now() - budget.startedAt >= MAX_SCAN_MS
+    budget.bytes >= MAX_SCAN_BYTES
   );
 }
 
@@ -418,11 +416,13 @@ async function scanSessionFiles(
   root: string,
   budget: ScanBudget,
   visit: (file: string) => Promise<boolean>,
+  signal?: AbortSignal,
 ): Promise<void> {
   const pending: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
   while (pending.length > 0 && !budgetExceeded(budget)) {
     const current = pending.pop();
     if (!current) return;
+    signal?.throwIfAborted();
     budget.directories += 1;
     let directory: Dir;
     try {
@@ -432,6 +432,7 @@ async function scanSessionFiles(
     }
     try {
       for await (const entry of directory) {
+        signal?.throwIfAborted();
         budget.entries += 1;
         if (budget.entries % SCAN_YIELD_INTERVAL === 0) await yieldToEventLoop();
         if (budgetExceeded(budget)) return;
@@ -469,7 +470,6 @@ export async function listOmpSessionDescriptors(
   const query = options.query?.trim().toLowerCase();
   const matches: OmpSessionDescriptor[] = [];
   const budget: ScanBudget = {
-    startedAt: Date.now(),
     directories: 0,
     files: 0,
     bytes: 0,
@@ -481,29 +481,35 @@ export async function listOmpSessionDescriptors(
       ? join(environment.HOME ?? environment.USERPROFILE ?? homedir(), options.sessionDir.slice(2))
       : resolve(options.cwd ?? homedir(), options.sessionDir)
     : ompSessionDir(environment);
-  await scanSessionFiles(root, budget, async (file) => {
-    const fileName = basename(file);
-    const stem = fileName.slice(0, -".jsonl".length);
-    if (requestedId && !stem.endsWith(`_${requestedId}`)) return true;
-    const descriptor = await parseDescriptor(file, budget);
-    if (
-      !descriptor ||
-      !stem.endsWith(`_${descriptor.id}`) ||
-      (options.cwd !== undefined && descriptor.cwd !== options.cwd)
-    )
-      return !budgetExceeded(budget);
-    if (
-      query &&
-      !descriptor.id.toLowerCase().includes(query) &&
-      !descriptor.title?.toLowerCase().includes(query) &&
-      !descriptor.firstPromptPreview?.toLowerCase().includes(query) &&
-      !descriptor.lastPromptPreview?.toLowerCase().includes(query)
-    ) {
-      return !budgetExceeded(budget);
-    }
-    retainNewest(matches, descriptor, retentionLimit);
-    return !requestedId || matches.length < 2;
-  });
+  await scanSessionFiles(
+    root,
+    budget,
+    async (file) => {
+      const fileName = basename(file);
+      const stem = fileName.slice(0, -".jsonl".length);
+      if (requestedId && !stem.endsWith(`_${requestedId}`)) return true;
+      const descriptor = await parseDescriptor(file, budget);
+      if (
+        !descriptor ||
+        !stem.endsWith(`_${descriptor.id}`) ||
+        (options.cwd !== undefined && descriptor.cwd !== options.cwd)
+      )
+        return !budgetExceeded(budget);
+      if (
+        query &&
+        !descriptor.id.toLowerCase().includes(query) &&
+        !descriptor.title?.toLowerCase().includes(query) &&
+        !descriptor.firstPromptPreview?.toLowerCase().includes(query) &&
+        !descriptor.lastPromptPreview?.toLowerCase().includes(query)
+      ) {
+        return !budgetExceeded(budget);
+      }
+      retainNewest(matches, descriptor, retentionLimit);
+      return !requestedId || matches.length < 2;
+    },
+    options.signal,
+  );
+  options.signal?.throwIfAborted();
   return matches;
 }
 
