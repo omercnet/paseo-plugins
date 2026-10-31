@@ -1,0 +1,60 @@
+# Renovate's hosted app cannot regenerate bun.lock or the npm-shrinkwrap.json files: the npm
+# manager fails on `catalog:` specs, and catalog entries come from a regex manager with no
+# artifact support. This refreshes them on each Renovate push. Pushes made with GITHUB_TOKEN do
+# not start workflows, so the job dispatches CI for the new head itself, and it cannot loop.
+name: Renovate lockfiles
+
+on:
+  push:
+    branches: ["renovate/**"]
+
+permissions: {}
+
+concurrency:
+  group: renovate-lockfiles-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    name: Refresh bun.lock and shrinkwraps
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.4
+      - name: Regenerate lockfiles
+        run: |
+          bun install --ignore-scripts
+          for shrinkwrap in $(git ls-files '*/npm-shrinkwrap.json'); do
+            plugin="${shrinkwrap%/*}"
+            node scripts/shrinkwrap.mjs --check "$plugin" || node scripts/shrinkwrap.mjs "$plugin"
+          done
+      - name: Push lockfiles and run CI
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if git diff --quiet; then
+            echo "Lockfiles are up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --all --message "chore(deps): refresh lockfiles"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
+          gh workflow run ci.yml --repo "$REPOSITORY" --ref "$BRANCH"
