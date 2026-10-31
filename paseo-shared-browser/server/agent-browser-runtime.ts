@@ -400,14 +400,18 @@ export class AgentBrowserRuntime {
     } catch (error) {
       // Record the daemon a failed open left behind: since agent-browser 0.40.0 `close`
       // removes the PID file before returning, after which its exit is unobservable.
-      await this.captureDaemon().catch(() => undefined);
+      await this.protectIpcMetadata();
+      // An unverified record may be a stale PID file of an earlier daemon, written before
+      // this one recorded its own: leave it to shutdown's lazy lookup instead.
+      await this.captureDaemon(true).catch(() => undefined);
       throw error;
     }
-    this.assertRuntimeOpen();
-    const targetId = findString(opened, ["targetId", "target_id"]);
+    // Capture before the stopping check, so a shutdown racing this launch can still
+    // confirm the exit after `close` removed the PID file.
     await this.protectIpcMetadata();
     await this.captureDaemon();
     this.assertRuntimeOpen();
+    const targetId = findString(opened, ["targetId", "target_id"]);
     await this.connectCdp(targetId);
   }
 
@@ -1797,11 +1801,13 @@ export class AgentBrowserRuntime {
   /**
    * Records the PID-file daemon. Only a PID whose environment carries this runtime's own
    * nonce gets a verified identity; anything else is observable but never signalled.
+   * `verifiedOnly` leaves an unverified PID unrecorded, so a later lookup re-reads the file.
    */
-  private async captureDaemon(): Promise<void> {
+  private async captureDaemon(verifiedOnly = false): Promise<void> {
     const pid = await this.daemonPid();
     if (pid === null) return;
     const probe = await probeProcess(pid, this.ownerNonce);
+    if (verifiedOnly && probe.status !== "owned") return;
     this.daemon = { pid, identity: probe.status === "owned" ? probe.identity : null };
   }
 

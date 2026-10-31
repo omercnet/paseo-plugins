@@ -308,6 +308,28 @@ describe.each(ownershipModes)(
       expect(daemon.pid && alive(daemon.pid)).toBe(false);
     });
 
+    it("does not take a stale PID file left before a failed open as the exit of a later daemon", async () => {
+      const f = await fixture(200);
+      const stale = await ownChild();
+      stale.kill("SIGKILL");
+      await exited(stale);
+      const pidFile = join(f.ipc, "owned.pid");
+      // A crashed earlier daemon left its PID file; the new one has not recorded itself yet.
+      await writeFile(pidFile, String(stale.pid));
+      cli.version = AGENT_BROWSER_VERSION;
+      cli.onOpen = () => undefined;
+      await expect(f.runtime.launch()).rejects.toThrow("agent-browser command failed");
+      // The new daemon records itself only after the open already failed.
+      const daemon = await ownChild(f.native.ownerNonce);
+      own(daemon);
+      await writeFile(pidFile, String(daemon.pid));
+      const kill = vi.spyOn(process, "kill");
+      await f.runtime.shutdown();
+      expect(kill).toHaveBeenCalledWith(daemon.pid, "SIGKILL");
+      await exited(daemon);
+      expect(daemon.pid && alive(daemon.pid)).toBe(false);
+    });
+
     it("shares one in-flight shutdown and never reports success after a failed one", async () => {
       const f = await fixture(150);
       const daemon = await ownChild();
