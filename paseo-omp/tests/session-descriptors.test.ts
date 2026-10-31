@@ -854,6 +854,25 @@ describe("OMP session descriptor discovery", () => {
     expect(found.map(({ id }) => id).sort()).toEqual(ids.sort());
   });
 
+  test("stops scanning when the caller aborts", async () => {
+    const sessionRoot = await temporaryRoot();
+    await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        writeSession(sessionRoot, `-abort-${index}`, `native-abort-${index}`, "/repo"),
+      ),
+    );
+    const closed = new Error("connection closed");
+    const controller = new AbortController();
+    controller.abort(closed);
+
+    await expect(
+      listOmpSessionDescriptors(
+        { cwd: "/repo", signal: controller.signal },
+        { OMP_SESSION_DIR: sessionRoot },
+      ),
+    ).rejects.toBe(closed);
+  });
+
   test("rejects invalid scoped listing", async () => {
     await expect(
       listOmpSessionDescriptors({ cwd: "" }, { OMP_SESSION_DIR: "/tmp/unused" }),

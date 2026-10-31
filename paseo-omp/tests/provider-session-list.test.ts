@@ -56,8 +56,13 @@ describe("OMP direct provider", () => {
     );
     expect(runtime.starts).toHaveLength(0);
     expect(runtime.sessionListRequests).toEqual([
-      { query: undefined, limit: undefined, sessionDir: undefined },
-      { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2 },
+      {
+        query: undefined,
+        limit: undefined,
+        sessionDir: undefined,
+        signal: expect.any(AbortSignal),
+      },
+      { sessionId: NATIVE_SESSION_ID, cwd: "/repo", limit: 2, signal: expect.any(AbortSignal) },
     ]);
     await connection.close();
   });

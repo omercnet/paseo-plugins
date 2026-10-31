@@ -58,6 +58,7 @@ export interface OmpSessionListOptions {
   limit?: number;
   sessionId?: string;
   sessionDir?: string;
+  signal?: AbortSignal;
 }
 
 interface ScanBudget {
@@ -415,11 +416,13 @@ async function scanSessionFiles(
   root: string,
   budget: ScanBudget,
   visit: (file: string) => Promise<boolean>,
+  signal?: AbortSignal,
 ): Promise<void> {
   const pending: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
   while (pending.length > 0 && !budgetExceeded(budget)) {
     const current = pending.pop();
     if (!current) return;
+    signal?.throwIfAborted();
     budget.directories += 1;
     let directory: Dir;
     try {
@@ -429,6 +432,7 @@ async function scanSessionFiles(
     }
     try {
       for await (const entry of directory) {
+        signal?.throwIfAborted();
         budget.entries += 1;
         if (budget.entries % SCAN_YIELD_INTERVAL === 0) await yieldToEventLoop();
         if (budgetExceeded(budget)) return;
@@ -477,29 +481,34 @@ export async function listOmpSessionDescriptors(
       ? join(environment.HOME ?? environment.USERPROFILE ?? homedir(), options.sessionDir.slice(2))
       : resolve(options.cwd ?? homedir(), options.sessionDir)
     : ompSessionDir(environment);
-  await scanSessionFiles(root, budget, async (file) => {
-    const fileName = basename(file);
-    const stem = fileName.slice(0, -".jsonl".length);
-    if (requestedId && !stem.endsWith(`_${requestedId}`)) return true;
-    const descriptor = await parseDescriptor(file, budget);
-    if (
-      !descriptor ||
-      !stem.endsWith(`_${descriptor.id}`) ||
-      (options.cwd !== undefined && descriptor.cwd !== options.cwd)
-    )
-      return !budgetExceeded(budget);
-    if (
-      query &&
-      !descriptor.id.toLowerCase().includes(query) &&
-      !descriptor.title?.toLowerCase().includes(query) &&
-      !descriptor.firstPromptPreview?.toLowerCase().includes(query) &&
-      !descriptor.lastPromptPreview?.toLowerCase().includes(query)
-    ) {
-      return !budgetExceeded(budget);
-    }
-    retainNewest(matches, descriptor, retentionLimit);
-    return !requestedId || matches.length < 2;
-  });
+  await scanSessionFiles(
+    root,
+    budget,
+    async (file) => {
+      const fileName = basename(file);
+      const stem = fileName.slice(0, -".jsonl".length);
+      if (requestedId && !stem.endsWith(`_${requestedId}`)) return true;
+      const descriptor = await parseDescriptor(file, budget);
+      if (
+        !descriptor ||
+        !stem.endsWith(`_${descriptor.id}`) ||
+        (options.cwd !== undefined && descriptor.cwd !== options.cwd)
+      )
+        return !budgetExceeded(budget);
+      if (
+        query &&
+        !descriptor.id.toLowerCase().includes(query) &&
+        !descriptor.title?.toLowerCase().includes(query) &&
+        !descriptor.firstPromptPreview?.toLowerCase().includes(query) &&
+        !descriptor.lastPromptPreview?.toLowerCase().includes(query)
+      ) {
+        return !budgetExceeded(budget);
+      }
+      retainNewest(matches, descriptor, retentionLimit);
+      return !requestedId || matches.length < 2;
+    },
+    options.signal,
+  );
   return matches;
 }
 

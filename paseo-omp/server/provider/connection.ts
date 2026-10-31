@@ -893,6 +893,7 @@ export function createOmpConnection(
                 query: input.query,
                 limit: input.limit,
                 sessionDir: listingConfig.sessionDir,
+                signal: shutdown.signal,
               })
             ).map((session) => ({
               persistence: { version: 1, data: { sessionId: session.id } },
@@ -997,6 +998,7 @@ export function createOmpConnection(
                 environment,
                 hostInheritEnv,
                 scheduler,
+                controller.signal,
               )
             : await OmpProviderSession.open(
                 input,
