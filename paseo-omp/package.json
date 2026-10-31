@@ -78,8 +78,5 @@
     "typescript": "catalog:",
     "vitest": "catalog:",
     "zod": "catalog:"
-  },
-  "overrides": {
-    "qs": "6.16.1"
   }
 }
