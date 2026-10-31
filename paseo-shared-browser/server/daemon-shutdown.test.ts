@@ -1,10 +1,11 @@
 /** The session daemon is signalled only while it is still the exact process this runtime launched. */
 import { type ChildProcess, spawn } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentBrowserRuntime } from "./agent-browser-runtime";
+import { AGENT_BROWSER_VERSION, AgentBrowserRuntime } from "./agent-browser-runtime";
 import { RUNTIME_OWNER_VARIABLE } from "./process-identity";
 
 const probe = vi.hoisted(() => ({
@@ -32,20 +33,31 @@ vi.mock("./process-identity", async (importOriginal) => {
   };
 });
 
-const cli = vi.hoisted(() => ({ onClose: null as null | (() => void), closes: 0 }));
+const cli = vi.hoisted(() => ({
+  onClose: null as null | (() => void),
+  closes: 0,
+  /** Set to make `open` fail after its side effect, like a navigation failure. */
+  onOpen: null as null | (() => void),
+  version: "0.37.1",
+}));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   execFile: (
     _file: string,
     args: string[],
     _options: unknown,
-    callback: (error: null, result: { stdout: string }) => void,
+    callback: (error: Error | null, result?: { stdout: string }) => void,
   ) => {
     if (args.includes("close")) {
       cli.closes += 1;
       cli.onClose?.();
     }
-    callback(null, { stdout: args.includes("--version") ? "0.37.1\n" : "{}\n" });
+    if (args.includes("open") && cli.onOpen) {
+      cli.onOpen();
+      callback(new Error("Navigation failed: net::ERR_CONNECTION_REFUSED"));
+      return;
+    }
+    callback(null, { stdout: args.includes("--version") ? `${cli.version}\n` : "{}\n" });
   },
 }));
 
@@ -58,6 +70,8 @@ afterEach(async () => {
   );
   cli.onClose = null;
   cli.closes = 0;
+  cli.onOpen = null;
+  cli.version = "0.37.1";
   probe.unreadable = false;
   probe.simulated = null;
   vi.restoreAllMocks();
@@ -270,6 +284,27 @@ describe.each(ownershipModes)(
       // Portable contract (signalCode is POSIX-only): the runtime asked for SIGKILL of the
       // owned pid, and that process is observably gone.
       expect(kill).toHaveBeenCalledWith(daemon.pid, "SIGKILL");
+      expect(daemon.pid && alive(daemon.pid)).toBe(false);
+    });
+
+    it("confirms the exit of a daemon left by a failed open even when close removes its PID file", async () => {
+      const f = await fixture();
+      const daemon = await ownChild(f.native.ownerNonce);
+      own(daemon);
+      const pidFile = join(f.ipc, "owned.pid");
+      cli.version = AGENT_BROWSER_VERSION;
+      // The daemon starts and records its PID, then the initial navigation fails.
+      cli.onOpen = () => writeFileSync(pidFile, String(daemon.pid));
+      // agent-browser >= 0.40.0: close returns only after the daemon removed its PID file.
+      cli.onClose = () => {
+        daemon.kill("SIGTERM");
+        rmSync(pidFile, { force: true });
+      };
+      await expect(f.runtime.launch()).rejects.toThrow("agent-browser command failed");
+      const kill = vi.spyOn(process, "kill");
+      await f.runtime.shutdown();
+      await exited(daemon);
+      expect(kill).not.toHaveBeenCalledWith(daemon.pid, "SIGKILL");
       expect(daemon.pid && alive(daemon.pid)).toBe(false);
     });
 
