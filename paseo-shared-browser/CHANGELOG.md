@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.2](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.1...shared-browser-v4.1.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **deps:** update dependency agent-browser to v0.39.4 ([#428](https://github.com/omercnet/paseo-plugins/issues/428)) ([e9019d8](https://github.com/omercnet/paseo-plugins/commit/e9019d829b10e1d591a5c05775ff645cfcc82969))
+
 ## [4.1.1](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.0...shared-browser-v4.1.1) (2026-10-29)
 
 
