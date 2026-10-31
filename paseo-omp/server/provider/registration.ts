@@ -118,6 +118,7 @@ export interface OmpProviderOptions {
   timelineScheduler?: OmpTimelineScheduler;
   replayTimeoutMs?: number;
   environment?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
   /** Fixed, non-secret profile/store identity for providers whose configuration is server-owned. */
   catalogIdentity?: Readonly<Record<string, string>>;
   mcpInitializationTimeoutMs?: number;
@@ -156,6 +157,7 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
     });
   const nativeReservations = new OmpNativeSessionReservations();
   const sessionLimit = options.sessionLimit ?? new OmpSessionLimit();
+  const platform = options.platform ?? process.platform;
   const checkAvailability: NonNullable<ProviderRegistrationCompat["checkAvailability"]> = async (
     catalogOptions,
     context,
@@ -165,6 +167,12 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
     }
     const providerOptions = parseOmpProviderOptions(catalogOptions.providerOptions);
     const environment = { ...(options.environment ?? process.env), ...providerOptions.env };
+    // Windows env names are case-insensitive, but a copy keeps only the literal key (often
+    // `Path`), so `environment.PATH` would miss it and OMP would look not installed.
+    if (platform === "win32" && environment.PATH === undefined) {
+      const pathKey = Object.keys(environment).find((name) => name.toUpperCase() === "PATH");
+      if (pathKey !== undefined) environment.PATH = environment[pathKey];
+    }
     const configuredCommand: readonly [string, ...string[]] = providerOptions.command?.[0]
       ? [providerOptions.command[0], ...providerOptions.command.slice(1)]
       : [environment.OMP_COMMAND || "omp"];
@@ -173,6 +181,7 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
       cwd:
         catalogOptions.scope === "workspace" && catalogOptions.cwd ? catalogOptions.cwd : homedir(),
       environment,
+      platform,
       timeoutMs: context?.timeoutMs,
     });
   };

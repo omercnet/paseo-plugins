@@ -1,10 +1,11 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, test } from "vitest";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import {
+  stopWindowsTree,
   terminatePosixProcessTree,
   terminateSpawnedProcessTree,
 } from "../server/provider/omp-rpc-process";
@@ -157,6 +158,25 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
       }
     },
   );
+
+  test("treats taskkill exit 128 (process already gone) as verified cleanup", async () => {
+    for (const [code, outcome] of [
+      [0, "verified"],
+      [128, "verified"],
+      [1, "failed"],
+    ] as const) {
+      const spawnTaskkill = (() => {
+        const taskkill = Object.assign(new EventEmitter(), {
+          stdout: { resume() {} },
+          stderr: { resume() {} },
+          kill() {},
+        });
+        queueMicrotask(() => taskkill.emit("close", code, null));
+        return taskkill;
+      }) as unknown as typeof spawn;
+      await expect(stopWindowsTree(4321, spawnTaskkill)).resolves.toBe(outcome);
+    }
+  });
 
   test("terminates a surviving POSIX process group after its leader exited", async () => {
     const signals: Array<NodeJS.Signals | 0> = [];

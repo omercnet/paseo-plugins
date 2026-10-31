@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ProviderInput } from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
@@ -117,6 +120,23 @@ describe("OMP direct provider", () => {
       }),
     );
     await connection.close();
+  });
+
+  test("finds OMP through a Windows `Path` key in a copied environment", async () => {
+    const binDir = await mkdtemp(join(tmpdir(), "paseo-omp-win-path-"));
+    try {
+      await writeFile(join(binDir, "omp.EXE"), "#!/bin/sh\nexit 0\n");
+      await chmod(join(binDir, "omp.EXE"), 0o755);
+      const provider = createOmpProvider({
+        environment: { Path: binDir, PATHEXT: ".EXE", HOME: binDir },
+        platform: "win32",
+        runtime: new FakeOmpRuntime(),
+      });
+      const availability = await provider.checkAvailability?.({ scope: "global" });
+      expect(availability?.status).not.toBe("missing");
+    } finally {
+      await rm(binDir, { recursive: true, force: true });
+    }
   });
 
   test("ignores daemon launch data so spawns keep the plugin-owned command and environment", async () => {
