@@ -32,7 +32,7 @@
     },
     {
       "description": "CI Node versions and @types/node track the engines floors (>=24, paseo-omp >=22.18.0); raise them together with engines, not by Renovate major bumps",
-      "matchPackageNames": ["node", "@types/node"],
+      "matchPackageNames": ["node", "actions/node-versions", "@types/node"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     }
