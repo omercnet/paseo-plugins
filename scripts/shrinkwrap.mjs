@@ -5,7 +5,7 @@
 // The shrinkwrap locks the production dependency tree (resolved registry URLs and integrity) so
 // installing the published package cannot float to newer transitive versions. It is generated from
 // the manifest `bun pm pack` publishes: `catalog:` specs resolved, devDependencies removed.
-import { execFileSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -55,18 +55,9 @@ export function writeShrinkwrap(pluginDirectory) {
       join(staging, "package.json"),
       `${JSON.stringify(publishedManifest(pluginDirectory), null, 2)}\n`,
     );
-    execFileSync(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      [
-        "install",
-        "--package-lock-only",
-        "--omit=dev",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--workspaces=false",
-        "--registry=https://registry.npmjs.org/",
-      ],
+    // Through the shell so Windows resolves npm.cmd.
+    execSync(
+      "npm install --package-lock-only --omit=dev --ignore-scripts --no-audit --no-fund --workspaces=false --registry=https://registry.npmjs.org/",
       { cwd: staging, stdio: "inherit" },
     );
     writeFileSync(
