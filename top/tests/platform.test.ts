@@ -321,11 +321,13 @@ describe("a live process tree", () => {
     });
     spawned.push(child);
     const scan = defaultScan();
-    let listedAt = 0;
+    // Time each listing from when its table was read, as trackSessions does: a Windows scan
+    // takes seconds, so timing from the call start or end would skew the CPU rate.
+    let readAt = 0;
     const list = async () => {
       const began = Date.now();
       const listing = await Promise.resolve(scan()).catch(() => null);
-      listedAt = began;
+      readAt = began + (Array.isArray(listing) ? 0 : (listing?.delayMs ?? 0));
       return (Array.isArray(listing) ? listing : listing?.procs) ?? undefined;
     };
 
@@ -340,7 +342,7 @@ describe("a live process tree", () => {
       const tree = procs && find(procs);
       return procs && tree ? { procs, tree } : undefined;
     }, "the process tree to be listed");
-    const firstAt = listedAt;
+    const firstAt = readAt;
     const first = found.procs;
     const { root, grand } = found.tree;
 
@@ -353,7 +355,7 @@ describe("a live process tree", () => {
     // And the busy loop shows up as CPU on the second scan, charged through the grandchild too.
     await new Promise((resolve) => setTimeout(resolve, 2000));
     const second = await until(list, "a second scan");
-    const elapsed = (Date.now() - firstAt) / 1000;
+    const elapsed = (readAt - firstAt) / 1000;
     const { sessions } = attribute(second, attribute(first, null, 0).ticks, elapsed);
     const session = sessions.find((s) => s.agentId === agentId);
     expect(session?.processes).toBeGreaterThanOrEqual(2);
