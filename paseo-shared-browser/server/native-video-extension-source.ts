@@ -132,7 +132,11 @@ async function startCapture(targetId, width, height, generation) {
                 continue;
               state.lastEncodedTimestampUs = frame.timestamp;
               state.frameGenerations.set(frame.timestamp, current.generation);
-              while (state.frameGenerations.size > 4)
+              // encodeQueueSize drops when the codec dequeues a frame, not when it
+              // outputs, so a slow encode keeps more frames in flight than the gate
+              // above admits. Bound by one second at the 60fps ceiling, the host's
+              // packet age limit, so an in-flight output never loses its generation.
+              while (state.frameGenerations.size > 60)
                 state.frameGenerations.delete(state.frameGenerations.keys().next().value);
               const keyFrame =
                 state.forceKey || frame.timestamp - state.lastKeyTimestamp >= 1000000;

@@ -17,7 +17,7 @@ async function fixture(failFirstEncoder = false) {
       }),
     cancel: async () => deliver({ done: true }),
   };
-  const pending: { timestamp: number; type: string }[] = [];
+  const pending: { timestamp: number; type: string; queued: boolean }[] = [];
   const encoded: { timestamp: number; keyFrame: boolean }[] = [];
   let encoder: Encoder;
   const instances: Encoder[] = [];
@@ -37,14 +37,30 @@ async function fixture(failFirstEncoder = false) {
       if (failFirstEncoder && this === instances[0]) throw new Error("Codec stopped");
       this.encodeQueueSize++;
       encoded.push({ timestamp: frame.timestamp, keyFrame: options.keyFrame });
-      pending.push({ timestamp: frame.timestamp, type: options.keyFrame ? "key" : "delta" });
+      pending.push({
+        timestamp: frame.timestamp,
+        type: options.keyFrame ? "key" : "delta",
+        queued: true,
+      });
+    }
+    /** WebCodecs lowers encodeQueueSize once the codec starts a frame, before its output. */
+    dequeue() {
+      const value = pending.find((entry) => entry.queued);
+      if (!value) throw new Error("No queued fixture frame");
+      value.queued = false;
+      this.encodeQueueSize--;
     }
     output() {
       const value = pending.shift();
       if (!value) throw new Error("No queued fixture frame");
-      this.encodeQueueSize--;
+      if (value.queued) this.encodeQueueSize--;
       this.callbacks.output(
-        { ...value, byteLength: 10, copyTo: (bytes: Uint8Array) => bytes.fill(1) },
+        {
+          timestamp: value.timestamp,
+          type: value.type,
+          byteLength: 10,
+          copyTo: (bytes: Uint8Array) => bytes.fill(1),
+        },
         {},
       );
     }
@@ -94,6 +110,7 @@ async function fixture(failFirstEncoder = false) {
       await turn();
     },
     output: () => encoder!.output(),
+    dequeue: () => encoder!.dequeue(),
     ack: () =>
       runInContext(
         'for(const p of fixturePackets) acknowledge("stream",p.sequence)',
@@ -184,6 +201,28 @@ it("still suppresses dependencies after an actual encoded output is dropped", as
     await f.frame(133332);
     f.output();
     expect(f.packets.at(-1)?.type).toBe("key");
+  } finally {
+    await f.stop();
+  }
+});
+
+it("emits outputs from a codec that lags further behind than its dequeued queue size", async () => {
+  const f = await fixture();
+  try {
+    const timestamps = [0, 33334, 66668, 100002, 133336, 166670];
+    for (const timestamp of timestamps) {
+      await f.frame(timestamp);
+      f.dequeue();
+    }
+    expect(f.encoded).toHaveLength(timestamps.length);
+    for (const _ of timestamps) {
+      f.output();
+      f.ack();
+    }
+    expect(f.packets.map((p) => [p.timestampUs, p.type])).toEqual(
+      timestamps.map((timestamp, index) => [timestamp, index ? "delta" : "key"]),
+    );
+    expect(f.encoded.filter((e) => e.keyFrame)).toHaveLength(1);
   } finally {
     await f.stop();
   }
