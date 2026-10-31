@@ -99,13 +99,9 @@ export async function stopWindowsTree(pid: number): Promise<ProcessTreeCleanup> 
   }, PROCESS_STOP_TIMEOUT_MS);
   taskkill.once("error", () => finish("failed"));
   taskkill.once("close", (code, signal) => {
-    finish(
-      code === 0 && signal === null
-        ? "verified"
-        : code === 128 && signal === null
-          ? "uncertain"
-          : "failed",
-    );
+    // 128 means taskkill found no such process because it already exited; retrying only repeats
+    // 128. Callers still wait for the child's own exit, so a live OMP process cannot pass.
+    finish((code === 0 || code === 128) && signal === null ? "verified" : "failed");
   });
   return result.promise;
 }

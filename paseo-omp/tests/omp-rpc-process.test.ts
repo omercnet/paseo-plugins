@@ -1,10 +1,14 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import {
+  stopWindowsTree,
   terminatePosixProcessTree,
   terminateSpawnedProcessTree,
 } from "../server/provider/omp-rpc-process";
@@ -157,6 +161,27 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
       }
     },
   );
+
+  testOnPosix("treats taskkill exit 128 (process already gone) as verified cleanup", async () => {
+    const systemRoot = await mkdtemp(join(tmpdir(), "paseo-omp-taskkill-"));
+    const taskkill = join(systemRoot, "System32", "taskkill.exe");
+    await mkdir(dirname(taskkill));
+    vi.stubEnv("SystemRoot", systemRoot);
+    try {
+      for (const [code, outcome] of [
+        [0, "verified"],
+        [128, "verified"],
+        [1, "failed"],
+      ] as const) {
+        await writeFile(taskkill, `#!/bin/sh\nexit ${code}\n`);
+        await chmod(taskkill, 0o755);
+        await expect(stopWindowsTree(4321)).resolves.toBe(outcome);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(systemRoot, { recursive: true, force: true });
+    }
+  });
 
   test("terminates a surviving POSIX process group after its leader exited", async () => {
     const signals: Array<NodeJS.Signals | 0> = [];
