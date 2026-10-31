@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -20,18 +20,22 @@ test("stages catalog dependencies for a Git checkout", (t) => {
     JSON.stringify({
       catalog: { zod: "4.4.3" },
       dependencies: { zod: "catalog:" },
+      devDependencies: { typescript: "catalog:" },
+      overrides: { qs: "6.16.1" },
     }),
   );
   const calls = [];
 
-  const installed = prepareDependencies(root, (...args) => calls.push(args));
+  const installed = prepareDependencies(root, (...args) =>
+    calls.push([...args, JSON.parse(readFileSync(join(root, "package.json"), "utf8"))]),
+  );
 
   assert.equal(installed, true);
   assert.deepEqual(calls, [
     [
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["ci", "--omit=dev", "--ignore-scripts", "--workspaces=false"],
+      "npm ci --omit=dev --ignore-scripts --workspaces=false",
       { cwd: root, stdio: "inherit" },
+      { catalog: { zod: "4.4.3" }, dependencies: { zod: "4.4.3" } },
     ],
   ]);
 });

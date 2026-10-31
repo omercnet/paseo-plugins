@@ -1,10 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+// Run through the shell so Windows resolves npm.cmd: Node refuses to spawn .cmd files without one.
+const INSTALL_COMMAND = "npm ci --omit=dev --ignore-scripts --workspaces=false";
 
 function loadRootCatalog(root) {
   for (let directory = root; ; directory = dirname(directory)) {
@@ -28,6 +30,8 @@ function stageManifest(root, catalog, install) {
     manifest.dependencies[name] = catalog[name];
   }
   delete manifest.devDependencies;
+  // npm-shrinkwrap.json is generated without overrides, so npm ci rejects a manifest that keeps them.
+  delete manifest.overrides;
 
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   try {
@@ -41,18 +45,11 @@ export function resolveDependencyRoot(packageName, from = import.meta.url) {
   return dirname(createRequire(from).resolve(`${packageName}/package.json`));
 }
 
-export function prepareDependencies(root = projectRoot, execute = execFileSync) {
+export function prepareDependencies(root = projectRoot, execute = execSync) {
   const catalog = loadRootCatalog(root);
   if (!catalog) return false;
   stageManifest(root, catalog, () => {
-    execute(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["ci", "--omit=dev", "--ignore-scripts", "--workspaces=false"],
-      {
-        cwd: root,
-        stdio: "inherit",
-      },
-    );
+    execute(INSTALL_COMMAND, { cwd: root, stdio: "inherit" });
   });
   return true;
 }
