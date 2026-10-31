@@ -483,7 +483,7 @@ export async function injectContextModeOnCreate<T extends CreateRequest>(
     type: "stdio",
     command: launch.program,
     args: launch.args,
-    env: { ...launch.env, ...serverEnvironment(policy, storageRoot, request.env) },
+    env: { ...serverEnvironment(policy, storageRoot, request.env), ...launch.env },
   };
   return {
     ...request,

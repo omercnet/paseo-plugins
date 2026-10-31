@@ -320,6 +320,21 @@ describe("bounded Context Mode process", () => {
     ).resolves.toMatchObject({ version: "from-launch" });
   });
 
+  test("keeps the launch environment when dependencies also supply one", async () => {
+    const binary = await executable(
+      fakeMcpSource.replace(
+        'version: "2.0.5"',
+        'version: process.env.LAUNCH_PROBE + "/" + process.env.DEPENDENCY_PROBE',
+      ),
+    );
+    await expect(
+      inspectContextMode(
+        { ...launch(binary), env: { LAUNCH_PROBE: "from-launch" } },
+        { env: { DEPENDENCY_PROBE: "from-dependencies" } },
+      ),
+    ).resolves.toMatchObject({ version: "from-launch/from-dependencies" });
+  });
+
   test("rejects a failed initialize response with the upstream message", async () => {
     const binary = await executable(`
 const readline = require("node:readline");
