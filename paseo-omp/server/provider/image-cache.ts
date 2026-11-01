@@ -103,10 +103,18 @@ export class OmpImageCache {
 
   read(ref: string, mimeType: OmpImageMimeType): Buffer | undefined {
     if (!OMP_IMAGE_REF.test(ref)) return undefined;
+    const path = this.path(ref, mimeType);
+    // Windows has no O_NOFOLLOW; refuse a symlink there before opening it.
+    if (
+      constants.O_NOFOLLOW === undefined &&
+      lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()
+    ) {
+      return undefined;
+    }
     let descriptor: number;
     try {
       descriptor = openSync(
-        this.path(ref, mimeType),
+        path,
         // O_NONBLOCK keeps a FIFO planted under the image's name from hanging the worker.
         constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
       );
@@ -125,11 +133,26 @@ export class OmpImageCache {
         offset += read;
       }
       if (ompImageRef(bytes) !== ref) return;
-      const now = new Date();
-      futimesSync(descriptor, now, now);
+      this.touch(descriptor, path);
       return bytes;
     } finally {
       closeSync(descriptor);
+    }
+  }
+
+  /** Recency only orders eviction, so a failed touch never discards verified bytes. */
+  private touch(descriptor: number, path: string): void {
+    const now = new Date();
+    try {
+      futimesSync(descriptor, now, now);
+    } catch (error) {
+      if (!isFileSystemError(error)) throw error;
+      // Windows rejects futimes on a read-only descriptor with EPERM.
+      try {
+        utimesSync(path, now, now);
+      } catch (fallbackError) {
+        if (!isFileSystemError(fallbackError)) throw fallbackError;
+      }
     }
   }
 

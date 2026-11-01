@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   OmpImageCache,
@@ -54,8 +54,11 @@ describe("OMP image cache", () => {
     expect(ref).toBe(ompImageRef(bytes));
     expect(ref).toMatch(/^[0-9a-f]{64}$/u);
     expect(readdirSync(directory)).toEqual([`${ref}.png`]);
-    expect(statSync(directory).mode & 0o777).toBe(0o700);
-    expect(statSync(join(directory, `${ref}.png`)).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX permission bits; Node reports 0o666 there regardless of the mode.
+    if (process.platform !== "win32") {
+      expect(statSync(directory).mode & 0o777).toBe(0o700);
+      expect(statSync(join(directory, `${ref}.png`)).mode & 0o777).toBe(0o600);
+    }
     expect(cache.read(ref, "image/png")).toEqual(bytes);
     expect(cache.store(bytes, "image/png")).toBe(ref);
     expect(readdirSync(directory)).toEqual([`${ref}.png`]);
@@ -203,6 +206,7 @@ describe("OMP image cache", () => {
     );
   });
 
+  // Windows has no FIFOs in the file system.
   test.skipIf(process.platform === "win32")("does not block on a FIFO named like an image", () => {
     const cache = new OmpImageCache(directory);
     mkdirSync(directory, { recursive: true });
@@ -221,7 +225,7 @@ describe("OMP image cache", () => {
 
   test("resolves the cache under the daemon's Paseo home", () => {
     expect(ompImageCacheDir({ PASEO_HOME: "/srv/paseo" })).toBe(
-      "/srv/paseo/plugin-data/paseo-omp/images",
+      join(resolve("/srv/paseo"), "plugin-data", "paseo-omp", "images"),
     );
     expect(ompImageCacheDir({ PASEO_HOME: "~/isolated" })).toBe(
       join(homedir(), "isolated", "plugin-data", "paseo-omp", "images"),
