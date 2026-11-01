@@ -1535,7 +1535,9 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
       const runningChildren = childEvents.filter(
         (event) => event.event.type === "upsert" && event.event.status === "running",
       );
-      expect(runningChildren).toHaveLength(2);
+      // Upserts are sticky partial updates keyed by id. Paseo 0.15 also marks a child running
+      // when its turn starts, so count children, not running upserts.
+      expect(new Set(runningChildren.map((event) => event.event.id)).size).toBe(2);
       const childId = runningChildren.find(
         (event) => event.event.type === "upsert" && event.event.title === "worker",
       )?.event.id;
