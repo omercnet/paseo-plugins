@@ -7,6 +7,7 @@ import {
   getOmpImage,
   type OmpImage,
   type OmpImageTimelineData,
+  ompImageStaleTime,
   visibleOmpImageText,
 } from "../shared/provider-image";
 
@@ -19,14 +20,14 @@ type OmpImageSource =
 /** A decoded screenshot can hold several MB, so drop it soon after nothing shows it. */
 const IMAGE_QUERY_GC_MS = 60_000;
 
-function useOmpImageSource(image: OmpImage): OmpImageSource {
+function useOmpImageSource(image: OmpImage, hostId: string): OmpImageSource {
   const fetchImage = useRpc(getOmpImage);
   const ref = "ref" in image ? image.ref : null;
   const query = useQuery({
-    queryKey: ["omp-image", ref, image.mimeType],
+    queryKey: ["omp-image", hostId, ref, image.mimeType],
     queryFn: () => fetchImage({ ref: ref ?? "", mimeType: image.mimeType }),
     enabled: ref !== null,
-    staleTime: Number.POSITIVE_INFINITY,
+    staleTime: (current) => ompImageStaleTime(current.state.data),
     gcTime: IMAGE_QUERY_GC_MS,
     retry: 1,
   });
@@ -75,7 +76,11 @@ function imageStyles(theme: Theme) {
 
 type ImageStyles = ReturnType<typeof imageStyles>;
 
-export function OmpImageTimeline({ item, theme }: PluginTimelineItemProps<OmpImageTimelineData>) {
+export function OmpImageTimeline({
+  item,
+  theme,
+  host,
+}: PluginTimelineItemProps<OmpImageTimelineData>) {
   const styles = useMemo(() => imageStyles(theme), [theme]);
   const [enlargedId, setEnlargedId] = useState<string | null>(null);
   const enlarged = item.data.images.find((image) => image.id === enlargedId);
@@ -89,6 +94,7 @@ export function OmpImageTimeline({ item, theme }: PluginTimelineItemProps<OmpIma
         <OmpImageThumbnail
           key={image.id}
           image={image}
+          hostId={host.id}
           label={`${item.data.label} image ${index + 1}`}
           failed={failedImageIds.has(image.id)}
           styles={styles}
@@ -113,6 +119,7 @@ export function OmpImageTimeline({ item, theme }: PluginTimelineItemProps<OmpIma
             <EnlargedOmpImage
               key={enlarged.id}
               image={enlarged}
+              hostId={host.id}
               failed={failedImageIds.has(enlarged.id)}
               label={item.data.label}
               theme={theme}
@@ -126,6 +133,7 @@ export function OmpImageTimeline({ item, theme }: PluginTimelineItemProps<OmpIma
 
 function OmpImageThumbnail({
   image,
+  hostId,
   label,
   failed,
   styles,
@@ -133,13 +141,14 @@ function OmpImageThumbnail({
   onRenderFailed,
 }: {
   image: OmpImage;
+  hostId: string;
   label: string;
   failed: boolean;
   styles: ImageStyles;
   onEnlarge: () => void;
   onRenderFailed: () => void;
 }) {
-  const source = useOmpImageSource(image);
+  const source = useOmpImageSource(image, hostId);
   if (failed) {
     return (
       <View style={[styles.image, styles.imageFallback]}>
@@ -176,16 +185,18 @@ function OmpImageThumbnail({
 
 function EnlargedOmpImage({
   image,
+  hostId,
   label,
   failed,
   theme,
 }: {
   image: OmpImage;
+  hostId: string;
   label: string;
   failed: boolean;
   theme: Theme;
 }) {
-  const source = useOmpImageSource(image);
+  const source = useOmpImageSource(image, hostId);
   if (source.status !== "ready") {
     return (
       <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, textAlign: "center" }}>

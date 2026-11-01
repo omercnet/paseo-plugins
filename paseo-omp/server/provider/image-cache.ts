@@ -29,6 +29,9 @@ const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const OMP_IMAGE_REF = /^[0-9a-f]{64}$/u;
 const CACHED_IMAGE_FILE = /^[0-9a-f]{64}\.(?:gif|jpg|png|webp)$/u;
+/** Temp files a crash left between write and rename; never counted toward the cache limits. */
+const PENDING_IMAGE_FILE = /^\.[0-9a-f]{64}\.[0-9a-f]{16}\.tmp$/u;
+const STALE_PENDING_MS = 5 * 60 * 1000;
 const MISSING_FILE_CODES: Readonly<Record<string, true>> = { ENOENT: true, ELOOP: true };
 
 const IMAGE_EXTENSIONS: Readonly<Record<OmpImageMimeType, string>> = {
@@ -104,7 +107,8 @@ export class OmpImageCache {
     try {
       descriptor = openSync(
         this.path(ref, mimeType),
-        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        // O_NONBLOCK keeps a FIFO planted under the image's name from hanging the worker.
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
       );
     } catch (error) {
       if (isFileSystemError(error) && error.code && MISSING_FILE_CODES[error.code]) return;
@@ -139,7 +143,9 @@ export class OmpImageCache {
     }
     this.ensureDirectory();
     const path = this.path(ref, mimeType);
-    if (lstatSync(path, { throwIfNoEntry: false })?.isFile()) {
+    // A file of the wrong size (for example truncated by a crash) is rewritten, not trusted.
+    const existing = lstatSync(path, { throwIfNoEntry: false });
+    if (existing?.isFile() && existing.size === bytes.byteLength) {
       const now = new Date();
       utimesSync(path, now, now);
       return;
@@ -167,10 +173,16 @@ export class OmpImageCache {
   private evict(keepPath: string): void {
     const entries: CachedImageEntry[] = [];
     let totalBytes = 0;
+    const staleBefore = Date.now() - STALE_PENDING_MS;
     for (const name of readdirSync(this.directory)) {
-      if (!CACHED_IMAGE_FILE.test(name)) continue;
-      const stat = lstatSync(join(this.directory, name), { throwIfNoEntry: false });
+      const path = join(this.directory, name);
+      const stat = lstatSync(path, { throwIfNoEntry: false });
       if (!stat?.isFile()) continue;
+      if (PENDING_IMAGE_FILE.test(name)) {
+        if (stat.mtimeMs < staleBefore) rmSync(path, { force: true });
+        continue;
+      }
+      if (!CACHED_IMAGE_FILE.test(name)) continue;
       entries.push({ name, bytes: stat.size, modifiedMs: stat.mtimeMs });
       totalBytes += stat.size;
     }

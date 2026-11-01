@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -6,6 +7,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  truncateSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -18,7 +20,7 @@ import {
   ompImageRef,
   resolveGetOmpImage,
 } from "../server/provider/image-cache";
-import { getOmpImage } from "../shared/provider-image";
+import { getOmpImage, ompImageStaleTime } from "../shared/provider-image";
 
 const PNG_HEADER = Buffer.from("89504e470d0a1a0a", "hex");
 
@@ -173,6 +175,48 @@ describe("OMP image cache", () => {
       ompImageRef(bytes),
     );
     expect(error).toHaveBeenCalledTimes(2);
+  });
+
+  test("rewrites a damaged cache file when the image is stored again", () => {
+    const cache = new OmpImageCache(directory);
+    const bytes = png(16);
+    const ref = cache.store(bytes, "image/png");
+    truncateSync(join(directory, `${ref}.png`), 0);
+    expect(cache.read(ref, "image/png")).toBeUndefined();
+    expect(cache.store(bytes, "image/png")).toBe(ref);
+    expect(cache.read(ref, "image/png")).toEqual(bytes);
+  });
+
+  test("sweeps stale temp files left by an interrupted write", () => {
+    const cache = new OmpImageCache(directory);
+    mkdirSync(directory, { recursive: true });
+    const ref = ompImageRef(png(17));
+    const stale = join(directory, `.${ref}.0123456789abcdef.tmp`);
+    const fresh = join(directory, `.${ref}.fedcba9876543210.tmp`);
+    writeFileSync(stale, "partial");
+    writeFileSync(fresh, "in flight");
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(stale, old, old);
+    const stored = cache.store(png(18), "image/png");
+    expect(readdirSync(directory).sort()).toEqual(
+      [`.${ref}.fedcba9876543210.tmp`, `${stored}.png`].sort(),
+    );
+  });
+
+  test.skipIf(process.platform === "win32")("does not block on a FIFO named like an image", () => {
+    const cache = new OmpImageCache(directory);
+    mkdirSync(directory, { recursive: true });
+    const ref = ompImageRef(png(19));
+    execFileSync("mkfifo", [join(directory, `${ref}.png`)]);
+    expect(cache.read(ref, "image/png")).toBeUndefined();
+  });
+
+  test("keeps available images fresh but refetches missing ones", () => {
+    expect(ompImageStaleTime({ status: "available", data: "iVBORw0KGgo=" })).toBe(
+      Number.POSITIVE_INFINITY,
+    );
+    expect(ompImageStaleTime({ status: "missing" })).toBe(0);
+    expect(ompImageStaleTime(undefined)).toBe(0);
   });
 
   test("resolves the cache under the daemon's Paseo home", () => {

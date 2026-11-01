@@ -1,4 +1,4 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, type RpcOutput } from "@getpaseo/plugin";
 import { z } from "zod";
 
 const MAX_IMAGE_ENCODED_BYTES = 8 * 1024 * 1024;
@@ -112,6 +112,14 @@ export const getOmpImage = defineRpc({
     z.object({ status: z.literal("missing") }),
   ]),
 });
+
+/**
+ * Image bytes never change for a reference, but a missing image can be restored by a transcript
+ * replay, so only an available result stays fresh.
+ */
+export function ompImageStaleTime(result: RpcOutput<typeof getOmpImage> | undefined): number {
+  return result?.status === "available" ? Number.POSITIVE_INFINITY : 0;
+}
 
 export const ompImageTimelineSchema = z
   .object({
