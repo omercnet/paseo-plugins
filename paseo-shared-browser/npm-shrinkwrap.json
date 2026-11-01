@@ -10,7 +10,7 @@
       "dependencies": {
         "@getpaseo/plugin": "0.14.0",
         "@modelcontextprotocol/sdk": "1.32.2",
-        "agent-browser": "0.40.0",
+        "agent-browser": "0.41.0",
         "esbuild": "0.28.2",
         "zod": "4.6.7"
       }
@@ -606,9 +606,9 @@
       }
     },
     "node_modules/agent-browser": {
-      "version": "0.40.0",
-      "resolved": "https://registry.npmjs.org/agent-browser/-/agent-browser-0.40.0.tgz",
-      "integrity": "sha512-uqDAR3ozwJKYzVENMr/ZKYTZT1LUZauI49rTiK/KsFBxQDVTdtmrWGWTMWZlaIIQWToEtZUfWVXBSSTY6aHzrA==",
+      "version": "0.41.0",
+      "resolved": "https://registry.npmjs.org/agent-browser/-/agent-browser-0.41.0.tgz",
+      "integrity": "sha512-XJtBouE5+gGUKyZU1COSmnxU6MKIlmLE2oEyHzl0ohLVOhuRjx9kqQ9vOqxiiW/Gbvi4JPF4Oz777Mn3FGiHAA==",
       "hasInstallScript": true,
       "license": "Apache-2.0",
       "bin": {
