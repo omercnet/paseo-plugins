@@ -1798,6 +1798,9 @@ export class AgentBrowserRuntime {
   private async stopDaemon(force: boolean): Promise<void> {
     // A launch still awaiting `open` must capture its daemon before `close` removes the PID file.
     await this.opening?.catch(() => undefined);
+    // A failed open may have found only a stale record, its daemon writing the PID file later:
+    // record that before `close` removes it, still skipping a record disproven as ours.
+    if (this.daemonLaunched && !this.daemon) await this.captureDaemon(true).catch(() => undefined);
     let forced = force;
     if (!forced) {
       try {

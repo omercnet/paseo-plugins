@@ -361,6 +361,33 @@ describe.each(ownershipModes)(
       expect(daemon.pid && alive(daemon.pid)).toBe(false);
     });
 
+    it("confirms the exit of a daemon that records its PID after a failed open, before close removes it", async () => {
+      const f = await fixture();
+      const stale = await ownChild();
+      stale.kill("SIGKILL");
+      await exited(stale);
+      const pidFile = join(f.ipc, "owned.pid");
+      // A crashed earlier daemon left its PID file; the new one has not recorded itself yet.
+      await writeFile(pidFile, String(stale.pid));
+      cli.version = AGENT_BROWSER_VERSION;
+      cli.onOpen = () => undefined;
+      await expect(f.runtime.launch()).rejects.toThrow("agent-browser command failed");
+      expect(f.native.daemon).toBeNull();
+      // The new daemon records itself only after the open already failed.
+      const daemon = await ownChild(f.native.ownerNonce);
+      own(daemon);
+      await writeFile(pidFile, String(daemon.pid));
+      // agent-browser >= 0.40.0: close returns only after the daemon removed its PID file.
+      cli.onClose = () => {
+        daemon.kill("SIGTERM");
+        rmSync(pidFile, { force: true });
+      };
+      const kill = vi.spyOn(process, "kill");
+      await f.runtime.shutdown();
+      expect(kill).not.toHaveBeenCalledWith(daemon.pid, "SIGKILL");
+      await exited(daemon);
+    });
+
     it("captures the daemon of a launch still awaiting open before a racing shutdown closes it", async () => {
       const f = await fixture();
       const daemon = await ownChild(f.native.ownerNonce);
