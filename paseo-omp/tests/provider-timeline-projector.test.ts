@@ -1,5 +1,6 @@
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test } from "vitest";
+import { ompImageRef } from "../server/provider/image-cache";
 import { createOmpProvider } from "../server/provider/registration";
 import { OmpPublicDataSerializer, truncateUtf8 } from "../server/provider/security";
 import { OmpTimelineProjector } from "../server/provider/timeline-projector";
@@ -488,7 +489,7 @@ describe("OMP direct provider", () => {
               images: [
                 {
                   id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-                  data: image.data,
+                  ref: ompImageRef(Buffer.from(image.data, "base64")),
                   mimeType: image.mimeType,
                 },
               ],

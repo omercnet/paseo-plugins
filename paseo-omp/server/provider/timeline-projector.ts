@@ -7,6 +7,7 @@ import type {
 import { OMP_MCP_AUTH_TIMELINE_KIND } from "../../shared/mcp";
 import { HOST_TOOL_NAME_PREFIX, LEGACY_HOST_TOOL_NAME_PREFIX } from "./host-tools";
 import { isOmpImageMimeType, isValidImagePayload, type OmpImageMimeType } from "./image";
+import { ompImageCache } from "./image-cache";
 import {
   OMP_MAX_CONTENT_PARTS,
   OMP_MESSAGE_REPLAY_POLICIES,
@@ -1942,14 +1943,21 @@ export class OmpTimelineProjector {
     });
   }
 
+  /** The carrier names cached images, so it stays within the host's 64 KiB tool call budget. */
   private publishImages(id: string, label: string, image: NativeImageEnvelope): void {
+    const cache = ompImageCache();
+    const images = image.images.map(({ id: imageId, data, mimeType }) => ({
+      id: imageId,
+      ref: cache.store(Buffer.from(data, "base64"), mimeType),
+      mimeType,
+    }));
     this.publish({
       type: "tool_call",
       id: `${id}:images`,
       callId: `${id}:images`,
       name: `${label} images`,
       detail: { type: "plain_text", label },
-      metadata: { ompImageOwner: "omp", ompImage: { label, ...image } },
+      metadata: { ompImageOwner: "omp", ompImage: { label, ...image, images } },
       status: "completed",
       error: null,
     });

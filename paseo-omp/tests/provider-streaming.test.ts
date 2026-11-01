@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { ompImageRef } from "../server/provider/image-cache";
 import { transformOmpImageToolItem } from "../shared/provider-image";
 import {
   createHarness,
@@ -634,7 +635,7 @@ describe("OMP direct provider", () => {
         images: [
           {
             id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-            data: "iVBORw0KGgo=",
+            ref: ompImageRef(Buffer.from("iVBORw0KGgo=", "base64")),
             mimeType: "image/png",
           },
         ],
@@ -686,7 +687,7 @@ describe("OMP direct provider", () => {
         images: [
           {
             id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-            data: webpData,
+            ref: ompImageRef(Buffer.from(webpData, "base64")),
             mimeType: "image/webp",
           },
         ],

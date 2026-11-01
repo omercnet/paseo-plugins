@@ -18,6 +18,7 @@ import { OmpOperationalFailureCollector } from "./server/operational-failure-dia
 import { withOmpStore } from "./server/paths";
 import { OmpProtocolViolationCollector } from "./server/protocol-violation-diagnostics";
 import { withOmpSessionOpenEnv } from "./server/provider/host-tools";
+import { ompImageCache, resolveGetOmpImage } from "./server/provider/image-cache";
 import {
   createProfileOmpProvider,
   discoverOmpProfiles,
@@ -50,6 +51,7 @@ import {
 import { listOmpSettings, updateOmpSettings } from "./shared/omp-settings";
 import { listOmpStores, type OmpStore } from "./shared/omp-store";
 import { getOmpProviderHealth } from "./shared/provider-diagnostics";
+import { getOmpImage } from "./shared/provider-image";
 import { providerLaunchSettings } from "./shared/provider-launch-settings";
 import { listOmpQuotas } from "./shared/quota";
 import { listOmpSessions } from "./shared/sessions";
@@ -105,6 +107,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpSettings, scoped(resolveListOmpSettings));
   server.handle(updateOmpSettings, scoped(resolveUpdateOmpSettings));
   server.handle(getOmpProviderHealth, scoped(resolveGetOmpProviderHealth));
+  server.handle(getOmpImage, (input) => resolveGetOmpImage(input, ompImageCache()));
   server.handle(
     getOmpSupportReport,
     scoped((input) => resolveGetOmpSupportReport(input, protocolViolations, operationalFailures)),

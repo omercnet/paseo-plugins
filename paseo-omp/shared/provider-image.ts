@@ -1,3 +1,4 @@
+import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 const MAX_IMAGE_ENCODED_BYTES = 8 * 1024 * 1024;
@@ -82,10 +83,34 @@ function hasExpectedHeader(mimeType: string, bytes: readonly number[]): boolean 
   );
 }
 
-const ompImageSchema = z.object({
-  id: z.string().regex(/^[A-Za-z0-9_-]{16}$/u),
+const ompImageMimeTypeSchema = z.enum(["image/gif", "image/jpeg", "image/png", "image/webp"]);
+const ompImageIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16}$/u);
+/** SHA-256 of the image bytes, naming the file in the server's image cache. */
+const ompImageRefSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+
+const cachedOmpImageSchema = z.object({
+  id: ompImageIdSchema,
+  ref: ompImageRefSchema,
+  mimeType: ompImageMimeTypeSchema,
+});
+
+/** Inline base64 written before images moved to the cache; still present in saved history. */
+const inlineOmpImageSchema = z.object({
+  id: ompImageIdSchema,
   data: z.string().max(MAX_IMAGE_ENCODED_BYTES),
-  mimeType: z.enum(["image/gif", "image/jpeg", "image/png", "image/webp"]),
+  mimeType: ompImageMimeTypeSchema,
+});
+
+const ompImageSchema = z.union([cachedOmpImageSchema, inlineOmpImageSchema]);
+export type OmpImage = z.infer<typeof ompImageSchema>;
+
+export const getOmpImage = defineRpc({
+  name: "paseo-omp.get-image",
+  input: z.strictObject({ ref: ompImageRefSchema, mimeType: ompImageMimeTypeSchema }),
+  output: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("available"), data: z.string().max(MAX_IMAGE_ENCODED_BYTES) }),
+    z.object({ status: z.literal("missing") }),
+  ]),
 });
 
 export const ompImageTimelineSchema = z
@@ -99,6 +124,7 @@ export const ompImageTimelineSchema = z
     let encodedBytes = 0;
     let decodedBytes = 0;
     for (const [index, image] of value.images.entries()) {
+      if (!("data" in image)) continue;
       const decoded = decodedBase64Length(image.data);
       if (decoded === undefined || !hasExpectedHeader(image.mimeType, decodedPrefix(image.data))) {
         context.addIssue({

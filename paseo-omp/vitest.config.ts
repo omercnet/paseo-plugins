@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     testTimeout: 30_000,
     fileParallelism: true,
+    setupFiles: ["tests/setup/paseo-home.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],
