@@ -127,9 +127,9 @@ const MISSING_IMAGE_RECHECKS = 8;
 /** A mounted missing image is rechecked a bounded number of times so a restored image appears. */
 export function ompImageRefetchInterval(
   result: RpcOutput<typeof getOmpImage> | undefined,
-  fetches: number,
+  completedFetches: number,
 ): number | false {
-  return result?.status === "missing" && fetches <= MISSING_IMAGE_RECHECKS
+  return result?.status === "missing" && completedFetches <= MISSING_IMAGE_RECHECKS
     ? MISSING_IMAGE_RECHECK_MS
     : false;
 }

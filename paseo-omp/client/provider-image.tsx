@@ -30,7 +30,11 @@ function useOmpImageSource(image: OmpImage, hostId: string): OmpImageSource {
     enabled: ref !== null,
     staleTime: (current) => ompImageStaleTime(current.state.data),
     refetchInterval: (current) =>
-      ompImageRefetchInterval(current.state.data, current.state.dataUpdateCount),
+      ompImageRefetchInterval(
+        current.state.data,
+        // Failed rechecks keep the earlier "missing" data, so they count toward the limit too.
+        current.state.dataUpdateCount + current.state.errorUpdateCount,
+      ),
     gcTime: IMAGE_QUERY_GC_MS,
     retry: 1,
   });
