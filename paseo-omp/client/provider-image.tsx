@@ -7,6 +7,7 @@ import {
   getOmpImage,
   type OmpImage,
   type OmpImageTimelineData,
+  ompImageRefetchInterval,
   ompImageStaleTime,
   visibleOmpImageText,
 } from "../shared/provider-image";
@@ -28,6 +29,8 @@ function useOmpImageSource(image: OmpImage, hostId: string): OmpImageSource {
     queryFn: () => fetchImage({ ref: ref ?? "", mimeType: image.mimeType }),
     enabled: ref !== null,
     staleTime: (current) => ompImageStaleTime(current.state.data),
+    refetchInterval: (current) =>
+      ompImageRefetchInterval(current.state.data, current.state.dataUpdateCount),
     gcTime: IMAGE_QUERY_GC_MS,
     retry: 1,
   });

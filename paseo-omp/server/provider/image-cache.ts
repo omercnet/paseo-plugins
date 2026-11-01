@@ -12,6 +12,7 @@ import {
   readSync,
   renameSync,
   rmSync,
+  type Stats,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -67,6 +68,12 @@ function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
 }
 
+/** A real directory owned by the daemon user; never a symlink to somewhere else. */
+function isPrivateDirectory(stat: Stats): boolean {
+  const ownedByAnotherUser = process.getuid !== undefined && stat.uid !== process.getuid();
+  return stat.isDirectory() && !ownedByAnotherUser;
+}
+
 /** Paseo resolves its home the same way, so an isolated daemon keeps images in its own home. */
 export function ompImageCacheDir(environment: NodeJS.ProcessEnv = process.env): string {
   const raw = environment.PASEO_HOME ?? "~/.paseo";
@@ -103,6 +110,9 @@ export class OmpImageCache {
 
   read(ref: string, mimeType: OmpImageMimeType): Buffer | undefined {
     if (!OMP_IMAGE_REF.test(ref)) return undefined;
+    // A cache directory swapped for a symlink or another user's directory is never read.
+    const directory = lstatSync(this.directory, { throwIfNoEntry: false });
+    if (!directory || !isPrivateDirectory(directory)) return undefined;
     const path = this.path(ref, mimeType);
     // Windows has no O_NOFOLLOW; refuse a symlink there before opening it.
     if (
@@ -166,13 +176,8 @@ export class OmpImageCache {
     }
     this.ensureDirectory();
     const path = this.path(ref, mimeType);
-    // A file of the wrong size (for example truncated by a crash) is rewritten, not trusted.
-    const existing = lstatSync(path, { throwIfNoEntry: false });
-    if (existing?.isFile() && existing.size === bytes.byteLength) {
-      const now = new Date();
-      utimesSync(path, now, now);
-      return;
-    }
+    // Only an intact copy is reused; a damaged one (truncated or altered) is rewritten.
+    if (this.read(ref, mimeType)) return;
     const pending = join(this.directory, `.${ref}.${randomBytes(8).toString("hex")}.tmp`);
     try {
       writeFileSync(pending, bytes, { mode: PRIVATE_FILE_MODE, flag: "wx" });
@@ -185,9 +190,7 @@ export class OmpImageCache {
 
   private ensureDirectory(): void {
     mkdirSync(this.directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
-    const stat = lstatSync(this.directory);
-    const ownedByAnotherUser = process.getuid !== undefined && stat.uid !== process.getuid();
-    if (!stat.isDirectory() || ownedByAnotherUser) {
+    if (!isPrivateDirectory(lstatSync(this.directory))) {
       throw new OmpImageCacheError("image cache directory is not a private directory");
     }
     chmodSync(this.directory, PRIVATE_DIRECTORY_MODE);

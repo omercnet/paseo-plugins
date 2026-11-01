@@ -20,7 +20,7 @@ import {
   ompImageRef,
   resolveGetOmpImage,
 } from "../server/provider/image-cache";
-import { getOmpImage, ompImageStaleTime } from "../shared/provider-image";
+import { getOmpImage, ompImageRefetchInterval, ompImageStaleTime } from "../shared/provider-image";
 
 const PNG_HEADER = Buffer.from("89504e470d0a1a0a", "hex");
 
@@ -188,6 +188,22 @@ describe("OMP image cache", () => {
     expect(cache.read(ref, "image/png")).toBeUndefined();
     expect(cache.store(bytes, "image/png")).toBe(ref);
     expect(cache.read(ref, "image/png")).toEqual(bytes);
+
+    // Same size, different content: the hash check rejects it and storing again repairs it.
+    writeFileSync(join(directory, `${ref}.png`), png(20));
+    expect(cache.read(ref, "image/png")).toBeUndefined();
+    expect(cache.store(bytes, "image/png")).toBe(ref);
+    expect(cache.read(ref, "image/png")).toEqual(bytes);
+  });
+
+  test("refuses to read through a cache directory replaced by a symlink", () => {
+    const bytes = png(21);
+    const target = join(root, "elsewhere");
+    mkdirSync(target);
+    const ref = ompImageRef(bytes);
+    writeFileSync(join(target, `${ref}.png`), bytes);
+    symlinkSync(target, directory, "dir");
+    expect(new OmpImageCache(directory).read(ref, "image/png")).toBeUndefined();
   });
 
   test("sweeps stale temp files left by an interrupted write", () => {
@@ -221,6 +237,10 @@ describe("OMP image cache", () => {
     );
     expect(ompImageStaleTime({ status: "missing" })).toBe(0);
     expect(ompImageStaleTime(undefined)).toBe(0);
+    expect(ompImageRefetchInterval({ status: "missing" }, 1)).toBe(15_000);
+    expect(ompImageRefetchInterval({ status: "missing" }, 9)).toBe(false);
+    expect(ompImageRefetchInterval({ status: "available", data: "iVBORw0KGgo=" }, 1)).toBe(false);
+    expect(ompImageRefetchInterval(undefined, 0)).toBe(false);
   });
 
   test("resolves the cache under the daemon's Paseo home", () => {
