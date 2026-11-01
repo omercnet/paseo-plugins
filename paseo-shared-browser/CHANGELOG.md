@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.1.2](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.1...shared-browser-v4.1.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **deps:** update dependency agent-browser to v0.39.4 ([#428](https://github.com/omercnet/paseo-plugins/issues/428)) ([e9019d8](https://github.com/omercnet/paseo-plugins/commit/e9019d829b10e1d591a5c05775ff645cfcc82969))
+* **deps:** update dependency agent-browser to v0.40.0 ([#441](https://github.com/omercnet/paseo-plugins/issues/441)) ([70ec979](https://github.com/omercnet/paseo-plugins/commit/70ec979f3d07b4fcf4505e2002cc678253d55ef0))
+* **paseo-omp,paseo-shared-browser:** run npm ci through the shell and drop staged overrides ([#445](https://github.com/omercnet/paseo-plugins/issues/445)) ([d727c7a](https://github.com/omercnet/paseo-plugins/commit/d727c7a7569104f2bcf9ad53d722788296450c65))
+* **paseo-shared-browser:** keep frame generations for slow native video encodes ([#458](https://github.com/omercnet/paseo-plugins/issues/458)) ([afef687](https://github.com/omercnet/paseo-plugins/commit/afef687251797a789f7b3a3ffbe69b18c6d6d812))
+
 ## [4.1.1](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.0...shared-browser-v4.1.1) (2026-10-29)
 
 

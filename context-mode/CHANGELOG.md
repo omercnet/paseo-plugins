@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.2](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v3.1.1...paseo-context-mode-v3.1.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **context-mode:** resolve the bundled runtime from the plugin directory ([#452](https://github.com/omercnet/paseo-plugins/issues/452)) ([9529e18](https://github.com/omercnet/paseo-plugins/commit/9529e182f539e5ce7f3597ed277d1ecd04a24721))
+
 ## [3.1.1](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v3.1.0...paseo-context-mode-v3.1.1) (2026-10-29)
 
 
