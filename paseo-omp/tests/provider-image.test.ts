@@ -7,6 +7,7 @@ import {
   transformOmpImageToolItem,
   visibleOmpImageText,
 } from "../shared/provider-image";
+import { timelineContentModulePath } from "./helpers/provider-harness";
 
 const PNG = "iVBORw0KGgo=";
 
@@ -101,6 +102,53 @@ describe("OMP image timeline transformer", () => {
     });
     expect(transformed[0]).toBeUndefined();
     expect(transformed[2]).toBeUndefined();
+  });
+
+  test("transforms cached image references and rejects malformed ones", () => {
+    const ref = "a".repeat(64);
+    const cached = {
+      ompImageOwner: "omp",
+      ompImage: {
+        label: "Screenshot",
+        images: [{ id: "abcdefghijklmnop", ref, mimeType: "image/png" as const }],
+      },
+    };
+    expect(transformOmpImageToolItem(toolCall("omp:tool:9:images", cached))?.items).toEqual([
+      {
+        type: "plugin",
+        kind: "omp-images",
+        id: "omp:tool:9:images",
+        version: 1,
+        data: cached.ompImage,
+      },
+    ]);
+    for (const invalid of [ref.toUpperCase(), ref.slice(1), `../${ref.slice(3)}`]) {
+      const metadata = {
+        ...cached,
+        ompImage: { ...cached.ompImage, images: [{ ...cached.ompImage.images[0], ref: invalid }] },
+      };
+      expect(transformOmpImageToolItem(toolCall("omp:tool:9:images", metadata))).toBeUndefined();
+    }
+  });
+
+  test("keeps 64 cached references within the host tool call budget", async () => {
+    const carrier = toolCall("omp:tool:10:images", {
+      ompImageOwner: "omp",
+      ompImage: {
+        label: "x".repeat(256),
+        images: Array.from({ length: 64 }, (_, index) => ({
+          id: `image-${String(index).padStart(10, "0")}`,
+          ref: index.toString(16).padStart(64, "0"),
+          mimeType: "image/png",
+        })),
+      },
+    });
+    // Static imports pull the host's incompatible Node/Zod declaration graph into this package.
+    const timelineContent = (await import(timelineContentModulePath)) as unknown as {
+      limitAgentTimelineItemContent(item: AgentTimelineItem): AgentTimelineItem;
+    };
+    expect(timelineContent.limitAgentTimelineItemContent(carrier)).toEqual(carrier);
+    expect(transformOmpImageToolItem(carrier)?.items[0]?.data.images).toHaveLength(64);
   });
 
   test("hides machine-facing coordinate notes from the image caption", () => {

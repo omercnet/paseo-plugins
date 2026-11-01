@@ -4,7 +4,12 @@ import type {
   OmpOperationalFailure,
   OmpOperationalFailureReporter,
 } from "../server/operational-failure-diagnostics";
-import { ompImageTimelineSchema, transformOmpImageToolItem } from "../shared/provider-image";
+import { ompImageCache, ompImageRef, resolveGetOmpImage } from "../server/provider/image-cache";
+import {
+  getOmpImage,
+  ompImageTimelineSchema,
+  transformOmpImageToolItem,
+} from "../shared/provider-image";
 import {
   createHarness,
   establishTerminalOwnership,
@@ -370,11 +375,11 @@ describe("OMP direct provider", () => {
       limitAgentTimelineItemContent(item: ProviderTimelineItem): ProviderTimelineItem;
     };
     const reducedCarrier = timelineContent.limitAgentTimelineItemContent(browserCarrier.item);
+    // The host's item budget leaves the carrier intact because it names the image by reference.
+    expect(reducedCarrier).toEqual(browserCarrier.item);
     if (reducedCarrier.type !== "tool_call") throw new Error("Expected reduced image carrier");
     const browserTransform = transformOmpImageToolItem(reducedCarrier);
     const browserImage = browserTransform?.items[0];
-    expect(JSON.stringify(browserImage?.data).length).toBeGreaterThan(256 * 1024);
-    expect(ompImageTimelineSchema.parse(browserImage?.data).images[0]?.data).toBe(screenshotBytes);
     expect(browserImage).toEqual({
       type: "plugin",
       id: browserCarrier.item.id,
@@ -385,7 +390,7 @@ describe("OMP direct provider", () => {
         images: [
           {
             id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-            data: screenshotBytes,
+            ref: expect.stringMatching(/^[0-9a-f]{64}$/u),
             mimeType: "image/png",
           },
         ],
@@ -393,6 +398,14 @@ describe("OMP direct provider", () => {
         details: { width: 1280, height: 720, authorization: "test-value" },
       },
     });
+    const [browserImageRef] = ompImageTimelineSchema.parse(browserImage?.data).images;
+    if (!browserImageRef || !("ref" in browserImageRef)) throw new Error("Expected image ref");
+    const fetchedScreenshot = resolveGetOmpImage(
+      getOmpImage.input.parse({ ref: browserImageRef.ref, mimeType: browserImageRef.mimeType }),
+      ompImageCache(),
+    );
+    expect(fetchedScreenshot).toEqual({ status: "available", data: screenshotBytes });
+    expect(screenshotBytes.length).toBeGreaterThan(256 * 1024);
     const screenshotLifecycle = events.flatMap((event) =>
       event.type === "timeline.item" && event.item.id === browserTool.item.id ? [event.item] : [],
     );
@@ -494,7 +507,7 @@ describe("OMP direct provider", () => {
         images: [
           {
             id: expect.stringMatching(/^[A-Za-z0-9_-]{16}$/u),
-            data: "iVBORw0KGgo=",
+            ref: ompImageRef(Buffer.from("iVBORw0KGgo=", "base64")),
             mimeType: "image/png",
           },
         ],
@@ -1153,7 +1166,12 @@ describe("OMP direct provider", () => {
       if (event.type !== "timeline.item" || event.item.type !== "tool_call") return [];
       const transformed = transformOmpImageToolItem(event.item)?.items[0];
       if (!transformed) return [];
-      return ompImageTimelineSchema.parse(transformed.data).images.map((image) => image.data);
+      return ompImageTimelineSchema.parse(transformed.data).images.map((image) => {
+        if (!("ref" in image)) throw new Error("Expected cached image ref");
+        const cached = ompImageCache().read(image.ref, image.mimeType);
+        if (!cached) throw new Error("Expected cached image bytes");
+        return cached.toString("base64");
+      });
     });
     expect(renderedImages.length).toBeGreaterThan(0);
     expect(renderedImages.length).toBeLessThan(20);
