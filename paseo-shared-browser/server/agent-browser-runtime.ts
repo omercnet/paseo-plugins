@@ -57,7 +57,7 @@ import { createScreencastSourceTime } from "./screencast-source-time";
 import { createVideoSourceRecovery } from "./video-source-recovery";
 
 const execFileAsync = promisify(execFile);
-export const AGENT_BROWSER_VERSION = "0.40.0";
+export const AGENT_BROWSER_VERSION = "0.41.0";
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const DEFAULT_TIMEOUT_MS = 15_000;
