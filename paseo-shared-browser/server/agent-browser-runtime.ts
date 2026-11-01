@@ -317,6 +317,8 @@ export class AgentBrowserRuntime {
   private shutDown = false;
   /** A daemon was launched for this session, so absence of evidence is not proof of exit. */
   private daemonLaunched = false;
+  /** The in-flight initial `open`, settled only once the daemon it started was captured. */
+  private opening: Promise<unknown> | null = null;
   private readonly nativeVideo: boolean;
   private video: NativeVideoCapture | null = null;
   private videoRetirement: Promise<void> | null = null;
@@ -379,36 +381,53 @@ export class AgentBrowserRuntime {
     // From here a nonce-owned daemon may exist even if open rejects (e.g. navigation failure).
     this.daemonLaunched = true;
     this.daemon = null;
+    const opening = this.openDaemon([
+      "--session",
+      this.session,
+      "--profile",
+      this.profilePath,
+      "--executable-path",
+      this.executablePath,
+      ...(videoExtension ? ["--extension", videoExtension] : []),
+      "--hide-scrollbars",
+      "false",
+      ...(this.headed ? ["--headed"] : []),
+      ...(chromiumArguments ? ["--args", chromiumArguments] : []),
+      "--json",
+      "open",
+      this.initialUrl,
+    ]);
+    this.opening = opening;
     let opened: unknown;
     try {
-      opened = await this.invoke([
-        "--session",
-        this.session,
-        "--profile",
-        this.profilePath,
-        "--executable-path",
-        this.executablePath,
-        ...(videoExtension ? ["--extension", videoExtension] : []),
-        "--hide-scrollbars",
-        "false",
-        ...(this.headed ? ["--headed"] : []),
-        ...(chromiumArguments ? ["--args", chromiumArguments] : []),
-        "--json",
-        "open",
-        this.initialUrl,
-      ]);
-    } catch (error) {
-      // Record the daemon a failed open left behind: since agent-browser 0.40.0 `close`
-      // removes the PID file before returning, after which its exit is unobservable.
-      await this.captureDaemon().catch(() => undefined);
-      throw error;
+      opened = await opening;
+    } finally {
+      if (this.opening === opening) this.opening = null;
     }
     this.assertRuntimeOpen();
     const targetId = findString(opened, ["targetId", "target_id"]);
+    await this.connectCdp(targetId);
+  }
+
+  /**
+   * Runs the initial `open` and records the daemon it started before settling. Since
+   * agent-browser 0.40.0 `close` removes the PID file before returning, after which the
+   * daemon's exit is unobservable, so shutdown awaits this before issuing `close`.
+   */
+  private async openDaemon(args: string[]): Promise<unknown> {
+    let opened: unknown;
+    try {
+      opened = await this.invoke(args);
+    } catch (error) {
+      await this.protectIpcMetadata();
+      // The PID file may be a stale record of an earlier daemon, written before this one
+      // recorded its own: drop it when disproven and leave it to shutdown's lazy lookup.
+      await this.captureDaemon(true).catch(() => undefined);
+      throw error;
+    }
     await this.protectIpcMetadata();
     await this.captureDaemon();
-    this.assertRuntimeOpen();
-    await this.connectCdp(targetId);
+    return opened;
   }
 
   /** Attach an independent page controller to an existing browser session. */
@@ -1777,6 +1796,11 @@ export class AgentBrowserRuntime {
 
   /** Close, then require observed exit; escalate to a verified-owned SIGKILL and observe that too. */
   private async stopDaemon(force: boolean): Promise<void> {
+    // A launch still awaiting `open` must capture its daemon before `close` removes the PID file.
+    await this.opening?.catch(() => undefined);
+    // A failed open may have found only a stale record, its daemon writing the PID file later:
+    // record that before `close` removes it, still skipping a record disproven as ours.
+    if (this.daemonLaunched && !this.daemon) await this.captureDaemon(true).catch(() => undefined);
     let forced = force;
     if (!forced) {
       try {
@@ -1797,11 +1821,20 @@ export class AgentBrowserRuntime {
   /**
    * Records the PID-file daemon. Only a PID whose environment carries this runtime's own
    * nonce gets a verified identity; anything else is observable but never signalled.
+   * `possiblyStale` drops a PID proven not this runtime's live daemon (foreign or gone), so
+   * a later lookup re-reads the file; an unknown probe keeps a live PID as exit evidence.
    */
-  private async captureDaemon(): Promise<void> {
+  private async captureDaemon(possiblyStale = false): Promise<void> {
     const pid = await this.daemonPid();
     if (pid === null) return;
     const probe = await probeProcess(pid, this.ownerNonce);
+    if (
+      possiblyStale &&
+      (probe.status === "foreign" ||
+        probe.status === "absent" ||
+        (probe.status === "unknown" && !processExists(pid)))
+    )
+      return;
     this.daemon = { pid, identity: probe.status === "owned" ? probe.identity : null };
   }
 

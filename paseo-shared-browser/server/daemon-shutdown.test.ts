@@ -38,6 +38,9 @@ const cli = vi.hoisted(() => ({
   closes: 0,
   /** Set to make `open` fail after its side effect, like a navigation failure. */
   onOpen: null as null | (() => void),
+  /** Set to hold the `open` reply until it resolves, like a slow initial navigation. */
+  openReply: null as null | Promise<void>,
+  opens: 0,
   version: "0.37.1",
 }));
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -51,6 +54,11 @@ vi.mock("node:child_process", async (importOriginal) => ({
     if (args.includes("close")) {
       cli.closes += 1;
       cli.onClose?.();
+    }
+    if (args.includes("open")) cli.opens += 1;
+    if (args.includes("open") && cli.openReply) {
+      void cli.openReply.then(() => callback(null, { stdout: "{}\n" }));
+      return;
     }
     if (args.includes("open") && cli.onOpen) {
       cli.onOpen();
@@ -71,6 +79,8 @@ afterEach(async () => {
   cli.onClose = null;
   cli.closes = 0;
   cli.onOpen = null;
+  cli.openReply = null;
+  cli.opens = 0;
   cli.version = "0.37.1";
   probe.unreadable = false;
   probe.simulated = null;
@@ -223,6 +233,27 @@ describe("unverifiable daemon identity (platforms without /proc, unowned PIDs)",
     expect(kill).not.toHaveBeenCalledWith(daemon.pid, "SIGKILL");
   });
 
+  it("confirms the exit of a daemon left by a failed open when its identity probe is unknown", async () => {
+    const f = await fixture();
+    // The normal probe result where /proc is missing or unreadable (macOS, Windows).
+    probe.unreadable = true;
+    const daemon = await ownChild(f.native.ownerNonce);
+    const pidFile = join(f.ipc, "owned.pid");
+    cli.version = AGENT_BROWSER_VERSION;
+    cli.onOpen = () => writeFileSync(pidFile, String(daemon.pid));
+    // agent-browser >= 0.40.0: close returns only after the daemon removed its PID file.
+    cli.onClose = () => {
+      daemon.kill("SIGTERM");
+      rmSync(pidFile, { force: true });
+    };
+    await expect(f.runtime.launch()).rejects.toThrow("agent-browser command failed");
+    expect(f.native.daemon).toEqual({ pid: daemon.pid, identity: null });
+    const kill = vi.spyOn(process, "kill");
+    await f.runtime.shutdown();
+    expect(kill).not.toHaveBeenCalledWith(daemon.pid, "SIGKILL");
+    await exited(daemon);
+  });
+
   it("has nothing to observe or signal for a runtime that never launched", async () => {
     // Never launched: ordinary cleanup has nothing to observe.
     const f = await fixture(150);
@@ -306,6 +337,85 @@ describe.each(ownershipModes)(
       await exited(daemon);
       expect(kill).not.toHaveBeenCalledWith(daemon.pid, "SIGKILL");
       expect(daemon.pid && alive(daemon.pid)).toBe(false);
+    });
+
+    it("does not take a stale PID file left before a failed open as the exit of a later daemon", async () => {
+      const f = await fixture(200);
+      const stale = await ownChild();
+      stale.kill("SIGKILL");
+      await exited(stale);
+      const pidFile = join(f.ipc, "owned.pid");
+      // A crashed earlier daemon left its PID file; the new one has not recorded itself yet.
+      await writeFile(pidFile, String(stale.pid));
+      cli.version = AGENT_BROWSER_VERSION;
+      cli.onOpen = () => undefined;
+      await expect(f.runtime.launch()).rejects.toThrow("agent-browser command failed");
+      // The new daemon records itself only after the open already failed.
+      const daemon = await ownChild(f.native.ownerNonce);
+      own(daemon);
+      await writeFile(pidFile, String(daemon.pid));
+      const kill = vi.spyOn(process, "kill");
+      await f.runtime.shutdown();
+      expect(kill).toHaveBeenCalledWith(daemon.pid, "SIGKILL");
+      await exited(daemon);
+      expect(daemon.pid && alive(daemon.pid)).toBe(false);
+    });
+
+    it("confirms the exit of a daemon that records its PID after a failed open, before close removes it", async () => {
+      const f = await fixture();
+      const stale = await ownChild();
+      stale.kill("SIGKILL");
+      await exited(stale);
+      const pidFile = join(f.ipc, "owned.pid");
+      // A crashed earlier daemon left its PID file; the new one has not recorded itself yet.
+      await writeFile(pidFile, String(stale.pid));
+      cli.version = AGENT_BROWSER_VERSION;
+      cli.onOpen = () => undefined;
+      await expect(f.runtime.launch()).rejects.toThrow("agent-browser command failed");
+      expect(f.native.daemon).toBeNull();
+      // The new daemon records itself only after the open already failed.
+      const daemon = await ownChild(f.native.ownerNonce);
+      own(daemon);
+      await writeFile(pidFile, String(daemon.pid));
+      // agent-browser >= 0.40.0: close returns only after the daemon removed its PID file.
+      cli.onClose = () => {
+        daemon.kill("SIGTERM");
+        rmSync(pidFile, { force: true });
+      };
+      const kill = vi.spyOn(process, "kill");
+      await f.runtime.shutdown();
+      expect(kill).not.toHaveBeenCalledWith(daemon.pid, "SIGKILL");
+      await exited(daemon);
+    });
+
+    it("captures the daemon of a launch still awaiting open before a racing shutdown closes it", async () => {
+      const f = await fixture();
+      const daemon = await ownChild(f.native.ownerNonce);
+      own(daemon);
+      const pidFile = join(f.ipc, "owned.pid");
+      cli.version = AGENT_BROWSER_VERSION;
+      // The daemon recorded its PID, but the initial open replies only later.
+      await writeFile(pidFile, String(daemon.pid));
+      const { promise: openReply, resolve: reply } = Promise.withResolvers<void>();
+      cli.openReply = openReply;
+      // agent-browser >= 0.40.0: close returns only after the daemon removed its PID file;
+      // the aborted open then replies with the PID file already gone.
+      cli.onClose = () => {
+        daemon.kill("SIGTERM");
+        rmSync(pidFile, { force: true });
+        reply();
+      };
+      const launching = f.runtime.launch();
+      await vi.waitFor(() => expect(cli.opens).toBe(1));
+      const kill = vi.spyOn(process, "kill");
+      const stopping = f.runtime.shutdown();
+      // A real-time race: the open replies on its own a little later unless close ends it
+      // first; awaiting the launch from shutdown is exactly what is under test.
+      setTimeout(reply, 100);
+      await expect(launching).rejects.toThrow("shutting down");
+      await stopping;
+      expect(kill).not.toHaveBeenCalledWith(daemon.pid, "SIGKILL");
+      await exited(daemon);
     });
 
     it("shares one in-flight shutdown and never reports success after a failed one", async () => {
