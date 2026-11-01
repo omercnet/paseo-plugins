@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 const PRIMARY_SESSION_ID = "01a08f6b-8da9-72cb-9080-fc50139bdfca";
@@ -43,6 +44,8 @@ const resumeTarget = resumeIndex >= 0 ? args[resumeIndex + 1] : undefined;
 let sessionId = resumeTarget?.endsWith(".jsonl")
   ? (JSON.parse(readFileSync(resumeTarget, "utf8").split("\n", 1)[0] ?? "{}").id as string)
   : (resumeTarget ?? PRIMARY_SESSION_ID);
+const sessionDirIndex = args.indexOf("--session-dir");
+const sessionDir = sessionDirIndex >= 0 ? args[sessionDirIndex + 1] : undefined;
 const modelIndex = args.indexOf("--model");
 const configuredModel = modelIndex >= 0 ? args[modelIndex + 1] : undefined;
 let currentModel =
@@ -716,6 +719,23 @@ reader.on("line", (line) => {
     case "branch":
       sessionId = BRANCHED_SESSION_ID;
       history = [{ role: "user", content: "replayed question", entryId: "user-root" }];
+      // Like OMP, a branch is a new session journal that a later resume can resolve.
+      if (sessionDir) {
+        writeFileSync(
+          join(sessionDir, `2026-09-12T00-00-01-000Z_${BRANCHED_SESSION_ID}.jsonl`),
+          `${[
+            { type: "session", version: 3, id: BRANCHED_SESSION_ID, cwd: process.cwd() },
+            {
+              type: "message",
+              id: "user-root",
+              parentId: null,
+              message: { role: "user", content: "replayed question" },
+            },
+          ]
+            .map((entry) => JSON.stringify(entry))
+            .join("\n")}\n`,
+        );
+      }
       respond(command, { text: "replayed question", cancelled: false });
       break;
     case "get_subagents":
