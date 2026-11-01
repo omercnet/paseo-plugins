@@ -758,9 +758,10 @@ describe("OMP history through the Paseo host", () => {
     registry.replace([registration]);
     const hookRequests: Array<{ purpose?: string; reason?: string }> = [];
     const lifecycle = {
-      // The exact env transform the plugin registers for agent.session_open.
+      // The exact env transform the plugin registers for agent.session_open. Paseo 0.15 dispatches
+      // that legacy registration under its new daemon hook name, agent.open.before.
       async before(name: string, hookRequest: unknown) {
-        if (name !== "agent.session_open") return hookRequest;
+        if (name !== "agent.session_open" && name !== "agent.open.before") return hookRequest;
         const typed = hookRequest as Parameters<typeof withOmpSessionOpenEnv>[0];
         hookRequests.push({ purpose: typed.purpose, reason: typed.reason });
         return withOmpSessionOpenEnv(typed);
