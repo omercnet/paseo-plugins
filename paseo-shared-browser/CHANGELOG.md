@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.3](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.2...shared-browser-v4.1.3) (2026-11-01)
+
+
+### Bug Fixes
+
+* **paseo-shared-browser:** keep only a verified daemon record after a failed open ([#466](https://github.com/omercnet/paseo-plugins/issues/466)) ([6fea779](https://github.com/omercnet/paseo-plugins/commit/6fea7798b9ce0897cd8d5a83e7d1de42975b5fe8))
+
 ## [4.1.2](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.1...shared-browser-v4.1.2) (2026-10-31)
 
 
