@@ -104,8 +104,9 @@ describe("OMP direct provider", () => {
     const registry = new adapter.PluginAgentClientRegistry(pino({ enabled: false }));
     registry.replace([registration]);
     const lifecycle = {
+      // Paseo 0.15 dispatches the plugin's agent.session_open registration as agent.open.before.
       async before(name: string, request: unknown) {
-        if (name !== "agent.session_open") return request;
+        if (name !== "agent.session_open" && name !== "agent.open.before") return request;
         return withOmpWorkspaceIdentity(
           request as {
             agentId: string;
