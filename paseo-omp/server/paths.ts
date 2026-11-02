@@ -31,7 +31,9 @@ export function withWindowsEnvironmentNames(
   for (const name of WINDOWS_CASE_INSENSITIVE_ENV) {
     if (environment[name] !== undefined) continue;
     const upper = name.toUpperCase();
-    const key = Object.keys(environment).find((candidate) => candidate.toUpperCase() === upper);
+    const key = Object.keys(environment).find(
+      (candidate) => candidate.toUpperCase() === upper && environment[candidate] !== undefined,
+    );
     if (key === undefined) continue;
     if (normalized === environment) normalized = { ...environment };
     normalized[name] = environment[key];

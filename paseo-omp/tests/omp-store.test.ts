@@ -163,6 +163,14 @@ test("an exact-cased Windows PATH wins over a differently cased duplicate", () =
   });
 });
 
+test("an undefined exact-cased Windows PATH falls back to a defined duplicate", () => {
+  withOmpStore({ profile: "team-beta" }, () => {
+    expect(currentOmpEnvironment({ PATH: undefined, Path: "C:\\bin" }, "win32").PATH).toBe(
+      "C:\\bin",
+    );
+  });
+});
+
 test("named profiles follow existing OMP XDG data and state roots", async () => {
   const home = await mkdtemp(join(tmpdir(), "paseo-profile-xdg-"));
   temporaryDirectories.push(home);
