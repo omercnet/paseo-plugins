@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; 18.2.0; 18.8.4; and 18.10.1, the newest release covered end to end. The full controlled canary is pinned to official Paseo image `0.14.0-beta.1@sha256:9576b0043599ee89e410b89e145c1d24d1fb880e70c905e3583cc04767dd5ac8`; the required canary matrix validates OMP 18.1.15, 18.8.4, and 18.10.1.
+Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; 18.2.0; 18.8.4; and 18.10.1, the newest release covered end to end. The full controlled canary is pinned to official Paseo image `0.15.0-beta.1@sha256:9cb11ab7d3066b1c4a825b7c926cc768fdbcf36adca2c216654eb99f0abb03f1`; the required canary matrix validates OMP 18.1.15, 18.8.4, and 18.10.1.
 
 Classifications:
 
@@ -110,7 +110,7 @@ The Linux real-OMP CI matrix downloads checksummed `omp-linux-x64` assets for OM
 `.github/workflows/paseo-latest.yml` installs the `@getpaseo/*` SDK packages for each channel in its latest and beta matrix without changing the repository manifest or lockfile, runs the full plugin typecheck and unit suite, and maintains one rolling `compat-paseo-<channel>` issue per channel: updated with the first typecheck and test error while the channel fails, closed automatically when it passes. It is advisory: the pinned catalog remains the release contract.
 
 
-The controlled canary passed end to end on official Paseo 0.11.1 with OMP 18.1.15 and 18.2.0 on 2026-10-08. In addition to runtime health, catalog, prompts, tools, MCP, permissions, steering, interruption, persistence, Hub, usage, rewind, and plugin RPC coverage, it verified that a direct child has `parentSubagentId: null` and the root task's `toolCallId`, a nested child has its direct parent's public subagent ID and the nested task's `toolCallId`, both children finish as `completed`, and both timelines remain independently fetchable without cross-contamination.
+The controlled canary passed end to end on official Paseo 0.15.0-beta.1 with OMP 18.1.15, 18.8.4, and 18.10.1 on 2026-11-02. In addition to runtime health, catalog, prompts, tools, MCP, permissions, steering, interruption, persistence, Hub, usage, rewind, and plugin RPC coverage, it verified that a direct child has `parentSubagentId: null` and the root task's `toolCallId`, a nested child has its direct parent's public subagent ID and the nested task's `toolCallId`, both children finish as `completed`, and both timelines remain independently fetchable without cross-contamination.
 
 A separate isolated Paseo 0.11.1 daemon smoke used the deterministic OMP fixture to import and archive a native journal, cold-restart the daemon, remove the working directory, and fetch the archived timeline. The original history and cwd were preserved without unarchiving. Interactive resume still rejected the missing cwd; after restoring it, a send unarchived the agent and resumed interactively with the same opaque persistence handle.
 
