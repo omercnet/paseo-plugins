@@ -47,7 +47,9 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
     }
     const leaderClosed = once(leader, "close");
 
-    expect(await terminateSpawnedProcessTree(leader.pid, "win32")).toBe(true);
+    // Real taskkill.exe can exceed the 750 ms production budget on a loaded runner (#457). This
+    // test checks that taskkill kills the whole tree; the deadline path has its own test below.
+    expect(await stopWindowsTree(leader.pid, spawn, 10_000)).toBe("verified");
     await leaderClosed;
     expect(() => process.kill(descendantPid, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
@@ -175,6 +177,25 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
         return taskkill;
       }) as unknown as typeof spawn;
       await expect(stopWindowsTree(4321, spawnTaskkill)).resolves.toBe(outcome);
+    }
+  });
+
+  test("reports failed cleanup when taskkill misses its deadline", async () => {
+    for (const closesAfterKill of [true, false]) {
+      const kills: Array<NodeJS.Signals | number | undefined> = [];
+      const spawnTaskkill = (() => {
+        const taskkill = Object.assign(new EventEmitter(), {
+          stdout: { resume() {} },
+          stderr: { resume() {} },
+          kill(signal?: NodeJS.Signals | number) {
+            kills.push(signal);
+            if (closesAfterKill) queueMicrotask(() => taskkill.emit("close", null, "SIGKILL"));
+          },
+        });
+        return taskkill;
+      }) as unknown as typeof spawn;
+      await expect(stopWindowsTree(4321, spawnTaskkill, 1)).resolves.toBe("failed");
+      expect(kills).toEqual(["SIGKILL"]);
     }
   });
 

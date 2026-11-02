@@ -67,6 +67,7 @@ export type ProcessTreeCleanup = "verified" | "uncertain" | "failed";
 export async function stopWindowsTree(
   pid: number,
   spawnTaskkill: typeof spawn = spawn,
+  timeoutMs = PROCESS_STOP_TIMEOUT_MS,
 ): Promise<ProcessTreeCleanup> {
   const result = Promise.withResolvers<ProcessTreeCleanup>();
   const systemRoot = process.env.SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT;
@@ -98,8 +99,8 @@ export async function stopWindowsTree(
   };
   deadline = setTimeout(() => {
     taskkill.kill("SIGKILL");
-    finalDeadline = setTimeout(() => finish("failed"), PROCESS_STOP_TIMEOUT_MS);
-  }, PROCESS_STOP_TIMEOUT_MS);
+    finalDeadline = setTimeout(() => finish("failed"), timeoutMs);
+  }, timeoutMs);
   taskkill.once("error", () => finish("failed"));
   taskkill.once("close", (code, signal) => {
     // 128 means taskkill found no such process because it already exited; retrying only repeats
