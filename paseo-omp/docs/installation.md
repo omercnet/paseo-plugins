@@ -4,7 +4,7 @@ Paseo plugins are trusted, unsandboxed code. Review this plugin and its package 
 
 ## Requirements
 
-- Paseo daemon and apps: `^0.14.0 || ^0.15.0`; background-workspace discovery (`includeBackground`) requires the `features.backgroundWorkspaces` host feature, which every 0.14 host advertises
+- Paseo daemon and apps: `^0.14.0 || ^0.15.0`; background-workspace discovery (`includeBackground`) requires the `features.backgroundWorkspaces` host feature, which every 0.14 and later host advertises
 - OMP: `18.1.15` or newer is the supported floor
 - OMP RPC: protocol v2 must negotiate successfully
 
