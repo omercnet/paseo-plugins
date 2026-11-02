@@ -79,6 +79,9 @@ screenshot uses the same synthetic project and agent names.
   Closed (active work, descendants, pending finish notifications and provider safety checks keep a
   runtime resident). They keep their record and resume on the next prompt, so **Archive N closed** archives
   them too. Set `agents.idleRuntimeCleanup: false` in the host config to disable the release.
+- On Paseo 0.15, eligible agents that were running when the host stopped or crashed appear in Closed at startup
+  and are resumed in the background. **Archive N closed** archives any that have not resumed yet, which
+  cancels their resume. Set `agents.resumeOnStartup: false` in the host config to leave them closed.
 
 ## Sidebar row
 
