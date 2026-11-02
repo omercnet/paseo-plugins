@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.2.3](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.2.2...paseo-omp-v5.2.3) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.15.0-beta.1 ([#479](https://github.com/omercnet/paseo-plugins/issues/479)) ([89f4559](https://github.com/omercnet/paseo-plugins/commit/89f45597a6f634c856def38ed6a5a76782083a8b))
+
 ## [5.2.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.2.1...paseo-omp-v5.2.2) (2026-11-02)
 
 

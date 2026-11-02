@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v3.1.0...paseo-beads-v3.1.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.15.0-beta.1 ([#479](https://github.com/omercnet/paseo-plugins/issues/479)) ([89f4559](https://github.com/omercnet/paseo-plugins/commit/89f45597a6f634c856def38ed6a5a76782083a8b))
+
 ## [3.1.0](https://github.com/omercnet/paseo-plugins/compare/paseo-beads-v3.0.1...paseo-beads-v3.1.0) (2026-10-28)
 
 
