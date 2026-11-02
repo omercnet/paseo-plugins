@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.2.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.2.0...paseo-omp-v5.2.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **paseo-omp:** serve timeline images from a content-hashed cache ([#475](https://github.com/omercnet/paseo-plugins/issues/475)) ([bbf6fe2](https://github.com/omercnet/paseo-plugins/commit/bbf6fe27b14c03065d9853846b3b428a031f630d))
+
 ## [5.2.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.1.1...paseo-omp-v5.2.0) (2026-10-31)
 
 

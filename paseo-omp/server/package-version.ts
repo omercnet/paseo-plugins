@@ -1,2 +1,2 @@
 /** Release Please keeps this bundle-safe constant aligned with package.json. */
-export const PASEO_OMP_PACKAGE_VERSION = "5.2.0"; // x-release-please-version
+export const PASEO_OMP_PACKAGE_VERSION = "5.2.1"; // x-release-please-version
