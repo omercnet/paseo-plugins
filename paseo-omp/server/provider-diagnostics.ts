@@ -17,7 +17,13 @@ import type {
   OmpVersionStatus,
   PathState,
 } from "../shared/provider-diagnostics";
-import { currentOmpEnvironment, ompAgentDir, ompDataDir, ompSessionDir } from "./paths";
+import {
+  currentOmpEnvironment,
+  ompAgentDir,
+  ompDataDir,
+  ompSessionDir,
+  withWindowsEnvironmentNames,
+} from "./paths";
 
 const VERSION_TIMEOUT_MS = 3_000;
 const HELP_TIMEOUT_MS = 3_000;
@@ -53,10 +59,14 @@ const PROBE_ENV_ALLOWLIST = [
   "LC_ALL",
 ] as const;
 
-export function buildProbeEnv(sourceEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function buildProbeEnv(
+  sourceEnv: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const source = withWindowsEnvironmentNames(sourceEnv, platform);
   const env: NodeJS.ProcessEnv = {};
   for (const key of PROBE_ENV_ALLOWLIST) {
-    const value = sourceEnv[key];
+    const value = source[key];
     if (value !== undefined) env[key] = value;
   }
   return env;
@@ -201,7 +211,11 @@ export async function killWindowsProcessTree(
   child.stdout.on("data", () => {});
   child.stderr.on("data", () => {});
   child.onError(() => finish(false));
-  child.onClose((code, signal) => finish(!timedOut && code === 0 && signal === null));
+  // 128 means taskkill found no such process because it already exited. runBounded still waits
+  // for the leader's own close, so a live leader cannot pass on this exit code alone.
+  child.onClose((code, signal) =>
+    finish(!timedOut && (code === 0 || code === 128) && signal === null),
+  );
   cancelDeadline = schedule(() => {
     timedOut = true;
     try {
@@ -573,14 +587,18 @@ export async function probeOmpAvailability(options: OmpAvailabilityProbeOptions)
   status: "missing" | "unrunnable" | "incompatible" | "available";
   diagnostic?: string;
 }> {
-  const environment = options.environment ?? currentOmpEnvironment();
+  const platform = options.platform ?? process.platform;
+  const environment = withWindowsEnvironmentNames(
+    options.environment ?? currentOmpEnvironment(),
+    platform,
+  );
   const [command, ...prefixArgs] = options.command;
   const resolvedPath = await resolveExecutablePath(
     command,
     (environment.PATH ?? "").split(delimiter),
     {
       cwd: options.cwd,
-      platform: options.platform ?? process.platform,
+      platform,
       pathExt: environment.PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
     },
   );
@@ -589,7 +607,7 @@ export async function probeOmpAvailability(options: OmpAvailabilityProbeOptions)
   const operationTimeout = Math.max(1, Math.min(options.timeoutMs ?? VERSION_TIMEOUT_MS, 60_000));
   const killGraceMs = Math.min(KILL_GRACE_MS, Math.max(1, Math.floor(operationTimeout / 4)));
   const probeTimeoutMs = Math.max(1, operationTimeout - killGraceMs * 2);
-  const probeEnv = buildProbeEnv(environment);
+  const probeEnv = buildProbeEnv(environment, platform);
   const [versionRun, helpRun] = await Promise.all([
     runBounded(
       options.spawnFn ?? defaultSpawn,

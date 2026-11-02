@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  buildProbeEnv,
   buildStatefulCommandEnv,
   computeOmpProviderHealth,
   computeProcessDiagnostics,
@@ -39,6 +40,18 @@ test("stateful OMP commands preserve config selectors without provider credentia
     XDG_CONFIG_HOME: "/tmp/config",
   });
   expect(env.OPENAI_API_KEY).toBeUndefined();
+});
+
+test("probe environments resolve Windows PATH, PATHEXT and SystemRoot case-insensitively", () => {
+  const source = { Path: "C:\\bin", PathExt: ".EXE", SYSTEMROOT: "D:\\Windows", HOME: "C:\\h" };
+
+  expect(buildProbeEnv(source, "win32")).toEqual({
+    PATH: "C:\\bin",
+    PATHEXT: ".EXE",
+    SystemRoot: "D:\\Windows",
+    HOME: "C:\\h",
+  });
+  expect(buildProbeEnv(source, "linux")).toEqual({ HOME: "C:\\h" });
 });
 
 const temporaryDirectories: string[] = [];
@@ -390,6 +403,13 @@ describe("killWindowsProcessTree", () => {
     queueMicrotask(() => child.emitClose(1, null));
 
     expect(await killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 5_000)).toBe(false);
+  });
+
+  test("treats taskkill exit 128 (process already gone) as success", async () => {
+    const child = new FakeChild();
+    queueMicrotask(() => child.emitClose(128, null));
+
+    expect(await killWindowsProcessTree(1, () => child, SYSTEM_ROOT, 5_000)).toBe(true);
   });
 
   test("returns false when the spawn itself fails synchronously", async () => {

@@ -15,11 +15,39 @@ export function withOmpStore<T>(store: OmpStore | undefined, operation: () => T)
   return storeContext.run(ServerOmpStoreSchema.parse(store ?? {}), operation);
 }
 
+const WINDOWS_CASE_INSENSITIVE_ENV = ["PATH", "PATHEXT", "SystemRoot"] as const;
+
+/**
+ * Windows env names are case-insensitive, but a plain-object copy of `process.env` keeps only the
+ * literal key (often `Path`), so `environment.PATH` would read undefined. Returns the environment
+ * with PATH, PATHEXT and SystemRoot reachable under those exact names; never mutates the input.
+ */
+export function withWindowsEnvironmentNames(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (platform !== "win32") return environment;
+  let normalized = environment;
+  for (const name of WINDOWS_CASE_INSENSITIVE_ENV) {
+    if (environment[name] !== undefined) continue;
+    const upper = name.toUpperCase();
+    const key = Object.keys(environment).find((candidate) => candidate.toUpperCase() === upper);
+    if (key === undefined) continue;
+    if (normalized === environment) normalized = { ...environment };
+    normalized[name] = environment[key];
+  }
+  return normalized;
+}
+
 /** Per-request selection, never process.env mutation: concurrent profiles stay isolated. */
-export function currentOmpEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function currentOmpEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
   const store = storeContext.getStore();
-  if (!store?.profile && !store?.agentDir) return source;
-  const environment = { ...source };
+  const normalized = withWindowsEnvironmentNames(source, platform);
+  if (!store?.profile && !store?.agentDir) return normalized;
+  const environment = { ...normalized };
   for (const name of [
     "PASEO_OMP_AGENT_DIR",
     "OMP_AGENT_DIR",
