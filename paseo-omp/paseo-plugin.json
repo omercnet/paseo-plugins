@@ -2,6 +2,6 @@
   "id": "paseo-omp",
   "description": "Paseo integration for OMP, including its direct provider and workspace tooling.",
   "icon": "icon.png",
-  "requirements": { "paseo": "^0.14.0" },
+  "requirements": { "paseo": "^0.14.0 || ^0.15.0" },
   "build": [["node", "scripts/prepare-dependencies.mjs"]]
 }
