@@ -167,12 +167,6 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
     }
     const providerOptions = parseOmpProviderOptions(catalogOptions.providerOptions);
     const environment = { ...(options.environment ?? process.env), ...providerOptions.env };
-    // Windows env names are case-insensitive, but a copy keeps only the literal key (often
-    // `Path`), so `environment.PATH` would miss it and OMP would look not installed.
-    if (platform === "win32" && environment.PATH === undefined) {
-      const pathKey = Object.keys(environment).find((name) => name.toUpperCase() === "PATH");
-      if (pathKey !== undefined) environment.PATH = environment[pathKey];
-    }
     const configuredCommand: readonly [string, ...string[]] = providerOptions.command?.[0]
       ? [providerOptions.command[0], ...providerOptions.command.slice(1)]
       : [environment.OMP_COMMAND || "omp"];
