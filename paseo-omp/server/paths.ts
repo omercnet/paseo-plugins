@@ -45,9 +45,10 @@ export function currentOmpEnvironment(
   platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   const store = storeContext.getStore();
-  const normalized = withWindowsEnvironmentNames(source, platform);
-  if (!store?.profile && !store?.agentDir) return normalized;
-  const environment = { ...normalized };
+  if (!store?.profile && !store?.agentDir) return withWindowsEnvironmentNames(source, platform);
+  // Normalize the copy, not the source: the live Windows env answers PATH for a `Path` key, but
+  // a spread copy keeps only the literal key.
+  const environment = withWindowsEnvironmentNames({ ...source }, platform);
   for (const name of [
     "PASEO_OMP_AGENT_DIR",
     "OMP_AGENT_DIR",

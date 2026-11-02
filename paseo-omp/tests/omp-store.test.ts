@@ -137,6 +137,32 @@ test("a selected profile keeps Windows Path, PathExt and SystemRoot readable by 
   expect(source).toEqual({ Path: "C:\\bin", PathExt: ".EXE", SYSTEMROOT: "D:\\Windows" });
 });
 
+test("a selected profile copies a case-insensitive live Windows env with canonical names", () => {
+  // Models the real Windows process.env: lookups ignore case, but its own keys keep their casing.
+  const target: NodeJS.ProcessEnv = { Path: "C:\\bin", PathExt: ".EXE", SYSTEMROOT: "D:\\Windows" };
+  const liveEnv = new Proxy(target, {
+    get: (object, name) =>
+      typeof name === "string"
+        ? object[
+            Object.keys(object).find((key) => key.toUpperCase() === name.toUpperCase()) ?? name
+          ]
+        : undefined,
+  });
+  withOmpStore({ profile: "team-beta" }, () => {
+    const selected = currentOmpEnvironment(liveEnv, "win32");
+    expect(selected.PATH).toBe("C:\\bin");
+    expect(selected.PATHEXT).toBe(".EXE");
+    expect(selected.SystemRoot).toBe("D:\\Windows");
+  });
+});
+
+test("an exact-cased Windows PATH wins over a differently cased duplicate", () => {
+  const source = { Path: "C:\\other", PATH: "C:\\exact" };
+  withOmpStore({ profile: "team-beta" }, () => {
+    expect(currentOmpEnvironment(source, "win32").PATH).toBe("C:\\exact");
+  });
+});
+
 test("named profiles follow existing OMP XDG data and state roots", async () => {
   const home = await mkdtemp(join(tmpdir(), "paseo-profile-xdg-"));
   temporaryDirectories.push(home);

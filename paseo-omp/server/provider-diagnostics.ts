@@ -1009,7 +1009,7 @@ export async function computeOmpProviderHealth(
   const killGraceMs = deps.killGraceMs ?? KILL_GRACE_MS;
   const maxVersionBytes = deps.maxVersionBytes ?? MAX_VERSION_BYTES;
   const maxHelpBytes = deps.maxHelpBytes ?? MAX_HELP_BYTES;
-  const probeEnv = buildProbeEnv(deps.env);
+  const probeEnv = buildProbeEnv(deps.env, deps.platform);
 
   const resolvedPath = await resolveExecutablePath(deps.command, deps.pathDirs, {
     cwd: deps.cwd,
