@@ -1,5 +1,14 @@
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -276,7 +285,8 @@ async function createHarness(
     subagentControlRegistry?: OmpSubagentControlRegistry;
   } = {},
 ): Promise<Harness> {
-  const root = await mkdtemp(join(tmpdir(), "paseo-omp-conformance-"));
+  // Resolved, because the fake OMP records process.cwd() and macOS tmpdir() is a symlink.
+  const root = await realpath(await mkdtemp(join(tmpdir(), "paseo-omp-conformance-")));
   roots.push(root);
   const cwd = join(root, "workspace");
   const sessionDir = join(root, "sessions");
