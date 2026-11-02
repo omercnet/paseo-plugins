@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.2.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.2.1...paseo-omp-v5.2.2) (2026-11-02)
+
+
+### Bug Fixes
+
+* **paseo-omp:** decouple live taskkill tree test from the 750 ms budget ([#476](https://github.com/omercnet/paseo-plugins/issues/476)) ([755239e](https://github.com/omercnet/paseo-plugins/commit/755239e0f844daf8eff063b604c02fff30ac4486)), refs [#457](https://github.com/omercnet/paseo-plugins/issues/457)
+* **paseo-omp:** resolve Windows PATH, PATHEXT and SystemRoot case-insensitively ([#477](https://github.com/omercnet/paseo-plugins/issues/477)) ([fa56ab4](https://github.com/omercnet/paseo-plugins/commit/fa56ab41ee64febee0dc5f12131b52323d90a120))
+
 ## [5.2.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.2.0...paseo-omp-v5.2.1) (2026-11-01)
 
 
