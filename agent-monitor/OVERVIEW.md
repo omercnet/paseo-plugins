@@ -8,6 +8,6 @@ It reads agent, workspace and project lists through the selected host's existing
 
 On Paseo 0.14 and later, eligible idle resumable agents are released after about an hour and appear in Closed (active work, descendants, pending finish notifications and provider safety checks keep a runtime resident). They keep their record and resume on the next prompt, so the closed-agent sweep archives them too. The host setting `agents.idleRuntimeCleanup: false` disables the release.
 
-On Paseo 0.15, agents that were running when the host stopped or crashed appear in Closed at startup and are resumed in the background. The closed-agent sweep archives any that have not resumed yet, which cancels their resume. The host setting `agents.resumeOnStartup: false` leaves them closed.
+On Paseo 0.15, eligible agents that were running when the host stopped or crashed appear in Closed at startup and are resumed in the background. The closed-agent sweep archives any that have not resumed yet, which cancels their resume. The host setting `agents.resumeOnStartup: false` leaves them closed.
 
 Requires Paseo ^0.13.0 || ^0.14.0 || ^0.15.0.
