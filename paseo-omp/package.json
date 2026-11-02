@@ -1,6 +1,6 @@
 {
   "name": "@omercnet/paseo-omp",
-  "version": "5.2.1",
+  "version": "5.2.2",
   "type": "module",
   "description": "Paseo integration for OMP, including its direct provider and workspace tooling.",
   "license": "MIT",
