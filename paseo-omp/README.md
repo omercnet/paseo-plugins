@@ -54,7 +54,7 @@ Profile selection is request-local: concurrent clients cannot change each other'
 
 ## Paseo provider SDK coverage
 
-The capability inventory is pinned to `@getpaseo/plugin` 0.15.0-beta.1, with nightly compatibility checks
+The capability inventory is pinned to `@getpaseo/plugin` 0.15.0, with nightly compatibility checks
 against the latest and beta channels. Provider capability scoring covers
 all 18 entries in the SDK's `PROVIDER_CAPABILITIES`; the separate provider/client SDK table below
 also tracks the registration, screen, and sidebar APIs introduced in 0.11. This measures strict SDK surface
