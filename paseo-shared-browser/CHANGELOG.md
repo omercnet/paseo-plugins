@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.6](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.5...shared-browser-v4.1.6) (2026-11-03)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.15.0 ([#488](https://github.com/omercnet/paseo-plugins/issues/488)) ([7e03060](https://github.com/omercnet/paseo-plugins/commit/7e0306043670294badb5b6c2c5b374c9c84da457))
+
 ## [4.1.5](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.4...shared-browser-v4.1.5) (2026-11-02)
 
 
