@@ -5,6 +5,7 @@ import {
   resolveOpenOmpMcpAuthorizationInPaseoBrowser,
 } from "./server/mcp-browser";
 import { resolveListOmpMemory } from "./server/memory";
+import { OmpAccounts } from "./server/omp-accounts";
 import { resolveListOmpConfig } from "./server/omp-config";
 import { resolveListOmpModels } from "./server/omp-models";
 import {
@@ -40,6 +41,16 @@ import { composerPillSettings } from "./shared/composer-pill-settings";
 import { listHubProcesses, tailHubLog } from "./shared/hub";
 import { openOmpMcpAuthorizationInPaseoBrowser } from "./shared/mcp";
 import { listOmpMemory } from "./shared/memory";
+import {
+  cancelOmpAccountLogin,
+  listOmpAccounts,
+  redeemOmpAccountReset,
+  removeOmpAccount,
+  setOmpAccountSteering,
+  setOmpAccountsSetting,
+  startOmpAccountLogin,
+  submitOmpAccountLoginCode,
+} from "./shared/omp-accounts";
 import { listOmpConfig } from "./shared/omp-config";
 import { listOmpModels } from "./shared/omp-models";
 import {
@@ -79,6 +90,7 @@ export default function contribute(server: PluginServerContext) {
   const subagentControlRegistry = new OmpSubagentControlRegistry();
   const protocolViolations = new OmpProtocolViolationCollector();
   const operationalFailures = new OmpOperationalFailureCollector();
+  const accounts = new OmpAccounts();
   const profiles = discoverOmpProfilesSync();
   server.handle(listOmpStores, async () => ({ profiles: await discoverOmpProfiles() }));
   for (const profile of profiles) {
@@ -96,6 +108,47 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listHubProcesses, resolveListHubProcesses);
   server.handle(tailHubLog, resolveTailHubLog);
   server.handle(listOmpQuotas, scoped(resolveListOmpQuotas));
+  server.handle(
+    listOmpAccounts,
+    scoped(({ store, refresh }) => accounts.list(store, refresh ?? false)),
+  );
+  server.handle(
+    startOmpAccountLogin,
+    scoped(({ store, provider }) => accounts.startLogin(store, provider)),
+  );
+  server.handle(
+    submitOmpAccountLoginCode,
+    scoped(({ loginId, code }) => accounts.submitCode(loginId, code)),
+  );
+  server.handle(
+    cancelOmpAccountLogin,
+    scoped(({ loginId }) => accounts.cancelLogin(loginId)),
+  );
+  server.handle(
+    removeOmpAccount,
+    scoped(async ({ store, provider, credentialId }) => {
+      await accounts.remove(store, provider, credentialId);
+      return { ok: true as const };
+    }),
+  );
+  server.handle(
+    redeemOmpAccountReset,
+    scoped(({ store, provider, credentialId }) => accounts.redeem(store, provider, credentialId)),
+  );
+  server.handle(
+    setOmpAccountSteering,
+    scoped(async ({ store, provider, credentialId, preferred, reservePct }) => {
+      await accounts.setSteering(store, provider, credentialId, { preferred, reservePct });
+      return { ok: true as const };
+    }),
+  );
+  server.handle(
+    setOmpAccountsSetting,
+    scoped(async ({ store, path, value }) => {
+      await accounts.setSetting(store, path, value);
+      return { ok: true as const };
+    }),
+  );
   server.handle(listOmpMemory, scoped(resolveListOmpMemory));
   server.handle(listOmpSessions, scoped(resolveListOmpSessions));
   server.handle(listOmpConfig, scoped(resolveListOmpConfig));
@@ -137,6 +190,7 @@ export default function contribute(server: PluginServerContext) {
   );
   return () => {
     browserAuthorizationRegistry.clear();
+    accounts.stop();
     removeSessionLimitListener();
     subagentControlRegistry.clear();
     removeSessionOpenHook();

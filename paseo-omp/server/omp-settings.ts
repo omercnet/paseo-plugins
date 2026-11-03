@@ -200,7 +200,7 @@ export function parseOmpSettingsList(raw: unknown): ParsedOmpSettings {
   return { settings, droppedCount };
 }
 
-async function resolveOmpExecutable(): Promise<string | null> {
+export async function resolveOmpExecutable(): Promise<string | null> {
   return resolveExecutablePath(
     currentOmpEnvironment().OMP_COMMAND ?? "omp",
     (currentOmpEnvironment().PATH ?? "").split(delimiter),

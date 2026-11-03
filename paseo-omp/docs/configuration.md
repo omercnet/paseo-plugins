@@ -81,6 +81,18 @@ Rows disappear as their subagents finish. Outcomes and errors appear as Paseo to
 
 The controls follow Paseo's client trust model. They are plugin RPCs, which the daemon only accepts from clients with its `daemon.manage` permission. That permission is a superset of what the controls can do: a `daemon.manage` client can already install plugin code on the daemon. The agent ID in a request selects the agent rather than limiting who may act on it, because the daemon passes no caller identity to the handler. A client without `daemon.manage` sees the rows but its requests are rejected.
 
+## OMP accounts
+
+The **Accounts** tab of the OMP screen lists the logins in OMP's own credential store for the selected store, grouped by provider. An OAuth login shows OMP's usage bars and reset times, and says whether the reading is live or OMP's last recorded one when the provider gave none. A provider with several logins also shows where OMP would start new agents right now, from `omp dry-balance`. OMP balances agents across its logins and moves off one that hits a limit by itself; this view does not change that.
+
+- **Add login** runs OMP's own sign-in for a provider OMP offers. Open the sign-in page on any device. On the host's computer sign-in finishes by itself; anywhere else, paste the code or the address of the page that failed to load. One sign-in runs at a time because OAuth callbacks use fixed local ports. Closing the dialog stops the `omp` process.
+- **Remove** signs one login out of OMP after a confirmation. It is OMP's store, so `omp` in a terminal loses the login too.
+- **Use reset** spends one banked reset (`omp usage reset <provider>/<id>`) after a confirmation, and is disabled with OMP's reason when OMP cannot use one right now.
+- **Prefer** makes a login the one new agents for its provider start on while it has room, and **Keep in reserve** sets the quota OMP leaves unused on it. Both edit that login's entry in OMP's own `auth.accountPolicies` (priority 100 with a reclaim threshold 15 points above the reserve that applies), replacing only that entry and keeping any other policy fields or accounts as written. At most one login per provider is preferred. They show only for logins OMP gives an account id for, which today means Claude and ChatGPT.
+- **How OMP uses these logins** edits OMP's `retry.usageReservePct`, `retry.usageReservePolicy`, `retry.waitForUsageReset`, and the `codexResets` and `claudeResets` auto-redeem and keep-credits settings through `omp config set`, so the Configuration tab and terminal `omp` see the same values.
+
+The plugin reads no OMP credential file and never receives a token. Every read and action goes through the `omp` command, and a pasted code goes straight to its standard input. Reads are cached for five minutes; **Refresh** asks the providers again. Logins belong to the selected store, so a profile shows its own. The tab is host-level and does not appear in the workspace OMP panel.
+
 ## Credentials and environment
 
 The plugin is deny-by-default. It inherits only its fixed built-in allowlist of core provider authentication variables, exact host-wide names an operator selects in **OMP → Plugin**, and additional exact profile names under `providerOptions.inheritEnv`; it does not discover or inherit arbitrary credential-shaped names. Prefer OMP's native credential store or auth broker whenever possible.

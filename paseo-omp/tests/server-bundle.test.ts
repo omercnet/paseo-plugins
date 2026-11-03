@@ -184,13 +184,21 @@ describe("plugin server bundle", () => {
           },
           registerProvider: (provider: ProviderRegistration) => providers.push(provider),
         });
-        expect(handlers).toHaveLength(20);
+        expect(handlers).toHaveLength(28);
         expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-models");
         expect(handlers.map(([contract]) => contract.name)).toEqual(
           expect.arrayContaining([
             "paseo-omp.cancel-subagent",
             "paseo-omp.steer-subagent",
             "paseo-omp.get-image",
+            "paseo-omp.list-accounts",
+            "paseo-omp.start-account-login",
+            "paseo-omp.submit-account-login-code",
+            "paseo-omp.cancel-account-login",
+            "paseo-omp.remove-account",
+            "paseo-omp.redeem-account-reset",
+            "paseo-omp.set-account-steering",
+            "paseo-omp.set-accounts-setting",
           ]),
         );
         expect(settings).toEqual([
