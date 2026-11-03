@@ -639,6 +639,8 @@ interface Snapshot {
   providers: OmpAccountProvider[];
   accounts: OmpAccount[];
   balance: OmpBalancePreview[];
+  /** When the read producing this snapshot began; a read that began earlier never replaces it. */
+  startedAt: number;
   settings: OmpAccountsSettings;
   /** `provider/credentialId` to the ids OMP's account policies select that login by. */
   identities: Map<string, AccountKey>;
@@ -646,7 +648,11 @@ interface Snapshot {
   error: string | null;
 }
 
-async function readSnapshot(command: OmpCommand, invalidate: boolean): Promise<Snapshot> {
+async function readSnapshot(
+  command: OmpCommand,
+  invalidate: boolean,
+  startedAt: number,
+): Promise<Snapshot> {
   // Asks the providers again instead of answering from OMP's usage cache.
   if (invalidate) await runOmp(command, ["usage", "invalidate"]);
   const errors: string[] = [];
@@ -692,6 +698,7 @@ async function readSnapshot(command: OmpCommand, invalidate: boolean): Promise<S
         return key ? [[`${reset.provider}/${reset.credentialId}`, key] as const] : [];
       }),
     ),
+    startedAt,
     fetchedAt: Date.now(),
     error: errors.length > 0 ? errors.join(" · ") : null,
   };
@@ -828,17 +835,20 @@ export class OmpAccounts {
     } finally {
       rpc.close();
     }
-    // A policy left behind would silently apply to a later login with the same account id.
+    // A policy left behind would silently apply to a later login with the same account id. The
+    // logout has already happened, so a failed cleanup is not a failed removal.
     if (key) {
-      await this.writes.run(async () => {
-        const config = await runJson(command, ["config", "list", "--json"], ConfigSchema);
-        const kept = readPolicies(config).filter((policy) => !selects(policy, key));
-        await this.writeSetting(
-          command,
-          "auth.accountPolicies",
-          kept.length > 0 ? JSON.stringify(kept) : null,
-        );
-      });
+      await this.writes
+        .run(async () => {
+          const config = await runJson(command, ["config", "list", "--json"], ConfigSchema);
+          const kept = readPolicies(config).filter((policy) => !selects(policy, key));
+          await this.writeSetting(
+            command,
+            "auth.accountPolicies",
+            kept.length > 0 ? JSON.stringify(kept) : null,
+          );
+        })
+        .catch(() => undefined);
     }
     await this.refreshAfterChange(store);
   }
@@ -926,13 +936,24 @@ export class OmpAccounts {
       // refuses to load, so the thresholds move with it in the same write.
       if (path === "retry.usageReservePct") {
         const config = await runJson(command, ["config", "list", "--json"], ConfigSchema);
+        const current = SettingValueSchema.safeParse(config["retry.usageReservePct"]);
+        const currentDefault =
+          current.success && typeof current.data.value === "number"
+            ? current.data.value
+            : DEFAULT_RESERVE_PCT;
         const nextDefault = typeof value === "number" ? value : DEFAULT_RESERVE_PCT;
         const policies = withReclaimThresholds(readPolicies(config), nextDefault);
-        await this.writeSetting(
-          command,
-          "auth.accountPolicies",
-          policies.length > 0 ? JSON.stringify(policies) : null,
-        );
+        const policiesJson = policies.length > 0 ? JSON.stringify(policies) : null;
+        // OMP must never see a reclaim threshold at or below the default in force between the two
+        // writes: raise thresholds before a higher default, lower them after a lower default.
+        if (nextDefault >= currentDefault) {
+          await this.writeSetting(command, "auth.accountPolicies", policiesJson);
+          await this.writeSetting(command, path, JSON.stringify(nextDefault));
+        } else {
+          await this.writeSetting(command, path, value === null ? null : JSON.stringify(value));
+          await this.writeSetting(command, "auth.accountPolicies", policiesJson);
+        }
+        return;
       }
       await this.writeSetting(command, path, value === null ? null : JSON.stringify(value));
     });
@@ -984,11 +1005,11 @@ export class OmpAccounts {
     if (running && !invalidate) return running;
     const startedAt = Date.now();
     const next = resolveCommand()
-      .then((command) => readSnapshot(command, invalidate))
+      .then((command) => readSnapshot(command, invalidate, startedAt))
       .then((snapshot) => {
         // A read that began before a later write must not overwrite what that write produced.
         const current = this.snapshots.get(key);
-        if (!current || current.fetchedAt <= startedAt) this.snapshots.set(key, snapshot);
+        if (!current || current.startedAt <= startedAt) this.snapshots.set(key, snapshot);
         return this.snapshots.get(key) ?? snapshot;
       })
       .finally(() => {
@@ -1027,9 +1048,10 @@ export class OmpAccounts {
       if (!isOpen(login.step)) return;
       login.step = "verifying";
       login.codePrompt = null;
-      // The login is stored once OMP accepts it; a failed refresh must not report it as failed.
-      this.settle(login, "done", null);
+      // refreshAfterChange never throws, so a failed refresh cannot mark a stored login failed;
+      // settling after it means the listing already shows the new login when "done" appears.
       await this.refreshAfterChange(store);
+      this.settle(login, "done", null);
     } catch (error) {
       if (isOpen(login.step)) this.settle(login, "failed", publicMessage(error));
     }

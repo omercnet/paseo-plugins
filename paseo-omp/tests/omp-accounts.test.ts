@@ -35,6 +35,9 @@ interface Scenario {
   stateFile: string;
   /** Every invocation's argv is appended here as JSON lines. */
   logFile: string;
+  /** Second `usage --json` waits this long and the third twice as long: a poll started before a write finishes during the write's refresh. */
+  delayMs?: number;
+  delayFile?: string;
 }
 
 /** A scripted `omp`: the account rpc commands plus the `usage`, `models` and `dry-balance` reads. */
@@ -47,6 +50,7 @@ const args = process.argv.slice(2);
 if (S.logFile) require("node:fs").appendFileSync(S.logFile, JSON.stringify(args) + "\\n");
 const print = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 const fail = (message) => { process.stderr.write(message + "\\n"); process.exit(1); };
+if (S.delayMs && args[0] === "usage" && args[1] === "--json") { const fs = require("node:fs"); const n = fs.existsSync(S.delayFile) ? Number(fs.readFileSync(S.delayFile, "utf8")) : 0; fs.writeFileSync(S.delayFile, String(n + 1)); const wait = n === 1 ? S.delayMs : n === 2 ? S.delayMs * 2 : 0; if (wait) { const until = Date.now() + wait; while (Date.now() < until) {} } }
 if (args[0] === "--version") { console.log("omp/fake"); process.exit(0); }
 if (args.includes("--mode")) {
   let loginId = null;
@@ -234,7 +238,15 @@ async function install(overrides: Partial<Scenario> = {}): Promise<OmpAccounts> 
   await writeFile(stateFile, JSON.stringify({ overrides: {} }));
   await writeFile(
     script,
-    fakeOmp(scenario(pidFile, { policyFile, stateFile, logFile, ...overrides })),
+    fakeOmp(
+      scenario(pidFile, {
+        policyFile,
+        stateFile,
+        logFile,
+        delayFile: join(directory, "delayed"),
+        ...overrides,
+      }),
+    ),
   );
   await chmod(script, 0o755);
   process.env.OMP_COMMAND = script;
@@ -873,5 +885,42 @@ describe.skipIf(ON_WINDOWS)("remove and reset", () => {
       ok: false,
       message: "OMP could not use the reset",
     });
+  });
+});
+
+describe.skipIf(ON_WINDOWS)("read and write overlap", () => {
+  test("a poll that began before a write never replaces the snapshot that write refreshed", async () => {
+    const accounts = await install({ delayMs: 1500 });
+    await accounts.list(undefined, false);
+    // The poll finishes after the write's refresh began but before it ends: the poll's result is
+    // stored first, and the refresh (newer by start time) must still replace it.
+    const poll = accounts.list(undefined, true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await accounts.setSteering(undefined, "anthropic", 3, { reservePct: 20 });
+    await poll;
+    const view = await accounts.list(undefined, false);
+    expect(view.accounts.find((a) => a.credentialId === 3)?.steering?.reservePct).toBe(20);
+  });
+
+  test("lowering the default reserve writes the setting before the thresholds", async () => {
+    const accounts = await install();
+    await accounts.setSteering(undefined, "anthropic", 3, { preferred: true });
+    await accounts.setSetting(undefined, "retry.usageReservePct", 50);
+    await accounts.setSetting(undefined, "retry.usageReservePct", 10);
+    const calls = (await readFile(logFile, "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as string[]);
+    const writes = calls.filter((a) => a[0] === "config" && a[1] === "set").map((a) => a[2]);
+    expect(writes.slice(-4)).toEqual([
+      "auth.accountPolicies",
+      "retry.usageReservePct",
+      "retry.usageReservePct",
+      "auth.accountPolicies",
+    ]);
+    const policies = JSON.parse(await readFile(policyFile, "utf8")) as Array<{
+      reclaimAbovePct: number;
+    }>;
+    expect(policies[0]?.reclaimAbovePct).toBe(25);
   });
 });
