@@ -29,6 +29,7 @@ import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider
 import { getOmpSupportReport, OMP_SUPPORT_ISSUE_URL } from "../shared/support-diagnostics";
 import { ComposerPillSettingsSection } from "./composer-pill-settings";
 import { openOmpExternalUrl } from "./external-url";
+import { OmpAccountsSection } from "./omp-accounts-section";
 import { type OmpConfigStyles, useConfigStyles } from "./omp-config-styles";
 import { type OmpConfigSurfaceView as SurfaceView, surfaceViewsForScope } from "./omp-config-views";
 import {
@@ -1143,6 +1144,10 @@ function OmpConfigContent({
             </SectionCard>
           )}
         </>
+      ) : null}
+
+      {view === "accounts" && !cwd ? (
+        <OmpAccountsSection theme={theme} styles={styles} store={store} />
       ) : null}
 
       {view === "plugin" ? (

@@ -92,6 +92,7 @@ describe("OMP Help surface state", () => {
   test("adds Help without changing existing global and workspace tabs", () => {
     expect(surfaceViewsForScope(false).map((view) => view.id)).toEqual([
       "overview",
+      "accounts",
       "plugin",
       "plugins",
       "composer",
