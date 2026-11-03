@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { OmpAccounts } from "../server/omp-accounts";
 import type { OmpAccountsView, OmpLogin } from "../shared/omp-accounts";
 
+// The fake omp is a shebang script, which Windows cannot run as `omp`; the pure merge and
+// schema rules stay covered everywhere by omp-accounts-contract.test.ts.
+const ON_WINDOWS = process.platform === "win32";
+
 interface Scenario {
   providers: unknown[];
   /** Logins by the provider id `get_logout_accounts` is asked about. */
@@ -274,7 +278,7 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-describe("listing", () => {
+describe.skipIf(ON_WINDOWS)("listing", () => {
   test("lists each login once, keeps API keys without usage, and offers every available provider", async () => {
     const accounts = await install();
     const view = await accounts.list(undefined, false);
@@ -414,7 +418,7 @@ describe("listing", () => {
   });
 });
 
-describe("sign-in", () => {
+describe.skipIf(ON_WINDOWS)("sign-in", () => {
   test("reaches the code step with omp's link and prompt, then finishes once omp accepts the code", async () => {
     const accounts = await install();
     const started = await accounts.startLogin(undefined, "anthropic");
@@ -484,7 +488,7 @@ describe("sign-in", () => {
   });
 });
 
-describe("caching and isolation", () => {
+describe.skipIf(ON_WINDOWS)("caching and isolation", () => {
   async function calls(): Promise<string[][]> {
     const text = await readFile(logFile, "utf8").catch(() => "");
     return text
@@ -588,7 +592,7 @@ describe("caching and isolation", () => {
   });
 });
 
-describe("steering", () => {
+describe.skipIf(ON_WINDOWS)("steering", () => {
   async function policies(): Promise<unknown[]> {
     return JSON.parse(await readFile(policyFile, "utf8")) as unknown[];
   }
@@ -699,7 +703,7 @@ describe("steering", () => {
   });
 });
 
-describe("remove and reset", () => {
+describe.skipIf(ON_WINDOWS)("remove and reset", () => {
   test("removing a login omp does not know surfaces omp's own message and leaves the list alone", async () => {
     const accounts = await install();
     const before = await accounts.list(undefined, false);
