@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.3.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.2.4...paseo-omp-v5.3.0) (2026-11-03)
+
+
+### Features
+
+* **paseo-omp:** accounts tab for OMP logins, usage, resets and balancing ([#491](https://github.com/omercnet/paseo-plugins/issues/491)) ([2ab33c4](https://github.com/omercnet/paseo-plugins/commit/2ab33c4e283b4397298b2afa1a8ec4201cc53195))
+
 ## [5.2.4](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.2.3...paseo-omp-v5.2.4) (2026-11-03)
 
 
