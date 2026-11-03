@@ -32,7 +32,6 @@ const LOGIN_TIMEOUT_MS = 15 * 60_000;
 const FINISHED_LOGIN_TTL_MS = 10 * 60_000;
 const KILL_GRACE_MS = 1_000;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
-const STDERR_TAIL_BYTES = 2_000;
 const BALANCE_SAMPLES = "20";
 
 /** A bare rpc session: no tools, extensions or context, nothing saved. Only account commands run. */
@@ -132,6 +131,8 @@ const ResetAccountSchema = z.object({
   redeemableCount: z.number().int(),
   soonestExpiry: z.string().nullish(),
   unavailableReason: z.string().nullish(),
+  /** OMP could not read this login's resets at all. */
+  error: z.string().nullish(),
 });
 type ResetAccount = z.infer<typeof ResetAccountSchema>;
 const ResetsSchema = z.object({ accounts: entries(ResetAccountSchema).nullish() });
@@ -190,8 +191,9 @@ const PREFERRED_PRIORITY = 100;
 const RECLAIM_MARGIN_PCT = 15;
 const DEFAULT_RESERVE_PCT = 10;
 
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/** What the client may see: the plugin's own messages, never a raw Node error or omp's stderr. */
+function publicMessage(error: unknown): string {
+  return error instanceof OmpPublicError ? error.message : "omp did not answer";
 }
 
 function readOutput<T>(schema: z.ZodType<T>, value: unknown, command: string): T {
@@ -246,7 +248,8 @@ class OmpRpcProcess {
     { resolve(data: unknown): void; reject(error: Error): void }
   >();
   private nextId = 0;
-  private stderr = "";
+  private closed = false;
+  private killer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     command: OmpCommand,
@@ -258,22 +261,24 @@ class OmpRpcProcess {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stdin?.on("error", () => undefined);
-    this.child.stderr?.on("data", (chunk: Buffer) => {
-      this.stderr = (this.stderr + chunk.toString("utf8")).slice(-STDERR_TAIL_BYTES);
-    });
+    this.child.stderr?.resume();
     if (this.child.stdout) {
       createInterface({ input: this.child.stdout }).on("line", (line) => this.receive(line));
     }
     this.child.on("error", (error) => this.failAll(error));
     this.child.on("close", (code) => {
-      const detail = this.stderr.trim().split("\n").pop();
+      this.closed = true;
+      clearTimeout(this.killer);
       const status = code === null ? "" : ` with code ${code}`;
-      this.failAll(new OmpAccountsError(`omp exited${status}${detail ? `: ${detail}` : ""}`));
+      this.failAll(new OmpAccountsError(`omp exited${status}`));
     });
   }
 
   /** OMP's answer, still unchecked: callers read it through a schema. */
   request(command: Record<string, unknown>, timeoutMs = RPC_REQUEST_TIMEOUT_MS): Promise<unknown> {
+    if (this.closed) {
+      return Promise.reject(new OmpAccountsError("omp is no longer running"));
+    }
     const id = `paseo-omp-${++this.nextId}`;
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
     const timer = setTimeout(() => {
@@ -299,7 +304,11 @@ class OmpRpcProcess {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.child.kill();
+    // A login process that ignores TERM keeps OMP's fixed OAuth callback port.
+    this.killer = setTimeout(() => this.child.kill("SIGKILL"), KILL_GRACE_MS);
   }
 
   private receive(line: string): void {
@@ -343,9 +352,11 @@ async function listStoredLogins(command: OmpCommand): Promise<Listing> {
       providers
         .filter((provider) => provider.authenticated)
         .map(async (provider) => {
-          const listed = LogoutAccountsSchema.safeParse(
-            await rpc.request({ type: "get_logout_accounts", providerId: provider.id }),
-          );
+          // One provider's failed or odd answer leaves out only that provider's logins.
+          const answer = await rpc
+            .request({ type: "get_logout_accounts", providerId: provider.id })
+            .catch(() => undefined);
+          const listed = LogoutAccountsSchema.safeParse(answer);
           return listed.success ? listed.data.accounts : [];
         }),
     );
@@ -404,7 +415,16 @@ function lastRecorded(
 }
 
 function toResets(reset: ResetAccount | undefined): OmpAccount["resets"] {
-  if (!reset || reset.availableCount <= 0) return null;
+  if (!reset) return null;
+  if (reset.error) {
+    return {
+      available: 0,
+      usableNow: false,
+      blockedReason: "OMP could not read this login's resets",
+      soonestExpiry: null,
+    };
+  }
+  if (reset.availableCount <= 0) return null;
   const usableNow = reset.redeemableCount > 0;
   return {
     available: reset.availableCount,
@@ -478,14 +498,37 @@ export function applySteering(
   }
   if (change.reservePct === null) delete target.reservePct;
   else if (typeof change.reservePct === "number") target.reservePct = change.reservePct;
-  // OMP requires the reclaim threshold above the reserve that applies to the preferred login.
-  for (const policy of next) {
-    if (policy.priority !== PREFERRED_PRIORITY) continue;
+  return next
+    .map((policy) =>
+      policy.provider === key.provider
+        ? withReclaimThresholds([policy], defaultReservePct)[0]
+        : policy,
+    )
+    .filter(
+      (policy): policy is AccountPolicy => policy !== undefined && Object.keys(policy).length > 2,
+    );
+}
+
+/**
+ * The plugin's preferred policies with their reclaim threshold recomputed above the reserve that
+ * applies; OMP refuses a threshold at or below it. Policies the plugin did not prefer are untouched.
+ */
+export function withReclaimThresholds(
+  policies: readonly AccountPolicy[],
+  defaultReservePct: number,
+): AccountPolicy[] {
+  return policies.map((policy) => {
+    if (policy.priority !== PREFERRED_PRIORITY) return policy;
+    const next = { ...policy };
     const reserve = policy.reservePct ?? defaultReservePct;
-    if (reserve < 100) policy.reclaimAbovePct = Math.min(100, reserve + RECLAIM_MARGIN_PCT);
-    else delete policy.reclaimAbovePct;
-  }
-  return next.filter((policy) => Object.keys(policy).length > 2);
+    if (reserve < 100) next.reclaimAbovePct = Math.min(100, reserve + RECLAIM_MARGIN_PCT);
+    else delete next.reclaimAbovePct;
+    return next;
+  });
+}
+
+function sameKey(a: AccountKey, b: AccountKey): boolean {
+  return a.provider === b.provider && a.accountId === b.accountId && a.orgId === b.orgId;
 }
 
 function readPolicies(config: Config | null): AccountPolicy[] {
@@ -610,11 +653,11 @@ async function readSnapshot(command: OmpCommand, invalidate: boolean): Promise<S
   const [listing, usage, resets, history, config] = await Promise.all([
     listStoredLogins(command),
     runJson(command, ["usage", "--json"], UsageSchema).catch((error: unknown) => {
-      errors.push(`Usage: ${describe(error)}`);
+      errors.push(`Usage: ${publicMessage(error)}`);
       return { reports: [] };
     }),
     runJson(command, ["usage", "reset", "--json"], ResetsSchema).catch((error: unknown) => {
-      errors.push(`Resets: ${describe(error)}`);
+      errors.push(`Resets: ${publicMessage(error)}`);
       return { accounts: [] };
     }),
     // Local records only, so it is cheap; it stands in for a missing live reading.
@@ -622,7 +665,7 @@ async function readSnapshot(command: OmpCommand, invalidate: boolean): Promise<S
       entries: [],
     })),
     runJson(command, ["config", "list", "--json"], ConfigSchema).catch((error: unknown) => {
-      errors.push(`Settings: ${describe(error)}`);
+      errors.push(`Settings: ${publicMessage(error)}`);
       return null;
     }),
   ]);
@@ -718,7 +761,11 @@ export class OmpAccounts {
     try {
       return this.view(store, await this.load(store, refresh), null);
     } catch (error) {
-      return this.view(store, cached ?? null, `Could not read OMP's accounts: ${describe(error)}`);
+      return this.view(
+        store,
+        cached ?? null,
+        `Could not read OMP's accounts: ${publicMessage(error)}`,
+      );
     }
   }
 
@@ -773,13 +820,27 @@ export class OmpAccounts {
   }
 
   async remove(store: OmpStore | undefined, provider: string, credentialId: number): Promise<void> {
-    const rpc = new OmpRpcProcess(await resolveCommand());
+    const command = await resolveCommand();
+    const key = this.snapshots.get(storeKey(store))?.identities.get(`${provider}/${credentialId}`);
+    const rpc = new OmpRpcProcess(command);
     try {
       await rpc.request({ type: "logout", providerId: provider, credentialId });
     } finally {
       rpc.close();
     }
-    await this.load(store, true);
+    // A policy left behind would silently apply to a later login with the same account id.
+    if (key) {
+      await this.writes.run(async () => {
+        const config = await runJson(command, ["config", "list", "--json"], ConfigSchema);
+        const kept = readPolicies(config).filter((policy) => !selects(policy, key));
+        await this.writeSetting(
+          command,
+          "auth.accountPolicies",
+          kept.length > 0 ? JSON.stringify(kept) : null,
+        );
+      });
+    }
+    await this.refreshAfterChange(store);
   }
 
   async redeem(
@@ -802,7 +863,13 @@ export class OmpAccounts {
       REDEEM_TIMEOUT_MS,
     );
     const used = run.outcome === "exited" && run.exitCode === 0;
-    await this.load(store, true);
+    await this.refreshAfterChange(store);
+    if (run.outcome === "timeout") {
+      return {
+        ok: false,
+        message: "OMP did not finish in time; check its banked resets before trying again",
+      };
+    }
     if (!used) return { ok: false, message: "OMP could not use the reset" };
     return { ok: true, message: lastLine(run.stdout) ?? "Reset used" };
   }
@@ -823,6 +890,15 @@ export class OmpAccounts {
           "OMP doesn't say which account this login belongs to, so its policies can't select it",
         );
       }
+      // OMP refuses a policy that matches two stored logins, which would take the provider down.
+      const twins = [...snapshot.identities.entries()].filter(
+        ([ref, other]) => ref !== `${provider}/${credentialId}` && sameKey(other, key),
+      );
+      if (twins.length > 0) {
+        throw new OmpAccountsError(
+          "Two logins share this account id, so a policy for it would be ambiguous",
+        );
+      }
       const config = await runJson(command, ["config", "list", "--json"], ConfigSchema);
       const reserve = SettingValueSchema.safeParse(config["retry.usageReservePct"]);
       const defaultReserve =
@@ -836,7 +912,7 @@ export class OmpAccounts {
         next.length > 0 ? JSON.stringify(next) : null,
       );
     });
-    await this.load(store, false);
+    await this.refreshAfterChange(store);
   }
 
   async setSetting(
@@ -845,10 +921,22 @@ export class OmpAccounts {
     value: string | number | boolean | null,
   ): Promise<void> {
     const command = await resolveCommand();
-    await this.writes.run(() =>
-      this.writeSetting(command, path, value === null ? null : JSON.stringify(value)),
-    );
-    await this.load(store, false);
+    await this.writes.run(async () => {
+      // A new default reserve can sit at or above a preferred login's reclaim threshold, which OMP
+      // refuses to load, so the thresholds move with it in the same write.
+      if (path === "retry.usageReservePct") {
+        const config = await runJson(command, ["config", "list", "--json"], ConfigSchema);
+        const nextDefault = typeof value === "number" ? value : DEFAULT_RESERVE_PCT;
+        const policies = withReclaimThresholds(readPolicies(config), nextDefault);
+        await this.writeSetting(
+          command,
+          "auth.accountPolicies",
+          policies.length > 0 ? JSON.stringify(policies) : null,
+        );
+      }
+      await this.writeSetting(command, path, value === null ? null : JSON.stringify(value));
+    });
+    await this.refreshAfterChange(store);
   }
 
   /** `omp config set <path> --json -- <json>`, or `config reset` for null; OMP validates the value. */
@@ -894,17 +982,33 @@ export class OmpAccounts {
     const key = storeKey(store);
     const running = this.loading.get(key);
     if (running && !invalidate) return running;
+    const startedAt = Date.now();
     const next = resolveCommand()
       .then((command) => readSnapshot(command, invalidate))
       .then((snapshot) => {
-        this.snapshots.set(key, snapshot);
-        return snapshot;
+        // A read that began before a later write must not overwrite what that write produced.
+        const current = this.snapshots.get(key);
+        if (!current || current.fetchedAt <= startedAt) this.snapshots.set(key, snapshot);
+        return this.snapshots.get(key) ?? snapshot;
       })
       .finally(() => {
         if (this.loading.get(key) === next) this.loading.delete(key);
       });
     this.loading.set(key, next);
     return next;
+  }
+
+  /**
+   * After a change OMP has already applied: start a fresh read (never one that began before the
+   * change), and if it fails drop the cached snapshot so the next read goes to OMP.
+   */
+  private async refreshAfterChange(store: OmpStore | undefined): Promise<void> {
+    const key = storeKey(store);
+    try {
+      await this.load(store, true);
+    } catch {
+      this.snapshots.delete(key);
+    }
   }
 
   private async runLogin(
@@ -923,10 +1027,11 @@ export class OmpAccounts {
       if (!isOpen(login.step)) return;
       login.step = "verifying";
       login.codePrompt = null;
-      await this.load(store, true);
+      // The login is stored once OMP accepts it; a failed refresh must not report it as failed.
       this.settle(login, "done", null);
+      await this.refreshAfterChange(store);
     } catch (error) {
-      if (isOpen(login.step)) this.settle(login, "failed", describe(error));
+      if (isOpen(login.step)) this.settle(login, "failed", publicMessage(error));
     }
   }
 

@@ -8,7 +8,7 @@ import {
   useToast,
 } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   cancelOmpAccountLogin,
@@ -150,12 +150,26 @@ function usageAgeLabel(account: OmpAccount): string | null {
   return account.usageIsRecorded ? `OMP's last recorded reading, ${age}` : `Read by OMP ${age}`;
 }
 
+/** The reserve select's options; a value outside the fixed choices (set by hand) is listed as itself. */
+function reserveOptions(account: OmpAccount, defaultReservePct: number) {
+  const current = account.steering?.reservePct ?? null;
+  const value = current === null ? "default" : String(current);
+  const options = [
+    { label: `OMP default (${defaultReservePct}%)`, value: "default" },
+    ...RESERVE_CHOICES.map((pct) => ({ label: `${pct}%`, value: pct })),
+  ];
+  if (current !== null && !RESERVE_CHOICES.some((pct) => pct === value)) {
+    options.push({ label: `${value}%`, value });
+  }
+  return { value, options };
+}
+
 function AccountCard({
   account,
   theme,
   styles,
   defaultReservePct,
-  steering,
+  saving,
   onRemove,
   onRedeem,
   onSteer,
@@ -164,12 +178,13 @@ function AccountCard({
   theme: Theme;
   styles: OmpConfigStyles;
   defaultReservePct: number;
-  /** Null while a steering change is saving, so the controls wait for it. */
-  steering: "ready" | null;
+  /** A steering change is saving; the controls wait for it without unmounting. */
+  saving: boolean;
   onRemove(): void;
   onRedeem(): void;
   onSteer(change: { preferred?: boolean; reservePct?: number | null }): void;
 }) {
+  const reserveShown = reserveOptions(account, defaultReservePct);
   const age = usageAgeLabel(account);
   return (
     <View style={styles.card}>
@@ -206,7 +221,7 @@ function AccountCard({
             styles={styles}
             theme={theme}
             label={account.steering.preferred ? "Stop preferring" : "Prefer"}
-            disabled={!steering}
+            disabled={saving}
             onPress={() => onSteer({ preferred: !account.steering?.preferred })}
           />
         ) : null}
@@ -227,17 +242,13 @@ function AccountCard({
           onPress={onRemove}
         />
       </View>
-      {account.steering && steering ? (
+      {account.steering ? (
         <SettingsSelect
           label="Keep in reserve"
           hint="OMP moves agents off this login before this much is left"
-          value={
-            account.steering.reservePct === null ? "default" : String(account.steering.reservePct)
-          }
-          options={[
-            { label: `OMP default (${defaultReservePct}%)`, value: "default" },
-            ...RESERVE_CHOICES.map((pct) => ({ label: `${pct}%`, value: pct })),
-          ]}
+          value={reserveShown.value}
+          options={reserveShown.options}
+          disabled={saving}
           onValueChange={(choice) =>
             onSteer({ reservePct: choice === "default" ? null : Number(choice) })
           }
@@ -614,6 +625,7 @@ function SignInModal({
   const submit = useRpc(submitOmpAccountLoginCode);
   const cancel = useRpc(cancelOmpAccountLogin);
   const [state, setState] = useState<SignInState>({ kind: "pick" });
+  const closed = useRef(false);
   const login =
     state.kind === "login" ? view?.logins.find((entry) => entry.id === state.id) : undefined;
 
@@ -621,14 +633,21 @@ function SignInModal({
     setState({ kind: "starting", provider });
     try {
       const started = await start({ store, provider: provider.id });
+      // Closed while omp was starting: nothing else knows the id, so cancel it here or it keeps
+      // the OAuth callback port until the next sign-in.
+      if (closed.current) {
+        cancel({ store, loginId: started.id }).catch(() => undefined);
+        return;
+      }
       setState({ kind: "login", id: started.id });
       await queryClient.invalidateQueries({ queryKey: ACCOUNTS_KEY });
     } catch (error) {
-      setState({ kind: "failed", message: describe(error) });
+      if (!closed.current) setState({ kind: "failed", message: describe(error) });
     }
   }
 
   function close() {
+    closed.current = true;
     if (login && loginIsOpen(login)) cancel({ store, loginId: login.id }).catch(() => undefined);
     onClose();
   }
@@ -819,7 +838,7 @@ export function OmpAccountsSection({
               theme={theme}
               styles={styles}
               defaultReservePct={defaultReserve}
-              steering={steer.isPending ? null : "ready"}
+              saving={steer.isPending}
               onRemove={() => setPending({ kind: "remove", account })}
               onRedeem={() => setPending({ kind: "reset", account })}
               onSteer={(change) => steer.mutate({ kind: "account", account, ...change })}

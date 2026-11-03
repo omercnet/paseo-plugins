@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { applySteering } from "../server/omp-accounts";
+import { applySteering, withReclaimThresholds } from "../server/omp-accounts";
 import {
   OmpAccountProviderIdSchema,
   OmpAccountsSettingPathSchema,
@@ -181,5 +181,40 @@ describe("applySteering", () => {
     );
     expect(next).toHaveLength(2);
     expect(next.map((policy) => policy.reservePct)).toEqual([5, 50]);
+  });
+});
+
+describe("withReclaimThresholds", () => {
+  test("moves every preferred login's reclaim above a raised default reserve", () => {
+    const start = applySteering([], KEY_A, { preferred: true }, 10);
+    expect(start[0]?.reclaimAbovePct).toBe(25);
+    const [raised] = withReclaimThresholds(start, 50);
+    expect(raised?.reclaimAbovePct).toBe(65);
+  });
+
+  test("leaves a login with its own reserve, and non-preferred policies, as they are", () => {
+    const own = applySteering([], KEY_A, { preferred: true, reservePct: 20 }, 10);
+    const user = {
+      provider: "anthropic",
+      account: { accountId: "u" },
+      priority: 7,
+      reclaimAbovePct: 9,
+    };
+    const next = withReclaimThresholds([...own, user], 80);
+    expect(next[0]?.reclaimAbovePct).toBe(35);
+    expect(next[1]).toEqual(user);
+  });
+});
+
+describe("applySteering scope", () => {
+  test("does not rewrite another provider's hand-set reclaim threshold", () => {
+    const other = {
+      provider: "openai-codex",
+      account: { accountId: "c" },
+      priority: 100,
+      reclaimAbovePct: 99,
+    };
+    const next = applySteering([other], KEY_A, { preferred: true }, 10);
+    expect(next.find((policy) => policy.provider === "openai-codex")).toEqual(other);
   });
 });

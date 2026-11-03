@@ -22,6 +22,8 @@ interface Scenario {
   balance: unknown;
   /** Credential ids `logout` finds; any other id answers with an error frame that has no `data`. */
   known: number[];
+  /** Providers whose `get_logout_accounts` answers with an error frame. */
+  brokenProviders?: string[];
   /** `usage reset <provider>/<id>` exits 0 for these refs and 1 otherwise. */
   redeemable: string[];
   /** Where the fake writes its pid when it starts a sign-in. */
@@ -52,7 +54,10 @@ if (args.includes("--mode")) {
     const request = JSON.parse(line);
     const respond = (data) => print({ type: "response", id: request.id, success: true, data });
     if (request.type === "get_login_providers") return respond({ providers: S.providers });
-    if (request.type === "get_logout_accounts") return respond({ accounts: S.accounts[request.providerId] ?? [] });
+    if (request.type === "get_logout_accounts") {
+      if ((S.brokenProviders ?? []).includes(request.providerId)) return print({ type: "response", id: request.id, success: false, error: "boom" });
+      return respond({ accounts: S.accounts[request.providerId] ?? [] });
+    }
     if (request.type === "logout") {
       if (S.known.includes(request.credentialId)) return respond({});
       return print({ type: "response", id: request.id, success: false, error: "Credential " + request.credentialId + " is not stored for " + request.providerId });
@@ -700,6 +705,118 @@ describe.skipIf(ON_WINDOWS)("steering", () => {
     await expect(
       accounts.setSetting(undefined, "retry.usageReservePolicy", "maybe"),
     ).rejects.toThrow("OMP rejected the change to retry.usageReservePolicy");
+  });
+});
+
+describe.skipIf(ON_WINDOWS)("review regressions", () => {
+  const policies = async () =>
+    JSON.parse(await readFile(policyFile, "utf8")) as Array<Record<string, unknown>>;
+
+  test("raising the default reserve moves a preferred login's reclaim threshold in the same change", async () => {
+    const accounts = await install();
+    await accounts.setSteering(undefined, "anthropic", 3, { preferred: true });
+    expect((await policies())[0]?.reclaimAbovePct).toBe(25);
+    await accounts.setSetting(undefined, "retry.usageReservePct", 50);
+    expect((await policies())[0]?.reclaimAbovePct).toBe(65);
+    expect((await accounts.list(undefined, false)).settings["retry.usageReservePct"]).toBe(50);
+  });
+
+  test("refuses a policy whose account id matches two stored logins", async () => {
+    const accounts = await install({
+      resets: {
+        accounts: [
+          {
+            provider: "anthropic",
+            credentialId: 3,
+            accountId: "same",
+            availableCount: 0,
+            redeemableCount: 0,
+          },
+          {
+            provider: "anthropic",
+            credentialId: 4,
+            accountId: "same",
+            availableCount: 0,
+            redeemableCount: 0,
+          },
+        ],
+      },
+    });
+    await expect(
+      accounts.setSteering(undefined, "anthropic", 3, { preferred: true }),
+    ).rejects.toThrow(/share this account id/);
+    expect(await policies()).toEqual([]);
+  });
+
+  test("removing a login drops its policy so a later login does not inherit it", async () => {
+    const accounts = await install();
+    await accounts.setSteering(undefined, "anthropic", 3, { preferred: true });
+    await accounts.setSteering(undefined, "anthropic", 4, { reservePct: 5 });
+    await accounts.remove(undefined, "anthropic", 3);
+    expect(await policies()).toEqual([
+      { provider: "anthropic", account: { accountId: "acc-b" }, reservePct: 5 },
+    ]);
+  });
+
+  test("a change OMP applied is not reported as failed when only the refresh fails", async () => {
+    const accounts = await install();
+    await accounts.list(undefined, false);
+    await accounts.setSteering(undefined, "anthropic", 3, { reservePct: 20 });
+    // Break the listing reads only; config writes still land.
+    await install({
+      brokenProviders: ["anthropic", "openai-codex", "openai-codex-device", "zai"],
+      usageRaw: "garbage",
+    });
+    await expect(
+      accounts.setSetting(undefined, "retry.waitForUsageReset", true),
+    ).resolves.toBeUndefined();
+    const state = JSON.parse(await readFile(stateFile, "utf8")) as {
+      overrides: Record<string, { value: unknown }>;
+    };
+    expect(state.overrides["retry.waitForUsageReset"]?.value).toBe(true);
+  });
+
+  test("a failed listing for one provider leaves out only that provider's logins", async () => {
+    const accounts = await install({ brokenProviders: ["openai-codex", "openai-codex-device"] });
+    const view = await accounts.list(undefined, false);
+    expect(view.error).toBeNull();
+    expect(view.accounts.map((a) => a.provider)).toEqual(["anthropic", "anthropic", "zai"]);
+  });
+
+  test("a login whose resets OMP cannot read says so instead of showing nothing", async () => {
+    const accounts = await install({
+      resets: {
+        accounts: [
+          {
+            provider: "anthropic",
+            credentialId: 3,
+            accountId: "acc-a",
+            availableCount: 0,
+            redeemableCount: 0,
+            error: "Failed to load saved resets",
+          },
+        ],
+      },
+    });
+    const view = await accounts.list(undefined, false);
+    expect(view.accounts.find((a) => a.credentialId === 3)?.resets).toMatchObject({
+      usableNow: false,
+      blockedReason: expect.stringContaining("could not read"),
+    });
+  });
+
+  test("the client never sees a raw process error", async () => {
+    process.env.OMP_COMMAND = join(directory, "omp");
+    await writeFile(
+      join(directory, "omp"),
+      "#!/usr/bin/env node\nprocess.stderr.write('token=abc');process.exit(3);\n",
+    );
+    await chmod(join(directory, "omp"), 0o755);
+    const accounts = new OmpAccounts();
+    created.push(accounts);
+    const view = await accounts.list(undefined, false);
+    expect(view.error).not.toContain("abc");
+    await expect(accounts.remove(undefined, "anthropic", 3)).rejects.not.toThrow(/abc/);
   });
 });
 
