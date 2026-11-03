@@ -24,6 +24,8 @@ interface Scenario {
   known: number[];
   /** Providers whose `get_logout_accounts` answers with an error frame. */
   brokenProviders?: string[];
+  /** `get_login_providers` answers with an error frame, so a whole read fails. */
+  brokenListing?: boolean;
   /** `usage reset <provider>/<id>` exits 0 for these refs and 1 otherwise. */
   redeemable: string[];
   /** Where the fake writes its pid when it starts a sign-in. */
@@ -57,7 +59,10 @@ if (args.includes("--mode")) {
   createInterface({ input: process.stdin }).on("line", (line) => {
     const request = JSON.parse(line);
     const respond = (data) => print({ type: "response", id: request.id, success: true, data });
-    if (request.type === "get_login_providers") return respond({ providers: S.providers });
+    if (request.type === "get_login_providers") {
+      if (S.brokenListing) return print({ type: "response", id: request.id, success: false, error: "boom" });
+      return respond({ providers: S.providers });
+    }
     if (request.type === "get_logout_accounts") {
       if ((S.brokenProviders ?? []).includes(request.providerId)) return print({ type: "response", id: request.id, success: false, error: "boom" });
       return respond({ accounts: S.accounts[request.providerId] ?? [] });
@@ -774,11 +779,8 @@ describe.skipIf(ON_WINDOWS)("review regressions", () => {
     const accounts = await install();
     await accounts.list(undefined, false);
     await accounts.setSteering(undefined, "anthropic", 3, { reservePct: 20 });
-    // Break the listing reads only; config writes still land.
-    await install({
-      brokenProviders: ["anthropic", "openai-codex", "openai-codex-device", "zai"],
-      usageRaw: "garbage",
-    });
+    // Every later read fails outright; config writes still land.
+    await install({ brokenListing: true });
     await expect(
       accounts.setSetting(undefined, "retry.waitForUsageReset", true),
     ).resolves.toBeUndefined();
@@ -786,6 +788,10 @@ describe.skipIf(ON_WINDOWS)("review regressions", () => {
       overrides: Record<string, { value: unknown }>;
     };
     expect(state.overrides["retry.waitForUsageReset"]?.value).toBe(true);
+    // The stale snapshot was dropped, so the next read goes to OMP and reports the failure.
+    const view = await accounts.list(undefined, false);
+    expect(view.error).toContain("Could not read");
+    expect(view.accounts).toEqual([]);
   });
 
   test("a failed listing for one provider leaves out only that provider's logins", async () => {

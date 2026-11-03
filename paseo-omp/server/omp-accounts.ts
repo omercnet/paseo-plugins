@@ -948,7 +948,7 @@ export class OmpAccounts {
         // writes: raise thresholds before a higher default, lower them after a lower default.
         if (nextDefault >= currentDefault) {
           await this.writeSetting(command, "auth.accountPolicies", policiesJson);
-          await this.writeSetting(command, path, JSON.stringify(nextDefault));
+          await this.writeSetting(command, path, value === null ? null : JSON.stringify(value));
         } else {
           await this.writeSetting(command, path, value === null ? null : JSON.stringify(value));
           await this.writeSetting(command, "auth.accountPolicies", policiesJson);
