@@ -1,8 +1,17 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
-import { Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
+import {
+  Modal,
+  SettingsAction,
+  SettingsCard,
+  SettingsInput,
+  SettingsRow,
+  SettingsSection,
+  SettingsSwitch,
+  useToast,
+} from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import {
   addOmpMcp,
   cancelOmpMcpAuth,
@@ -15,8 +24,8 @@ import {
   startOmpMcpAuth,
   submitOmpMcpAuthCode,
 } from "../shared/omp-mcps";
-import { type OmpStore, storeLabel } from "../shared/omp-store";
-import { ActionButton, ConfirmModal, describe, LoginProgress } from "./omp-accounts-section";
+import type { OmpStore } from "../shared/omp-store";
+import { ConfirmModal, describe, LoginProgress } from "./omp-accounts-section";
 import { loginIsOpen } from "./omp-accounts-state";
 import type { OmpConfigStyles } from "./omp-config-styles";
 import { ompStoreKey } from "./omp-store-state";
@@ -26,96 +35,93 @@ type Theme = PluginSurfaceProps["theme"];
 /** Kept apart from the config editor's `paseo-omp` key so MCP work never locks setting edits. */
 const MCPS_KEY = ["paseo-omp-mcps"] as const;
 const OPEN_AUTH_POLL_MS = 1_000;
+const TEST_HINT = "Connects and lists its tools";
 
-function McpCard({
-  server,
-  theme,
-  styles,
-  busy,
-  authorizing,
-  onAuthorize,
-  onAction,
-  onRemove,
-}: {
-  server: OmpMcpServer;
-  theme: Theme;
+/** What the last test or add check said about one server; shown on its own row. */
+interface Outcome {
+  ok: boolean;
+  message: string;
+}
+
+interface ServerSectionProps {
   styles: OmpConfigStyles;
+  server: OmpMcpServer;
+  outcome: Outcome | undefined;
   busy: boolean;
+  testing: boolean;
   authorizing: boolean;
+  onToggle(enabled: boolean): void;
+  onTest(): void;
   onAuthorize(): void;
-  onAction(action: OmpMcpAction): void;
   onRemove(): void;
-}) {
-  const disabled = server.state === "disabled";
+}
+
+function ServerSection({
+  styles,
+  server,
+  outcome,
+  busy,
+  testing,
+  authorizing,
+  onToggle,
+  onTest,
+  onAuthorize,
+  onRemove,
+}: ServerSectionProps) {
   // Only a remote server signs in with OAuth; a local one is a process OMP starts.
   const remote = server.transport === "http" || server.transport === "sse";
+  const failed = outcome !== undefined && !outcome.ok;
   return (
-    <View style={styles.card}>
-      <View style={styles.cardHeader}>
-        <Text numberOfLines={1} style={[styles.cardTitle, { flexShrink: 1 }]}>
-          {server.name}
-        </Text>
-        <View style={styles.chip}>
-          <Text style={styles.chipText}>{server.transport}</Text>
-        </View>
-        <View style={styles.chip}>
-          <Text style={styles.chipText}>{server.state}</Text>
-        </View>
-      </View>
-      <Text numberOfLines={2} style={styles.muted}>
-        {server.target}
-      </Text>
-      <Text style={styles.collectionSummary}>{`From ${server.source}`}</Text>
-      <View style={styles.row}>
+    <SettingsSection
+      title={server.name}
+      trailing={<Text style={styles.muted}>{`${server.transport} · ${server.source}`}</Text>}
+    >
+      <SettingsCard>
+        <SettingsRow label={server.target} />
+        <SettingsSwitch
+          label="Enabled"
+          hint="Whether OMP connects to it"
+          value={server.state === "enabled"}
+          disabled={busy}
+          onValueChange={onToggle}
+        />
+        <SettingsAction
+          label="Test connection"
+          hint={outcome?.ok ? outcome.message : TEST_HINT}
+          error={failed ? outcome.message : null}
+          actionLabel={testing ? "Testing..." : "Test"}
+          disabled={busy}
+          onPress={onTest}
+        />
         {remote ? (
-          <ActionButton
-            styles={styles}
-            theme={theme}
-            label={authorizing ? "Starting..." : "Authorize"}
-            tone="primary"
+          <SettingsAction
+            label="Sign in"
+            hint="Authorize through your browser"
+            actionLabel={authorizing ? "Starting..." : "Authorize"}
             disabled={busy || authorizing}
             onPress={onAuthorize}
           />
         ) : null}
-        <ActionButton
-          styles={styles}
-          theme={theme}
-          label="Test"
-          disabled={busy}
-          onPress={() => onAction("test")}
-        />
-        <ActionButton
-          styles={styles}
-          theme={theme}
-          label={disabled ? "Enable" : "Disable"}
-          disabled={busy}
-          onPress={() => onAction(disabled ? "enable" : "disable")}
-        />
         {server.source === "user" ? (
-          <ActionButton
-            styles={styles}
-            theme={theme}
-            label="Remove"
-            tone="danger"
+          <SettingsAction
+            label="Remove server"
+            hint="Deletes it from OMP's user MCP file"
+            actionLabel="Remove"
             disabled={busy}
             onPress={onRemove}
           />
         ) : null}
-      </View>
-    </View>
+      </SettingsCard>
+    </SettingsSection>
   );
 }
 
 function AddMcpModal({
-  styles,
-  theme,
   busy,
   error,
   onAdd,
   onClose,
 }: {
-  styles: OmpConfigStyles;
-  theme: Theme;
   busy: boolean;
   error: string | null;
   onAdd(input: { name: string; target: string }): void;
@@ -132,48 +138,23 @@ function AddMcpModal({
       onOpenChange={(open) => (open || busy ? undefined : onClose())}
     >
       <Modal.Content>
-        <Text style={styles.collectionSummary}>Adds the server to OMP's user MCP file</Text>
-        <Text style={styles.muted}>Name</Text>
-        <TextInput
-          value={name}
-          onChangeText={setName}
-          placeholder="docs"
-          placeholderTextColor={theme.colors.foregroundMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          accessibilityLabel="MCP server name"
-          style={styles.scalarInput}
-        />
-        <Text style={styles.muted}>Server URL, or the command that starts it</Text>
-        <TextInput
-          value={target}
-          onChangeText={setTarget}
-          placeholder="https://mcp.example.com/mcp"
-          placeholderTextColor={theme.colors.foregroundMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          accessibilityLabel="MCP server URL or command"
-          onSubmitEditing={() => valid && onAdd({ name: name.trim(), target })}
-          style={styles.scalarInput}
-        />
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        <View style={[styles.row, { justifyContent: "flex-end" }]}>
-          <ActionButton
-            styles={styles}
-            theme={theme}
-            label="Cancel"
-            disabled={busy}
-            onPress={onClose}
+        <SettingsCard>
+          <SettingsInput label="Name" placeholder="docs" onChangeText={setName} />
+          <SettingsInput
+            label="Address"
+            hint="A URL, or the command that starts the server"
+            placeholder="https://mcp.example.com/mcp"
+            error={error}
+            onChangeText={setTarget}
           />
-          <ActionButton
-            styles={styles}
-            theme={theme}
-            label={busy ? "Adding..." : "Add"}
-            tone="primary"
+          <SettingsAction
+            label="Add to OMP"
+            hint="Adds it to OMP's user MCP file, then tests the connection"
+            actionLabel={busy ? "Adding..." : "Add"}
             disabled={busy || !valid}
             onPress={() => onAdd({ name: name.trim(), target })}
           />
-        </View>
+        </SettingsCard>
       </Modal.Content>
     </Modal>
   );
@@ -199,6 +180,7 @@ export function OmpMcpsSection({
   const [adding, setAdding] = useState(false);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
   const [authId, setAuthId] = useState<string | null>(null);
+  const [outcomes, setOutcomes] = useState<ReadonlyMap<string, Outcome>>(new Map());
   const queryKey = [...MCPS_KEY, ompStoreKey(store)];
   const mcps = useQuery({
     queryKey,
@@ -206,6 +188,16 @@ export function OmpMcpsSection({
     refetchInterval: (query) =>
       query.state.data?.auths.some(loginIsOpen) ? OPEN_AUTH_POLL_MS : false,
   });
+
+  function remember(name: string, outcome: Outcome | null) {
+    setOutcomes((previous) => {
+      const next = new Map(previous);
+      if (outcome) next.set(name, outcome);
+      else next.delete(name);
+      return next;
+    });
+  }
+
   const refresh = useMutation({
     mutationKey: [...MCPS_KEY, "refresh"],
     mutationFn: () => load({ store, refresh: true }),
@@ -215,9 +207,11 @@ export function OmpMcpsSection({
   const run = useMutation({
     mutationKey: [...MCPS_KEY, "run"],
     mutationFn: (change: { name: string; action: OmpMcpAction }) => act({ store, ...change }),
-    onSuccess: async (result) => {
-      if (result.ok) toast.show(result.message, { variant: "success" });
+    onSuccess: async (result, { name, action }) => {
+      if (action === "test") remember(name, result);
+      else if (result.ok) toast.show(result.message, { variant: "success" });
       else toast.error(result.message);
+      if (action === "remove" && result.ok) remember(name, null);
       await queryClient.invalidateQueries({ queryKey: MCPS_KEY });
     },
     onError: (error) => toast.error(describe(error)),
@@ -226,10 +220,11 @@ export function OmpMcpsSection({
   const add = useMutation({
     mutationKey: [...MCPS_KEY, "add"],
     mutationFn: (input: { name: string; target: string }) => addServer({ store, ...input }),
-    onSuccess: async (result) => {
+    onSuccess: async (result, { name }) => {
       if (!result.ok) return;
-      // A failed check stays on the page below; a toast alone is easy to miss.
-      if (result.check !== "failed") toast.show(result.message, { variant: "success" });
+      const healthy = result.check !== "failed";
+      remember(name, { ok: healthy, message: result.message });
+      toast.show(result.message, { variant: healthy ? "success" : "warning" });
       setAdding(false);
       await queryClient.invalidateQueries({ queryKey: MCPS_KEY });
     },
@@ -261,69 +256,62 @@ export function OmpMcpsSection({
     setAdding(true);
   }
 
+  const notice = mcps.error
+    ? `Could not read OMP's MCP servers: ${describe(mcps.error)}`
+    : (view?.error ?? null);
+
   return (
-    <>
-      <View style={styles.sectionHeader}>
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>MCP servers</Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Refresh OMP MCP servers"
-            style={styles.refresh}
-            disabled={refresh.isPending}
-            onPress={() => refresh.mutate()}
-          >
-            <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
-            <Text style={styles.refreshLabel}>
-              {refresh.isPending ? "Refreshing..." : "Refresh"}
-            </Text>
-          </Pressable>
-          <ActionButton
-            styles={styles}
-            theme={theme}
+    <View style={{ gap: 12 }}>
+      <SettingsSection
+        title="MCP servers"
+        info="The servers OMP connects to, read and changed through omp itself, so the terminal sees the same list."
+      >
+        <SettingsCard>
+          <SettingsAction
             label="Add server"
-            tone="primary"
+            hint="Connect OMP to a URL or a local command"
+            actionLabel="Add"
             disabled={view === undefined || !view.installed}
             onPress={openAdd}
           />
-        </View>
-        <Text style={styles.source}>{storeLabel(store)}</Text>
-      </View>
-      <Text style={styles.muted}>
-        The MCP servers OMP connects to, read and changed through omp itself, so the terminal sees
-        the same list. Authorize signs a remote server in through your browser.
-      </Text>
-      {mcps.isLoading ? <Text style={styles.muted}>Loading OMP MCP servers...</Text> : null}
-      {mcps.error ? (
-        <Text
-          style={styles.error}
-        >{`Could not read OMP's MCP servers: ${describe(mcps.error)}`}</Text>
-      ) : null}
+          <SettingsAction
+            label="Refresh list"
+            hint="Read the servers from omp again"
+            actionLabel={refresh.isPending ? "Refreshing..." : "Refresh"}
+            disabled={refresh.isPending}
+            onPress={() => refresh.mutate()}
+          />
+        </SettingsCard>
+      </SettingsSection>
+      {mcps.isLoading ? <Text style={styles.muted}>Loading MCP servers...</Text> : null}
+      {notice ? <Text style={styles.error}>{notice}</Text> : null}
       {view && !view.installed ? (
-        <Text style={styles.muted}>The omp command was not found on this host.</Text>
+        <Text style={styles.muted}>The omp command was not found on this host</Text>
       ) : null}
-      {view?.error ? <Text style={styles.error}>{view.error}</Text> : null}
-      {add.data?.check === "failed" ? <Text style={styles.error}>{add.data.message}</Text> : null}
       {view?.installed && !view.error && view.servers.length === 0 ? (
-        <Text style={styles.muted}>No MCP servers yet. Add one to get started.</Text>
+        <Text style={styles.muted}>No MCP servers yet</Text>
       ) : null}
       {view?.servers.map((server) => (
-        <McpCard
+        <ServerSection
           key={`${server.source}/${server.name}`}
-          server={server}
-          theme={theme}
           styles={styles}
+          server={server}
+          outcome={outcomes.get(server.name)}
           busy={run.isPending}
+          testing={
+            run.isPending && run.variables?.name === server.name && run.variables.action === "test"
+          }
           authorizing={authorize.isPending && authorize.variables === server.name}
+          onToggle={(enabled) =>
+            run.mutate({ name: server.name, action: enabled ? "enable" : "disable" })
+          }
+          onTest={() => run.mutate({ name: server.name, action: "test" })}
           onAuthorize={() => authorize.mutate(server.name)}
-          onAction={(action) => run.mutate({ name: server.name, action })}
           onRemove={() => setPendingRemove(server.name)}
         />
       ))}
       {adding ? (
         <AddMcpModal
-          styles={styles}
-          theme={theme}
           busy={add.isPending}
           error={addError}
           onAdd={(input) => add.mutate(input)}
@@ -352,7 +340,6 @@ export function OmpMcpsSection({
           <Modal.Content>
             <LoginProgress
               styles={styles}
-              theme={theme}
               login={auth}
               onSubmit={async (code) => {
                 await submit({ store, authId: auth.id, code });
@@ -364,6 +351,6 @@ export function OmpMcpsSection({
           </Modal.Content>
         </Modal>
       ) : null}
-    </>
+    </View>
   );
 }
