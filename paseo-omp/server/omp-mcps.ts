@@ -221,15 +221,19 @@ export class OmpMcps {
     name: string,
     action: OmpMcpAction,
   ): Promise<{ ok: boolean; message: string }> {
-    if (action !== "test" && this.hasOpenAuth(store, name)) {
-      throw new OmpAccountsError(`Finish or cancel the sign-in for ${name} before changing it`);
-    }
     const command = await resolveCommand();
     // `remove` defaults to the project in omp's working directory; this plugin only manages the
     // user's own file.
     const line =
       action === "remove" ? `/mcp remove ${name} --scope user` : `/mcp ${action} ${name}`;
-    const printed = await this.writes.run(() => runSlash(command, line));
+    const printed = await this.writes.run(async () => {
+      // Checked here, in the queue, not before it: a sign-in registered while this change waited
+      // for its turn must still stop it.
+      if (action !== "test" && this.hasOpenAuth(store, name)) {
+        throw new OmpAccountsError(`Finish or cancel the sign-in for ${name} before changing it`);
+      }
+      return runSlash(command, line);
+    });
     this.invalidate();
     return actionResult(printed, action);
   }
@@ -270,6 +274,14 @@ export class OmpMcps {
 
   async startAuth(store: OmpStore | undefined, name: string): Promise<OmpMcpAuth> {
     const command = await resolveCommand();
+    // Registered in the write queue: a change already running finishes before omp copies the
+    // server's config, and every later change finds this sign-in open and is refused.
+    const auth = await this.writes.run(async () => this.register(store, name));
+    void this.runAuth(auth, command);
+    return toAuth(auth);
+  }
+
+  private register(store: OmpStore | undefined, name: string): AuthState {
     // OAuth callbacks listen on fixed local ports, so only one authorization runs at a time.
     for (const other of this.auths.values()) {
       if (isOpen(other.step)) {
@@ -295,8 +307,7 @@ export class OmpMcps {
       endedAt: null,
     };
     this.auths.set(auth.id, auth);
-    void this.runAuth(auth, command);
-    return toAuth(auth);
+    return auth;
   }
 
   /**
@@ -393,8 +404,10 @@ export class OmpMcps {
     let tested: string;
     try {
       tested = (await runSlash(await resolveCommand(), `/mcp test ${auth.name}`)).trim();
-    } catch {
-      this.settle(auth, "done", signedIn);
+    } catch (error) {
+      const reason = publicMessage(error);
+      const message = `${signedIn} The login is saved, but the connection check could not run: ${reason}`;
+      this.settle(auth, "failed", message);
       return;
     }
     if (readConnectionCheck(tested) === "connected") {

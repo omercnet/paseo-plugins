@@ -71,8 +71,24 @@ function ServerSection({
   // Only a remote server signs in with OAuth; a local one is a process OMP starts.
   const remote = server.transport === "http" || server.transport === "sse";
   const failed = outcome !== undefined && !outcome.ok;
-  // OMP allows names the plugin cannot pass as one command argument; those are listed only.
-  const manageable = OmpMcpNameSchema.safeParse(server.name).success;
+  // OMP allows names the plugin cannot pass as one command argument. Such a server is shown with
+  // its address and no actions, because every action would be refused.
+  if (!OmpMcpNameSchema.safeParse(server.name).success) {
+    return (
+      <SettingsSection
+        title={server.name}
+        trailing={<Text style={styles.muted}>{`${server.transport} · ${server.source}`}</Text>}
+      >
+        <SettingsCard>
+          <SettingsRow label={server.target} />
+          <SettingsRow
+            label="Manage in the OMP terminal"
+            hint="Its name has spaces or other characters this plugin cannot pass to omp safely"
+          />
+        </SettingsCard>
+      </SettingsSection>
+    );
+  }
   return (
     <SettingsSection
       title={server.name}
@@ -80,12 +96,6 @@ function ServerSection({
     >
       <SettingsCard>
         <SettingsRow label={server.target} />
-        {manageable ? null : (
-          <SettingsRow
-            label="Manage in the OMP terminal"
-            hint="Its name has spaces or other characters this plugin cannot pass to omp safely"
-          />
-        )}
         <SettingsSwitch
           label="Enabled"
           hint="Whether OMP connects to it"
@@ -128,11 +138,14 @@ function AddMcpModal({
   busy,
   error,
   onAdd,
+  onEdit,
   onClose,
 }: {
   busy: boolean;
   error: string | null;
   onAdd(input: { name: string; target: string }): void;
+  /** The person changed a field, so the last attempt's error no longer describes it. */
+  onEdit(): void;
   onClose(): void;
 }) {
   const [name, setName] = useState("");
@@ -147,13 +160,23 @@ function AddMcpModal({
     >
       <Modal.Content>
         <SettingsCard>
-          <SettingsInput label="Name" placeholder="docs" onChangeText={setName} />
+          <SettingsInput
+            label="Name"
+            placeholder="docs"
+            onChangeText={(value) => {
+              setName(value);
+              if (error) onEdit();
+            }}
+          />
           <SettingsInput
             label="Address"
             hint="A URL, or the command that starts the server"
             placeholder="https://mcp.example.com/mcp"
             error={error}
-            onChangeText={setTarget}
+            onChangeText={(value) => {
+              setTarget(value);
+              if (error) onEdit();
+            }}
           />
           <SettingsAction
             label="Add to OMP"
@@ -323,6 +346,7 @@ export function OmpMcpsSection({
           busy={add.isPending}
           error={addError}
           onAdd={(input) => add.mutate(input)}
+          onEdit={() => add.reset()}
           onClose={() => setAdding(false)}
         />
       ) : null}

@@ -109,7 +109,7 @@ gh pr merge <N> -R omercnet/paseo-plugins --squash --delete-branch
 
 ### 8. Cleanup
 
-- Leave the dev daemon running with the plugin loaded from the checkout and a scenario seeded, so a human can try the change (see "Leave the demo daemon running" in the root `AGENTS.md`). Confirm `$S cli <plugin> plugin ls` shows `running`, then put the `DEV_HOST` URL, where to click, and `$S down <plugin>` in the final report. Run `down` only when the human says they are done or to replace the daemon with a fresh one, then confirm with `ps` that no dev daemon is left.
+- Leave the dev daemon running with the plugin loaded from the checkout and a scenario seeded, so a human can try the change (see "Leave the demo daemon running" in the root `AGENTS.md`). For a helper-managed plugin, confirm `$S cli <plugin> plugin ls` shows `running` and report `$S down <plugin>` as the stop command. `dev-daemon.sh` refuses `paseo-omp`: there, follow `paseo-omp/AGENTS.md` (`npx --no-install paseo plugin ls paseo-omp --host "$DEV_HOST" --json`, and `npx --no-install paseo daemon stop --home "$PWD/.paseo-dev"` as the stop command). Put the `DEV_HOST` URL, where to click, and that stop command in the final report. Run it only when the human says they are done or to replace the daemon with a fresh one, then confirm with `ps` that no dev daemon is left.
 - Remove temp files you created. Keep any `pr-assets-<plugin>` branch that a README or manifest links to.
 - Final report: what was wrong, what changed, how it was verified (commands and results), what Astra changed or approved, and what is explicitly out of scope.
 

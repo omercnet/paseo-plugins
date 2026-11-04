@@ -193,6 +193,10 @@ interface Scenario {
   slowList?: string;
   /** The sign-in callback answers with a redirect to this address. */
   redirectTo?: string;
+  /** `/mcp test` kills omp before it answers. */
+  crashOnTest?: boolean;
+  /** Enable and disable log a `done` line and answer only after a delay. */
+  slowMutation?: boolean;
   /** Every slash command is appended here, one per line. */
   logFile: string;
   stateFile: string;
@@ -237,6 +241,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return ack();
   }
   if (sub === "test") {
+    if (S.crashOnTest) process.exit(1);
     out(S.tests && S.tests[name] !== undefined ? S.tests[name] : 'Server "' + name + '" connected (0 tools).');
     return ack();
   }
@@ -246,9 +251,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return ack();
   }
   if (sub === "enable" || sub === "disable") {
-    fs.writeFileSync(S.stateFile, JSON.stringify(servers.map((s) => s.name === name ? { ...s, enabled: sub === "enable" } : s)));
-    out('Server "' + name + '" ' + sub + "d.");
-    return ack();
+    const apply = () => {
+      fs.writeFileSync(S.stateFile, JSON.stringify(servers.map((s) => s.name === name ? { ...s, enabled: sub === "enable" } : s)));
+      if (S.slowMutation) fs.appendFileSync(S.logFile, "done " + request.message + "\\n");
+      out('Server "' + name + '" ' + sub + "d.");
+      ack();
+    };
+    if (S.slowMutation) setTimeout(apply, 800); else apply();
+    return;
   }
   if (sub === "reauth") {
     ack();
@@ -625,6 +635,53 @@ describe.skipIf(ON_WINDOWS)("authorization", () => {
 
     mcps.cancelAuth(id);
     expect(await mcps.run(undefined, "docs", "disable")).toMatchObject({ ok: true });
+  });
+
+  test("a change and a sign-in started together never run at the same time", async () => {
+    const mcps = await install({ servers: [docs], slowMutation: true });
+
+    const [change] = await Promise.allSettled([
+      mcps.run(undefined, "docs", "disable"),
+      mcps.startAuth(undefined, "docs"),
+    ]);
+    const log = await until(calls, (lines) => {
+      const reauthStarted = lines.includes("/mcp reauth docs");
+      return (
+        reauthStarted && (lines.includes("done /mcp disable docs") || change.status === "rejected")
+      );
+    });
+
+    // omp copies the config when a reauth starts; that must not happen while a change is running.
+    if (log.includes("/mcp disable docs")) {
+      expect(log.indexOf("/mcp reauth docs")).toBeGreaterThan(
+        log.indexOf("done /mcp disable docs"),
+      );
+    } else {
+      expect(change.status).toBe("rejected");
+    }
+  });
+
+  test("a sign-in only locks the server in its own store", async () => {
+    const mcps = await install({ servers: [docs] });
+    await begin(mcps);
+
+    const result = await mcps.run({ agentDir: "/tmp/another-store" }, "docs", "disable");
+
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  test("a saved login whose connection check cannot run is reported, not called signed in", async () => {
+    const mcps = await install({ servers: [docs], crashOnTest: true });
+    const { id } = await begin(mcps);
+
+    await mcps.submitCode(id, "good");
+    const failed = await until(
+      () => step(mcps, id),
+      (auth) => auth?.step === "failed",
+    );
+
+    expect(failed?.message).toContain("login is saved");
+    expect(failed?.message).toContain("could not run");
   });
 
   test("a callback that answers with a redirect is not followed", async () => {

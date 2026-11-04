@@ -479,6 +479,38 @@ function ProviderPicker({
   );
 }
 
+/** Owns the pasted text, so it is dropped with the input instead of lingering unseen. */
+function CodeEntry({
+  placeholder,
+  error,
+  submitting,
+  onSubmit,
+}: {
+  placeholder: string;
+  error: string | null;
+  submitting: boolean;
+  onSubmit(code: string): void;
+}) {
+  const [code, setCode] = useState("");
+  return (
+    <SettingsCard>
+      <SettingsInput
+        label="Signing in on another device?"
+        hint="Paste the address of the page that failed to load after signing in, or the code"
+        placeholder={placeholder}
+        error={error}
+        onChangeText={setCode}
+      />
+      <SettingsAction
+        label="Finish sign-in"
+        actionLabel={submitting ? "Continuing..." : "Continue"}
+        disabled={submitting || code.trim() === ""}
+        onPress={() => onSubmit(code)}
+      />
+    </SettingsCard>
+  );
+}
+
 export function LoginProgress({
   styles,
   login,
@@ -493,12 +525,11 @@ export function LoginProgress({
   onClose(): void;
 }) {
   const toast = useToast();
-  const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
   const url = login.url;
 
-  async function submit() {
+  async function submit(code: string) {
     setSubmitting(true);
     setCodeError(null);
     try {
@@ -553,21 +584,12 @@ export function LoginProgress({
         />
       </SettingsCard>
       {login.codePrompt ? (
-        <SettingsCard>
-          <SettingsInput
-            label="Signing in on another device?"
-            hint="Paste the address of the page that failed to load after signing in, or the code"
-            placeholder={login.codePrompt}
-            error={codeError}
-            onChangeText={setCode}
-          />
-          <SettingsAction
-            label="Finish sign-in"
-            actionLabel={submitting ? "Continuing..." : "Continue"}
-            disabled={submitting || code.trim() === ""}
-            onPress={() => void submit()}
-          />
-        </SettingsCard>
+        <CodeEntry
+          placeholder={login.codePrompt}
+          error={codeError}
+          submitting={submitting}
+          onSubmit={(code) => void submit(code)}
+        />
       ) : (
         <Text style={styles.muted}>Waiting for you to finish signing in...</Text>
       )}
