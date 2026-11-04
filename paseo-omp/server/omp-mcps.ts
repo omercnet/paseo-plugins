@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
 import type { OmpLoginStep } from "../shared/omp-accounts";
 import {
   type OmpMcpAction,
@@ -19,15 +20,27 @@ import {
   publicMessage,
   resolveCommand,
 } from "./omp-accounts";
-import { ompAgentDir, withOmpStore } from "./paths";
+import { currentOmpEnvironment, ompAgentDir, withOmpStore } from "./paths";
+import { buildStatefulCommandEnv } from "./provider-diagnostics";
 
 /**
- * The directory omp reads for a store. Two selectors can name the same one (the default store and
- * an explicit agent directory equal to it) and then share one config, so a guard keyed by the
- * selector could be bypassed through the other.
+ * The directory omp reads for a store, resolved from the environment omp is started with: that
+ * environment does not carry every variable the plugin itself reads for its own file access. Two
+ * selectors can name the same directory (the default store and an explicit agent directory equal
+ * to it, or a symlink to it) and then share one config, so a guard keyed by the selector could be
+ * bypassed through the other.
  */
 function storeIdentity(store: OmpStore | undefined): string {
-  return withOmpStore(store, () => ompAgentDir());
+  let directory: string;
+  try {
+    directory = withOmpStore(store, () =>
+      ompAgentDir(buildStatefulCommandEnv(currentOmpEnvironment())),
+    );
+  } catch {
+    throw new OmpAccountsError("The selected OMP store is not valid");
+  }
+  const real = existsSync(directory) ? realpathSync(directory) : directory;
+  return process.platform === "win32" ? real.toLowerCase() : real;
 }
 
 const SLASH_TIMEOUT_MS = 60_000;
@@ -195,7 +208,12 @@ export class OmpMcps {
   private readonly writes = new SerialMutationQueue();
 
   async list(store: OmpStore | undefined, refresh: boolean): Promise<OmpMcpsView> {
-    const key = storeIdentity(store);
+    let key: string;
+    try {
+      key = storeIdentity(store);
+    } catch (error) {
+      return { installed: true, servers: [], auths: [], error: publicMessage(error) };
+    }
     const auths = [...this.auths.values()].filter((auth) => auth.directory === key).map(toAuth);
     let command: OmpCommand;
     try {

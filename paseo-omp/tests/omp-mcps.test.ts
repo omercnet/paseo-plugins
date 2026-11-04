@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   callbackUrl,
   OmpMcps,
@@ -11,7 +11,6 @@ import {
   readConnectionCheck,
   reportsFailure,
 } from "../server/omp-mcps";
-import { ompAgentDir, withOmpStore } from "../server/paths";
 import { OmpMcpNameSchema, OmpMcpTargetSchema } from "../shared/omp-mcps";
 
 // The fake omp is a shebang script, which Windows cannot run as `omp`; the pure rules below stay
@@ -332,6 +331,18 @@ function alive(pid: number): boolean {
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "paseo-omp-mcps-"));
+  // The sign-in lock keys on the directory omp reads, which these variables decide.
+  vi.stubEnv("HOME", directory);
+  for (const name of [
+    "PI_CODING_AGENT_DIR",
+    "PASEO_OMP_AGENT_DIR",
+    "OMP_AGENT_DIR",
+    "OMP_PROFILE",
+    "PI_PROFILE",
+    "PI_CONFIG_DIR",
+  ]) {
+    vi.stubEnv(name, undefined);
+  }
   logFile = join(directory, "calls.log");
   stateFile = join(directory, "servers.json");
   pidFile = join(directory, "auth.pid");
@@ -339,6 +350,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const mcps of created.splice(0)) mcps.stop();
   if (previousCommand === undefined) delete process.env.OMP_COMMAND;
   else process.env.OMP_COMMAND = previousCommand;
@@ -665,9 +677,33 @@ describe.skipIf(ON_WINDOWS)("authorization", () => {
   test("two selectors for the same agent directory share one sign-in lock", async () => {
     const mcps = await install({ servers: [docs] });
     await begin(mcps);
-    const sameDirectory = { agentDir: withOmpStore(undefined, () => ompAgentDir()) };
+
+    const sameDirectory = { agentDir: join(directory, ".omp", "agent") };
 
     await expect(mcps.run(sameDirectory, "docs", "disable")).rejects.toThrow("sign-in for docs");
+  });
+
+  test("the lock follows the directory omp is started with, not a plugin-only override", async () => {
+    // PASEO_OMP_AGENT_DIR moves where the plugin reads files, but omp is never given it.
+    vi.stubEnv("PASEO_OMP_AGENT_DIR", join(directory, "plugin-only"));
+    const mcps = await install({ servers: [docs] });
+    await begin(mcps);
+
+    await expect(
+      mcps.run({ agentDir: join(directory, ".omp", "agent") }, "docs", "disable"),
+    ).rejects.toThrow("sign-in for docs");
+    expect(
+      await mcps.run({ agentDir: join(directory, "plugin-only") }, "docs", "disable"),
+    ).toMatchObject({ ok: true });
+  });
+
+  test("an invalid store selection is reported by the listing instead of throwing", async () => {
+    vi.stubEnv("OMP_PROFILE", "not a valid profile!");
+    const mcps = await install({ servers: [docs] });
+
+    const view = await mcps.list(undefined, false);
+
+    expect(view.error).toContain("not valid");
   });
 
   test("a sign-in only locks the server in its own store", async () => {
