@@ -5,7 +5,7 @@
 #   dev-daemon.sh reload <plugin>                   reload the plugin after edits
 #   dev-daemon.sh cli <plugin> <paseo args...>      run the paseo CLI against the dev daemon (adds --host)
 #   dev-daemon.sh agents <plugin>                   print provider and context of each recorded agent
-#   dev-daemon.sh down <plugin>                     stop the daemon and delete its state
+#   dev-daemon.sh down <plugin>                     stop the daemon and delete its state (only when the human is done testing)
 #
 # State lives in ${TMPDIR:-/tmp}/deliver-<plugin>. paseo-omp is refused: follow paseo-omp/AGENTS.md.
 # The CLI comes from the plugin, the repo root, the bun store, or the first plugin that has it.
@@ -65,6 +65,7 @@ case "$cmd" in
     host=$(dev_host)
     clean "$cli" plugin install "$dir" --host "$host" >/dev/null
     echo "DEV_HOST=$host"
+    echo "DEV_URL=http://$host/"
     echo "DEV_HOME=$home"
     echo "WORK_DIR=$state/work"
     ;;

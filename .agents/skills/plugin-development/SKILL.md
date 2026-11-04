@@ -55,12 +55,13 @@ $S up <plugin>
 $S cli <plugin> plugin remove <id>
 $S cli <plugin> plugin install "$T/x/package" --json   # must report status "running"
 $S cli <plugin> plugin ls
-$S down <plugin>
+$S cli <plugin> plugin remove <id>
+$S cli <plugin> plugin install "$PWD/<plugin>"   # back to the checkout, so the daemon you leave running serves your code
 ```
 
 - `npm:` sources only take registry specs (`npm:pkg@version`), not tarball paths, so install the extracted directory.
 - The extraction directory must have no `node_modules` in any parent, or you recreate the hoisting problem.
-- Run `up`, installs and `down` from the same shell session type. Daemons started inside a sandboxed runner can be killed when the call ends.
+- Run `up` and the installs from the same shell session type. A daemon started inside a sandboxed runner can be killed when the call ends, which breaks the demo you leave for a human: make `plugin ls` your last command and restart the daemon if it is gone.
 - Failure shows as plugin status `failed` and a `Build failed` error naming the boundary plugin. Success is `running` with no error.
 - Use the browser tool against `http://$DEV_HOST/` to confirm the plugin's screen renders without console errors. Daemon and `~/.paseo` safety rules in the root `AGENTS.md` apply.
 

@@ -109,7 +109,7 @@ gh pr merge <N> -R omercnet/paseo-plugins --squash --delete-branch
 
 ### 8. Cleanup
 
-- `$S down <plugin>` (removes the daemon and its state). Confirm with `ps` that no dev daemon is left running.
+- Leave the dev daemon running with the plugin loaded from the checkout and a scenario seeded, so a human can try the change (see "Leave the demo daemon running" in the root `AGENTS.md`). Confirm `$S cli <plugin> plugin ls` shows `running`, then put the `DEV_HOST` URL, where to click, and `$S down <plugin>` in the final report. Run `down` only when the human says they are done or to replace the daemon with a fresh one, then confirm with `ps` that no dev daemon is left.
 - Remove temp files you created. Keep any `pr-assets-<plugin>` branch that a README or manifest links to.
 - Final report: what was wrong, what changed, how it was verified (commands and results), what Astra changed or approved, and what is explicitly out of scope.
 
