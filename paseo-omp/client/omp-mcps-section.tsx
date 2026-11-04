@@ -228,7 +228,8 @@ export function OmpMcpsSection({
     mutationFn: (input: { name: string; target: string }) => addServer({ store, ...input }),
     onSuccess: async (result) => {
       if (!result.ok) return;
-      toast.show(result.message, { variant: "success" });
+      // A failed check stays on the page below; a toast alone is easy to miss.
+      if (result.check !== "failed") toast.show(result.message, { variant: "success" });
       setAdding(false);
       await queryClient.invalidateQueries({ queryKey: MCPS_KEY });
     },
@@ -302,6 +303,7 @@ export function OmpMcpsSection({
         <Text style={styles.muted}>The omp command was not found on this host.</Text>
       ) : null}
       {view?.error ? <Text style={styles.error}>{view.error}</Text> : null}
+      {add.data?.check === "failed" ? <Text style={styles.error}>{add.data.message}</Text> : null}
       {view?.installed && !view.error && view.servers.length === 0 ? (
         <Text style={styles.muted}>No MCP servers yet. Add one to get started.</Text>
       ) : null}

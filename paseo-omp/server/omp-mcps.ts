@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { OmpLoginStep } from "../shared/omp-accounts";
 import {
   type OmpMcpAction,
+  type OmpMcpAddResult,
   type OmpMcpAuth,
+  type OmpMcpCheck,
   type OmpMcpServer,
   OmpMcpServerSchema,
   type OmpMcpsView,
@@ -49,6 +51,12 @@ export function reportsFailure(text: string): boolean {
   return /\b(?:fail(?:ed|ure)|not found|unknown option|invalid)\b|\busage:/iu.test(
     text.replace(/"[^"]*"/gu, ""),
   );
+}
+
+/** A 401 means something is there and wants a sign-in; any other failure means nothing there is a working MCP server. */
+export function readConnectionCheck(text: string): OmpMcpCheck {
+  if (/\bHTTP 401\b/u.test(text)) return "needs-authorization";
+  return text === "" || reportsFailure(text) ? "failed" : "connected";
 }
 
 /** What one line of `/mcp reauth` output means for the authorization it belongs to. */
@@ -201,7 +209,7 @@ export class OmpMcps {
   }
 
   /** `target` was validated by the contract: one URL token, or a command line after `--`. */
-  async add(name: string, target: string): Promise<{ ok: boolean; message: string }> {
+  async add(name: string, target: string): Promise<OmpMcpAddResult> {
     const command = await resolveCommand();
     const remote = /^https?:\/\//iu.test(target);
     const line = remote
@@ -209,7 +217,29 @@ export class OmpMcps {
       : `/mcp add ${name} --scope user -- ${target}`;
     const printed = await this.writes.run(() => runSlash(command, line));
     this.listings.clear();
-    return actionResult(printed, "add");
+    const added = actionResult(printed, "add");
+    if (!added.ok) return { ...added, check: null };
+    return this.check(command, name, added.message);
+  }
+
+  /** `/mcp add` never connects, so a mistyped address is only found by testing it. */
+  private async check(command: OmpCommand, name: string, added: string): Promise<OmpMcpAddResult> {
+    let tested: string;
+    try {
+      tested = (await runSlash(command, `/mcp test ${name}`)).trim();
+    } catch (error) {
+      const message = `${added} The connection check could not run: ${publicMessage(error)}`;
+      return { ok: true, message, check: null };
+    }
+    const check = readConnectionCheck(tested);
+    if (check === "connected") return { ok: true, message: `${added} ${tested}`, check };
+    if (check === "needs-authorization") {
+      return { ok: true, message: `${added} It needs a sign-in: use Authorize.`, check };
+    }
+    const reason = tested === "" ? "omp gave no answer" : tested;
+    const advice =
+      "Its connection check failed, so this may not be a working MCP server. Check the address.";
+    return { ok: true, message: `${added} ${advice} omp said: ${reason}`, check };
   }
 
   async startAuth(store: OmpStore | undefined, name: string): Promise<OmpMcpAuth> {

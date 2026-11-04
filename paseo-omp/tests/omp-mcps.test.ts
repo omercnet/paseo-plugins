@@ -7,6 +7,7 @@ import {
   OmpMcps,
   parseMcpList,
   readAuthOutput,
+  readConnectionCheck,
   reportsFailure,
 } from "../server/omp-mcps";
 import { OmpMcpTargetSchema } from "../shared/omp-mcps";
@@ -79,6 +80,30 @@ describe("reading omp's printed text", () => {
   });
 });
 
+describe("a new server's connection check", () => {
+  // Each text is what omp 18.13.1 printed for `/mcp test` against that kind of address.
+  test("an address nothing answers on is a failure", () => {
+    const failures = [
+      'Connection to "a" failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?',
+      'Connection to "a" failed: getaddrinfo ENOTFOUND no-such-host.invalid',
+      'Connection to "a" failed: HTTP 404: nope',
+      `Connection to "a" failed: JSON Parse error: Unrecognized token '<'`,
+      "",
+    ];
+    for (const text of failures) expect(readConnectionCheck(text)).toBe("failed");
+  });
+
+  test("a 401 means a server that wants a sign-in, not a broken one", () => {
+    const text =
+      'Connection to "a" failed: HTTP 401: Missing Authorization header\n [WWW-Authenticate: Bearer resource_metadata="https://x.test/.well-known/oauth-protected-resource"]';
+    expect(readConnectionCheck(text)).toBe("needs-authorization");
+  });
+
+  test("a server that connects passes", () => {
+    expect(readConnectionCheck('Server "a" connected (3 tools).')).toBe("connected");
+  });
+});
+
 describe("the callback omp is asked for", () => {
   test("a pasted redirect URL is handed over as it is", () => {
     const pasted = "http://localhost:3000/callback?code=abc&state=s3cret";
@@ -121,6 +146,8 @@ interface Scenario {
   listRaw?: string;
   /** omp exits right after printing the sign-in page. */
   crashAfterUrl?: boolean;
+  /** What `/mcp test <name>` prints; a server not listed here connects. */
+  tests?: Record<string, string>;
   /** Every slash command is appended here, one per line. */
   logFile: string;
   stateFile: string;
@@ -160,6 +187,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     servers.push(url > 0 ? { name, transport: "http", enabled: true, target: tokens[url + 1] } : { name, transport: "stdio", enabled: true, target: tokens.slice(command + 1).join(" ") });
     fs.writeFileSync(S.stateFile, JSON.stringify(servers));
     out('Added MCP server "' + name + '" (user).');
+    return ack();
+  }
+  if (sub === "test") {
+    out(S.tests && S.tests[name] !== undefined ? S.tests[name] : 'Server "' + name + '" connected (0 tools).');
     return ack();
   }
   if (sub === "remove") {
@@ -302,7 +333,9 @@ describe.skipIf(ON_WINDOWS)("servers", () => {
 
     expect(await calls()).toEqual([
       "/mcp add docs --scope user --url https://docs.test/mcp",
+      "/mcp test docs",
       "/mcp add local --scope user -- node server.js --port 1",
+      "/mcp test local",
     ]);
     const view = await mcps.list(undefined, false);
     expect(view.servers.map((server) => [server.name, server.transport, server.target])).toEqual([
@@ -311,11 +344,45 @@ describe.skipIf(ON_WINDOWS)("servers", () => {
     ]);
   });
 
-  test("a refused add reports omp's reason", async () => {
+  test("a new server that answers is reported as connected", async () => {
+    const mcps = await install();
+    const result = await mcps.add("docs", "https://docs.test/mcp");
+    expect(result).toMatchObject({ ok: true, check: "connected" });
+    expect(result.message).toContain("connected");
+  });
+
+  test("an address that is not an MCP server is still added, with a warning to check it", async () => {
+    const refused = 'Connection to "typo" failed: ECONNREFUSED: Unable to connect.';
+    const mcps = await install({ tests: { typo: refused } });
+
+    const result = await mcps.add("typo", "https://typo.test/mcp");
+
+    expect(result).toMatchObject({ ok: true, check: "failed" });
+    expect(result.message).toContain("Check the address");
+    expect(result.message).toContain("ECONNREFUSED");
+    expect((await mcps.list(undefined, false)).servers.map((server) => server.name)).toEqual([
+      "typo",
+    ]);
+  });
+
+  test("a server that wants a sign-in is pointed at Authorize, not called broken", async () => {
+    const unauthorized =
+      'Connection to "docs" failed: HTTP 401: Missing Authorization header\n [WWW-Authenticate: Bearer]';
+    const mcps = await install({ tests: { docs: unauthorized } });
+
+    const result = await mcps.add("docs", "https://docs.test/mcp");
+
+    expect(result).toMatchObject({ ok: true, check: "needs-authorization" });
+    expect(result.message).toContain("Authorize");
+    expect(result.message).not.toContain("Check the address");
+  });
+
+  test("a refused add reports omp's reason and tests nothing", async () => {
     const mcps = await install({ servers: [docs] });
     const result = await mcps.add("docs", "https://other.test");
-    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ ok: false, check: null });
     expect(result.message).toContain("already exists");
+    expect((await calls()).some((call) => call.startsWith("/mcp test"))).toBe(false);
   });
 
   test("removal stays in the user file and the listing follows", async () => {

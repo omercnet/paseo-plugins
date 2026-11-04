@@ -59,7 +59,19 @@ export const listOmpMcps = defineRpc({
   output: OmpMcpsViewSchema,
 });
 
-/** Adds the server to omp's user MCP file with `/mcp add`. `ok` is false when omp reports a failure. */
+/** What a connection check found: a server that answers, one that wants a sign-in (HTTP 401), or neither. */
+export const OmpMcpCheckSchema = z.enum(["connected", "needs-authorization", "failed"]);
+export type OmpMcpCheck = z.infer<typeof OmpMcpCheckSchema>;
+
+export const OmpMcpAddResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string(),
+  /** omp's `/mcp add` only writes the file, so the server is tested right after. Null when the add failed or the test could not run. */
+  check: OmpMcpCheckSchema.nullable(),
+});
+export type OmpMcpAddResult = z.infer<typeof OmpMcpAddResultSchema>;
+
+/** Adds the server to omp's user MCP file with `/mcp add`, then tests it. A server that fails the test stays added. */
 export const addOmpMcp = defineRpc({
   name: "paseo-omp.add-mcp",
   input: z.object({
@@ -67,7 +79,7 @@ export const addOmpMcp = defineRpc({
     name: OmpMcpNameSchema,
     target: OmpMcpTargetSchema,
   }),
-  output: z.object({ ok: z.boolean(), message: z.string() }),
+  output: OmpMcpAddResultSchema,
 });
 
 /** Runs the matching `/mcp` command through omp. `ok` is false when omp reports the command failed. */
