@@ -455,6 +455,24 @@ describe.skipIf(ON_WINDOWS)("authorization", () => {
     expect(done?.step).toBe("done");
   });
 
+  test("a saved login on a server that still fails its test is said plainly, not as signed in", async () => {
+    const gateway =
+      'Connection to "docs" failed: HTTP 403: {"message":"Missing Authentication Token"}';
+    const mcps = await install({ servers: [docs], tests: { docs: gateway } });
+    const { id } = await begin(mcps);
+
+    await mcps.submitCode(id, "good");
+    const failed = await until(
+      () => step(mcps, id),
+      (auth) => auth?.step === "failed",
+    );
+
+    expect(failed?.message).toContain("login is saved");
+    expect(failed?.message).toContain("address may be wrong");
+    expect(failed?.message).toContain("Missing Authentication Token");
+    expect(await calls()).toContain("/mcp test docs");
+  });
+
   test("a code omp does not accept leaves the sign-in open to try again", async () => {
     const mcps = await install({ servers: [docs] });
     const { id } = await begin(mcps);

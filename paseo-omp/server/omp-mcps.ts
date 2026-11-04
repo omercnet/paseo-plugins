@@ -341,6 +341,32 @@ export class OmpMcps {
     }
   }
 
+  /**
+   * A saved login does not make the address right: a server at the wrong path still fails its
+   * test. Say so here, where "You're signed in" would otherwise be followed by a failing Test.
+   */
+  private async confirmSignIn(auth: AuthState, signedIn: string): Promise<void> {
+    auth.step = "verifying";
+    auth.codePrompt = null;
+    let tested: string;
+    try {
+      tested = (await runSlash(await resolveCommand(), `/mcp test ${auth.name}`)).trim();
+    } catch {
+      this.settle(auth, "done", signedIn);
+      return;
+    }
+    if (readConnectionCheck(tested) === "connected") {
+      this.settle(auth, "done", `${signedIn} ${tested}`);
+      return;
+    }
+    const reason = tested === "" ? "omp gave no answer" : tested;
+    this.settle(
+      auth,
+      "failed",
+      `Signed in and the login is saved, but ${auth.name} still fails its connection check, so the server address may be wrong. omp said: ${reason}`,
+    );
+  }
+
   private onOutput(auth: AuthState, text: string): void {
     if (!isOpen(auth.step)) return;
     const output = readAuthOutput(text);
@@ -351,7 +377,8 @@ export class OmpMcps {
       auth.step = "waiting";
     } else if (output.kind === "done") {
       this.listings.clear();
-      this.settle(auth, "done", output.message);
+      void this.confirmSignIn(auth, output.message);
+      return;
     } else if (output.kind === "failed") {
       this.settle(auth, "failed", output.message);
     }
