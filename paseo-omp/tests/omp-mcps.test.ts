@@ -706,6 +706,21 @@ describe.skipIf(ON_WINDOWS)("authorization", () => {
     expect(view.error).toContain("not valid");
   });
 
+  test("an authorization that cannot resolve its store does not cancel another open sign-in", async () => {
+    vi.stubEnv("OMP_PROFILE", "not a valid profile!");
+    const mcps = await install({ servers: [docs] });
+    const work = { profile: "work" };
+    await mcps.startAuth(work, "docs");
+    await until(
+      async () => (await mcps.list(work, false)).auths[0]?.step,
+      (current) => current === "waiting",
+    );
+
+    await expect(mcps.startAuth(undefined, "docs")).rejects.toThrow("not valid");
+
+    expect((await mcps.list(work, false)).auths[0]?.step).toBe("waiting");
+  });
+
   test("a sign-in only locks the server in its own store", async () => {
     const mcps = await install({ servers: [docs] });
     await begin(mcps);

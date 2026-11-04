@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import type { OmpLoginStep } from "../shared/omp-accounts";
 import {
   type OmpMcpAction,
@@ -39,7 +39,12 @@ function storeIdentity(store: OmpStore | undefined): string {
   } catch {
     throw new OmpAccountsError("The selected OMP store is not valid");
   }
-  const real = existsSync(directory) ? realpathSync(directory) : directory;
+  let real = directory;
+  try {
+    real = realpathSync(directory);
+  } catch {
+    // A directory omp has not created yet has no real path; its own path is the identity.
+  }
   return process.platform === "win32" ? real.toLowerCase() : real;
 }
 
@@ -310,6 +315,8 @@ export class OmpMcps {
   }
 
   private register(store: OmpStore | undefined, name: string): AuthState {
+    // Resolved first: a store that cannot be resolved must not cancel anyone's open sign-in.
+    const directory = storeIdentity(store);
     // OAuth callbacks listen on fixed local ports, so only one authorization runs at a time.
     for (const other of this.auths.values()) {
       if (isOpen(other.step)) {
@@ -323,7 +330,7 @@ export class OmpMcps {
     }
     const auth: AuthState = {
       id: randomUUID(),
-      directory: storeIdentity(store),
+      directory,
       name,
       step: "starting",
       url: null,
