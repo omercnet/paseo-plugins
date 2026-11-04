@@ -485,11 +485,14 @@ function CodeEntry({
   error,
   submitting,
   onSubmit,
+  onEdit,
 }: {
   placeholder: string;
   error: string | null;
   submitting: boolean;
   onSubmit(code: string): void;
+  /** The pasted text changed, so the last attempt's error no longer describes it. */
+  onEdit(): void;
 }) {
   const [code, setCode] = useState("");
   return (
@@ -499,7 +502,10 @@ function CodeEntry({
         hint="Paste the address of the page that failed to load after signing in, or the code"
         placeholder={placeholder}
         error={error}
-        onChangeText={setCode}
+        onChangeText={(value) => {
+          setCode(value);
+          if (error) onEdit();
+        }}
       />
       <SettingsAction
         label="Finish sign-in"
@@ -589,6 +595,7 @@ export function LoginProgress({
           error={codeError}
           submitting={submitting}
           onSubmit={(code) => void submit(code)}
+          onEdit={() => setCodeError(null)}
         />
       ) : (
         <Text style={styles.muted}>Waiting for you to finish signing in...</Text>

@@ -11,6 +11,7 @@ import {
   readConnectionCheck,
   reportsFailure,
 } from "../server/omp-mcps";
+import { ompAgentDir, withOmpStore } from "../server/paths";
 import { OmpMcpNameSchema, OmpMcpTargetSchema } from "../shared/omp-mcps";
 
 // The fake omp is a shebang script, which Windows cannot run as `omp`; the pure rules below stay
@@ -659,6 +660,14 @@ describe.skipIf(ON_WINDOWS)("authorization", () => {
     } else {
       expect(change.status).toBe("rejected");
     }
+  });
+
+  test("two selectors for the same agent directory share one sign-in lock", async () => {
+    const mcps = await install({ servers: [docs] });
+    await begin(mcps);
+    const sameDirectory = { agentDir: withOmpStore(undefined, () => ompAgentDir()) };
+
+    await expect(mcps.run(sameDirectory, "docs", "disable")).rejects.toThrow("sign-in for docs");
   });
 
   test("a sign-in only locks the server in its own store", async () => {

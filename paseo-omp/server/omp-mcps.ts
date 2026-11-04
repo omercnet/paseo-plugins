@@ -18,8 +18,17 @@ import {
   OmpRpcProcess,
   publicMessage,
   resolveCommand,
-  storeKey,
 } from "./omp-accounts";
+import { ompAgentDir, withOmpStore } from "./paths";
+
+/**
+ * The directory omp reads for a store. Two selectors can name the same one (the default store and
+ * an explicit agent directory equal to it) and then share one config, so a guard keyed by the
+ * selector could be bypassed through the other.
+ */
+function storeIdentity(store: OmpStore | undefined): string {
+  return withOmpStore(store, () => ompAgentDir());
+}
 
 const SLASH_TIMEOUT_MS = 60_000;
 /** omp answers a prompt before some commands print; it prints nothing for others. */
@@ -148,7 +157,8 @@ function actionResult(printed: string, action: string): { ok: boolean; message: 
 
 interface AuthState {
   id: string;
-  storeKey: string;
+  /** The agent directory omp reads, not the selector that named it. */
+  directory: string;
   name: string;
   step: OmpLoginStep;
   url: string | null;
@@ -185,8 +195,8 @@ export class OmpMcps {
   private readonly writes = new SerialMutationQueue();
 
   async list(store: OmpStore | undefined, refresh: boolean): Promise<OmpMcpsView> {
-    const key = storeKey(store);
-    const auths = [...this.auths.values()].filter((auth) => auth.storeKey === key).map(toAuth);
+    const key = storeIdentity(store);
+    const auths = [...this.auths.values()].filter((auth) => auth.directory === key).map(toAuth);
     let command: OmpCommand;
     try {
       command = await resolveCommand();
@@ -295,7 +305,7 @@ export class OmpMcps {
     }
     const auth: AuthState = {
       id: randomUUID(),
-      storeKey: storeKey(store),
+      directory: storeIdentity(store),
       name,
       step: "starting",
       url: null,
@@ -355,9 +365,9 @@ export class OmpMcps {
   }
 
   private hasOpenAuth(store: OmpStore | undefined, name: string): boolean {
-    const key = storeKey(store);
+    const key = storeIdentity(store);
     return [...this.auths.values()].some(
-      (auth) => auth.storeKey === key && auth.name === name && isOpen(auth.step),
+      (auth) => auth.directory === key && auth.name === name && isOpen(auth.step),
     );
   }
 
