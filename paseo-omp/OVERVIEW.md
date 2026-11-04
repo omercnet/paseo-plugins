@@ -11,6 +11,7 @@ OMP adds an agent provider for the OMP coding agent, plus an OMP sidebar and wor
 - Edit OMP settings and project configuration for the default store or a named profile.
 - Manage OMP's own plugins, and view quota history, memory, hub processes, session history and a support report.
 - List the logins in OMP's own credential store, add or sign one out, spend a banked reset, and steer how OMP balances agents across them, from the **Accounts** tab.
+- List the MCP servers OMP connects to, add, test, enable, disable or remove them, and authorize a remote server through your browser, from the **MCPs** tab.
 - An **MCP** composer control runs OMP's MCP management in the current session, with authorization prompts shown in the chat.
 - While OMP subagents run, a row under each `task` card in the conversation lets you steer one with a message or stop it after confirmation. It needs OMP 18.4.9 or newer.
 - OMP agents can call Paseo's orchestration tools with the optional `serverId` argument and `list_hosts` to delegate work to other connected Paseo hosts.

@@ -50,7 +50,7 @@ const RPC_ARGS = [
 
 export class OmpAccountsError extends OmpPublicError {}
 
-interface OmpCommand {
+export interface OmpCommand {
   executable: string;
   env: NodeJS.ProcessEnv;
 }
@@ -83,8 +83,9 @@ const FrameSchema = z.object({
   instructions: OptionalText,
   title: OptionalText,
   message: OptionalText,
+  text: OptionalText,
 });
-type Frame = z.infer<typeof FrameSchema>;
+export type Frame = z.infer<typeof FrameSchema>;
 
 const LoginProvidersSchema = z.object({
   providers: entries(
@@ -192,7 +193,7 @@ const RECLAIM_MARGIN_PCT = 15;
 const DEFAULT_RESERVE_PCT = 10;
 
 /** What the client may see: the plugin's own messages, never a raw Node error or omp's stderr. */
-function publicMessage(error: unknown): string {
+export function publicMessage(error: unknown): string {
   return error instanceof OmpPublicError ? error.message : "omp did not answer";
 }
 
@@ -202,7 +203,7 @@ function readOutput<T>(schema: z.ZodType<T>, value: unknown, command: string): T
   return parsed.data;
 }
 
-async function resolveCommand(): Promise<OmpCommand> {
+export async function resolveCommand(): Promise<OmpCommand> {
   const executable = await resolveOmpExecutable();
   if (!executable) throw new OmpAccountsError("The omp command was not found on this host");
   return { executable, env: buildStatefulCommandEnv(currentOmpEnvironment()) };
@@ -240,8 +241,17 @@ async function runJson<T>(command: OmpCommand, args: readonly string[], schema: 
   return readOutput(schema, output, label);
 }
 
+/** What a caller hears from the process besides answers to its own requests. */
+export interface OmpRpcHandlers {
+  onUiRequest?(frame: Frame): void;
+  /** Text omp prints for a slash command (`command_output`). */
+  onOutput?(text: string): void;
+  /** omp ended without the caller closing it. */
+  onExit?(): void;
+}
+
 /** One short-lived `omp --mode rpc` process, spoken to in JSON lines. */
-class OmpRpcProcess {
+export class OmpRpcProcess {
   private readonly child: ChildProcess;
   private readonly pending = new Map<
     string,
@@ -253,7 +263,7 @@ class OmpRpcProcess {
 
   constructor(
     command: OmpCommand,
-    private readonly onUiRequest?: (frame: Frame) => void,
+    private readonly handlers: OmpRpcHandlers = {},
   ) {
     this.child = spawn(command.executable, RPC_ARGS, {
       cwd: tmpdir(),
@@ -267,10 +277,12 @@ class OmpRpcProcess {
     }
     this.child.on("error", (error) => this.failAll(error));
     this.child.on("close", (code) => {
+      const unexpected = !this.closed;
       this.closed = true;
       clearTimeout(this.killer);
       const status = code === null ? "" : ` with code ${code}`;
       this.failAll(new OmpAccountsError(`omp exited${status}`));
+      if (unexpected) this.handlers.onExit?.();
     });
   }
 
@@ -327,7 +339,9 @@ class OmpRpcProcess {
       if (frame.success) waiter.resolve(frame.data);
       else waiter.reject(new OmpAccountsError(frame.error ?? "omp refused the request"));
     } else if (frame.type === "extension_ui_request") {
-      this.onUiRequest?.(frame);
+      this.handlers.onUiRequest?.(frame);
+    } else if (frame.type === "command_output" && frame.text !== undefined) {
+      this.handlers.onOutput?.(frame.text);
     }
   }
 
@@ -719,7 +733,7 @@ interface LoginState {
   endedAt: number | null;
 }
 
-function isOpen(step: OmpLoginStep): boolean {
+export function isOpen(step: OmpLoginStep): boolean {
   return step === "starting" || step === "waiting" || step === "verifying";
 }
 
@@ -735,7 +749,7 @@ function toLogin(login: LoginState): OmpLogin {
   };
 }
 
-function storeKey(store: OmpStore | undefined): string {
+export function storeKey(store: OmpStore | undefined): string {
   return JSON.stringify(store ?? {});
 }
 
@@ -1038,7 +1052,9 @@ export class OmpAccounts {
     store: OmpStore | undefined,
   ): Promise<void> {
     try {
-      const rpc = new OmpRpcProcess(command, (frame) => this.onLoginUiRequest(login, frame));
+      const rpc = new OmpRpcProcess(command, {
+        onUiRequest: (frame) => this.onLoginUiRequest(login, frame),
+      });
       if (!isOpen(login.step)) {
         rpc.close();
         return;

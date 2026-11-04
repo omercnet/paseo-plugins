@@ -93,6 +93,7 @@ describe("OMP Help surface state", () => {
     expect(surfaceViewsForScope(false).map((view) => view.id)).toEqual([
       "overview",
       "accounts",
+      "mcps",
       "plugin",
       "plugins",
       "composer",

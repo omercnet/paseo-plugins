@@ -184,7 +184,7 @@ describe("plugin server bundle", () => {
           },
           registerProvider: (provider: ProviderRegistration) => providers.push(provider),
         });
-        expect(handlers).toHaveLength(28);
+        expect(handlers).toHaveLength(34);
         expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-models");
         expect(handlers.map(([contract]) => contract.name)).toEqual(
           expect.arrayContaining([
@@ -199,6 +199,12 @@ describe("plugin server bundle", () => {
             "paseo-omp.redeem-account-reset",
             "paseo-omp.set-account-steering",
             "paseo-omp.set-accounts-setting",
+            "paseo-omp.list-mcps",
+            "paseo-omp.add-mcp",
+            "paseo-omp.run-mcp-action",
+            "paseo-omp.start-mcp-auth",
+            "paseo-omp.submit-mcp-auth-code",
+            "paseo-omp.cancel-mcp-auth",
           ]),
         );
         expect(settings).toEqual([

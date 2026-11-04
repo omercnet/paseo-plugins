@@ -39,6 +39,7 @@ import {
   OMP_SETTINGS_REFERENCE,
   type OmpDocumentationLink,
 } from "./omp-doc-links";
+import { OmpMcpsSection } from "./omp-mcps-section";
 import { normalizeOmpModels } from "./omp-model-picker-state";
 import { OmpPluginManagerSection } from "./omp-plugin-manager";
 import { type OmpModelCatalogState, StructuredRoutingEditor } from "./omp-routing-editor";
@@ -1148,6 +1149,10 @@ function OmpConfigContent({
 
       {view === "accounts" && !cwd ? (
         <OmpAccountsSection theme={theme} styles={styles} store={store} />
+      ) : null}
+
+      {view === "mcps" && !cwd ? (
+        <OmpMcpsSection theme={theme} styles={styles} store={store} />
       ) : null}
 
       {view === "plugin" ? (

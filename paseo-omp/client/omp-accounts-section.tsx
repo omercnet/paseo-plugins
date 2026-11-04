@@ -54,7 +54,7 @@ type SignInState =
   | { kind: "failed"; message: string }
   | { kind: "login"; id: string };
 
-function describe(error: unknown): string {
+export function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -71,7 +71,7 @@ interface ActionButtonProps {
   disabled?: boolean;
 }
 
-function ActionButton({ styles, theme, label, onPress, tone, disabled }: ActionButtonProps) {
+export function ActionButton({ styles, theme, label, onPress, tone, disabled }: ActionButtonProps) {
   const dangerBorder = tone === "danger" ? { borderColor: theme.colors.statusDanger } : null;
   const dangerText = tone === "danger" ? { color: theme.colors.statusDanger } : null;
   return (
@@ -384,7 +384,7 @@ function SteeringSettingsCard({
   );
 }
 
-function ConfirmModal({
+export function ConfirmModal({
   styles,
   theme,
   title,
@@ -477,7 +477,7 @@ function ProviderPicker({
   );
 }
 
-function LoginProgress({
+export function LoginProgress({
   styles,
   theme,
   login,
@@ -487,7 +487,7 @@ function LoginProgress({
 }: {
   styles: OmpConfigStyles;
   theme: Theme;
-  login: OmpLogin;
+  login: Omit<OmpLogin, "provider">;
   onSubmit(code: string): Promise<void>;
   onRetry(): void;
   onClose(): void;
@@ -552,7 +552,7 @@ function LoginProgress({
   return (
     <>
       <Text style={styles.cardTitle}>1. Open the sign-in page</Text>
-      <Text style={styles.muted}>Sign in with the account you want to add.</Text>
+      <Text style={styles.muted}>Finish signing in on the page that opens.</Text>
       {login.instructions ? <Text style={styles.rowValue}>{login.instructions}</Text> : null}
       <View style={styles.row}>
         <ActionButton
