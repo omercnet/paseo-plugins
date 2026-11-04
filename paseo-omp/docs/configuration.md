@@ -93,6 +93,16 @@ The **Accounts** tab of the OMP screen lists the logins in OMP's own credential 
 
 The plugin reads no OMP credential file and never receives a token. Every read and action goes through the `omp` command, and a pasted code goes straight to its standard input. Reads are cached for five minutes; **Refresh** asks the providers again. Logins belong to the selected store, so a profile shows its own. The tab is host-level and does not appear in the workspace OMP panel.
 
+## OMP MCP servers
+
+The **MCPs** tab of the OMP screen lists the MCP servers `omp` reports for the selected store, with their transport, state and where each is defined. Every read and change the tab makes goes through OMP's own `/mcp` commands, so `omp` in a terminal sees the same list and the tab never reads or writes `mcp.json` itself.
+
+- **Add server** takes a name and either a URL, added with `/mcp add <name> --scope user --url <url>`, or a command line, added after `--`. It writes to OMP's user MCP file. A URL cannot contain spaces. OMP's `/mcp add` never connects, so the plugin runs `/mcp test` right after. A server that answers is reported as connected; one that answers HTTP 401 is reported as needing **Authorize**; anything else (refused connection, unknown host, 404, a page that is not an MCP server) stays added but is flagged on the page as probably not a working MCP server, with OMP's own message, so a mistyped address is not mistaken for a good one.
+- **Test**, **Enable** and **Disable** run the matching `/mcp` command. **Remove** asks for confirmation and removes the server from the user file only; its OAuth sign-in is kept.
+- **Authorize** runs `/mcp reauth` for a remote server (HTTP or SSE). Open the sign-in page on any device. On the host's computer OMP's own callback finishes it by itself; anywhere else, paste the address of the page that failed to load, or the code, and the plugin hands it to OMP's local callback. Only OMP's own loopback address is ever called. One authorization runs at a time because OMP's callback listens on a fixed local port, and closing the dialog stops the `omp` process. OMP stores the login under the exact server URL, and sign-in can succeed on a URL that is not the MCP endpoint (for example a missing `/mcp` path), so the plugin tests the server once sign-in finishes. If the test still fails, the dialog says the login is saved but the address may be wrong, with OMP's message.
+
+OMP's rpc mode reports the outcome of a command only as printed text, so a result the plugin cannot recognise as a failure is shown as success. The server list is cached for 30 seconds; **Refresh** and every change read it again. Servers belong to the selected store, and the tab is host-level: it does not appear in the workspace OMP panel.
+
 ## Credentials and environment
 
 The plugin is deny-by-default. It inherits only its fixed built-in allowlist of core provider authentication variables, exact host-wide names an operator selects in **OMP → Plugin**, and additional exact profile names under `providerOptions.inheritEnv`; it does not discover or inherit arbitrary credential-shaped names. Prefer OMP's native credential store or auth broker whenever possible.

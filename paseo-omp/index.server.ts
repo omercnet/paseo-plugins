@@ -7,6 +7,7 @@ import {
 import { resolveListOmpMemory } from "./server/memory";
 import { OmpAccounts } from "./server/omp-accounts";
 import { resolveListOmpConfig } from "./server/omp-config";
+import { OmpMcps } from "./server/omp-mcps";
 import { resolveListOmpModels } from "./server/omp-models";
 import {
   resolveInspectOmpPluginConfig,
@@ -52,6 +53,14 @@ import {
   submitOmpAccountLoginCode,
 } from "./shared/omp-accounts";
 import { listOmpConfig } from "./shared/omp-config";
+import {
+  addOmpMcp,
+  cancelOmpMcpAuth,
+  listOmpMcps,
+  runOmpMcpAction,
+  startOmpMcpAuth,
+  submitOmpMcpAuthCode,
+} from "./shared/omp-mcps";
 import { listOmpModels } from "./shared/omp-models";
 import {
   inspectOmpPluginConfig,
@@ -91,6 +100,7 @@ export default function contribute(server: PluginServerContext) {
   const protocolViolations = new OmpProtocolViolationCollector();
   const operationalFailures = new OmpOperationalFailureCollector();
   const accounts = new OmpAccounts();
+  const mcps = new OmpMcps();
   const profiles = discoverOmpProfilesSync();
   server.handle(listOmpStores, async () => ({ profiles: await discoverOmpProfiles() }));
   for (const profile of profiles) {
@@ -149,6 +159,30 @@ export default function contribute(server: PluginServerContext) {
       return { ok: true as const };
     }),
   );
+  server.handle(
+    listOmpMcps,
+    scoped(({ store, refresh }) => mcps.list(store, refresh ?? false)),
+  );
+  server.handle(
+    addOmpMcp,
+    scoped(({ name, target }) => mcps.add(name, target)),
+  );
+  server.handle(
+    runOmpMcpAction,
+    scoped(({ store, name, action }) => mcps.run(store, name, action)),
+  );
+  server.handle(
+    startOmpMcpAuth,
+    scoped(({ store, name }) => mcps.startAuth(store, name)),
+  );
+  server.handle(
+    submitOmpMcpAuthCode,
+    scoped(({ authId, code }) => mcps.submitCode(authId, code)),
+  );
+  server.handle(
+    cancelOmpMcpAuth,
+    scoped(({ authId }) => mcps.cancelAuth(authId)),
+  );
   server.handle(listOmpMemory, scoped(resolveListOmpMemory));
   server.handle(listOmpSessions, scoped(resolveListOmpSessions));
   server.handle(listOmpConfig, scoped(resolveListOmpConfig));
@@ -191,6 +225,7 @@ export default function contribute(server: PluginServerContext) {
   return () => {
     browserAuthorizationRegistry.clear();
     accounts.stop();
+    mcps.stop();
     removeSessionLimitListener();
     subagentControlRegistry.clear();
     removeSessionOpenHook();

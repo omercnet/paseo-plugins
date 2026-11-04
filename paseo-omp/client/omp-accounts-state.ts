@@ -43,7 +43,7 @@ export function signInProviders(
   );
 }
 
-export function loginIsOpen(login: OmpLogin): boolean {
+export function loginIsOpen(login: Pick<OmpLogin, "step">): boolean {
   return login.step === "starting" || login.step === "waiting" || login.step === "verifying";
 }
 

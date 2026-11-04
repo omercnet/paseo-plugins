@@ -2,7 +2,9 @@ import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import {
   Icon,
   Modal,
+  SettingsAction,
   SettingsCard,
+  SettingsInput,
   SettingsSelect,
   TextInput,
   useToast,
@@ -54,7 +56,7 @@ type SignInState =
   | { kind: "failed"; message: string }
   | { kind: "login"; id: string };
 
-function describe(error: unknown): string {
+export function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -71,7 +73,7 @@ interface ActionButtonProps {
   disabled?: boolean;
 }
 
-function ActionButton({ styles, theme, label, onPress, tone, disabled }: ActionButtonProps) {
+export function ActionButton({ styles, theme, label, onPress, tone, disabled }: ActionButtonProps) {
   const dangerBorder = tone === "danger" ? { borderColor: theme.colors.statusDanger } : null;
   const dangerText = tone === "danger" ? { color: theme.colors.statusDanger } : null;
   return (
@@ -384,7 +386,7 @@ function SteeringSettingsCard({
   );
 }
 
-function ConfirmModal({
+export function ConfirmModal({
   styles,
   theme,
   title,
@@ -477,33 +479,67 @@ function ProviderPicker({
   );
 }
 
-function LoginProgress({
+/** Owns the pasted text, so it is dropped with the input instead of lingering unseen. */
+function CodeEntry({
+  placeholder,
+  error,
+  submitting,
+  onSubmit,
+  onEdit,
+}: {
+  placeholder: string;
+  error: string | null;
+  submitting: boolean;
+  onSubmit(code: string): void;
+  /** The pasted text changed, so the last attempt's error no longer describes it. */
+  onEdit(): void;
+}) {
+  const [code, setCode] = useState("");
+  return (
+    <SettingsCard>
+      <SettingsInput
+        label="Signing in on another device?"
+        hint="Paste the address of the page that failed to load after signing in, or the code"
+        placeholder={placeholder}
+        error={error}
+        onChangeText={(value) => {
+          setCode(value);
+          if (error) onEdit();
+        }}
+      />
+      <SettingsAction
+        label="Finish sign-in"
+        actionLabel={submitting ? "Continuing..." : "Continue"}
+        disabled={submitting || code.trim() === ""}
+        onPress={() => onSubmit(code)}
+      />
+    </SettingsCard>
+  );
+}
+
+export function LoginProgress({
   styles,
-  theme,
   login,
   onSubmit,
   onRetry,
   onClose,
 }: {
   styles: OmpConfigStyles;
-  theme: Theme;
-  login: OmpLogin;
+  login: Omit<OmpLogin, "provider">;
   onSubmit(code: string): Promise<void>;
   onRetry(): void;
   onClose(): void;
 }) {
   const toast = useToast();
-  const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
   const url = login.url;
 
-  async function submit() {
+  async function submit(code: string) {
     setSubmitting(true);
     setCodeError(null);
     try {
       await onSubmit(code);
-      setCode("");
     } catch (error) {
       setCodeError(describe(error));
     } finally {
@@ -513,92 +549,54 @@ function LoginProgress({
 
   if (login.step === "done") {
     return (
-      <>
-        <Text style={styles.cardTitle}>You're signed in</Text>
-        <Text style={styles.rowValue}>OMP agents on this host can use the login now.</Text>
-        <View style={[styles.row, { justifyContent: "flex-end" }]}>
-          <ActionButton
-            styles={styles}
-            theme={theme}
-            label="Done"
-            tone="primary"
-            onPress={onClose}
-          />
-        </View>
-      </>
+      <SettingsCard>
+        <SettingsAction
+          label="You're signed in"
+          hint="OMP agents on this host can use the login now"
+          actionLabel="Done"
+          onPress={onClose}
+        />
+      </SettingsCard>
     );
   }
   if (login.step === "failed" || login.step === "canceled") {
+    const failed = login.step === "failed";
     return (
-      <>
-        <Text style={login.step === "failed" ? styles.error : styles.muted}>
-          {login.message ?? "Sign-in did not finish"}
-        </Text>
-        <View style={[styles.row, { justifyContent: "flex-end" }]}>
-          <ActionButton styles={styles} theme={theme} label="Close" onPress={onClose} />
-          <ActionButton
-            styles={styles}
-            theme={theme}
-            label="Try again"
-            tone="primary"
-            onPress={onRetry}
-          />
-        </View>
-      </>
+      <SettingsCard>
+        <SettingsAction
+          label={failed ? "Sign-in did not finish" : "Sign-in was canceled"}
+          hint={failed ? undefined : (login.message ?? undefined)}
+          error={failed ? (login.message ?? "Sign-in did not finish") : null}
+          actionLabel="Try again"
+          onPress={onRetry}
+        />
+      </SettingsCard>
     );
   }
   if (login.step === "starting") return <Text style={styles.muted}>Preparing sign-in...</Text>;
   if (login.step === "verifying") return <Text style={styles.muted}>Checking the login...</Text>;
   return (
     <>
-      <Text style={styles.cardTitle}>1. Open the sign-in page</Text>
-      <Text style={styles.muted}>Sign in with the account you want to add.</Text>
-      {login.instructions ? <Text style={styles.rowValue}>{login.instructions}</Text> : null}
-      <View style={styles.row}>
-        <ActionButton
-          styles={styles}
-          theme={theme}
-          label="Open sign-in page"
-          tone="primary"
+      <SettingsCard>
+        <SettingsAction
+          label="Open the sign-in page"
+          hint={login.instructions ?? "Finish signing in on the page that opens"}
+          actionLabel="Open"
           disabled={url === null}
           onPress={() => {
             if (url)
               openOmpExternalUrl(url).catch((error: unknown) => toast.error(describe(error)));
           }}
         />
-      </View>
+      </SettingsCard>
       {login.codePrompt ? (
-        <>
-          <Text style={styles.cardTitle}>
-            2. Not on this host's computer? Paste what the page shows
-          </Text>
-          <Text style={styles.muted}>
-            On the host's computer sign-in finishes by itself. Anywhere else, paste the code, or the
-            address of the page that failed to load after signing in.
-          </Text>
-          <TextInput
-            value={code}
-            onChangeText={setCode}
-            placeholder={login.codePrompt}
-            placeholderTextColor={theme.colors.foregroundMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            accessibilityLabel="Sign-in code or redirect URL"
-            onSubmitEditing={() => void submit()}
-            style={styles.scalarInput}
-          />
-          {codeError ? <Text style={styles.error}>{codeError}</Text> : null}
-          <View style={styles.row}>
-            <ActionButton
-              styles={styles}
-              theme={theme}
-              label={submitting ? "Continuing..." : "Continue"}
-              tone="primary"
-              disabled={submitting || code.trim() === ""}
-              onPress={() => void submit()}
-            />
-          </View>
-        </>
+        <CodeEntry
+          placeholder={login.codePrompt}
+          error={codeError}
+          submitting={submitting}
+          onSubmit={(code) => void submit(code)}
+          onEdit={() => setCodeError(null)}
+        />
       ) : (
         <Text style={styles.muted}>Waiting for you to finish signing in...</Text>
       )}
@@ -677,7 +675,6 @@ function SignInModal({
     body = (
       <LoginProgress
         styles={styles}
-        theme={theme}
         login={login}
         onSubmit={async (code) => {
           await submit({ store, loginId: login.id, code });

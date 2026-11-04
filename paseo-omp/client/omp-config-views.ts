@@ -1,6 +1,7 @@
 export type OmpConfigSurfaceView =
   | "overview"
   | "accounts"
+  | "mcps"
   | "plugin"
   | "plugins"
   | "composer"
@@ -11,6 +12,7 @@ export type OmpConfigSurfaceView =
 const SURFACE_VIEWS: readonly { id: OmpConfigSurfaceView; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "accounts", label: "Accounts" },
+  { id: "mcps", label: "MCPs" },
   { id: "plugin", label: "Plugin" },
   { id: "plugins", label: "OMP plugins" },
   { id: "composer", label: "Composer" },
@@ -20,7 +22,7 @@ const SURFACE_VIEWS: readonly { id: OmpConfigSurfaceView; label: string }[] = [
 ];
 
 /** Views that belong to the OMP store, not to a workspace's project settings. */
-const STORE_ONLY_VIEWS: readonly OmpConfigSurfaceView[] = ["composer", "accounts"];
+const STORE_ONLY_VIEWS: readonly OmpConfigSurfaceView[] = ["composer", "accounts", "mcps"];
 
 export function surfaceViewsForScope(workspaceScoped: boolean) {
   return workspaceScoped
