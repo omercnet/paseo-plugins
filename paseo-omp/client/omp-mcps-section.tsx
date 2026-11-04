@@ -71,6 +71,8 @@ function ServerSection({
   // Only a remote server signs in with OAuth; a local one is a process OMP starts.
   const remote = server.transport === "http" || server.transport === "sse";
   const failed = outcome !== undefined && !outcome.ok;
+  // OMP allows names the plugin cannot pass as one command argument; those are listed only.
+  const manageable = OmpMcpNameSchema.safeParse(server.name).success;
   return (
     <SettingsSection
       title={server.name}
@@ -78,6 +80,12 @@ function ServerSection({
     >
       <SettingsCard>
         <SettingsRow label={server.target} />
+        {manageable ? null : (
+          <SettingsRow
+            label="Manage in the OMP terminal"
+            hint="Its name has spaces or other characters this plugin cannot pass to omp safely"
+          />
+        )}
         <SettingsSwitch
           label="Enabled"
           hint="Whether OMP connects to it"

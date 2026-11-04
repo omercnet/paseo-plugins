@@ -53,10 +53,15 @@ export function reportsFailure(text: string): boolean {
   );
 }
 
-/** A 401 means something is there and wants a sign-in; any other failure means nothing there is a working MCP server. */
+/**
+ * Reads the status line of `/mcp test`. Only the first line says how the connection went: the lines
+ * after it list tool names, which can be any word, including "failed". A 401 means something is
+ * there and wants a sign-in; any other failure means nothing there is a working MCP server.
+ */
 export function readConnectionCheck(text: string): OmpMcpCheck {
-  if (/\bHTTP 401\b/u.test(text)) return "needs-authorization";
-  return text === "" || reportsFailure(text) ? "failed" : "connected";
+  const status = text.trim().split("\n")[0] ?? "";
+  if (/\bHTTP 401\b/u.test(status)) return "needs-authorization";
+  return status === "" || reportsFailure(status) ? "failed" : "connected";
 }
 
 /** What one line of `/mcp reauth` output means for the authorization it belongs to. */
@@ -67,6 +72,11 @@ export type AuthOutput =
   | { kind: "failed"; message: string };
 
 const AUTH_URL = /https?:\/\/\S+/u;
+
+/** omp's own terminal message for a reauth that was canceled; a server may be named "cancel-tools". */
+const OMP_AUTH_ENDED = /^Reauthorization cancelled for /u;
+/** Terminal answers omp prints for a reauth it will not start; they end the command like a failure. */
+const OMP_AUTH_REFUSAL = /is disabled\. Run \/mcp enable|reauthorization is not required/iu;
 
 /**
  * omp's rpc mode sends no `open_url` request for a reauthorization: the page address, the result
@@ -80,7 +90,7 @@ export function readAuthOutput(text: string): AuthOutput {
     return { kind: "url", url, instructions: instructions || null };
   }
   if (printed.startsWith("\u2713")) return { kind: "done", message: printed };
-  if (reportsFailure(printed) || /\bcancel/iu.test(printed)) {
+  if (reportsFailure(printed) || OMP_AUTH_ENDED.test(printed) || OMP_AUTH_REFUSAL.test(printed)) {
     return { kind: "failed", message: printed };
   }
   return { kind: "progress" };
@@ -132,7 +142,8 @@ async function runSlash(command: OmpCommand, line: string): Promise<string> {
 function actionResult(printed: string, action: string): { ok: boolean; message: string } {
   const message = printed.trim();
   if (message === "") return { ok: false, message: `omp gave no answer to /mcp ${action}` };
-  return { ok: !reportsFailure(message), message };
+  // Only the status line counts; `/mcp test` lists tool names on the lines after it.
+  return { ok: !reportsFailure(message.split("\n")[0] ?? ""), message };
 }
 
 interface AuthState {
@@ -168,6 +179,8 @@ function toAuth(auth: AuthState): OmpMcpAuth {
 export class OmpMcps {
   private readonly auths = new Map<string, AuthState>();
   private readonly listings = new Map<string, { servers: OmpMcpServer[]; at: number }>();
+  /** Bumped by every change, so a listing that began before one cannot be stored after it. */
+  private generation = 0;
   /** One config write at a time, so each one edits the file the previous one wrote. */
   private readonly writes = new SerialMutationQueue();
 
@@ -185,26 +198,39 @@ export class OmpMcps {
       return { installed: true, servers: cached.servers, auths, error: null };
     }
     try {
+      const began = this.generation;
       const printed = await runSlash(command, "/mcp list");
       const servers = parseMcpList(printed);
       if (servers.length === 0 && printed.trim() !== "" && !EMPTY_LIST.test(printed.trim())) {
         throw new OmpAccountsError("omp's MCP list is not in a format this plugin can read");
       }
-      this.listings.set(key, { servers, at: Date.now() });
+      if (began === this.generation) this.listings.set(key, { servers, at: Date.now() });
       return { installed: true, servers, auths, error: null };
     } catch (error) {
       return { installed: true, servers: [], auths, error: publicMessage(error) };
     }
   }
 
-  async run(name: string, action: OmpMcpAction): Promise<{ ok: boolean; message: string }> {
+  /**
+   * omp's reauthorization copies the server's config when it starts and may write it back when the
+   * browser step ends, which would undo a change made in between. So a server with a sign-in open
+   * is left alone until that sign-in ends; another client's change is refused here, not hidden.
+   */
+  async run(
+    store: OmpStore | undefined,
+    name: string,
+    action: OmpMcpAction,
+  ): Promise<{ ok: boolean; message: string }> {
+    if (action !== "test" && this.hasOpenAuth(store, name)) {
+      throw new OmpAccountsError(`Finish or cancel the sign-in for ${name} before changing it`);
+    }
     const command = await resolveCommand();
     // `remove` defaults to the project in omp's working directory; this plugin only manages the
     // user's own file.
     const line =
       action === "remove" ? `/mcp remove ${name} --scope user` : `/mcp ${action} ${name}`;
     const printed = await this.writes.run(() => runSlash(command, line));
-    this.listings.clear();
+    this.invalidate();
     return actionResult(printed, action);
   }
 
@@ -216,7 +242,7 @@ export class OmpMcps {
       ? `/mcp add ${name} --scope user --url ${target}`
       : `/mcp add ${name} --scope user -- ${target}`;
     const printed = await this.writes.run(() => runSlash(command, line));
-    this.listings.clear();
+    this.invalidate();
     const added = actionResult(printed, "add");
     if (!added.ok) return { ...added, check: null };
     return this.check(command, name, added.message);
@@ -292,7 +318,11 @@ export class OmpMcps {
     auth.message = null;
     let accepted: boolean;
     try {
-      const response = await fetch(target, { signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS) });
+      // A redirect would leave omp's loopback address, which the pasted text may not name.
+      const response = await fetch(target, {
+        redirect: "error",
+        signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
+      });
       accepted = response.ok;
     } catch {
       if (auth.step === "verifying") auth.step = "waiting";
@@ -311,6 +341,18 @@ export class OmpMcps {
     if (!auth) return null;
     if (isOpen(auth.step)) this.settle(auth, "canceled", "Authorization was canceled");
     return toAuth(auth);
+  }
+
+  private hasOpenAuth(store: OmpStore | undefined, name: string): boolean {
+    const key = storeKey(store);
+    return [...this.auths.values()].some(
+      (auth) => auth.storeKey === key && auth.name === name && isOpen(auth.step),
+    );
+  }
+
+  private invalidate(): void {
+    this.generation += 1;
+    this.listings.clear();
   }
 
   stop(): void {
@@ -376,7 +418,7 @@ export class OmpMcps {
       auth.codePrompt = "Paste the address from the browser, or the code";
       auth.step = "waiting";
     } else if (output.kind === "done") {
-      this.listings.clear();
+      this.invalidate();
       void this.confirmSignIn(auth, output.message);
       return;
     } else if (output.kind === "failed") {

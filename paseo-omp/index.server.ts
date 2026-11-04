@@ -169,7 +169,7 @@ export default function contribute(server: PluginServerContext) {
   );
   server.handle(
     runOmpMcpAction,
-    scoped(({ name, action }) => mcps.run(name, action)),
+    scoped(({ store, name, action }) => mcps.run(store, name, action)),
   );
   server.handle(
     startOmpMcpAuth,

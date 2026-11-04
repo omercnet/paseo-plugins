@@ -3,12 +3,18 @@ import { z } from "zod";
 import { OmpLoginSchema } from "./omp-accounts";
 import { OmpStoreSchema } from "./omp-store";
 
-/** A server name as `omp` lists it. It ends up in a slash command, so it never starts with `-`. */
+/** A server name as `omp` lists it. OMP allows spaces and other characters in names. */
+export const OmpMcpListedNameSchema = z.string().min(1).max(200);
+
+/**
+ * A name the plugin may put in a slash command: it never starts with `-` and has no spaces, so it
+ * is one argument. A listed server whose name does not fit can be shown but not acted on here.
+ */
 export const OmpMcpNameSchema = z.string().regex(/^[a-zA-Z0-9_.:][a-zA-Z0-9_.:-]{0,99}$/u);
 
 /** One line of `/mcp list`: `name | transport | state | target [source]`. */
 export const OmpMcpServerSchema = z.object({
-  name: OmpMcpNameSchema,
+  name: OmpMcpListedNameSchema,
   transport: z.string(),
   /** `enabled` or `disabled`, as OMP words it. */
   state: z.string(),
@@ -50,6 +56,12 @@ export const OmpMcpTargetSchema = z
   .refine(
     (target) => !/^https?:\/\//iu.test(target) || /^\S+$/u.test(target),
     "A server URL can't contain spaces",
+  )
+  // omp reads the command line as shell-like words and drops quote characters, which would store a
+  // different URL than the one typed.
+  .refine(
+    (target) => !/^https?:\/\//iu.test(target) || !/['"]/u.test(target),
+    "A server URL can't contain quotes; write them as %27 and %22",
   );
 
 export const listOmpMcps = defineRpc({

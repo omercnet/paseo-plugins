@@ -1,4 +1,5 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -10,7 +11,7 @@ import {
   readConnectionCheck,
   reportsFailure,
 } from "../server/omp-mcps";
-import { OmpMcpTargetSchema } from "../shared/omp-mcps";
+import { OmpMcpNameSchema, OmpMcpTargetSchema } from "../shared/omp-mcps";
 
 // The fake omp is a shebang script, which Windows cannot run as `omp`; the pure rules below stay
 // covered everywhere.
@@ -41,8 +42,18 @@ describe("reading omp's printed text", () => {
     ]);
   });
 
-  test("drops a line whose name could be read as a flag", () => {
-    expect(parseMcpList("--scope | http | enabled | https://x.test [user]")).toEqual([]);
+  test("a server with a space in its name is still listed", () => {
+    const rows = parseMcpList(
+      "docs | http | enabled | https://a.test [user]\nteam docs | http | enabled | https://b.test/team [user]",
+    );
+    expect(rows.map((row) => row.name)).toEqual(["docs", "team docs"]);
+  });
+
+  test("a name that could be read as a flag is listed but never acted on", () => {
+    const [row] = parseMcpList("--scope | http | enabled | https://x.test [user]");
+    expect(row?.name).toBe("--scope");
+    expect(OmpMcpNameSchema.safeParse("--scope").success).toBe(false);
+    expect(OmpMcpNameSchema.safeParse("team docs").success).toBe(false);
   });
 
   test("a failure is read from the words omp uses, never from a quoted server name", () => {
@@ -52,6 +63,23 @@ describe("reading omp's printed text", () => {
     expect(reportsFailure("Unknown option: name")).toBe(true);
     expect(reportsFailure('Server "failed-server" disabled (user config).')).toBe(false);
     expect(reportsFailure('Added MCP server "invalid-looking" (user).')).toBe(false);
+  });
+
+  test("a reauth omp refuses to start ends the command instead of hanging", () => {
+    const disabled = 'Server "docs" is disabled. Run /mcp enable docs first.';
+    const noAuth = "Server connection succeeded without OAuth; reauthorization is not required.";
+    expect(readAuthOutput(disabled).kind).toBe("failed");
+    expect(readAuthOutput(noAuth).kind).toBe("failed");
+    expect(readAuthOutput("Exchanging authorization code for tokens...").kind).toBe("progress");
+  });
+
+  test("a test's tool names are not read as a failure", () => {
+    expect(readConnectionCheck('Server "docs" connected (1 tools).\n  - invalid')).toBe(
+      "connected",
+    );
+    expect(readConnectionCheck('Server "docs" connected (2 tools).\n  - failed\n  - failure')).toBe(
+      "connected",
+    );
   });
 
   test("the sign-in page and its hint come out of the authorization block", () => {
@@ -77,6 +105,13 @@ describe("reading omp's printed text", () => {
     );
     expect(readAuthOutput('Failed to reauthorize server "a": denied').kind).toBe("failed");
     expect(readAuthOutput('Reauthorization cancelled for "a".').kind).toBe("failed");
+  });
+
+  test("a server whose name contains a failure word does not end its own sign-in", () => {
+    for (const name of ["cancel-tools", "failed-server", "invalid-looking"]) {
+      const progress = `Reauthorizing "${name}"\u2026 opening your browser (5 minute timeout).`;
+      expect(readAuthOutput(progress).kind).toBe("progress");
+    }
   });
 });
 
@@ -134,6 +169,12 @@ describe("a server to add", () => {
     expect(OmpMcpTargetSchema.safeParse("https://x.test --scope project").success).toBe(false);
   });
 
+  test("a URL with a quote is refused rather than stored altered, but a command may quote", () => {
+    expect(OmpMcpTargetSchema.safeParse("https://x.test/mcp?tenant=o'brien").success).toBe(false);
+    expect(OmpMcpTargetSchema.safeParse("https://x.test/mcp?tenant=o%27brien").success).toBe(true);
+    expect(OmpMcpTargetSchema.safeParse('node "my server.js"').success).toBe(true);
+  });
+
   test("a command line is one line", () => {
     expect(OmpMcpTargetSchema.safeParse("npx -y some-server").success).toBe(true);
     expect(OmpMcpTargetSchema.safeParse("node a.js\n/mcp remove b").success).toBe(false);
@@ -148,6 +189,10 @@ interface Scenario {
   crashAfterUrl?: boolean;
   /** What `/mcp test <name>` prints; a server not listed here connects. */
   tests?: Record<string, string>;
+  /** `/mcp list` reads the servers, writes this file, then waits before it prints. */
+  slowList?: string;
+  /** The sign-in callback answers with a redirect to this address. */
+  redirectTo?: string;
   /** Every slash command is appended here, one per line. */
   logFile: string;
   stateFile: string;
@@ -177,8 +222,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const ack = () => print({ type: "response", id: request.id, success: true, data: { agentInvoked: false } });
   const servers = state();
   if (sub === "list") {
-    out(S.listRaw !== undefined ? S.listRaw : servers.length === 0 ? "No MCP servers configured." : servers.map((s) => s.name + " | " + s.transport + " | " + (s.enabled ? "enabled" : "disabled") + " | " + s.target + " [user]").join("\\n"));
-    return ack();
+    const text = S.listRaw !== undefined ? S.listRaw : servers.length === 0 ? "No MCP servers configured." : servers.map((s) => s.name + " | " + s.transport + " | " + (s.enabled ? "enabled" : "disabled") + " | " + s.target + " [user]").join("\\n");
+    const answer = () => { out(text); ack(); };
+    if (S.slowList) { fs.writeFileSync(S.slowList, "read"); setTimeout(answer, 1500); } else answer();
+    return;
   }
   if (sub === "add") {
     if (servers.some((s) => s.name === name)) { out('Failed to add server: Server "' + name + '" already exists'); return ack(); }
@@ -208,6 +255,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     out('Reauthorizing "' + name + '"... opening your browser (5 minute timeout).');
     const server = http.createServer((req, res) => {
       const url = new URL(req.url, "http://localhost");
+      if (S.redirectTo) { res.writeHead(302, { location: S.redirectTo }); res.end(); return; }
       if (url.searchParams.get("code") === "good" && url.searchParams.get("state") === "s3cret") {
         res.writeHead(200); res.end("ok");
         out('\\u2713 Reauthorized "' + name + '" (user config). Server reconnected.');
@@ -321,7 +369,7 @@ describe.skipIf(ON_WINDOWS)("servers", () => {
     await mcps.list(undefined, true);
     expect(await calls()).toEqual(["/mcp list", "/mcp list"]);
 
-    await mcps.run("docs", "disable");
+    await mcps.run(undefined, "docs", "disable");
     const view = await mcps.list(undefined, false);
     expect(view.servers[0]?.state).toBe("disabled");
   });
@@ -387,9 +435,50 @@ describe.skipIf(ON_WINDOWS)("servers", () => {
 
   test("removal stays in the user file and the listing follows", async () => {
     const mcps = await install({ servers: [docs] });
-    expect(await mcps.run("docs", "remove")).toMatchObject({ ok: true });
+    expect(await mcps.run(undefined, "docs", "remove")).toMatchObject({ ok: true });
     expect(await calls()).toEqual(["/mcp remove docs --scope user"]);
     expect((await mcps.list(undefined, false)).servers).toEqual([]);
+  });
+
+  test("a server with a space in its name is still listed by the plugin", async () => {
+    const spaced = {
+      name: "team docs",
+      transport: "http",
+      enabled: true,
+      target: "https://t.test",
+    };
+    const mcps = await install({ servers: [docs, spaced] });
+    const view = await mcps.list(undefined, false);
+    expect(view.servers.map((server) => server.name)).toEqual(["docs", "team docs"]);
+  });
+
+  test("tool names that look like failures do not fail a test or an add that connected", async () => {
+    const listing = 'Server "x" connected (2 tools).\n  - invalid\n  - failed';
+    const mcps = await install({ servers: [docs], tests: { docs: listing, other: listing } });
+    expect(await mcps.run(undefined, "docs", "test")).toMatchObject({ ok: true });
+    expect(await mcps.add("other", "https://other.test")).toMatchObject({
+      ok: true,
+      check: "connected",
+    });
+  });
+
+  test("a listing that began before a change is not kept after it", async () => {
+    const marker = join(directory, "listing-read");
+    const mcps = await install({ servers: [docs], slowList: marker });
+    const stale = mcps.list(undefined, true);
+    await until(
+      () =>
+        readFile(marker, "utf8").then(
+          () => true,
+          () => false,
+        ),
+      (read) => read,
+    );
+
+    await mcps.run(undefined, "docs", "disable");
+    await stale;
+
+    expect((await mcps.list(undefined, false)).servers[0]?.state).toBe("disabled");
   });
 });
 
@@ -517,6 +606,48 @@ describe.skipIf(ON_WINDOWS)("authorization", () => {
     );
     expect(failed).toMatchObject({ step: "failed" });
     expect(failed?.message).toContain("stopped");
+  });
+
+  test("a server with a sign-in open is not changed until the sign-in ends", async () => {
+    const other = { name: "other", transport: "http", enabled: true, target: "https://other.test" };
+    const mcps = await install({ servers: [docs, other] });
+    const { id } = await begin(mcps);
+
+    await expect(mcps.run(undefined, "docs", "disable")).rejects.toThrow("sign-in for docs");
+    await expect(mcps.run(undefined, "docs", "remove")).rejects.toThrow("sign-in for docs");
+    expect(await mcps.run(undefined, "docs", "test")).toMatchObject({ ok: true });
+    expect(await mcps.run(undefined, "other", "disable")).toMatchObject({ ok: true });
+    expect(
+      (await calls()).filter(
+        (call) => call === "/mcp disable docs" || call === "/mcp remove docs --scope user",
+      ),
+    ).toEqual([]);
+
+    mcps.cancelAuth(id);
+    expect(await mcps.run(undefined, "docs", "disable")).toMatchObject({ ok: true });
+  });
+
+  test("a callback that answers with a redirect is not followed", async () => {
+    const hits: string[] = [];
+    const elsewhere = createServer((request, response) => {
+      hits.push(request.url ?? "");
+      response.end("elsewhere");
+    });
+    const listening = Promise.withResolvers<void>();
+    elsewhere.listen(0, "127.0.0.1", () => listening.resolve());
+    await listening.promise;
+    const address = elsewhere.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const mcps = await install({ servers: [docs], redirectTo: `http://127.0.0.1:${port}/steal` });
+      const { id } = await begin(mcps);
+
+      await expect(mcps.submitCode(id, "good")).rejects.toThrow("no longer listening");
+
+      expect(hits).toEqual([]);
+    } finally {
+      elsewhere.close();
+    }
   });
 
   test("a newer authorization replaces the one still open", async () => {
