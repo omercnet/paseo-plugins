@@ -109,3 +109,26 @@ export const testOmpRules = defineRpc({
     z.object({ status: z.literal("error"), message: z.string() }),
   ]),
 });
+
+export const OmpRuleFiringSchema = z.object({
+  name: z.string(),
+  count: z.number().int().positive(),
+  /** ISO time of the most recent firing. */
+  lastFiredAt: z.string().nullable(),
+});
+export type OmpRuleFiring = z.infer<typeof OmpRuleFiringSchema>;
+
+/** How often each rule fired, counted from OMP's session files for this workspace or every session. */
+export const listOmpRuleFirings = defineRpc({
+  name: "paseo-omp.rule-firings",
+  input: z
+    .object({ store: OmpStoreSchema.optional(), cwd: OmpWorkspaceCwdSchema.optional() })
+    .strict(),
+  output: z.object({
+    firings: z.array(OmpRuleFiringSchema),
+    /** Sessions the counts cover. */
+    sessions: z.number().int().nonnegative(),
+    /** True when a size or time bound left some sessions or session text uncounted. */
+    partial: z.boolean(),
+  }),
+});
