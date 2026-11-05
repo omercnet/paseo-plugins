@@ -9,8 +9,8 @@ import { ompStoreKey } from "./omp-store-state";
 const SESSIONS_POLL_MS = 20_000;
 const PREVIEW_LIMIT = 20;
 
-function age(epochSeconds: number): string {
-  const seconds = Math.max(0, Math.floor(Date.now() / 1_000 - epochSeconds));
+function age(updatedAt: string): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(updatedAt)) / 1_000));
   if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
@@ -52,22 +52,22 @@ export function SessionsPopover(props: PluginButtonContentProps) {
     [layout.compact, theme],
   );
 
-  if (sessions.isLoading) return <Text style={styles.muted}>Loading omp history…</Text>;
-  if (sessions.error) return <Text style={styles.error}>Could not read omp history.</Text>;
+  if (sessions.isLoading) return <Text style={styles.muted}>Loading OMP sessions…</Text>;
+  if (sessions.error) return <Text style={styles.error}>Could not read OMP sessions.</Text>;
   const items = sessions.data?.sessions ?? [];
   if (items.length === 0)
-    return <Text style={styles.muted}>No omp prompts for this directory.</Text>;
+    return <Text style={styles.muted}>No OMP sessions for this directory.</Text>;
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
       <Text style={styles.muted}>{storeLabel(store)}</Text>
       {items.slice(0, PREVIEW_LIMIT).map((entry) => (
-        <View key={entry.id} style={styles.row}>
+        <View key={entry.sessionId} style={styles.row}>
           {entry.title ? <Text style={styles.title}>{entry.title}</Text> : null}
           <Text style={styles.prompt} numberOfLines={3}>
-            {`${entry.prompt}${entry.truncated ? "…" : ""}`}
+            {entry.prompt}
           </Text>
-          <Text style={styles.detail}>{age(entry.createdAt)}</Text>
+          {entry.updatedAt ? <Text style={styles.detail}>{age(entry.updatedAt)}</Text> : null}
         </View>
       ))}
       {items.length > PREVIEW_LIMIT ? (

@@ -34,12 +34,12 @@ async function fixture(name: string) {
   temporaryDirectories.push(root);
   await writeFile(join(root, "config.yml"), `theme:\n  dark: ${name}\n`);
   await writeFile(join(root, "settings.json"), JSON.stringify({ sessionDir: `sessions-${name}` }));
-  const history = new DatabaseSync(join(root, "history.db"));
-  history.exec(
-    "CREATE TABLE history (id INTEGER PRIMARY KEY, prompt TEXT, created_at INTEGER, cwd TEXT, session_id TEXT); CREATE TABLE session_titles (session_id TEXT PRIMARY KEY, title TEXT, updated_at INTEGER)",
+  const sessions = join(root, `sessions-${name}`, "-workspace");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `2026-01-01T00-00-00-000Z_session_${name}.jsonl`),
+    `${JSON.stringify({ type: "session", version: 3, id: `session_${name}`, cwd: "/workspace" })}\n${JSON.stringify({ type: "message", message: { role: "user", content: name } })}\n`,
   );
-  history.prepare("INSERT INTO history VALUES (1, ?, 1000, '/workspace', NULL)").run(name);
-  history.close();
   const quota = new DatabaseSync(join(root, "agent.db"));
   quota.exec(
     "CREATE TABLE usage_history (id INTEGER, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER)",
@@ -74,7 +74,7 @@ test("concurrent store scopes isolate config, history, quota, memory and session
       withOmpStore({ agentDir }, async () => {
         await new Promise((resolve) => setTimeout(resolve, index === 0 ? 8 : 1));
         const config = await resolveListOmpConfig({});
-        const history = resolveListOmpSessions({ cwd: "/workspace" });
+        const history = await resolveListOmpSessions({ cwd: "/workspace" });
         const quota = resolveListOmpQuotas({});
         const memory = await resolveListOmpMemory({ cwd: "/workspace" });
         return {
