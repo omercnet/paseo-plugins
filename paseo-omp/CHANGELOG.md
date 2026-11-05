@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.4.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.3.0...paseo-omp-v5.4.0) (2026-11-05)
+
+
+### Features
+
+* **paseo-omp:** add MCPs tab with browser authorization ([#497](https://github.com/omercnet/paseo-plugins/issues/497)) ([e799d2a](https://github.com/omercnet/paseo-plugins/commit/e799d2a3552cbb19f5b5c346c438c33abc390bd5))
+
 ## [5.3.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.2.4...paseo-omp-v5.3.0) (2026-11-03)
 
 
