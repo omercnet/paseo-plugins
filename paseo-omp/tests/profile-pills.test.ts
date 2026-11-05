@@ -20,6 +20,7 @@ vi.mock("../client/provider-image", () => ({ OmpImageTimeline: () => null }));
 vi.mock("../client/quota-popover", () => ({ QuotaPopover: () => null }));
 vi.mock("../client/sessions-popover", () => ({ SessionsPopover: () => null }));
 vi.mock("../client/subagents-strip", () => ({ OmpSubagentStrip: () => null }));
+vi.mock("../client/rule-notice", () => ({ OmpRuleNoticeRow: () => null }));
 
 import contribute from "../index.client";
 import { listOmpQuotas } from "../shared/quota";

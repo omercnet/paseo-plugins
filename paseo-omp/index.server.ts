@@ -31,6 +31,7 @@ import { OmpPublicError } from "./server/provider/security";
 import { OmpSessionLimit } from "./server/provider/session-limit";
 import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
 import { resolveListOmpQuotas } from "./server/quota";
+import { registerOmpRuleNotices } from "./server/rule-notices";
 import { resolveListOmpSessions } from "./server/sessions";
 import {
   OmpSubagentControlRegistry,
@@ -208,6 +209,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(steerOmpSubagent, (input) =>
     resolveSteerOmpSubagent(input, subagentControlRegistry),
   );
+  const removeRuleNotices = registerOmpRuleNotices(server);
   const removeSessionOpenHook = server.before("agent.session_open", ({ request }) => {
     if (request.provider !== "omp-plugin" && !request.provider.startsWith("omp-plugin-")) return;
     return withOmpSessionOpenEnv(request);
@@ -228,6 +230,7 @@ export default function contribute(server: PluginServerContext) {
     mcps.stop();
     removeSessionLimitListener();
     subagentControlRegistry.clear();
+    removeRuleNotices();
     removeSessionOpenHook();
   };
 }

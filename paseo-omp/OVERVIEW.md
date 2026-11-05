@@ -14,6 +14,7 @@ OMP adds an agent provider for the OMP coding agent, plus an OMP sidebar and wor
 - List the MCP servers OMP connects to, add, test, enable, disable or remove them, and authorize a remote server through your browser, from the **MCPs** tab.
 - An **MCP** composer control runs OMP's MCP management in the current session, with authorization prompts shown in the chat.
 - While OMP subagents run, a row under each `task` card in the conversation lets you steer one with a message or stop it after confirmation. It needs OMP 18.4.9 or newer.
+- When an OMP rule fires during a turn of an agent on Paseo's bundled `omp` provider, a notice under that turn names the rule and the text it matched. The plugin reads this from the agent's OMP session file, which that provider does not report.
 - OMP agents can call Paseo's orchestration tools with the optional `serverId` argument and `list_hosts` to delegate work to other connected Paseo hosts.
 
 ## Reads and sends
