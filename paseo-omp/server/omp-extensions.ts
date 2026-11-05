@@ -172,8 +172,9 @@ async function scanRoot(root: string, level: Level): Promise<Found[]> {
 
 /**
  * What OMP would discover in the documented folders: the workspace's `.omp/` (project level) and
- * the agent directory (user level). It does not read `.gitignore`, `package.json` manifests or
- * the `extensions` setting, so it is a close inventory, not OMP's own list.
+ * the agent directory (user level). It does not read `.gitignore` or the `extensions` setting, and
+ * it leaves out folders whose `package.json` declares entries, so it is a close inventory, not
+ * OMP's own list.
  */
 export async function scanExtensions(cwd: string | undefined, agentDir: string): Promise<Found[]> {
   const projectRoot = cwd ? join(cwd, ".omp") : null;
