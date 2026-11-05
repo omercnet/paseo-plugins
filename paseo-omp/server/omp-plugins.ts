@@ -711,20 +711,23 @@ export function parseOmpCatalog(stdout: string, marketplace: string): OmpCatalog
     throw new Error("OMP returned an invalid plugin catalog");
   }
   const plugins: OmpCatalogState["plugins"] = [];
+  let current: OmpCatalogState["plugins"][number] | null = null;
   for (const line of lines) {
     const entry = /^ {2}(\S+)$/u.exec(line);
     if (entry?.[1]) {
       const [name, version] = entry[1].split("@");
-      const id = OmpMarketplacePluginIdSchema.safeParse(`${name}@${marketplace}`);
-      if (!id.success) continue;
-      plugins.push({ id: id.data, version: boundedText(version, 128), description: null });
+      const id = `${name}@${marketplace}`;
+      // OMP allows mixed-case names and caps the assembled id at 128 characters.
+      const valid = OmpMarketplaceNameSchema.safeParse(name).success && id.length <= 128;
+      current = valid ? { id, version: boundedText(version, 128), description: null } : null;
+      if (!current) continue;
+      plugins.push(current);
       if (plugins.length === OMP_CATALOG_PLUGIN_LIMIT) break;
       continue;
     }
     const description = /^ {4}(\S.*)$/u.exec(line);
-    const last = plugins.at(-1);
-    if (description?.[1] && last && last.description === null) {
-      last.description = boundedText(description[1].trim(), DESCRIPTION_LIMIT);
+    if (description?.[1] && current && current.description === null) {
+      current.description = boundedText(description[1].trim(), DESCRIPTION_LIMIT);
     }
   }
   return plugins;

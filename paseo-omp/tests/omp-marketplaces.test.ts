@@ -97,6 +97,28 @@ describe("OMP marketplace catalog", () => {
     expect(() => parseOmpCatalog("Failed to discover plugins", "demo-catalog")).toThrow();
   });
 
+  test("keeps mixed-case plugin names and enforces the 128-character id limit", () => {
+    const long = "a".repeat(64);
+    expect(parseOmpCatalog("Available Plugins (m):\n\n  MixedCase@2.0\n    Upper\n", "m")).toEqual([
+      { id: "MixedCase@m", version: "2.0", description: "Upper" },
+    ]);
+    const marketplace = "b".repeat(63);
+    expect(parseOmpCatalog(`Available Plugins (x):\n\n  ${long}\n`, marketplace)).toEqual([
+      { id: `${long}@${marketplace}`, version: null, description: null },
+    ]);
+    expect(parseOmpCatalog(`Available Plugins (x):\n\n  ${long}\n`, `${marketplace}b`)).toEqual([]);
+    expect(parseOmpCatalog(`Available Plugins (x):\n\n  ${long}x\n`, marketplace)).toEqual([]);
+  });
+
+  test("does not attach a skipped entry's description to the previous plugin", () => {
+    expect(
+      parseOmpCatalog(
+        "Available Plugins (m):\n\n  bare\n  bad_name\n    Belongs to the skipped entry\n",
+        "m",
+      ),
+    ).toEqual([{ id: "bare@m", version: null, description: null }]);
+  });
+
   test("asks OMP for exactly the selected marketplace", async () => {
     const calls: string[][] = [];
     const state = await browseOmpMarketplaceWithDependencies(

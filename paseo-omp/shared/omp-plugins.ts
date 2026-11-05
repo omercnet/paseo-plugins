@@ -298,7 +298,7 @@ export const listOmpMarketplaces = defineRpc({
 
 export const OmpCatalogPluginSchema = z
   .object({
-    id: z.string().min(3).max(129),
+    id: z.string().min(3).max(128),
     version: z.string().min(1).max(128).nullable(),
     description: z.string().max(1_024).nullable(),
   })

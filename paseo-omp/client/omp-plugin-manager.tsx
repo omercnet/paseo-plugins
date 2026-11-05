@@ -724,6 +724,10 @@ export function OmpPluginManagerSection({
     mutationFn: (input: OmpMarketplaceMutation) => mutateMarketplace({ ...input, store }),
     onSuccess: (result, input) => {
       queryClient.setQueryData([...MARKETPLACES_QUERY_KEY, ompStoreKey(store)], result.state);
+      void queryClient.invalidateQueries({
+        queryKey: [...MARKETPLACES_QUERY_KEY, "catalog", ompStoreKey(store)],
+        refetchType: "none",
+      });
       setNotice({ tone: result.ok ? "success" : "error", text: result.message });
       if (result.ok && input.action === "add") setCatalogSource("");
       if (result.ok && input.action === "remove" && input.marketplace === browsing) {
