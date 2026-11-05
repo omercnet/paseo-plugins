@@ -1,10 +1,16 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
-import { copyText, Icon } from "@getpaseo/plugin/client/ui";
-import { useQuery } from "@tanstack/react-query";
+import { copyText, Icon, useToast } from "@getpaseo/plugin/client/ui";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
-import { listOmpRules, type OmpRule, type OmpRuleKind } from "../shared/omp-rules";
+import { Pressable, Switch, Text, View } from "react-native";
+import {
+  listOmpRules,
+  type OmpRule,
+  type OmpRuleKind,
+  setOmpRuleEnabled,
+} from "../shared/omp-rules";
 import type { OmpStore } from "../shared/omp-store";
+import { describe } from "./omp-accounts-section";
 import type { OmpConfigStyles } from "./omp-config-styles";
 import { ompStoreKey } from "./omp-store-state";
 
@@ -16,6 +22,8 @@ const COPY_LABELS: Record<CopyState, string> = {
   copied: "Copied",
   failed: "Copy failed",
 };
+
+const RULES_KEY = ["paseo-omp", "rules"] as const;
 
 const GROUPS: readonly { kind: OmpRuleKind; title: string; empty: string }[] = [
   { kind: "watch", title: "Watch", empty: "No watch rules" },
@@ -50,7 +58,20 @@ function Detail({
   );
 }
 
-function RuleRow({ styles, rule }: { styles: OmpConfigStyles; rule: OmpRule }) {
+interface RuleSwitch {
+  busy: boolean;
+  toggle: (name: string, enabled: boolean) => void;
+}
+
+function RuleRow({
+  styles,
+  rule,
+  rules,
+}: {
+  styles: OmpConfigStyles;
+  rule: OmpRule;
+  rules: RuleSwitch;
+}) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
   async function copyPath() {
     try {
@@ -75,6 +96,12 @@ function RuleRow({ styles, rule }: { styles: OmpConfigStyles; rule: OmpRule }) {
           {rule.name}
         </Text>
         <Text style={styles.source}>{sourceLabel(rule)}</Text>
+        <Switch
+          accessibilityLabel={`Rule ${rule.name} is on`}
+          disabled={rules.busy}
+          value
+          onValueChange={() => rules.toggle(rule.name, false)}
+        />
       </View>
       {rule.description ? <Text style={styles.settingDescription}>{rule.description}</Text> : null}
       {details.map(([label, values]) =>
@@ -102,10 +129,12 @@ function BuiltinRules({
   theme,
   styles,
   rules,
+  rulesSwitch,
 }: {
   theme: Theme;
   styles: OmpConfigStyles;
   rules: OmpRule[];
+  rulesSwitch: RuleSwitch;
 }) {
   const [expanded, setExpanded] = useState(false);
   if (rules.length === 0) return null;
@@ -126,7 +155,9 @@ function BuiltinRules({
         <Text style={styles.rowValue}>Built-in rules ({rules.length})</Text>
       </Pressable>
       {expanded
-        ? rules.map((rule) => <RuleRow key={rule.name} styles={styles} rule={rule} />)
+        ? rules.map((rule) => (
+            <RuleRow key={rule.name} styles={styles} rule={rule} rules={rulesSwitch} />
+          ))
         : null}
     </>
   );
@@ -144,10 +175,27 @@ export function OmpRulesSection({
   store?: OmpStore;
 }) {
   const loadRules = useRpc(listOmpRules);
+  const setEnabled = useRpc(setOmpRuleEnabled);
+  const toast = useToast();
+  const queryClient = useQueryClient();
   const rules = useQuery({
-    queryKey: ["paseo-omp", "rules", ompStoreKey(store), cwd ?? "global"],
+    queryKey: [...RULES_KEY, ompStoreKey(store), cwd ?? "global"],
     queryFn: () => loadRules({ store, ...(cwd ? { cwd } : {}) }),
   });
+  const toggle = useMutation({
+    mutationKey: [...RULES_KEY, "toggle"],
+    mutationFn: (change: { name: string; enabled: boolean }) =>
+      setEnabled({ store, ...(cwd ? { cwd } : {}), ...change }),
+    onSuccess: async (result) => {
+      if (result.status === "error") toast.error(result.message);
+      await queryClient.invalidateQueries({ queryKey: RULES_KEY });
+    },
+    onError: (error) => toast.error(describe(error)),
+  });
+  const rulesSwitch: RuleSwitch = {
+    busy: toggle.isPending,
+    toggle: (name, enabled) => toggle.mutate({ name, enabled }),
+  };
   const list = rules.data;
   return (
     <>
@@ -186,9 +234,14 @@ export function OmpRulesSection({
                 <Text style={styles.cardTitle}>{group.title}</Text>
                 {members.length === 0 ? <Text style={styles.muted}>{group.empty}</Text> : null}
                 {own.map((rule) => (
-                  <RuleRow key={rule.name} styles={styles} rule={rule} />
+                  <RuleRow key={rule.name} styles={styles} rule={rule} rules={rulesSwitch} />
                 ))}
-                <BuiltinRules theme={theme} styles={styles} rules={builtin} />
+                <BuiltinRules
+                  theme={theme}
+                  styles={styles}
+                  rules={builtin}
+                  rulesSwitch={rulesSwitch}
+                />
                 {group.kind === "watch" && !list.builtinRules ? (
                   <Text style={styles.muted}>Built-in rules are off (ttsr.builtinRules)</Text>
                 ) : null}
@@ -203,10 +256,16 @@ export function OmpRulesSection({
               <>
                 <Text style={styles.muted}>Listed in ttsr.disabledRules, so OMP skips them</Text>
                 {list.disabled.map((name) => (
-                  <View key={name} style={styles.setting}>
+                  <View key={name} style={[styles.setting, styles.settingHeader]}>
                     <Text selectable style={styles.settingValue}>
                       {name}
                     </Text>
+                    <Switch
+                      accessibilityLabel={`Rule ${name} is off`}
+                      disabled={rulesSwitch.busy}
+                      value={false}
+                      onValueChange={() => rulesSwitch.toggle(name, true)}
+                    />
                   </View>
                 ))}
               </>
