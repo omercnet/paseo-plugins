@@ -1005,7 +1005,7 @@ function OmpConfigContent({
   const agentsQuery = useQuery({
     queryKey: ["paseo-omp", "agents", ompStoreKey(store), cwd ?? "global"],
     queryFn: () => loadAgents(context),
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
   });
   const agentCatalog: OmpAgentCatalogState = {
     agents: agentsQuery.data?.agents ?? [],
@@ -1249,19 +1249,26 @@ function OmpConfigContent({
                 accessibilityLabel="Refresh OMP configuration"
                 style={styles.refresh}
                 disabled={
-                  configQuery.isFetching || settingsQuery.isFetching || modelsQuery.isFetching
+                  configQuery.isFetching ||
+                  settingsQuery.isFetching ||
+                  modelsQuery.isFetching ||
+                  agentsQuery.isFetching
                 }
                 onPress={() => {
                   void Promise.all([
                     configQuery.refetch(),
                     settingsQuery.refetch(),
                     modelsQuery.refetch(),
+                    agentsQuery.refetch(),
                   ]);
                 }}
               >
                 <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
                 <Text style={styles.refreshLabel}>
-                  {configQuery.isFetching || settingsQuery.isFetching || modelsQuery.isFetching
+                  {configQuery.isFetching ||
+                  settingsQuery.isFetching ||
+                  modelsQuery.isFetching ||
+                  agentsQuery.isFetching
                     ? "Refreshing…"
                     : "Refresh"}
                 </Text>
