@@ -186,7 +186,8 @@ describe("plugin server bundle", () => {
           },
           registerProvider: (provider: ProviderRegistration) => providers.push(provider),
         });
-        expect(handlers).toHaveLength(46);
+        const names = handlers.map(([contract]) => contract.name);
+        expect(new Set(names).size).toBe(names.length);
         expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-models");
         expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-rules");
         expect(handlers.map(([contract]) => contract.name)).toEqual(
