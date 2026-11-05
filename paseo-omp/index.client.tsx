@@ -132,6 +132,7 @@ export function registerConfig(
     return (
       <OmpConfigSurface
         {...props}
+        focusRule={props.params.rule}
         onComposerPillSettingsChange={onComposerPillSettingsChange}
         store={current}
         onStoreChange={(store) => {
@@ -241,7 +242,12 @@ export default function contribute(client: PluginClientContext) {
     kind: OMP_RULE_NOTICE_KIND,
     version: 1,
     schema: ompRuleNoticeSchema,
-    Component: OmpRuleNoticeRow,
+    Component: (props) => (
+      <OmpRuleNoticeRow
+        {...props}
+        openRule={(rule) => client.openScreen({ screenId: CONFIG_SCREEN_ID, params: { rule } })}
+      />
+    ),
   });
   const removeLspDiagnosticsRenderer = client.addTimelineRenderer({
     kind: OMP_LSP_DIAGNOSTICS_KIND,
