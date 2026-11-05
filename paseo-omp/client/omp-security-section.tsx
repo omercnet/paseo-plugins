@@ -10,7 +10,7 @@ import { Text, View } from "react-native";
 import { listOmpSecurity, type OmpSecurityScan } from "../shared/omp-security";
 import type { OmpStore } from "../shared/omp-store";
 import type { OmpConfigStyles } from "./omp-config-styles";
-import { severityText } from "./omp-security-state";
+import { SECURITY_QUERY_KEY, severityText } from "./omp-security-state";
 import { ompStoreKey } from "./omp-store-state";
 
 const INFO =
@@ -35,7 +35,7 @@ export function OmpSecuritySection({
 }) {
   const load = useRpc(listOmpSecurity);
   const security = useQuery({
-    queryKey: ["paseo-omp", "security", ompStoreKey(store), cwd],
+    queryKey: [...SECURITY_QUERY_KEY, ompStoreKey(store), cwd],
     queryFn: () => load({ store, cwd }),
     staleTime: STALE_MS,
     refetchOnWindowFocus: false,
