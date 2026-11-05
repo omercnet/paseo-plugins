@@ -82,20 +82,30 @@ describe("OMP settings inventory", () => {
     expect(categorizeOmpSetting("session.maxCost")).toBe("budget");
   });
 
-  test("describes the cap fields OMP lists without text, and keeps OMP's own text otherwise", () => {
+  test("describes the cap fields OMP lists without text, and keeps OMP's own text elsewhere", () => {
     const catalog = parseOmpSettingsList({
       "session.maxCost": { type: "number", description: "" },
-      "session.warnCost": { type: "number", description: "From OMP" },
+      "retry.enabled": { type: "boolean", description: "From OMP" },
     });
 
-    const [maxCost, warnCost] = catalog.settings;
+    const [maxCost, retry] = catalog.settings;
     expect(maxCost).toEqual({
       path: "session.maxCost",
       type: "number",
       description: expect.stringContaining("Stop a session"),
     });
-    expect(maxCost && "value" in maxCost ? maxCost.value : undefined).toBeUndefined();
-    expect(warnCost?.description).toBe("From OMP");
+    expect(retry?.description).toBe("From OMP");
+  });
+
+  test("replaces OMP's secrets wording with the caveats and the secrets.yml pointer", () => {
+    const catalog = parseOmpSettingsList({
+      "secrets.enabled": { value: true, type: "boolean", description: "Obfuscate secrets" },
+    });
+
+    const [secrets] = catalog.settings;
+    expect(secrets?.description).toContain("Best effort, not a guarantee");
+    expect(secrets?.description).toContain("secrets.yml");
+    expect(secrets?.description).not.toContain("Obfuscate secrets");
   });
 
   test("formats dotted camel-case paths as readable labels", () => {

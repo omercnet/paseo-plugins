@@ -7,7 +7,7 @@ import { parseDocument, parse as parseYaml } from "yaml";
 import {
   isOmpStructuredSettingPath,
   type listOmpSettings,
-  OMP_SETTING_FALLBACK_DESCRIPTIONS,
+  OMP_SETTING_DESCRIPTIONS,
   OMP_SETTINGS_CATALOG_VERSION,
   type OmpSetting,
   type OmpSettingType,
@@ -193,9 +193,8 @@ export function parseOmpSettingsList(raw: unknown): ParsedOmpSettings {
       path,
       type: parsedType.data,
       description:
-        typeof entry.description === "string" && entry.description
-          ? entry.description
-          : (OMP_SETTING_FALLBACK_DESCRIPTIONS[path] ?? ""),
+        OMP_SETTING_DESCRIPTIONS[path] ??
+        (typeof entry.description === "string" ? entry.description : ""),
       ...(redacted
         ? { redacted: true, ...(configured === undefined ? {} : { configured }) }
         : { value: entry.value }),
