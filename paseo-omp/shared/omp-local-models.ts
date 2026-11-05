@@ -32,3 +32,13 @@ export const downloadOmpLocalModel = defineRpc({
   input: z.object({ store: OmpStoreSchema.optional(), key: OmpLocalModelKeySchema }).strict(),
   output: z.object({ outcome: z.enum(["started", "busy", "unknown-model", "unavailable"]) }),
 });
+
+/** The roles record with `role` pointed at `selector`, or removed when `selector` is null. */
+export function withLocalModelRole(
+  roles: Readonly<Record<string, unknown>>,
+  role: string,
+  selector: string | null,
+): Record<string, unknown> {
+  const { [role]: _replaced, ...rest } = roles;
+  return selector === null ? rest : { ...rest, [role]: selector };
+}

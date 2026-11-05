@@ -1,10 +1,16 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   downloadOmpLocalModelWithDependencies,
   listOmpLocalModelsWithDependencies,
   type OmpLocalModelsDependencies,
+  tinyModelPath,
 } from "../server/omp-local-models";
 import type { BoundedRun } from "../server/provider-diagnostics";
+import { withLocalModelRole } from "../shared/omp-local-models";
 
 function finished(stdout: string, exitCode = 0): BoundedRun {
   return {
@@ -49,7 +55,7 @@ function harness(downloadResult: Promise<BoundedRun> = Promise.resolve(finished(
 }
 
 beforeEach(() => {
-  vi.stubEnv("PI_CODING_AGENT_DIR", `/tmp/omp-local-models-${Math.random()}`);
+  vi.stubEnv("PI_CODING_AGENT_DIR", join(tmpdir(), `omp-local-models-${randomUUID()}`));
 });
 
 afterEach(() => {
@@ -121,5 +127,41 @@ describe("OMP local models", () => {
     expect(
       await downloadOmpLocalModelWithDependencies({ key: "llama3.2:3b" }, dependencies),
     ).toEqual({ outcome: "started" });
+  });
+
+  test("assigns and clears a role without touching the others", () => {
+    const roles = { default: "a/b", tiny: "online/x" };
+    expect(withLocalModelRole(roles, "tiny", "local/falcon-h1-90m")).toEqual({
+      default: "a/b",
+      tiny: "local/falcon-h1-90m",
+    });
+    expect(withLocalModelRole(roles, "memory", "local/lfm2-1.2b")).toEqual({
+      ...roles,
+      memory: "local/lfm2-1.2b",
+    });
+    expect(withLocalModelRole(roles, "tiny", null)).toEqual({ default: "a/b" });
+  });
+
+  test("finds the cache under the agent folder, or under the XDG cache folder for the default agent folder", async () => {
+    expect(tinyModelPath("org/repo")).toMatch(/cache[\\/]tiny-models[\\/]org[\\/]repo$/u);
+
+    if (process.platform === "win32") return;
+    const root = await mkdtemp(join(tmpdir(), "omp-xdg-"));
+    try {
+      await mkdir(join(root, "xdg", "omp"), { recursive: true });
+      vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+      vi.stubEnv("PASEO_OMP_AGENT_DIR", undefined);
+      vi.stubEnv("OMP_AGENT_DIR", undefined);
+      vi.stubEnv("OMP_PROFILE", undefined);
+      vi.stubEnv("PI_PROFILE", undefined);
+      vi.stubEnv("PI_CONFIG_DIR", undefined);
+      vi.stubEnv("HOME", join(root, "home"));
+      vi.stubEnv("XDG_CACHE_HOME", join(root, "xdg"));
+      expect(tinyModelPath("org/repo")).toBe(
+        join(root, "xdg", "omp", "tiny-models", "org", "repo"),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

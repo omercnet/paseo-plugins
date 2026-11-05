@@ -6,6 +6,7 @@ import {
   downloadOmpLocalModel,
   listOmpLocalModels,
   type OmpLocalModel,
+  withLocalModelRole,
 } from "../shared/omp-local-models";
 import { updateOmpSettings } from "../shared/omp-settings";
 import type { OmpStore } from "../shared/omp-store";
@@ -110,8 +111,7 @@ export function OmpLocalModelsSection({
   const failed = start.data && start.data.outcome !== "started";
 
   function assignRole(role: string, selector: string | null) {
-    const { [role]: _removed, ...rest } = modelRoles;
-    assign.mutate(selector === null ? rest : { ...rest, [role]: selector });
+    assign.mutate(withLocalModelRole(modelRoles, role, selector));
   }
 
   return (
@@ -130,6 +130,7 @@ export function OmpLocalModelsSection({
         {models.data && !models.data.available ? (
           <Text style={styles.error}>OMP could not list its local models.</Text>
         ) : null}
+        {start.error ? <Text style={styles.error}>Could not start the download.</Text> : null}
         {failed ? (
           <Text style={styles.error}>
             {start.data?.outcome === "busy"

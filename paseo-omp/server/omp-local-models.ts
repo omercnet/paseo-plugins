@@ -5,7 +5,7 @@ import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { z } from "zod";
 import type { downloadOmpLocalModel, listOmpLocalModels } from "../shared/omp-local-models";
 import { resolveOmpExecutable } from "./omp-settings";
-import { currentOmpEnvironment, ompAgentDir } from "./paths";
+import { currentOmpEnvironment, ompAgentDir, ompCacheDir } from "./paths";
 import {
   type BoundedRun,
   buildStatefulCommandEnv,
@@ -38,6 +38,40 @@ export interface OmpLocalModelsDependencies {
   isCached(repo: string): Promise<boolean>;
 }
 
+/** Where a download from a network that needs a proxy or a private CA still works. */
+const NETWORK_VARIABLES = [
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "https_proxy",
+  "http_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "NODE_EXTRA_CA_CERTS",
+];
+
+function downloadEnvironment(): NodeJS.ProcessEnv {
+  const environment = currentOmpEnvironment();
+  const network = NETWORK_VARIABLES.flatMap((name) =>
+    environment[name] === undefined ? [] : [[name, environment[name]] as const],
+  );
+  return { ...buildStatefulCommandEnv(environment), ...Object.fromEntries(network) };
+}
+
+/**
+ * OMP keeps its tiny models under the agent folder's cache, or under the XDG cache folder when
+ * the default agent folder is in use and that folder exists.
+ */
+export function tinyModelPath(repo: string): string {
+  const cacheRoot = ompCacheDir();
+  const agentDir = ompAgentDir();
+  const base =
+    cacheRoot === agentDir
+      ? join(agentDir, "cache", "tiny-models")
+      : join(cacheRoot, "tiny-models");
+  return join(base, ...repo.split("/"));
+}
+
 const DEFAULT_DEPENDENCIES: OmpLocalModelsDependencies = {
   resolveExecutable: resolveOmpExecutable,
   run: (executable, args, timeoutMs) =>
@@ -45,7 +79,7 @@ const DEFAULT_DEPENDENCIES: OmpLocalModelsDependencies = {
       defaultSpawn,
       executable,
       args,
-      buildStatefulCommandEnv(currentOmpEnvironment()),
+      downloadEnvironment(),
       timeoutMs,
       KILL_GRACE_MS,
       MAX_OUTPUT_BYTES,
@@ -53,9 +87,7 @@ const DEFAULT_DEPENDENCIES: OmpLocalModelsDependencies = {
     ),
   async isCached(repo) {
     try {
-      return (
-        await stat(join(ompAgentDir(), "cache", "tiny-models", ...repo.split("/")))
-      ).isDirectory();
+      return (await stat(tinyModelPath(repo))).isDirectory();
     } catch {
       return false;
     }
