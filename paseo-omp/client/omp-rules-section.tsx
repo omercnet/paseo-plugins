@@ -12,6 +12,7 @@ import {
 import type { OmpStore } from "../shared/omp-store";
 import { describe } from "./omp-accounts-section";
 import type { OmpConfigStyles } from "./omp-config-styles";
+import { OmpRuleTest } from "./omp-rule-test";
 import { ompStoreKey } from "./omp-store-state";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -212,6 +213,7 @@ export function OmpRulesSection({
         </Text>
         <Text style={styles.muted}>Rule settings (ttsr.*) are in the Configuration tab.</Text>
       </View>
+      <OmpRuleTest theme={theme} styles={styles} cwd={cwd} store={store} />
       {rules.isLoading ? <Text style={styles.muted}>Loading rules...</Text> : null}
       {rules.error ? (
         <Text accessibilityRole="alert" style={styles.error}>

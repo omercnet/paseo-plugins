@@ -64,3 +64,48 @@ export const setOmpRuleEnabled = defineRpc({
     z.object({ status: z.literal("error"), message: z.string() }),
   ]),
 });
+
+export const MAX_RULE_TEST_CHARS = 20_000;
+
+export const OmpRuleTestSourceSchema = z.enum(["text", "thinking", "tool"]);
+export type OmpRuleTestSource = z.infer<typeof OmpRuleTestSourceSchema>;
+
+export const OmpRuleTestHitSchema = z.object({
+  name: z.string(),
+  provider: z.string(),
+  path: z.string(),
+  /** The rule's own patterns that matched the snippet. */
+  regex: z.array(z.string()),
+  ast: z.array(z.string()),
+});
+export type OmpRuleTestHit = z.infer<typeof OmpRuleTestHitSchema>;
+
+/** Runs `omp ttsr test`: which rules would fire on a snippet, in this workspace or the user scope. */
+export const testOmpRules = defineRpc({
+  name: "paseo-omp.test-rules",
+  input: z
+    .object({
+      store: OmpStoreSchema.optional(),
+      cwd: OmpWorkspaceCwdSchema.optional(),
+      snippet: z.string().min(1).max(MAX_RULE_TEST_CHARS),
+      /** The file the snippet pretends to come from, for scope and glob matching. */
+      path: z
+        .string()
+        .trim()
+        .min(1)
+        .max(1_024)
+        .refine((path) => !path.includes("\0"), "The path cannot hold a null character")
+        .optional(),
+      source: OmpRuleTestSourceSchema.optional(),
+    })
+    .strict(),
+  output: z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("ready"),
+      /** How many rules OMP checked. */
+      evaluated: z.number().int().nonnegative(),
+      triggered: z.array(OmpRuleTestHitSchema),
+    }),
+    z.object({ status: z.literal("error"), message: z.string() }),
+  ]),
+});
