@@ -21,6 +21,7 @@ const MAX_ROUTING_ENTRIES = 64;
 const MAX_FALLBACK_CHAIN_LENGTH = 16;
 const MAX_AGENT_MODEL_CHOICES = 8;
 const MAX_MODEL_SELECTOR_LENGTH = 513;
+const MAX_BASH_RULES = 128;
 
 function containsControlCharacter(value: string): boolean {
   for (const character of value) {
@@ -143,6 +144,44 @@ export const OmpDisabledAgentsSchema = z
   .max(MAX_ROUTING_ENTRIES)
   .refine((value) => new Set(value).size === value.length, "Disabled agents must be unique.");
 
+export const OmpToolApprovalSchema = z.enum(["allow", "prompt", "deny"]);
+export type OmpToolApproval = z.infer<typeof OmpToolApprovalSchema>;
+
+export const OmpToolPoliciesSchema = z
+  .record(
+    z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/u, "Tool names use letters, digits and _ . : -."),
+    OmpToolApprovalSchema,
+  )
+  .refine((value) => Object.keys(value).length <= MAX_ROUTING_ENTRIES, "Too many tool policies.");
+
+export const OmpBashRuleSchema = z
+  .object({
+    match: z
+      .string()
+      .min(1)
+      .max(512)
+      .refine((value) => !containsControlCharacter(value), "Rules cannot hold control characters."),
+    approval: OmpToolApprovalSchema,
+  })
+  .strict();
+export type OmpBashRule = z.infer<typeof OmpBashRuleSchema>;
+
+export const OmpBashRulesSchema = z.array(OmpBashRuleSchema).max(MAX_BASH_RULES);
+
+export const OmpRestrictedFoldersSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(1024)
+      .refine(
+        (value) => !containsControlCharacter(value),
+        "Folders cannot hold control characters.",
+      ),
+  )
+  .max(MAX_ROUTING_ENTRIES)
+  .refine((value) => new Set(value).size === value.length, "Restricted folders must be unique.");
+
 export const OMP_STRUCTURED_SETTING_PATHS = [
   "modelRoles",
   "retry.fallbackChains",
@@ -152,6 +191,9 @@ export const OMP_STRUCTURED_SETTING_PATHS = [
   "task.agentPrewalk",
   "task.agentAdvisor",
   "task.disabledAgents",
+  "tools.approval",
+  "bash.patterns",
+  "tools.restrictedFolders",
 ] as const;
 export type OmpStructuredSettingPath = (typeof OMP_STRUCTURED_SETTING_PATHS)[number];
 
@@ -173,6 +215,12 @@ export function parseOmpStructuredSettingValue(path: string, value: unknown): un
       return OmpAgentAdvisorSchema.safeParse(value).data;
     case "task.disabledAgents":
       return OmpDisabledAgentsSchema.safeParse(value).data;
+    case "tools.approval":
+      return OmpToolPoliciesSchema.safeParse(value).data;
+    case "bash.patterns":
+      return OmpBashRulesSchema.safeParse(value).data;
+    case "tools.restrictedFolders":
+      return OmpRestrictedFoldersSchema.safeParse(value).data;
     default:
       return undefined;
   }
@@ -182,9 +230,16 @@ export function isOmpStructuredSettingPath(path: string): path is OmpStructuredS
   return (OMP_STRUCTURED_SETTING_PATHS as readonly string[]).includes(path);
 }
 
+const ARRAY_STRUCTURED_SETTING_PATHS: readonly string[] = [
+  "cycleOrder",
+  "task.disabledAgents",
+  "bash.patterns",
+  "tools.restrictedFolders",
+];
+
 /** The OMP value type each structured path must have to be editable. */
 export function structuredSettingType(path: OmpStructuredSettingPath): "array" | "record" {
-  return path === "cycleOrder" || path === "task.disabledAgents" ? "array" : "record";
+  return ARRAY_STRUCTURED_SETTING_PATHS.includes(path) ? "array" : "record";
 }
 
 export const OmpSettingSchema = z
@@ -196,6 +251,8 @@ export const OmpSettingSchema = z
     redacted: z.boolean().optional(),
     configured: z.boolean().optional(),
     workspaceOverride: z.boolean().optional(),
+    /** Workspace scope only: the user-level value of a setting whose project value merges with it. */
+    userValue: z.unknown().optional(),
   })
   .strict();
 export type OmpSetting = z.infer<typeof OmpSettingSchema>;
@@ -386,9 +443,24 @@ const OMP_TOOL_SWITCHES: readonly { path: string; label: string; description: st
 ];
 
 const TOOL_SWITCH_LABELS = new Map(OMP_TOOL_SWITCHES.map(({ path, label }) => [path, label]));
+const SETTING_LABELS = new Map([
+  ...TOOL_SWITCH_LABELS,
+  ["tools.approvalMode", "Approval mode (not used by Paseo)"],
+]);
+
+const OMP_TOOL_POLICY_PATHS: readonly string[] = [
+  "tools.approval",
+  "bash.patterns",
+  "tools.restrictedFolders",
+];
+
+/** Settings the Tool policy card edits in place of the generic list. */
+export function isOmpToolPolicyPath(path: string): boolean {
+  return OMP_TOOL_POLICY_PATHS.includes(path);
+}
 
 export function categorizeOmpSetting(path: string): OmpSettingCategory {
-  if (TOOL_SWITCH_LABELS.has(path)) return "tools";
+  if (TOOL_SWITCH_LABELS.has(path) || isOmpToolPolicyPath(path)) return "tools";
   for (const category of OMP_SETTING_CATEGORIES) {
     if (CATEGORY_PREFIXES[category].some((prefix) => path === prefix || path.startsWith(prefix))) {
       return category;
@@ -398,8 +470,8 @@ export function categorizeOmpSetting(path: string): OmpSettingCategory {
 }
 
 export function formatOmpSettingLabel(path: string): string {
-  const switchLabel = TOOL_SWITCH_LABELS.get(path);
-  if (switchLabel) return switchLabel;
+  const settingLabel = SETTING_LABELS.get(path);
+  if (settingLabel) return settingLabel;
   const leaf = path.split(".").at(-1) ?? path;
   const words = leaf
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -421,6 +493,8 @@ export function orderOmpToolSettings(settings: readonly OmpSetting[]): OmpSettin
 /** Plain wording that replaces OMP's own description (or its absence) for these settings. */
 export const OMP_SETTING_DESCRIPTIONS: Readonly<Record<string, string>> = {
   ...Object.fromEntries(OMP_TOOL_SWITCHES.map(({ path, description }) => [path, description])),
+  "tools.approvalMode":
+    "Has no effect on Paseo agents: Paseo launches OMP with its own approval mode (Full Access, Write Approval or Always Ask), and that flag overrides this setting. It only applies to OMP run outside Paseo.",
   "session.warnCost":
     "Warn once when a session's spend reaches this many US dollars. Leave unset for no warning. Applies to every session, including subagents, and takes effect on the next request.",
   "session.maxCost":
@@ -508,6 +582,27 @@ const OmpStructuredSettingChangeSchema = z.discriminatedUnion("path", [
       operation: z.literal("set"),
       path: z.literal("task.disabledAgents"),
       value: OmpDisabledAgentsSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("set"),
+      path: z.literal("tools.approval"),
+      value: OmpToolPoliciesSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("set"),
+      path: z.literal("bash.patterns"),
+      value: OmpBashRulesSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("set"),
+      path: z.literal("tools.restrictedFolders"),
+      value: OmpRestrictedFoldersSchema,
     })
     .strict(),
 ]);

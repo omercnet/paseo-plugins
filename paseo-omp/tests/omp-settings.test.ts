@@ -12,6 +12,7 @@ import {
   categorizeOmpSetting,
   formatOmpSettingLabel,
   OMP_SETTING_DESCRIPTIONS,
+  type OmpBashRule,
   OmpModelSelectorSchema,
   orderOmpToolSettings,
   updateOmpSettings,
@@ -126,6 +127,8 @@ describe("OMP settings inventory", () => {
       expect(categorizeOmpSetting(path)).toBe("tools");
       expect(formatOmpSettingLabel(path)).not.toBe("Enabled");
     }
+    expect(categorizeOmpSetting("bash.patterns")).toBe("tools");
+    expect(categorizeOmpSetting("bash.maxTimeout")).not.toBe("tools");
     expect(categorizeOmpSetting("lsp.requestTimeout")).toBe("files");
     expect(categorizeOmpSetting("task.maxConcurrency")).toBe("tasks");
   });
@@ -173,7 +176,7 @@ describe("OMP settings inventory", () => {
 });
 
 describe("OMP scalar settings updates", () => {
-  function harness() {
+  function harness(initial: Record<string, unknown> = {}) {
     const values: Record<string, { value: unknown; type: string; description: string }> = {
       "retry.enabled": { value: true, type: "boolean", description: "" },
       temperature: { value: 0.5, type: "number", description: "" },
@@ -186,7 +189,11 @@ describe("OMP scalar settings updates", () => {
       "task.agentPrewalk": { value: {}, type: "record", description: "" },
       "task.agentAdvisor": { value: {}, type: "record", description: "" },
       "task.disabledAgents": { value: ["user-agent"], type: "array", description: "" },
+      "tools.approval": { value: {}, type: "record", description: "" },
+      "bash.patterns": { value: [], type: "array", description: "" },
+      "tools.restrictedFolders": { value: [], type: "array", description: "" },
     };
+    for (const [path, value] of Object.entries(initial)) values[path].value = value;
     const commands: string[][] = [];
     const dependencies: OmpSettingsDependencies = {
       async resolveExecutable() {
@@ -416,6 +423,204 @@ describe("OMP scalar settings updates", () => {
     expect(commands.filter(([operation]) => operation === "set" || operation === "reset")).toEqual(
       [],
     );
+  });
+
+  test("writes tool policy rules in the order given and refuses values OMP would not honor", async () => {
+    const rules: OmpBashRule[] = [
+      { match: "git push --force*", approval: "deny" },
+      { match: "git push*", approval: "prompt" },
+      { match: "npm test*", approval: "allow" },
+    ];
+    const { commands, dependencies } = harness();
+    const listed = await listOmpSettingsWithDependencies({}, dependencies);
+    const result = await updateOmpSettingsWithDependencies(
+      {
+        revision: listed.revision ?? "",
+        changes: [
+          { operation: "set", path: "bash.patterns", value: rules },
+          { operation: "set", path: "tools.approval", value: { eval: "prompt", bash: "deny" } },
+          { operation: "set", path: "tools.restrictedFolders", value: ["~/secrets"] },
+        ],
+      },
+      dependencies,
+    );
+
+    expect(result.failed).toBeUndefined();
+    expect(commands).toContainEqual([
+      "set",
+      "bash.patterns",
+      "--json",
+      "--",
+      JSON.stringify(rules),
+    ]);
+    expect(commands).toContainEqual([
+      "set",
+      "tools.approval",
+      "--json",
+      "--",
+      JSON.stringify({ eval: "prompt", bash: "deny" }),
+    ]);
+    const change = (path: string, value: unknown) =>
+      updateOmpSettings.input.safeParse({
+        revision: "revision",
+        changes: [{ operation: "set", path, value }],
+      }).success;
+    expect(change("tools.approval", { bash: "ask" })).toBe(false);
+    expect(change("tools.approval", { "bad tool": "deny" })).toBe(false);
+    expect(change("bash.patterns", [{ match: "", approval: "deny" }])).toBe(false);
+    expect(change("bash.patterns", [{ match: "ls", approval: "block" }])).toBe(false);
+    expect(change("bash.patterns", [{ match: "ls", approval: "deny", extra: 1 }])).toBe(false);
+    expect(change("tools.restrictedFolders", ["~/a", "~/a"])).toBe(false);
+  });
+
+  test("replaces the whole project bash rule list and leaves the global list alone", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "paseo-omp-policy-"));
+    const { commands, dependencies } = harness();
+    try {
+      const listed = await listOmpSettingsWithDependencies({ cwd }, dependencies);
+      const rules: OmpBashRule[] = [{ match: "rm -rf*", approval: "deny" }];
+      const written = await updateOmpSettingsWithDependencies(
+        {
+          cwd,
+          revision: listed.revision ?? "",
+          changes: [{ operation: "set", path: "bash.patterns", value: rules }],
+        },
+        dependencies,
+      );
+
+      expect(written.appliedPaths).toEqual(["bash.patterns"]);
+      expect(await readFile(join(cwd, ".omp", "config.yml"), "utf8")).toContain("rm -rf*");
+      expect(commands.filter(([operation]) => operation === "set")).toEqual([]);
+
+      const reset = await updateOmpSettingsWithDependencies(
+        {
+          cwd,
+          revision: written.catalog.revision ?? "",
+          changes: [{ operation: "reset", path: "bash.patterns" }],
+        },
+        dependencies,
+      );
+      expect(reset.appliedPaths).toEqual(["bash.patterns"]);
+      expect(await readFile(join(cwd, ".omp", "config.yml"), "utf8")).not.toContain("rm -rf*");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("writes only the project's own tool approvals because a project record merges with the user's", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "paseo-omp-approval-"));
+    const { dependencies } = harness({ "tools.approval": { bash: "deny", eval: "prompt" } });
+    try {
+      const listed = await listOmpSettingsWithDependencies({ cwd }, dependencies);
+      expect(listed.settings.find((entry) => entry.path === "tools.approval")?.userValue).toEqual({
+        bash: "deny",
+        eval: "prompt",
+      });
+      const written = await updateOmpSettingsWithDependencies(
+        {
+          cwd,
+          revision: listed.revision ?? "",
+          changes: [
+            {
+              operation: "set",
+              path: "tools.approval",
+              value: { bash: "deny", eval: "allow", lsp: "deny" },
+            },
+          ],
+        },
+        dependencies,
+      );
+      expect(written.failed).toBeUndefined();
+      const text = await readFile(join(cwd, ".omp", "config.yml"), "utf8");
+      expect(text).toContain("lsp: deny");
+      expect(text).toContain("eval: allow");
+      expect(text).not.toContain("bash");
+
+      const unchanged = await updateOmpSettingsWithDependencies(
+        {
+          cwd,
+          revision: written.catalog.revision ?? "",
+          changes: [
+            {
+              operation: "set",
+              path: "tools.approval",
+              value: { bash: "deny", eval: "prompt" },
+            },
+          ],
+        },
+        dependencies,
+      );
+      expect(unchanged.failed).toBeUndefined();
+      expect(await readFile(join(cwd, ".omp", "config.yml"), "utf8")).not.toContain("approval");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("applies a project tool approval that matches the user's when the project file has no tools section", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "paseo-omp-approval-same-"));
+    await mkdir(join(cwd, ".omp"), { recursive: true });
+    await writeFile(join(cwd, ".omp", "config.yml"), "personality: concise\n");
+    const { dependencies } = harness({ "tools.approval": { bash: "deny" } });
+    try {
+      const listed = await listOmpSettingsWithDependencies({ cwd }, dependencies);
+      const result = await updateOmpSettingsWithDependencies(
+        {
+          cwd,
+          revision: listed.revision ?? "",
+          changes: [{ operation: "set", path: "tools.approval", value: { bash: "deny" } }],
+        },
+        dependencies,
+      );
+
+      expect(result.failed).toBeUndefined();
+      expect(await readFile(join(cwd, ".omp", "config.yml"), "utf8")).toBe(
+        "personality: concise\n",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses a project tool approval write when the user-level approvals cannot be read", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "paseo-omp-approval-fail-"));
+    const { dependencies } = harness({ "tools.approval": { bash: "deny" } });
+    const failingLookup: OmpSettingsDependencies = {
+      ...dependencies,
+      async runConfig(executable, args, directory) {
+        if (directory === tmpdir()) {
+          return {
+            outcome: "exited",
+            stdout: "",
+            truncated: false,
+            exitCode: 1,
+            signal: null,
+            spawnErrorCode: null,
+            cleanupFailed: false,
+          };
+        }
+        return dependencies.runConfig(executable, args, directory);
+      },
+    };
+    try {
+      const listed = await listOmpSettingsWithDependencies({ cwd }, failingLookup);
+      const result = await updateOmpSettingsWithDependencies(
+        {
+          cwd,
+          revision: listed.revision ?? "",
+          changes: [
+            { operation: "set", path: "tools.approval", value: { bash: "deny", lsp: "deny" } },
+          ],
+        },
+        failingLookup,
+      );
+
+      expect(result.failed?.path).toBe("tools.approval");
+      expect(result.appliedPaths).toEqual([]);
+      await expect(readFile(join(cwd, ".omp", "config.yml"), "utf8")).rejects.toThrow();
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   test("rejects stale revisions before running mutations", async () => {
