@@ -1,7 +1,6 @@
 import { constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   MAX_OMP_RULE_NOTICE_RULES,
   OMP_RULE_MATCH_MAX_LENGTH,
@@ -9,8 +8,9 @@ import {
   OMP_RULE_NOTICE_KIND,
   type OmpRuleNotice,
 } from "../shared/rule-notices";
+import type { OmpTurnRow } from "./turn-rows";
 
-/** Rule firings are read from the end of the session file; a turn rarely writes more. */
+/** Turn rows are read from the end of the session file; a turn rarely writes more. */
 const TAIL_BYTES = 1024 * 1024;
 
 function bounded(value: string, max: number): string {
@@ -23,7 +23,7 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-async function readTail(file: string): Promise<string | undefined> {
+export async function readTail(file: string): Promise<string | undefined> {
   let handle: FileHandle;
   try {
     handle = await open(
@@ -100,38 +100,13 @@ export async function readOmpRuleNotice(
   };
 }
 
-/** Paseo's bundled `omp` provider drops OMP rule events, so surface them from its session file. */
-export function registerOmpRuleNotices(server: Pick<PluginServerContext, "addHook">): () => void {
-  // One Paseo turn can report several native turn starts; keep the earliest. Hooks run
-  // concurrently, so state is read and cleared before the first await.
-  const turnStarts = new Map<string, number>();
-  const turnKey = (agentId: string, turnId: string | null) => `${agentId}\0${turnId ?? ""}`;
-  const removeBefore = server.addHook("agent.turn.before", async ({ agent, turnId }) => {
-    const key = turnKey(agent.id, turnId);
-    if (agent.provider === "omp" && !turnStarts.has(key)) turnStarts.set(key, Date.now());
-  });
-  const removeAfter = server.addHook("agent.turn.after", async ({ agent, turnId }, { paseo }) => {
-    const key = turnKey(agent.id, turnId);
-    const since = turnStarts.get(key);
-    const until = Date.now();
-    turnStarts.delete(key);
-    if (agent.provider !== "omp" || since === undefined) return;
-    const ref = paseo.agents.ref(agent.id);
-    const sessionFile = (await ref.refresh())?.agent.persistence?.nativeHandle;
-    if (!sessionFile) return;
-    const found = await readOmpRuleNotice(sessionFile, since, until);
-    if (!found) return;
-    await ref.timeline.append({
-      type: "plugin",
-      id: `rule-notice:${found.id}`,
-      kind: OMP_RULE_NOTICE_KIND,
-      version: 1,
-      data: found.notice,
-    });
-  });
-  return () => {
-    removeBefore();
-    removeAfter();
-    turnStarts.clear();
-  };
+/** The OMP rule notice of one turn as a timeline row; Paseo's bundled `omp` provider drops rule events. */
+export async function ompRuleNoticeRow(
+  sessionFile: string,
+  since: number,
+  until: number,
+): Promise<OmpTurnRow | undefined> {
+  const found = await readOmpRuleNotice(sessionFile, since, until);
+  if (!found) return;
+  return { id: `rule-notice:${found.id}`, kind: OMP_RULE_NOTICE_KIND, data: found.notice };
 }

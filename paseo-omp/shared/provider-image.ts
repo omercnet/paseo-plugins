@@ -109,6 +109,8 @@ const inlineOmpImageSchema = z.object({
 const ompImageSchema = z.union([cachedOmpImageSchema, inlineOmpImageSchema]);
 export type OmpImage = z.infer<typeof ompImageSchema>;
 
+export const OMP_IMAGE_TIMELINE_KIND = "omp-images";
+
 export const getOmpImage = defineRpc({
   name: "paseo-omp.get-image",
   input: z.strictObject({ ref: ompImageRefSchema, mimeType: ompImageMimeTypeSchema }),
@@ -200,7 +202,7 @@ export function transformOmpImageToolItem(item: { callId: string; metadata?: unk
     items: [
       {
         type: "plugin" as const,
-        kind: "omp-images",
+        kind: OMP_IMAGE_TIMELINE_KIND,
         id: item.callId,
         version: 1,
         data: metadata.data.ompImage,
