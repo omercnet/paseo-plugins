@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, stat } from "node:fs/promises";
+import { type FileHandle, open, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { RpcInput } from "@getpaseo/plugin";
 import { z } from "zod";
@@ -17,8 +17,9 @@ export interface FiringLimits {
   ms: number;
 }
 
-const DEFAULT_LIMITS: FiringLimits = {
-  sessions: 500,
+/** `sessions` plus the one extra session asked for must stay within the session listing's cap of 500. */
+export const DEFAULT_FIRING_LIMITS: FiringLimits = {
+  sessions: 400,
   fileBytes: 8 * 1024 * 1024,
   totalBytes: 64 * 1024 * 1024,
   ms: 8_000,
@@ -78,7 +79,12 @@ async function countFile(
 ): Promise<Map<string, Tally> | null> {
   const rules = new Map<string, Tally>();
   let lineCount = 0;
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let handle: FileHandle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch {
+    return null;
+  }
   try {
     const lines = createInterface({
       input: handle.createReadStream({ encoding: "utf8", end: readBytes - 1 }),
@@ -117,7 +123,7 @@ async function countFile(
 export async function readRuleFirings(
   input: { cwd?: string; sessionDir?: string },
   environment: NodeJS.ProcessEnv = currentOmpEnvironment(),
-  limits: FiringLimits = DEFAULT_LIMITS,
+  limits: FiringLimits = DEFAULT_FIRING_LIMITS,
   now: () => number = Date.now,
 ): Promise<{ firings: OmpRuleFiring[]; sessions: number; partial: boolean }> {
   const started = now();

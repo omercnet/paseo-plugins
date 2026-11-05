@@ -11,7 +11,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { type FiringLimits, readRuleFirings } from "../server/omp-rule-firings";
+import {
+  DEFAULT_FIRING_LIMITS,
+  type FiringLimits,
+  readRuleFirings,
+} from "../server/omp-rule-firings";
 
 const LIMITS: FiringLimits = {
   sessions: 50,
@@ -152,6 +156,16 @@ describe("counting rule firings from session files", () => {
     await session("/work/a", [injection("2026-11-01T10:00:00.000Z", "r")]);
     const result = await count(undefined, { ...LIMITS, sessions: 1 });
     expect(result.sessions).toBe(1);
+    expect(result.partial).toBe(true);
+  });
+
+  test("with the default bounds, a store larger than the session bound is flagged", async () => {
+    const extra = DEFAULT_FIRING_LIMITS.sessions + 1;
+    for (let index = 0; index < extra; index += 1) {
+      await session("/work/a", [injection("2026-11-01T10:00:00.000Z", "r")]);
+    }
+    const result = await readRuleFirings({ sessionDir: root }, {});
+    expect(result.sessions).toBe(DEFAULT_FIRING_LIMITS.sessions);
     expect(result.partial).toBe(true);
   });
 
