@@ -334,7 +334,7 @@ export const OMP_SETTING_DESCRIPTIONS: Readonly<Record<string, string>> = {
   "session.maxCost":
     "Stop a session from sending new model requests once its spend reaches this many US dollars. Leave unset for no limit. Requests already in flight can finish past the limit; raise or reset the value to continue.",
   "secrets.enabled":
-    "Hides keys, tokens and passwords from the model provider. Values are swapped for placeholders before text is sent and restored when the model uses them in a tool call. OMP detects environment variables named like KEY, TOKEN, SECRET or PASSWORD, passwords in connection URLs, and common token formats. Custom rules live in secrets.yml in the OMP agent folder or a project's .omp folder; edit that file by hand, Paseo never shows it. Best effort, not a guarantee: system prompts, tool definitions and images are not covered. Applies to new sessions.",
+    "Hides keys, tokens and passwords from the model provider. Values are swapped for placeholders before text is sent and restored when the model uses them in a tool call. OMP detects environment variables named like KEY, TOKEN, SECRET or PASSWORD, passwords in connection URLs, and common token formats. Custom rules live in secrets.yml in the OMP agent folder or a project's .omp folder; edit that file by hand, Paseo never shows it. Best effort, not a guarantee: system prompts, static tool definitions and images are not covered. Applies to new sessions.",
 };
 
 export const listOmpSettings = defineRpc({

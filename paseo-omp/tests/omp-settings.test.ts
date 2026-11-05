@@ -11,6 +11,7 @@ import {
 import {
   categorizeOmpSetting,
   formatOmpSettingLabel,
+  OMP_SETTING_DESCRIPTIONS,
   OmpModelSelectorSchema,
   updateOmpSettings,
 } from "../shared/omp-settings";
@@ -92,19 +93,18 @@ describe("OMP settings inventory", () => {
     expect(maxCost).toEqual({
       path: "session.maxCost",
       type: "number",
-      description: expect.stringContaining("Stop a session"),
+      description: OMP_SETTING_DESCRIPTIONS["session.maxCost"],
     });
     expect(retry?.description).toBe("From OMP");
   });
 
-  test("replaces OMP's secrets wording with the caveats and the secrets.yml pointer", () => {
+  test("replaces OMP's own description for a setting with Paseo wording", () => {
     const catalog = parseOmpSettingsList({
       "secrets.enabled": { value: true, type: "boolean", description: "Obfuscate secrets" },
     });
 
     const [secrets] = catalog.settings;
-    expect(secrets?.description).toContain("Best effort, not a guarantee");
-    expect(secrets?.description).toContain("secrets.yml");
+    expect(secrets?.description).toBe(OMP_SETTING_DESCRIPTIONS["secrets.enabled"]);
     expect(secrets?.description).not.toContain("Obfuscate secrets");
   });
 
