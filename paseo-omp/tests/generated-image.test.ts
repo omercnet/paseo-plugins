@@ -147,6 +147,15 @@ describe("resolveGeneratedImages", () => {
     expect(resolve(path)).toEqual([{ status: "missing" }]);
   });
 
+  test("accepts a large image up to the cache size limit", () => {
+    const path = join(temp, "omp-image-large.png");
+    const bytes = Buffer.concat([PNG, Buffer.alloc(MAX_CACHED_IMAGE_BYTES - PNG.length)]);
+    writeFileSync(path, bytes);
+    expect(resolve(path)).toEqual([
+      { status: "available", ref: ompImageRef(bytes), mimeType: "image/png" },
+    ]);
+  });
+
   test.skipIf(process.platform === "win32")(
     "accepts a file when the temp directory is reached through a symlink",
     () => {

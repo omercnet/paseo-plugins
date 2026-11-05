@@ -32,7 +32,8 @@ function readGeneratedImage(
     return undefined;
   }
   const bytes = readRegularFile(join(directory, name), MAX_CACHED_IMAGE_BYTES);
-  if (!bytes || !isValidImagePayload(bytes.toString("base64"), mimeType, Number.MAX_SAFE_INTEGER)) {
+  // Only the magic bytes are checked, so encode only the header (12 bytes are 16 characters).
+  if (!bytes || !isValidImagePayload(bytes.subarray(0, 12).toString("base64"), mimeType, 16)) {
     return undefined;
   }
   return { bytes, mimeType };
