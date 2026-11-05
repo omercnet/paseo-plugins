@@ -1,4 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { resolveGeneratedImages } from "./server/generated-images";
 import { resolveListHubProcesses, resolveTailHubLog } from "./server/hub";
 import {
   OmpBrowserAuthorizationRegistry,
@@ -49,6 +50,7 @@ import {
 } from "./server/subagents";
 import { resolveGetOmpSupportReport } from "./server/support-diagnostics";
 import { composerPillSettings } from "./shared/composer-pill-settings";
+import { resolveOmpGeneratedImages } from "./shared/generated-image";
 import { listHubProcesses, tailHubLog } from "./shared/hub";
 import { openOmpMcpAuthorizationInPaseoBrowser } from "./shared/mcp";
 import { listOmpMemory } from "./shared/memory";
@@ -218,6 +220,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getOmpUpdateStatus, resolveGetOmpUpdateStatus);
   server.handle(installOmpUpdate, resolveInstallOmpUpdate);
   server.handle(getOmpImage, (input) => resolveGetOmpImage(input, ompImageCache()));
+  server.handle(resolveOmpGeneratedImages, (input) =>
+    resolveGeneratedImages(input, ompImageCache()),
+  );
   server.handle(
     getOmpSupportReport,
     scoped((input) => resolveGetOmpSupportReport(input, protocolViolations, operationalFailures)),

@@ -83,10 +83,15 @@ function hasExpectedHeader(mimeType: string, bytes: readonly number[]): boolean 
   );
 }
 
-const ompImageMimeTypeSchema = z.enum(["image/gif", "image/jpeg", "image/png", "image/webp"]);
+export const ompImageMimeTypeSchema = z.enum([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 const ompImageIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16}$/u);
 /** SHA-256 of the image bytes, naming the file in the server's image cache. */
-const ompImageRefSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+export const ompImageRefSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 
 const cachedOmpImageSchema = z.object({
   id: ompImageIdSchema,
