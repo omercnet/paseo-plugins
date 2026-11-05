@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { type FileHandle, lstat, mkdtemp, open, readdir, rm } from "node:fs/promises";
+import { type FileHandle, lstat, mkdtemp, open, readdir, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -147,9 +147,12 @@ async function readRuleFile(path: string): Promise<string | null> {
       path,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
     );
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > MAX_RULE_FILE_BYTES) return null;
-    return await handle.readFile("utf8");
+    const info = await handle.stat();
+    if (!info.isFile()) return null;
+    const buffer = Buffer.alloc(MAX_RULE_FILE_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > MAX_RULE_FILE_BYTES) return null;
+    return buffer.toString("utf8", 0, bytesRead);
   } catch {
     return null;
   } finally {
@@ -164,6 +167,13 @@ async function isNonEmptyDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function isRealDirectory(path: string): Promise<boolean> {
+  return lstat(path).then(
+    (stat) => stat.isDirectory(),
+    () => false,
+  );
 }
 
 async function ruleFilesIn(directory: string): Promise<string[]> {
@@ -235,8 +245,16 @@ async function ruleFiles(cwd: string | undefined): Promise<RuleFile[]> {
       files.push({ name: base.replace(/\.(md|mdc)$/u, ""), path, source, sticky: false });
     }
   };
-  if (cwd && resolve(cwd) !== homedir())
-    add(await ruleFilesIn(join(cwd, ".omp", "rules")), "project");
+  // A cloned project could point `.omp` or `.omp/rules` anywhere, so neither may be a symlink.
+  const projectRules = cwd ? join(cwd, ".omp", "rules") : undefined;
+  if (
+    cwd &&
+    projectRules &&
+    resolve(cwd) !== homedir() &&
+    (await isRealDirectory(join(cwd, ".omp"))) &&
+    (await isRealDirectory(projectRules))
+  )
+    add(await ruleFilesIn(projectRules), "project");
   add(await ruleFilesIn(join(agentDir, "rules")), "user");
   files.push({ name: "RULES", path: join(agentDir, "RULES.md"), source: "user", sticky: true });
   const projectConfig = cwd ? await nearestProjectConfigDir(cwd) : null;
@@ -326,12 +344,19 @@ async function listRulesIn(
 ): Promise<OmpRulesList> {
   const executable = await dependencies.resolveExecutable();
   if (!executable) throw new OmpRulesError("The omp command was not found on this host");
-  const [watch, disabled, builtinRules] = await Promise.all([
+  // Every command finishes before the caller may remove its working directory.
+  const [watchResult, disabledResult, builtinResult] = await Promise.allSettled([
     runJson(dependencies, executable, ["ttsr", "list", "--json"], runIn).then(parseWatchRules),
     readSetting(dependencies, executable, "ttsr.disabledRules", DisabledRulesSchema, runIn),
     readSetting(dependencies, executable, "ttsr.builtinRules", BuiltinRulesSchema, runIn),
   ]);
-  const disabledNames = clipList(disabled);
+  for (const result of [watchResult, disabledResult, builtinResult]) {
+    if (result.status === "rejected") throw result.reason;
+  }
+  const watch = (watchResult as PromiseFulfilledResult<WatchRule[]>).value;
+  const disabled = (disabledResult as PromiseFulfilledResult<string[]>).value;
+  const builtinRules = (builtinResult as PromiseFulfilledResult<boolean>).value;
+  const disabledNames = [...new Set(clipList(disabled))];
   const hidden = new Set([...watch.map((rule) => rule.name), ...disabledNames]);
   return {
     status: "ready",
@@ -352,8 +377,8 @@ async function listRules(
     const isDirectory =
       isAbsolute(cwd) &&
       !cwd.includes("\0") &&
-      (await lstat(cwd).then(
-        (stat) => stat.isDirectory(),
+      (await stat(cwd).then(
+        (info) => info.isDirectory(),
         () => false,
       ));
     if (!isDirectory) throw new OmpRulesError("The workspace path is invalid");
@@ -365,8 +390,13 @@ async function listRules(
   try {
     return await listRulesIn(scratch, undefined, dependencies);
   } finally {
-    // Only ever delete the directory this call created under the system temp directory.
-    if (resolve(scratch).startsWith(prefix)) await dependencies.removeDir(scratch);
+    // Only ever delete the directory this call created directly under the system temp directory.
+    const ours =
+      scratch === resolve(scratch) &&
+      dirname(scratch) === tmpdir() &&
+      basename(scratch).startsWith("paseo-omp-rules-") &&
+      basename(scratch) !== "paseo-omp-rules-";
+    if (ours) await dependencies.removeDir(scratch).catch(() => undefined);
   }
 }
 

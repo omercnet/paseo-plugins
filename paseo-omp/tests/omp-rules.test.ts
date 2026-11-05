@@ -187,6 +187,37 @@ describe("OMP rule listing", () => {
     expect(result).toMatchObject({ status: "ready", rules: [] });
   });
 
+  test("does not read a project whose .omp or .omp/rules is a symlinked directory", async () => {
+    const elsewhere = join(root, "elsewhere");
+    await rule(elsewhere, "secret.md", "---\ndescription: Not a project rule\n---\nx\n");
+    await mkdir(join(project, ".omp"), { recursive: true });
+    await symlink(elsewhere, join(project, ".omp", "rules"));
+    const other = join(root, "other");
+    await mkdir(join(other, ".git"), { recursive: true });
+    await mkdir(join(root, "fake-omp"), { recursive: true });
+    await symlink(elsewhere, join(root, "fake-omp", "rules"));
+    await symlink(join(root, "fake-omp"), join(other, ".omp"));
+    const { dependencies } = fakeOmp();
+
+    for (const cwd of [project, other]) {
+      await expect(listOmpRulesWithDependencies({ cwd }, dependencies)).resolves.toMatchObject({
+        status: "ready",
+        rules: [],
+      });
+    }
+  });
+
+  test("lists a workspace opened through a symlinked path", async () => {
+    await rule(join(project, ".omp", "rules"), "local.md", "---\nalwaysApply: true\n---\nx\n");
+    const link = join(root, "project-link");
+    await symlink(project, link);
+    const { dependencies } = fakeOmp();
+
+    const result = await listOmpRulesWithDependencies({ cwd: link }, dependencies);
+
+    expect(result.status === "ready" && result.rules.map((entry) => entry.name)).toEqual(["local"]);
+  });
+
   test("the global listing runs in a fresh empty directory and reads no project files", async () => {
     await rule(join(project, ".omp", "rules"), "local.md", "---\nalwaysApply: true\n---\nx\n");
     await rule(join(agentDir, "rules"), "mine.md", "---\ndescription: Mine\n---\nx\n");
@@ -205,13 +236,33 @@ describe("OMP rule listing", () => {
     expect(existsSync(scratch)).toBe(false);
   });
 
-  test("never removes a directory outside its own temp scratch directory", async () => {
-    const { removed, dependencies } = fakeOmp({ scratchDir: project });
+  test.each([
+    ["a project directory", () => project],
+    ["the temp root", () => tmpdir()],
+    ["the bare prefix", () => SCRATCH_PREFIX],
+    ["a nested look-alike", () => join(root, "paseo-omp-rules-x")],
+  ])("never removes %s handed back as the scratch directory", async (_label, scratch) => {
+    const { removed, dependencies } = fakeOmp({ scratchDir: scratch() });
 
-    await listOmpRulesWithDependencies({}, dependencies);
+    // The fake omp reads the directory, which may not exist; only the removal matters here.
+    await listOmpRulesWithDependencies({}, dependencies).catch(() => undefined);
 
     expect(removed).toEqual([]);
     expect(existsSync(project)).toBe(true);
+  });
+
+  test("a failed cleanup does not hide a successful listing", async () => {
+    const { dependencies } = fakeOmp();
+    const failing = {
+      ...dependencies,
+      removeDir: async () => {
+        throw new Error("EBUSY");
+      },
+    };
+
+    await expect(listOmpRulesWithDependencies({}, failing)).resolves.toMatchObject({
+      status: "ready",
+    });
   });
 
   test.each([
