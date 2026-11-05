@@ -28,7 +28,7 @@ const KINDS: readonly { kind: OmpToolConfigKind; label: string; example: string 
   },
 ];
 
-function Choice({
+export function Choice({
   styles,
   label,
   selected,

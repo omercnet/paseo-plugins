@@ -118,6 +118,8 @@ export type SpawnFn = (
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   cwd?: string,
+  /** Written to the child's stdin, which is closed afterwards. Without it stdin is ignored. */
+  input?: string,
 ) => ProbeChildProcess;
 
 export type SignalProcess = (pid: number, signal: NodeJS.Signals | 0) => void;
@@ -234,13 +236,18 @@ export function defaultSpawn(
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   cwd?: string,
+  input?: string,
 ): ProbeChildProcess {
   const child = spawn(command, args, {
     cwd,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     env,
     detached: process.platform !== "win32",
   });
+  // A child that exits without reading closes the pipe; that is not an error here. Without
+  // input, stdin closes at once, so a child that reads it sees end of input.
+  child.stdin.on("error", () => {});
+  child.stdin.end(input);
   return {
     pid: child.pid,
     stdout: child.stdout,
@@ -378,11 +385,12 @@ export function runBounded(
   maxBytes: number,
   cwd?: string,
   stderrLimit = 0,
+  input?: string,
 ): Promise<BoundedRun> {
   const { promise, resolve } = Promise.withResolvers<BoundedRun>();
   let child: ProbeChildProcess;
   try {
-    child = spawnFn(command, args, env, cwd);
+    child = spawnFn(command, args, env, cwd, input);
   } catch (error) {
     resolve({
       outcome: "spawn-error",

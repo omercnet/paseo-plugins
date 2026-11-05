@@ -29,7 +29,12 @@ export class OmpRulesError extends OmpPublicError {}
 
 export interface OmpRulesDependencies {
   resolveExecutable(): Promise<string | null>;
-  run(executable: string, args: readonly string[], cwd: string): Promise<BoundedRun>;
+  run(
+    executable: string,
+    args: readonly string[],
+    cwd: string,
+    input?: string,
+  ): Promise<BoundedRun>;
   makeScratchDir(prefix: string): Promise<string>;
   removeDir(path: string): Promise<void>;
 }
@@ -111,9 +116,10 @@ export async function runJson(
   executable: string,
   args: readonly string[],
   cwd: string,
+  input?: string,
 ): Promise<unknown> {
   const label = `omp ${args.join(" ")}`;
-  const run = await dependencies.run(executable, args, cwd);
+  const run = await dependencies.run(executable, args, cwd, input);
   if (run.outcome === "timeout") throw new OmpRulesError(`${label} timed out`);
   if (run.outcome !== "exited" || run.exitCode !== 0 || run.truncated) {
     throw new OmpRulesError(`${label} failed`);
@@ -424,7 +430,7 @@ export async function listOmpRulesWithDependencies(
 
 export const ompCommandDependencies: OmpRulesDependencies = {
   resolveExecutable: resolveOmpExecutable,
-  run: (executable, args, cwd) =>
+  run: (executable, args, cwd, input) =>
     runBounded(
       defaultSpawn,
       executable,
@@ -434,6 +440,8 @@ export const ompCommandDependencies: OmpRulesDependencies = {
       KILL_GRACE_MS,
       MAX_OUTPUT_BYTES,
       cwd,
+      0,
+      input,
     ),
   makeScratchDir: (prefix) => mkdtemp(prefix),
   removeDir: (path) => rm(path, { recursive: true, force: true }),
