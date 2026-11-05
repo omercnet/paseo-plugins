@@ -64,7 +64,7 @@ export interface OmpSettingsDependencies {
   validateProjectConfig(executable: string, path: string): Promise<BoundedRun>;
 }
 
-async function readProjectConfigText(path: string): Promise<string> {
+export async function readProjectConfigText(path: string): Promise<string> {
   try {
     return await readFile(path, "utf8");
   } catch (error) {
@@ -83,12 +83,16 @@ function runSucceeded(result: BoundedRun): boolean {
   );
 }
 
-async function writeProjectChanges(
+export type ProjectChange =
+  | { operation: "set"; path: string; value: unknown }
+  | { operation: "reset"; path: string };
+
+export async function writeProjectChanges(
   cwd: string,
   expectedText: string,
-  changes: RpcInput<typeof updateOmpSettings>["changes"],
+  changes: readonly ProjectChange[],
   executable: string,
-  dependencies: OmpSettingsDependencies,
+  dependencies: Pick<OmpSettingsDependencies, "validateProjectConfig">,
 ): Promise<"applied" | "conflict"> {
   const path = join(cwd, ".omp", "config.yml");
   try {
@@ -242,7 +246,7 @@ async function validateOmpProjectConfig(executable: string, path: string): Promi
   );
 }
 
-const DEFAULT_DEPENDENCIES: OmpSettingsDependencies = {
+export const ompSettingsDependencies: OmpSettingsDependencies = {
   resolveExecutable: resolveOmpExecutable,
   runConfig: runOmpConfig,
   validateProjectConfig: validateOmpProjectConfig,
@@ -351,7 +355,7 @@ export async function listOmpSettingsWithDependencies(
 export async function resolveListOmpSettings(
   input: RpcInput<typeof listOmpSettings>,
 ): Promise<CatalogResult> {
-  return listOmpSettingsWithDependencies(input, DEFAULT_DEPENDENCIES);
+  return listOmpSettingsWithDependencies(input, ompSettingsDependencies);
 }
 
 export async function updateOmpSettingsWithDependencies(
@@ -504,10 +508,15 @@ export async function updateOmpSettingsWithDependencies(
 
 const settingsMutationQueue = new SerialMutationQueue();
 
+/** Settings and skill edits share this queue so they never write one config file at once. */
+export function runSettingsMutation<T>(operation: () => Promise<T>): Promise<T> {
+  return settingsMutationQueue.run(operation);
+}
+
 export function resolveUpdateOmpSettings(
   input: RpcInput<typeof updateOmpSettings>,
 ): Promise<OmpSettingsUpdateResult> {
-  return settingsMutationQueue.run(() =>
-    updateOmpSettingsWithDependencies(input, DEFAULT_DEPENDENCIES),
+  return runSettingsMutation(() =>
+    updateOmpSettingsWithDependencies(input, ompSettingsDependencies),
   );
 }

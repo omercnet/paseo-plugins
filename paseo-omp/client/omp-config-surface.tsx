@@ -44,6 +44,7 @@ import { normalizeOmpModels } from "./omp-model-picker-state";
 import { OmpPluginManagerSection } from "./omp-plugin-manager";
 import { type OmpModelCatalogState, StructuredRoutingEditor } from "./omp-routing-editor";
 import { OmpRulesSection } from "./omp-rules-section";
+import { OmpSkillsSection } from "./omp-skills-section";
 import { OmpStorePicker } from "./omp-store-picker";
 import { ompStoreKey } from "./omp-store-state";
 import {
@@ -1171,6 +1172,9 @@ function OmpConfigContent({
       ) : null}
       {view === "rules" ? (
         <OmpRulesSection theme={theme} styles={styles} cwd={cwd} store={store} />
+      ) : null}
+      {view === "skills" ? (
+        <OmpSkillsSection theme={theme} styles={styles} cwd={cwd} store={store} />
       ) : null}
       {view === "composer" && !cwd && onComposerPillSettingsChange ? (
         <ComposerPillSettingsSection theme={theme} onChange={onComposerPillSettingsChange} />
