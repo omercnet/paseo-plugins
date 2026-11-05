@@ -17,6 +17,11 @@ import {
 } from "./server/omp-plugins";
 import { resolveListOmpRules } from "./server/omp-rules";
 import { resolveListOmpSettings, resolveUpdateOmpSettings } from "./server/omp-settings";
+import {
+  resolveDeleteOmpManagedSkill,
+  resolveListOmpSkills,
+  resolveSetOmpSkillEnabled,
+} from "./server/omp-skills";
 import { OmpOperationalFailureCollector } from "./server/operational-failure-diagnostics";
 import { withOmpStore } from "./server/paths";
 import { OmpProtocolViolationCollector } from "./server/protocol-violation-diagnostics";
@@ -71,6 +76,7 @@ import {
 } from "./shared/omp-plugins";
 import { listOmpRules } from "./shared/omp-rules";
 import { listOmpSettings, updateOmpSettings } from "./shared/omp-settings";
+import { deleteOmpManagedSkill, listOmpSkills, setOmpSkillEnabled } from "./shared/omp-skills";
 import { listOmpStores, type OmpStore } from "./shared/omp-store";
 import { getOmpProviderHealth } from "./shared/provider-diagnostics";
 import { getOmpImage } from "./shared/provider-image";
@@ -189,6 +195,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpModels, scoped(resolveListOmpModels));
   server.handle(listOmpPlugins, scoped(resolveListOmpPlugins));
   server.handle(listOmpRules, scoped(resolveListOmpRules));
+  server.handle(listOmpSkills, scoped(resolveListOmpSkills));
+  server.handle(setOmpSkillEnabled, scoped(resolveSetOmpSkillEnabled));
+  server.handle(deleteOmpManagedSkill, scoped(resolveDeleteOmpManagedSkill));
   server.handle(inspectOmpPluginConfig, scoped(resolveInspectOmpPluginConfig));
   server.handle(mutateOmpPlugin, scoped(resolveMutateOmpPlugin));
   server.handle(mutateOmpPluginConfig, scoped(resolveMutateOmpPluginConfig));

@@ -106,8 +106,8 @@ function toWatchRule(rule: WatchRule, cwd: string | undefined): OmpRule {
   };
 }
 
-async function runJson(
-  dependencies: OmpRulesDependencies,
+export async function runJson(
+  dependencies: Pick<OmpRulesDependencies, "run">,
   executable: string,
   args: readonly string[],
   cwd: string,
@@ -125,8 +125,8 @@ async function runJson(
   }
 }
 
-async function readSetting<T>(
-  dependencies: OmpRulesDependencies,
+export async function readSetting<T>(
+  dependencies: Pick<OmpRulesDependencies, "run">,
   executable: string,
   path: string,
   schema: z.ZodType<{ value: T }>,
@@ -373,10 +373,15 @@ async function listRulesIn(
   };
 }
 
-async function listRules(
+/**
+ * Runs `operation` where OMP finds only this scope: the workspace, or an empty directory so no
+ * project's files leak into the global (user-level) view.
+ */
+export async function inOmpScope<T>(
   cwd: string | undefined,
-  dependencies: OmpRulesDependencies,
-): Promise<OmpRulesList> {
+  dependencies: Pick<OmpRulesDependencies, "makeScratchDir" | "removeDir">,
+  operation: (runIn: string) => Promise<T>,
+): Promise<T> {
   if (cwd !== undefined) {
     const isDirectory =
       isAbsolute(cwd) &&
@@ -386,13 +391,12 @@ async function listRules(
         () => false,
       ));
     if (!isDirectory) throw new OmpRulesError("The workspace path is invalid");
-    return listRulesIn(cwd, cwd, dependencies);
+    return operation(cwd);
   }
-  // An empty directory keeps every project's rules out of the global listing.
   const prefix = join(tmpdir(), "paseo-omp-rules-");
   const scratch = await dependencies.makeScratchDir(prefix);
   try {
-    return await listRulesIn(scratch, undefined, dependencies);
+    return await operation(scratch);
   } finally {
     // Only ever delete the directory this call created directly under the system temp directory.
     const ours =
@@ -409,14 +413,16 @@ export async function listOmpRulesWithDependencies(
   dependencies: OmpRulesDependencies,
 ): Promise<OmpRulesList> {
   try {
-    return await listRules(input.cwd, dependencies);
+    return await inOmpScope(input.cwd, dependencies, (runIn) =>
+      listRulesIn(runIn, input.cwd, dependencies),
+    );
   } catch (error) {
     if (error instanceof OmpRulesError) return { status: "error", message: error.message };
     throw error;
   }
 }
 
-const DEFAULT_DEPENDENCIES: OmpRulesDependencies = {
+export const ompCommandDependencies: OmpRulesDependencies = {
   resolveExecutable: resolveOmpExecutable,
   run: (executable, args, cwd) =>
     runBounded(
@@ -434,5 +440,5 @@ const DEFAULT_DEPENDENCIES: OmpRulesDependencies = {
 };
 
 export function resolveListOmpRules(input: RpcInput<typeof listOmpRules>): Promise<OmpRulesList> {
-  return listOmpRulesWithDependencies(input, DEFAULT_DEPENDENCIES);
+  return listOmpRulesWithDependencies(input, ompCommandDependencies);
 }
