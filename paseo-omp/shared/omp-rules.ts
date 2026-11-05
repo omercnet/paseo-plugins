@@ -47,3 +47,20 @@ export const listOmpRules = defineRpc({
     .strict(),
   output: OmpRulesListSchema,
 });
+
+/** Off adds `name` to `ttsr.disabledRules`; on removes it. A workspace writes its own `.omp/config.yml`. */
+export const setOmpRuleEnabled = defineRpc({
+  name: "paseo-omp.set-rule-enabled",
+  input: z
+    .object({
+      store: OmpStoreSchema.optional(),
+      cwd: OmpWorkspaceCwdSchema.optional(),
+      name: z.string().trim().min(1).max(256),
+      enabled: z.boolean(),
+    })
+    .strict(),
+  output: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("ok") }),
+    z.object({ status: z.literal("error"), message: z.string() }),
+  ]),
+});

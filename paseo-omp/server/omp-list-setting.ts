@@ -9,7 +9,7 @@ import {
 } from "./omp-settings";
 import { OmpPublicError } from "./provider/security";
 
-export type OmpListName = "skills.ignoredSkills" | "disabledExtensions";
+export type OmpListName = "skills.ignoredSkills" | "disabledExtensions" | "ttsr.disabledRules";
 
 export class OmpListError extends OmpPublicError {}
 

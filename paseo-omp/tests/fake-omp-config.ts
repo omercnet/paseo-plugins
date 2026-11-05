@@ -24,11 +24,12 @@ export function exited(stdout: string): BoundedRun {
 export const ProjectConfigSchema = z
   .object({
     skills: z.object({ ignoredSkills: z.array(z.string()).optional() }).optional(),
+    ttsr: z.object({ disabledRules: z.array(z.string()).optional() }).optional(),
     disabledExtensions: z.array(z.string()).optional(),
   })
   .nullable();
 
-export type ListName = "skills.ignoredSkills" | "disabledExtensions";
+export type ListName = "skills.ignoredSkills" | "disabledExtensions" | "ttsr.disabledRules";
 
 function readProject(text: string) {
   try {
@@ -50,6 +51,7 @@ export function fakeOmp(
   const calls: { args: readonly string[]; cwd: string }[] = [];
   const userConfig: Record<ListName, string[]> = {
     "skills.ignoredSkills": [],
+    "ttsr.disabledRules": [],
     disabledExtensions: [],
     ...user,
   };
@@ -58,8 +60,7 @@ export function fakeOmp(
     run: async (_executable, args, cwd) => {
       calls.push({ args, cwd });
       if (args[0] === "skill") return exited(JSON.stringify({ skills, warnings: [] }));
-      const list: ListName =
-        args[2] === "disabledExtensions" ? "disabledExtensions" : "skills.ignoredSkills";
+      const list = args[2] as ListName;
       if (args[1] === "set") {
         userConfig[list] = z.array(z.string()).parse(JSON.parse(args[5] ?? "[]"));
         return exited("{}");
@@ -67,10 +68,12 @@ export function fakeOmp(
       const projectFile = join(cwd, ".omp", "config.yml");
       const projectText = existsSync(projectFile) ? await readFile(projectFile, "utf8") : "";
       const project = readProject(projectText);
-      const projectList =
-        list === "skills.ignoredSkills"
-          ? project?.skills?.ignoredSkills
-          : project?.disabledExtensions;
+      const projectLists: Record<ListName, string[] | undefined> = {
+        "skills.ignoredSkills": project?.skills?.ignoredSkills,
+        "ttsr.disabledRules": project?.ttsr?.disabledRules,
+        disabledExtensions: project?.disabledExtensions,
+      };
+      const projectList = projectLists[list];
       return exited(JSON.stringify({ value: projectList ?? userConfig[list] }));
     },
     validateProjectConfig: async () => exited("{}"),

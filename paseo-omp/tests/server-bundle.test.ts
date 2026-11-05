@@ -197,6 +197,7 @@ describe("plugin server bundle", () => {
             "paseo-omp.list-security",
             "paseo-omp.list-skills",
             "paseo-omp.set-skill-enabled",
+            "paseo-omp.set-rule-enabled",
             "paseo-omp.delete-managed-skill",
           ]),
         );
