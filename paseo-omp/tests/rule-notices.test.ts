@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -75,6 +75,21 @@ describe("OMP rule notices", () => {
     expect(await readOmpRuleNotice(file, turnStart, turnStart + 1_000)).toBeUndefined();
     expect(await readOmpRuleNotice("relative/session.jsonl", 0, turnStart)).toBeUndefined();
   });
+
+  test.skipIf(process.platform === "win32")(
+    "does not follow a symlinked session path",
+    async () => {
+      const turnStart = Date.parse("2026-11-05T09:10:00.000Z");
+      const target = await sessionFile(
+        injection("fired", new Date(turnStart + 1_000).toISOString(), ["no-canary"]),
+      );
+      const link = join(directories[0] ?? "", "link_session.jsonl");
+      await symlink(target, link);
+
+      expect(await readOmpRuleNotice(target, turnStart, turnStart + 5_000)).toBeDefined();
+      expect(await readOmpRuleNotice(link, turnStart, turnStart + 5_000)).toBeUndefined();
+    },
+  );
 
   test("appends one row per bundled omp turn from its first start, ignoring other providers", async () => {
     const turnStart = Date.parse("2026-11-05T09:10:00.000Z");
