@@ -89,7 +89,8 @@ describe("resolveGeneratedImages", () => {
     root = mkdtempSync(join(tmpdir(), "omp-generated-test-"));
     temp = join(root, "tmp");
     mkdirSync(temp);
-    vi.stubEnv("TMPDIR", temp);
+    // os.tmpdir() reads TMPDIR on POSIX and TEMP or TMP on Windows.
+    for (const name of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(name, temp);
     cache = new OmpImageCache(join(root, "cache"));
   });
 
