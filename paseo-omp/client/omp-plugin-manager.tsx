@@ -20,6 +20,7 @@ import {
   type OmpPluginConfigState,
   OmpPluginInstallSourceSchema,
   type OmpPluginMutation,
+  redactSourceCredentials,
 } from "../shared/omp-plugins";
 
 import type { OmpStore } from "../shared/omp-store";
@@ -877,7 +878,7 @@ export function OmpPluginManagerSection({
       kind: "marketplace",
       input: { action: "add", source: parsed.data, store },
       origin: { surface: "catalog" },
-      title: `Add marketplace ${parsed.data}?`,
+      title: `Add marketplace ${redactSourceCredentials(parsed.data)}?`,
       warning:
         "Plugins from a marketplace are trusted code. Adding it fetches the catalog on the daemon host, and any plugin you install from it can run code with that host's access.",
     });

@@ -8,7 +8,7 @@ import {
   parseOmpMarketplaceList,
 } from "../server/omp-plugins";
 import type { BoundedRun } from "../server/provider-diagnostics";
-import { OmpMarketplaceMutationSchema } from "../shared/omp-plugins";
+import { OmpMarketplaceMutationSchema, redactSourceCredentials } from "../shared/omp-plugins";
 
 function completed(stdout: string, exitCode = 0): BoundedRun {
   return {
@@ -46,6 +46,20 @@ describe("OMP marketplace listing", () => {
       { name: "official", source: "owner/repo" },
       { name: "demo-catalog", source: "/tmp/some dir/catalog" },
     ]);
+  });
+
+  test("never returns credentials embedded in a catalog URL", () => {
+    expect(
+      parseOmpMarketplaceList(
+        "Configured Marketplaces:\n\n  private  https://user:s3cret@git.example.com/org/repo.git\n" +
+          "  ssh-style  git@github.com:org/repo.git\n",
+      ),
+    ).toEqual([
+      { name: "private", source: "https://git.example.com/org/repo.git" },
+      { name: "ssh-style", source: "git@github.com:org/repo.git" },
+    ]);
+    expect(redactSourceCredentials("https://token@host/x?a=b@c")).toBe("https://host/x?a=b@c");
+    expect(redactSourceCredentials("owner/repo")).toBe("owner/repo");
   });
 
   test("treats the empty-state message as no marketplaces and rejects unknown output", () => {

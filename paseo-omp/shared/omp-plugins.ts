@@ -276,6 +276,11 @@ export const OmpMarketplaceSchema = z
   .strict();
 export type OmpMarketplace = z.infer<typeof OmpMarketplaceSchema>;
 
+/** Drops `user:token@` from a URL source so credentials are never displayed. */
+export function redactSourceCredentials(source: string): string {
+  return source.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#\s]*@/iu, "$1");
+}
+
 export const OmpMarketplaceStateSchema = z
   .object({
     available: z.boolean(),

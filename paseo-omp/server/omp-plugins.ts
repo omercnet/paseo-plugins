@@ -24,6 +24,7 @@ import {
   type OmpPluginMutation,
   OmpPluginNameSchema,
   type OmpPluginState,
+  redactSourceCredentials,
 } from "../shared/omp-plugins";
 import { SerialMutationQueue } from "./mutation-queue";
 import { currentOmpEnvironment } from "./paths";
@@ -696,7 +697,7 @@ export function parseOmpMarketplaceList(stdout: string): OmpMarketplaceState["ma
     const match = /^ {2}(\S+) {2}(\S.*)$/u.exec(line);
     if (!match?.[1] || !match[2]) continue;
     const name = OmpMarketplaceNameSchema.safeParse(match[1]);
-    const source = boundedText(match[2].trim(), 4_096);
+    const source = boundedText(redactSourceCredentials(match[2].trim()), 4_096);
     if (name.success && source) marketplaces.push({ name: name.data, source });
     if (marketplaces.length === OMP_PLUGIN_LIMIT) break;
   }
