@@ -18,6 +18,7 @@ OMP adds an agent provider for the OMP coding agent, plus an OMP sidebar and wor
 - When an OMP rule fires during a turn of an agent on Paseo's bundled `omp` provider, a notice under that turn names the rule and the text it matched. The plugin reads this, best effort, from the end of the agent's OMP session file, which that provider does not report.
 - When an agent on Paseo's bundled `omp` provider calls OMP's `lsp` tool for diagnostics, the call shows as a card grouped by file with an icon per severity. Output the plugin does not recognize keeps the original row.
 - When an agent on Paseo's bundled `omp` provider generates an image with OMP's `generate_image` tool, the row shows the image with a Download button on web and desktop. The plugin reads the saved `omp-image-*` file from the daemon host's temp directory, so the image is gone once the host cleans that directory.
+- When an agent on Paseo's bundled `omp` provider previews an OMP `ast_edit` rewrite, the call shows as a read-only diff card per file. It is built from the preview text and does not apply or discard anything; OMP's follow-up `xd://resolve` or `xd://reject` write stays a separate row. A preview the plugin cannot parse keeps the original row.
 - OMP agents can call Paseo's orchestration tools with the optional `serverId` argument and `list_hosts` to delegate work to other connected Paseo hosts.
 
 ## Reads and sends

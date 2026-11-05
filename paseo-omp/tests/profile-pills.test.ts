@@ -19,6 +19,7 @@ vi.mock("../client/subagents-strip", () => ({ OmpSubagentStrip: () => null }));
 vi.mock("../client/rule-notice", () => ({ OmpRuleNoticeRow: () => null }));
 vi.mock("../client/lsp-diagnostics", () => ({ OmpLspDiagnosticsCard: () => null }));
 vi.mock("../client/generated-image", () => ({ OmpGeneratedImagesRow: () => null }));
+vi.mock("../client/ast-edit", () => ({ OmpAstEditCard: () => null }));
 
 import contribute from "../index.client";
 import { listOmpQuotas } from "../shared/quota";
