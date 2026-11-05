@@ -119,7 +119,8 @@ function RuleRow({
     ["Files", rule.globs],
     ["Agents", rule.agents],
   ];
-  const fired = rules.firingLabel(rule.name);
+  // Only watch rules fire; always-applied and rulebook rules sit in the prompt.
+  const fired = rule.kind === "watch" ? rules.firingLabel(rule.name) : null;
   return (
     <View style={styles.setting}>
       <View style={styles.settingHeader}>
