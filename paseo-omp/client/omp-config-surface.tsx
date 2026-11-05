@@ -1462,6 +1462,7 @@ function OmpConfigContent({
                 }
                 onPress={() => {
                   void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "tool-config"] });
+                  void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "local-models"] });
                   void Promise.all([
                     configQuery.refetch(),
                     settingsQuery.refetch(),
