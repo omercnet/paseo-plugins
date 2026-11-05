@@ -917,6 +917,7 @@ export function OmpPluginManagerSection({
           styles={styles}
           onPress={() => {
             void plugins.refetch();
+            void queryClient.invalidateQueries({ queryKey: MARKETPLACES_QUERY_KEY });
           }}
         />
       </View>
