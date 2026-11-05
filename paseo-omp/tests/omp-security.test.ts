@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { severityText } from "../client/omp-security-state";
 import {
   countSeverities,
   listOmpSecurityWithDependencies,
   parseScanLines,
 } from "../server/omp-security";
 import type { BoundedRun } from "../server/provider-diagnostics";
+import type { OmpSecurityScan } from "../shared/omp-security";
 import { exited, fakeOmp } from "./fake-omp-config";
 
 /** OMP prints an em dash between a scan id and its status. */
@@ -266,5 +268,37 @@ describe("listing scans for a workspace", () => {
     );
     expect(result.status).toBe("error");
     expect(omp.reads).toEqual([]);
+  });
+});
+
+describe("wording the counts of a scan", () => {
+  const scan: OmpSecurityScan = {
+    id: "secscan_x",
+    phase: "completed",
+    findingCount: 3,
+    severities: { critical: 0, high: 2, medium: 1, low: 0, informational: 0 },
+    severitiesComplete: true,
+    producer: "omp",
+    createdAt: "2026-11-05T10:00:00.000Z",
+  };
+
+  test("lists the severities present, most severe first, or says there are no findings", () => {
+    expect(severityText(scan)).toBe("2 high, 1 medium");
+    expect(severityText({ ...scan, findingCount: 0 })).toBe("No findings");
+  });
+
+  test("a list that is cut short keeps the counts it has and says they may be incomplete", () => {
+    expect(severityText({ ...scan, severitiesComplete: false })).toBe(
+      "2 high, 1 medium (counts may be incomplete)",
+    );
+  });
+
+  test("a failed read says counts are unavailable instead of printing nothing", () => {
+    const failed: OmpSecurityScan = {
+      ...scan,
+      severities: { critical: 0, high: 0, medium: 0, low: 0, informational: 0 },
+      severitiesComplete: false,
+    };
+    expect(severityText(failed)).toBe("Severity counts unavailable");
   });
 });
