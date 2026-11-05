@@ -21,7 +21,7 @@ type OmpImageSource =
 /** A decoded screenshot can hold several MB, so drop it soon after nothing shows it. */
 const IMAGE_QUERY_GC_MS = 60_000;
 
-function useOmpImageSource(image: OmpImage, hostId: string): OmpImageSource {
+export function useOmpImageSource(image: OmpImage, hostId: string): OmpImageSource {
   const fetchImage = useRpc(getOmpImage);
   const ref = "ref" in image ? image.ref : null;
   const query = useQuery({

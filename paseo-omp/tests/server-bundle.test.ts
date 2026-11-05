@@ -201,6 +201,7 @@ describe("plugin server bundle", () => {
             "paseo-omp.cancel-subagent",
             "paseo-omp.steer-subagent",
             "paseo-omp.get-image",
+            "paseo-omp.resolve-generated-images",
             "paseo-omp.list-accounts",
             "paseo-omp.start-account-login",
             "paseo-omp.submit-account-login-code",

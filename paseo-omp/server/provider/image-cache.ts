@@ -23,7 +23,7 @@ import type { getOmpImage } from "../../shared/provider-image";
 import type { OmpImageMimeType } from "./image";
 
 /** Matches the projector's 8 MiB encoded image bound. */
-const MAX_CACHED_IMAGE_BYTES = 6 * 1024 * 1024;
+export const MAX_CACHED_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_CACHE_BYTES = 256 * 1024 * 1024;
 const MAX_CACHE_FILES = 1_024;
 const PRIVATE_DIRECTORY_MODE = 0o700;

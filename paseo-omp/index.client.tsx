@@ -5,6 +5,7 @@ import type {
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
 import { ConfigSidebarItem } from "./client/config-sidebar";
+import { OmpGeneratedImagesRow } from "./client/generated-image";
 import { OMP_ICON } from "./client/hub-icon";
 import { HubPopover } from "./client/hub-popover";
 import { summarizeHubProcesses } from "./client/hub-status";
@@ -43,6 +44,11 @@ import {
   composerPillSettings,
   composerPillSettingsSchema,
 } from "./shared/composer-pill-settings";
+import {
+  OMP_GENERATED_IMAGE_KIND,
+  ompGeneratedImagesSchema,
+  transformOmpGeneratedImageItem,
+} from "./shared/generated-image";
 import { listHubProcesses } from "./shared/hub";
 import {
   OMP_LSP_DIAGNOSTICS_KIND,
@@ -253,6 +259,19 @@ export default function contribute(client: PluginClientContext) {
     query: { itemType: "tool_call" },
     transform({ item }) {
       return transformOmpImageToolItem(item);
+    },
+  });
+  const removeGeneratedImageRenderer = client.addTimelineRenderer({
+    kind: OMP_GENERATED_IMAGE_KIND,
+    version: 1,
+    schema: ompGeneratedImagesSchema,
+    Component: OmpGeneratedImagesRow,
+  });
+  const removeGeneratedImageTransformer = client.addTimelineTransformer({
+    id: "omp-generated-images",
+    query: { itemType: "tool_call" },
+    transform({ item }) {
+      return transformOmpGeneratedImageItem(item);
     },
   });
   const loadStoreQuotas = createStoreQuotaLoader(
@@ -543,6 +562,8 @@ export default function contribute(client: PluginClientContext) {
     removeLspDiagnosticsRenderer();
     removeLspTransformer();
     removeImageTransformer();
+    removeGeneratedImageRenderer();
+    removeGeneratedImageTransformer();
     removeOpenConfig();
     removeConfigEntry();
     removeOpenWorkspace();
