@@ -4,8 +4,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
 import {
+  listOmpRuleFirings,
   listOmpRules,
   type OmpRule,
+  type OmpRuleFiring,
   type OmpRuleKind,
   setOmpRuleEnabled,
 } from "../shared/omp-rules";
@@ -25,6 +27,31 @@ const COPY_LABELS: Record<CopyState, string> = {
 };
 
 const RULES_KEY = ["paseo-omp", "rules"] as const;
+const FIRINGS_KEY = ["paseo-omp", "rule-firings"] as const;
+const MOST_FIRED = 3;
+
+function firingText(firing: OmpRuleFiring): string {
+  const times = firing.count === 1 ? "1 time" : `${firing.count} times`;
+  return firing.lastFiredAt
+    ? `${times}, last ${new Date(firing.lastFiredAt).toLocaleString()}`
+    : times;
+}
+
+function firedSummary(counted: {
+  firings: readonly OmpRuleFiring[];
+  sessions: number;
+  partial: boolean;
+}): string {
+  const top = counted.firings
+    .slice(0, MOST_FIRED)
+    .map((firing) => `${firing.name} (${firing.count})`)
+    .join(", ");
+  const sessions = `${counted.sessions} ${counted.sessions === 1 ? "session" : "sessions"}`;
+  const bound = counted.partial ? ", newest first, so some older firings are not counted" : "";
+  return top
+    ? `Most fired: ${top}. Counted from ${sessions}${bound}.`
+    : `No rule fired in the ${sessions} counted${bound}.`;
+}
 
 const GROUPS: readonly { kind: OmpRuleKind; title: string; empty: string }[] = [
   { kind: "watch", title: "Watch", empty: "No watch rules" },
@@ -62,6 +89,8 @@ function Detail({
 interface RuleSwitch {
   busy: boolean;
   toggle: (name: string, enabled: boolean) => void;
+  /** How often the rule fired in the counted sessions; null until they are counted. */
+  firingLabel: (name: string) => string | null;
 }
 
 function RuleRow({
@@ -90,6 +119,7 @@ function RuleRow({
     ["Files", rule.globs],
     ["Agents", rule.agents],
   ];
+  const fired = rules.firingLabel(rule.name);
   return (
     <View style={styles.setting}>
       <View style={styles.settingHeader}>
@@ -105,6 +135,7 @@ function RuleRow({
         />
       </View>
       {rule.description ? <Text style={styles.settingDescription}>{rule.description}</Text> : null}
+      {fired ? <Detail styles={styles} label="Fired" value={fired} /> : null}
       {details.map(([label, values]) =>
         values.length > 0 ? (
           <Detail key={label} styles={styles} label={label} value={values.join(", ")} />
@@ -186,6 +217,22 @@ export function OmpRulesSection({
     queryKey: [...RULES_KEY, ompStoreKey(store), cwd ?? "global"],
     queryFn: () => loadRules({ store, ...(cwd ? { cwd } : {}) }),
   });
+  const loadFirings = useRpc(listOmpRuleFirings);
+  const firingsQuery = useQuery({
+    queryKey: [...FIRINGS_KEY, ompStoreKey(store), cwd ?? "global"],
+    queryFn: () => loadFirings({ store, ...(cwd ? { cwd } : {}) }),
+    staleTime: 30_000,
+  });
+  const counted = firingsQuery.data;
+  const firingByName = new Map((counted?.firings ?? []).map((firing) => [firing.name, firing]));
+  function firingLabel(name: string): string | null {
+    const firing = firingByName.get(name);
+    if (firing) return firingText(firing);
+    return counted ? "Not fired in the sessions counted" : null;
+  }
+  function noisiestFirst(left: OmpRule, right: OmpRule): number {
+    return (firingByName.get(right.name)?.count ?? 0) - (firingByName.get(left.name)?.count ?? 0);
+  }
   const toggle = useMutation({
     mutationKey: [...RULES_KEY, "toggle"],
     mutationFn: (change: { name: string; enabled: boolean }) =>
@@ -199,6 +246,7 @@ export function OmpRulesSection({
   const rulesSwitch: RuleSwitch = {
     busy: toggle.isPending,
     toggle: (name, enabled) => toggle.mutate({ name, enabled }),
+    firingLabel,
   };
   const list = rules.data;
   const focused =
@@ -222,6 +270,7 @@ export function OmpRulesSection({
         </Text>
         <Text style={styles.muted}>Rule settings (ttsr.*) are in the Configuration tab.</Text>
       </View>
+      {counted ? <Text style={styles.muted}>{firedSummary(counted)}</Text> : null}
       {focusRule && list?.status === "ready" ? (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Rule named {focusRule}</Text>
@@ -252,8 +301,8 @@ export function OmpRulesSection({
         <>
           {GROUPS.map((group) => {
             const members = list.rules.filter((rule) => rule.kind === group.kind);
-            const own = members.filter((rule) => rule.source !== "builtin");
-            const builtin = members.filter((rule) => rule.source === "builtin");
+            const own = members.filter((rule) => rule.source !== "builtin").sort(noisiestFirst);
+            const builtin = members.filter((rule) => rule.source === "builtin").sort(noisiestFirst);
             return (
               <View key={group.kind} style={styles.card}>
                 <Text style={styles.cardTitle}>{group.title}</Text>

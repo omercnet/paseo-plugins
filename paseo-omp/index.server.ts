@@ -24,6 +24,7 @@ import {
   resolveMutateOmpPluginConfig,
 } from "./server/omp-plugins";
 import { readHostAppendPrompt, readOmpPromptFiles } from "./server/omp-prompt-files";
+import { resolveListOmpRuleFirings } from "./server/omp-rule-firings";
 import { resolveSetOmpRuleEnabled } from "./server/omp-rule-switch";
 import { resolveTestOmpRules } from "./server/omp-rule-test";
 import { resolveListOmpRules } from "./server/omp-rules";
@@ -99,7 +100,12 @@ import {
   mutateOmpPluginConfig,
 } from "./shared/omp-plugins";
 import { getOmpPromptFiles } from "./shared/omp-prompt-files";
-import { listOmpRules, setOmpRuleEnabled, testOmpRules } from "./shared/omp-rules";
+import {
+  listOmpRuleFirings,
+  listOmpRules,
+  setOmpRuleEnabled,
+  testOmpRules,
+} from "./shared/omp-rules";
 import { listOmpSecurity } from "./shared/omp-security";
 import { listOmpSettings, updateOmpSettings } from "./shared/omp-settings";
 import { deleteOmpManagedSkill, listOmpSkills, setOmpSkillEnabled } from "./shared/omp-skills";
@@ -229,6 +235,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpRules, scoped(resolveListOmpRules));
   server.handle(setOmpRuleEnabled, scoped(resolveSetOmpRuleEnabled));
   server.handle(testOmpRules, scoped(resolveTestOmpRules));
+  server.handle(listOmpRuleFirings, scoped(resolveListOmpRuleFirings));
   server.handle(listOmpExtensions, scoped(resolveListOmpExtensions));
   server.handle(setOmpExtensionEnabled, scoped(resolveSetOmpExtensionEnabled));
   server.handle(listOmpSecurity, scoped(resolveListOmpSecurity));

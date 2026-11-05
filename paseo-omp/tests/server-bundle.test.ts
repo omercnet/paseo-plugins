@@ -199,6 +199,7 @@ describe("plugin server bundle", () => {
             "paseo-omp.set-skill-enabled",
             "paseo-omp.set-rule-enabled",
             "paseo-omp.test-rules",
+            "paseo-omp.rule-firings",
             "paseo-omp.delete-managed-skill",
           ]),
         );
