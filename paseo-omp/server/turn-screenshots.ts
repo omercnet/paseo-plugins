@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { z } from "zod";
 import { OMP_IMAGE_TIMELINE_KIND, ompImageTimelineSchema } from "../shared/provider-image";
 import { isOmpImageMimeType, isValidImagePayload, type OmpImageMimeType } from "./provider/image";
@@ -100,10 +101,14 @@ export async function readOmpScreenshots(
   }
   if (!id) return;
   const unique = new Map(blobs.map((blob) => [blob.hash, blob]));
-  const images = [...unique.values()].slice(0, MAX_SCREENSHOTS).flatMap((blob) => {
+  const images: z.infer<typeof ompImageTimelineSchema>["images"] = [];
+  for (const blob of unique.values()) {
+    if (images.length >= MAX_SCREENSHOTS) break;
     const ref = copyToCache(directory, blob, cache);
-    return ref ? [{ id: ref.slice(0, 16), ref, mimeType: blob.mimeType }] : [];
-  });
+    if (ref) images.push({ id: ref.slice(0, 16), ref, mimeType: blob.mimeType });
+    // Each copy reads and hashes up to 6 MiB synchronously; let other daemon work run between images.
+    await yieldToEventLoop();
+  }
   if (images.length === 0) return;
   return {
     id: `screenshots:${id}`,

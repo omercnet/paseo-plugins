@@ -133,4 +133,22 @@ describe("OMP turn screenshots", () => {
       await readOmpScreenshots("sessions/project/session.jsonl", SINCE, UNTIL, cache),
     ).toBeUndefined();
   });
+
+  test("counts only images that were copied toward the per-turn limit", async () => {
+    const missing = Array.from({ length: 17 }, (_, index) => sha256(png(`missing ${index}`)));
+    const valid = Array.from({ length: 18 }, (_, index) => png(`valid ${index}`));
+    const file = session([
+      toolResult("many", "2026-11-05T09:10:05.000Z", [
+        ...missing.map((hash) => image(hash)),
+        ...valid.map((bytes) => image(blob(bytes))),
+      ]),
+    ]);
+
+    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache);
+
+    const images = ompImageTimelineSchema.parse(row?.data).images;
+    expect(images).toHaveLength(16);
+    const refs = images.map((entry) => ("ref" in entry ? entry.ref : undefined));
+    expect(refs).toEqual(valid.slice(0, 16).map(sha256));
+  });
 });
