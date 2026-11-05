@@ -358,8 +358,10 @@ async function listRulesIn(
   const watch = (watchResult as PromiseFulfilledResult<WatchRule[]>).value;
   const disabled = (disabledResult as PromiseFulfilledResult<string[]>).value;
   const builtinRules = (builtinResult as PromiseFulfilledResult<boolean>).value;
-  const disabledNames = [...new Set(clipList(disabled))];
-  const hidden = new Set([...watch.map((rule) => rule.name), ...disabledNames]);
+  // OMP trims each name and matches the whole list; only the displayed names are clipped.
+  const allDisabled = [...new Set(disabled.map((name) => name.trim()).filter(Boolean))];
+  const disabledNames = clipList(allDisabled);
+  const hidden = new Set([...watch.map((rule) => rule.name), ...allDisabled]);
   return {
     status: "ready",
     rules: [

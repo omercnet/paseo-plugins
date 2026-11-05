@@ -175,6 +175,20 @@ describe("OMP rule listing", () => {
     expect(result.rules.find((entry) => entry.name === "shared")?.description).toBe("Project wins");
   });
 
+  test("hides a rule OMP turns off by a padded name or one past the display limit", async () => {
+    const projectRules = join(project, ".omp", "rules");
+    await rule(projectRules, "padded.md", "---\nalwaysApply: true\n---\nx\n");
+    await rule(projectRules, "late.md", "---\ndescription: Late\n---\nx\n");
+    await rule(projectRules, "kept.md", "---\ndescription: Kept\n---\nx\n");
+    const filler = Array.from({ length: 60 }, (_, index) => `filler-${index}`);
+    const { dependencies } = fakeOmp({ disabled: [" padded ", ...filler, "late"] });
+
+    const result = await listOmpRulesWithDependencies({ cwd: project }, dependencies);
+
+    expect(result.status === "ready" && result.rules.map((entry) => entry.name)).toEqual(["kept"]);
+    expect(result.status === "ready" && result.disabled[0]).toBe("padded");
+  });
+
   test("does not follow a symlinked rule file", async () => {
     await rule(root, "target.md", "---\ndescription: Linked\n---\nbody\n");
     await mkdir(join(agentDir, "rules"), { recursive: true });
