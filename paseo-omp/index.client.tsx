@@ -4,6 +4,7 @@ import type {
   PluginClientContext,
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
+import { OmpAstEditCard } from "./client/ast-edit";
 import { ConfigSidebarItem } from "./client/config-sidebar";
 import { OmpGeneratedImagesRow } from "./client/generated-image";
 import { OMP_ICON } from "./client/hub-icon";
@@ -39,6 +40,7 @@ import {
   configStoreFromParams,
 } from "./client/sidebar-compat";
 import { OmpSubagentStrip } from "./client/subagents-strip";
+import { OMP_AST_EDIT_KIND, ompAstEditSchema, transformOmpAstEditItem } from "./shared/ast-edit";
 import {
   type ComposerPillSettings,
   composerPillSettings,
@@ -272,6 +274,19 @@ export default function contribute(client: PluginClientContext) {
     query: { itemType: "tool_call" },
     transform({ item }) {
       return transformOmpGeneratedImageItem(item);
+    },
+  });
+  const removeAstEditRenderer = client.addTimelineRenderer({
+    kind: OMP_AST_EDIT_KIND,
+    version: 1,
+    schema: ompAstEditSchema,
+    Component: OmpAstEditCard,
+  });
+  const removeAstEditTransformer = client.addTimelineTransformer({
+    id: "omp-ast-edit",
+    query: { itemType: "tool_call" },
+    transform({ item }) {
+      return transformOmpAstEditItem(item);
     },
   });
   const loadStoreQuotas = createStoreQuotaLoader(
@@ -564,6 +579,8 @@ export default function contribute(client: PluginClientContext) {
     removeImageTransformer();
     removeGeneratedImageRenderer();
     removeGeneratedImageTransformer();
+    removeAstEditRenderer();
+    removeAstEditTransformer();
     removeOpenConfig();
     removeConfigEntry();
     removeOpenWorkspace();
