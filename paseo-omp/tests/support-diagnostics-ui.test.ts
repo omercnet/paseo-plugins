@@ -111,6 +111,7 @@ describe("OMP Help surface state", () => {
       "rules",
       "skills",
       "extensions",
+      "security",
       "configuration",
       "diagnostics",
       "help",

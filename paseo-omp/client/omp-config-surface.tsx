@@ -56,6 +56,8 @@ import {
   StructuredRoutingEditor,
 } from "./omp-routing-editor";
 import { OmpRulesSection } from "./omp-rules-section";
+import { OmpSecuritySection } from "./omp-security-section";
+import { SECURITY_QUERY_KEY } from "./omp-security-state";
 import { OmpSkillsSection } from "./omp-skills-section";
 import { OmpStorePicker } from "./omp-store-picker";
 import { ompStoreKey } from "./omp-store-state";
@@ -1249,6 +1251,7 @@ function OmpConfigContent({
       queryClient.setQueryData(settingsQueryKey, result.catalog);
       void queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "config"] });
+      void queryClient.invalidateQueries({ queryKey: SECURITY_QUERY_KEY });
       if (
         !result.conflict &&
         !result.failed &&
@@ -1372,6 +1375,9 @@ function OmpConfigContent({
       ) : null}
       {view === "extensions" ? (
         <OmpExtensionsSection theme={theme} styles={styles} cwd={cwd} store={store} />
+      ) : null}
+      {view === "security" && cwd ? (
+        <OmpSecuritySection styles={styles} cwd={cwd} store={store} />
       ) : null}
       {view === "composer" && !cwd && onComposerPillSettingsChange ? (
         <ComposerPillSettingsSection theme={theme} onChange={onComposerPillSettingsChange} />
