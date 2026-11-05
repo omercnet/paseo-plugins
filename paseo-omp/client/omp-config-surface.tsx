@@ -588,7 +588,10 @@ function ProviderHealthSection({
         theme={theme}
         styles={styles}
         store={store}
-        onRefreshed={() => refresh.mutate()}
+        onRefreshed={() => {
+          void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "models"] });
+          refresh.mutate();
+        }}
       />
 
       {providers.isLoading ? <Text style={styles.muted}>Loading provider status…</Text> : null}
