@@ -10,8 +10,11 @@ import { resolveListOmpConfig } from "./server/omp-config";
 import { OmpMcps } from "./server/omp-mcps";
 import { resolveListOmpModels } from "./server/omp-models";
 import {
+  resolveBrowseOmpMarketplace,
   resolveInspectOmpPluginConfig,
+  resolveListOmpMarketplaces,
   resolveListOmpPlugins,
+  resolveMutateOmpMarketplace,
   resolveMutateOmpPlugin,
   resolveMutateOmpPluginConfig,
 } from "./server/omp-plugins";
@@ -69,8 +72,11 @@ import {
 } from "./shared/omp-mcps";
 import { listOmpModels } from "./shared/omp-models";
 import {
+  browseOmpMarketplace,
   inspectOmpPluginConfig,
+  listOmpMarketplaces,
   listOmpPlugins,
+  mutateOmpMarketplace,
   mutateOmpPlugin,
   mutateOmpPluginConfig,
 } from "./shared/omp-plugins";
@@ -194,6 +200,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpConfig, scoped(resolveListOmpConfig));
   server.handle(listOmpModels, scoped(resolveListOmpModels));
   server.handle(listOmpPlugins, scoped(resolveListOmpPlugins));
+  server.handle(listOmpMarketplaces, scoped(resolveListOmpMarketplaces));
+  server.handle(browseOmpMarketplace, scoped(resolveBrowseOmpMarketplace));
+  server.handle(mutateOmpMarketplace, scoped(resolveMutateOmpMarketplace));
   server.handle(listOmpRules, scoped(resolveListOmpRules));
   server.handle(listOmpSkills, scoped(resolveListOmpSkills));
   server.handle(setOmpSkillEnabled, scoped(resolveSetOmpSkillEnabled));

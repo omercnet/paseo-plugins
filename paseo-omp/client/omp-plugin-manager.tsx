@@ -1,15 +1,19 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { TextInput } from "@getpaseo/plugin/client/ui";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TextStyle, ViewStyle } from "react-native";
 import { Pressable, Switch, Text, View } from "react-native";
 import {
+  browseOmpMarketplace,
   inspectOmpPluginConfig,
+  listOmpMarketplaces,
   listOmpPlugins,
+  mutateOmpMarketplace,
   mutateOmpPlugin,
   mutateOmpPluginConfig,
   type OmpInstalledPlugin,
+  type OmpMarketplaceMutation,
   type OmpPluginConfigMutation,
   OmpPluginConfigMutationSchema,
   type OmpPluginConfigSetting,
@@ -22,9 +26,12 @@ import type { OmpStore } from "../shared/omp-store";
 import { ompStoreKey } from "./omp-store-state";
 
 const PLUGINS_QUERY_KEY = ["paseo-omp", "plugins"] as const;
+const MARKETPLACES_QUERY_KEY = ["paseo-omp", "marketplaces"] as const;
+const CATALOG_ROW_LIMIT = 50;
 
 type ConfirmationOrigin =
   | { surface: "install" }
+  | { surface: "catalog" }
   | { surface: "plugin"; key: string }
   | { surface: "config"; key: string };
 
@@ -39,6 +46,13 @@ type PendingConfirmation =
   | {
       kind: "config";
       input: OmpPluginConfigMutation;
+      origin: ConfirmationOrigin;
+      title: string;
+      warning: string;
+    }
+  | {
+      kind: "marketplace";
+      input: OmpMarketplaceMutation;
       origin: ConfirmationOrigin;
       title: string;
       warning: string;
@@ -264,7 +278,7 @@ function ConfirmationPanel({
           label={busy ? "Applying…" : confirmLabel}
           disabled={busy}
           primary
-          danger={action === "uninstall" || action === "delete"}
+          danger={action === "uninstall" || action === "delete" || action === "remove"}
           styles={styles}
           onPress={onConfirm}
         />
@@ -688,6 +702,39 @@ export function OmpPluginManagerSection({
   const [inspected, setInspected] = useState<OmpPluginConfigState | null>(null);
   const [configEditGenerations, setConfigEditGenerations] = useState<Record<string, number>>({});
   const inspectionGeneration = useRef(0);
+  const loadMarketplaces = useRpc(listOmpMarketplaces);
+  const browseMarketplace = useRpc(browseOmpMarketplace);
+  const mutateMarketplace = useRpc(mutateOmpMarketplace);
+  const [catalogSource, setCatalogSource] = useState("");
+  const [browsing, setBrowsing] = useState<string | null>(null);
+  const marketplaces = useQuery({
+    queryKey: [...MARKETPLACES_QUERY_KEY, ompStoreKey(store)],
+    queryFn: () => loadMarketplaces({ store }),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const catalog = useQuery({
+    queryKey: [...MARKETPLACES_QUERY_KEY, "catalog", ompStoreKey(store), browsing],
+    queryFn:
+      browsing === null ? skipToken : () => browseMarketplace({ store, marketplace: browsing }),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const marketplaceMutation = useMutation({
+    mutationKey: ["paseo-omp", "marketplace", ompStoreKey(store)],
+    mutationFn: (input: OmpMarketplaceMutation) => mutateMarketplace({ ...input, store }),
+    onSuccess: (result, input) => {
+      queryClient.setQueryData([...MARKETPLACES_QUERY_KEY, ompStoreKey(store)], result.state);
+      setNotice({ tone: result.ok ? "success" : "error", text: result.message });
+      if (result.ok && input.action === "add") setCatalogSource("");
+      if (result.ok && input.action === "remove" && input.marketplace === browsing) {
+        setBrowsing(null);
+      }
+      setConfirmation(null);
+    },
+    onError: () => {
+      setNotice({ tone: "error", text: "The marketplace operation could not be completed." });
+      setConfirmation(null);
+    },
+  });
   const plugins = useQuery({
     queryKey: [...PLUGINS_QUERY_KEY, ompStoreKey(store), cwd ?? "global"],
     queryFn: () => loadPlugins(context),
@@ -744,7 +791,7 @@ export function OmpPluginManagerSection({
       setConfirmation(null);
     },
   });
-  const busy = mutation.isPending || configMutation.isPending;
+  const busy = mutation.isPending || configMutation.isPending || marketplaceMutation.isPending;
   useEffect(() => {
     if (!confirmation) return;
     const { origin } = confirmation;
@@ -816,9 +863,39 @@ export function OmpPluginManagerSection({
     setConfirmation(null);
     configInspection.mutate({ plugin, generation });
   };
+  const requestCatalogAdd = () => {
+    const parsed = OmpPluginInstallSourceSchema.safeParse(catalogSource);
+    if (!parsed.success) {
+      setNotice({
+        tone: "error",
+        text: "Enter one valid Git source, URL, or local path without options or control characters.",
+      });
+      return;
+    }
+    setNotice(null);
+    setConfirmation({
+      kind: "marketplace",
+      input: { action: "add", source: parsed.data, store },
+      origin: { surface: "catalog" },
+      title: `Add marketplace ${parsed.data}?`,
+      warning:
+        "Plugins from a marketplace are trusted code. Adding it fetches the catalog on the daemon host, and any plugin you install from it can run code with that host's access.",
+    });
+  };
+  const requestCatalogRemove = (name: string) => {
+    setNotice(null);
+    setConfirmation({
+      kind: "marketplace",
+      input: { action: "remove", marketplace: name, store },
+      origin: { surface: "catalog" },
+      title: `Remove marketplace ${name}?`,
+      warning: "Removes the catalog and its cached copy. Installed plugins are not uninstalled.",
+    });
+  };
   const applyConfirmation = () => {
     if (!confirmation) return;
     if (confirmation.kind === "plugin") mutation.mutate(confirmation.input);
+    else if (confirmation.kind === "marketplace") marketplaceMutation.mutate(confirmation.input);
     else configMutation.mutate(confirmation.input);
   };
 
@@ -872,6 +949,118 @@ export function OmpPluginManagerSection({
               primary
               styles={styles}
               onPress={requestInstall}
+            />
+          </View>
+        )}
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Marketplaces</Text>
+        <Text style={styles.muted}>
+          Catalogs of installable OMP plugins. Browse one to fill the install box above.
+        </Text>
+        {marketplaces.isLoading ? <Text style={styles.muted}>Loading marketplaces…</Text> : null}
+        {marketplaces.error || marketplaces.data?.error ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {marketplaces.data?.error ?? "Could not load OMP marketplaces."}
+          </Text>
+        ) : null}
+        {marketplaces.data?.available && marketplaces.data.marketplaces.length === 0 ? (
+          <Text style={styles.muted}>No marketplaces configured.</Text>
+        ) : null}
+        {marketplaces.data?.marketplaces.map((marketplace) => (
+          <View key={marketplace.name} style={styles.setting}>
+            <View style={styles.cardHeader}>
+              <View style={{ flexShrink: 1 }}>
+                <Text style={styles.settingName}>{marketplace.name}</Text>
+                <Text selectable style={styles.settingDescription}>
+                  {marketplace.source}
+                </Text>
+              </View>
+              <View style={styles.actions}>
+                <ActionButton
+                  label={browsing === marketplace.name ? "Hide" : "Browse"}
+                  disabled={busy || confirmation !== null}
+                  styles={styles}
+                  onPress={() =>
+                    setBrowsing(browsing === marketplace.name ? null : marketplace.name)
+                  }
+                />
+                <ActionButton
+                  label="Remove"
+                  disabled={busy || confirmation !== null}
+                  danger
+                  styles={styles}
+                  onPress={() => requestCatalogRemove(marketplace.name)}
+                />
+              </View>
+            </View>
+            {browsing === marketplace.name ? (
+              <View style={styles.settings}>
+                {catalog.isFetching ? <Text style={styles.muted}>Loading catalog…</Text> : null}
+                {catalog.error || catalog.data?.error ? (
+                  <Text accessibilityRole="alert" style={styles.error}>
+                    {catalog.data?.error ?? "Could not load this catalog."}
+                  </Text>
+                ) : null}
+                {catalog.data?.available && catalog.data.plugins.length === 0 ? (
+                  <Text style={styles.muted}>This catalog lists no plugins.</Text>
+                ) : null}
+                {catalog.data?.plugins.slice(0, CATALOG_ROW_LIMIT).map((plugin) => (
+                  <View key={plugin.id} style={styles.cardHeader}>
+                    <View style={{ flexShrink: 1 }}>
+                      <Text style={styles.settingName}>
+                        {plugin.id}
+                        {plugin.version ? ` · ${plugin.version}` : ""}
+                      </Text>
+                      {plugin.description ? (
+                        <Text style={styles.settingDescription}>{plugin.description}</Text>
+                      ) : null}
+                    </View>
+                    <ActionButton
+                      label="Use"
+                      disabled={busy || confirmation !== null}
+                      styles={styles}
+                      onPress={() => setSource(plugin.id)}
+                    />
+                  </View>
+                ))}
+                {catalog.data && catalog.data.plugins.length > CATALOG_ROW_LIMIT ? (
+                  <Text style={styles.muted}>
+                    Showing {CATALOG_ROW_LIMIT} of {catalog.data.plugins.length} plugins.
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        ))}
+        <TextInput
+          accessibilityLabel="OMP marketplace source"
+          editable={!busy && confirmation === null}
+          value={catalogSource}
+          onChangeText={setCatalogSource}
+          placeholder="owner/repo, Git URL, or local path"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={styles.input}
+        />
+        {confirmation?.origin.surface === "catalog" ? (
+          <ConfirmationPanel
+            confirmation={confirmation}
+            busy={busy}
+            styles={styles}
+            onCancel={() => setConfirmation(null)}
+            onConfirm={applyConfirmation}
+          />
+        ) : (
+          <View style={styles.actions}>
+            <ActionButton
+              label="Review add"
+              disabled={busy || confirmation !== null || catalogSource.length === 0}
+              primary
+              styles={styles}
+              onPress={requestCatalogAdd}
             />
           </View>
         )}
