@@ -1,3 +1,4 @@
+import type { OmpPromptFiles } from "../shared/omp-prompt-files";
 import type {
   OmpLspDiagnostics,
   OmpMcpDiagnostics,
@@ -258,4 +259,31 @@ export function selectKnownOmpProviders(
         ]
       : [],
   );
+}
+
+export interface PromptFileNotice {
+  file: "APPEND_SYSTEM.md" | "SYSTEM.md";
+  text: string;
+}
+
+/**
+ * Paseo's built-in omp provider passes the host Append system prompt as `--append-system-prompt`
+ * on create and resume, which makes OMP skip a discovered APPEND_SYSTEM.md. With no host prompt
+ * there is no APPEND_SYSTEM.md notice; per-agent prompts are not visible to a plugin.
+ */
+export function promptFileNotices(files: OmpPromptFiles): PromptFileNotice[] {
+  const notices: PromptFileNotice[] = [];
+  if (files.appendSystemFile && files.hostAppendPrompt) {
+    notices.push({
+      file: "APPEND_SYSTEM.md",
+      text: "Paseo's Append system prompt is set, so agents on the built-in omp provider and newly created agents on the omp-plugin provider ignore this file.",
+    });
+  }
+  if (files.systemFile) {
+    notices.push({
+      file: "SYSTEM.md",
+      text: "Active. It replaces OMP's default prompt, so OMP's default tool policy is off.",
+    });
+  }
+  return notices;
 }

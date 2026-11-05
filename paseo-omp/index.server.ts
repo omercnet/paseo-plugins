@@ -20,6 +20,7 @@ import {
   resolveMutateOmpPlugin,
   resolveMutateOmpPluginConfig,
 } from "./server/omp-plugins";
+import { readHostAppendPrompt, readOmpPromptFiles } from "./server/omp-prompt-files";
 import { resolveListOmpRules } from "./server/omp-rules";
 import { resolveListOmpSettings, resolveUpdateOmpSettings } from "./server/omp-settings";
 import {
@@ -85,6 +86,7 @@ import {
   mutateOmpPlugin,
   mutateOmpPluginConfig,
 } from "./shared/omp-plugins";
+import { getOmpPromptFiles } from "./shared/omp-prompt-files";
 import { listOmpRules } from "./shared/omp-rules";
 import { listOmpSettings, updateOmpSettings } from "./shared/omp-settings";
 import { deleteOmpManagedSkill, listOmpSkills, setOmpSkillEnabled } from "./shared/omp-skills";
@@ -220,6 +222,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpSettings, scoped(resolveListOmpSettings));
   server.handle(updateOmpSettings, scoped(resolveUpdateOmpSettings));
   server.handle(getOmpProviderHealth, scoped(resolveGetOmpProviderHealth));
+  // Not `scoped`: the handler also needs the host context to read Paseo's Append system prompt.
+  server.handle(getOmpPromptFiles, ({ store, cwd }, { paseo }) =>
+    withOmpStore(store, async () => readOmpPromptFiles(cwd, await readHostAppendPrompt(paseo))),
+  );
   server.handle(getOmpUpdateStatus, resolveGetOmpUpdateStatus);
   server.handle(installOmpUpdate, resolveInstallOmpUpdate);
   server.handle(getOmpImage, (input) => resolveGetOmpImage(input, ompImageCache()));

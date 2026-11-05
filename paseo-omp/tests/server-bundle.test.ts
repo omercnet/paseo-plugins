@@ -218,6 +218,7 @@ describe("plugin server bundle", () => {
             "paseo-omp.cancel-mcp-auth",
             "paseo-omp.get-update-status",
             "paseo-omp.install-update",
+            "paseo-omp.get-prompt-files",
           ]),
         );
         expect(settings).toEqual([
