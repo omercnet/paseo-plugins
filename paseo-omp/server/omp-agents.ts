@@ -41,6 +41,9 @@ export interface OmpAgentDependencies {
   userAgentsDir(): string;
 }
 
+/** Names OMP reserves for itself and never registers from an agent file. */
+const RESERVED_AGENT_NAMES: readonly string[] = ["main", "sub"];
+
 /** The name OMP registers for an agent file: its frontmatter `name`, which needs a `description`. */
 async function agentNameFromFile(path: string): Promise<string | null> {
   const metadata = await stat(path);
@@ -56,7 +59,11 @@ async function agentNameFromFile(path: string): Promise<string | null> {
   if (fields === null || typeof fields !== "object") return null;
   const { name, description } = fields as Record<string, unknown>;
   if (typeof description !== "string" || description.length === 0) return null;
-  const parsed = OmpAgentNameSchema.safeParse(typeof name === "string" ? name.trim() : name);
+  if (typeof name !== "string" || RESERVED_AGENT_NAMES.includes(name.trim().toLowerCase())) {
+    return null;
+  }
+  // OMP keeps the name as written; one with surrounding whitespace cannot be routed, so skip it.
+  const parsed = OmpAgentNameSchema.safeParse(name);
   return parsed.success ? parsed.data : null;
 }
 

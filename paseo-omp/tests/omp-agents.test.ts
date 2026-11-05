@@ -51,9 +51,9 @@ describe("OMP agent discovery", () => {
     });
   });
 
-  test("uses the frontmatter name OMP registers, not the file name", async () => {
+  test("uses the frontmatter name OMP registers, exactly as written, not the file name", async () => {
     await writeFile(join(userDir, "helper.md"), agentFile("reviewer"));
-    await writeFile(join(userDir, "spaced.md"), agentFile("  padded  "));
+    await writeFile(join(userDir, "cased.md"), agentFile("Reviewer"));
 
     const result = await listOmpAgentsWithDependencies(
       {},
@@ -61,9 +61,24 @@ describe("OMP agent discovery", () => {
     );
 
     expect(result.agents).toEqual([
-      { name: "padded", source: "user" },
       { name: "reviewer", source: "user" },
+      { name: "Reviewer", source: "user" },
     ]);
+  });
+
+  test("skips reserved names and names that cannot be routed as written", async () => {
+    await writeFile(join(userDir, "a.md"), agentFile("main"));
+    await writeFile(join(userDir, "b.md"), agentFile("MAIN"));
+    await writeFile(join(userDir, "c.md"), agentFile('" sub "'));
+    await writeFile(join(userDir, "d.md"), agentFile('"  padded  "'));
+    await writeFile(join(userDir, "e.md"), agentFile("fine"));
+
+    const result = await listOmpAgentsWithDependencies(
+      {},
+      { bundledNames: async () => [], userAgentsDir: () => userDir },
+    );
+
+    expect(result.agents).toEqual([{ name: "fine", source: "user" }]);
   });
 
   test("skips files OMP would not load as agents", async () => {
