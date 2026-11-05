@@ -120,20 +120,26 @@ describe("resolveGeneratedImages", () => {
     writeFileSync(join(temp, "notes.png"), PNG);
     writeFileSync(join(temp, "omp-image-text.png"), "plain text, not an image");
     writeFileSync(join(temp, "omp-image-wrongtype.jpg"), PNG);
-    symlinkSync(secret, join(temp, "omp-image-link.png"));
     mkdirSync(join(temp, "omp-image-dir.png"));
     const refused = [
       secret,
       join(temp, "notes.png"),
       join(temp, "omp-image-text.png"),
       join(temp, "omp-image-wrongtype.jpg"),
-      join(temp, "omp-image-link.png"),
       join(temp, "omp-image-dir.png"),
       join(temp, "omp-image-absent.png"),
       join(temp, "..", "tmp", "..", "elsewhere", "omp-image-outside.png"),
       "omp-image-relative.png",
     ];
     expect(resolve(...refused)).toEqual(refused.map(() => ({ status: "missing" })));
+  });
+
+  test.skipIf(process.platform === "win32")("refuses a symlink named like an image", () => {
+    const target = join(root, "omp-image-target.png");
+    writeFileSync(target, PNG);
+    const link = join(temp, "omp-image-link.png");
+    symlinkSync(target, link);
+    expect(resolve(link)).toEqual([{ status: "missing" }]);
   });
 
   test.skipIf(process.platform === "win32")("does not hang on a FIFO named like an image", () => {
