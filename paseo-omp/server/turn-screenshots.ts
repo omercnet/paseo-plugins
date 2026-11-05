@@ -10,12 +10,18 @@ import { readTail } from "./rule-notices";
 import type { OmpTurnRow } from "./turn-rows";
 
 const BLOB_REFERENCE = /^blob:sha256:([0-9a-f]{64})$/u;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/u;
+/** OMP moves image data of at least this many base64 characters into a blob; smaller stays inline. */
+const MAX_INLINE_BASE64_LENGTH = 1_024;
 const MAX_SCREENSHOTS = 16;
 const LABEL = "Screenshots";
 
-interface ScreenshotBlob {
+interface ScreenshotImage {
+  /** SHA-256 of the image bytes; names the blob file. */
   hash: string;
   mimeType: OmpImageMimeType;
+  /** Present for an image persisted inline instead of as a blob. */
+  bytes?: Buffer;
 }
 
 /** `<agent dir>/sessions/<project>/<session>.jsonl` keeps its image blobs in `<agent dir>/blobs`. */
@@ -40,10 +46,10 @@ const evalResultEntrySchema = z.object({
   }),
 });
 
-/** One persisted `eval` tool result: its image blocks as blob references. */
+/** One persisted `eval` tool result: its image blocks, as blob references or small inline data. */
 function parseEvalResult(
   line: string,
-): { id: string; at: number; blobs: ScreenshotBlob[] } | undefined {
+): { id: string; at: number; images: ScreenshotImage[] } | undefined {
   let json: unknown;
   try {
     json = JSON.parse(line);
@@ -52,32 +58,38 @@ function parseEvalResult(
   }
   const entry = evalResultEntrySchema.safeParse(json);
   if (!entry.success) return undefined;
-  const blobs = entry.data.message.content.flatMap((block): ScreenshotBlob[] => {
-    const hash = block.type === "image" ? BLOB_REFERENCE.exec(block.data ?? "")?.[1] : undefined;
+  const images = entry.data.message.content.flatMap((block): ScreenshotImage[] => {
     const mimeType = block.mimeType ?? "";
-    return hash && isOmpImageMimeType(mimeType) ? [{ hash, mimeType }] : [];
+    const data = block.data ?? "";
+    if (block.type !== "image" || !isOmpImageMimeType(mimeType)) return [];
+    const hash = BLOB_REFERENCE.exec(data)?.[1];
+    if (hash) return [{ hash, mimeType }];
+    if (data.length > MAX_INLINE_BASE64_LENGTH || !BASE64.test(data)) return [];
+    const bytes = Buffer.from(data, "base64");
+    return [{ hash: createHash("sha256").update(bytes).digest("hex"), mimeType, bytes }];
   });
-  return { id: entry.data.id, at: Date.parse(entry.data.timestamp), blobs };
+  return { id: entry.data.id, at: Date.parse(entry.data.timestamp), images };
 }
 
 function copyToCache(
   directory: string,
-  blob: ScreenshotBlob,
+  image: ScreenshotImage,
   cache: OmpImageCache,
 ): string | undefined {
-  const bytes = readRegularFile(join(directory, blob.hash), MAX_CACHED_IMAGE_BYTES);
-  if (!bytes || createHash("sha256").update(bytes).digest("hex") !== blob.hash) return undefined;
+  const bytes = image.bytes ?? readRegularFile(join(directory, image.hash), MAX_CACHED_IMAGE_BYTES);
+  if (!bytes || createHash("sha256").update(bytes).digest("hex") !== image.hash) return undefined;
   // Only the magic bytes are checked, so encode only the header (12 bytes are 16 characters).
-  if (!isValidImagePayload(bytes.subarray(0, 12).toString("base64"), blob.mimeType, 16)) {
+  if (!isValidImagePayload(bytes.subarray(0, 12).toString("base64"), image.mimeType, 16)) {
     return undefined;
   }
-  return cache.store(bytes, blob.mimeType);
+  return cache.store(bytes, image.mimeType);
 }
 
 /**
  * The `eval` screenshots of the turn between `since` and `until` (epoch ms). OMP persists each as
- * a content-addressed blob next to its sessions; they are copied into the image cache so the
- * row can name them by cache reference and the stock image renderer shows them.
+ * a content-addressed blob next to its sessions (or inline when it is tiny); they are copied into
+ * the image cache so the row can name them by cache reference and the stock image renderer shows
+ * them.
  */
 export async function readOmpScreenshots(
   sessionFile: string,
@@ -90,22 +102,22 @@ export async function readOmpScreenshots(
   const tail = await readTail(sessionFile);
   if (!tail) return;
   let id: string | undefined;
-  const blobs: ScreenshotBlob[] = [];
+  const found: ScreenshotImage[] = [];
   for (const line of tail.split("\n")) {
-    if (!line.includes("blob:sha256:")) continue;
+    if (!line.includes("toolResult")) continue;
     const result = parseEvalResult(line);
-    if (!result || !(result.at >= since && result.at <= until) || result.blobs.length === 0)
+    if (!result || !(result.at >= since && result.at <= until) || result.images.length === 0)
       continue;
     id ??= result.id;
-    blobs.push(...result.blobs);
+    found.push(...result.images);
   }
   if (!id) return;
-  const unique = new Map(blobs.map((blob) => [blob.hash, blob]));
+  const unique = new Map(found.map((image) => [image.hash, image]));
   const images: z.infer<typeof ompImageTimelineSchema>["images"] = [];
-  for (const blob of unique.values()) {
+  for (const image of unique.values()) {
     if (images.length >= MAX_SCREENSHOTS) break;
-    const ref = copyToCache(directory, blob, cache);
-    if (ref) images.push({ id: ref.slice(0, 16), ref, mimeType: blob.mimeType });
+    const ref = copyToCache(directory, image, cache);
+    if (ref) images.push({ id: ref.slice(0, 16), ref, mimeType: image.mimeType });
     // Each copy reads and hashes up to 6 MiB synchronously; let other daemon work run between images.
     await yieldToEventLoop();
   }

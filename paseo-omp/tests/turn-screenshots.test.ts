@@ -89,9 +89,6 @@ describe("OMP turn screenshots", () => {
       toolResult("other-tool", "2026-11-05T09:10:05.000Z", [image(blob(png("other")))], "read"),
       toolResult("late", "2026-11-05T09:11:00.000Z", [image(blob(png("late")))]),
       toolResult("text-only", "2026-11-05T09:10:06.000Z", [{ type: "text", text: "no image" }]),
-      toolResult("inline", "2026-11-05T09:10:07.000Z", [
-        { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
-      ]),
       toolResult("kept", "2026-11-05T09:10:08.000Z", [image(blob(bytes))]),
     ]);
 
@@ -99,6 +96,47 @@ describe("OMP turn screenshots", () => {
 
     expect(row?.id).toBe("screenshots:kept");
     expect(ompImageTimelineSchema.parse(row?.data).images).toHaveLength(1);
+  });
+
+  test("keeps a tiny image that OMP persisted inline instead of as a blob", async () => {
+    const bytes = png("tiny inline image");
+    const file = session([
+      toolResult("inline", "2026-11-05T09:10:07.000Z", [
+        { type: "image", data: bytes.toString("base64"), mimeType: "image/png" },
+      ]),
+    ]);
+
+    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache);
+
+    expect(row?.id).toBe("screenshots:inline");
+    expect(ompImageTimelineSchema.parse(row?.data).images).toEqual([
+      { id: sha256(bytes).slice(0, 16), ref: sha256(bytes), mimeType: "image/png" },
+    ]);
+    expect(cache.read(sha256(bytes), "image/png")?.equals(bytes)).toBe(true);
+  });
+
+  test("ignores inline data that is not a small, valid image", async () => {
+    const file = session([
+      toolResult("not-image", "2026-11-05T09:10:07.000Z", [
+        {
+          type: "image",
+          data: Buffer.from("plain text").toString("base64"),
+          mimeType: "image/png",
+        },
+      ]),
+      toolResult("too-big", "2026-11-05T09:10:08.000Z", [
+        {
+          type: "image",
+          data: Buffer.concat([png("x"), Buffer.alloc(2_000)]).toString("base64"),
+          mimeType: "image/png",
+        },
+      ]),
+      toolResult("bad-base64", "2026-11-05T09:10:09.000Z", [
+        { type: "image", data: "not base64!!", mimeType: "image/png" },
+      ]),
+    ]);
+
+    expect(await readOmpScreenshots(file, SINCE, UNTIL, cache)).toBeUndefined();
   });
 
   test("drops blobs that are missing, altered, not images or symlinks", async () => {
