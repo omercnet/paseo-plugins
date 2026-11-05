@@ -143,7 +143,9 @@ describe("OMP local models", () => {
   });
 
   test("finds the cache under the agent folder, or under the XDG cache folder for the default agent folder", async () => {
-    expect(tinyModelPath("org/repo")).toMatch(/cache[\\/]tiny-models[\\/]org[\\/]repo$/u);
+    expect(tinyModelPath("org/repo")).toBe(
+      join(process.env.PI_CODING_AGENT_DIR ?? "", "cache", "tiny-models", "org", "repo"),
+    );
 
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "omp-xdg-"));
@@ -158,7 +160,7 @@ describe("OMP local models", () => {
       vi.stubEnv("HOME", join(root, "home"));
       vi.stubEnv("XDG_CACHE_HOME", join(root, "xdg"));
       expect(tinyModelPath("org/repo")).toBe(
-        join(root, "xdg", "omp", "tiny-models", "org", "repo"),
+        join(root, "xdg", "omp", "cache", "tiny-models", "org", "repo"),
       );
     } finally {
       await rm(root, { recursive: true, force: true });

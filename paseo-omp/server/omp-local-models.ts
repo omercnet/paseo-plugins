@@ -58,18 +58,9 @@ function downloadEnvironment(): NodeJS.ProcessEnv {
   return { ...buildStatefulCommandEnv(environment), ...Object.fromEntries(network) };
 }
 
-/**
- * OMP keeps its tiny models under the agent folder's cache, or under the XDG cache folder when
- * the default agent folder is in use and that folder exists.
- */
+/** OMP keeps its tiny models under `cache/tiny-models` of its cache root (the agent folder, or the XDG cache folder's omp). */
 export function tinyModelPath(repo: string): string {
-  const cacheRoot = ompCacheDir();
-  const agentDir = ompAgentDir();
-  const base =
-    cacheRoot === agentDir
-      ? join(agentDir, "cache", "tiny-models")
-      : join(cacheRoot, "tiny-models");
-  return join(base, ...repo.split("/"));
+  return join(ompCacheDir(), "cache", "tiny-models", ...repo.split("/"));
 }
 
 const DEFAULT_DEPENDENCIES: OmpLocalModelsDependencies = {
