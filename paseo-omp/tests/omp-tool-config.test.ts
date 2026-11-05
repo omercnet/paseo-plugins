@@ -116,6 +116,8 @@ describe("reading and writing lsp.json and dap.json", () => {
     expect(saved).toMatchObject({ outcome: "saved", warnings: [] });
     expect(await readFile(join(root, "agent", "lsp.json"), "utf8")).toBe(`${text}\n`);
 
+    expect((await resolveReadOmpToolConfig({ kind: "lsp" })).revision).toBe(saved.revision);
+
     const incomplete = await resolveWriteOmpToolConfig({
       kind: "lsp",
       revision: saved.revision,
@@ -123,7 +125,6 @@ describe("reading and writing lsp.json and dap.json", () => {
     });
     expect(incomplete.outcome).toBe("saved");
     expect(incomplete.warnings).toEqual([expect.stringContaining("mine")]);
-    expect((await resolveReadOmpToolConfig({ kind: "lsp" })).revision).toBe(saved.revision);
 
     const projectEmpty = await resolveReadOmpToolConfig({ kind: "dap", cwd: project });
     const projectSaved = await resolveWriteOmpToolConfig({
