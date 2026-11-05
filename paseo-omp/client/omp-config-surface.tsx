@@ -636,7 +636,7 @@ function MagicKeywordsHelp({ styles }: { styles: OmpConfigStyles }) {
       <KeyValueRow
         styles={styles}
         label="orchestrate"
-        value="Splits the work across parallel subagents and verifies each phase."
+        value="Splits the work across parallel subagents and verifies each phase. Needs the task tool."
       />
       <KeyValueRow
         styles={styles}
