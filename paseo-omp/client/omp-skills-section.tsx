@@ -14,6 +14,7 @@ import {
   listOmpSkills,
   type OmpSkill,
   type OmpSkillOff,
+  SKILL_ENTRY_PREFIX,
   setOmpSkillEnabled,
 } from "../shared/omp-skills";
 import type { OmpStore } from "../shared/omp-store";
@@ -24,7 +25,6 @@ import { ompStoreKey } from "./omp-store-state";
 type Theme = PluginSurfaceProps["theme"];
 
 const SKILLS_KEY = ["paseo-omp", "skills"] as const;
-const EXTENSION_PREFIX = "skill:";
 
 const INFO =
   "OMP hides turned-off skills from its own list, so they are read from skills.ignoredSkills and disabledExtensions. In a workspace, a change is saved to the project's .omp/config.yml with the whole list, because a project list replaces the user list. Changes apply to new sessions, or after an agent reload.";
@@ -50,7 +50,7 @@ function skillHint(skill: OmpSkill): string {
 }
 
 function offLabel(off: OmpSkillOff): string {
-  return off.list === "disabledExtensions" ? off.entry.slice(EXTENSION_PREFIX.length) : off.entry;
+  return off.list === "disabledExtensions" ? off.entry.slice(SKILL_ENTRY_PREFIX.length) : off.entry;
 }
 
 function offHint(off: OmpSkillOff): string {
@@ -129,7 +129,7 @@ export function OmpSkillsSection({
             <SettingsSection key={group.title} title={group.title}>
               <SettingsCard>
                 {group.skills.map((skill) => (
-                  <View key={skill.path}>
+                  <View key={`${skill.source}/${skill.path}`}>
                     <SettingsSwitch
                       label={skill.name}
                       hint={skillHint(skill)}

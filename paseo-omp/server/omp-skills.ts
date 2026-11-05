@@ -11,6 +11,7 @@ import type {
   OmpSkillsList,
   setOmpSkillEnabled,
 } from "../shared/omp-skills";
+import { SKILL_ENTRY_PREFIX } from "../shared/omp-skills";
 import {
   inOmpScope,
   type OmpRulesDependencies,
@@ -32,7 +33,7 @@ const MAX_SKILLS = 500;
 const MAX_OFF_ENTRIES = 200;
 const MAX_TEXT_CHARS = 2_000;
 const MANAGED_SOURCE = "omp-managed";
-const EXTENSION_PREFIX = "skill:";
+const UNREADABLE_CONFIG = "The workspace OMP configuration could not be read";
 
 export class OmpSkillsError extends OmpPublicError {}
 
@@ -98,7 +99,7 @@ function offEntries(ignored: readonly string[], extensions: readonly string[]): 
     ...extensions
       .map((entry) => entry.trim())
       .filter(
-        (entry) => entry.startsWith(EXTENSION_PREFIX) && entry.length > EXTENSION_PREFIX.length,
+        (entry) => entry.startsWith(SKILL_ENTRY_PREFIX) && entry.length > SKILL_ENTRY_PREFIX.length,
       )
       .map((entry) => ({ list: "disabledExtensions" as const, entry })),
   ];
@@ -152,7 +153,11 @@ async function writeList(
   runIn: string,
 ): Promise<void> {
   const projectPath = input.cwd ? join(input.cwd, ".omp", "config.yml") : null;
-  const snapshot = projectPath ? await readProjectConfigText(projectPath) : "";
+  const snapshot = projectPath
+    ? await readProjectConfigText(projectPath).catch(() => {
+        throw new OmpSkillsError(UNREADABLE_CONFIG);
+      })
+    : "";
   const current = await readList(dependencies, executable, input.list, runIn);
   const kept = current.filter((entry) => entry.trim() !== input.entry);
   const next = input.enabled ? kept : [...kept, input.entry];
@@ -163,7 +168,12 @@ async function writeList(
       [{ operation: "set", path: input.list, value: next }],
       executable,
       dependencies,
-    );
+    ).catch((error: unknown) => {
+      // The writer's messages are written for the user, as in the settings editor.
+      throw new OmpSkillsError(
+        error instanceof Error ? error.message : "Could not update workspace settings.",
+      );
+    });
     if (outcome === "conflict") {
       throw new OmpSkillsError("The workspace configuration changed. Try again");
     }
@@ -184,7 +194,7 @@ export async function setOmpSkillEnabledWithDependencies(
   dependencies: OmpSkillsDependencies,
 ): Promise<{ status: "ok" } | { status: "error"; message: string }> {
   try {
-    if (input.list === "disabledExtensions" && !input.entry.startsWith(EXTENSION_PREFIX)) {
+    if (input.list === "disabledExtensions" && !input.entry.startsWith(SKILL_ENTRY_PREFIX)) {
       throw new OmpSkillsError("That entry is not a skill");
     }
     const executable = await requireExecutable(dependencies);

@@ -3,6 +3,9 @@ import { z } from "zod";
 import { OmpWorkspaceCwdSchema } from "./hub";
 import { OmpStoreSchema } from "./omp-store";
 
+/** A `disabledExtensions` entry for a skill reads `skill:<name>`. */
+export const SKILL_ENTRY_PREFIX = "skill:";
+
 export const OmpSkillLevelSchema = z.enum(["project", "user", "other"]);
 export type OmpSkillLevel = z.infer<typeof OmpSkillLevelSchema>;
 

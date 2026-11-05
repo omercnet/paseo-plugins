@@ -40,6 +40,14 @@ const ProjectConfigSchema = z
 
 type ListName = "skills.ignoredSkills" | "disabledExtensions";
 
+function readProject(text: string) {
+  try {
+    return ProjectConfigSchema.parse(parseYaml(text) ?? null);
+  } catch {
+    return null;
+  }
+}
+
 /** A stand-in for omp: a user config plus the project `.omp/config.yml` that replaces its lists. */
 function fakeOmp(skills: unknown[], user: Partial<Record<ListName, string[]>> = {}) {
   const calls: { args: readonly string[]; cwd: string }[] = [];
@@ -61,7 +69,7 @@ function fakeOmp(skills: unknown[], user: Partial<Record<ListName, string[]>> = 
       }
       const projectFile = join(cwd, ".omp", "config.yml");
       const projectText = existsSync(projectFile) ? await readFile(projectFile, "utf8") : "";
-      const project = ProjectConfigSchema.parse(parseYaml(projectText) ?? null);
+      const project = readProject(projectText);
       const projectList =
         list === "skills.ignoredSkills"
           ? project?.skills?.ignoredSkills
@@ -116,17 +124,14 @@ afterEach(async () => {
 
 describe("listing skills", () => {
   test("reports source, level and the managed flag, and skips entries it cannot read", async () => {
-    const fake = fakeOmp(
-      [
-        { name: "a", description: "Alpha", baseDir: "/x/a", source: "native:project", hide: false },
-        { name: "b", description: null, baseDir: "/x/b", source: "omp-managed:user" },
-        { name: "c", baseDir: "/x/c", source: "agents:user" },
-        { name: "d", baseDir: "/x/d", source: "registry" },
-        { name: "", baseDir: "/x/e", source: "native:user" },
-        "junk",
-      ],
-      {},
-    );
+    const fake = fakeOmp([
+      { name: "a", description: "Alpha", baseDir: "/x/a", source: "native:project", hide: false },
+      { name: "b", description: null, baseDir: "/x/b", source: "omp-managed:user" },
+      { name: "c", baseDir: "/x/c", source: "agents:user" },
+      { name: "d", baseDir: "/x/d", source: "registry" },
+      { name: "", baseDir: "/x/e", source: "native:user" },
+      "junk",
+    ]);
     const result = await listOmpSkillsWithDependencies({ cwd: project }, fake.dependencies);
     expect(result).toMatchObject({ status: "ready" });
     if (result.status !== "ready") return;
@@ -204,6 +209,44 @@ describe("turning a skill on or off", () => {
     );
     expect(await projectIgnored()).toEqual(["keep"]);
     expect(await readFile(join(project, ".omp", "config.yml"), "utf8")).toContain("other: 1");
+  });
+
+  test("turning a skill on removes its skill: entry from disabledExtensions", async () => {
+    const fake = fakeOmp([], { disabledExtensions: ["skill:old", "extension:keep"] });
+    const result = await setOmpSkillEnabledWithDependencies(
+      { list: "disabledExtensions", entry: "skill:old", enabled: true },
+      fake.dependencies,
+    );
+    expect(result).toEqual({ status: "ok" });
+    expect(fake.userConfig.disabledExtensions).toEqual(["extension:keep"]);
+  });
+
+  test("a workspace file changed during the write is reported, not overwritten", async () => {
+    const fake = fakeOmp([], { "skills.ignoredSkills": ["user-off"] });
+    const file = join(project, ".omp", "config.yml");
+    await mkdir(join(project, ".omp"), { recursive: true });
+    await writeFile(file, "theme: dark\n");
+    fake.dependencies.validateProjectConfig = async () => {
+      await writeFile(file, "theme: light\n");
+      return exited("{}");
+    };
+    const result = await setOmpSkillEnabledWithDependencies(
+      { cwd: project, list: "skills.ignoredSkills", entry: "x", enabled: false },
+      fake.dependencies,
+    );
+    expect(result.status).toBe("error");
+    expect(await readFile(file, "utf8")).toBe("theme: light\n");
+  });
+
+  test("an unusable workspace configuration is an error result, not a rejection", async () => {
+    const fake = fakeOmp([]);
+    await mkdir(join(project, ".omp"), { recursive: true });
+    await writeFile(join(project, ".omp", "config.yml"), "skills: [unclosed\n");
+    const result = await setOmpSkillEnabledWithDependencies(
+      { cwd: project, list: "skills.ignoredSkills", entry: "x", enabled: false },
+      fake.dependencies,
+    );
+    expect(result.status).toBe("error");
   });
 
   test("disabledExtensions only takes skill entries", async () => {
