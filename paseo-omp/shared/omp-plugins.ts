@@ -262,3 +262,93 @@ export const mutateOmpPlugin = defineRpc({
     })
     .strict(),
 });
+
+// OMP's own marketplace and catalog plugin name rule (marketplace/types.ts).
+const OMP_MARKETPLACE_NAME = /^[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,62}[a-zA-Z0-9])?$/u;
+export const OMP_CATALOG_PLUGIN_LIMIT = 1_000;
+
+export const OmpMarketplaceNameSchema = z
+  .string()
+  .regex(OMP_MARKETPLACE_NAME, "Expected an OMP marketplace name");
+
+export const OmpMarketplaceSchema = z
+  .object({ name: OmpMarketplaceNameSchema, source: z.string().min(1).max(4_096) })
+  .strict();
+export type OmpMarketplace = z.infer<typeof OmpMarketplaceSchema>;
+
+/** Drops `user:token@` from a URL source so credentials are never displayed. */
+export function redactSourceCredentials(source: string): string {
+  return source.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#\s]*@/iu, "$1");
+}
+
+export const OmpMarketplaceStateSchema = z
+  .object({
+    available: z.boolean(),
+    marketplaces: z.array(OmpMarketplaceSchema).max(OMP_PLUGIN_LIMIT),
+    error: z.string().max(256).optional(),
+  })
+  .strict();
+export type OmpMarketplaceState = z.infer<typeof OmpMarketplaceStateSchema>;
+
+export const listOmpMarketplaces = defineRpc({
+  name: "paseo-omp.list-marketplaces",
+  input: z.object({ store: OmpStoreSchema.optional() }).strict(),
+  output: OmpMarketplaceStateSchema,
+});
+
+export const OmpCatalogPluginSchema = z
+  .object({
+    id: z.string().min(3).max(128),
+    version: z.string().min(1).max(128).nullable(),
+    description: z.string().max(1_024).nullable(),
+  })
+  .strict();
+export type OmpCatalogPlugin = z.infer<typeof OmpCatalogPluginSchema>;
+
+export const OmpCatalogStateSchema = z
+  .object({
+    available: z.boolean(),
+    marketplace: OmpMarketplaceNameSchema,
+    plugins: z.array(OmpCatalogPluginSchema).max(OMP_CATALOG_PLUGIN_LIMIT),
+    error: z.string().max(256).optional(),
+  })
+  .strict();
+export type OmpCatalogState = z.infer<typeof OmpCatalogStateSchema>;
+
+export const browseOmpMarketplace = defineRpc({
+  name: "paseo-omp.browse-marketplace",
+  input: z
+    .object({ store: OmpStoreSchema.optional(), marketplace: OmpMarketplaceNameSchema })
+    .strict(),
+  output: OmpCatalogStateSchema,
+});
+
+export const OmpMarketplaceMutationSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("add"),
+      source: OmpPluginInstallSourceSchema,
+      store: OmpStoreSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("remove"),
+      marketplace: OmpMarketplaceNameSchema,
+      store: OmpStoreSchema.optional(),
+    })
+    .strict(),
+]);
+export type OmpMarketplaceMutation = z.infer<typeof OmpMarketplaceMutationSchema>;
+
+export const mutateOmpMarketplace = defineRpc({
+  name: "paseo-omp.mutate-marketplace",
+  input: OmpMarketplaceMutationSchema,
+  output: z
+    .object({
+      ok: z.boolean(),
+      message: z.string().min(1).max(256),
+      state: OmpMarketplaceStateSchema,
+    })
+    .strict(),
+});

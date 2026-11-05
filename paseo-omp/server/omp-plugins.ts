@@ -3,20 +3,28 @@ import { delimiter, isAbsolute, join } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import { z } from "zod";
 import {
+  type browseOmpMarketplace,
   type inspectOmpPluginConfig,
+  type listOmpMarketplaces,
   type listOmpPlugins,
+  type mutateOmpMarketplace,
   type mutateOmpPlugin,
   type mutateOmpPluginConfig,
+  OMP_CATALOG_PLUGIN_LIMIT,
   OMP_PLUGIN_LIMIT,
+  type OmpCatalogState,
   type OmpInstalledPlugin,
   OmpInstalledPluginSchema,
+  OmpMarketplaceNameSchema,
   OmpMarketplacePluginIdSchema,
+  type OmpMarketplaceState,
   type OmpPluginConfigMutation,
   type OmpPluginConfigSetting,
   type OmpPluginConfigState,
   type OmpPluginMutation,
   OmpPluginNameSchema,
   type OmpPluginState,
+  redactSourceCredentials,
 } from "../shared/omp-plugins";
 import { SerialMutationQueue } from "./mutation-queue";
 import { currentOmpEnvironment } from "./paths";
@@ -672,5 +680,179 @@ export function resolveMutateOmpPlugin(
 ): Promise<{ ok: boolean; message: string; state: OmpPluginState }> {
   return pluginMutationQueue.run(() =>
     mutateOmpPluginWithDependencies(input, DEFAULT_DEPENDENCIES),
+  );
+}
+
+// OMP prints marketplace listings as text only (`--json` is ignored), so parse the stable
+// "name  source" and "name[@version]" / indented description shapes and reject anything else.
+
+export function parseOmpMarketplaceList(stdout: string): OmpMarketplaceState["marketplaces"] {
+  const lines = stdout.split(/\r?\n/u);
+  if (!lines.some((line) => line.startsWith("Configured Marketplaces:"))) {
+    if (lines.some((line) => line.startsWith("No marketplaces configured"))) return [];
+    throw new Error("OMP returned an invalid marketplace list");
+  }
+  const marketplaces: OmpMarketplaceState["marketplaces"] = [];
+  for (const line of lines) {
+    const match = /^ {2}(\S+) {2}(\S.*)$/u.exec(line);
+    if (!match?.[1] || !match[2]) continue;
+    const name = OmpMarketplaceNameSchema.safeParse(match[1]);
+    const source = boundedText(redactSourceCredentials(match[2].trim()), 4_096);
+    if (name.success && source) marketplaces.push({ name: name.data, source });
+    if (marketplaces.length === OMP_PLUGIN_LIMIT) break;
+  }
+  return marketplaces;
+}
+
+export function parseOmpCatalog(stdout: string, marketplace: string): OmpCatalogState["plugins"] {
+  const lines = stdout.split(/\r?\n/u);
+  if (!lines.some((line) => line.startsWith("Available Plugins"))) {
+    if (lines.some((line) => line.startsWith("No plugins found"))) return [];
+    throw new Error("OMP returned an invalid plugin catalog");
+  }
+  const plugins: OmpCatalogState["plugins"] = [];
+  let current: OmpCatalogState["plugins"][number] | null = null;
+  for (const line of lines) {
+    const entry = /^ {2}(\S+)$/u.exec(line);
+    if (entry?.[1]) {
+      const [name, version] = entry[1].split("@");
+      const id = `${name}@${marketplace}`;
+      // OMP allows mixed-case names and caps the assembled id at 128 characters.
+      const valid = OmpMarketplaceNameSchema.safeParse(name).success && id.length <= 128;
+      current = valid ? { id, version: boundedText(version, 128), description: null } : null;
+      if (!current) continue;
+      plugins.push(current);
+      if (plugins.length === OMP_CATALOG_PLUGIN_LIMIT) break;
+      continue;
+    }
+    const description = /^ {4}(\S.*)$/u.exec(line);
+    if (description?.[1] && current && current.description === null) {
+      current.description = boundedText(description[1].trim(), DESCRIPTION_LIMIT);
+    }
+  }
+  return plugins;
+}
+
+async function loadMarketplaces(
+  executable: string,
+  dependencies: OmpPluginDependencies,
+): Promise<OmpMarketplaceState> {
+  const result = await dependencies.runPlugin(
+    executable,
+    ["plugin", "marketplace", "list"],
+    LIST_OUTPUT_LIMIT,
+    READ_TIMEOUT_MS,
+  );
+  if (!runSucceeded(result)) {
+    return { available: false, marketplaces: [], error: readFailure(result) };
+  }
+  try {
+    return { available: true, marketplaces: parseOmpMarketplaceList(result.stdout) };
+  } catch {
+    return {
+      available: false,
+      marketplaces: [],
+      error: "OMP returned an invalid marketplace list.",
+    };
+  }
+}
+
+export async function listOmpMarketplacesWithDependencies(
+  dependencies: OmpPluginDependencies,
+): Promise<OmpMarketplaceState> {
+  const executable = await dependencies.resolveExecutable();
+  if (!executable) {
+    return {
+      available: false,
+      marketplaces: [],
+      error: "The OMP executable could not be resolved.",
+    };
+  }
+  return loadMarketplaces(executable, dependencies);
+}
+
+export function resolveListOmpMarketplaces(
+  _input: RpcInput<typeof listOmpMarketplaces>,
+): Promise<OmpMarketplaceState> {
+  return listOmpMarketplacesWithDependencies(DEFAULT_DEPENDENCIES);
+}
+
+export async function browseOmpMarketplaceWithDependencies(
+  input: RpcInput<typeof browseOmpMarketplace>,
+  dependencies: OmpPluginDependencies,
+): Promise<OmpCatalogState> {
+  const unavailable = (error: string): OmpCatalogState => ({
+    available: false,
+    marketplace: input.marketplace,
+    plugins: [],
+    error,
+  });
+  const executable = await dependencies.resolveExecutable();
+  if (!executable) return unavailable("The OMP executable could not be resolved.");
+  const result = await dependencies.runPlugin(
+    executable,
+    ["plugin", "discover", input.marketplace],
+    LIST_OUTPUT_LIMIT,
+    READ_TIMEOUT_MS,
+  );
+  if (!runSucceeded(result)) return unavailable(readFailure(result));
+  try {
+    return {
+      available: true,
+      marketplace: input.marketplace,
+      plugins: parseOmpCatalog(result.stdout, input.marketplace),
+    };
+  } catch {
+    return unavailable("OMP returned an invalid plugin catalog.");
+  }
+}
+
+export function resolveBrowseOmpMarketplace(
+  input: RpcInput<typeof browseOmpMarketplace>,
+): Promise<OmpCatalogState> {
+  return browseOmpMarketplaceWithDependencies(input, DEFAULT_DEPENDENCIES);
+}
+
+export function buildOmpMarketplaceMutationArgs(
+  input: RpcInput<typeof mutateOmpMarketplace>,
+): string[] {
+  return [
+    "plugin",
+    "marketplace",
+    input.action,
+    input.action === "add" ? input.source : input.marketplace,
+  ];
+}
+
+export async function mutateOmpMarketplaceWithDependencies(
+  input: RpcInput<typeof mutateOmpMarketplace>,
+  dependencies: OmpPluginDependencies,
+): Promise<{ ok: boolean; message: string; state: OmpMarketplaceState }> {
+  const executable = await dependencies.resolveExecutable();
+  if (!executable) {
+    const message = "The OMP executable could not be resolved.";
+    return { ok: false, message, state: { available: false, marketplaces: [], error: message } };
+  }
+  const mutation = await dependencies.runPlugin(
+    executable,
+    buildOmpMarketplaceMutationArgs(input),
+    MUTATION_OUTPUT_LIMIT,
+    MUTATION_TIMEOUT_MS,
+  );
+  const ok = runSucceeded(mutation);
+  const state = await loadMarketplaces(executable, dependencies);
+  if (!ok) return { ok, message: mutationFailure(mutation), state };
+  return {
+    ok,
+    message: input.action === "add" ? "Marketplace added." : "Marketplace removed.",
+    state,
+  };
+}
+
+export function resolveMutateOmpMarketplace(
+  input: RpcInput<typeof mutateOmpMarketplace>,
+): Promise<{ ok: boolean; message: string; state: OmpMarketplaceState }> {
+  return pluginMutationQueue.run(() =>
+    mutateOmpMarketplaceWithDependencies(input, DEFAULT_DEPENDENCIES),
   );
 }
