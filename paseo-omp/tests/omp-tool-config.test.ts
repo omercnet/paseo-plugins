@@ -75,6 +75,12 @@ describe("definitions OMP would drop", () => {
     expect(
       warnings({ servers: { mine: { command: "x", extensionToLanguage: { ".x": "x" } } } }),
     ).toEqual([]);
+    expect(warnings({ servers: { mine: { command: "x", extensionToLanguage: {} } } })).toHaveLength(
+      1,
+    );
+    expect(
+      warnings({ servers: { mine: { command: "x", fileTypes: [], rootMarkers: [] } } }),
+    ).toHaveLength(1);
     expect(
       warnOmpToolConfig("dap", JSON.stringify({ adapters: { mine: { command: "d" } } })),
     ).toEqual([]);

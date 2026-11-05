@@ -194,6 +194,10 @@ const BUILT_IN_LSP_SERVERS: ReadonlySet<string> = new Set([
  * Definitions that pass validation but that OMP drops: a server that is not built in needs a
  * command, file types and root markers (or extensionToLanguage, which supplies both).
  */
+function hasText(value: unknown): boolean {
+  return Array.isArray(value) && value.some((item) => typeof item === "string" && item.length > 0);
+}
+
 export function warnOmpToolConfig(kind: OmpToolConfigKind, text: string): string[] {
   let document: unknown;
   try {
@@ -222,11 +226,13 @@ export function warnOmpToolConfig(kind: OmpToolConfigKind, text: string): string
     ...ignoredWarning,
     ...Object.entries(entries).flatMap(([name, entry]) => {
       if (builtIn.has(name) || !isObject(entry)) return [];
-      const derived = "extensionToLanguage" in entry;
+      const extensions = isObject(entry.extensionToLanguage)
+        ? Object.keys(entry.extensionToLanguage).filter((extension) => extension.length > 0)
+        : [];
       const missing = [
         typeof entry.command === "string" && entry.command ? null : "command",
-        !lsp || derived || Array.isArray(entry.fileTypes) ? null : "fileTypes",
-        !lsp || derived || Array.isArray(entry.rootMarkers) ? null : "rootMarkers",
+        !lsp || extensions.length > 0 || hasText(entry.fileTypes) ? null : "fileTypes",
+        !lsp || extensions.length > 0 || hasText(entry.rootMarkers) ? null : "rootMarkers",
       ].filter((field) => field !== null);
       return missing.length === 0
         ? []

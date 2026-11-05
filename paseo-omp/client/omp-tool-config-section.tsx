@@ -80,10 +80,14 @@ export function OmpToolConfigSection({
   const save = useMutation({
     mutationKey: ["paseo-omp", "tool-config-save"],
     mutationFn: (input: { revision: string; text: string }) => write({ ...target, ...input }),
-    onSuccess: async (result) => {
+    onSuccess: async (result, input) => {
       if (result.outcome !== "saved") return;
       await queryClient.invalidateQueries({ queryKey });
-      setDrafts(({ [scope]: _saved, ...rest }) => rest);
+      setDrafts((current) => {
+        if (current[scope]?.text !== input.text) return current;
+        const { [scope]: _saved, ...rest } = current;
+        return rest;
+      });
     },
   });
 
