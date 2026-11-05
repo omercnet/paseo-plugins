@@ -191,6 +191,8 @@ describe("plugin server bundle", () => {
         expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-rules");
         expect(handlers.map(([contract]) => contract.name)).toEqual(
           expect.arrayContaining([
+            "paseo-omp.list-extensions",
+            "paseo-omp.set-extension-enabled",
             "paseo-omp.list-skills",
             "paseo-omp.set-skill-enabled",
             "paseo-omp.delete-managed-skill",

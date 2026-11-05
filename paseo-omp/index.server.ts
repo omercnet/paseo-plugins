@@ -9,6 +9,7 @@ import { resolveListOmpMemory } from "./server/memory";
 import { OmpAccounts } from "./server/omp-accounts";
 import { resolveListOmpAgents } from "./server/omp-agents";
 import { resolveListOmpConfig } from "./server/omp-config";
+import { resolveListOmpExtensions, resolveSetOmpExtensionEnabled } from "./server/omp-extensions";
 import { OmpMcps } from "./server/omp-mcps";
 import { resolveListOmpModels } from "./server/omp-models";
 import {
@@ -67,6 +68,7 @@ import {
 } from "./shared/omp-accounts";
 import { listOmpAgents } from "./shared/omp-agents";
 import { listOmpConfig } from "./shared/omp-config";
+import { listOmpExtensions, setOmpExtensionEnabled } from "./shared/omp-extensions";
 import {
   addOmpMcp,
   cancelOmpMcpAuth,
@@ -211,6 +213,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(browseOmpMarketplace, scoped(resolveBrowseOmpMarketplace));
   server.handle(mutateOmpMarketplace, scoped(resolveMutateOmpMarketplace));
   server.handle(listOmpRules, scoped(resolveListOmpRules));
+  server.handle(listOmpExtensions, scoped(resolveListOmpExtensions));
+  server.handle(setOmpExtensionEnabled, scoped(resolveSetOmpExtensionEnabled));
   server.handle(listOmpSkills, scoped(resolveListOmpSkills));
   server.handle(setOmpSkillEnabled, scoped(resolveSetOmpSkillEnabled));
   server.handle(deleteOmpManagedSkill, scoped(resolveDeleteOmpManagedSkill));
