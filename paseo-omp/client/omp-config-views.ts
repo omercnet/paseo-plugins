@@ -4,6 +4,7 @@ export type OmpConfigSurfaceView =
   | "mcps"
   | "plugin"
   | "plugins"
+  | "rules"
   | "composer"
   | "configuration"
   | "diagnostics"
@@ -15,6 +16,7 @@ const SURFACE_VIEWS: readonly { id: OmpConfigSurfaceView; label: string }[] = [
   { id: "mcps", label: "MCPs" },
   { id: "plugin", label: "Plugin" },
   { id: "plugins", label: "OMP plugins" },
+  { id: "rules", label: "Rules" },
   { id: "composer", label: "Composer" },
   { id: "configuration", label: "Configuration" },
   { id: "diagnostics", label: "Diagnostics" },
