@@ -354,8 +354,9 @@ export interface BoundedRun {
   signal: NodeJS.Signals | null;
   /** ENOENT vs everything else, so "not found" and "found but unrunnable" stay distinct. */
   spawnErrorCode: string | null;
-  /** True when tree termination/verification failed or the leader missed its final close bound. */
   cleanupFailed: boolean;
+  /** Only present when the caller asked for it with `stderrLimit`. Never forwarded across RPC. */
+  stderr?: string;
 }
 
 /**
@@ -375,6 +376,7 @@ export function runBounded(
   killGraceMs: number,
   maxBytes: number,
   cwd?: string,
+  stderrLimit = 0,
 ): Promise<BoundedRun> {
   const { promise, resolve } = Promise.withResolvers<BoundedRun>();
   let child: ProbeChildProcess;
@@ -397,6 +399,8 @@ export function runBounded(
   const stdoutChunks: Buffer[] = [];
   let stdoutBytes = 0;
   let truncated = false;
+  const stderrChunks: Buffer[] = [];
+  let stderrBytes = 0;
   let timedOut = false;
   let leaderClosed = false;
   let leaderExitCode: number | null = null;
@@ -405,6 +409,7 @@ export function runBounded(
   let treeCleanupSucceeded = false;
   let finalLeaderTimer: ReturnType<typeof setTimeout> | undefined;
   const getStdout = () => Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8");
+  const getStderr = () => Buffer.concat(stderrChunks, stderrBytes).toString("utf8");
 
   const cleanupListeners = () => {
     child.stdout.removeAllListeners();
@@ -428,6 +433,7 @@ export function runBounded(
       signal: leaderSignal,
       spawnErrorCode: null,
       cleanupFailed,
+      ...(stderrLimit > 0 ? { stderr: getStderr() } : {}),
     });
   };
   const settleAfterCleanup = () => {
@@ -482,8 +488,14 @@ export function runBounded(
     stdoutChunks.push(accepted);
     stdoutBytes += accepted.length;
   });
-  child.stderr.on("data", () => {
-    // Intentionally discarded: never stored, parsed, or forwarded across the RPC boundary.
+  child.stderr.on("data", (chunk: Buffer) => {
+    // Discarded unless the caller opted in with `stderrLimit`; then kept, bounded, for that
+    // caller to parse. It is never forwarded across the RPC boundary as-is.
+    const remaining = stderrLimit - stderrBytes;
+    if (remaining <= 0) return;
+    const accepted = chunk.subarray(0, remaining);
+    stderrChunks.push(accepted);
+    stderrBytes += accepted.length;
   });
   child.onClose((code, signal) => {
     leaderClosed = true;
@@ -501,6 +513,7 @@ export function runBounded(
       signal,
       spawnErrorCode: null,
       cleanupFailed: false,
+      ...(stderrLimit > 0 ? { stderr: getStderr() } : {}),
     });
   });
 

@@ -12,6 +12,7 @@ import { resolveListOmpConfig } from "./server/omp-config";
 import { resolveListOmpExtensions, resolveSetOmpExtensionEnabled } from "./server/omp-extensions";
 import { OmpMcps } from "./server/omp-mcps";
 import { resolveListOmpModels } from "./server/omp-models";
+import { resolveGetOmpModelsFileStatus, resolveRefreshOmpModels } from "./server/omp-models-file";
 import {
   resolveBrowseOmpMarketplace,
   resolveInspectOmpPluginConfig,
@@ -79,6 +80,7 @@ import {
   submitOmpMcpAuthCode,
 } from "./shared/omp-mcps";
 import { listOmpModels } from "./shared/omp-models";
+import { getOmpModelsFileStatus, refreshOmpModels } from "./shared/omp-models-file";
 import {
   browseOmpMarketplace,
   inspectOmpPluginConfig,
@@ -230,6 +232,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getOmpPromptFiles, ({ store, cwd }, { paseo }) =>
     withOmpStore(store, async () => readOmpPromptFiles(cwd, await readHostAppendPrompt(paseo))),
   );
+  server.handle(getOmpModelsFileStatus, scoped(resolveGetOmpModelsFileStatus));
+  server.handle(refreshOmpModels, scoped(resolveRefreshOmpModels));
   server.handle(getOmpUpdateStatus, resolveGetOmpUpdateStatus);
   server.handle(installOmpUpdate, resolveInstallOmpUpdate);
   server.handle(getOmpImage, (input) => resolveGetOmpImage(input, ompImageCache()));

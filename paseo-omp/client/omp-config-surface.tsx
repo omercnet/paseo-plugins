@@ -14,6 +14,7 @@ import type { ComposerPillSettings } from "../shared/composer-pill-settings";
 import { listOmpAgents } from "../shared/omp-agents";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import { listOmpModels } from "../shared/omp-models";
+import { getOmpModelsFileStatus, refreshOmpModels } from "../shared/omp-models-file";
 import { getOmpPromptFiles } from "../shared/omp-prompt-files";
 import {
   categorizeOmpSetting,
@@ -34,7 +35,7 @@ import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider
 import { getOmpSupportReport, OMP_SUPPORT_ISSUE_URL } from "../shared/support-diagnostics";
 import { ComposerPillSettingsSection } from "./composer-pill-settings";
 import { openOmpExternalUrl } from "./external-url";
-import { OmpAccountsSection } from "./omp-accounts-section";
+import { ActionButton, OmpAccountsSection } from "./omp-accounts-section";
 import { type OmpConfigStyles, useConfigStyles } from "./omp-config-styles";
 import { type OmpConfigSurfaceView as SurfaceView, surfaceViewsForScope } from "./omp-config-views";
 import {
@@ -89,6 +90,7 @@ const SETTINGS_QUERY_KEY = ["paseo-omp", "settings"] as const;
 const CONFIG_POLL_MS = 30_000;
 const HEALTH_QUERY_KEY = ["paseo-omp", "provider-health"] as const;
 const PROMPT_FILES_QUERY_KEY = ["paseo-omp", "prompt-files"] as const;
+const MODELS_FILE_QUERY_KEY = ["paseo-omp", "models-file"] as const;
 const PROVIDERS_QUERY_KEY = ["paseo-omp", "provider-snapshot"] as const;
 
 function KeyValueRow({
@@ -416,6 +418,72 @@ function PromptFilesSection({
   );
 }
 
+function ModelsSection({
+  theme,
+  styles,
+  store,
+  onRefreshed,
+}: {
+  theme: PluginSurfaceProps["theme"];
+  styles: OmpConfigStyles;
+  store?: OmpStore;
+  onRefreshed(): void;
+}) {
+  const loadStatus = useRpc(getOmpModelsFileStatus);
+  const refreshModels = useRpc(refreshOmpModels);
+  const status = useQuery({
+    queryKey: [...MODELS_FILE_QUERY_KEY, ompStoreKey(store)],
+    queryFn: () => loadStatus({ store }),
+  });
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const refresh = useMutation({
+    mutationFn: () => refreshModels({ store }),
+    onSuccess: (result) => {
+      setMessage({
+        ok: result.ok,
+        text: result.ok
+          ? "OMP refreshed its model lists. Paseo's list updates next."
+          : result.message,
+      });
+      if (result.ok) onRefreshed();
+    },
+    onError: () => setMessage({ ok: false, text: "Could not refresh models. Try again." }),
+  });
+  const current = status.data;
+  return (
+    <SectionCard styles={styles} title="Models">
+      {status.isLoading ? <Text style={styles.muted}>Checking models.yml…</Text> : null}
+      {current?.state === "ok" ? (
+        <KeyValueRow styles={styles} label="models.yml" value="No errors reported" />
+      ) : null}
+      {current?.state === "invalid" ? (
+        <KeyValueRow
+          styles={styles}
+          label="models.yml"
+          value={`OMP dropped your custom providers: ${current.detail}`}
+          valueColor={theme.colors.statusDanger}
+        />
+      ) : null}
+      {current?.state === "unknown" || status.error ? (
+        <KeyValueRow styles={styles} label="models.yml" value="Could not check" />
+      ) : null}
+      <View style={styles.row}>
+        <Text style={styles.rowLabel}>Model lists</Text>
+        <ActionButton
+          styles={styles}
+          theme={theme}
+          label={refresh.isPending ? "Refreshing models…" : "Refresh models"}
+          disabled={refresh.isPending}
+          onPress={() => refresh.mutate()}
+        />
+      </View>
+      {message ? (
+        <Text style={message.ok ? styles.muted : styles.error}>{message.text}</Text>
+      ) : null}
+    </SectionCard>
+  );
+}
+
 function ProviderHealthSection({
   theme,
   styles,
@@ -459,6 +527,7 @@ function ProviderHealthSection({
       ]);
       if (update) queryClient.setQueryData(UPDATE_QUERY_KEY, update);
       await queryClient.invalidateQueries({ queryKey: PROMPT_FILES_QUERY_KEY });
+      await queryClient.invalidateQueries({ queryKey: MODELS_FILE_QUERY_KEY });
       if (result.failed) throw new Error("Could not fully refresh OMP provider health.");
     },
   });
@@ -515,6 +584,12 @@ function ProviderHealthSection({
       {health.data ? <StorageSection theme={theme} styles={styles} health={health.data} /> : null}
       {health.data ? <ProcessSection theme={theme} styles={styles} health={health.data} /> : null}
       <PromptFilesSection theme={theme} styles={styles} cwd={cwd} store={store} />
+      <ModelsSection
+        theme={theme}
+        styles={styles}
+        store={store}
+        onRefreshed={() => refresh.mutate()}
+      />
 
       {providers.isLoading ? <Text style={styles.muted}>Loading provider status…</Text> : null}
       {providers.error ? (
