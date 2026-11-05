@@ -8,7 +8,10 @@ import { OmpStoreSchema } from "./omp-store";
  */
 export const OmpModelsFileStatusSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("ok") }),
-  /** `detail` is OMP's own validation message, cleaned and bounded. */
+  /**
+   * OMP's own validation message, control characters stripped and bounded. Values OMP echoes as
+   * "(was ...)" are removed; field paths and the provider and model names from the file remain.
+   */
   z.object({ state: z.literal("invalid"), detail: z.string().max(400) }),
   z.object({ state: z.literal("unknown") }),
 ]);

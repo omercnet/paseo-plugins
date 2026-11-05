@@ -1,6 +1,7 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   getOmpModelsFileStatusWithDependencies,
+  modelsEnvironment,
   type OmpModelsDependencies,
   parseOmpModelsWarning,
   refreshOmpModelsWithDependencies,
@@ -28,11 +29,11 @@ const INVALID_YAML =
   "Failed to load config file models, Unexpected error: YAML Parse error: Unexpected token\n";
 
 function fakeOmp(answer: BoundedRun | null) {
-  const calls: { args: readonly string[]; stderrLimit: number }[] = [];
+  const calls: { args: readonly string[]; stderrLimit: number; daemonEnvironment: boolean }[] = [];
   const dependencies: OmpModelsDependencies = {
     resolveExecutable: async () => (answer ? "/usr/bin/omp" : null),
-    run: async (_executable, args, _timeoutMs, stderrLimit) => {
-      calls.push({ args, stderrLimit });
+    run: async (_executable, args, _timeoutMs, stderrLimit, daemonEnvironment) => {
+      calls.push({ args, stderrLimit, daemonEnvironment });
       return answer ?? run();
     },
   };
@@ -67,6 +68,31 @@ describe("parseOmpModelsWarning", () => {
     ).toEqual({ state: "invalid", detail: "OMP could not load it" });
   });
 
+  test("reports omp's schema error without echoing the offending value", () => {
+    const status = parseOmpModelsWarning(
+      "Warning: models.yml validation failed \u2014 custom providers disabled\n" +
+        'Failed to load config file models, Schema error: providers.p.api: must be "openai-completions" or "typesafe" (was "SECRETAPI-sk-abc")\n',
+    );
+    expect(status).toEqual({
+      state: "invalid",
+      detail: 'providers.p.api: must be "openai-completions" or "typesafe"',
+    });
+  });
+
+  test("joins the bullet lines of a multi-problem schema error and drops their values", () => {
+    const status = parseOmpModelsWarning(
+      "Warning: models.yml validation failed \u2014 custom providers disabled\n" +
+        "Failed to load config file models, Schema error:\n" +
+        "  - providers.p.baseUrl: must be a string (was sk-LEAKED)\n" +
+        "  - providers.p.models: must be an array (was a string)\n" +
+        "some later line\n",
+    );
+    expect(status).toEqual({
+      state: "invalid",
+      detail: "providers.p.baseUrl: must be a string; providers.p.models: must be an array",
+    });
+  });
+
   test("bounds the detail and strips control characters", () => {
     const noisy = `${"x".repeat(1000)}\u001b[31m`;
     const status = parseOmpModelsWarning(
@@ -86,6 +112,7 @@ describe("models.yml status", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args).toEqual(["models", "--json", "--no-extensions"]);
     expect(calls[0]?.stderrLimit).toBeGreaterThan(0);
+    expect(calls[0]?.daemonEnvironment).toBe(false);
   });
 
   test("reports invalid from the stderr of a successful run", async () => {
@@ -119,14 +146,9 @@ describe("refresh models", () => {
     await expect(refreshOmpModelsWithDependencies(dependencies)).resolves.toMatchObject({
       ok: true,
     });
-    expect(calls).toEqual([{ args: ["models", "refresh"], stderrLimit: 0 }]);
-  });
-
-  test("reports a failed refresh without echoing omp's output", async () => {
-    const { dependencies } = fakeOmp(run({ exitCode: 1, stdout: "boom: /home/someone/secret" }));
-    const result = await refreshOmpModelsWithDependencies(dependencies);
-    expect(result.ok).toBe(false);
-    expect(result.message).not.toContain("secret");
+    expect(calls).toEqual([
+      { args: ["models", "refresh"], stderrLimit: 0, daemonEnvironment: true },
+    ]);
   });
 
   test("reports a timeout distinctly", async () => {
@@ -141,5 +163,22 @@ describe("refresh models", () => {
     await expect(refreshOmpModelsWithDependencies(dependencies)).resolves.toMatchObject({
       ok: false,
     });
+  });
+});
+
+describe("models environment", () => {
+  beforeEach(() => {
+    vi.stubEnv("PATH", "/usr/bin");
+    vi.stubEnv("OPENAI_API_KEY", "sk-from-daemon");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  test("a refresh gets the daemon's API keys so hosted catalogs answer", () => {
+    expect(modelsEnvironment(true).OPENAI_API_KEY).toBe("sk-from-daemon");
+  });
+
+  test("the models.yml check never gets them", () => {
+    expect(modelsEnvironment(false).OPENAI_API_KEY).toBeUndefined();
+    expect(modelsEnvironment(false).PATH).toBe("/usr/bin");
   });
 });

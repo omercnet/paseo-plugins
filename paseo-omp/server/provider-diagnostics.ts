@@ -354,6 +354,7 @@ export interface BoundedRun {
   signal: NodeJS.Signals | null;
   /** ENOENT vs everything else, so "not found" and "found but unrunnable" stay distinct. */
   spawnErrorCode: string | null;
+  /** True when tree termination/verification failed or the leader missed its final close bound. */
   cleanupFailed: boolean;
   /** Only present when the caller asked for it with `stderrLimit`. Never forwarded across RPC. */
   stderr?: string;
