@@ -17,6 +17,7 @@ vi.mock("../client/provider-image", () => ({ OmpImageTimeline: () => null }));
 vi.mock("../client/quota-popover", () => ({ QuotaPopover: () => null }));
 vi.mock("../client/subagents-strip", () => ({ OmpSubagentStrip: () => null }));
 vi.mock("../client/rule-notice", () => ({ OmpRuleNoticeRow: () => null }));
+vi.mock("../client/lsp-diagnostics", () => ({ OmpLspDiagnosticsCard: () => null }));
 
 import {
   configParamsFromStore,

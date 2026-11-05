@@ -8,6 +8,7 @@ import { ConfigSidebarItem } from "./client/config-sidebar";
 import { OMP_ICON } from "./client/hub-icon";
 import { HubPopover } from "./client/hub-popover";
 import { summarizeHubProcesses } from "./client/hub-status";
+import { OmpLspDiagnosticsCard } from "./client/lsp-diagnostics";
 import { OmpMcpAuthorizationCard } from "./client/mcp-authorization";
 import { McpPopover } from "./client/mcp-popover";
 import { OmpMemoryPanel } from "./client/memory-panel";
@@ -43,6 +44,11 @@ import {
   composerPillSettingsSchema,
 } from "./shared/composer-pill-settings";
 import { listHubProcesses } from "./shared/hub";
+import {
+  OMP_LSP_DIAGNOSTICS_KIND,
+  ompLspDiagnosticsSchema,
+  transformOmpLspToolItem,
+} from "./shared/lsp-diagnostics";
 import { OMP_MCP_AUTH_TIMELINE_KIND, ompMcpAuthorizationTimelineSchema } from "./shared/mcp";
 import { type OmpStore, storeForProvider } from "./shared/omp-store";
 import { ompImageTimelineSchema, transformOmpImageToolItem } from "./shared/provider-image";
@@ -228,6 +234,19 @@ export default function contribute(client: PluginClientContext) {
     version: 1,
     schema: ompRuleNoticeSchema,
     Component: OmpRuleNoticeRow,
+  });
+  const removeLspDiagnosticsRenderer = client.addTimelineRenderer({
+    kind: OMP_LSP_DIAGNOSTICS_KIND,
+    version: 1,
+    schema: ompLspDiagnosticsSchema,
+    Component: OmpLspDiagnosticsCard,
+  });
+  const removeLspTransformer = client.addTimelineTransformer({
+    id: "omp-lsp-diagnostics",
+    query: { itemType: "tool_call" },
+    transform({ item }) {
+      return transformOmpLspToolItem(item);
+    },
   });
   const removeImageTransformer = client.addTimelineTransformer({
     id: "omp-images",
@@ -521,6 +540,8 @@ export default function contribute(client: PluginClientContext) {
     removeMcpAuthorizationRenderer();
     removeSubagentStripRenderer();
     removeRuleNoticeRenderer();
+    removeLspDiagnosticsRenderer();
+    removeLspTransformer();
     removeImageTransformer();
     removeOpenConfig();
     removeConfigEntry();
