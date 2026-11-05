@@ -206,7 +206,7 @@ export function OmpRulesSection({
   const focusNote =
     list?.status === "ready" && list.disabled.includes(focusRule ?? "")
       ? "This rule is turned off. Switch it on under Turned off below."
-      : "This rule is not in this scope. It may come from a project's .omp folder, so look in that workspace's OMP tab.";
+      : "No rule with this name is in this scope.";
   return (
     <>
       <View style={styles.sectionHeader}>
@@ -224,13 +224,15 @@ export function OmpRulesSection({
       </View>
       {focusRule && list?.status === "ready" ? (
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Rule that fired</Text>
+          <Text style={styles.cardTitle}>Rule named {focusRule}</Text>
+          <Text style={styles.muted}>
+            Matched by name in this scope. If the rule that fired came from a project's .omp folder,
+            look in that workspace's OMP tab.
+          </Text>
           {focused ? (
             <RuleRow styles={styles} rule={focused} rules={rulesSwitch} />
           ) : (
-            <Text style={styles.muted}>
-              {focusRule}. {focusNote}
-            </Text>
+            <Text style={styles.muted}>{focusNote}</Text>
           )}
         </View>
       ) : null}
