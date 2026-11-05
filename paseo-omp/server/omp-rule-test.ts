@@ -66,6 +66,10 @@ export async function testOmpRulesWithDependencies(
         const { name, path, sourceProvider, matched } = parsed.data;
         return [{ name, provider: sourceProvider, path, regex: matched.regex, ast: matched.ast }];
       });
+    // Fired rules that all fail to parse mean the output changed shape; "none fired" would be false.
+    if (output.data.triggered.length > 0 && triggered.length === 0) {
+      throw new OmpRulesError("omp ttsr test gave output the plugin can't read");
+    }
     return { status: "ready", evaluated: output.data.evaluated, triggered };
   } catch (error) {
     if (error instanceof OmpPublicError) return { status: "error", message: error.message };

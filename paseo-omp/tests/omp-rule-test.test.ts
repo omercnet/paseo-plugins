@@ -159,6 +159,10 @@ describe("testing a snippet against the rules", () => {
     ["a failing omp", exited("", 1)],
     ["output that is not JSON", exited("not json")],
     ["JSON of another shape", exited(JSON.stringify({ triggered: "no" }))],
+    [
+      "fired rules that all have an unknown shape",
+      exited(JSON.stringify({ evaluated: 3, triggered: [{ rule: "renamed", where: "/r.md" }] })),
+    ],
     ["a timeout", { ...exited(""), outcome: "timeout", exitCode: null } satisfies BoundedRun],
   ])("%s is an error result, not a rejection", async (_label, run) => {
     const result = await testOmpRulesWithDependencies({ snippet: "x" }, fakeOmp(run).dependencies);
