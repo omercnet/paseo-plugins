@@ -75,12 +75,7 @@ export function OmpRuleTest({
           style={[styles.scalarInput, { maxWidth: undefined }]}
         />
         <View style={styles.editorActions}>
-          <Choice
-            styles={styles}
-            label="Auto"
-            selected={!source}
-            onPress={() => setSource(null)}
-          />
+          <Choice styles={styles} label="Auto" selected={!source} onPress={() => setSource(null)} />
           {SOURCES.map((option) => (
             <Choice
               key={option}
