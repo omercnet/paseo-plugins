@@ -113,8 +113,9 @@ export async function writeProjectChanges(
   if (document.errors.length > 0) throw new Error("Workspace OMP configuration is invalid YAML.");
   for (const change of changes) {
     const segments = change.path.split(".");
-    if (change.operation === "reset") document.deleteIn(segments);
-    else document.setIn(segments, change.value);
+    if (change.operation === "reset") {
+      if (document.hasIn(segments)) document.deleteIn(segments);
+    } else document.setIn(segments, change.value);
   }
 
   await mkdir(dirname(path), { recursive: true });

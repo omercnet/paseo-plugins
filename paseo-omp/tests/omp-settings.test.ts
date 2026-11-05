@@ -557,6 +557,31 @@ describe("OMP scalar settings updates", () => {
     }
   });
 
+  test("applies a project tool approval that matches the user's when the project file has no tools section", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "paseo-omp-approval-same-"));
+    await mkdir(join(cwd, ".omp"), { recursive: true });
+    await writeFile(join(cwd, ".omp", "config.yml"), "personality: concise\n");
+    const { dependencies } = harness({ "tools.approval": { bash: "deny" } });
+    try {
+      const listed = await listOmpSettingsWithDependencies({ cwd }, dependencies);
+      const result = await updateOmpSettingsWithDependencies(
+        {
+          cwd,
+          revision: listed.revision ?? "",
+          changes: [{ operation: "set", path: "tools.approval", value: { bash: "deny" } }],
+        },
+        dependencies,
+      );
+
+      expect(result.failed).toBeUndefined();
+      expect(await readFile(join(cwd, ".omp", "config.yml"), "utf8")).toBe(
+        "personality: concise\n",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("refuses a project tool approval write when the user-level approvals cannot be read", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "paseo-omp-approval-fail-"));
     const { dependencies } = harness({ "tools.approval": { bash: "deny" } });
