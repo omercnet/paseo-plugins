@@ -389,6 +389,9 @@ function PromptFilesSection({
     queryKey: [...PROMPT_FILES_QUERY_KEY, ompStoreKey(store), cwd ?? "global"],
     queryFn: () => loadPromptFiles({ store, ...(cwd ? { cwd } : {}) }),
   });
+  if (files.error) {
+    return <Text style={styles.error}>Could not read the OMP prompt files. Try refreshing.</Text>;
+  }
   const notices = files.data ? promptFileNotices(files.data) : [];
   if (notices.length === 0) return null;
   return (
@@ -448,8 +451,8 @@ function ProviderHealthSection({
         cwd ? undefined : loadUpdateStatus({ force: true }).catch(() => undefined),
       ]);
       if (update) queryClient.setQueryData(UPDATE_QUERY_KEY, update);
-      if (result.failed) throw new Error("Could not fully refresh OMP provider health.");
       await queryClient.invalidateQueries({ queryKey: PROMPT_FILES_QUERY_KEY });
+      if (result.failed) throw new Error("Could not fully refresh OMP provider health.");
     },
   });
   // After an update the version row is stale; the install already returned the fresh update status.

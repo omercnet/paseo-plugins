@@ -9,8 +9,8 @@ export const OmpPromptFilesSchema = z.object({
   appendSystemFile: z.boolean(),
   /** A SYSTEM.md exists there: it replaces OMP's default instruction template. */
   systemFile: z.boolean(),
-  /** Whether Paseo has an Append system prompt set. Null when the plugin could not read it. */
-  hostAppendPrompt: z.boolean().nullable(),
+  /** Whether Paseo has an Append system prompt set. */
+  hostAppendPrompt: z.boolean(),
 });
 export type OmpPromptFiles = z.infer<typeof OmpPromptFilesSchema>;
 

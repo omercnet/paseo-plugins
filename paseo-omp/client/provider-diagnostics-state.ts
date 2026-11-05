@@ -267,18 +267,16 @@ export interface PromptFileNotice {
 }
 
 /**
- * The built-in provider passes Paseo's Append system prompt as `--append-system-prompt`, which
- * makes OMP skip a discovered APPEND_SYSTEM.md. An unreadable host setting is worded as a
- * possibility, and a host with no Append system prompt raises no APPEND_SYSTEM.md warning.
+ * Paseo's built-in omp provider passes the host Append system prompt as `--append-system-prompt`
+ * on create and resume, which makes OMP skip a discovered APPEND_SYSTEM.md. With no host prompt
+ * there is no APPEND_SYSTEM.md notice; per-agent prompts are not visible to a plugin.
  */
 export function promptFileNotices(files: OmpPromptFiles): PromptFileNotice[] {
   const notices: PromptFileNotice[] = [];
-  if (files.appendSystemFile && files.hostAppendPrompt !== false) {
+  if (files.appendSystemFile && files.hostAppendPrompt) {
     notices.push({
       file: "APPEND_SYSTEM.md",
-      text: files.hostAppendPrompt
-        ? "Replaced by Paseo's Append system prompt, so OMP ignores this file."
-        : "May be replaced by Paseo's Append system prompt, in which case OMP ignores this file.",
+      text: "Paseo's Append system prompt is set, so agents on the built-in omp provider ignore this file.",
     });
   }
   if (files.systemFile) {

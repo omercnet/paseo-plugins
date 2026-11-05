@@ -25,7 +25,7 @@ afterEach(async () => {
   if (root.startsWith(SCRATCH_PREFIX)) await rm(root, { recursive: true, force: true });
 });
 
-function read(cwd: string | undefined, host: boolean | null) {
+function read(cwd: string | undefined, host = false) {
   return withOmpStore({ agentDir }, () => readOmpPromptFiles(cwd, host));
 }
 
@@ -40,20 +40,26 @@ describe("readOmpPromptFiles", () => {
     });
   });
 
-  test("ignores a missing file, an empty file, and a directory of the same name", async () => {
+  test("counts an empty file, as OMP does, but not a directory of the same name", async () => {
     await writeFile(join(agentDir, "APPEND_SYSTEM.md"), "");
     await mkdir(join(agentDir, "SYSTEM.md"));
-    await expect(read(undefined, false)).resolves.toEqual({
-      appendSystemFile: false,
+    await expect(read(undefined)).resolves.toMatchObject({
+      appendSystemFile: true,
       systemFile: false,
-      hostAppendPrompt: false,
     });
   });
 
   test("reads a workspace's .omp/ only for a workspace view", async () => {
     await writeFile(join(project, ".omp", "SYSTEM.md"), "project prompt");
-    expect((await read(undefined, null)).systemFile).toBe(false);
-    expect((await read(project, null)).systemFile).toBe(true);
+    expect((await read(undefined)).systemFile).toBe(false);
+    expect((await read(project)).systemFile).toBe(true);
+  });
+
+  test("treats a .omp that is a file as having no prompt files", async () => {
+    const odd = join(root, "odd");
+    await mkdir(odd);
+    await writeFile(join(odd, ".omp"), "not a directory");
+    await expect(read(odd)).resolves.toMatchObject({ appendSystemFile: false, systemFile: false });
   });
 });
 
@@ -67,7 +73,7 @@ describe("readHostAppendPrompt", () => {
     await expect(readHostAppendPrompt(host("  \n"))).resolves.toBe(false);
   });
 
-  test("reports unknown when the host config cannot be read", async () => {
+  test("lets a host read failure surface instead of guessing", async () => {
     const refusing = {
       config: {
         get: async () => {
@@ -75,38 +81,32 @@ describe("readHostAppendPrompt", () => {
         },
       },
     } as never;
-    await expect(readHostAppendPrompt(refusing)).resolves.toBeNull();
+    await expect(readHostAppendPrompt(refusing)).rejects.toThrow("denied");
   });
 });
 
 describe("promptFileNotices", () => {
   const base = { appendSystemFile: false, systemFile: false, hostAppendPrompt: false };
 
-  test("says APPEND_SYSTEM.md is replaced when Paseo has an Append system prompt", () => {
-    const [notice] = promptFileNotices({ ...base, appendSystemFile: true, hostAppendPrompt: true });
-    expect(notice?.file).toBe("APPEND_SYSTEM.md");
-    expect(notice?.text).toMatch(/^Replaced by/);
-  });
-
-  test("words it as a possibility when the host setting could not be read", () => {
-    const [notice] = promptFileNotices({ ...base, appendSystemFile: true, hostAppendPrompt: null });
-    expect(notice?.text).toMatch(/^May be replaced/);
-  });
-
-  test("raises no APPEND_SYSTEM.md notice when Paseo has no Append system prompt", () => {
+  test("flags APPEND_SYSTEM.md only when Paseo has an Append system prompt", () => {
+    const flagged = promptFileNotices({ ...base, appendSystemFile: true, hostAppendPrompt: true });
+    expect(flagged.map((notice) => notice.file)).toEqual(["APPEND_SYSTEM.md"]);
     expect(promptFileNotices({ ...base, appendSystemFile: true })).toEqual([]);
   });
 
-  test("says SYSTEM.md turns the default tool policy off, with or without a host prompt", () => {
-    for (const hostAppendPrompt of [true, false, null]) {
+  test("flags SYSTEM.md with or without a host prompt", () => {
+    for (const hostAppendPrompt of [true, false]) {
       const notices = promptFileNotices({ ...base, systemFile: true, hostAppendPrompt });
-      expect(notices).toHaveLength(1);
-      expect(notices[0]?.file).toBe("SYSTEM.md");
-      expect(notices[0]?.text).toContain("tool policy is off");
+      expect(notices.map((notice) => notice.file)).toEqual(["SYSTEM.md"]);
     }
   });
 
-  test("raises nothing when no prompt file exists", () => {
+  test("lists both, and nothing when no prompt file exists", () => {
+    expect(
+      promptFileNotices({ appendSystemFile: true, systemFile: true, hostAppendPrompt: true }).map(
+        (notice) => notice.file,
+      ),
+    ).toEqual(["APPEND_SYSTEM.md", "SYSTEM.md"]);
     expect(promptFileNotices({ ...base, hostAppendPrompt: true })).toEqual([]);
   });
 });

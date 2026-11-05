@@ -4,42 +4,33 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { OmpPromptFiles } from "../shared/omp-prompt-files";
 import { ompAgentDir } from "./paths";
 
-async function hasNonEmptyFile(path: string): Promise<boolean> {
+// OMP checks for the file's existence, so an empty file still counts. A `.omp` that is a file
+// (ENOTDIR) simply has no prompt files in it.
+async function hasFile(path: string): Promise<boolean> {
   try {
-    const info = await stat(path);
-    return info.isFile() && info.size > 0;
+    return (await stat(path)).isFile();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
     throw error;
   }
 }
 
 async function hasPromptFile(directories: readonly string[], name: string): Promise<boolean> {
-  const found = await Promise.all(
-    directories.map((directory) => hasNonEmptyFile(join(directory, name))),
-  );
+  const found = await Promise.all(directories.map((directory) => hasFile(join(directory, name))));
   return found.some(Boolean);
 }
 
-/**
- * Paseo's host Append system prompt, as a yes/no. Null when the host refuses or fails the read:
- * the caller then words the warning as "may be replaced" instead of guessing.
- */
-export async function readHostAppendPrompt(
-  paseo: PluginHandlerContext["paseo"],
-): Promise<boolean | null> {
-  try {
-    const { config } = await paseo.config.get();
-    return config.appendSystemPrompt.trim() !== "";
-  } catch {
-    return null;
-  }
+/** Paseo's host Append system prompt as a yes/no; the text never leaves this function. */
+export async function readHostAppendPrompt(paseo: PluginHandlerContext["paseo"]): Promise<boolean> {
+  const { config } = await paseo.config.get();
+  return config.appendSystemPrompt.trim() !== "";
 }
 
 /** Where OMP looks: the agent directory, plus the workspace's `.omp/` for a project view. */
 export async function readOmpPromptFiles(
   cwd: string | undefined,
-  hostAppendPrompt: boolean | null,
+  hostAppendPrompt: boolean,
 ): Promise<OmpPromptFiles> {
   const directories = [ompAgentDir(), ...(cwd ? [join(cwd, ".omp")] : [])];
   const [appendSystemFile, systemFile] = await Promise.all([

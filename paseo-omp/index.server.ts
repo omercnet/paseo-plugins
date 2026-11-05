@@ -217,6 +217,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpSettings, scoped(resolveListOmpSettings));
   server.handle(updateOmpSettings, scoped(resolveUpdateOmpSettings));
   server.handle(getOmpProviderHealth, scoped(resolveGetOmpProviderHealth));
+  // Not `scoped`: the handler also needs the host context to read Paseo's Append system prompt.
   server.handle(getOmpPromptFiles, ({ store, cwd }, { paseo }) =>
     withOmpStore(store, async () => readOmpPromptFiles(cwd, await readHostAppendPrompt(paseo))),
   );
