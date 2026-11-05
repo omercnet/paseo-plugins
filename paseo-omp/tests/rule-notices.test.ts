@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { readOmpRuleNotice, registerOmpRuleNotices } from "../server/rule-notices";
+import { ompRuleNoticeRow, readOmpRuleNotice } from "../server/rule-notices";
+import { registerOmpTurnRows } from "../server/turn-rows";
 
 const directories: string[] = [];
 
@@ -112,7 +113,7 @@ describe("OMP rule notices", () => {
         }),
       },
     };
-    registerOmpRuleNotices(server);
+    registerOmpTurnRows(server, [ompRuleNoticeRow]);
 
     vi.useFakeTimers({ toFake: ["Date"] });
     try {

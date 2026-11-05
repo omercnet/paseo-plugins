@@ -47,13 +47,15 @@ import { OmpPublicError } from "./server/provider/security";
 import { OmpSessionLimit } from "./server/provider/session-limit";
 import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
 import { resolveListOmpQuotas } from "./server/quota";
-import { registerOmpRuleNotices } from "./server/rule-notices";
+import { ompRuleNoticeRow } from "./server/rule-notices";
 import {
   OmpSubagentControlRegistry,
   resolveCancelOmpSubagent,
   resolveSteerOmpSubagent,
 } from "./server/subagents";
 import { resolveGetOmpSupportReport } from "./server/support-diagnostics";
+import { registerOmpTurnRows } from "./server/turn-rows";
+import { ompScreenshotRow } from "./server/turn-screenshots";
 import { composerPillSettings } from "./shared/composer-pill-settings";
 import { resolveOmpGeneratedImages } from "./shared/generated-image";
 import { listHubProcesses, tailHubLog } from "./shared/hub";
@@ -259,7 +261,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(steerOmpSubagent, (input) =>
     resolveSteerOmpSubagent(input, subagentControlRegistry),
   );
-  const removeRuleNotices = registerOmpRuleNotices(server);
+  const removeTurnRows = registerOmpTurnRows(server, [ompRuleNoticeRow, ompScreenshotRow]);
   const removeSessionOpenHook = server.before("agent.session_open", ({ request }) => {
     if (request.provider !== "omp-plugin" && !request.provider.startsWith("omp-plugin-")) return;
     return withOmpSessionOpenEnv(request);
@@ -280,7 +282,7 @@ export default function contribute(server: PluginServerContext) {
     mcps.stop();
     removeSessionLimitListener();
     subagentControlRegistry.clear();
-    removeRuleNotices();
+    removeTurnRows();
     removeSessionOpenHook();
   };
 }
