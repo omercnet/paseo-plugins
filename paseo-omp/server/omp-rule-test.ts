@@ -59,13 +59,13 @@ export async function testOmpRulesWithDependencies(
     const output = TestOutputSchema.safeParse(raw);
     if (!output.success) throw new OmpRulesError("omp ttsr test gave output the plugin can't read");
     const triggered = output.data.triggered
-      .slice(0, MAX_HITS)
       .flatMap((entry): OmpRuleTestHit[] => {
         const parsed = TriggeredSchema.safeParse(entry);
         if (!parsed.success) return [];
         const { name, path, sourceProvider, matched } = parsed.data;
         return [{ name, provider: sourceProvider, path, regex: matched.regex, ast: matched.ast }];
-      });
+      })
+      .slice(0, MAX_HITS);
     // Fired rules that all fail to parse mean the output changed shape; "none fired" would be false.
     if (output.data.triggered.length > 0 && triggered.length === 0) {
       throw new OmpRulesError("omp ttsr test gave output the plugin can't read");

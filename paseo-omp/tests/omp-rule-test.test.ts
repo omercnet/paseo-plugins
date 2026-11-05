@@ -130,6 +130,24 @@ describe("testing a snippet against the rules", () => {
     }
   });
 
+  test("unreadable entries do not use up the hit cap", async () => {
+    const readable = (name: string) => ({
+      name,
+      path: `/r/${name}.md`,
+      sourceProvider: "native",
+      matched: { regex: ["x"], ast: [] },
+    });
+    const triggered = [
+      ...Array.from({ length: 100 }, () => "junk"),
+      ...Array.from({ length: 105 }, (_, index) => readable(`rule-${index}`)),
+    ];
+    const fake = fakeOmp(exited(JSON.stringify({ evaluated: 205, triggered })));
+    const result = await testOmpRulesWithDependencies({ snippet: "x" }, fake.dependencies);
+    if (result.status !== "ready") throw new Error("expected a result");
+    expect(result.triggered).toHaveLength(100);
+    expect(result.triggered[0]?.name).toBe("rule-0");
+  });
+
   test("keeps readable hits and bounds the matched patterns", async () => {
     const fake = fakeOmp(
       exited(
