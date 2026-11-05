@@ -32,18 +32,22 @@ const LspServerSchema = z
     "resolvedCommand and createClient are owned by OMP and cannot be configured",
   );
 
-const DapAdapterSchema = z.looseObject({
-  command: z.string().min(1).optional(),
-  args: stringList.optional(),
-  languages: stringList.optional(),
-  fileTypes: stringList.optional(),
-  rootMarkers: stringList.optional(),
-  launchDefaults: object.optional(),
-  attachDefaults: object.optional(),
-  connectMode: z.enum(["stdio", "socket", "tcp"]).optional(),
-  acceptsDirectoryProgram: z.boolean().optional(),
-  skipAttachRequest: z.boolean().optional(),
-});
+const DapAdapterSchema = z
+  .looseObject({
+    command: z.string().min(1).optional(),
+    args: stringList.optional(),
+    languages: stringList.optional(),
+    fileTypes: stringList.optional(),
+    rootMarkers: stringList.optional(),
+    launchDefaults: object.optional(),
+    attachDefaults: object.optional(),
+    connectMode: z.enum(["stdio", "socket", "tcp"]).optional(),
+    acceptsDirectoryProgram: z.boolean().optional(),
+  })
+  .refine(
+    (adapter) => !("skipAttachRequest" in adapter),
+    "skipAttachRequest belongs inside attachDefaults, where OMP reads it",
+  );
 
 const LspFileSchema = z.looseObject({ idleTimeoutMs: z.number().optional() });
 

@@ -52,6 +52,17 @@ describe("validating lsp.json and dap.json before they are written", () => {
     ).toEqual([]);
   });
 
+  test("rejects skipAttachRequest at the top of an adapter, where OMP does not read it", () => {
+    const top = { adapters: { a: { command: "d", skipAttachRequest: true } } };
+    expect(validateOmpToolConfig("dap", JSON.stringify(top))).toEqual([
+      expect.stringContaining("attachDefaults"),
+    ]);
+    const inside = {
+      adapters: { a: { command: "d", attachDefaults: { skipAttachRequest: true } } },
+    };
+    expect(validateOmpToolConfig("dap", JSON.stringify(inside))).toEqual([]);
+  });
+
   test("rejects a wrapper mixed with flat entries, which OMP silently drops", () => {
     const text = JSON.stringify({ servers: { a: { disabled: true } }, b: { disabled: true } });
     expect(validateOmpToolConfig("lsp", text)).toEqual([expect.stringContaining("Do not mix")]);
