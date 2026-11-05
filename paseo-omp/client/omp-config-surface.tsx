@@ -19,6 +19,7 @@ import {
   categorizeOmpSetting,
   formatOmpSettingLabel,
   isOmpStructuredSettingPath,
+  isOmpToolPolicyPath,
   listOmpSettings,
   OMP_SETTING_CATEGORIES,
   type OmpSetting,
@@ -57,6 +58,7 @@ import { OmpRulesSection } from "./omp-rules-section";
 import { OmpSkillsSection } from "./omp-skills-section";
 import { OmpStorePicker } from "./omp-store-picker";
 import { ompStoreKey } from "./omp-store-state";
+import { ToolPolicyCard } from "./omp-tool-policy";
 import { OmpUpdateRow, UPDATE_QUERY_KEY } from "./omp-update-row";
 import {
   type BinaryHealthSummary,
@@ -859,6 +861,7 @@ function ConfigurationCategory({
   category,
   styles,
   settings,
+  policySettings: allPolicySettings,
   drafts,
   theme,
   modelCatalog,
@@ -876,6 +879,8 @@ function ConfigurationCategory({
   modelRoles: Readonly<Record<string, unknown>>;
   agentCatalog: OmpAgentCatalogState;
   settings: readonly OmpSetting[];
+  /** Every stored tool policy setting, so warnings do not depend on the search text. */
+  policySettings: readonly OmpSetting[];
   drafts: Readonly<Record<string, SettingDraft>>;
   disabled: boolean;
   workspaceScoped: boolean;
@@ -883,92 +888,110 @@ function ConfigurationCategory({
   onOpenDocumentation(link: OmpDocumentationLink): void;
 }) {
   const categoryDocumentation = documentationForSettingCategory(category.id);
+  const visiblePolicySettings =
+    category.id === "tools" ? settings.filter((setting) => isOmpToolPolicyPath(setting.path)) : [];
+  const listed = settings.filter((setting) => !visiblePolicySettings.includes(setting));
   return (
-    <SectionCard
-      styles={styles}
-      title={`${category.label} · ${settings.length}`}
-      action={
-        categoryDocumentation ? (
-          <DocumentationLink
-            link={categoryDocumentation}
-            styles={styles}
-            onOpen={onOpenDocumentation}
-          />
-        ) : undefined
-      }
-    >
-      {settings.map((setting) => {
-        const complex =
-          Array.isArray(setting.value) ||
-          (setting.value !== null && typeof setting.value === "object");
-        const editable =
-          !setting.redacted && ["boolean", "number", "string", "enum"].includes(setting.type);
-        const structuredEditable =
-          !setting.redacted &&
-          isOmpStructuredSettingPath(setting.path) &&
-          setting.type === structuredSettingType(setting.path);
-        const settingDocumentation = documentationForSettingPath(setting.path);
-        const draft = drafts[setting.path];
-        return (
-          <View key={setting.path} style={styles.setting}>
-            <View style={styles.settingHeader}>
-              <Text style={styles.cardTitle}>{formatOmpSettingLabel(setting.path)}</Text>
-              {setting.workspaceOverride ? (
-                <Text style={styles.source}>Workspace override</Text>
+    <>
+      {visiblePolicySettings.length > 0 ? (
+        <ToolPolicyCard
+          settings={allPolicySettings}
+          visiblePaths={visiblePolicySettings.map((setting) => setting.path)}
+          drafts={drafts}
+          disabled={disabled}
+          workspaceScoped={workspaceScoped}
+          resetLabel={workspaceScoped ? "Remove workspace override" : "Reset to default"}
+          styles={styles}
+          onSet={(path, value) => onDraft(path, { operation: "set", value })}
+          onReset={(path) => onDraft(path, { operation: "reset" })}
+        />
+      ) : null}
+      <SectionCard
+        styles={styles}
+        title={`${category.label} · ${listed.length}`}
+        action={
+          categoryDocumentation ? (
+            <DocumentationLink
+              link={categoryDocumentation}
+              styles={styles}
+              onOpen={onOpenDocumentation}
+            />
+          ) : undefined
+        }
+      >
+        {listed.map((setting) => {
+          const complex =
+            Array.isArray(setting.value) ||
+            (setting.value !== null && typeof setting.value === "object");
+          const editable =
+            !setting.redacted && ["boolean", "number", "string", "enum"].includes(setting.type);
+          const structuredEditable =
+            !setting.redacted &&
+            isOmpStructuredSettingPath(setting.path) &&
+            setting.type === structuredSettingType(setting.path);
+          const settingDocumentation = documentationForSettingPath(setting.path);
+          const draft = drafts[setting.path];
+          return (
+            <View key={setting.path} style={styles.setting}>
+              <View style={styles.settingHeader}>
+                <Text style={styles.cardTitle}>{formatOmpSettingLabel(setting.path)}</Text>
+                {setting.workspaceOverride ? (
+                  <Text style={styles.source}>Workspace override</Text>
+                ) : null}
+                {!complex && !editable && !structuredEditable ? (
+                  <StructuredSettingValue setting={setting} styles={styles} />
+                ) : null}
+              </View>
+              <Text selectable style={styles.settingPath}>
+                {setting.path} · {setting.type}
+              </Text>
+              {settingDocumentation ? (
+                <View style={styles.docsActions}>
+                  <DocumentationLink
+                    link={settingDocumentation}
+                    styles={styles}
+                    onOpen={onOpenDocumentation}
+                  />
+                </View>
               ) : null}
-              {!complex && !editable && !structuredEditable ? (
+              {editable ? (
+                <EditableScalarValue
+                  setting={setting}
+                  draft={draft}
+                  disabled={disabled}
+                  resetLabel={workspaceScoped ? "Remove workspace override" : "Reset to default"}
+                  showReset={!workspaceScoped || setting.workspaceOverride === true}
+                  styles={styles}
+                  onSet={(value) => onDraft(setting.path, { operation: "set", value })}
+                  onReset={() => onDraft(setting.path, { operation: "reset" })}
+                />
+              ) : structuredEditable ? (
+                <StructuredRoutingEditor
+                  setting={setting}
+                  value={draft?.operation === "set" ? draft.value : setting.value}
+                  disabled={disabled}
+                  resetLabel={workspaceScoped ? "Remove workspace override" : "Reset to default"}
+                  showReset={!workspaceScoped || setting.workspaceOverride === true}
+                  resetPending={draft?.operation === "reset"}
+                  styles={styles}
+                  theme={theme}
+                  modelCatalog={modelCatalog}
+                  modelRoles={modelRoles}
+                  agentCatalog={agentCatalog}
+                  onSet={(value) => onDraft(setting.path, { operation: "set", value })}
+                  onReset={() => onDraft(setting.path, { operation: "reset" })}
+                />
+              ) : complex ? (
                 <StructuredSettingValue setting={setting} styles={styles} />
               ) : null}
+              {setting.description ? (
+                <Text style={styles.settingDescription}>{setting.description}</Text>
+              ) : null}
             </View>
-            <Text selectable style={styles.settingPath}>
-              {setting.path} · {setting.type}
-            </Text>
-            {settingDocumentation ? (
-              <View style={styles.docsActions}>
-                <DocumentationLink
-                  link={settingDocumentation}
-                  styles={styles}
-                  onOpen={onOpenDocumentation}
-                />
-              </View>
-            ) : null}
-            {editable ? (
-              <EditableScalarValue
-                setting={setting}
-                draft={draft}
-                disabled={disabled}
-                resetLabel={workspaceScoped ? "Remove workspace override" : "Reset to default"}
-                showReset={!workspaceScoped || setting.workspaceOverride === true}
-                styles={styles}
-                onSet={(value) => onDraft(setting.path, { operation: "set", value })}
-                onReset={() => onDraft(setting.path, { operation: "reset" })}
-              />
-            ) : structuredEditable ? (
-              <StructuredRoutingEditor
-                setting={setting}
-                value={draft?.operation === "set" ? draft.value : setting.value}
-                disabled={disabled}
-                resetLabel={workspaceScoped ? "Remove workspace override" : "Reset to default"}
-                showReset={!workspaceScoped || setting.workspaceOverride === true}
-                resetPending={draft?.operation === "reset"}
-                styles={styles}
-                theme={theme}
-                modelCatalog={modelCatalog}
-                modelRoles={modelRoles}
-                agentCatalog={agentCatalog}
-                onSet={(value) => onDraft(setting.path, { operation: "set", value })}
-                onReset={() => onDraft(setting.path, { operation: "reset" })}
-              />
-            ) : complex ? (
-              <StructuredSettingValue setting={setting} styles={styles} />
-            ) : null}
-            {setting.description ? (
-              <Text style={styles.settingDescription}>{setting.description}</Text>
-            ) : null}
-          </View>
-        );
-      })}
-    </SectionCard>
+          );
+        })}
+      </SectionCard>
+    </>
   );
 }
 
@@ -1130,7 +1153,7 @@ function OmpConfigContent({
         let value: unknown = draft.value;
         if (isOmpStructuredSettingPath(path)) {
           const parsed = parseOmpStructuredSettingValue(path, value);
-          if (parsed === undefined) throw new Error(`${path} contains invalid routing values.`);
+          if (parsed === undefined) throw new Error(`${path} contains invalid values.`);
           value = parsed;
         } else if (setting.type === "number") {
           const raw = String(draft.value).trim();
@@ -1457,6 +1480,9 @@ function OmpConfigContent({
                     agentCatalog={agentCatalog}
                     styles={styles}
                     settings={catalog.byCategory.get(selectedCategory.id) ?? []}
+                    policySettings={catalog.sourceSettings.filter((setting) =>
+                      isOmpToolPolicyPath(setting.path),
+                    )}
                     drafts={drafts}
                     disabled={!settingsQuery.data?.revision || save.isPending}
                     workspaceScoped={cwd !== undefined}

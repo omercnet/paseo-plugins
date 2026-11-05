@@ -12,6 +12,7 @@ import {
   type OmpSetting,
   type OmpSettingType,
   OmpSettingTypeSchema,
+  OmpToolPoliciesSchema,
   parseOmpStructuredSettingValue,
   structuredSettingType,
   type updateOmpSettings,
@@ -252,6 +253,51 @@ export const ompSettingsDependencies: OmpSettingsDependencies = {
   validateProjectConfig: validateOmpProjectConfig,
 };
 
+/**
+ * Project `tools.approval` entries merge with the user's instead of replacing them, so a project
+ * editor must know which entries are inherited.
+ */
+async function withUserToolPolicies(
+  executable: string,
+  dependencies: OmpSettingsDependencies,
+  settings: OmpSetting[],
+): Promise<OmpSetting[]> {
+  const result = await dependencies.runConfig(executable, ["list", "--json"], tmpdir());
+  if (!runSucceeded(result)) return settings;
+  let listed: unknown;
+  try {
+    listed = JSON.parse(result.stdout);
+  } catch {
+    return settings;
+  }
+  const userValue =
+    parseOmpSettingsList(listed).settings.find((setting) => setting.path === "tools.approval")
+      ?.value ?? {};
+  return settings.map((setting) =>
+    setting.path === "tools.approval" ? { ...setting, userValue } : setting,
+  );
+}
+
+/** Keeps a project `tools.approval` record to what differs from the user's, so inherited rules stay inherited. */
+function projectChanges(
+  changes: RpcInput<typeof updateOmpSettings>["changes"],
+  byPath: ReadonlyMap<string, OmpSetting>,
+): ProjectChange[] {
+  return changes.map((change) => {
+    if (change.operation !== "set" || change.path !== "tools.approval") return change;
+    const inherited =
+      OmpToolPoliciesSchema.safeParse(byPath.get(change.path)?.userValue).data ?? {};
+    const own = Object.fromEntries(
+      Object.entries(OmpToolPoliciesSchema.parse(change.value)).filter(
+        ([tool, approval]) => inherited[tool] !== approval,
+      ),
+    );
+    return Object.keys(own).length === 0
+      ? { operation: "reset", path: change.path }
+      : { operation: "set", path: change.path, value: own };
+  });
+}
+
 async function loadCatalog(
   executable: string | null | undefined,
   dependencies: OmpSettingsDependencies,
@@ -301,7 +347,13 @@ async function loadCatalog(
       revision,
       droppedCount: catalog.droppedCount,
       ...(projectPath ? { path: projectPath } : path ? { path } : {}),
-      settings: cwd ? await markWorkspaceOverrides(cwd, catalog.settings) : catalog.settings,
+      settings: cwd
+        ? await withUserToolPolicies(
+            resolved,
+            dependencies,
+            await markWorkspaceOverrides(cwd, catalog.settings),
+          )
+        : catalog.settings,
     };
   } catch {
     return {
@@ -414,6 +466,17 @@ export async function updateOmpSettingsWithDependencies(
           catalog: current,
         };
       }
+      if (change.path === "tools.approval" && setting.userValue === undefined) {
+        return {
+          conflict: false,
+          appliedPaths: [],
+          failed: {
+            path: change.path,
+            message: "Could not read the user-level tool approvals. Try again.",
+          },
+          catalog: current,
+        };
+      }
     }
 
     const projectPath = join(input.cwd, ".omp", "config.yml");
@@ -427,7 +490,7 @@ export async function updateOmpSettingsWithDependencies(
       const outcome = await writeProjectChanges(
         input.cwd,
         afterValidation,
-        input.changes,
+        projectChanges(input.changes, byPath),
         executable,
         dependencies,
       );
