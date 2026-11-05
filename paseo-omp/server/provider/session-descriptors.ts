@@ -59,6 +59,8 @@ export interface OmpSessionListOptions {
   sessionId?: string;
   sessionDir?: string;
   signal?: AbortSignal;
+  /** Called when a scan bound ended the listing early, so the result may miss sessions. */
+  onTruncated?: () => void;
 }
 
 interface ScanBudget {
@@ -510,6 +512,7 @@ export async function listOmpSessionDescriptors(
     options.signal,
   );
   options.signal?.throwIfAborted();
+  if (budgetExceeded(budget)) options.onTruncated?.();
   return matches;
 }
 

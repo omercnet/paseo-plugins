@@ -147,6 +147,47 @@ describe("counting rule firings from session files", () => {
     expect(result.sessions).toBeLessThan(3);
   });
 
+  test("more sessions than the session bound are flagged, not silently dropped", async () => {
+    await session("/work/a", [injection("2026-11-01T10:00:00.000Z", "r")]);
+    await session("/work/a", [injection("2026-11-01T10:00:00.000Z", "r")]);
+    const result = await count(undefined, { ...LIMITS, sessions: 1 });
+    expect(result.sessions).toBe(1);
+    expect(result.partial).toBe(true);
+  });
+
+  test("more distinct rules than the list holds are flagged", async () => {
+    const names = Array.from({ length: 501 }, (_, index) => `rule-${index}`);
+    await session("/work/a", [injection("2026-11-01T10:00:00.000Z", ...names)]);
+    const result = await count();
+    expect(result.firings).toHaveLength(500);
+    expect(result.partial).toBe(true);
+  });
+
+  test("a count made under a smaller per-file bound is redone under a larger one", async () => {
+    const lines = Array.from({ length: 6 }, () => injection("2026-11-01T10:00:00.000Z", "again"));
+    await session("/work/a", lines);
+    const small = await count(undefined, { ...LIMITS, fileBytes: 500 });
+    expect(small.partial).toBe(true);
+    const full = await count();
+    expect(full.partial).toBe(false);
+    expect(full.firings[0]?.count).toBe(6);
+  });
+
+  test("a read cut off by the time bound is flagged and counted in full the next time", async () => {
+    const lines = Array.from({ length: 2_500 }, () =>
+      injection("2026-11-01T10:00:00.000Z", "long"),
+    );
+    await session("/work/a", lines);
+    let calls = 0;
+    const cutOff = await count(undefined, LIMITS, () => {
+      calls += 1;
+      return calls <= 2 ? 0 : 1_000_000;
+    });
+    expect(cutOff).toEqual({ firings: [], sessions: 0, partial: true });
+    const full = await count();
+    expect(full.firings[0]?.count).toBe(2_500);
+  });
+
   test("no sessions gives an empty, complete result", async () => {
     expect(await count()).toEqual({ firings: [], sessions: 0, partial: false });
   });

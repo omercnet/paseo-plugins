@@ -47,9 +47,9 @@ function firedSummary(counted: {
     .map((firing) => `${firing.name} (${firing.count})`)
     .join(", ");
   const sessions = `${counted.sessions} ${counted.sessions === 1 ? "session" : "sessions"}`;
-  const bound = counted.partial ? ", newest first, so some older firings are not counted" : "";
+  const bound = counted.partial ? ", so some firings are not counted" : "";
   return top
-    ? `Most fired: ${top}. Counted from ${sessions}${bound}.`
+    ? `Most fired: ${top}. Counted by rule name from ${sessions}${bound}.`
     : `No rule fired in the ${sessions} counted${bound}.`;
 }
 
@@ -228,7 +228,7 @@ export function OmpRulesSection({
   function firingLabel(name: string): string | null {
     const firing = firingByName.get(name);
     if (firing) return firingText(firing);
-    return counted ? "Not fired in the sessions counted" : null;
+    return counted && !counted.partial ? "Not fired in the sessions counted" : null;
   }
   function noisiestFirst(left: OmpRule, right: OmpRule): number {
     return (firingByName.get(right.name)?.count ?? 0) - (firingByName.get(left.name)?.count ?? 0);

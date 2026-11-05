@@ -43,6 +43,8 @@ interface Tally {
 interface FileFirings {
   mtimeMs: number;
   size: number;
+  /** Bytes the counts cover: a larger bound than this one means the file must be read again. */
+  readBytes: number;
   truncated: boolean;
   rules: Map<string, Tally>;
 }
@@ -66,8 +68,16 @@ function addTo(rules: Map<string, Tally>, name: string, at: number, count = 1): 
   rules.set(name, tally);
 }
 
-async function countFile(path: string, readBytes: number): Promise<Map<string, Tally>> {
+const LINES_PER_TIME_CHECK = 1_000;
+
+/** The counts of one file, or null when `expired` ended the read or the file could not be read. */
+async function countFile(
+  path: string,
+  readBytes: number,
+  expired: () => boolean,
+): Promise<Map<string, Tally> | null> {
   const rules = new Map<string, Tally>();
+  let lineCount = 0;
   const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const lines = createInterface({
@@ -75,6 +85,8 @@ async function countFile(path: string, readBytes: number): Promise<Map<string, T
       crlfDelay: Number.POSITIVE_INFINITY,
     });
     for await (const line of lines) {
+      lineCount += 1;
+      if (lineCount % LINES_PER_TIME_CHECK === 0 && expired()) return null;
       if (!line.includes('"ttsr_injection"')) continue;
       let parsed: unknown;
       try {
@@ -89,10 +101,12 @@ async function countFile(path: string, readBytes: number): Promise<Map<string, T
         if (name && name.length <= MAX_NAME_CHARS) addTo(rules, name, Number.isNaN(at) ? 0 : at);
       }
     }
+  } catch {
+    return null;
   } finally {
     await handle.close().catch(() => undefined);
   }
-  return rules;
+  return expired() ? null : rules;
 }
 
 /**
@@ -107,40 +121,66 @@ export async function readRuleFirings(
   now: () => number = Date.now,
 ): Promise<{ firings: OmpRuleFiring[]; sessions: number; partial: boolean }> {
   const started = now();
-  const sessions = await listOmpSessionDescriptors(
-    {
-      limit: limits.sessions,
-      ...(input.cwd ? { cwd: input.cwd } : {}),
-      ...(input.sessionDir ? { sessionDir: input.sessionDir } : {}),
-    },
-    environment,
-  );
+  const expired = () => now() - started > limits.ms;
+  let partial = false;
+  const signal = AbortSignal.timeout(limits.ms);
+  let found: Awaited<ReturnType<typeof listOmpSessionDescriptors>>;
+  try {
+    found = await listOmpSessionDescriptors(
+      {
+        // One more than wanted, to learn whether older sessions exist.
+        limit: limits.sessions + 1,
+        signal,
+        onTruncated: () => {
+          partial = true;
+        },
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.sessionDir ? { sessionDir: input.sessionDir } : {}),
+      },
+      environment,
+    );
+  } catch (error) {
+    if (signal.aborted) return { firings: [], sessions: 0, partial: true };
+    throw error;
+  }
+  if (found.length > limits.sessions) partial = true;
+  const sessions = found.slice(0, limits.sessions);
   const totals = new Map<string, Tally>();
   let counted = 0;
   let bytes = 0;
-  let partial = false;
   for (const session of sessions) {
     const file = session.transcriptFile;
     if (!file) continue;
-    if (now() - started > limits.ms) {
+    if (expired()) {
       partial = true;
       break;
     }
     const info = await stat(file).catch(() => null);
     if (!info?.isFile()) continue;
+    const readBytes = Math.min(info.size, limits.fileBytes);
     let firings = cache.get(file);
-    if (firings?.mtimeMs !== info.mtimeMs || firings.size !== info.size) {
-      const readBytes = Math.min(info.size, limits.fileBytes);
+    if (
+      firings?.mtimeMs !== info.mtimeMs ||
+      firings.size !== info.size ||
+      firings.readBytes !== readBytes
+    ) {
       if (bytes + readBytes > limits.totalBytes) {
         partial = true;
         break;
       }
       bytes += readBytes;
+      const rules = await countFile(file, readBytes, expired);
+      if (!rules) {
+        // Not cached: a file that could not be read completely is read again next time.
+        partial = true;
+        continue;
+      }
       firings = {
         mtimeMs: info.mtimeMs,
         size: info.size,
+        readBytes,
         truncated: info.size > limits.fileBytes,
-        rules: await countFile(file, readBytes).catch(() => new Map<string, Tally>()),
+        rules,
       };
       remember(file, firings);
     }
@@ -148,6 +188,7 @@ export async function readRuleFirings(
     counted += 1;
     for (const [name, tally] of firings.rules) addTo(totals, name, tally.last, tally.count);
   }
+  if (totals.size > MAX_RULES) partial = true;
   const firings = [...totals]
     .map(([name, tally]) => ({
       name,
