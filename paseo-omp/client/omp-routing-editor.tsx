@@ -1,7 +1,8 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { TextInput } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Switch, Text, View } from "react-native";
+import type { OmpAgent } from "../shared/omp-agents";
 import {
   formatOmpSettingLabel,
   isOmpStructuredSettingPath,
@@ -24,6 +25,12 @@ export type OmpModelCatalogState = {
   error?: string;
 };
 
+export type OmpAgentCatalogState = {
+  agents: readonly OmpAgent[];
+  loading: boolean;
+  error?: string;
+};
+
 type StructuredRoutingEditorProps = {
   setting: OmpSetting;
   value: unknown;
@@ -35,6 +42,7 @@ type StructuredRoutingEditorProps = {
   theme: PluginSurfaceProps["theme"];
   modelCatalog: OmpModelCatalogState;
   modelRoles: Readonly<Record<string, unknown>>;
+  agentCatalog: OmpAgentCatalogState;
   onSet(value: unknown): void;
   onReset(): void;
 };
@@ -128,6 +136,99 @@ function OrderedRoleEditor({
   );
 }
 
+function AgentPicker({
+  agents,
+  taken,
+  disabled,
+  styles,
+  onSelect,
+}: {
+  agents: readonly OmpAgent[];
+  taken: readonly string[];
+  disabled: boolean;
+  styles: OmpConfigStyles;
+  onSelect(name: string): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const choices = agents.filter((agent) => !taken.includes(agent.name));
+  if (choices.length === 0) return null;
+  return (
+    <View style={styles.recordList}>
+      <RowButton
+        label={open ? "Close agents" : "Choose agent"}
+        disabled={disabled}
+        styles={styles}
+        onPress={() => setOpen((current) => !current)}
+      />
+      {open
+        ? choices.map((agent) => (
+            <RowButton
+              key={agent.name}
+              label={`${agent.name} (${agent.source})`}
+              disabled={disabled}
+              styles={styles}
+              onPress={() => {
+                onSelect(agent.name);
+                setOpen(false);
+              }}
+            />
+          ))
+        : null}
+    </View>
+  );
+}
+
+/** Turning off the default agent fails every task call that names no agent. */
+const DEFAULT_AGENT = "task";
+
+function DisabledAgentsEditor({
+  value,
+  agentCatalog,
+  disabled,
+  styles,
+  onSet,
+}: Pick<StructuredRoutingEditorProps, "value" | "agentCatalog" | "disabled" | "styles" | "onSet">) {
+  const switchedOff = asStringArray(value);
+  const listed = agentCatalog.agents.map((agent) => agent.name);
+  const names = [...listed, ...switchedOff.filter((name) => !listed.includes(name))];
+  return (
+    <View style={styles.recordList}>
+      {agentCatalog.error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {agentCatalog.error}
+        </Text>
+      ) : null}
+      {names.length === 0 ? (
+        <Text style={styles.muted}>
+          {agentCatalog.loading ? "Loading agents…" : "No agents found."}
+        </Text>
+      ) : null}
+      {names.map((name) => {
+        const off = switchedOff.includes(name);
+        const locked = name === DEFAULT_AGENT && !off;
+        return (
+          <View key={name} style={styles.recordRow}>
+            <Text style={styles.recordKey}>{name}</Text>
+            <Switch
+              accessibilityLabel={`Agent ${name} is ${off ? "off" : "on"}`}
+              value={!off}
+              disabled={disabled || locked}
+              onValueChange={(on) =>
+                onSet(on ? switchedOff.filter((item) => item !== name) : [...switchedOff, name])
+              }
+            />
+            {locked ? (
+              <Text style={styles.muted}>
+                The default agent stays on: without it every task call that names no agent fails.
+              </Text>
+            ) : null}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 function RecordRoutingEditor({
   setting,
   value,
@@ -136,10 +237,19 @@ function RecordRoutingEditor({
   theme,
   modelCatalog,
   modelRoles,
+  agentCatalog,
   onSet,
 }: Pick<
   StructuredRoutingEditorProps,
-  "setting" | "value" | "disabled" | "styles" | "onSet" | "theme" | "modelCatalog" | "modelRoles"
+  | "setting"
+  | "value"
+  | "disabled"
+  | "styles"
+  | "onSet"
+  | "theme"
+  | "modelCatalog"
+  | "modelRoles"
+  | "agentCatalog"
 >) {
   const record = asRecord(value);
   const [keyErrors, setKeyErrors] = useState<Record<string, string>>({});
@@ -198,6 +308,15 @@ function RecordRoutingEditor({
               <Text accessibilityRole="alert" style={styles.error}>
                 {keyErrors[key]}
               </Text>
+            ) : null}
+            {setting.path.startsWith("task.") ? (
+              <AgentPicker
+                agents={agentCatalog.agents}
+                taken={Object.keys(record)}
+                disabled={disabled}
+                styles={styles}
+                onSelect={(name) => onSet(replaceRecordKey(record, key, name))}
+              />
             ) : null}
             <TextInput
               accessibilityLabel={`${formatOmpSettingLabel(setting.path)} ${valueLabel} ${index + 1}`}
@@ -287,6 +406,8 @@ export function StructuredRoutingEditor(props: StructuredRoutingEditorProps) {
         <Text style={props.styles.muted}>{props.resetLabel} when changes are applied</Text>
       ) : props.setting.path === "cycleOrder" ? (
         <OrderedRoleEditor {...props} />
+      ) : props.setting.path === "task.disabledAgents" ? (
+        <DisabledAgentsEditor {...props} />
       ) : (
         <RecordRoutingEditor {...props} />
       )}

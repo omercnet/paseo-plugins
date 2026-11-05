@@ -13,6 +13,7 @@ import {
   type OmpSettingType,
   OmpSettingTypeSchema,
   parseOmpStructuredSettingValue,
+  structuredSettingType,
   type updateOmpSettings,
 } from "../shared/omp-settings";
 import { SerialMutationQueue } from "./mutation-queue";
@@ -315,8 +316,7 @@ async function loadCatalog(
 
 function serializeSettingValue(setting: OmpSetting, value: unknown): string | null {
   if (isOmpStructuredSettingPath(setting.path)) {
-    const expectedType = setting.path === "cycleOrder" ? "array" : "record";
-    if (setting.type !== expectedType) return null;
+    if (setting.type !== structuredSettingType(setting.path)) return null;
     const parsed = parseOmpStructuredSettingValue(setting.path, value);
     return parsed === undefined ? null : JSON.stringify(parsed);
   }
@@ -332,7 +332,7 @@ function isEditableSetting(setting: OmpSetting): boolean {
   if (setting.redacted) return false;
   if (["boolean", "number", "string", "enum"].includes(setting.type)) return true;
   if (!isOmpStructuredSettingPath(setting.path)) return false;
-  return setting.type === (setting.path === "cycleOrder" ? "array" : "record");
+  return setting.type === structuredSettingType(setting.path);
 }
 
 export async function listOmpSettingsWithDependencies(

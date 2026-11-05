@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, Switch, Text, View } from "react-native";
 import type { ComposerPillSettings } from "../shared/composer-pill-settings";
+import { listOmpAgents } from "../shared/omp-agents";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import { listOmpModels } from "../shared/omp-models";
 import {
@@ -23,6 +24,7 @@ import {
   type OmpSettingCategory,
   orderOmpToolSettings,
   parseOmpStructuredSettingValue,
+  structuredSettingType,
   updateOmpSettings,
 } from "../shared/omp-settings";
 import { type OmpStore, storeLabel } from "../shared/omp-store";
@@ -44,7 +46,11 @@ import {
 import { OmpMcpsSection } from "./omp-mcps-section";
 import { normalizeOmpModels } from "./omp-model-picker-state";
 import { OmpPluginManagerSection } from "./omp-plugin-manager";
-import { type OmpModelCatalogState, StructuredRoutingEditor } from "./omp-routing-editor";
+import {
+  type OmpAgentCatalogState,
+  type OmpModelCatalogState,
+  StructuredRoutingEditor,
+} from "./omp-routing-editor";
 import { OmpRulesSection } from "./omp-rules-section";
 import { OmpSkillsSection } from "./omp-skills-section";
 import { OmpStorePicker } from "./omp-store-picker";
@@ -815,6 +821,7 @@ function ConfigurationCategory({
   theme,
   modelCatalog,
   modelRoles,
+  agentCatalog,
   disabled,
   workspaceScoped,
   onDraft,
@@ -825,6 +832,7 @@ function ConfigurationCategory({
   theme: PluginSurfaceProps["theme"];
   modelCatalog: OmpModelCatalogState;
   modelRoles: Readonly<Record<string, unknown>>;
+  agentCatalog: OmpAgentCatalogState;
   settings: readonly OmpSetting[];
   drafts: Readonly<Record<string, SettingDraft>>;
   disabled: boolean;
@@ -856,7 +864,7 @@ function ConfigurationCategory({
         const structuredEditable =
           !setting.redacted &&
           isOmpStructuredSettingPath(setting.path) &&
-          setting.type === (setting.path === "cycleOrder" ? "array" : "record");
+          setting.type === structuredSettingType(setting.path);
         const settingDocumentation = documentationForSettingPath(setting.path);
         const draft = drafts[setting.path];
         return (
@@ -905,6 +913,7 @@ function ConfigurationCategory({
                 theme={theme}
                 modelCatalog={modelCatalog}
                 modelRoles={modelRoles}
+                agentCatalog={agentCatalog}
                 onSet={(value) => onDraft(setting.path, { operation: "set", value })}
                 onReset={() => onDraft(setting.path, { operation: "reset" })}
               />
@@ -973,6 +982,7 @@ function OmpConfigContent({
   const loadSettings = useRpc(listOmpSettings);
   const updateSettings = useRpc(updateOmpSettings);
   const loadModels = useRpc(listOmpModels);
+  const loadAgents = useRpc(listOmpAgents);
   const queryClient = useQueryClient();
   const context = { store, ...(cwd ? { cwd } : {}) };
   const pendingMutations = useIsMutating({ mutationKey: ["paseo-omp"] });
@@ -992,6 +1002,18 @@ function OmpConfigContent({
     queryFn: () => loadModels(context),
     staleTime: 30_000,
   });
+  const agentsQuery = useQuery({
+    queryKey: ["paseo-omp", "agents", ompStoreKey(store), cwd ?? "global"],
+    queryFn: () => loadAgents(context),
+    staleTime: 5 * 60_000,
+  });
+  const agentCatalog: OmpAgentCatalogState = {
+    agents: agentsQuery.data?.agents ?? [],
+    loading: agentsQuery.isLoading,
+    ...(agentsQuery.error || agentsQuery.data?.error
+      ? { error: "Could not list every OMP agent. Typed names remain available." }
+      : {}),
+  };
   const [view, setView] = useState<SurfaceView>("overview");
   const [activeCategory, setActiveCategory] = useState<OmpSettingCategory>("appearance");
   const [search, setSearch] = useState("");
@@ -1227,19 +1249,26 @@ function OmpConfigContent({
                 accessibilityLabel="Refresh OMP configuration"
                 style={styles.refresh}
                 disabled={
-                  configQuery.isFetching || settingsQuery.isFetching || modelsQuery.isFetching
+                  configQuery.isFetching ||
+                  settingsQuery.isFetching ||
+                  modelsQuery.isFetching ||
+                  agentsQuery.isFetching
                 }
                 onPress={() => {
                   void Promise.all([
                     configQuery.refetch(),
                     settingsQuery.refetch(),
                     modelsQuery.refetch(),
+                    agentsQuery.refetch(),
                   ]);
                 }}
               >
                 <Icon name="RefreshCw" size={14} color={theme.colors.foreground} />
                 <Text style={styles.refreshLabel}>
-                  {configQuery.isFetching || settingsQuery.isFetching || modelsQuery.isFetching
+                  {configQuery.isFetching ||
+                  settingsQuery.isFetching ||
+                  modelsQuery.isFetching ||
+                  agentsQuery.isFetching
                     ? "Refreshing…"
                     : "Refresh"}
                 </Text>
@@ -1380,6 +1409,7 @@ function OmpConfigContent({
                     theme={theme}
                     modelCatalog={modelCatalog}
                     modelRoles={modelRoles}
+                    agentCatalog={agentCatalog}
                     styles={styles}
                     settings={catalog.byCategory.get(selectedCategory.id) ?? []}
                     drafts={drafts}

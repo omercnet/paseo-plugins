@@ -185,6 +185,7 @@ describe("OMP scalar settings updates", () => {
       "task.agentServiceTierOverrides": { value: {}, type: "record", description: "" },
       "task.agentPrewalk": { value: {}, type: "record", description: "" },
       "task.agentAdvisor": { value: {}, type: "record", description: "" },
+      "task.disabledAgents": { value: ["user-agent"], type: "array", description: "" },
     };
     const commands: string[][] = [];
     const dependencies: OmpSettingsDependencies = {
@@ -292,6 +293,7 @@ describe("OMP scalar settings updates", () => {
           },
           { operation: "set", path: "task.agentPrewalk", value: { reviewer: "@smol" } },
           { operation: "set", path: "task.agentAdvisor", value: { reviewer: "on" } },
+          { operation: "set", path: "task.disabledAgents", value: ["scout", "sonic"] },
         ],
       },
       dependencies,
@@ -350,6 +352,13 @@ describe("OMP scalar settings updates", () => {
       "--",
       JSON.stringify({ reviewer: "on" }),
     ]);
+    expect(commands).toContainEqual([
+      "set",
+      "task.disabledAgents",
+      "--json",
+      "--",
+      JSON.stringify(["scout", "sonic"]),
+    ]);
 
     const reset = await updateOmpSettingsWithDependencies(
       {
@@ -385,6 +394,12 @@ describe("OMP scalar settings updates", () => {
       updateOmpSettings.input.safeParse({
         revision: "revision",
         changes: [{ operation: "set", path: "cycleOrder", value: ["default", "default"] }],
+      }).success,
+    ).toBe(false);
+    expect(
+      updateOmpSettings.input.safeParse({
+        revision: "revision",
+        changes: [{ operation: "set", path: "task.disabledAgents", value: ["scout", "scout"] }],
       }).success,
     ).toBe(false);
 
@@ -479,6 +494,30 @@ describe("OMP scalar settings updates", () => {
       expect(
         commands.filter(([operation]) => operation === "set" || operation === "reset"),
       ).toEqual([]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("writes the whole disabled-agents list to the project file so user entries do not return", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "paseo-omp-settings-"));
+    const { commands, dependencies } = harness();
+    try {
+      const listed = await listOmpSettingsWithDependencies({ cwd }, dependencies);
+      const written = await updateOmpSettingsWithDependencies(
+        {
+          cwd,
+          revision: listed.revision ?? "",
+          changes: [{ operation: "set", path: "task.disabledAgents", value: ["scout", "sonic"] }],
+        },
+        dependencies,
+      );
+      expect(written.appliedPaths).toEqual(["task.disabledAgents"]);
+      const text = await readFile(join(cwd, ".omp", "config.yml"), "utf8");
+      expect(text).toContain("disabledAgents");
+      expect(text).toContain("scout, sonic");
+      expect(text).not.toContain("user-agent");
+      expect(commands.filter(([operation]) => operation === "set")).toEqual([]);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
