@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, Switch, Text, View } from "react-native";
 import type { ComposerPillSettings } from "../shared/composer-pill-settings";
-import { listOmpAgents, type OmpAgent } from "../shared/omp-agents";
+import { listOmpAgents } from "../shared/omp-agents";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import { listOmpModels } from "../shared/omp-models";
 import {
@@ -46,7 +46,11 @@ import {
 import { OmpMcpsSection } from "./omp-mcps-section";
 import { normalizeOmpModels } from "./omp-model-picker-state";
 import { OmpPluginManagerSection } from "./omp-plugin-manager";
-import { type OmpModelCatalogState, StructuredRoutingEditor } from "./omp-routing-editor";
+import {
+  type OmpAgentCatalogState,
+  type OmpModelCatalogState,
+  StructuredRoutingEditor,
+} from "./omp-routing-editor";
 import { OmpRulesSection } from "./omp-rules-section";
 import { OmpSkillsSection } from "./omp-skills-section";
 import { OmpStorePicker } from "./omp-store-picker";
@@ -817,7 +821,7 @@ function ConfigurationCategory({
   theme,
   modelCatalog,
   modelRoles,
-  agents,
+  agentCatalog,
   disabled,
   workspaceScoped,
   onDraft,
@@ -828,7 +832,7 @@ function ConfigurationCategory({
   theme: PluginSurfaceProps["theme"];
   modelCatalog: OmpModelCatalogState;
   modelRoles: Readonly<Record<string, unknown>>;
-  agents: readonly OmpAgent[];
+  agentCatalog: OmpAgentCatalogState;
   settings: readonly OmpSetting[];
   drafts: Readonly<Record<string, SettingDraft>>;
   disabled: boolean;
@@ -909,7 +913,7 @@ function ConfigurationCategory({
                 theme={theme}
                 modelCatalog={modelCatalog}
                 modelRoles={modelRoles}
-                agents={agents}
+                agentCatalog={agentCatalog}
                 onSet={(value) => onDraft(setting.path, { operation: "set", value })}
                 onReset={() => onDraft(setting.path, { operation: "reset" })}
               />
@@ -1003,6 +1007,13 @@ function OmpConfigContent({
     queryFn: () => loadAgents(context),
     staleTime: 30_000,
   });
+  const agentCatalog: OmpAgentCatalogState = {
+    agents: agentsQuery.data?.agents ?? [],
+    loading: agentsQuery.isLoading,
+    ...(agentsQuery.error || agentsQuery.data?.error
+      ? { error: "Could not list every OMP agent. Typed names remain available." }
+      : {}),
+  };
   const [view, setView] = useState<SurfaceView>("overview");
   const [activeCategory, setActiveCategory] = useState<OmpSettingCategory>("appearance");
   const [search, setSearch] = useState("");
@@ -1391,7 +1402,7 @@ function OmpConfigContent({
                     theme={theme}
                     modelCatalog={modelCatalog}
                     modelRoles={modelRoles}
-                    agents={agentsQuery.data?.agents ?? []}
+                    agentCatalog={agentCatalog}
                     styles={styles}
                     settings={catalog.byCategory.get(selectedCategory.id) ?? []}
                     drafts={drafts}

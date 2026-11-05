@@ -1,7 +1,8 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { type listOmpAgents, OMP_AGENT_LIMIT, type OmpAgent } from "../shared/omp-agents";
 import { OmpAgentNameSchema } from "../shared/omp-settings";
@@ -12,7 +13,25 @@ import { buildStatefulCommandEnv, defaultSpawn, runBounded } from "./provider-di
 const UNPACK_TIMEOUT_MS = 15_000;
 const KILL_GRACE_MS = 1_000;
 const UNPACK_OUTPUT_LIMIT = 64 * 1024;
+const AGENT_FILE_LIMIT = 256 * 1024;
+const FRONTMATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/u;
 const BUNDLED_FAILURE = "Bundled agents could not be listed.";
+
+/** Everything OMP would use to relocate its config, data, state, cache or agent directory. */
+const OMP_LOCATION_ENV = [
+  "OMP_AGENT_DIR",
+  "OMP_PROFILE",
+  "OMP_SESSION_DIR",
+  "PASEO_OMP_AGENT_DIR",
+  "PI_CODING_AGENT_DIR",
+  "PI_CODING_AGENT_SESSION_DIR",
+  "PI_CONFIG_DIR",
+  "PI_PROFILE",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+] as const;
 
 const UnpackResultSchema = z.object({ written: z.array(z.string()) });
 
@@ -22,12 +41,31 @@ export interface OmpAgentDependencies {
   userAgentsDir(): string;
 }
 
-function agentNamesFrom(files: readonly string[]): string[] {
+/** The name OMP registers for an agent file: its frontmatter `name`, which needs a `description`. */
+async function agentNameFromFile(path: string): Promise<string | null> {
+  const metadata = await stat(path);
+  if (!metadata.isFile() || metadata.size > AGENT_FILE_LIMIT) return null;
+  const frontmatter = FRONTMATTER.exec(await readFile(path, "utf8"));
+  if (!frontmatter?.[1]) return null;
+  let fields: unknown;
+  try {
+    fields = parseYaml(frontmatter[1]);
+  } catch {
+    return null;
+  }
+  if (fields === null || typeof fields !== "object") return null;
+  const { name, description } = fields as Record<string, unknown>;
+  if (typeof description !== "string" || description.length === 0) return null;
+  const parsed = OmpAgentNameSchema.safeParse(typeof name === "string" ? name.trim() : name);
+  return parsed.success ? parsed.data : null;
+}
+
+async function agentNamesFrom(paths: readonly string[]): Promise<string[]> {
   const names: string[] = [];
-  for (const file of files) {
-    if (!file.endsWith(".md")) continue;
-    const name = OmpAgentNameSchema.safeParse(basename(file, ".md"));
-    if (name.success) names.push(name.data);
+  for (const path of paths.slice(0, OMP_AGENT_LIMIT)) {
+    if (!path.endsWith(".md")) continue;
+    const name = await agentNameFromFile(path).catch(() => null);
+    if (name) names.push(name);
   }
   return names;
 }
@@ -35,17 +73,31 @@ function agentNamesFrom(files: readonly string[]): string[] {
 async function agentNamesIn(directory: string): Promise<string[]> {
   try {
     const entries = await readdir(directory, { withFileTypes: true });
-    return agentNamesFrom(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
+    return agentNamesFrom(
+      entries.filter((entry) => entry.isFile()).map((entry) => join(directory, entry.name)),
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
 }
 
+/** A scratch-only OMP environment: nothing inherited can point OMP at a real directory. */
+export function scratchOmpEnvironment(base: NodeJS.ProcessEnv, scratch: string): NodeJS.ProcessEnv {
+  const environment = { ...base };
+  for (const key of OMP_LOCATION_ENV) delete environment[key];
+  return {
+    ...environment,
+    HOME: scratch,
+    USERPROFILE: scratch,
+    PI_CODING_AGENT_DIR: join(scratch, "agent"),
+  };
+}
+
 /**
  * OMP has no agent list command, but `agents unpack` writes the bundled set to a folder. The
  * folder and the whole OMP home are throwaway, so an OMP that ignores `--dir` still writes
- * nothing into the real agent directory.
+ * nothing into a real agent directory.
  */
 async function unpackBundledNames(): Promise<string[]> {
   const executable = await resolveOmpExecutable();
@@ -56,12 +108,7 @@ async function unpackBundledNames(): Promise<string[]> {
       defaultSpawn,
       executable,
       ["agents", "unpack", "--dir", join(scratch, "out"), "--json"],
-      {
-        ...buildStatefulCommandEnv(currentOmpEnvironment()),
-        HOME: scratch,
-        USERPROFILE: scratch,
-        PI_CODING_AGENT_DIR: join(scratch, "agent"),
-      },
+      scratchOmpEnvironment(buildStatefulCommandEnv(currentOmpEnvironment()), scratch),
       UNPACK_TIMEOUT_MS,
       KILL_GRACE_MS,
       UNPACK_OUTPUT_LIMIT,
@@ -70,7 +117,12 @@ async function unpackBundledNames(): Promise<string[]> {
     if (result.outcome !== "exited" || result.exitCode !== 0 || result.truncated) {
       throw new Error("OMP could not unpack its bundled agents.");
     }
-    return agentNamesFrom(UnpackResultSchema.parse(JSON.parse(result.stdout)).written);
+    const { written } = UnpackResultSchema.parse(JSON.parse(result.stdout));
+    const inside = written.filter((path) => {
+      const within = relative(scratch, path);
+      return isAbsolute(path) && !within.startsWith("..") && !isAbsolute(within);
+    });
+    return await agentNamesFrom(inside);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

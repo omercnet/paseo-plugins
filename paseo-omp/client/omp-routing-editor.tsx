@@ -25,6 +25,12 @@ export type OmpModelCatalogState = {
   error?: string;
 };
 
+export type OmpAgentCatalogState = {
+  agents: readonly OmpAgent[];
+  loading: boolean;
+  error?: string;
+};
+
 type StructuredRoutingEditorProps = {
   setting: OmpSetting;
   value: unknown;
@@ -36,7 +42,7 @@ type StructuredRoutingEditorProps = {
   theme: PluginSurfaceProps["theme"];
   modelCatalog: OmpModelCatalogState;
   modelRoles: Readonly<Record<string, unknown>>;
-  agents: readonly OmpAgent[];
+  agentCatalog: OmpAgentCatalogState;
   onSet(value: unknown): void;
   onReset(): void;
 };
@@ -177,17 +183,26 @@ const DEFAULT_AGENT = "task";
 
 function DisabledAgentsEditor({
   value,
-  agents,
+  agentCatalog,
   disabled,
   styles,
   onSet,
-}: Pick<StructuredRoutingEditorProps, "value" | "agents" | "disabled" | "styles" | "onSet">) {
+}: Pick<StructuredRoutingEditorProps, "value" | "agentCatalog" | "disabled" | "styles" | "onSet">) {
   const switchedOff = asStringArray(value);
-  const listed = agents.map((agent) => agent.name);
+  const listed = agentCatalog.agents.map((agent) => agent.name);
   const names = [...listed, ...switchedOff.filter((name) => !listed.includes(name))];
-  if (names.length === 0) return <Text style={styles.muted}>No agents found.</Text>;
   return (
     <View style={styles.recordList}>
+      {agentCatalog.error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {agentCatalog.error}
+        </Text>
+      ) : null}
+      {names.length === 0 ? (
+        <Text style={styles.muted}>
+          {agentCatalog.loading ? "Loading agents…" : "No agents found."}
+        </Text>
+      ) : null}
       {names.map((name) => {
         const off = switchedOff.includes(name);
         const locked = name === DEFAULT_AGENT && !off;
@@ -222,7 +237,7 @@ function RecordRoutingEditor({
   theme,
   modelCatalog,
   modelRoles,
-  agents,
+  agentCatalog,
   onSet,
 }: Pick<
   StructuredRoutingEditorProps,
@@ -234,7 +249,7 @@ function RecordRoutingEditor({
   | "theme"
   | "modelCatalog"
   | "modelRoles"
-  | "agents"
+  | "agentCatalog"
 >) {
   const record = asRecord(value);
   const [keyErrors, setKeyErrors] = useState<Record<string, string>>({});
@@ -296,7 +311,7 @@ function RecordRoutingEditor({
             ) : null}
             {setting.path.startsWith("task.") ? (
               <AgentPicker
-                agents={agents}
+                agents={agentCatalog.agents}
                 taken={Object.keys(record)}
                 disabled={disabled}
                 styles={styles}
