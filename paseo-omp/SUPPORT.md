@@ -32,7 +32,7 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 - `qwen2.5:0.5b` is provided only for free exploratory inference. It may ignore exact-output instructions and is not a deterministic protocol or tool-use oracle; use the `Deterministic Canary` picker label for assertions.
 - The deterministic mock does not implement OMP's compaction-summary contract, so `/compact` reports `OMP compaction failed` in the canary; compaction remains covered by protocol fixtures.
 - `/handoff` reports `OMP command failed` in the controlled canary even with deterministic role models configured; treat handoff as unavailable there until its native prerequisite is isolated.
-- Composer pills and the Hub list workspaces with `includeBackground`, which the client throws on for hosts that do not advertise `features.backgroundWorkspaces`; every Paseo 0.13 host advertises it.
+- Composer pills list workspaces with `includeBackground`, which the client throws on for hosts that do not advertise `features.backgroundWorkspaces`; every Paseo 0.13 host advertises it.
 - Native Fast mode and a first-class plan mode are not exposed. `/handoff` is implemented but is not reproducible in the controlled canary without its native OMP workflow prerequisites.
 - Terminal-started OMP sessions are discoverable and importable but are not registered automatically through a terminal hook.
 - Paseo clients do not own OMP sessions. Mobile or desktop disconnects remain subject to Paseo's reconnect grace while the daemon-owned provider and OMP child continue independently; reconnecting can reveal an existing turn but does not transfer or sever runtime ownership.

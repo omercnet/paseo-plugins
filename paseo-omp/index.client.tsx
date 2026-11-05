@@ -4,9 +4,9 @@ import type {
   PluginClientContext,
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
+import { ConfigSidebarItem } from "./client/config-sidebar";
 import { OMP_ICON } from "./client/hub-icon";
 import { HubPopover } from "./client/hub-popover";
-import { ConfigSidebarItem, createHubSidebar } from "./client/hub-sidebar";
 import { summarizeHubProcesses } from "./client/hub-status";
 import { OmpMcpAuthorizationCard } from "./client/mcp-authorization";
 import { McpPopover } from "./client/mcp-popover";
@@ -35,8 +35,6 @@ import {
   configParamsFromStore,
   configScreenTitle,
   configStoreFromParams,
-  HUB_SIDEBAR_ITEM_ID,
-  loadHubSnapshot,
 } from "./client/sidebar-compat";
 import { OmpSubagentStrip } from "./client/subagents-strip";
 import {
@@ -112,15 +110,9 @@ async function loadAgents(paseo: PaseoApi): Promise<AgentEntry[]> {
   return entries;
 }
 
-/**
- * A param-addressable `config` screen (same id as the old sidebar item, so saved links resolve to
- * it), a header row that opens it, and a Hub status row.
- */
-export function registerConfigAndHub(
-  client: Pick<
-    PluginClientContext,
-    "addScreen" | "addSidebarHeaderItem" | "openScreen" | "rpc" | "paseo"
-  >,
+/** A param-addressable `config` screen (same id as the old sidebar item, so saved links resolve to it) and a header row that opens it. */
+export function registerConfig(
+  client: Pick<PluginClientContext, "addScreen" | "addSidebarHeaderItem" | "openScreen">,
   onComposerPillSettingsChange: (settings: ComposerPillSettings) => void,
 ): () => void {
   function ConfigScreen(props: PluginSurfaceProps & { params: Record<string, string> }) {
@@ -138,24 +130,12 @@ export function registerConfigAndHub(
       />
     );
   }
-  const { HubSidebarItem } = createHubSidebar(() =>
-    loadHubSnapshot(
-      () =>
-        client.paseo.workspaces.list({ filter: { includeBackground: true }, page: { limit: 200 } }),
-      async (cwd) => (await client.rpc(listHubProcesses, { cwd })).processes,
-    ),
-  );
   const removers = [
     client.addScreen({ id: CONFIG_SCREEN_ID, title: configScreenTitle, Component: ConfigScreen }),
     client.addSidebarHeaderItem({
       id: CONFIG_SCREEN_ID,
       title: "OMP",
       Component: ConfigSidebarItem,
-    }),
-    client.addSidebarHeaderItem({
-      id: HUB_SIDEBAR_ITEM_ID,
-      title: "OMP Hub",
-      Component: HubSidebarItem,
     }),
   ];
   return () => {
@@ -216,7 +196,7 @@ export default function contribute(client: PluginClientContext) {
       openPanel("workspace", { location: "workspace" });
     },
   });
-  const removeConfigEntry = registerConfigAndHub(client, applyComposerPillSettings);
+  const removeConfigEntry = registerConfig(client, applyComposerPillSettings);
   const removeOpenConfig = client.addCommandCenterItem({
     id: "open-config",
     title: "Open OMP",

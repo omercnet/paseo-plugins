@@ -3,10 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 vi.mock("../client/hub-icon", () => ({ OMP_ICON: { svg: "<svg></svg>" } }));
 vi.mock("../client/hub-popover", () => ({ HubPopover: () => null }));
-vi.mock("../client/hub-sidebar", () => ({
-  ConfigSidebarItem: () => null,
-  createHubSidebar: () => ({ HubSidebarItem: () => null, HubSidebarPopover: () => null }),
-}));
+vi.mock("../client/config-sidebar", () => ({ ConfigSidebarItem: () => null }));
 vi.mock("../client/mcp-authorization", () => ({ OmpMcpAuthorizationCard: () => null }));
 vi.mock("../client/mcp-popover", () => ({ McpPopover: () => null }));
 vi.mock("../client/memory-panel", () => ({ OmpMemoryPanel: () => null }));
