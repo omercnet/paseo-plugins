@@ -7,6 +7,7 @@ export type OmpConfigSurfaceView =
   | "rules"
   | "skills"
   | "extensions"
+  | "security"
   | "composer"
   | "configuration"
   | "diagnostics"
@@ -21,6 +22,7 @@ const SURFACE_VIEWS: readonly { id: OmpConfigSurfaceView; label: string }[] = [
   { id: "rules", label: "Rules" },
   { id: "skills", label: "Skills" },
   { id: "extensions", label: "Extensions" },
+  { id: "security", label: "Security" },
   { id: "composer", label: "Composer" },
   { id: "configuration", label: "Configuration" },
   { id: "diagnostics", label: "Diagnostics" },
@@ -30,8 +32,10 @@ const SURFACE_VIEWS: readonly { id: OmpConfigSurfaceView; label: string }[] = [
 /** Views that belong to the OMP store, not to a workspace's project settings. */
 const STORE_ONLY_VIEWS: readonly OmpConfigSurfaceView[] = ["composer", "accounts", "mcps"];
 
+/** Views about one project, which the global OMP screen has no project for. */
+const WORKSPACE_ONLY_VIEWS: readonly OmpConfigSurfaceView[] = ["security"];
+
 export function surfaceViewsForScope(workspaceScoped: boolean) {
-  return workspaceScoped
-    ? SURFACE_VIEWS.filter((candidate) => !STORE_ONLY_VIEWS.includes(candidate.id))
-    : SURFACE_VIEWS;
+  const hidden = workspaceScoped ? STORE_ONLY_VIEWS : WORKSPACE_ONLY_VIEWS;
+  return SURFACE_VIEWS.filter((candidate) => !hidden.includes(candidate.id));
 }
