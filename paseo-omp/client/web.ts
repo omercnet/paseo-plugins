@@ -8,6 +8,7 @@ declare const document: {
 export const canDownloadFiles = Platform.OS === "web";
 
 export function downloadDataUri(uri: string, fileName: string): void {
+  if (!canDownloadFiles) return;
   const link = document.createElement("a");
   link.href = uri;
   link.download = fileName;

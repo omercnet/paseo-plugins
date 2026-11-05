@@ -1,9 +1,10 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resolveGeneratedImages } from "../server/generated-images";
-import { OmpImageCache, ompImageRef } from "../server/provider/image-cache";
+import { MAX_CACHED_IMAGE_BYTES, OmpImageCache, ompImageRef } from "../server/provider/image-cache";
 import { transformOmpGeneratedImageItem } from "../shared/generated-image";
 
 const PNG = Buffer.concat([
@@ -133,4 +134,30 @@ describe("resolveGeneratedImages", () => {
     ];
     expect(resolve(...refused)).toEqual(refused.map(() => ({ status: "missing" })));
   });
+
+  test.skipIf(process.platform === "win32")("does not hang on a FIFO named like an image", () => {
+    const fifo = join(temp, "omp-image-fifo.png");
+    execFileSync("mkfifo", [fifo]);
+    expect(resolve(fifo)).toEqual([{ status: "missing" }]);
+  });
+
+  test("refuses a file over the cache size limit", () => {
+    const path = join(temp, "omp-image-huge.png");
+    writeFileSync(path, Buffer.concat([PNG, Buffer.alloc(MAX_CACHED_IMAGE_BYTES)]));
+    expect(resolve(path)).toEqual([{ status: "missing" }]);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "accepts a file when the temp directory is reached through a symlink",
+    () => {
+      const link = join(root, "tmp-link");
+      symlinkSync(temp, link);
+      vi.stubEnv("TMPDIR", link);
+      const path = join(temp, "omp-image-linked.png");
+      writeFileSync(path, PNG);
+      expect(resolve(path)).toEqual([
+        { status: "available", ref: ompImageRef(PNG), mimeType: "image/png" },
+      ]);
+    },
+  );
 });

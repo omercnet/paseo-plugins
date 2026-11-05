@@ -37,7 +37,10 @@ export function OmpGeneratedImagesRow(props: PluginTimelineItemProps<OmpGenerate
   const query = useQuery({
     queryKey: ["omp-generated-images", host.id, item.data.paths],
     queryFn: () => resolve({ paths: item.data.paths }),
-    staleTime: Number.POSITIVE_INFINITY,
+    staleTime: (current) =>
+      current.state.data?.images.every((result) => result.status === "available")
+        ? Number.POSITIVE_INFINITY
+        : 0,
     retry: 1,
   });
   const muted = { color: theme.colors.foregroundMuted, fontSize: 12 };
@@ -59,9 +62,9 @@ export function OmpGeneratedImagesRow(props: PluginTimelineItemProps<OmpGenerate
         />
       ) : null}
       {canDownloadFiles
-        ? images.map((image) => (
+        ? images.map((image, index) => (
             <DownloadButton
-              key={image.id}
+              key={`${index}:${image.id}`}
               image={image}
               hostId={host.id}
               color={theme.colors.accent}

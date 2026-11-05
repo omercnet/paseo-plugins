@@ -14,6 +14,8 @@ export function readRegularFile(path: string, maxBytes: number): Buffer | undefi
   try {
     const stat = fstatSync(descriptor);
     if (!stat.isFile() || stat.size > maxBytes) return undefined;
+    // A file another user planted in a shared directory is not ours to read.
+    if (process.getuid !== undefined && stat.uid !== process.getuid()) return undefined;
     const bytes = Buffer.alloc(stat.size);
     let offset = 0;
     while (offset < bytes.length) {
