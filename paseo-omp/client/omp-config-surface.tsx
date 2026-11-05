@@ -44,6 +44,7 @@ import {
   OMP_SETTINGS_REFERENCE,
   type OmpDocumentationLink,
 } from "./omp-doc-links";
+import { OmpExtensionsSection } from "./omp-extensions-section";
 import { OmpMcpsSection } from "./omp-mcps-section";
 import { normalizeOmpModels } from "./omp-model-picker-state";
 import { OmpPluginManagerSection } from "./omp-plugin-manager";
@@ -1267,6 +1268,9 @@ function OmpConfigContent({
       ) : null}
       {view === "skills" ? (
         <OmpSkillsSection theme={theme} styles={styles} cwd={cwd} store={store} />
+      ) : null}
+      {view === "extensions" ? (
+        <OmpExtensionsSection theme={theme} styles={styles} cwd={cwd} store={store} />
       ) : null}
       {view === "composer" && !cwd && onComposerPillSettingsChange ? (
         <ComposerPillSettingsSection theme={theme} onChange={onComposerPillSettingsChange} />

@@ -1,17 +1,20 @@
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { z } from "zod";
 import {
   deleteOmpManagedSkillWithDependencies,
   listOmpSkillsWithDependencies,
-  type OmpSkillsDependencies,
   setOmpSkillEnabledWithDependencies,
 } from "../server/omp-skills";
-import type { BoundedRun } from "../server/provider-diagnostics";
+import {
+  fakeOmp as baseFakeOmp,
+  exited,
+  type ListName,
+  ProjectConfigSchema,
+} from "./fake-omp-config";
 
 const SCRATCH_PREFIX = join(tmpdir(), "paseo-omp-rules-");
 
@@ -19,71 +22,9 @@ let root: string;
 let agentDir: string;
 let project: string;
 
-function exited(stdout: string): BoundedRun {
-  return {
-    outcome: "exited",
-    stdout,
-    truncated: false,
-    exitCode: 0,
-    signal: null,
-    spawnErrorCode: null,
-    cleanupFailed: false,
-  };
-}
-
-const ProjectConfigSchema = z
-  .object({
-    skills: z.object({ ignoredSkills: z.array(z.string()).optional() }).optional(),
-    disabledExtensions: z.array(z.string()).optional(),
-  })
-  .nullable();
-
-type ListName = "skills.ignoredSkills" | "disabledExtensions";
-
-function readProject(text: string) {
-  try {
-    return ProjectConfigSchema.parse(parseYaml(text) ?? null);
-  } catch {
-    return null;
-  }
-}
-
-/** A stand-in for omp: a user config plus the project `.omp/config.yml` that replaces its lists. */
+/** The shared fake, with deletions allowed under this test's temp root only. */
 function fakeOmp(skills: unknown[], user: Partial<Record<ListName, string[]>> = {}) {
-  const calls: { args: readonly string[]; cwd: string }[] = [];
-  const userConfig: Record<ListName, string[]> = {
-    "skills.ignoredSkills": [],
-    disabledExtensions: [],
-    ...user,
-  };
-  const dependencies: OmpSkillsDependencies = {
-    resolveExecutable: async () => "/usr/bin/omp",
-    run: async (_executable, args, cwd) => {
-      calls.push({ args, cwd });
-      if (args[0] === "skill") return exited(JSON.stringify({ skills, warnings: [] }));
-      const list: ListName =
-        args[2] === "disabledExtensions" ? "disabledExtensions" : "skills.ignoredSkills";
-      if (args[1] === "set") {
-        userConfig[list] = z.array(z.string()).parse(JSON.parse(args[5] ?? "[]"));
-        return exited("{}");
-      }
-      const projectFile = join(cwd, ".omp", "config.yml");
-      const projectText = existsSync(projectFile) ? await readFile(projectFile, "utf8") : "";
-      const project = readProject(projectText);
-      const projectList =
-        list === "skills.ignoredSkills"
-          ? project?.skills?.ignoredSkills
-          : project?.disabledExtensions;
-      return exited(JSON.stringify({ value: projectList ?? userConfig[list] }));
-    },
-    validateProjectConfig: async () => exited("{}"),
-    makeScratchDir: (prefix) => mkdtemp(prefix),
-    removeDir: async (path) => {
-      const ours = path.startsWith(SCRATCH_PREFIX) || path.startsWith(root + sep);
-      if (ours) await rm(path, { recursive: true, force: true });
-    },
-  };
-  return { calls, userConfig, dependencies };
+  return baseFakeOmp(skills, user, root);
 }
 
 async function skillFolder(parent: string, name: string): Promise<string> {

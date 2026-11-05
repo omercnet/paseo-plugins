@@ -6,26 +6,20 @@ import type {
   deleteOmpManagedSkill,
   listOmpSkills,
   OmpSkill,
-  OmpSkillList,
   OmpSkillOff,
   OmpSkillsList,
   setOmpSkillEnabled,
 } from "../shared/omp-skills";
 import { SKILL_ENTRY_PREFIX } from "../shared/omp-skills";
 import {
-  inOmpScope,
-  type OmpRulesDependencies,
-  ompCommandDependencies,
-  readSetting,
-  runJson,
-} from "./omp-rules";
-import {
-  type OmpSettingsDependencies,
-  ompSettingsDependencies,
-  readProjectConfigText,
-  runSettingsMutation,
-  writeProjectChanges,
-} from "./omp-settings";
+  type OmpListDependencies,
+  ompListDependencies,
+  readList,
+  requireOmpExecutable,
+  writeListEntry,
+} from "./omp-list-setting";
+import { inOmpScope, runJson } from "./omp-rules";
+import { runSettingsMutation } from "./omp-settings";
 import { ompAgentDir } from "./paths";
 import { OmpPublicError } from "./provider/security";
 
@@ -33,13 +27,8 @@ const MAX_SKILLS = 500;
 const MAX_OFF_ENTRIES = 200;
 const MAX_TEXT_CHARS = 2_000;
 const MANAGED_SOURCE = "omp-managed";
-const UNREADABLE_CONFIG = "The workspace OMP configuration could not be read";
 
 export class OmpSkillsError extends OmpPublicError {}
-
-export interface OmpSkillsDependencies extends OmpRulesDependencies {
-  validateProjectConfig: OmpSettingsDependencies["validateProjectConfig"];
-}
 
 /** One entry of `omp skill list --json`. */
 const SkillEntrySchema = z.object({
@@ -52,7 +41,6 @@ const SkillEntrySchema = z.object({
   source: z.string().min(1).max(128),
 });
 const SkillListSchema = z.object({ skills: z.array(z.unknown()) });
-const ListSettingSchema = z.object({ value: z.array(z.string()) });
 
 /** A source reads `<provider>:<level>`, such as `native:project` or `omp-managed:user`. */
 function toSkill(entry: z.infer<typeof SkillEntrySchema>): OmpSkill {
@@ -70,7 +58,7 @@ function toSkill(entry: z.infer<typeof SkillEntrySchema>): OmpSkill {
 }
 
 async function listSkills(
-  dependencies: OmpSkillsDependencies,
+  dependencies: OmpListDependencies,
   executable: string,
   runIn: string,
 ): Promise<OmpSkill[]> {
@@ -81,15 +69,6 @@ async function listSkills(
     const skill = SkillEntrySchema.safeParse(entry);
     return skill.success ? [toSkill(skill.data)] : [];
   });
-}
-
-function readList(
-  dependencies: OmpSkillsDependencies,
-  executable: string,
-  list: OmpSkillList,
-  runIn: string,
-): Promise<string[]> {
-  return readSetting(dependencies, executable, list, ListSettingSchema, runIn);
 }
 
 /** OMP trims each entry. Only `skill:` entries of `disabledExtensions` concern skills. */
@@ -115,18 +94,12 @@ function offEntries(ignored: readonly string[], extensions: readonly string[]): 
     .map(({ list, entry }) => ({ list, entry: entry.slice(0, MAX_TEXT_CHARS) }));
 }
 
-async function requireExecutable(dependencies: OmpSkillsDependencies): Promise<string> {
-  const executable = await dependencies.resolveExecutable();
-  if (!executable) throw new OmpSkillsError("The omp command was not found on this host");
-  return executable;
-}
-
 export async function listOmpSkillsWithDependencies(
   input: RpcInput<typeof listOmpSkills>,
-  dependencies: OmpSkillsDependencies,
+  dependencies: OmpListDependencies,
 ): Promise<OmpSkillsList> {
   try {
-    const executable = await requireExecutable(dependencies);
+    const executable = await requireOmpExecutable(dependencies);
     return await inOmpScope(input.cwd, dependencies, async (runIn) => {
       const [skills, ignored, extensions] = await Promise.all([
         listSkills(dependencies, executable, runIn),
@@ -141,65 +114,17 @@ export async function listOmpSkillsWithDependencies(
   }
 }
 
-/**
- * A project list replaces the user list, so a workspace edit starts from the effective list and
- * saves all of it to the project file. Starting from the project file alone would turn every
- * skill the user turned off back on.
- */
-async function writeList(
-  input: RpcInput<typeof setOmpSkillEnabled>,
-  dependencies: OmpSkillsDependencies,
-  executable: string,
-  runIn: string,
-): Promise<void> {
-  const projectPath = input.cwd ? join(input.cwd, ".omp", "config.yml") : null;
-  const snapshot = projectPath
-    ? await readProjectConfigText(projectPath).catch(() => {
-        throw new OmpSkillsError(UNREADABLE_CONFIG);
-      })
-    : "";
-  const current = await readList(dependencies, executable, input.list, runIn);
-  const kept = current.filter((entry) => entry.trim() !== input.entry);
-  const next = input.enabled ? kept : [...kept, input.entry];
-  if (input.cwd) {
-    const outcome = await writeProjectChanges(
-      input.cwd,
-      snapshot,
-      [{ operation: "set", path: input.list, value: next }],
-      executable,
-      dependencies,
-    ).catch((error: unknown) => {
-      // The writer's messages are written for the user, as in the settings editor.
-      throw new OmpSkillsError(
-        error instanceof Error ? error.message : "Could not update workspace settings.",
-      );
-    });
-    if (outcome === "conflict") {
-      throw new OmpSkillsError("The workspace configuration changed. Try again");
-    }
-    return;
-  }
-  const run = await dependencies.run(
-    executable,
-    ["config", "set", input.list, "--json", "--", JSON.stringify(next)],
-    runIn,
-  );
-  if (run.outcome !== "exited" || run.exitCode !== 0) {
-    throw new OmpSkillsError("OMP rejected the change");
-  }
-}
-
 export async function setOmpSkillEnabledWithDependencies(
   input: RpcInput<typeof setOmpSkillEnabled>,
-  dependencies: OmpSkillsDependencies,
+  dependencies: OmpListDependencies,
 ): Promise<{ status: "ok" } | { status: "error"; message: string }> {
   try {
     if (input.list === "disabledExtensions" && !input.entry.startsWith(SKILL_ENTRY_PREFIX)) {
       throw new OmpSkillsError("That entry is not a skill");
     }
-    const executable = await requireExecutable(dependencies);
+    const executable = await requireOmpExecutable(dependencies);
     await inOmpScope(input.cwd, dependencies, (runIn) =>
-      runSettingsMutation(() => writeList(input, dependencies, executable, runIn)),
+      runSettingsMutation(() => writeListEntry(input, dependencies, executable, runIn)),
     );
     return { status: "ok" };
   } catch (error) {
@@ -215,10 +140,10 @@ export async function setOmpSkillEnabledWithDependencies(
  */
 export async function deleteOmpManagedSkillWithDependencies(
   input: RpcInput<typeof deleteOmpManagedSkill>,
-  dependencies: OmpSkillsDependencies,
+  dependencies: OmpListDependencies,
 ): Promise<{ status: "ok" } | { status: "error"; message: string }> {
   try {
-    const executable = await requireExecutable(dependencies);
+    const executable = await requireOmpExecutable(dependencies);
     const skills = await inOmpScope(undefined, dependencies, (runIn) =>
       listSkills(dependencies, executable, runIn),
     );
@@ -241,19 +166,14 @@ export async function deleteOmpManagedSkillWithDependencies(
   }
 }
 
-const DEFAULT_DEPENDENCIES: OmpSkillsDependencies = {
-  ...ompCommandDependencies,
-  validateProjectConfig: ompSettingsDependencies.validateProjectConfig,
-};
-
 export function resolveListOmpSkills(input: RpcInput<typeof listOmpSkills>) {
-  return listOmpSkillsWithDependencies(input, DEFAULT_DEPENDENCIES);
+  return listOmpSkillsWithDependencies(input, ompListDependencies);
 }
 
 export function resolveSetOmpSkillEnabled(input: RpcInput<typeof setOmpSkillEnabled>) {
-  return setOmpSkillEnabledWithDependencies(input, DEFAULT_DEPENDENCIES);
+  return setOmpSkillEnabledWithDependencies(input, ompListDependencies);
 }
 
 export function resolveDeleteOmpManagedSkill(input: RpcInput<typeof deleteOmpManagedSkill>) {
-  return deleteOmpManagedSkillWithDependencies(input, DEFAULT_DEPENDENCIES);
+  return deleteOmpManagedSkillWithDependencies(input, ompListDependencies);
 }
