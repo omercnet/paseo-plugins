@@ -1,7 +1,8 @@
 import type { Dirent } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
+import { z } from "zod";
 import type {
   listOmpExtensions,
   OmpExtensionItem,
@@ -23,9 +24,15 @@ import { OmpPublicError } from "./provider/security";
 const MAX_ENTRIES_PER_DIR = 200;
 const MAX_ITEMS = 500;
 const MAX_NAME_CHARS = 256;
+const MAX_MANIFEST_BYTES = 64 * 1024;
 const SCRIPT_SUFFIX = /\.(ts|js)$/u;
 const TOOL_SUFFIX = /\.(ts|js|sh|bash|py)$/u;
 const DECLARATION = /\.d\.(ts|js)$/u;
+const DeclaredEntries = z.object({ extensions: z.array(z.unknown()).min(1) });
+const ManifestSchema = z.object({
+  omp: DeclaredEntries.optional(),
+  pi: DeclaredEntries.optional(),
+});
 
 export class OmpExtensionsError extends OmpPublicError {}
 
@@ -67,6 +74,25 @@ async function indexIn(dir: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * OMP loads the entries a folder's package.json declares instead of its index file, under names
+ * this scan cannot derive. Such a folder is left out, and so is one whose manifest is too large
+ * to check, rather than listing a switch that would turn off nothing.
+ */
+async function declaresExtensions(folder: string): Promise<boolean> {
+  const path = join(folder, "package.json");
+  const info = await lstat(path).catch(() => null);
+  if (!info?.isFile()) return false;
+  if (info.size > MAX_MANIFEST_BYTES) return true;
+  const text = await readFile(path, "utf8").catch(() => "");
+  try {
+    const manifest = ManifestSchema.safeParse(JSON.parse(text));
+    return manifest.success && (manifest.data.omp !== undefined || manifest.data.pi !== undefined);
+  } catch {
+    return false;
+  }
+}
+
 /** `extensions/<name>.ts|js` and `extensions/<name>/index.ts|js`, as OMP's native discovery. */
 async function extensionCandidates(root: string): Promise<Candidate[]> {
   const dir = join(root, "extensions");
@@ -74,7 +100,7 @@ async function extensionCandidates(root: string): Promise<Candidate[]> {
   for (const entry of await entriesOf(dir)) {
     if (entry.isFile() && SCRIPT_SUFFIX.test(entry.name) && !DECLARATION.test(entry.name)) {
       found.push({ name: entry.name.replace(SCRIPT_SUFFIX, ""), path: join(dir, entry.name) });
-    } else if (entry.isDirectory()) {
+    } else if (entry.isDirectory() && !(await declaresExtensions(join(dir, entry.name)))) {
       const index = await indexIn(join(dir, entry.name));
       if (index) found.push({ name: entry.name, path: index });
     }
@@ -125,7 +151,16 @@ async function scanRoot(root: string, level: Level): Promise<Found[]> {
   for (const { name, path } of await toolCandidates(root)) {
     items.push(entryFor("tool", level, name, path, `tool:${name}`));
   }
-  return items;
+  // OMP keys extensions and tools by name, so of two same-named entries (`a.ts` and `a.js`) only
+  // one loads. Keep one row per id, preferring TypeScript as OMP does for index files.
+  const byId = new Map<string, Found>();
+  for (const item of items) {
+    const kept = byId.get(item.id);
+    if (!kept || (item.path.endsWith(".ts") && !kept.path.endsWith(".ts"))) {
+      byId.set(item.id, item);
+    }
+  }
+  return [...byId.values()];
 }
 
 /**

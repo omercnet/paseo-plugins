@@ -30,7 +30,7 @@ const GROUPS: readonly { kind: OmpExtensionKind; title: string }[] = [
 ];
 
 const INFO =
-  "Read from the folders OMP documents: the workspace's .omp/ and OMP's agent directory. OMP has no list command, so this is a close inventory: it does not read .gitignore, package.json manifests or the extensions setting, and it never follows symlinks. Turning one off adds it to disabledExtensions; in a workspace the whole list is saved to the project's .omp/config.yml, because a project list replaces the user list. Changes apply to new sessions. OMP does not report extension load errors for the built-in omp agents.";
+  "Read from the folders OMP documents: the workspace's .omp/ and OMP's agent directory (the agent directory itself is read even if it is a symlink; nothing below it is). OMP has no list command, so this is a close inventory, not OMP's own list: it does not read .gitignore, the extensions setting or package.json manifests (folders with one are left out), it leaves out declaration files, JSON and Markdown tool definitions and symlinked entries, and it shows one row where two files share a name. Turning one off adds it to disabledExtensions; in a workspace the whole list is saved to the project's .omp/config.yml, because a project list replaces the user list. Changes apply to new sessions. OMP does not report extension load errors for the built-in omp agents.";
 
 const RESTART_HINT = "Turned on. An agent that is already running needs a restart to load it.";
 
@@ -114,7 +114,7 @@ export function OmpExtensionsSection({
                 <SettingsCard>
                   {members.map((item) => (
                     <SettingsSwitch
-                      key={`${item.level}/${item.id}`}
+                      key={item.path}
                       label={item.name}
                       hint={itemHint(item)}
                       value={item.enabled}

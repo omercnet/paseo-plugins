@@ -115,6 +115,46 @@ describe("scanning the documented folders", () => {
     expect(await scanExtensions(project, agentDir)).toEqual([]);
   });
 
+  test("two files with one name make one row, preferring TypeScript", async () => {
+    const ext = join(agentDir, "extensions");
+    await file(join(ext, "dup.js"));
+    await file(join(ext, "dup.ts"));
+    await file(join(ext, "dup2", "index.ts"));
+    await file(join(ext, "dup2.js"));
+    await file(join(agentDir, "tools", "same.sh"));
+    await file(join(agentDir, "tools", "same.py"));
+    const items = await scanExtensions(undefined, agentDir);
+    expect(items.map(({ id, path }) => [id, path.slice(agentDir.length + 1)])).toEqual([
+      ["extension-module:dup", "extensions/dup.ts"],
+      ["extension-module:dup2", "extensions/dup2/index.ts"],
+      ["tool:same", "tools/same.py"],
+    ]);
+  });
+
+  test("a folder whose package.json declares extensions is left out, one with a plain manifest is not", async () => {
+    const ext = join(agentDir, "extensions");
+    await file(join(ext, "declared", "index.ts"));
+    await file(join(ext, "declared", "package.json"), '{"omp":{"extensions":["./main.ts"]}}');
+    await file(join(ext, "declared-pi", "index.ts"));
+    await file(join(ext, "declared-pi", "package.json"), '{"pi":{"extensions":["./main.ts"]}}');
+    await file(join(ext, "plain", "index.ts"));
+    await file(join(ext, "plain", "package.json"), '{"name":"plain","omp":{"extensions":[]}}');
+    await file(join(ext, "broken", "index.ts"));
+    await file(join(ext, "broken", "package.json"), "{ not json");
+    const items = await scanExtensions(undefined, agentDir);
+    expect(items.map((item) => item.name)).toEqual(["broken", "plain"]);
+  });
+
+  test("a symlinked index file or hook file is not listed", async () => {
+    const outside = join(root, "outside");
+    await file(join(outside, "real.ts"));
+    await mkdir(join(agentDir, "extensions", "pack"), { recursive: true });
+    await symlink(join(outside, "real.ts"), join(agentDir, "extensions", "pack", "index.ts"));
+    await mkdir(join(agentDir, "hooks", "pre"), { recursive: true });
+    await symlink(join(outside, "real.ts"), join(agentDir, "hooks", "pre", "bash.ts"));
+    expect(await scanExtensions(undefined, agentDir)).toEqual([]);
+  });
+
   test("a folder with a flood of entries is capped", async () => {
     for (let i = 0; i < 230; i += 1) {
       await file(join(agentDir, "extensions", `ext-${String(i).padStart(3, "0")}.ts`));
@@ -189,14 +229,16 @@ describe("turning one on or off", () => {
   });
 
   test("refuses an id the scan does not find and writes nothing", async () => {
-    await file(join(agentDir, "extensions", "real.ts"));
+    await file(join(project, ".omp", "extensions", "real.ts"));
     const fake = fakeOmp([]);
+    const before = await readFile(join(project, ".omp", "extensions", "real.ts"), "utf8");
     const result = await setOmpExtensionEnabledWithDependencies(
-      { id: "extension-module:invented", enabled: false },
+      { cwd: project, id: "extension-module:invented", enabled: false },
       fake.dependencies,
     );
     expect(result.status).toBe("error");
     expect(fake.userConfig.disabledExtensions).toEqual([]);
-    expect(existsSync(join(project, ".omp"))).toBe(false);
+    expect(existsSync(join(project, ".omp", "config.yml"))).toBe(false);
+    expect(await readFile(join(project, ".omp", "extensions", "real.ts"), "utf8")).toBe(before);
   });
 });
