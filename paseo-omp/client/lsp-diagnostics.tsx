@@ -44,9 +44,9 @@ export function OmpLspDiagnosticsCard({ item, theme }: PluginTimelineItemProps<O
           <Text style={{ color: foreground, fontSize: 13, fontWeight: "500" }} selectable>
             {file.path}
           </Text>
-          {file.diagnostics.map((diagnostic) => (
+          {file.diagnostics.map((diagnostic, index) => (
             <View
-              key={`${diagnostic.line}:${diagnostic.column}:${diagnostic.message}`}
+              key={`${index}:${diagnostic.line}:${diagnostic.column}`}
               style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}
             >
               <Icon

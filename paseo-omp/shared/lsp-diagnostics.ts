@@ -34,6 +34,9 @@ const DIAGNOSTIC = /^\s+(\d+):(\d+) \[(error|warning|info|hint)\] (.+)$/u;
 const TOTAL = new RegExp(`^${COUNTS}:$`, "u");
 /** A glob result opens each file with `<icon> <path>: 1 error(s)` or `<icon> <path>: no issues`. */
 const FILE_SUMMARY = new RegExp(`^\\S+ .+: (?:${COUNTS}|no issues)$`, "u");
+/** OMP's own warnings (`<icon> a.ts: some servers failed (...)`, `[Showing lines ...]`) are not diagnostics. */
+const NOTE =
+  /^(?:\S+ .+: (?:no diagnostics report yet|some servers failed|all language servers failed)|\[.*\])/u;
 
 /**
  * Parses the text of an OMP `lsp` diagnostics result: a headed tree (`# dir/`, `## file`) whose
@@ -44,8 +47,20 @@ export function parseOmpLspDiagnostics(text: string): OmpLspDiagnostics | undefi
   const files = new Map<string, OmpLspDiagnostics["files"][number]["diagnostics"]>();
   const directories: string[] = [];
   let current: OmpLspDiagnostics["files"][number]["diagnostics"] | undefined;
+  let summarized = false;
+  let afterBlank = false;
   for (const line of text.split("\n")) {
-    if (line.trim() === "" || TOTAL.test(line) || FILE_SUMMARY.test(line)) continue;
+    if (line.trim() === "") {
+      afterBlank = true;
+      continue;
+    }
+    const wasAfterBlank = afterBlank;
+    afterBlank = false;
+    if (TOTAL.test(line) || FILE_SUMMARY.test(line)) {
+      summarized = true;
+      continue;
+    }
+    if (NOTE.test(line)) return undefined;
     const heading = HEADING.exec(line);
     if (heading) {
       const depth = (heading[1] ?? "").length - 1;
@@ -72,9 +87,10 @@ export function parseOmpLspDiagnostics(text: string): OmpLspDiagnostics | undefi
       continue;
     }
     const last = current?.at(-1);
-    if (!last) return undefined;
+    if (!last || wasAfterBlank) return undefined;
     last.message += `\n${line.trim()}`;
   }
+  if (!summarized) return undefined;
   const parsed = ompLspDiagnosticsSchema.safeParse({
     files: [...files].map(([path, diagnostics]) => ({ path, diagnostics })),
   });

@@ -106,6 +106,23 @@ describe("OMP lsp diagnostics", () => {
     ],
     ["text before any file", "Language servers: typescript-native"],
     ["an empty result", ""],
+    [
+      "a servers-failed note",
+      "1 error(s):\n# a.ts\n  1:1 [error] [ts] Bad.\n\u26a0 a.ts: some servers failed (eslint)",
+    ],
+    [
+      "a no-report note",
+      "1 error(s):\n# a.ts\n  1:1 [error] [ts] Bad.\n\u26a0 b.ts: no diagnostics report yet from eslint; retry once it finishes analyzing",
+    ],
+    [
+      "a truncation notice",
+      "1 error(s):\n# a.ts\n  1:1 [error] [ts] Bad.\n[Showing lines 1-50 of 90. Use offset=51 to continue]",
+    ],
+    [
+      "text appended after a blank line",
+      "1 error(s):\n# a.ts\n  1:1 [error] [ts] Bad.\n\nUngrouped message",
+    ],
+    ["a tree without a summary line", "# a.ts\n  1:1 [error] [ts] Bad."],
   ])("returns nothing for %s", (_name, text) => {
     expect(parseOmpLspDiagnostics(text)).toBeUndefined();
   });
