@@ -21,6 +21,7 @@ import {
   OMP_SETTING_CATEGORIES,
   type OmpSetting,
   type OmpSettingCategory,
+  orderOmpToolSettings,
   parseOmpStructuredSettingValue,
   updateOmpSettings,
 } from "../shared/omp-settings";
@@ -990,6 +991,8 @@ function OmpConfigContent({
       if (group) group.push(setting);
       else byCategory.set(category, [setting]);
     }
+    const tools = byCategory.get("tools");
+    if (tools) byCategory.set("tools", orderOmpToolSettings(tools));
     return { sourceSettings, matching, byCategory };
   }, [configQuery.data?.config, normalizedSearch, settingsQuery.data]);
   const modelCatalog: OmpModelCatalogState = {

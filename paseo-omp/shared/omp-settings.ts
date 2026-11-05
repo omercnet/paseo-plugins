@@ -309,7 +309,73 @@ const CATEGORY_PREFIXES: Readonly<Record<OmpSettingCategory, readonly string[]>>
   general: [],
 };
 
+/** The optional-tool on/off switches, in the order they list when all are the same state. */
+const OMP_TOOL_SWITCHES: readonly { path: string; label: string; description: string }[] = [
+  {
+    path: "github.enabled",
+    label: "GitHub",
+    description:
+      "Repositories, issues, pull requests and Actions from the agent. Needs the gh command on the PATH.",
+  },
+  {
+    path: "security.enabled",
+    label: "Security scan",
+    description: "Security scan planning and execution, plus the read-only security:// resources.",
+  },
+  {
+    path: "generate_image.enabled",
+    label: "Image generation",
+    description: "Text-to-image generation and editing.",
+  },
+  {
+    path: "speechgen.enabled",
+    label: "Speech synthesis",
+    description: "Turns text into speech files, on-device or with xAI Grok Voice.",
+  },
+  {
+    path: "computer.enabled",
+    label: "Desktop control",
+    description:
+      "Lets the agent script this machine's desktop: screenshots, input and accessibility.",
+  },
+  {
+    path: "lsp.enabled",
+    label: "Language servers",
+    description: "Code intelligence: definitions, references, diagnostics and rename.",
+  },
+  {
+    path: "debug.enabled",
+    label: "Debugger",
+    description: "Debugging through DAP adapters.",
+  },
+  {
+    path: "ida.enabled",
+    label: "IDA Pro",
+    description:
+      "Opens executables in IDA Pro and adds the ida tool. Does nothing without an IDA install.",
+  },
+  {
+    path: "checkpoint.enabled",
+    label: "Checkpoints",
+    description: "Checkpoint and rewind tools for saving and restoring context.",
+  },
+  {
+    path: "task.isolation.enabled",
+    label: "Task isolation",
+    description: "Lets a task run apart from the shared checkout when it asks to.",
+  },
+  {
+    path: "magicKeywords.enabled",
+    label: "Magic keywords",
+    description:
+      "Hidden notices when a message holds a standalone ultrathink, orchestrate, workflowz or jevify keyword.",
+  },
+];
+
+const TOOL_SWITCH_LABELS = new Map(OMP_TOOL_SWITCHES.map(({ path, label }) => [path, label]));
+
 export function categorizeOmpSetting(path: string): OmpSettingCategory {
+  if (TOOL_SWITCH_LABELS.has(path)) return "tools";
   for (const category of OMP_SETTING_CATEGORIES) {
     if (CATEGORY_PREFIXES[category].some((prefix) => path === prefix || path.startsWith(prefix))) {
       return category;
@@ -319,6 +385,8 @@ export function categorizeOmpSetting(path: string): OmpSettingCategory {
 }
 
 export function formatOmpSettingLabel(path: string): string {
+  const switchLabel = TOOL_SWITCH_LABELS.get(path);
+  if (switchLabel) return switchLabel;
   const leaf = path.split(".").at(-1) ?? path;
   const words = leaf
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -327,8 +395,19 @@ export function formatOmpSettingLabel(path: string): string {
   return words ? `${words[0]?.toUpperCase() ?? ""}${words.slice(1)}` : path;
 }
 
+/** Tools category order: enabled switches, then disabled switches, then every other tool setting. */
+export function orderOmpToolSettings(settings: readonly OmpSetting[]): OmpSetting[] {
+  const byPath = new Map(settings.map((setting) => [setting.path, setting]));
+  const switches = OMP_TOOL_SWITCHES.flatMap(({ path }) => byPath.get(path) ?? []);
+  const enabled = switches.filter((setting) => setting.value === true);
+  const disabled = switches.filter((setting) => setting.value !== true);
+  const rest = settings.filter((setting) => !TOOL_SWITCH_LABELS.has(setting.path));
+  return [...enabled, ...disabled, ...rest];
+}
+
 /** Plain wording that replaces OMP's own description (or its absence) for these settings. */
 export const OMP_SETTING_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  ...Object.fromEntries(OMP_TOOL_SWITCHES.map(({ path, description }) => [path, description])),
   "session.warnCost":
     "Warn once when a session's spend reaches this many US dollars. Leave unset for no warning. Applies to every session, including subagents, and takes effect on the next request.",
   "session.maxCost":

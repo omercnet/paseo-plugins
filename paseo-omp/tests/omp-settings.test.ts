@@ -13,6 +13,7 @@ import {
   formatOmpSettingLabel,
   OMP_SETTING_DESCRIPTIONS,
   OmpModelSelectorSchema,
+  orderOmpToolSettings,
   updateOmpSettings,
 } from "../shared/omp-settings";
 
@@ -106,6 +107,51 @@ describe("OMP settings inventory", () => {
     const [secrets] = catalog.settings;
     expect(secrets?.description).toBe(OMP_SETTING_DESCRIPTIONS["secrets.enabled"]);
     expect(secrets?.description).not.toContain("Obfuscate secrets");
+  });
+
+  test("files every optional-tool switch under Tools, whichever prefix it used to match", () => {
+    for (const path of [
+      "github.enabled",
+      "security.enabled",
+      "generate_image.enabled",
+      "speechgen.enabled",
+      "computer.enabled",
+      "lsp.enabled",
+      "debug.enabled",
+      "ida.enabled",
+      "checkpoint.enabled",
+      "task.isolation.enabled",
+      "magicKeywords.enabled",
+    ]) {
+      expect(categorizeOmpSetting(path)).toBe("tools");
+      expect(formatOmpSettingLabel(path)).not.toBe("Enabled");
+    }
+    expect(categorizeOmpSetting("lsp.requestTimeout")).toBe("files");
+    expect(categorizeOmpSetting("task.maxConcurrency")).toBe("tasks");
+  });
+
+  test("lists enabled tool switches first, then disabled ones, then the other tool settings", () => {
+    const setting = (path: string, value: unknown) => ({
+      path,
+      type: "boolean" as const,
+      description: "",
+      value,
+    });
+    const ordered = orderOmpToolSettings([
+      setting("tools.approvalMode", "yolo"),
+      setting("github.enabled", false),
+      setting("checkpoint.enabled", true),
+      setting("github.cache.enabled", true),
+      setting("lsp.enabled", true),
+    ]).map((entry) => entry.path);
+
+    expect(ordered).toEqual([
+      "lsp.enabled",
+      "checkpoint.enabled",
+      "github.enabled",
+      "tools.approvalMode",
+      "github.cache.enabled",
+    ]);
   });
 
   test("formats dotted camel-case paths as readable labels", () => {
