@@ -29,6 +29,7 @@ import {
   quotaSeverityForProvider,
   quotaSummaryForProvider,
 } from "./client/quota-state";
+import { OmpRuleNoticeRow } from "./client/rule-notice";
 import { SessionsPopover } from "./client/sessions-popover";
 import {
   CONFIG_SCREEN_ID,
@@ -49,6 +50,7 @@ import { OMP_MCP_AUTH_TIMELINE_KIND, ompMcpAuthorizationTimelineSchema } from ".
 import { type OmpStore, storeForProvider } from "./shared/omp-store";
 import { ompImageTimelineSchema, transformOmpImageToolItem } from "./shared/provider-image";
 import { listOmpQuotas } from "./shared/quota";
+import { OMP_RULE_NOTICE_KIND, ompRuleNoticeSchema } from "./shared/rule-notices";
 import { OMP_SUBAGENT_STRIP_KIND, ompSubagentStripSchema } from "./shared/subagents";
 
 const PAGE_LIMIT = 200;
@@ -244,6 +246,12 @@ export default function contribute(client: PluginClientContext) {
     version: 1,
     schema: ompSubagentStripSchema,
     Component: OmpSubagentStrip,
+  });
+  const removeRuleNoticeRenderer = client.addTimelineRenderer({
+    kind: OMP_RULE_NOTICE_KIND,
+    version: 1,
+    schema: ompRuleNoticeSchema,
+    Component: OmpRuleNoticeRow,
   });
   const removeImageTransformer = client.addTimelineTransformer({
     id: "omp-images",
@@ -553,6 +561,7 @@ export default function contribute(client: PluginClientContext) {
     removeImageRenderer();
     removeMcpAuthorizationRenderer();
     removeSubagentStripRenderer();
+    removeRuleNoticeRenderer();
     removeImageTransformer();
     removeOpenConfig();
     removeConfigEntry();

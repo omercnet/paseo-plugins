@@ -62,6 +62,7 @@ async function supportReportFromBundle(entryPath: string): Promise<string> {
   if (typeof module.default !== "function") throw new Error("Missing server contribution");
   const handlers: Array<[{ name: string }, unknown]> = [];
   const cleanup = module.default({
+    addHook: () => () => {},
     before: () => () => {},
     handle: (contract: { name: string }, handler: unknown) => handlers.push([contract, handler]),
     registerSettings: () => ({ subscribe: () => () => {} }),
@@ -169,6 +170,7 @@ describe("plugin server bundle", () => {
         const settings: unknown[] = [];
         const beforeHooks: unknown[] = [];
         const cleanup = module.default({
+          addHook: () => () => {},
           before: (...args: unknown[]) => {
             beforeHooks.push(args);
             return () => {};
