@@ -210,20 +210,31 @@ export function warnOmpToolConfig(kind: OmpToolConfigKind, text: string): string
     false,
   );
   const builtIn = lsp ? BUILT_IN_LSP_SERVERS : BUILT_IN_DAP_ADAPTERS;
-  return Object.entries(entries).flatMap(([name, entry]) => {
-    if (builtIn.has(name) || !isObject(entry)) return [];
-    const derived = "extensionToLanguage" in entry;
-    const missing = [
-      typeof entry.command === "string" && entry.command ? null : "command",
-      !lsp || derived || Array.isArray(entry.fileTypes) ? null : "fileTypes",
-      !lsp || derived || Array.isArray(entry.rootMarkers) ? null : "rootMarkers",
-    ].filter((field) => field !== null);
-    return missing.length === 0
-      ? []
-      : [
-          `${name} is not a built-in ${lsp ? "server" : "adapter"}, so OMP ignores it without ${missing.join(", ")}`,
-        ];
-  });
+  const ignored =
+    !lsp && isObject(document.adapters)
+      ? Object.keys(document).filter((key) => key !== "adapters")
+      : [];
+  const ignoredWarning =
+    ignored.length > 0
+      ? [`OMP ignores ${ignored.join(", ")} because adapters is present; move them inside adapters`]
+      : [];
+  return [
+    ...ignoredWarning,
+    ...Object.entries(entries).flatMap(([name, entry]) => {
+      if (builtIn.has(name) || !isObject(entry)) return [];
+      const derived = "extensionToLanguage" in entry;
+      const missing = [
+        typeof entry.command === "string" && entry.command ? null : "command",
+        !lsp || derived || Array.isArray(entry.fileTypes) ? null : "fileTypes",
+        !lsp || derived || Array.isArray(entry.rootMarkers) ? null : "rootMarkers",
+      ].filter((field) => field !== null);
+      return missing.length === 0
+        ? []
+        : [
+            `${name} is not a built-in ${lsp ? "server" : "adapter"}, so OMP ignores it without ${missing.join(", ")}`,
+          ];
+    }),
+  ];
 }
 
 const ToolConfigTargetSchema = z.object({

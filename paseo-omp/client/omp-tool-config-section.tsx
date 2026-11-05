@@ -71,7 +71,8 @@ export function OmpToolConfigSection({
   const write = useRpc(writeOmpToolConfig);
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<OmpToolConfigKind>("lsp");
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  /** A draft keeps the revision it started from, so a refetch cannot hide an outside edit. */
+  const [drafts, setDrafts] = useState<Record<string, { text: string; revision: string }>>({});
   const scope = `${ompStoreKey(store)}:${cwd ?? "user"}:${kind}`;
   const queryKey = ["paseo-omp", "tool-config", ompStoreKey(store), cwd ?? "user", kind];
   const target = { ...(store ? { store } : {}), ...(cwd ? { cwd } : {}), kind };
@@ -87,8 +88,9 @@ export function OmpToolConfigSection({
   });
 
   const loaded = file.data;
-  const text = drafts[scope] ?? loaded?.text ?? "";
-  const dirty = loaded !== undefined && text !== loaded.text;
+  const draft = drafts[scope];
+  const text = draft?.text ?? loaded?.text ?? "";
+  const dirty = draft !== undefined && loaded !== undefined && draft.text !== loaded.text;
   const result = save.data;
   const example = KINDS.find((entry) => entry.kind === kind)?.example ?? "";
 
@@ -143,7 +145,10 @@ export function OmpToolConfigSection({
           value={text}
           onChangeText={(next) => {
             save.reset();
-            setDrafts((current) => ({ ...current, [scope]: next }));
+            setDrafts((current) => ({
+              ...current,
+              [scope]: { text: next, revision: current[scope]?.revision ?? loaded?.revision ?? "" },
+            }));
           }}
           style={[styles.scalarInput, { minHeight: 200, maxWidth: undefined }]}
         />
@@ -186,7 +191,7 @@ export function OmpToolConfigSection({
             label={save.isPending ? "Saving..." : "Save"}
             selected
             disabled={!loaded || !dirty || save.isPending}
-            onPress={() => save.mutate({ revision: loaded?.revision ?? "", text })}
+            onPress={() => save.mutate({ revision: draft?.revision ?? "", text })}
           />
         </View>
       </View>

@@ -80,6 +80,9 @@ describe("definitions OMP would drop", () => {
     ).toEqual([]);
     const dap = (value: unknown) => warnOmpToolConfig("dap", JSON.stringify(value));
     expect(dap({ adapters: { gdb: { args: ["-i", "dap"] } } })).toEqual([]);
+    expect(dap({ adapters: { gdb: { args: [] } }, mine: { command: "d" } })).toEqual([
+      expect.stringContaining("OMP ignores mine because adapters is present"),
+    ]);
     expect(dap({ adapters: { mine: { args: ["x"] } } })).toEqual([
       expect.stringContaining("mine is not a built-in adapter"),
     ]);
