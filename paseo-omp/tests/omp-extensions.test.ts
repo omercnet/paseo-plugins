@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import {
@@ -55,7 +55,7 @@ describe("scanning the documented folders", () => {
     await file(join(omp, "extensions", "safety.ts"));
     await file(join(omp, "extensions", "pack", "index.js"));
     await file(join(omp, "hooks", "pre", "bash.ts"));
-    await file(join(omp, "hooks", "post", "*.sh"));
+    await file(join(omp, "hooks", "post", "format.sh"));
     await file(join(omp, "tools", "lint.py"));
     await file(join(omp, "tools", "deploy", "index.ts"));
     await file(join(agentDir, "extensions", "personal.js"));
@@ -64,7 +64,7 @@ describe("scanning the documented folders", () => {
       ["extension", "project", "pack", "extension-module:pack"],
       ["extension", "project", "safety", "extension-module:safety"],
       ["hook", "project", "pre/bash.ts", "hook:pre:bash:bash.ts"],
-      ["hook", "project", "post/*.sh", "hook:post:*:*.sh"],
+      ["hook", "project", "post/format.sh", "hook:post:format:format.sh"],
       ["tool", "project", "deploy", "tool:deploy"],
       ["tool", "project", "lint", "tool:lint"],
       ["extension", "user", "personal", "extension-module:personal"],
@@ -124,7 +124,8 @@ describe("scanning the documented folders", () => {
     await file(join(agentDir, "tools", "same.sh"));
     await file(join(agentDir, "tools", "same.py"));
     const items = await scanExtensions(undefined, agentDir);
-    expect(items.map(({ id, path }) => [id, path.slice(agentDir.length + 1)])).toEqual([
+    const relativeToAgent = (path: string) => relative(agentDir, path).split(sep).join("/");
+    expect(items.map(({ id, path }) => [id, relativeToAgent(path)])).toEqual([
       ["extension-module:dup", "extensions/dup.ts"],
       ["extension-module:dup2", "extensions/dup2/index.ts"],
       ["tool:same", "tools/same.py"],
