@@ -1635,7 +1635,13 @@ function OmpConfigContent({
               </View>
             </View>
           ) : null}
-          <OmpToolConfigSection styles={styles} theme={theme} store={store} cwd={cwd} />
+          <OmpToolConfigSection
+            key={`${ompStoreKey(store)}:${cwd ?? ""}`}
+            styles={styles}
+            theme={theme}
+            store={store}
+            cwd={cwd}
+          />
           {cwd === undefined ? (
             <OmpLocalModelsSection
               styles={styles}

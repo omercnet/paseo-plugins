@@ -79,10 +79,10 @@ export function OmpToolConfigSection({
   const save = useMutation({
     mutationKey: ["paseo-omp", "tool-config-save"],
     mutationFn: (input: { revision: string; text: string }) => write({ ...target, ...input }),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       if (result.outcome !== "saved") return;
+      await queryClient.invalidateQueries({ queryKey });
       setDrafts(({ [scope]: _saved, ...rest }) => rest);
-      void queryClient.invalidateQueries({ queryKey });
     },
   });
 
@@ -115,7 +115,9 @@ export function OmpToolConfigSection({
         <Text style={styles.settingDescription}>
           {cwd ? "Project file" : "User file"} for new sessions only. OMP keeps running agents on
           their current servers, and reports server status only inside a session. OMP ignores an
-          invalid definition and only logs a warning, so Save checks the file first.
+          invalid definition and only logs a warning, so Save checks the file first. Save cannot
+          tell which servers are built in, so a new server still needs command, fileTypes and
+          rootMarkers.
         </Text>
         {loaded ? (
           <Text selectable style={styles.settingPath}>

@@ -56,11 +56,12 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** OMP accepts a wrapper key or a flat map of entries; mixing them silently drops the flat ones. */
+/** OMP accepts a wrapper key or a flat map of entries. For lsp.json, mixing them silently drops the flat ones. */
 function entriesOf(
   document: Record<string, unknown>,
   wrapper: "servers" | "adapters",
   ignoredKeys: readonly string[],
+  rejectMixed: boolean,
 ): { entries: Record<string, unknown>; errors: string[] } {
   const wrapped = document[wrapper];
   if (wrapped === undefined) {
@@ -72,7 +73,7 @@ function entriesOf(
     (key) => key !== wrapper && !ignoredKeys.includes(key),
   );
   const errors =
-    stray.length > 0
+    rejectMixed && stray.length > 0
       ? [`Do not mix ${wrapper} with entries at the top level (${stray.join(", ")})`]
       : [];
   return { entries: wrapped, errors };
@@ -95,7 +96,12 @@ export function validateOmpToolConfig(kind: OmpToolConfigKind, text: string): st
     const top = LspFileSchema.safeParse(document);
     if (!top.success) errors.push(...top.error.issues.map((issue) => describe(issue, "")));
   }
-  const { entries, errors: shapeErrors } = entriesOf(document, wrapper, ignoredKeys);
+  const { entries, errors: shapeErrors } = entriesOf(
+    document,
+    wrapper,
+    ignoredKeys,
+    kind === "lsp",
+  );
   errors.push(...shapeErrors);
   const schema = kind === "lsp" ? LspServerSchema : DapAdapterSchema;
   for (const [name, entry] of Object.entries(entries)) {

@@ -42,6 +42,16 @@ describe("validating lsp.json and dap.json before they are written", () => {
     ).toEqual([expect.stringContaining("a.connectMode")]);
   });
 
+  test("accepts a flat dap.json map and a wrapped one with sibling entries", () => {
+    expect(validateOmpToolConfig("dap", JSON.stringify({ a: { command: "d" } }))).toEqual([]);
+    expect(
+      validateOmpToolConfig(
+        "dap",
+        JSON.stringify({ adapters: { a: { command: "d" } }, b: { command: "e" } }),
+      ),
+    ).toEqual([]);
+  });
+
   test("rejects a wrapper mixed with flat entries, which OMP silently drops", () => {
     const text = JSON.stringify({ servers: { a: { disabled: true } }, b: { disabled: true } });
     expect(validateOmpToolConfig("lsp", text)).toEqual([expect.stringContaining("Do not mix")]);
@@ -107,7 +117,7 @@ describe("reading and writing lsp.json and dap.json", () => {
       text: '{ "servers": { "a": { "args": 1 } } }',
     });
     expect(invalid.outcome).toBe("invalid");
-    expect(invalid.errors.length).toBeGreaterThan(0);
+    expect(invalid.errors).toEqual([expect.stringContaining("a.args")]);
 
     await writeFile(path, '{ "idleTimeoutMs": 2 }\n');
     const stale = await resolveWriteOmpToolConfig({
@@ -117,6 +127,28 @@ describe("reading and writing lsp.json and dap.json", () => {
     });
     expect(stale.outcome).toBe("conflict");
     expect(await readFile(path, "utf8")).toBe('{ "idleTimeoutMs": 2 }\n');
+  });
+
+  test("refuses an oversized save in bytes and a symlinked project folder", async () => {
+    const empty = await resolveReadOmpToolConfig({ kind: "lsp" });
+    const multibyte = `{ "servers": { "a": { "settings": { "x": "${"\u00e9".repeat(140_000)}" } } } }`;
+    expect(multibyte.length).toBeLessThan(256 * 1024);
+    const large = await resolveWriteOmpToolConfig({
+      kind: "lsp",
+      revision: empty.revision,
+      text: multibyte,
+    });
+    expect(large.outcome).toBe("invalid");
+
+    const real = join(root, "real-omp");
+    await mkdir(real, { recursive: true });
+    await symlink(real, join(project, ".omp"));
+    await expect(resolveReadOmpToolConfig({ kind: "lsp", cwd: project })).rejects.toThrow(
+      "symlinked",
+    );
+    await expect(
+      resolveWriteOmpToolConfig({ kind: "lsp", cwd: project, revision: "", text: "{}" }),
+    ).rejects.toThrow("symlinked");
   });
 
   test("lists sibling variants OMP also merges and refuses a symlinked file", async () => {
