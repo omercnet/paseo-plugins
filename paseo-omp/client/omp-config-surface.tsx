@@ -62,6 +62,7 @@ import { SECURITY_QUERY_KEY } from "./omp-security-state";
 import { OmpSkillsSection } from "./omp-skills-section";
 import { OmpStorePicker } from "./omp-store-picker";
 import { ompStoreKey } from "./omp-store-state";
+import { OmpToolConfigSection } from "./omp-tool-config-section";
 import { ToolPolicyCard } from "./omp-tool-policy";
 import { OmpUpdateRow, UPDATE_QUERY_KEY } from "./omp-update-row";
 import {
@@ -1460,6 +1461,8 @@ function OmpConfigContent({
                   agentsQuery.isFetching
                 }
                 onPress={() => {
+                  void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "tool-config"] });
+                  void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "local-models"] });
                   void Promise.all([
                     configQuery.refetch(),
                     settingsQuery.refetch(),
@@ -1634,6 +1637,13 @@ function OmpConfigContent({
               </View>
             </View>
           ) : null}
+          <OmpToolConfigSection
+            key={`${ompStoreKey(store)}:${cwd ?? ""}`}
+            styles={styles}
+            theme={theme}
+            store={store}
+            cwd={cwd}
+          />
           {cwd === undefined ? (
             <OmpLocalModelsSection
               styles={styles}

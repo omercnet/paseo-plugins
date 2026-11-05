@@ -32,6 +32,7 @@ import {
   resolveListOmpSkills,
   resolveSetOmpSkillEnabled,
 } from "./server/omp-skills";
+import { resolveReadOmpToolConfig, resolveWriteOmpToolConfig } from "./server/omp-tool-config";
 import { resolveGetOmpUpdateStatus, resolveInstallOmpUpdate } from "./server/omp-update";
 import { OmpOperationalFailureCollector } from "./server/operational-failure-diagnostics";
 import { withOmpStore } from "./server/paths";
@@ -101,6 +102,7 @@ import { listOmpSecurity } from "./shared/omp-security";
 import { listOmpSettings, updateOmpSettings } from "./shared/omp-settings";
 import { deleteOmpManagedSkill, listOmpSkills, setOmpSkillEnabled } from "./shared/omp-skills";
 import { listOmpStores, type OmpStore } from "./shared/omp-store";
+import { readOmpToolConfig, writeOmpToolConfig } from "./shared/omp-tool-config";
 import { getOmpUpdateStatus, installOmpUpdate } from "./shared/omp-update";
 import { getOmpProviderHealth } from "./shared/provider-diagnostics";
 import { getOmpImage } from "./shared/provider-image";
@@ -234,6 +236,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(mutateOmpPluginConfig, scoped(resolveMutateOmpPluginConfig));
   server.handle(listOmpSettings, scoped(resolveListOmpSettings));
   server.handle(updateOmpSettings, scoped(resolveUpdateOmpSettings));
+  server.handle(readOmpToolConfig, scoped(resolveReadOmpToolConfig));
+  server.handle(writeOmpToolConfig, scoped(resolveWriteOmpToolConfig));
   server.handle(listOmpLocalModels, scoped(resolveListOmpLocalModels));
   server.handle(downloadOmpLocalModel, scoped(resolveDownloadOmpLocalModel));
   server.handle(getOmpProviderHealth, scoped(resolveGetOmpProviderHealth));
