@@ -36,7 +36,7 @@ const TOTAL = new RegExp(`^${COUNTS}:$`, "u");
 const FILE_SUMMARY = new RegExp(`^\\S+ .+: (?:${COUNTS}|no issues)$`, "u");
 /** OMP's own warnings (`<icon> a.ts: some servers failed (...)`, `[Showing lines ...]`) are not diagnostics. */
 const NOTE =
-  /^(?:\S+ .+: (?:no diagnostics report yet|some servers failed|all language servers failed)|\[.*\])/u;
+  /^(?:\S+ .+: (?:no diagnostics report yet|some servers failed|all language servers failed|No language server found)|\[.*\])/u;
 
 /**
  * Parses the text of an OMP `lsp` diagnostics result: a headed tree (`# dir/`, `## file`) whose

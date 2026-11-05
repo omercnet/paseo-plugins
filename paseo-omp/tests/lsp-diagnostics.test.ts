@@ -115,6 +115,10 @@ describe("OMP lsp diagnostics", () => {
       "1 error(s):\n# a.ts\n  1:1 [error] [ts] Bad.\n\u26a0 b.ts: no diagnostics report yet from eslint; retry once it finishes analyzing",
     ],
     [
+      "a no-language-server failure after diagnostics",
+      "1 error(s):\n# a.ts\n  1:1 [error] [ts] Bad.\n\u26a0 /repo/b.xyz: No language server found",
+    ],
+    [
       "a truncation notice",
       "1 error(s):\n# a.ts\n  1:1 [error] [ts] Bad.\n[Showing lines 1-50 of 90. Use offset=51 to continue]",
     ],
