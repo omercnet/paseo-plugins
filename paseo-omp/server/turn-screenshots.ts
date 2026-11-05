@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { z } from "zod";
 import { OMP_IMAGE_TIMELINE_KIND, ompImageTimelineSchema } from "../shared/provider-image";
+import { ompDataDir } from "./paths";
 import { isOmpImageMimeType, isValidImagePayload, type OmpImageMimeType } from "./provider/image";
 import { MAX_CACHED_IMAGE_BYTES, type OmpImageCache, ompImageCache } from "./provider/image-cache";
 import { readRegularFile } from "./regular-file";
@@ -11,8 +12,8 @@ import type { OmpTurnRow } from "./turn-rows";
 
 const BLOB_REFERENCE = /^blob:sha256:([0-9a-f]{64})$/u;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/u;
-/** OMP moves image data of at least this many base64 characters into a blob; smaller stays inline. */
-const MAX_INLINE_BASE64_LENGTH = 1_024;
+/** OMP moves image data of 1,024 or more base64 characters into a blob; shorter stays inline. */
+const MAX_INLINE_BASE64_LENGTH = 1_023;
 const MAX_SCREENSHOTS = 16;
 const LABEL = "Screenshots";
 
@@ -22,12 +23,6 @@ interface ScreenshotImage {
   mimeType: OmpImageMimeType;
   /** Present for an image persisted inline instead of as a blob. */
   bytes?: Buffer;
-}
-
-/** `<agent dir>/sessions/<project>/<session>.jsonl` keeps its image blobs in `<agent dir>/blobs`. */
-function blobDirectory(sessionFile: string): string | undefined {
-  const sessions = dirname(dirname(sessionFile));
-  return basename(sessions) === "sessions" ? join(dirname(sessions), "blobs") : undefined;
 }
 
 const evalResultEntrySchema = z.object({
@@ -87,7 +82,7 @@ function copyToCache(
 
 /**
  * The `eval` screenshots of the turn between `since` and `until` (epoch ms). OMP persists each as
- * a content-addressed blob next to its sessions (or inline when it is tiny); they are copied into
+ * a content-addressed file in `blobDirectory` (or inline when it is tiny); they are copied into
  * the image cache so the row can name them by cache reference and the stock image renderer shows
  * them.
  */
@@ -96,9 +91,9 @@ export async function readOmpScreenshots(
   since: number,
   until: number,
   cache: OmpImageCache,
+  blobDirectory: string,
 ): Promise<OmpTurnRow | undefined> {
-  const directory = blobDirectory(sessionFile);
-  if (!directory || !isAbsolute(sessionFile) || !sessionFile.endsWith(".jsonl")) return;
+  if (!isAbsolute(sessionFile) || !sessionFile.endsWith(".jsonl")) return;
   const tail = await readTail(sessionFile);
   if (!tail) return;
   let id: string | undefined;
@@ -116,7 +111,7 @@ export async function readOmpScreenshots(
   const images: z.infer<typeof ompImageTimelineSchema>["images"] = [];
   for (const image of unique.values()) {
     if (images.length >= MAX_SCREENSHOTS) break;
-    const ref = copyToCache(directory, image, cache);
+    const ref = copyToCache(blobDirectory, image, cache);
     if (ref) images.push({ id: ref.slice(0, 16), ref, mimeType: image.mimeType });
     // Each copy reads and hashes up to 6 MiB synchronously; let other daemon work run between images.
     await yieldToEventLoop();
@@ -135,5 +130,11 @@ export function ompScreenshotRow(
   since: number,
   until: number,
 ): Promise<OmpTurnRow | undefined> {
-  return readOmpScreenshots(sessionFile, since, until, ompImageCache());
+  return readOmpScreenshots(
+    sessionFile,
+    since,
+    until,
+    ompImageCache(),
+    join(ompDataDir(), "blobs"),
+  );
 }

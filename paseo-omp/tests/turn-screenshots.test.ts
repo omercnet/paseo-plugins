@@ -44,6 +44,8 @@ describe("OMP turn screenshots", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  const blobs = () => join(agentDirectory, "blobs");
+
   function blob(bytes: Buffer, name = sha256(bytes)): string {
     writeFileSync(join(agentDirectory, "blobs", name), bytes);
     return sha256(bytes);
@@ -67,7 +69,7 @@ describe("OMP turn screenshots", () => {
       toolResult("shot-2", "2026-11-05T09:10:06.000Z", [image(blob(second)), image(blob(first))]),
     ]);
 
-    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache);
+    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache, blobs());
 
     expect(row?.id).toBe("screenshots:shot-1");
     expect(row?.kind).toBe("omp-images");
@@ -92,7 +94,7 @@ describe("OMP turn screenshots", () => {
       toolResult("kept", "2026-11-05T09:10:08.000Z", [image(blob(bytes))]),
     ]);
 
-    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache);
+    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache, blobs());
 
     expect(row?.id).toBe("screenshots:kept");
     expect(ompImageTimelineSchema.parse(row?.data).images).toHaveLength(1);
@@ -106,13 +108,46 @@ describe("OMP turn screenshots", () => {
       ]),
     ]);
 
-    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache);
+    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache, blobs());
 
     expect(row?.id).toBe("screenshots:inline");
     expect(ompImageTimelineSchema.parse(row?.data).images).toEqual([
       { id: sha256(bytes).slice(0, 16), ref: sha256(bytes), mimeType: "image/png" },
     ]);
     expect(cache.read(sha256(bytes), "image/png")?.equals(bytes)).toBe(true);
+  });
+
+  test("reads blobs from the given directory when the session file is in a custom session directory", async () => {
+    const bytes = png("custom session directory");
+    const hash = blob(bytes);
+    const customSessions = join(root, "elsewhere");
+    mkdirSync(customSessions);
+    const file = join(customSessions, "session.jsonl");
+    writeFileSync(
+      file,
+      `${JSON.stringify(toolResult("custom", "2026-11-05T09:10:07.000Z", [image(hash)]))}\n`,
+    );
+
+    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache, blobs());
+
+    expect(row?.id).toBe("screenshots:custom");
+    expect(cache.read(hash, "image/png")?.equals(bytes)).toBe(true);
+  });
+
+  test("still shows inline images when the blob directory does not exist", async () => {
+    const bytes = png("inline without blob directory");
+    const file = session([
+      toolResult("inline", "2026-11-05T09:10:07.000Z", [
+        { type: "image", data: bytes.toString("base64"), mimeType: "image/png" },
+        image(sha256(png("lost blob"))),
+      ]),
+    ]);
+
+    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache, join(root, "no-blobs"));
+
+    expect(ompImageTimelineSchema.parse(row?.data).images).toEqual([
+      { id: sha256(bytes).slice(0, 16), ref: sha256(bytes), mimeType: "image/png" },
+    ]);
   });
 
   test("ignores inline data that is not a small, valid image", async () => {
@@ -136,7 +171,7 @@ describe("OMP turn screenshots", () => {
       ]),
     ]);
 
-    expect(await readOmpScreenshots(file, SINCE, UNTIL, cache)).toBeUndefined();
+    expect(await readOmpScreenshots(file, SINCE, UNTIL, cache, blobs())).toBeUndefined();
   });
 
   test("drops blobs that are missing, altered, not images or symlinks", async () => {
@@ -157,18 +192,17 @@ describe("OMP turn screenshots", () => {
       ]),
     ]);
 
-    expect(await readOmpScreenshots(file, SINCE, UNTIL, cache)).toBeUndefined();
+    expect(await readOmpScreenshots(file, SINCE, UNTIL, cache, blobs())).toBeUndefined();
   });
 
-  test("refuses a session file outside an agent sessions directory", async () => {
-    const file = join(root, "session.jsonl");
+  test("refuses a relative session file path", async () => {
+    const file = join(agentDirectory, "sessions", "project", "session.jsonl");
     writeFileSync(
       file,
       `${JSON.stringify(toolResult("shot", "2026-11-05T09:10:05.000Z", [image(blob(png("x")))]))}\n`,
     );
-    expect(await readOmpScreenshots(file, SINCE, UNTIL, cache)).toBeUndefined();
     expect(
-      await readOmpScreenshots("sessions/project/session.jsonl", SINCE, UNTIL, cache),
+      await readOmpScreenshots("sessions/project/session.jsonl", SINCE, UNTIL, cache, blobs()),
     ).toBeUndefined();
   });
 
@@ -182,7 +216,7 @@ describe("OMP turn screenshots", () => {
       ]),
     ]);
 
-    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache);
+    const row = await readOmpScreenshots(file, SINCE, UNTIL, cache, blobs());
 
     const images = ompImageTimelineSchema.parse(row?.data).images;
     expect(images).toHaveLength(16);
