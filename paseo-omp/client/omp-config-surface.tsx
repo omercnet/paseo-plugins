@@ -625,6 +625,46 @@ function ProviderHealthSection({
   );
 }
 
+function MagicKeywordsHelp({ styles }: { styles: OmpConfigStyles }) {
+  return (
+    <SectionCard styles={styles} title="Magic keywords">
+      <Text style={styles.muted}>
+        OMP treats a few standalone, lowercase words in a prompt as switches. Each adds a hidden
+        instruction for that one turn. Words inside code blocks, inline code and paths are ignored.
+      </Text>
+      <KeyValueRow
+        styles={styles}
+        label="ultrathink"
+        value="Careful reasoning, and maximum reasoning effort when automatic thinking is on."
+      />
+      <KeyValueRow
+        styles={styles}
+        label="orchestrate"
+        value="Splits the work across parallel subagents and verifies each phase. Needs the task tool."
+      />
+      <KeyValueRow
+        styles={styles}
+        label="workflowz"
+        value="Runs a scripted multi-subagent workflow. Needs the eval and task tools."
+      />
+      <KeyValueRow
+        styles={styles}
+        label="jevify"
+        value="Applies a bulk-classification contract. Needs the eval tool."
+      />
+      <Text style={styles.muted}>
+        Cost: orchestrate and workflowz can start extra subagents, so a turn that uses them costs
+        more.
+      </Text>
+      <Text style={styles.muted}>
+        To turn them off, set magicKeywords.enabled to false in Configuration. Each word also has
+        its own switch: magicKeywords.ultrathink, magicKeywords.orchestrate, magicKeywords.workflow
+        (this one switches workflowz) and magicKeywords.jevify.
+      </Text>
+    </SectionCard>
+  );
+}
+
 function SupportDiagnosticsSection({
   theme,
   styles,
@@ -1388,7 +1428,10 @@ function OmpConfigContent({
       ) : null}
 
       {view === "help" ? (
-        <SupportDiagnosticsSection theme={theme} styles={styles} cwd={cwd} store={store} />
+        <>
+          <MagicKeywordsHelp styles={styles} />
+          <SupportDiagnosticsSection theme={theme} styles={styles} cwd={cwd} store={store} />
+        </>
       ) : null}
 
       {view === "configuration" ? (
