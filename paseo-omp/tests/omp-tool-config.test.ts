@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resolveReadOmpToolConfig, resolveWriteOmpToolConfig } from "../server/omp-tool-config";
-import { validateOmpToolConfig } from "../shared/omp-tool-config";
+import { validateOmpToolConfig, warnOmpToolConfig } from "../shared/omp-tool-config";
 
 describe("validating lsp.json and dap.json before they are written", () => {
   test("accepts the wrapped and the flat shape OMP reads", () => {
@@ -58,6 +58,29 @@ describe("validating lsp.json and dap.json before they are written", () => {
   });
 });
 
+describe("definitions OMP would drop", () => {
+  const warnings = (value: unknown) => warnOmpToolConfig("lsp", JSON.stringify(value));
+
+  test("warns about a new server that lacks what OMP needs, but not about overrides", () => {
+    expect(warnings({ servers: { mine: { command: "x" } } })).toEqual([
+      expect.stringContaining("mine is not a built-in server"),
+    ]);
+    expect(warnings({ mine: { disabled: true } })).toHaveLength(1);
+    expect(warnings({ servers: { pylsp: { disabled: true } } })).toEqual([]);
+    expect(
+      warnings({
+        servers: { mine: { command: "x", fileTypes: [".x"], rootMarkers: [".git"] } },
+      }),
+    ).toEqual([]);
+    expect(
+      warnings({ servers: { mine: { command: "x", extensionToLanguage: { ".x": "x" } } } }),
+    ).toEqual([]);
+    expect(
+      warnOmpToolConfig("dap", JSON.stringify({ adapters: { mine: { command: "d" } } })),
+    ).toEqual([]);
+  });
+});
+
 describe("reading and writing lsp.json and dap.json", () => {
   let root: string;
   let project: string;
@@ -90,8 +113,16 @@ describe("reading and writing lsp.json and dap.json", () => {
 
     const text = '{ "servers": { "pylsp": { "disabled": true } } }';
     const saved = await resolveWriteOmpToolConfig({ kind: "lsp", revision: empty.revision, text });
-    expect(saved.outcome).toBe("saved");
+    expect(saved).toMatchObject({ outcome: "saved", warnings: [] });
     expect(await readFile(join(root, "agent", "lsp.json"), "utf8")).toBe(`${text}\n`);
+
+    const incomplete = await resolveWriteOmpToolConfig({
+      kind: "lsp",
+      revision: saved.revision,
+      text: '{ "servers": { "mine": { "command": "x" } } }',
+    });
+    expect(incomplete.outcome).toBe("saved");
+    expect(incomplete.warnings).toEqual([expect.stringContaining("mine")]);
     expect((await resolveReadOmpToolConfig({ kind: "lsp" })).revision).toBe(saved.revision);
 
     const projectEmpty = await resolveReadOmpToolConfig({ kind: "dap", cwd: project });

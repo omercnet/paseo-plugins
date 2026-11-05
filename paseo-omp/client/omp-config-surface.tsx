@@ -1461,6 +1461,7 @@ function OmpConfigContent({
                   agentsQuery.isFetching
                 }
                 onPress={() => {
+                  void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "tool-config"] });
                   void Promise.all([
                     configQuery.refetch(),
                     settingsQuery.refetch(),

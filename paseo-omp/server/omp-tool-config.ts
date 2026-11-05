@@ -7,6 +7,7 @@ import {
   type OmpToolConfigKind,
   type readOmpToolConfig,
   validateOmpToolConfig,
+  warnOmpToolConfig,
   type writeOmpToolConfig,
 } from "../shared/omp-tool-config";
 import { SerialMutationQueue } from "./mutation-queue";
@@ -99,13 +100,14 @@ async function writeToolConfig(input: WriteInput): Promise<RpcOutput<typeof writ
   if (Buffer.byteLength(input.text) > MAX_TOOL_CONFIG_BYTES) {
     errors.push("The file is larger than 256 KiB, which this editor will not open again.");
   }
-  if (errors.length > 0) return { outcome: "invalid", errors, revision: input.revision };
+  if (errors.length > 0)
+    return { outcome: "invalid", errors, warnings: [], revision: input.revision };
 
   const { directory, path } = locate(input);
   await refuseLinkedProjectFolder(directory, input.cwd);
   const snapshot = await readExisting(path);
   if (revisionOf(snapshot) !== input.revision) {
-    return { outcome: "conflict", errors: [], revision: revisionOf(snapshot) };
+    return { outcome: "conflict", errors: [], warnings: [], revision: revisionOf(snapshot) };
   }
 
   const text = input.text.endsWith("\n") ? input.text : `${input.text}\n`;
@@ -114,10 +116,20 @@ async function writeToolConfig(input: WriteInput): Promise<RpcOutput<typeof writ
   try {
     await writeFile(temporaryPath, text, { encoding: "utf8", mode: 0o600 });
     if ((await readExisting(path)) !== snapshot) {
-      return { outcome: "conflict", errors: [], revision: revisionOf(await readExisting(path)) };
+      return {
+        outcome: "conflict",
+        errors: [],
+        warnings: [],
+        revision: revisionOf(await readExisting(path)),
+      };
     }
     await rename(temporaryPath, path);
-    return { outcome: "saved", errors: [], revision: revisionOf(text) };
+    return {
+      outcome: "saved",
+      errors: [],
+      warnings: warnOmpToolConfig(input.kind, text),
+      revision: revisionOf(text),
+    };
   } finally {
     await unlink(temporaryPath).catch(() => {});
   }

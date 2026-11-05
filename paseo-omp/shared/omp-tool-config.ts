@@ -113,6 +113,93 @@ export function validateOmpToolConfig(kind: OmpToolConfigKind, text: string): st
   return errors;
 }
 
+/** The servers OMP ships. Any other name is a new definition, which OMP drops unless it is complete. */
+const BUILT_IN_LSP_SERVERS: ReadonlySet<string> = new Set([
+  "rust-analyzer",
+  "clangd",
+  "zls",
+  "gopls",
+  "typescript-language-server",
+  "typescript-native",
+  "denols",
+  "biome",
+  "eslint",
+  "vscode-html-language-server",
+  "vscode-css-language-server",
+  "vscode-json-language-server",
+  "tailwindcss",
+  "svelte",
+  "vue-language-server",
+  "astro",
+  "pyright",
+  "basedpyright",
+  "pylsp",
+  "ty",
+  "ruff",
+  "jdtls",
+  "kotlin-lsp",
+  "metals",
+  "hls",
+  "ocamllsp",
+  "elixirls",
+  "expert",
+  "erlangls",
+  "gleam",
+  "solargraph",
+  "ruby-lsp",
+  "rubocop",
+  "bashls",
+  "lua-language-server",
+  "intelephense",
+  "phpactor",
+  "omnisharp",
+  "yamlls",
+  "terraformls",
+  "dockerls",
+  "helm-ls",
+  "nixd",
+  "nil",
+  "ols",
+  "dartls",
+  "marksman",
+  "texlab",
+  "graphql",
+  "prismals",
+  "vimls",
+  "emmet-language-server",
+  "sourcekit-lsp",
+  "swiftlint",
+  "tlaplus",
+]);
+
+/**
+ * Definitions that pass validation but that OMP drops: a server that is not built in needs a
+ * command, file types and root markers (or extensionToLanguage, which supplies both).
+ */
+export function warnOmpToolConfig(kind: OmpToolConfigKind, text: string): string[] {
+  if (kind !== "lsp") return [];
+  let document: unknown;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!isObject(document)) return [];
+  const { entries } = entriesOf(document, "servers", ["idleTimeoutMs"], false);
+  return Object.entries(entries).flatMap(([name, entry]) => {
+    if (BUILT_IN_LSP_SERVERS.has(name) || !isObject(entry)) return [];
+    const derived = "extensionToLanguage" in entry;
+    const missing = [
+      typeof entry.command === "string" && entry.command ? null : "command",
+      derived || Array.isArray(entry.fileTypes) ? null : "fileTypes",
+      derived || Array.isArray(entry.rootMarkers) ? null : "rootMarkers",
+    ].filter((field) => field !== null);
+    return missing.length === 0
+      ? []
+      : [`${name} is not a built-in server, so OMP ignores it without ${missing.join(", ")}`];
+  });
+}
+
 const ToolConfigTargetSchema = z.object({
   store: OmpStoreSchema.optional(),
   /** A workspace folder selects its project file; without one the user file is used. */
@@ -142,6 +229,8 @@ export const writeOmpToolConfig = defineRpc({
   output: z.object({
     outcome: z.enum(["saved", "conflict", "invalid"]),
     errors: z.array(z.string()),
+    /** Saved anyway, but OMP will not use these definitions. */
+    warnings: z.array(z.string()),
     revision: z.string(),
   }),
 });

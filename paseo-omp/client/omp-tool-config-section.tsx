@@ -163,6 +163,13 @@ export function OmpToolConfigSection({
         {result?.outcome === "saved" ? (
           <Text style={styles.muted}>Saved. New sessions will use it.</Text>
         ) : null}
+        {result?.outcome === "saved"
+          ? result.warnings.map((warning) => (
+              <Text key={warning} style={styles.error}>
+                {warning}
+              </Text>
+            ))
+          : null}
         <View style={styles.editorActions}>
           <Choice
             styles={styles}
