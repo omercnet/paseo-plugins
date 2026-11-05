@@ -25,6 +25,7 @@ import {
   updateOmpSettings,
 } from "../shared/omp-settings";
 import { type OmpStore, storeLabel } from "../shared/omp-store";
+import { getOmpUpdateStatus } from "../shared/omp-update";
 import { getOmpProviderHealth, type OmpProviderHealth } from "../shared/provider-diagnostics";
 import { getOmpSupportReport, OMP_SUPPORT_ISSUE_URL } from "../shared/support-diagnostics";
 import { ComposerPillSettingsSection } from "./composer-pill-settings";
@@ -47,6 +48,7 @@ import { OmpRulesSection } from "./omp-rules-section";
 import { OmpSkillsSection } from "./omp-skills-section";
 import { OmpStorePicker } from "./omp-store-picker";
 import { ompStoreKey } from "./omp-store-state";
+import { OmpUpdateRow, UPDATE_QUERY_KEY } from "./omp-update-row";
 import {
   type BinaryHealthSummary,
   loadReadyProviderSnapshot,
@@ -222,10 +224,14 @@ function BinarySection({
   theme,
   styles,
   health,
+  workspaceScoped,
+  onUpdateInstalled,
 }: {
   theme: PluginSurfaceProps["theme"];
   styles: OmpConfigStyles;
   health: OmpProviderHealth;
+  workspaceScoped: boolean;
+  onUpdateInstalled(): void;
 }) {
   const summary = summarizeBinaryHealth(health.binary);
   return (
@@ -246,6 +252,9 @@ function BinarySection({
           value="Timed-out probe did not confirm exit"
           valueColor={theme.colors.statusDanger}
         />
+      ) : null}
+      {health.binary.installed && !workspaceScoped ? (
+        <OmpUpdateRow styles={styles} theme={theme} onInstalled={onUpdateInstalled} />
       ) : null}
     </SectionCard>
   );
@@ -374,8 +383,10 @@ function ProviderHealthSection({
   const paseo = usePaseo();
   const queryClient = useQueryClient();
   const loadHealth = useRpc(getOmpProviderHealth);
+  const loadUpdateStatus = useRpc(getOmpUpdateStatus);
+  const healthKey = [...HEALTH_QUERY_KEY, ompStoreKey(store), cwd ?? "global"];
   const health = useQuery({
-    queryKey: [...HEALTH_QUERY_KEY, ompStoreKey(store), cwd ?? "global"],
+    queryKey: healthKey,
     queryFn: () => loadHealth({ store, ...(cwd ? { cwd } : {}) }),
   });
   const providers = useQuery({
@@ -384,22 +395,29 @@ function ProviderHealthSection({
   });
   const refresh = useMutation({
     mutationFn: async () => {
-      const result = await refreshProviderDiagnostics({
-        providers: paseo.providers,
-        providerIds: [
-          ...selectKnownOmpProviders(providers.data?.entries ?? []).map((provider) => provider.id),
-          ...(store?.profile ? [`omp-plugin-${store.profile}`] : []),
-        ],
-        loadForcedHealth: () => loadHealth({ store, force: true, ...(cwd ? { cwd } : {}) }),
-        cacheHealth: (value) =>
-          queryClient.setQueryData(
-            [...HEALTH_QUERY_KEY, ompStoreKey(store), cwd ?? "global"],
-            value,
-          ),
-        cacheProviders: (value) => queryClient.setQueryData(PROVIDERS_QUERY_KEY, value),
-      });
+      const [result, update] = await Promise.all([
+        refreshProviderDiagnostics({
+          providers: paseo.providers,
+          providerIds: [
+            ...selectKnownOmpProviders(providers.data?.entries ?? []).map(
+              (provider) => provider.id,
+            ),
+            ...(store?.profile ? [`omp-plugin-${store.profile}`] : []),
+          ],
+          loadForcedHealth: () => loadHealth({ store, force: true, ...(cwd ? { cwd } : {}) }),
+          cacheHealth: (value) => queryClient.setQueryData(healthKey, value),
+          cacheProviders: (value) => queryClient.setQueryData(PROVIDERS_QUERY_KEY, value),
+        }),
+        cwd ? undefined : loadUpdateStatus({ force: true }).catch(() => undefined),
+      ]);
+      if (update) queryClient.setQueryData(UPDATE_QUERY_KEY, update);
       if (result.failed) throw new Error("Could not fully refresh OMP provider health.");
     },
+  });
+  // After an update the version row is stale; the install already returned the fresh update status.
+  const reloadHealth = useMutation({
+    mutationFn: () => loadHealth({ store, force: true, ...(cwd ? { cwd } : {}) }),
+    onSuccess: (value) => queryClient.setQueryData(healthKey, value),
   });
   const isRefreshing = refresh.isPending || health.isFetching || providers.isFetching;
   const knownProviders = providers.data ? selectKnownOmpProviders(providers.data.entries) : [];
@@ -434,7 +452,15 @@ function ProviderHealthSection({
       {refresh.error ? (
         <Text style={styles.error}>Could not fully refresh provider health. Try again.</Text>
       ) : null}
-      {health.data ? <BinarySection theme={theme} styles={styles} health={health.data} /> : null}
+      {health.data ? (
+        <BinarySection
+          theme={theme}
+          styles={styles}
+          health={health.data}
+          workspaceScoped={cwd !== undefined}
+          onUpdateInstalled={() => reloadHealth.mutate()}
+        />
+      ) : null}
       {health.data ? (
         <CapabilitiesSection theme={theme} styles={styles} health={health.data} />
       ) : null}
