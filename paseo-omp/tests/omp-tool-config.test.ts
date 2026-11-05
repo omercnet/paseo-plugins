@@ -1,0 +1,135 @@
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { resolveReadOmpToolConfig, resolveWriteOmpToolConfig } from "../server/omp-tool-config";
+import { validateOmpToolConfig } from "../shared/omp-tool-config";
+
+describe("validating lsp.json and dap.json before they are written", () => {
+  test("accepts the wrapped and the flat shape OMP reads", () => {
+    const server = { command: "my-lsp", fileTypes: [".xyz"], rootMarkers: [".git"] };
+    expect(validateOmpToolConfig("lsp", JSON.stringify({ servers: { mine: server } }))).toEqual([]);
+    expect(validateOmpToolConfig("lsp", JSON.stringify({ mine: server }))).toEqual([]);
+    expect(validateOmpToolConfig("lsp", JSON.stringify({ idleTimeoutMs: 300000 }))).toEqual([]);
+    expect(
+      validateOmpToolConfig("lsp", JSON.stringify({ servers: { pylsp: { disabled: true } } })),
+    ).toEqual([]);
+    expect(
+      validateOmpToolConfig("dap", JSON.stringify({ adapters: { mine: { command: "dap" } } })),
+    ).toEqual([]);
+  });
+
+  test("names every value OMP would ignore", () => {
+    expect(validateOmpToolConfig("lsp", "{")).toEqual([expect.stringContaining("Not valid JSON")]);
+    expect(validateOmpToolConfig("lsp", "[]")).toEqual(["The file must hold a JSON object"]);
+    expect(
+      validateOmpToolConfig("lsp", JSON.stringify({ servers: { a: { args: "--stdio" } } })),
+    ).toEqual([expect.stringContaining("a.args")]);
+    expect(
+      validateOmpToolConfig("lsp", JSON.stringify({ servers: { a: { resolvedCommand: "x" } } })),
+    ).toEqual([expect.stringContaining("owned by OMP")]);
+    expect(validateOmpToolConfig("lsp", JSON.stringify({ idleTimeoutMs: "soon" }))).toEqual([
+      expect.stringContaining("idleTimeoutMs"),
+    ]);
+    expect(validateOmpToolConfig("dap", JSON.stringify({ adapters: { a: {} } }))).toEqual([
+      expect.stringContaining("a.command"),
+    ]);
+    expect(
+      validateOmpToolConfig(
+        "dap",
+        JSON.stringify({ adapters: { a: { command: "d", connectMode: "pipe" } } }),
+      ),
+    ).toEqual([expect.stringContaining("a.connectMode")]);
+  });
+
+  test("rejects a wrapper mixed with flat entries, which OMP silently drops", () => {
+    const text = JSON.stringify({ servers: { a: { disabled: true } }, b: { disabled: true } });
+    expect(validateOmpToolConfig("lsp", text)).toEqual([expect.stringContaining("Do not mix")]);
+  });
+});
+
+describe("reading and writing lsp.json and dap.json", () => {
+  let root: string;
+  let project: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "omp-tool-config-"));
+    project = join(root, "project");
+    await mkdir(project, { recursive: true });
+    vi.stubEnv("HOME", join(root, "home"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"));
+    for (const name of [
+      "PASEO_OMP_AGENT_DIR",
+      "OMP_AGENT_DIR",
+      "OMP_PROFILE",
+      "PI_PROFILE",
+      "PI_CONFIG_DIR",
+    ]) {
+      vi.stubEnv(name, undefined);
+    }
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test("creates the user file in the agent directory and the project file under .omp", async () => {
+    const empty = await resolveReadOmpToolConfig({ kind: "lsp" });
+    expect(empty).toMatchObject({ path: join(root, "agent", "lsp.json"), exists: false, text: "" });
+
+    const text = '{ "servers": { "pylsp": { "disabled": true } } }';
+    const saved = await resolveWriteOmpToolConfig({ kind: "lsp", revision: empty.revision, text });
+    expect(saved.outcome).toBe("saved");
+    expect(await readFile(join(root, "agent", "lsp.json"), "utf8")).toBe(`${text}\n`);
+    expect((await resolveReadOmpToolConfig({ kind: "lsp" })).revision).toBe(saved.revision);
+
+    const projectEmpty = await resolveReadOmpToolConfig({ kind: "dap", cwd: project });
+    const projectSaved = await resolveWriteOmpToolConfig({
+      kind: "dap",
+      cwd: project,
+      revision: projectEmpty.revision,
+      text: '{ "adapters": { "a": { "command": "d" } } }',
+    });
+    expect(projectSaved.outcome).toBe("saved");
+    expect((await stat(join(project, ".omp", "dap.json"))).isFile()).toBe(true);
+  });
+
+  test("writes nothing when the text is invalid or the file changed since it was read", async () => {
+    const path = join(root, "agent", "lsp.json");
+    await mkdir(join(root, "agent"), { recursive: true });
+    await writeFile(path, '{ "idleTimeoutMs": 1 }\n');
+    const current = await resolveReadOmpToolConfig({ kind: "lsp" });
+
+    const invalid = await resolveWriteOmpToolConfig({
+      kind: "lsp",
+      revision: current.revision,
+      text: '{ "servers": { "a": { "args": 1 } } }',
+    });
+    expect(invalid.outcome).toBe("invalid");
+    expect(invalid.errors.length).toBeGreaterThan(0);
+
+    await writeFile(path, '{ "idleTimeoutMs": 2 }\n');
+    const stale = await resolveWriteOmpToolConfig({
+      kind: "lsp",
+      revision: current.revision,
+      text: '{ "idleTimeoutMs": 3 }',
+    });
+    expect(stale.outcome).toBe("conflict");
+    expect(await readFile(path, "utf8")).toBe('{ "idleTimeoutMs": 2 }\n');
+  });
+
+  test("lists sibling variants OMP also merges and refuses a symlinked file", async () => {
+    await mkdir(join(project, ".omp"), { recursive: true });
+    await writeFile(join(project, ".omp", "lsp.yaml"), "servers: {}\n");
+    expect((await resolveReadOmpToolConfig({ kind: "lsp", cwd: project })).otherFiles).toEqual([
+      "lsp.yaml",
+    ]);
+
+    await writeFile(join(root, "elsewhere.json"), "{}");
+    await symlink(join(root, "elsewhere.json"), join(project, ".omp", "lsp.json"));
+    await expect(resolveReadOmpToolConfig({ kind: "lsp", cwd: project })).rejects.toThrow(
+      "symlinked",
+    );
+  });
+});
