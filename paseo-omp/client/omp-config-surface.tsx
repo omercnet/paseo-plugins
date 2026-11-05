@@ -47,6 +47,7 @@ import {
   type OmpDocumentationLink,
 } from "./omp-doc-links";
 import { OmpExtensionsSection } from "./omp-extensions-section";
+import { OmpLocalModelsSection } from "./omp-local-models-section";
 import { OmpMcpsSection } from "./omp-mcps-section";
 import { normalizeOmpModels } from "./omp-model-picker-state";
 import { OmpPluginManagerSection } from "./omp-plugin-manager";
@@ -1240,6 +1241,15 @@ function OmpConfigContent({
       ? drafts.modelRoles.value
       : undefined
     : catalog.sourceSettings.find((setting) => setting.path === "modelRoles")?.value;
+  const savedModelRolesValue = catalog.sourceSettings.find(
+    (setting) => setting.path === "modelRoles",
+  )?.value;
+  const savedModelRoles =
+    savedModelRolesValue !== null &&
+    typeof savedModelRolesValue === "object" &&
+    !Array.isArray(savedModelRolesValue)
+      ? (savedModelRolesValue as Readonly<Record<string, unknown>>)
+      : {};
   const modelRoles =
     modelRolesValue !== null &&
     typeof modelRolesValue === "object" &&
@@ -1623,6 +1633,19 @@ function OmpConfigContent({
                 )}
               </View>
             </View>
+          ) : null}
+          {cwd === undefined ? (
+            <OmpLocalModelsSection
+              styles={styles}
+              store={store}
+              modelRoles={savedModelRoles}
+              settingsRevision={settingsQuery.data?.revision}
+              rolesPending={drafts.modelRoles !== undefined}
+              onRolesChanged={() => {
+                void queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
+                void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "config"] });
+              }}
+            />
           ) : null}
         </>
       ) : null}

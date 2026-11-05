@@ -10,6 +10,7 @@ import { OmpAccounts } from "./server/omp-accounts";
 import { resolveListOmpAgents } from "./server/omp-agents";
 import { resolveListOmpConfig } from "./server/omp-config";
 import { resolveListOmpExtensions, resolveSetOmpExtensionEnabled } from "./server/omp-extensions";
+import { resolveDownloadOmpLocalModel, resolveListOmpLocalModels } from "./server/omp-local-models";
 import { OmpMcps } from "./server/omp-mcps";
 import { resolveListOmpModels } from "./server/omp-models";
 import { resolveGetOmpModelsFileStatus, resolveRefreshOmpModels } from "./server/omp-models-file";
@@ -74,6 +75,7 @@ import {
 import { listOmpAgents } from "./shared/omp-agents";
 import { listOmpConfig } from "./shared/omp-config";
 import { listOmpExtensions, setOmpExtensionEnabled } from "./shared/omp-extensions";
+import { downloadOmpLocalModel, listOmpLocalModels } from "./shared/omp-local-models";
 import {
   addOmpMcp,
   cancelOmpMcpAuth,
@@ -232,6 +234,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(mutateOmpPluginConfig, scoped(resolveMutateOmpPluginConfig));
   server.handle(listOmpSettings, scoped(resolveListOmpSettings));
   server.handle(updateOmpSettings, scoped(resolveUpdateOmpSettings));
+  server.handle(listOmpLocalModels, scoped(resolveListOmpLocalModels));
+  server.handle(downloadOmpLocalModel, scoped(resolveDownloadOmpLocalModel));
   server.handle(getOmpProviderHealth, scoped(resolveGetOmpProviderHealth));
   // Not `scoped`: the handler also needs the host context to read Paseo's Append system prompt.
   server.handle(getOmpPromptFiles, ({ store, cwd }, { paseo }) =>
