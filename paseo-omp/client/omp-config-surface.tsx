@@ -13,6 +13,7 @@ import { Pressable, ScrollView, Switch, Text, View } from "react-native";
 import type { ComposerPillSettings } from "../shared/composer-pill-settings";
 import { listOmpConfig, type OmpConfig } from "../shared/omp-config";
 import { listOmpModels } from "../shared/omp-models";
+import { getOmpPromptFiles } from "../shared/omp-prompt-files";
 import {
   categorizeOmpSetting,
   formatOmpSettingLabel,
@@ -57,6 +58,7 @@ import {
   mcpTone,
   type PathStateSummary,
   processTone,
+  promptFileNotices,
   refreshProviderDiagnostics,
   rpcUiTone,
   selectKnownOmpProviders,
@@ -79,6 +81,7 @@ import {
 const SETTINGS_QUERY_KEY = ["paseo-omp", "settings"] as const;
 const CONFIG_POLL_MS = 30_000;
 const HEALTH_QUERY_KEY = ["paseo-omp", "provider-health"] as const;
+const PROMPT_FILES_QUERY_KEY = ["paseo-omp", "prompt-files"] as const;
 const PROVIDERS_QUERY_KEY = ["paseo-omp", "provider-snapshot"] as const;
 
 function KeyValueRow({
@@ -370,6 +373,39 @@ function ProcessSection({
   );
 }
 
+function PromptFilesSection({
+  theme,
+  styles,
+  cwd,
+  store,
+}: {
+  theme: PluginSurfaceProps["theme"];
+  styles: OmpConfigStyles;
+  cwd?: string;
+  store?: OmpStore;
+}) {
+  const loadPromptFiles = useRpc(getOmpPromptFiles);
+  const files = useQuery({
+    queryKey: [...PROMPT_FILES_QUERY_KEY, ompStoreKey(store), cwd ?? "global"],
+    queryFn: () => loadPromptFiles({ store, ...(cwd ? { cwd } : {}) }),
+  });
+  const notices = files.data ? promptFileNotices(files.data) : [];
+  if (notices.length === 0) return null;
+  return (
+    <SectionCard styles={styles} title="Prompt files">
+      {notices.map((notice) => (
+        <KeyValueRow
+          key={notice.file}
+          styles={styles}
+          label={notice.file}
+          value={notice.text}
+          valueColor={theme.colors.statusWarning}
+        />
+      ))}
+    </SectionCard>
+  );
+}
+
 function ProviderHealthSection({
   theme,
   styles,
@@ -413,6 +449,7 @@ function ProviderHealthSection({
       ]);
       if (update) queryClient.setQueryData(UPDATE_QUERY_KEY, update);
       if (result.failed) throw new Error("Could not fully refresh OMP provider health.");
+      await queryClient.invalidateQueries({ queryKey: PROMPT_FILES_QUERY_KEY });
     },
   });
   // After an update the version row is stale; the install already returned the fresh update status.
@@ -467,6 +504,7 @@ function ProviderHealthSection({
       ) : null}
       {health.data ? <StorageSection theme={theme} styles={styles} health={health.data} /> : null}
       {health.data ? <ProcessSection theme={theme} styles={styles} health={health.data} /> : null}
+      <PromptFilesSection theme={theme} styles={styles} cwd={cwd} store={store} />
 
       {providers.isLoading ? <Text style={styles.muted}>Loading provider status…</Text> : null}
       {providers.error ? (

@@ -1,3 +1,4 @@
+import type { OmpPromptFiles } from "../shared/omp-prompt-files";
 import type {
   OmpLspDiagnostics,
   OmpMcpDiagnostics,
@@ -258,4 +259,33 @@ export function selectKnownOmpProviders(
         ]
       : [],
   );
+}
+
+export interface PromptFileNotice {
+  file: "APPEND_SYSTEM.md" | "SYSTEM.md";
+  text: string;
+}
+
+/**
+ * The built-in provider passes Paseo's Append system prompt as `--append-system-prompt`, which
+ * makes OMP skip a discovered APPEND_SYSTEM.md. An unreadable host setting is worded as a
+ * possibility, and a host with no Append system prompt raises no APPEND_SYSTEM.md warning.
+ */
+export function promptFileNotices(files: OmpPromptFiles): PromptFileNotice[] {
+  const notices: PromptFileNotice[] = [];
+  if (files.appendSystemFile && files.hostAppendPrompt !== false) {
+    notices.push({
+      file: "APPEND_SYSTEM.md",
+      text: files.hostAppendPrompt
+        ? "Replaced by Paseo's Append system prompt, so OMP ignores this file."
+        : "May be replaced by Paseo's Append system prompt, in which case OMP ignores this file.",
+    });
+  }
+  if (files.systemFile) {
+    notices.push({
+      file: "SYSTEM.md",
+      text: "Active. It replaces OMP's default prompt, so OMP's default tool policy is off.",
+    });
+  }
+  return notices;
 }
