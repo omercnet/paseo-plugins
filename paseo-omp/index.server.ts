@@ -6,6 +6,7 @@ import {
 } from "./server/mcp-browser";
 import { resolveListOmpMemory } from "./server/memory";
 import { OmpAccounts } from "./server/omp-accounts";
+import { resolveListOmpAgents } from "./server/omp-agents";
 import { resolveListOmpConfig } from "./server/omp-config";
 import { OmpMcps } from "./server/omp-mcps";
 import { resolveListOmpModels } from "./server/omp-models";
@@ -62,6 +63,7 @@ import {
   startOmpAccountLogin,
   submitOmpAccountLoginCode,
 } from "./shared/omp-accounts";
+import { listOmpAgents } from "./shared/omp-agents";
 import { listOmpConfig } from "./shared/omp-config";
 import {
   addOmpMcp,
@@ -201,6 +203,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpMemory, scoped(resolveListOmpMemory));
   server.handle(listOmpConfig, scoped(resolveListOmpConfig));
   server.handle(listOmpModels, scoped(resolveListOmpModels));
+  server.handle(listOmpAgents, scoped(resolveListOmpAgents));
   server.handle(listOmpPlugins, scoped(resolveListOmpPlugins));
   server.handle(listOmpMarketplaces, scoped(resolveListOmpMarketplaces));
   server.handle(browseOmpMarketplace, scoped(resolveBrowseOmpMarketplace));

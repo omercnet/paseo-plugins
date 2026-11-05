@@ -67,7 +67,7 @@ export function isValidOmpModelSelector(value: string): boolean {
   return OmpModelSelectorSchema.safeParse(value).success;
 }
 
-const OmpAgentNameSchema = z
+export const OmpAgentNameSchema = z
   .string()
   .min(1)
   .max(128)
@@ -138,6 +138,11 @@ export const OmpAgentAdvisorSchema = z
     "Too many agent advisor overrides.",
   );
 
+export const OmpDisabledAgentsSchema = z
+  .array(OmpAgentNameSchema)
+  .max(MAX_ROUTING_ENTRIES)
+  .refine((value) => new Set(value).size === value.length, "Disabled agents must be unique.");
+
 export const OMP_STRUCTURED_SETTING_PATHS = [
   "modelRoles",
   "retry.fallbackChains",
@@ -146,6 +151,7 @@ export const OMP_STRUCTURED_SETTING_PATHS = [
   "task.agentServiceTierOverrides",
   "task.agentPrewalk",
   "task.agentAdvisor",
+  "task.disabledAgents",
 ] as const;
 export type OmpStructuredSettingPath = (typeof OMP_STRUCTURED_SETTING_PATHS)[number];
 
@@ -165,6 +171,8 @@ export function parseOmpStructuredSettingValue(path: string, value: unknown): un
       return OmpAgentPrewalkSchema.safeParse(value).data;
     case "task.agentAdvisor":
       return OmpAgentAdvisorSchema.safeParse(value).data;
+    case "task.disabledAgents":
+      return OmpDisabledAgentsSchema.safeParse(value).data;
     default:
       return undefined;
   }
@@ -172,6 +180,11 @@ export function parseOmpStructuredSettingValue(path: string, value: unknown): un
 
 export function isOmpStructuredSettingPath(path: string): path is OmpStructuredSettingPath {
   return (OMP_STRUCTURED_SETTING_PATHS as readonly string[]).includes(path);
+}
+
+/** The OMP value type each structured path must have to be editable. */
+export function structuredSettingType(path: OmpStructuredSettingPath): "array" | "record" {
+  return path === "cycleOrder" || path === "task.disabledAgents" ? "array" : "record";
 }
 
 export const OmpSettingSchema = z
@@ -488,6 +501,13 @@ const OmpStructuredSettingChangeSchema = z.discriminatedUnion("path", [
       operation: z.literal("set"),
       path: z.literal("task.agentAdvisor"),
       value: OmpAgentAdvisorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("set"),
+      path: z.literal("task.disabledAgents"),
+      value: OmpDisabledAgentsSchema,
     })
     .strict(),
 ]);
