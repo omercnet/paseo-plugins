@@ -186,7 +186,7 @@ describe("plugin server bundle", () => {
           },
           registerProvider: (provider: ProviderRegistration) => providers.push(provider),
         });
-        expect(handlers).toHaveLength(40);
+        expect(handlers).toHaveLength(42);
         expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-models");
         expect(handlers.map(([contract]) => contract.name)).toContain("paseo-omp.list-rules");
         expect(handlers.map(([contract]) => contract.name)).toEqual(
@@ -215,6 +215,8 @@ describe("plugin server bundle", () => {
             "paseo-omp.start-mcp-auth",
             "paseo-omp.submit-mcp-auth-code",
             "paseo-omp.cancel-mcp-auth",
+            "paseo-omp.get-update-status",
+            "paseo-omp.install-update",
           ]),
         );
         expect(settings).toEqual([
