@@ -194,6 +194,7 @@ describe("plugin server bundle", () => {
           expect.arrayContaining([
             "paseo-omp.list-extensions",
             "paseo-omp.set-extension-enabled",
+            "paseo-omp.list-security",
             "paseo-omp.list-skills",
             "paseo-omp.set-skill-enabled",
             "paseo-omp.delete-managed-skill",

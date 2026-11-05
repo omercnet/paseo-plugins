@@ -23,6 +23,7 @@ import {
 } from "./server/omp-plugins";
 import { readHostAppendPrompt, readOmpPromptFiles } from "./server/omp-prompt-files";
 import { resolveListOmpRules } from "./server/omp-rules";
+import { resolveListOmpSecurity } from "./server/omp-security";
 import { resolveListOmpSettings, resolveUpdateOmpSettings } from "./server/omp-settings";
 import {
   resolveDeleteOmpManagedSkill,
@@ -90,6 +91,7 @@ import {
 } from "./shared/omp-plugins";
 import { getOmpPromptFiles } from "./shared/omp-prompt-files";
 import { listOmpRules } from "./shared/omp-rules";
+import { listOmpSecurity } from "./shared/omp-security";
 import { listOmpSettings, updateOmpSettings } from "./shared/omp-settings";
 import { deleteOmpManagedSkill, listOmpSkills, setOmpSkillEnabled } from "./shared/omp-skills";
 import { listOmpStores, type OmpStore } from "./shared/omp-store";
@@ -217,6 +219,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpRules, scoped(resolveListOmpRules));
   server.handle(listOmpExtensions, scoped(resolveListOmpExtensions));
   server.handle(setOmpExtensionEnabled, scoped(resolveSetOmpExtensionEnabled));
+  server.handle(listOmpSecurity, scoped(resolveListOmpSecurity));
   server.handle(listOmpSkills, scoped(resolveListOmpSkills));
   server.handle(setOmpSkillEnabled, scoped(resolveSetOmpSkillEnabled));
   server.handle(deleteOmpManagedSkill, scoped(resolveDeleteOmpManagedSkill));

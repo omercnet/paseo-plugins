@@ -54,6 +54,7 @@ import {
   StructuredRoutingEditor,
 } from "./omp-routing-editor";
 import { OmpRulesSection } from "./omp-rules-section";
+import { OmpSecuritySection } from "./omp-security-section";
 import { OmpSkillsSection } from "./omp-skills-section";
 import { OmpStorePicker } from "./omp-store-picker";
 import { ompStoreKey } from "./omp-store-state";
@@ -1271,6 +1272,9 @@ function OmpConfigContent({
       ) : null}
       {view === "extensions" ? (
         <OmpExtensionsSection theme={theme} styles={styles} cwd={cwd} store={store} />
+      ) : null}
+      {view === "security" && cwd ? (
+        <OmpSecuritySection styles={styles} cwd={cwd} store={store} />
       ) : null}
       {view === "composer" && !cwd && onComposerPillSettingsChange ? (
         <ComposerPillSettingsSection theme={theme} onChange={onComposerPillSettingsChange} />
