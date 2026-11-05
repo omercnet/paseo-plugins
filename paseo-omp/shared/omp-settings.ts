@@ -1,4 +1,4 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, type RpcOutput } from "@getpaseo/plugin";
 import { z } from "zod";
 import { OmpWorkspaceCwdSchema } from "./hub";
 import { OmpStoreSchema } from "./omp-store";
@@ -642,3 +642,6 @@ export const updateOmpSettings = defineRpc({
     }),
   }),
 });
+
+/** The settings catalog an update returns, which a cache can take in place of a refetch. */
+export type OmpSettingsCatalog = RpcOutput<typeof updateOmpSettings>["catalog"];
