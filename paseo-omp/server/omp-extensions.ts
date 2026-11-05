@@ -1,5 +1,5 @@
 import type { Dirent } from "node:fs";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import { z } from "zod";
@@ -16,7 +16,7 @@ import {
   requireOmpExecutable,
   writeListEntry,
 } from "./omp-list-setting";
-import { inOmpScope } from "./omp-rules";
+import { inOmpScope, readRegularFile } from "./omp-rules";
 import { runSettingsMutation } from "./omp-settings";
 import { ompAgentDir } from "./paths";
 import { OmpPublicError } from "./provider/security";
@@ -24,15 +24,11 @@ import { OmpPublicError } from "./provider/security";
 const MAX_ENTRIES_PER_DIR = 200;
 const MAX_ITEMS = 500;
 const MAX_NAME_CHARS = 256;
-const MAX_MANIFEST_BYTES = 64 * 1024;
 const SCRIPT_SUFFIX = /\.(ts|js)$/u;
 const TOOL_SUFFIX = /\.(ts|js|sh|bash|py)$/u;
 const DECLARATION = /\.d\.(ts|js)$/u;
 const DeclaredEntries = z.object({ extensions: z.array(z.unknown()).min(1) });
-const ManifestSchema = z.object({
-  omp: DeclaredEntries.optional(),
-  pi: DeclaredEntries.optional(),
-});
+const ManifestSchema = z.object({ omp: z.unknown().optional(), pi: z.unknown().optional() });
 
 export class OmpExtensionsError extends OmpPublicError {}
 
@@ -76,50 +72,64 @@ async function indexIn(dir: string): Promise<string | null> {
 
 /**
  * OMP loads the entries a folder's package.json declares instead of its index file, under names
- * this scan cannot derive. Such a folder is left out, and so is one whose manifest is too large
- * to check, rather than listing a switch that would turn off nothing.
+ * this scan cannot derive. Such a folder is left out, and so is one whose manifest cannot be read
+ * safely (a link, a pipe, an oversize file), rather than listing a switch that would turn off
+ * nothing.
  */
 async function declaresExtensions(folder: string): Promise<boolean> {
   const path = join(folder, "package.json");
   const info = await lstat(path).catch(() => null);
-  if (!info?.isFile()) return false;
-  if (info.size > MAX_MANIFEST_BYTES) return true;
-  const text = await readFile(path, "utf8").catch(() => "");
+  if (!info) return false;
+  const text = info.isFile() ? await readRegularFile(path) : null;
+  if (text === null) return true;
   try {
     const manifest = ManifestSchema.safeParse(JSON.parse(text));
-    return manifest.success && (manifest.data.omp !== undefined || manifest.data.pi !== undefined);
+    // OMP reads `omp` when the manifest has it and `pi` otherwise.
+    const selected = manifest.success ? (manifest.data.omp ?? manifest.data.pi) : undefined;
+    return DeclaredEntries.safeParse(selected).success;
   } catch {
     return false;
   }
 }
 
-/** `extensions/<name>.ts|js` and `extensions/<name>/index.ts|js`, as OMP's native discovery. */
-async function extensionCandidates(root: string): Promise<Candidate[]> {
-  const dir = join(root, "extensions");
-  const found: Candidate[] = [];
-  for (const entry of await entriesOf(dir)) {
-    if (entry.isFile() && SCRIPT_SUFFIX.test(entry.name) && !DECLARATION.test(entry.name)) {
-      found.push({ name: entry.name.replace(SCRIPT_SUFFIX, ""), path: join(dir, entry.name) });
-    } else if (entry.isDirectory() && !(await declaresExtensions(join(dir, entry.name)))) {
-      const index = await indexIn(join(dir, entry.name));
-      if (index) found.push({ name: entry.name, path: index });
-    }
-  }
-  return found;
+function byNameThenTypeScript(a: Candidate, b: Candidate): number {
+  if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+  return Number(b.path.endsWith(".ts")) - Number(a.path.endsWith(".ts"));
 }
 
-/** `tools/<name>.<ts|js|sh|bash|py>` and `tools/<name>/index.ts`. */
-async function toolCandidates(root: string): Promise<Candidate[]> {
-  const dir = join(root, "tools");
-  const found: Candidate[] = [];
+/**
+ * `extensions/<name>.ts|js` and `extensions/<name>/index.ts|js`, as OMP's native discovery. OMP
+ * adds direct files before folder indexes and keeps the first of a name, so the order is the
+ * precedence. Of `a.js` and `a.ts` this scan prefers `.ts`.
+ */
+async function extensionCandidates(root: string): Promise<Candidate[]> {
+  const dir = join(root, "extensions");
+  const files: Candidate[] = [];
+  const folders: Candidate[] = [];
   for (const entry of await entriesOf(dir)) {
-    if (entry.isFile() && TOOL_SUFFIX.test(entry.name) && !DECLARATION.test(entry.name)) {
-      found.push({ name: entry.name.replace(TOOL_SUFFIX, ""), path: join(dir, entry.name) });
-    } else if (entry.isDirectory() && (await isRealFile(join(dir, entry.name, "index.ts")))) {
-      found.push({ name: entry.name, path: join(dir, entry.name, "index.ts") });
+    if (entry.isFile() && SCRIPT_SUFFIX.test(entry.name) && !DECLARATION.test(entry.name)) {
+      files.push({ name: entry.name.replace(SCRIPT_SUFFIX, ""), path: join(dir, entry.name) });
+    } else if (entry.isDirectory() && !(await declaresExtensions(join(dir, entry.name)))) {
+      const index = await indexIn(join(dir, entry.name));
+      if (index) folders.push({ name: entry.name, path: index });
     }
   }
-  return found;
+  return [...files.sort(byNameThenTypeScript), ...folders];
+}
+
+/** `tools/<name>.<ts|js|sh|bash|py>` and `tools/<name>/index.ts`; files first, as for extensions. */
+async function toolCandidates(root: string): Promise<Candidate[]> {
+  const dir = join(root, "tools");
+  const files: Candidate[] = [];
+  const folders: Candidate[] = [];
+  for (const entry of await entriesOf(dir)) {
+    if (entry.isFile() && TOOL_SUFFIX.test(entry.name) && !DECLARATION.test(entry.name)) {
+      files.push({ name: entry.name.replace(TOOL_SUFFIX, ""), path: join(dir, entry.name) });
+    } else if (entry.isDirectory() && (await isRealFile(join(dir, entry.name, "index.ts")))) {
+      folders.push({ name: entry.name, path: join(dir, entry.name, "index.ts") });
+    }
+  }
+  return [...files.sort(byNameThenTypeScript), ...folders];
 }
 
 function entryFor(
@@ -151,14 +161,11 @@ async function scanRoot(root: string, level: Level): Promise<Found[]> {
   for (const { name, path } of await toolCandidates(root)) {
     items.push(entryFor("tool", level, name, path, `tool:${name}`));
   }
-  // OMP keys extensions and tools by name, so of two same-named entries (`a.ts` and `a.js`) only
-  // one loads. Keep one row per id, preferring TypeScript as OMP does for index files.
+  // OMP keys extensions and tools by name, so of two same-named entries only the first loads;
+  // the candidates are already in OMP's order. Keep one row per id.
   const byId = new Map<string, Found>();
   for (const item of items) {
-    const kept = byId.get(item.id);
-    if (!kept || (item.path.endsWith(".ts") && !kept.path.endsWith(".ts"))) {
-      byId.set(item.id, item);
-    }
+    if (!byId.has(item.id)) byId.set(item.id, item);
   }
   return [...byId.values()];
 }

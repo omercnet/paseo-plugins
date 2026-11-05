@@ -61,12 +61,12 @@ describe("scanning the documented folders", () => {
     await file(join(agentDir, "extensions", "personal.js"));
     const items = await scanExtensions(project, agentDir);
     expect(items.map(({ kind, level, name, id }) => [kind, level, name, id])).toEqual([
-      ["extension", "project", "pack", "extension-module:pack"],
       ["extension", "project", "safety", "extension-module:safety"],
+      ["extension", "project", "pack", "extension-module:pack"],
       ["hook", "project", "pre/bash.ts", "hook:pre:bash:bash.ts"],
       ["hook", "project", "post/format.sh", "hook:post:format:format.sh"],
-      ["tool", "project", "deploy", "tool:deploy"],
       ["tool", "project", "lint", "tool:lint"],
+      ["tool", "project", "deploy", "tool:deploy"],
       ["extension", "user", "personal", "extension-module:personal"],
     ]);
   });
@@ -115,7 +115,7 @@ describe("scanning the documented folders", () => {
     expect(await scanExtensions(project, agentDir)).toEqual([]);
   });
 
-  test("two files with one name make one row, preferring TypeScript", async () => {
+  test("one row per name: a direct file beats a folder index, then TypeScript beats JavaScript", async () => {
     const ext = join(agentDir, "extensions");
     await file(join(ext, "dup.js"));
     await file(join(ext, "dup.ts"));
@@ -127,23 +127,43 @@ describe("scanning the documented folders", () => {
     const relativeToAgent = (path: string) => relative(agentDir, path).split(sep).join("/");
     expect(items.map(({ id, path }) => [id, relativeToAgent(path)])).toEqual([
       ["extension-module:dup", "extensions/dup.ts"],
-      ["extension-module:dup2", "extensions/dup2/index.ts"],
+      ["extension-module:dup2", "extensions/dup2.js"],
       ["tool:same", "tools/same.py"],
     ]);
   });
 
-  test("a folder whose package.json declares extensions is left out, one with a plain manifest is not", async () => {
+  test("a folder whose package.json OMP would read for entries is left out", async () => {
     const ext = join(agentDir, "extensions");
     await file(join(ext, "declared", "index.ts"));
     await file(join(ext, "declared", "package.json"), '{"omp":{"extensions":["./main.ts"]}}');
     await file(join(ext, "declared-pi", "index.ts"));
     await file(join(ext, "declared-pi", "package.json"), '{"pi":{"extensions":["./main.ts"]}}');
+    await file(join(ext, "both", "index.ts"));
+    await file(join(ext, "both", "package.json"), '{"omp":{"extensions":["./main.ts"]},"pi":{}}');
+    await file(join(ext, "oversize", "index.ts"));
+    await file(join(ext, "oversize", "package.json"), `{"name":"${"x".repeat(300_000)}"}`);
+    const outside = join(root, "outside");
+    await file(join(outside, "package.json"), '{"omp":{"extensions":["./main.ts"]}}');
+    await file(join(ext, "linked", "index.ts"));
+    await symlink(join(outside, "package.json"), join(ext, "linked", "package.json"));
+    expect(await scanExtensions(undefined, agentDir)).toEqual([]);
+  });
+
+  test("a folder with a plain, empty, broken or pi-only-after-omp manifest is listed", async () => {
+    const ext = join(agentDir, "extensions");
     await file(join(ext, "plain", "index.ts"));
-    await file(join(ext, "plain", "package.json"), '{"name":"plain","omp":{"extensions":[]}}');
+    await file(join(ext, "plain", "package.json"), '{"name":"plain"}');
+    await file(join(ext, "empty", "index.ts"));
+    await file(join(ext, "empty", "package.json"), '{"omp":{"extensions":[]}}');
     await file(join(ext, "broken", "index.ts"));
     await file(join(ext, "broken", "package.json"), "{ not json");
+    await file(join(ext, "omp-first", "index.ts"));
+    await file(
+      join(ext, "omp-first", "package.json"),
+      '{"omp":{},"pi":{"extensions":["./main.ts"]}}',
+    );
     const items = await scanExtensions(undefined, agentDir);
-    expect(items.map((item) => item.name)).toEqual(["broken", "plain"]);
+    expect(items.map((item) => item.name)).toEqual(["broken", "empty", "omp-first", "plain"]);
   });
 
   test("a symlinked index file or hook file is not listed", async () => {

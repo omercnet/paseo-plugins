@@ -21,7 +21,7 @@ const KILL_GRACE_MS = 1_000;
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_RULES = 500;
 const MAX_RULE_FILES = 200;
-const MAX_RULE_FILE_BYTES = 256 * 1024;
+const MAX_FILE_BYTES = 256 * 1024;
 const MAX_TEXT_CHARS = 2_000;
 const MAX_LIST_ENTRIES = 50;
 
@@ -139,8 +139,8 @@ export async function readSetting<T>(
   return parsed.data.value;
 }
 
-/** Reads a regular file without following a symlink, or returns null. */
-async function readRuleFile(path: string): Promise<string | null> {
+/** Reads a small regular file without following a symlink or blocking on a pipe, or returns null. */
+export async function readRegularFile(path: string): Promise<string | null> {
   let handle: FileHandle | undefined;
   try {
     // O_NOFOLLOW does not exist on Windows, so reject a symlink before opening it too.
@@ -151,9 +151,9 @@ async function readRuleFile(path: string): Promise<string | null> {
     );
     const info = await handle.stat();
     if (!info.isFile()) return null;
-    const buffer = Buffer.alloc(MAX_RULE_FILE_BYTES + 1);
+    const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > MAX_RULE_FILE_BYTES) return null;
+    if (bytesRead > MAX_FILE_BYTES) return null;
     return buffer.toString("utf8", 0, bytesRead);
   } catch {
     return null;
@@ -327,7 +327,7 @@ export async function readPromptRules(
   const rules: OmpRule[] = [];
   for (const file of await ruleFiles(cwd)) {
     if (seen.has(file.name)) continue;
-    const text = await readRuleFile(file.path);
+    const text = await readRegularFile(file.path);
     // OMP drops an empty RULES.md and an `enabled: false` file before the first-wins check.
     if (text === null || (file.sticky && text.trim() === "")) continue;
     const meta = frontmatter(text);
