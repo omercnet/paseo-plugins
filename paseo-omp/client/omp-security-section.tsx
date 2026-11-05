@@ -69,6 +69,11 @@ export function OmpSecuritySection({
       {list?.status === "ready" && list.scans.length === 0 ? (
         <Text style={styles.muted}>No scans are stored for this project</Text>
       ) : null}
+      {list?.status === "ready" && list.skipped > 0 ? (
+        <Text style={styles.muted}>
+          {`${list.skipped} ${list.skipped === 1 ? "entry" : "entries"} in OMP's scan list could not be read`}
+        </Text>
+      ) : null}
       {list?.status === "ready" && list.scans.length > 0 ? (
         <SettingsSection title="Scans">
           <SettingsCard>

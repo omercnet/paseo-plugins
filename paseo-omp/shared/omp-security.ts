@@ -33,6 +33,8 @@ export const OmpSecurityListSchema = z.discriminatedUnion("status", [
     scans: z.array(OmpSecurityScanSchema),
     /** More scans are stored than are listed. */
     truncated: z.boolean(),
+    /** Lines of OMP's scan list the plugin could not read or that repeated an id. */
+    skipped: z.number().int().nonnegative(),
   }),
   /** `security.enabled` is false, so OMP refuses to read its security resources. */
   z.object({ status: z.literal("off") }),
