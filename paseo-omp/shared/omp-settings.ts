@@ -190,6 +190,7 @@ export type OmpSetting = z.infer<typeof OmpSettingSchema>;
 export const OMP_SETTING_CATEGORIES = [
   "appearance",
   "model",
+  "budget",
   "interaction",
   "context",
   "memory",
@@ -244,6 +245,7 @@ const CATEGORY_PREFIXES: Readonly<Record<OmpSettingCategory, readonly string[]>>
     "prewalk.",
     "tier.",
   ],
+  budget: ["session.warnCost", "session.maxCost"],
   interaction: [
     "autoResume",
     "power.",
@@ -324,6 +326,14 @@ export function formatOmpSettingLabel(path: string): string {
     .trim();
   return words ? `${words[0]?.toUpperCase() ?? ""}${words.slice(1)}` : path;
 }
+
+/** OMP ships these without a description; unset means no cap. */
+export const OMP_SETTING_FALLBACK_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  "session.warnCost":
+    "Warn once when a session's spend reaches this many US dollars. Leave unset for no warning. Applies to every session, including subagents, and takes effect on the next request.",
+  "session.maxCost":
+    "Stop a session from sending new model requests once its spend reaches this many US dollars. Leave unset for no limit. Requests already in flight can finish past the limit; raise or reset the value to continue.",
+};
 
 export const listOmpSettings = defineRpc({
   name: "paseo-omp.list-settings",

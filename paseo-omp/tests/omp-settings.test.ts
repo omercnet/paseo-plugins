@@ -77,6 +77,27 @@ describe("OMP settings inventory", () => {
     expect(categorizeOmpSetting("setupVersion")).toBe("general");
   });
 
+  test("groups the spending cap fields into their own Budget category", () => {
+    expect(categorizeOmpSetting("session.warnCost")).toBe("budget");
+    expect(categorizeOmpSetting("session.maxCost")).toBe("budget");
+  });
+
+  test("describes the cap fields OMP lists without text, and keeps OMP's own text otherwise", () => {
+    const catalog = parseOmpSettingsList({
+      "session.maxCost": { type: "number", description: "" },
+      "session.warnCost": { type: "number", description: "From OMP" },
+    });
+
+    const [maxCost, warnCost] = catalog.settings;
+    expect(maxCost).toEqual({
+      path: "session.maxCost",
+      type: "number",
+      description: expect.stringContaining("Stop a session"),
+    });
+    expect(maxCost && "value" in maxCost ? maxCost.value : undefined).toBeUndefined();
+    expect(warnCost?.description).toBe("From OMP");
+  });
+
   test("formats dotted camel-case paths as readable labels", () => {
     expect(formatOmpSettingLabel("providers.streamIdleTimeoutSeconds")).toBe(
       "Stream Idle Timeout Seconds",

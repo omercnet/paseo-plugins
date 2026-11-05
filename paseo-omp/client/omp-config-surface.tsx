@@ -595,6 +595,7 @@ function SupportDiagnosticsSection({
 const CATEGORY_LABELS: Record<OmpSettingCategory, string> = {
   appearance: "Appearance",
   model: "Model",
+  budget: "Budget",
   interaction: "Interaction",
   context: "Context",
   memory: "Memory",
@@ -763,7 +764,8 @@ function EditableScalarValue({
           accessibilityLabel={`Edit ${formatOmpSettingLabel(setting.path)}`}
           editable={!disabled}
           keyboardType={setting.type === "number" ? "numeric" : "default"}
-          value={value === undefined ? "" : String(value)}
+          placeholder="Not set"
+          value={value === undefined || value === null ? "" : String(value)}
           onChangeText={onSet}
           style={styles.scalarInput}
         />
