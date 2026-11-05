@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { z } from "zod";
-import type { downloadOmpLocalModel, listOmpLocalModels } from "../shared/omp-local-models";
+import {
+  type downloadOmpLocalModel,
+  type listOmpLocalModels,
+  OmpLocalModelKeySchema,
+} from "../shared/omp-local-models";
 import { resolveOmpExecutable } from "./omp-settings";
 import { currentOmpEnvironment, ompAgentDir, ompCacheDir } from "./paths";
 import {
@@ -129,18 +133,20 @@ export async function listOmpLocalModelsWithDependencies(
   const listed = executable ? await listModels(executable, dependencies) : null;
   if (!listed) return { available: false, models: [] };
   const models = await Promise.all(
-    listed.map(async (model) => {
-      const job = jobs.get(jobKey(model.key));
-      return {
-        key: model.key,
-        label: model.label,
-        description: model.description,
-        sizeMb: sizeFrom(model.description),
-        downloaded: await dependencies.isCached(model.repo),
-        download: job?.state ?? ("idle" as const),
-        error: job?.error ?? null,
-      };
-    }),
+    listed
+      .filter((model) => OmpLocalModelKeySchema.safeParse(model.key).success)
+      .map(async (model) => {
+        const job = jobs.get(jobKey(model.key));
+        return {
+          key: model.key,
+          label: model.label,
+          description: model.description,
+          sizeMb: sizeFrom(model.description),
+          downloaded: await dependencies.isCached(model.repo),
+          download: job?.state ?? ("idle" as const),
+          error: job?.error ?? null,
+        };
+      }),
   );
   return { available: true, models };
 }

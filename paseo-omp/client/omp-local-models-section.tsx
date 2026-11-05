@@ -8,7 +8,7 @@ import {
   type OmpLocalModel,
   withLocalModelRole,
 } from "../shared/omp-local-models";
-import { updateOmpSettings } from "../shared/omp-settings";
+import { type OmpSettingsCatalog, updateOmpSettings } from "../shared/omp-settings";
 import type { OmpStore } from "../shared/omp-store";
 import type { OmpConfigStyles } from "./omp-config-styles";
 import { ompStoreKey } from "./omp-store-state";
@@ -73,7 +73,7 @@ export function OmpLocalModelsSection({
   settingsRevision: string | undefined;
   /** Unapplied edits to modelRoles would be overwritten by a role assignment made here. */
   rolesPending: boolean;
-  onRolesChanged(): void;
+  onRolesChanged(catalog: OmpSettingsCatalog | undefined): void;
 }) {
   const list = useRpc(listOmpLocalModels);
   const download = useRpc(downloadOmpLocalModel);
@@ -103,7 +103,8 @@ export function OmpLocalModelsSection({
       });
       return update(input);
     },
-    onSettled: onRolesChanged,
+    onSuccess: (result) => onRolesChanged(result.catalog),
+    onError: () => onRolesChanged(undefined),
   });
 
   const busy = models.data?.models.some((model) => model.download === "running") === true;
@@ -127,7 +128,7 @@ export function OmpLocalModelsSection({
           if the local model fails, the session stays untitled. The first download can also install
           OMP's inference runtime, so it may take longer and use more disk than the model size.
         </Text>
-        {models.data && !models.data.available ? (
+        {models.error || (models.data && !models.data.available) ? (
           <Text style={styles.error}>OMP could not list its local models.</Text>
         ) : null}
         {start.error ? <Text style={styles.error}>Could not start the download.</Text> : null}

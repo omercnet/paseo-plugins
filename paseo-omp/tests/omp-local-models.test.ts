@@ -76,6 +76,26 @@ describe("OMP local models", () => {
     ]);
   });
 
+  test("leaves out a model whose key the plugin would not pass on instead of failing the list", async () => {
+    const { dependencies } = harness();
+    const odd = {
+      ...dependencies,
+      run: async () =>
+        finished(
+          JSON.stringify({
+            models: [
+              { key: "bad key;rm", repo: "org/x", label: "Bad", description: "" },
+              { key: "ok-model", repo: "org/y", label: "Ok", description: "" },
+            ],
+          }),
+        ),
+    };
+
+    const listed = await listOmpLocalModelsWithDependencies(odd);
+
+    expect(listed.models.map((model) => model.key)).toEqual(["ok-model"]);
+  });
+
   test("reports unavailable when OMP cannot list or prints something else", async () => {
     const { dependencies } = harness();
     const broken = { ...dependencies, run: async () => finished("not json") };

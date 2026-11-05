@@ -1641,7 +1641,8 @@ function OmpConfigContent({
               modelRoles={savedModelRoles}
               settingsRevision={settingsQuery.data?.revision}
               rolesPending={drafts.modelRoles !== undefined}
-              onRolesChanged={() => {
+              onRolesChanged={(catalog) => {
+                if (catalog) queryClient.setQueryData(settingsQueryKey, catalog);
                 void queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
                 void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "config"] });
               }}
