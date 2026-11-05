@@ -18,7 +18,6 @@ import {
   discoverOmpProfiles,
 } from "../server/provider/profile-providers";
 import { resolveListOmpQuotas } from "../server/quota";
-import { resolveListOmpSessions } from "../server/sessions";
 import { OmpProfileNameSchema, OmpStoreSchema, storeForProvider } from "../shared/omp-store";
 
 const directories: string[] = [];
@@ -110,12 +109,6 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
         ")",
     );
     quota.close();
-    const sessions = join(data, "sessions", "-workspace");
-    await mkdir(sessions, { recursive: true });
-    await writeFile(
-      join(sessions, "2026-01-01T00-00-00-000Z_session_migrated.jsonl"),
-      `${JSON.stringify({ type: "session", version: 3, id: "session_migrated", cwd: "/workspace" })}\n${JSON.stringify({ type: "message", message: { role: "user", content: "migrated" } })}\n`,
-    );
     const memory = new DatabaseSync(join(bank, "mnemopi.db"));
     memory.exec(
       "CREATE TABLE facts (fact_id TEXT, subject TEXT, predicate TEXT, object TEXT, confidence REAL, timestamp TEXT, created_at TEXT); INSERT INTO facts VALUES ('1', 'fixture', 'profile', 'migrated', 1, '2026-01-01', '2026-01-01')",
@@ -129,9 +122,6 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
     await withOmpStore({ profile: "work" }, async () => {
       expect((await resolveListOmpConfig({})).config?.theme?.dark).toBe("migrated");
       expect(resolveListOmpQuotas({}).quotas[0]?.provider).toBe("migrated");
-      expect((await resolveListOmpSessions({ cwd: "/workspace" })).sessions[0]?.prompt).toBe(
-        "migrated",
-      );
       expect((await resolveListOmpMemory({ cwd: "/workspace" })).facts[0]?.object).toBe("migrated");
       expect(ompSessionDir()).toBe(join(data, "sessions"));
     });

@@ -30,7 +30,6 @@ import {
   quotaSummaryForProvider,
 } from "./client/quota-state";
 import { OmpRuleNoticeRow } from "./client/rule-notice";
-import { SessionsPopover } from "./client/sessions-popover";
 import {
   CONFIG_SCREEN_ID,
   configParamsFromStore,
@@ -72,7 +71,6 @@ type PillEntry = {
   quotaSeverity: QuotaSeverity;
   hub?: PluginButtonRegistration;
   memory?: PluginButtonRegistration;
-  sessions?: PluginButtonRegistration;
   quota?: PluginButtonRegistration;
   mcp?: PluginButtonRegistration;
 };
@@ -85,7 +83,6 @@ function samePillSettings(
     left?.mcp === right.mcp &&
     left.hub === right.hub &&
     left.memory === right.memory &&
-    left.sessions === right.sessions &&
     left.quota === right.quota
   );
 }
@@ -93,7 +90,6 @@ function samePillSettings(
 function removePills(entry: PillEntry): void {
   entry.hub?.remove();
   entry.memory?.remove();
-  entry.sessions?.remove();
   entry.quota?.remove();
   entry.mcp?.remove();
 }
@@ -319,23 +315,6 @@ export default function contribute(client: PluginClientContext) {
     } else {
       entry.memory?.remove();
       entry.memory = undefined;
-    }
-
-    if (settings.sessions) {
-      entry.sessions ??= client.addComposerPill({
-        id: "sessions",
-        workspaceId: entry.workspaceId,
-        agentId: agent.id,
-        button: {
-          title: "OMP session history",
-          icon: "History",
-          label: "Sessions",
-          behavior: { kind: "popover", Content: SessionsPopover },
-        },
-      });
-    } else {
-      entry.sessions?.remove();
-      entry.sessions = undefined;
     }
 
     if (settings.quota) {

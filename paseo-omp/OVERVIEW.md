@@ -9,7 +9,7 @@ OMP adds an agent provider for the OMP coding agent, plus an OMP sidebar and wor
 ## What the sidebar and panel do
 
 - Edit OMP settings and project configuration for the default store or a named profile.
-- Manage OMP's own plugins, and view quota history, memory, hub processes, session history and a support report.
+- Manage OMP's own plugins, and view quota history, memory, hub processes and a support report.
 - List the logins in OMP's own credential store, add or sign one out, spend a banked reset, and steer how OMP balances agents across them, from the **Accounts** tab.
 - List the MCP servers OMP connects to, add, test, enable, disable or remove them, and authorize a remote server through your browser, from the **MCPs** tab.
 - An **MCP** composer control runs OMP's MCP management in the current session, with authorization prompts shown in the chat.

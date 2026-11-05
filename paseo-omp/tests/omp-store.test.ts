@@ -18,7 +18,6 @@ import {
 } from "../server/paths";
 import { buildStatefulCommandEnv } from "../server/provider-diagnostics";
 import { resolveListOmpQuotas } from "../server/quota";
-import { resolveListOmpSessions } from "../server/sessions";
 import { OmpStoreSchema } from "../shared/omp-store";
 
 const temporaryDirectories: string[] = [];
@@ -34,12 +33,6 @@ async function fixture(name: string) {
   temporaryDirectories.push(root);
   await writeFile(join(root, "config.yml"), `theme:\n  dark: ${name}\n`);
   await writeFile(join(root, "settings.json"), JSON.stringify({ sessionDir: `sessions-${name}` }));
-  const sessions = join(root, `sessions-${name}`, "-workspace");
-  await mkdir(sessions, { recursive: true });
-  await writeFile(
-    join(sessions, `2026-01-01T00-00-00-000Z_session_${name}.jsonl`),
-    `${JSON.stringify({ type: "session", version: 3, id: `session_${name}`, cwd: "/workspace" })}\n${JSON.stringify({ type: "message", message: { role: "user", content: name } })}\n`,
-  );
   const quota = new DatabaseSync(join(root, "agent.db"));
   quota.exec(
     "CREATE TABLE usage_history (id INTEGER, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER)",
@@ -65,7 +58,7 @@ async function fixture(name: string) {
   return root;
 }
 
-test("concurrent store scopes isolate config, history, quota, memory and session paths", async () => {
+test("concurrent store scopes isolate config, quota, memory and session paths", async () => {
   const roots = await Promise.all([fixture("alpha"), fixture("beta")]);
   vi.stubEnv("PASEO_OMP_AGENT_DIR", "/daemon-default-must-not-be-read");
   vi.stubEnv("OMP_SESSION_DIR", "/daemon-session-must-not-be-read");
@@ -74,12 +67,10 @@ test("concurrent store scopes isolate config, history, quota, memory and session
       withOmpStore({ agentDir }, async () => {
         await new Promise((resolve) => setTimeout(resolve, index === 0 ? 8 : 1));
         const config = await resolveListOmpConfig({});
-        const history = await resolveListOmpSessions({ cwd: "/workspace" });
         const quota = resolveListOmpQuotas({});
         const memory = await resolveListOmpMemory({ cwd: "/workspace" });
         return {
           config: config.config?.theme?.dark,
-          history: history.sessions[0]?.prompt,
           quota: quota.quotas[0]?.provider,
           memory: memory.facts[0]?.object,
           sessionRoot: ompSessionDir(),
@@ -91,7 +82,6 @@ test("concurrent store scopes isolate config, history, quota, memory and session
   for (const [index, name] of ["alpha", "beta"].entries()) {
     expect(results[index]).toEqual({
       config: name,
-      history: name,
       quota: name,
       memory: name,
       sessionRoot: join(roots[index] ?? "missing-fixture", `sessions-${name}`),
@@ -237,9 +227,6 @@ test("registered RPC handlers carry store selection across asynchronous resolver
       const input = { store: { agentDir }, cwd: "/workspace" };
       expect(await handlers.get("paseo-omp.list-quotas")?.(input)).toEqual({
         quotas: [expect.objectContaining({ provider: name })],
-      });
-      expect(await handlers.get("paseo-omp.list-sessions")?.(input)).toEqual({
-        sessions: [expect.objectContaining({ prompt: name })],
       });
       expect(await handlers.get("paseo-omp.list-memory")?.(input)).toEqual(
         expect.objectContaining({ facts: [expect.objectContaining({ object: name })] }),

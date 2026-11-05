@@ -32,7 +32,6 @@ import { OmpSessionLimit } from "./server/provider/session-limit";
 import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
 import { resolveListOmpQuotas } from "./server/quota";
 import { registerOmpRuleNotices } from "./server/rule-notices";
-import { resolveListOmpSessions } from "./server/sessions";
 import {
   OmpSubagentControlRegistry,
   resolveCancelOmpSubagent,
@@ -75,7 +74,6 @@ import { getOmpProviderHealth } from "./shared/provider-diagnostics";
 import { getOmpImage } from "./shared/provider-image";
 import { providerLaunchSettings } from "./shared/provider-launch-settings";
 import { listOmpQuotas } from "./shared/quota";
-import { listOmpSessions } from "./shared/sessions";
 import { cancelOmpSubagent, steerOmpSubagent } from "./shared/subagents";
 import { getOmpSupportReport } from "./shared/support-diagnostics";
 
@@ -185,7 +183,6 @@ export default function contribute(server: PluginServerContext) {
     scoped(({ authId }) => mcps.cancelAuth(authId)),
   );
   server.handle(listOmpMemory, scoped(resolveListOmpMemory));
-  server.handle(listOmpSessions, scoped(resolveListOmpSessions));
   server.handle(listOmpConfig, scoped(resolveListOmpConfig));
   server.handle(listOmpModels, scoped(resolveListOmpModels));
   server.handle(listOmpPlugins, scoped(resolveListOmpPlugins));
