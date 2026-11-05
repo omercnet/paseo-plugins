@@ -1157,6 +1157,7 @@ function OmpConfigContent({
   onStoreChange,
   storeInHistory = false,
   onComposerPillSettingsChange,
+  focusRule,
 }: PluginSurfaceProps & {
   cwd?: string;
   store?: OmpStore;
@@ -1164,6 +1165,8 @@ function OmpConfigContent({
   /** True when each store selection is a separate history entry (0.11 screen params). */
   storeInHistory?: boolean;
   onComposerPillSettingsChange?: (settings: ComposerPillSettings) => void;
+  /** A rule to open the Rules tab on, from a rule-fired link. */
+  focusRule?: string;
 }) {
   const loadConfig = useRpc(listOmpConfig);
   const loadSettings = useRpc(listOmpSettings);
@@ -1201,7 +1204,7 @@ function OmpConfigContent({
       ? { error: "Could not list every OMP agent. Typed names remain available." }
       : {}),
   };
-  const [view, setView] = useState<SurfaceView>("overview");
+  const [view, setView] = useState<SurfaceView>(focusRule ? "rules" : "overview");
   const [activeCategory, setActiveCategory] = useState<OmpSettingCategory>("appearance");
   const [search, setSearch] = useState("");
   const [drafts, setDrafts] = useState<Record<string, SettingDraft>>({});
@@ -1419,7 +1422,13 @@ function OmpConfigContent({
         <OmpPluginManagerSection theme={theme} compact={layout.compact} cwd={cwd} store={store} />
       ) : null}
       {view === "rules" ? (
-        <OmpRulesSection theme={theme} styles={styles} cwd={cwd} store={store} />
+        <OmpRulesSection
+          theme={theme}
+          styles={styles}
+          cwd={cwd}
+          store={store}
+          focusRule={focusRule}
+        />
       ) : null}
       {view === "skills" ? (
         <OmpSkillsSection theme={theme} styles={styles} cwd={cwd} store={store} />
@@ -1668,6 +1677,7 @@ function OmpStoreContent(
   props: PluginSurfaceProps & {
     cwd?: string;
     onComposerPillSettingsChange?: (settings: ComposerPillSettings) => void;
+    focusRule?: string;
     /** Controlled selection (0.11 screen params); omitted, the surface keeps local state. */
     store?: OmpStore;
     onStoreChange?: (store: OmpStore | undefined) => void;
@@ -1694,6 +1704,7 @@ export function OmpConfigSurface(
     onComposerPillSettingsChange: (settings: ComposerPillSettings) => void;
     store?: OmpStore;
     onStoreChange?: (store: OmpStore | undefined) => void;
+    focusRule?: string;
   },
 ) {
   return <OmpStoreContent {...props} />;

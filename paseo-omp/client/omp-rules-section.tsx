@@ -169,11 +169,14 @@ export function OmpRulesSection({
   styles,
   cwd,
   store,
+  focusRule,
 }: {
   theme: Theme;
   styles: OmpConfigStyles;
   cwd?: string;
   store?: OmpStore;
+  /** The rule a "fired" link opened this tab for, shown first. */
+  focusRule?: string;
 }) {
   const loadRules = useRpc(listOmpRules);
   const setEnabled = useRpc(setOmpRuleEnabled);
@@ -198,6 +201,12 @@ export function OmpRulesSection({
     toggle: (name, enabled) => toggle.mutate({ name, enabled }),
   };
   const list = rules.data;
+  const focused =
+    list?.status === "ready" ? list.rules.find((rule) => rule.name === focusRule) : undefined;
+  const focusNote =
+    list?.status === "ready" && list.disabled.includes(focusRule ?? "")
+      ? "This rule is turned off. Switch it on under Turned off below."
+      : "This rule is not in this scope. It may come from a project's .omp folder, so look in that workspace's OMP tab.";
   return (
     <>
       <View style={styles.sectionHeader}>
@@ -213,6 +222,18 @@ export function OmpRulesSection({
         </Text>
         <Text style={styles.muted}>Rule settings (ttsr.*) are in the Configuration tab.</Text>
       </View>
+      {focusRule && list?.status === "ready" ? (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Rule that fired</Text>
+          {focused ? (
+            <RuleRow styles={styles} rule={focused} rules={rulesSwitch} />
+          ) : (
+            <Text style={styles.muted}>
+              {focusRule}. {focusNote}
+            </Text>
+          )}
+        </View>
+      ) : null}
       <OmpRuleTest theme={theme} styles={styles} cwd={cwd} store={store} />
       {rules.isLoading ? <Text style={styles.muted}>Loading rules...</Text> : null}
       {rules.error ? (

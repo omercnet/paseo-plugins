@@ -1,9 +1,13 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import type { OmpRuleNotice } from "../shared/rule-notices";
 
-export function OmpRuleNoticeRow({ item, theme }: PluginTimelineItemProps<OmpRuleNotice>) {
+export function OmpRuleNoticeRow({
+  item,
+  theme,
+  openRule,
+}: PluginTimelineItemProps<OmpRuleNotice> & { openRule(name: string): void }) {
   const color = theme.colors.foregroundMuted;
   return (
     <View style={{ gap: 2, paddingVertical: 2 }}>
@@ -15,6 +19,13 @@ export function OmpRuleNoticeRow({ item, theme }: PluginTimelineItemProps<OmpRul
               ? `OMP rule ${rule.name} fired`
               : `OMP rule ${rule.name} fired on “${rule.matched}”`}
           </Text>
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel={`Open rule ${rule.name} in OMP settings`}
+            onPress={() => openRule(rule.name)}
+          >
+            <Text style={{ color: theme.colors.accent, fontSize: 13 }}>View rule</Text>
+          </Pressable>
         </View>
       ))}
     </View>
