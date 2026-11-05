@@ -44,7 +44,7 @@ export function parseOmpAstEdit(text: string): OmpAstEdit | undefined {
   const directories: string[] = [];
   let current: FileChanges | undefined;
   let removed: { line: number; before: string } | undefined;
-  for (const line of text.split("\n")) {
+  for (const line of text.split(/\r?\n/u)) {
     if (line.trim() === "" || PROPOSAL.test(line)) continue;
     const change = CHANGE.exec(line);
     if (change) {
@@ -85,21 +85,36 @@ export function parseOmpAstEdit(text: string): OmpAstEdit | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+const textBlockSchema = z.looseObject({ type: z.string(), text: z.string().optional() });
 const astEditRowSchema = z.object({
   name: z.literal("ast_edit"),
   callId: z.string(),
   status: z.literal("completed"),
-  detail: z.object({ type: z.literal("plain_text"), text: z.string() }),
+  detail: z.union([
+    z.object({ type: z.literal("plain_text"), text: z.string() }),
+    z.object({
+      type: z.literal("unknown"),
+      output: z.looseObject({ content: z.array(textBlockSchema) }),
+    }),
+  ]),
 });
 
 /**
  * Replaces a completed built-in `ast_edit` row with a read-only diff card. The built-in provider
- * passes only the result text, so a row whose text does not parse stays as is.
+ * passes only the result text (as a plain text row, or as the raw result for an unmapped tool), so
+ * a row whose text does not parse stays as is.
  */
 export function transformOmpAstEditItem(item: unknown) {
   const row = astEditRowSchema.safeParse(item);
   if (!row.success) return undefined;
-  const data = parseOmpAstEdit(row.data.detail.text);
+  const { detail } = row.data;
+  const text =
+    detail.type === "plain_text"
+      ? detail.text
+      : detail.output.content
+          .flatMap((block) => (block.text === undefined ? [] : [block.text]))
+          .join("\n");
+  const data = parseOmpAstEdit(text);
   if (!data) return undefined;
   return {
     items: [

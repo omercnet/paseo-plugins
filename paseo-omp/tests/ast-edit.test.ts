@@ -65,6 +65,24 @@ describe("OMP ast_edit preview", () => {
     expect(parsed?.files[0]?.changes).toEqual([{ line: 2, before: "debugger;", after: "" }]);
   });
 
+  test("keeps a before-text that starts with digits and a space, and a # in the path", () => {
+    const parsed = parseOmpAstEdit(`${PROPOSAL}\n\n[a#b.ts#387A]\n-2:5 foo\n+2:5 bar`);
+    expect(parsed?.files).toEqual([
+      { path: "a#b.ts", changes: [{ line: 2, before: "5 foo", after: "5 bar" }] },
+    ]);
+  });
+
+  test("rebuilds paths nested more than one directory deep", () => {
+    const parsed = parseOmpAstEdit(
+      `${PROPOSAL}\n\n# a/\n## b/\n### c.ts#AB12 (1 replacement)\n-1:x\n+1:y\n## d.ts#CD34 (1 replacement)\n-2:x\n+2:y`,
+    );
+    expect(parsed?.files.map((file) => file.path)).toEqual(["a/b/c.ts", "a/d.ts"]);
+  });
+
+  test("parses CRLF output", () => {
+    expect(parseOmpAstEdit(SINGLE.replaceAll("\n", "\r\n"))?.files[0]?.changes).toHaveLength(2);
+  });
+
   test.each([
     ["no matches", "No replacements made"],
     ["plain line and column mode", `${PROPOSAL}\n\n[a.ts]\n-2:5 foo(1, 2)\n+2:5 bar(2, 1)`],
@@ -87,6 +105,17 @@ describe("OMP ast_edit preview", () => {
       version: 1,
     });
     expect(ompAstEditSchema.safeParse(result?.items[0]?.data).success).toBe(true);
+  });
+
+  test("also reads the result of a row the provider left unmapped", () => {
+    const row = astEditRow(undefined, {
+      detail: {
+        type: "unknown",
+        input: {},
+        output: { content: [{ type: "text", text: SINGLE }], details: { success: true } },
+      },
+    });
+    expect(transformOmpAstEditItem(row)?.items[0]?.kind).toBe("omp-ast-edit");
   });
 
   test.each([
