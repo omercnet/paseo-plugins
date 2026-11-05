@@ -96,8 +96,9 @@ export async function resolveReadOmpToolConfig(
 }
 
 async function writeToolConfig(input: WriteInput): Promise<RpcOutput<typeof writeOmpToolConfig>> {
+  const text = input.text.endsWith("\n") ? input.text : `${input.text}\n`;
   const errors = validateOmpToolConfig(input.kind, input.text);
-  if (Buffer.byteLength(input.text) > MAX_TOOL_CONFIG_BYTES) {
+  if (Buffer.byteLength(text) > MAX_TOOL_CONFIG_BYTES) {
     errors.push("The file is larger than 256 KiB, which this editor will not open again.");
   }
   if (errors.length > 0)
@@ -110,7 +111,6 @@ async function writeToolConfig(input: WriteInput): Promise<RpcOutput<typeof writ
     return { outcome: "conflict", errors: [], warnings: [], revision: revisionOf(snapshot) };
   }
 
-  const text = input.text.endsWith("\n") ? input.text : `${input.text}\n`;
   await mkdir(directory, { recursive: true });
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
   try {

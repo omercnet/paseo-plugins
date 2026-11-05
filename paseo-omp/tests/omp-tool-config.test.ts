@@ -31,9 +31,9 @@ describe("validating lsp.json and dap.json before they are written", () => {
     expect(validateOmpToolConfig("lsp", JSON.stringify({ idleTimeoutMs: "soon" }))).toEqual([
       expect.stringContaining("idleTimeoutMs"),
     ]);
-    expect(validateOmpToolConfig("dap", JSON.stringify({ adapters: { a: {} } }))).toEqual([
-      expect.stringContaining("a.command"),
-    ]);
+    expect(
+      validateOmpToolConfig("dap", JSON.stringify({ adapters: { a: { command: 3 } } })),
+    ).toEqual([expect.stringContaining("a.command")]);
     expect(
       validateOmpToolConfig(
         "dap",
@@ -78,6 +78,11 @@ describe("definitions OMP would drop", () => {
     expect(
       warnOmpToolConfig("dap", JSON.stringify({ adapters: { mine: { command: "d" } } })),
     ).toEqual([]);
+    const dap = (value: unknown) => warnOmpToolConfig("dap", JSON.stringify(value));
+    expect(dap({ adapters: { gdb: { args: ["-i", "dap"] } } })).toEqual([]);
+    expect(dap({ adapters: { mine: { args: ["x"] } } })).toEqual([
+      expect.stringContaining("mine is not a built-in adapter"),
+    ]);
   });
 });
 

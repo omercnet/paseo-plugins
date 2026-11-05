@@ -33,7 +33,7 @@ const LspServerSchema = z
   );
 
 const DapAdapterSchema = z.looseObject({
-  command: z.string().min(1),
+  command: z.string().min(1).optional(),
   args: stringList.optional(),
   languages: stringList.optional(),
   fileTypes: stringList.optional(),
@@ -113,6 +113,24 @@ export function validateOmpToolConfig(kind: OmpToolConfigKind, text: string): st
   return errors;
 }
 
+/** The debug adapters OMP ships. An override of one inherits its command. */
+const BUILT_IN_DAP_ADAPTERS: ReadonlySet<string> = new Set([
+  "gdb",
+  "lldb-dap",
+  "codelldb",
+  "debugpy",
+  "dlv",
+  "js-debug-adapter",
+  "netcoredbg",
+  "kotlin-debug-adapter",
+  "rdbg",
+  "php-debug-adapter",
+  "bash-debug-adapter",
+  "dart-debug-adapter",
+  "flutter-debug-adapter",
+  "elixir-ls-debugger",
+]);
+
 /** The servers OMP ships. Any other name is a new definition, which OMP drops unless it is complete. */
 const BUILT_IN_LSP_SERVERS: ReadonlySet<string> = new Set([
   "rust-analyzer",
@@ -177,7 +195,6 @@ const BUILT_IN_LSP_SERVERS: ReadonlySet<string> = new Set([
  * command, file types and root markers (or extensionToLanguage, which supplies both).
  */
 export function warnOmpToolConfig(kind: OmpToolConfigKind, text: string): string[] {
-  if (kind !== "lsp") return [];
   let document: unknown;
   try {
     document = JSON.parse(text);
@@ -185,18 +202,27 @@ export function warnOmpToolConfig(kind: OmpToolConfigKind, text: string): string
     return [];
   }
   if (!isObject(document)) return [];
-  const { entries } = entriesOf(document, "servers", ["idleTimeoutMs"], false);
+  const lsp = kind === "lsp";
+  const { entries } = entriesOf(
+    document,
+    lsp ? "servers" : "adapters",
+    lsp ? ["idleTimeoutMs"] : [],
+    false,
+  );
+  const builtIn = lsp ? BUILT_IN_LSP_SERVERS : BUILT_IN_DAP_ADAPTERS;
   return Object.entries(entries).flatMap(([name, entry]) => {
-    if (BUILT_IN_LSP_SERVERS.has(name) || !isObject(entry)) return [];
+    if (builtIn.has(name) || !isObject(entry)) return [];
     const derived = "extensionToLanguage" in entry;
     const missing = [
       typeof entry.command === "string" && entry.command ? null : "command",
-      derived || Array.isArray(entry.fileTypes) ? null : "fileTypes",
-      derived || Array.isArray(entry.rootMarkers) ? null : "rootMarkers",
+      !lsp || derived || Array.isArray(entry.fileTypes) ? null : "fileTypes",
+      !lsp || derived || Array.isArray(entry.rootMarkers) ? null : "rootMarkers",
     ].filter((field) => field !== null);
     return missing.length === 0
       ? []
-      : [`${name} is not a built-in server, so OMP ignores it without ${missing.join(", ")}`];
+      : [
+          `${name} is not a built-in ${lsp ? "server" : "adapter"}, so OMP ignores it without ${missing.join(", ")}`,
+        ];
   });
 }
 
