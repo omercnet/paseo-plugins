@@ -296,6 +296,31 @@ describe("runBounded", () => {
     });
   });
 
+  test("discards stderr unless the caller opts in", async () => {
+    const child = new FakeChild();
+    queueMicrotask(() => {
+      child.stderr.emit("Warning: secret detail\n");
+      child.emitClose(0, null);
+    });
+
+    const result = await runBounded(() => child, "omp", ["models"], {}, 100, 20, 64);
+
+    expect(result.stderr).toBeUndefined();
+  });
+
+  test("keeps at most the requested bytes of stderr when the caller opts in", async () => {
+    const child = new FakeChild();
+    queueMicrotask(() => {
+      child.stderr.emit("0123456789");
+      child.stderr.emit("abcdefghij");
+      child.emitClose(0, null);
+    });
+
+    const result = await runBounded(() => child, "omp", ["models"], {}, 100, 20, 64, undefined, 12);
+
+    expect(result.stderr).toBe("0123456789ab");
+  });
+
   test("waits for tree cleanup after the timed-out leader closes", async () => {
     const child = new FakeChild();
     const cleanup = Promise.withResolvers<boolean>();

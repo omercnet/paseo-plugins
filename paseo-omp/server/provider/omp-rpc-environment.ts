@@ -200,7 +200,7 @@ function inheritedEnvironmentNames(inheritEnv: readonly string[] | undefined): R
   return names;
 }
 
-function buildOmpEnvironment(
+export function buildOmpEnvironment(
   sessionEnv: Readonly<Record<string, string>> | undefined,
   inheritEnv: readonly string[] | undefined,
   sourceEnv: NodeJS.ProcessEnv,

@@ -222,6 +222,8 @@ describe("plugin server bundle", () => {
             "paseo-omp.get-update-status",
             "paseo-omp.install-update",
             "paseo-omp.get-prompt-files",
+            "paseo-omp.get-models-file-status",
+            "paseo-omp.refresh-models",
           ]),
         );
         expect(settings).toEqual([
