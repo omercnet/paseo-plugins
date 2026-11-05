@@ -276,7 +276,7 @@ export function promptFileNotices(files: OmpPromptFiles): PromptFileNotice[] {
   if (files.appendSystemFile && files.hostAppendPrompt) {
     notices.push({
       file: "APPEND_SYSTEM.md",
-      text: "Paseo's Append system prompt is set, so agents on the built-in omp provider ignore this file.",
+      text: "Paseo's Append system prompt is set, so agents on the built-in omp provider and newly created agents on the omp-plugin provider ignore this file.",
     });
   }
   if (files.systemFile) {
