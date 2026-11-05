@@ -980,7 +980,7 @@ function OmpConfigContent({
       : fallbackSettingsFromConfig(configQuery.data?.config);
     const matching = sourceSettings.filter((setting) => {
       if (!normalizedSearch) return true;
-      return `${setting.path}\n${setting.description}`
+      return `${setting.path}\n${formatOmpSettingLabel(setting.path)}\n${setting.description}`
         .toLocaleLowerCase()
         .includes(normalizedSearch);
     });
