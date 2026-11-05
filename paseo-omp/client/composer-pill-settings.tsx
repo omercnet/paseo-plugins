@@ -36,11 +36,6 @@ const PILLS: readonly { key: ComposerPillKey; label: string; hint: string }[] = 
     hint: "Retained facts for the current workspace",
   },
   {
-    key: "sessions",
-    label: "Sessions",
-    hint: "Recent OMP prompts for the current workspace",
-  },
-  {
     key: "quota",
     label: "Quota",
     hint: "Provider quota usage when OMP has matching account data",

@@ -719,7 +719,6 @@ try {
   const rpcResults = await Promise.all([
     client.invokePluginRpc("paseo-omp", "paseo-omp.list-processes", { cwd }),
     client.invokePluginRpc("paseo-omp", "paseo-omp.list-memory", { cwd }),
-    client.invokePluginRpc("paseo-omp", "paseo-omp.list-sessions", { cwd }),
     client.invokePluginRpc("paseo-omp", "paseo-omp.list-config", {}),
     client.invokePluginRpc("paseo-omp", "paseo-omp.list-quotas", {}),
     client.invokePluginRpc("paseo-omp", "paseo-omp.get-provider-health", { force: true }),

@@ -15,7 +15,6 @@ vi.mock("../client/omp-config-surface", () => ({
 vi.mock("../client/provider-icon", () => ({ quotaProviderIcon: () => () => null }));
 vi.mock("../client/provider-image", () => ({ OmpImageTimeline: () => null }));
 vi.mock("../client/quota-popover", () => ({ QuotaPopover: () => null }));
-vi.mock("../client/sessions-popover", () => ({ SessionsPopover: () => null }));
 vi.mock("../client/subagents-strip", () => ({ OmpSubagentStrip: () => null }));
 vi.mock("../client/rule-notice", () => ({ OmpRuleNoticeRow: () => null }));
 
@@ -47,7 +46,7 @@ test("owned agent directory updates reconcile new agent pills and cached quota r
       return {
         status: "ready",
         revision: "revision-1",
-        values: { mcp: true, hub: true, memory: true, sessions: true, quota: true },
+        values: { mcp: true, hub: true, memory: true, quota: true },
       };
     }
     if (definition !== listOmpQuotas) return { processes: [] };
