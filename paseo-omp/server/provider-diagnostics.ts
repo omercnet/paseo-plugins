@@ -118,7 +118,7 @@ export type SpawnFn = (
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   cwd?: string,
-  /** Written to the child's stdin, which is closed afterwards. Without it stdin is ignored. */
+  /** Written to the child's stdin, which is closed afterwards. Without it stdin closes at once. */
   input?: string,
 ) => ProbeChildProcess;
 

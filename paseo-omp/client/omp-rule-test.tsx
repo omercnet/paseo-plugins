@@ -77,7 +77,7 @@ export function OmpRuleTest({
         <View style={styles.editorActions}>
           <Choice
             styles={styles}
-            label="Any source"
+            label="Auto"
             selected={!source}
             onPress={() => setSource(null)}
           />
