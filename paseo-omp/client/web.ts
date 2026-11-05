@@ -13,6 +13,7 @@ declare const URL: { createObjectURL(blob: Blob): string; revokeObjectURL(url: s
 export const canDownloadFiles = Platform.OS === "web";
 
 const BASE64_DATA_URI = /^data:([^;,]+);base64,(.*)$/su;
+const REVOKE_DELAY_MS = 60_000;
 
 /**
  * Saves a `data:` URI. Browsers refuse to download a data URL past about 2 MiB, so the bytes go
@@ -28,5 +29,6 @@ export function downloadDataUri(uri: string, fileName: string): void {
   link.href = objectUrl ?? uri;
   link.download = fileName;
   link.click();
-  if (objectUrl) setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  // Safari and Firefox can start the download after the click returns, so revoke late.
+  if (objectUrl) setTimeout(() => URL.revokeObjectURL(objectUrl), REVOKE_DELAY_MS);
 }
