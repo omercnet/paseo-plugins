@@ -233,7 +233,10 @@ export default function contribute(server: PluginServerContext) {
     withOmpStore(store, async () => readOmpPromptFiles(cwd, await readHostAppendPrompt(paseo))),
   );
   server.handle(getOmpModelsFileStatus, scoped(resolveGetOmpModelsFileStatus));
-  server.handle(refreshOmpModels, scoped(resolveRefreshOmpModels));
+  server.handle(
+    refreshOmpModels,
+    scoped(async (input) => resolveRefreshOmpModels(input, await resolveHostInheritEnv())),
+  );
   server.handle(getOmpUpdateStatus, resolveGetOmpUpdateStatus);
   server.handle(installOmpUpdate, resolveInstallOmpUpdate);
   server.handle(getOmpImage, (input) => resolveGetOmpImage(input, ompImageCache()));

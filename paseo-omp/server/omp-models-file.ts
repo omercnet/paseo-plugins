@@ -8,6 +8,7 @@ import type {
 import { SerialMutationQueue } from "./mutation-queue";
 import { resolveOmpExecutable } from "./omp-settings";
 import { currentOmpEnvironment } from "./paths";
+import { buildOmpEnvironment } from "./provider/omp-rpc-environment";
 import {
   type BoundedRun,
   buildStatefulCommandEnv,
@@ -29,18 +30,25 @@ export interface OmpModelsDependencies {
     args: readonly string[],
     timeoutMs: number,
     stderrLimit: number,
-    daemonEnvironment: boolean,
+    providerEnvironment: boolean,
   ): Promise<BoundedRun>;
 }
 
 /**
- * A refresh asks hosted catalogs for their lists with the API keys the daemon holds, exactly as
- * Paseo's own omp provider launches OMP, so it gets the daemon environment. The models.yml check
- * only needs the stateful probe environment.
+ * A refresh asks hosted catalogs for their lists with the API keys Paseo's own omp provider
+ * would hand OMP, so it gets that launch environment (runtime variables, provider-auth families
+ * and the host's inherited names; loader controls and other daemon secrets stay out). The
+ * models.yml check only needs the stateful probe environment.
  */
-export function modelsEnvironment(daemonEnvironment: boolean): NodeJS.ProcessEnv {
+export function modelsEnvironment(
+  providerEnvironment: boolean,
+  inheritEnv: readonly string[] = [],
+): NodeJS.ProcessEnv {
   const source = currentOmpEnvironment();
-  return daemonEnvironment ? { ...source, NO_COLOR: "1" } : buildStatefulCommandEnv(source);
+  if (!providerEnvironment) return buildStatefulCommandEnv(source);
+  const { env } = buildOmpEnvironment(undefined, inheritEnv, source);
+  env.NO_COLOR = "1";
+  return env;
 }
 
 function runOmp(
@@ -48,13 +56,14 @@ function runOmp(
   args: readonly string[],
   timeoutMs: number,
   stderrLimit: number,
-  daemonEnvironment: boolean,
+  providerEnvironment: boolean,
+  inheritEnv: readonly string[],
 ): Promise<BoundedRun> {
   return runBounded(
     defaultSpawn,
     executable,
     args,
-    modelsEnvironment(daemonEnvironment),
+    modelsEnvironment(providerEnvironment, inheritEnv),
     timeoutMs,
     KILL_GRACE_MS,
     MAX_OUTPUT_BYTES,
@@ -63,10 +72,13 @@ function runOmp(
   );
 }
 
-const DEFAULT_DEPENDENCIES: OmpModelsDependencies = {
-  resolveExecutable: resolveOmpExecutable,
-  run: runOmp,
-};
+function dependenciesFor(inheritEnv: readonly string[]): OmpModelsDependencies {
+  return {
+    resolveExecutable: resolveOmpExecutable,
+    run: (executable, args, timeoutMs, stderrLimit, providerEnvironment) =>
+      runOmp(executable, args, timeoutMs, stderrLimit, providerEnvironment, inheritEnv),
+  };
+}
 
 function succeeded(run: BoundedRun): boolean {
   return (
@@ -142,7 +154,7 @@ export async function refreshOmpModelsWithDependencies(
   if (!executable) return { ok: false, message: "The OMP executable could not be resolved." };
   const run = await dependencies.run(
     executable,
-    ["models", "refresh"],
+    ["models", "refresh", "--no-extensions"],
     REFRESH_TIMEOUT_MS,
     0,
     true,
@@ -155,11 +167,12 @@ const refreshQueue = new SerialMutationQueue();
 export function resolveGetOmpModelsFileStatus(
   _input: RpcInput<typeof getOmpModelsFileStatus>,
 ): Promise<OmpModelsFileStatus> {
-  return getOmpModelsFileStatusWithDependencies(DEFAULT_DEPENDENCIES);
+  return getOmpModelsFileStatusWithDependencies(dependenciesFor([]));
 }
 
 export function resolveRefreshOmpModels(
   _input: RpcInput<typeof refreshOmpModels>,
+  hostInheritEnv: readonly string[],
 ): Promise<{ ok: boolean; message: string }> {
-  return refreshQueue.run(() => refreshOmpModelsWithDependencies(DEFAULT_DEPENDENCIES));
+  return refreshQueue.run(() => refreshOmpModelsWithDependencies(dependenciesFor(hostInheritEnv)));
 }

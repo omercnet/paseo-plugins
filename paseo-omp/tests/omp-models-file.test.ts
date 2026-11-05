@@ -29,11 +29,12 @@ const INVALID_YAML =
   "Failed to load config file models, Unexpected error: YAML Parse error: Unexpected token\n";
 
 function fakeOmp(answer: BoundedRun | null) {
-  const calls: { args: readonly string[]; stderrLimit: number; daemonEnvironment: boolean }[] = [];
+  const calls: { args: readonly string[]; stderrLimit: number; providerEnvironment: boolean }[] =
+    [];
   const dependencies: OmpModelsDependencies = {
     resolveExecutable: async () => (answer ? "/usr/bin/omp" : null),
-    run: async (_executable, args, _timeoutMs, stderrLimit, daemonEnvironment) => {
-      calls.push({ args, stderrLimit, daemonEnvironment });
+    run: async (_executable, args, _timeoutMs, stderrLimit, providerEnvironment) => {
+      calls.push({ args, stderrLimit, providerEnvironment });
       return answer ?? run();
     },
   };
@@ -112,7 +113,7 @@ describe("models.yml status", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args).toEqual(["models", "--json", "--no-extensions"]);
     expect(calls[0]?.stderrLimit).toBeGreaterThan(0);
-    expect(calls[0]?.daemonEnvironment).toBe(false);
+    expect(calls[0]?.providerEnvironment).toBe(false);
   });
 
   test("reports invalid from the stderr of a successful run", async () => {
@@ -147,7 +148,7 @@ describe("refresh models", () => {
       ok: true,
     });
     expect(calls).toEqual([
-      { args: ["models", "refresh"], stderrLimit: 0, daemonEnvironment: true },
+      { args: ["models", "refresh", "--no-extensions"], stderrLimit: 0, providerEnvironment: true },
     ]);
   });
 
@@ -170,14 +171,29 @@ describe("models environment", () => {
   beforeEach(() => {
     vi.stubEnv("PATH", "/usr/bin");
     vi.stubEnv("OPENAI_API_KEY", "sk-from-daemon");
+    vi.stubEnv("GITHUB_TOKEN", "ghp-unrelated");
+    vi.stubEnv("NODE_OPTIONS", "--require /tmp/evil.js");
+    vi.stubEnv("MY_GATEWAY_KEY", "gw-inherited");
   });
   afterEach(() => vi.unstubAllEnvs());
 
-  test("a refresh gets the daemon's API keys so hosted catalogs answer", () => {
+  test("a refresh gets the provider API keys so hosted catalogs answer", () => {
     expect(modelsEnvironment(true).OPENAI_API_KEY).toBe("sk-from-daemon");
+    expect(modelsEnvironment(true).PATH).toBe("/usr/bin");
   });
 
-  test("the models.yml check never gets them", () => {
+  test("a refresh never gets unrelated daemon secrets or loader controls", () => {
+    const env = modelsEnvironment(true);
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.NODE_OPTIONS).toBeUndefined();
+  });
+
+  test("a refresh gets the names the host chose to inherit, and only those", () => {
+    expect(modelsEnvironment(true, ["MY_GATEWAY_KEY"]).MY_GATEWAY_KEY).toBe("gw-inherited");
+    expect(modelsEnvironment(true).MY_GATEWAY_KEY).toBeUndefined();
+  });
+
+  test("the models.yml check never gets provider keys", () => {
     expect(modelsEnvironment(false).OPENAI_API_KEY).toBeUndefined();
     expect(modelsEnvironment(false).PATH).toBe("/usr/bin");
   });
