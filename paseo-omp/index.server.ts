@@ -15,6 +15,7 @@ import {
   resolveMutateOmpPlugin,
   resolveMutateOmpPluginConfig,
 } from "./server/omp-plugins";
+import { resolveListOmpRules } from "./server/omp-rules";
 import { resolveListOmpSettings, resolveUpdateOmpSettings } from "./server/omp-settings";
 import { OmpOperationalFailureCollector } from "./server/operational-failure-diagnostics";
 import { withOmpStore } from "./server/paths";
@@ -68,6 +69,7 @@ import {
   mutateOmpPlugin,
   mutateOmpPluginConfig,
 } from "./shared/omp-plugins";
+import { listOmpRules } from "./shared/omp-rules";
 import { listOmpSettings, updateOmpSettings } from "./shared/omp-settings";
 import { listOmpStores, type OmpStore } from "./shared/omp-store";
 import { getOmpProviderHealth } from "./shared/provider-diagnostics";
@@ -186,6 +188,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listOmpConfig, scoped(resolveListOmpConfig));
   server.handle(listOmpModels, scoped(resolveListOmpModels));
   server.handle(listOmpPlugins, scoped(resolveListOmpPlugins));
+  server.handle(listOmpRules, scoped(resolveListOmpRules));
   server.handle(inspectOmpPluginConfig, scoped(resolveInspectOmpPluginConfig));
   server.handle(mutateOmpPlugin, scoped(resolveMutateOmpPlugin));
   server.handle(mutateOmpPluginConfig, scoped(resolveMutateOmpPluginConfig));

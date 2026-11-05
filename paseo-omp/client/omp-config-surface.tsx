@@ -43,6 +43,7 @@ import { OmpMcpsSection } from "./omp-mcps-section";
 import { normalizeOmpModels } from "./omp-model-picker-state";
 import { OmpPluginManagerSection } from "./omp-plugin-manager";
 import { type OmpModelCatalogState, StructuredRoutingEditor } from "./omp-routing-editor";
+import { OmpRulesSection } from "./omp-rules-section";
 import { OmpStorePicker } from "./omp-store-picker";
 import { ompStoreKey } from "./omp-store-state";
 import {
@@ -1165,6 +1166,9 @@ function OmpConfigContent({
 
       {view === "plugins" ? (
         <OmpPluginManagerSection theme={theme} compact={layout.compact} cwd={cwd} store={store} />
+      ) : null}
+      {view === "rules" ? (
+        <OmpRulesSection theme={theme} styles={styles} cwd={cwd} store={store} />
       ) : null}
       {view === "composer" && !cwd && onComposerPillSettingsChange ? (
         <ComposerPillSettingsSection theme={theme} onChange={onComposerPillSettingsChange} />

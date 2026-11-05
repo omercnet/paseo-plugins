@@ -12,6 +12,7 @@ OMP adds an agent provider for the OMP coding agent, plus an OMP sidebar and wor
 - Manage OMP's own plugins, and view quota history, memory, hub processes and a support report.
 - List the logins in OMP's own credential store, add or sign one out, spend a banked reset, and steer how OMP balances agents across them, from the **Accounts** tab.
 - List the MCP servers OMP connects to, add, test, enable, disable or remove them, and authorize a remote server through your browser, from the **MCPs** tab.
+- See which OMP rules apply (watch, always applied, rulebook, turned off) and the file each comes from, from the read-only **Rules** tab.
 - An **MCP** composer control runs OMP's MCP management in the current session, with authorization prompts shown in the chat.
 - While OMP subagents run, a row under each `task` card in the conversation lets you steer one with a message or stop it after confirmation. It needs OMP 18.4.9 or newer.
 - When an OMP rule fires during a turn of an agent on Paseo's bundled `omp` provider, a notice under that turn names the rule and the text it matched. The plugin reads this, best effort, from the end of the agent's OMP session file, which that provider does not report.

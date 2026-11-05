@@ -103,6 +103,17 @@ The **MCPs** tab of the OMP screen lists the MCP servers `omp` reports for the s
 
 OMP's rpc mode reports the outcome of a command only as printed text, so a result the plugin cannot recognise as a failure is shown as success. The server list is cached for 30 seconds; **Refresh** and every change read it again. Servers belong to the selected store, and the tab is host-level: it does not appear in the workspace OMP panel.
 
+## OMP rules
+
+The **Rules** tab of the OMP screen and of the workspace OMP panel shows which OMP rules apply. It is read-only: each rule shows the file it comes from, so you change a rule by editing that file.
+
+- **Watch** lists the rules `omp ttsr list` reports: rules with a `condition`, `astCondition`, or `question` that step in when the agent writes something they match. Built-in rules are collapsed under one row.
+- **Always applied** lists rules with `alwaysApply: true` and the `RULES.md` files, which go into every prompt in full.
+- **Rulebook** lists rules with only a `description`, which OMP names in the prompt and reads when relevant.
+- **Turned off** lists the names in the effective `ttsr.disabledRules` setting. OMP hides these rules, so only their names are known.
+
+Always-applied and rulebook rules are read from OMP's own rule files: `.omp/rules/*.md` and `*.mdc` in the workspace, `rules/` and `RULES.md` in the selected store's agent directory, and the nearest project `.omp/RULES.md`. The global screen never reads project files. Rules imported from other tools, such as Cursor or Windsurf, appear only when they are watch rules. Rule settings (`ttsr.*`) live in the **Configuration** tab. Rule and setting changes apply to new sessions, or to an agent after a reload.
+
 ## Credentials and environment
 
 The plugin is deny-by-default. It inherits only its fixed built-in allowlist of core provider authentication variables, exact host-wide names an operator selects in **OMP → Plugin**, and additional exact profile names under `providerOptions.inheritEnv`; it does not discover or inherit arbitrary credential-shaped names. Prefer OMP's native credential store or auth broker whenever possible.
