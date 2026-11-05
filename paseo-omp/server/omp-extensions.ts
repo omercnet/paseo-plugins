@@ -92,15 +92,10 @@ async function declaresExtensions(folder: string): Promise<boolean> {
   }
 }
 
-function byNameThenTypeScript(a: Candidate, b: Candidate): number {
-  if (a.name !== b.name) return a.name < b.name ? -1 : 1;
-  return Number(b.path.endsWith(".ts")) - Number(a.path.endsWith(".ts"));
-}
-
 /**
  * `extensions/<name>.ts|js` and `extensions/<name>/index.ts|js`, as OMP's native discovery. OMP
- * adds direct files before folder indexes and keeps the first of a name, so the order is the
- * precedence. Of `a.js` and `a.ts` this scan prefers `.ts`.
+ * lists direct files in path order before folder indexes and keeps the first of a name, so the
+ * order is the precedence: `a.js` beats `a.ts`, and a direct file beats a folder index.
  */
 async function extensionCandidates(root: string): Promise<Candidate[]> {
   const dir = join(root, "extensions");
@@ -114,7 +109,7 @@ async function extensionCandidates(root: string): Promise<Candidate[]> {
       if (index) folders.push({ name: entry.name, path: index });
     }
   }
-  return [...files.sort(byNameThenTypeScript), ...folders];
+  return [...files, ...folders];
 }
 
 /** `tools/<name>.<ts|js|sh|bash|py>` and `tools/<name>/index.ts`; files first, as for extensions. */
@@ -129,7 +124,7 @@ async function toolCandidates(root: string): Promise<Candidate[]> {
       folders.push({ name: entry.name, path: join(dir, entry.name, "index.ts") });
     }
   }
-  return [...files.sort(byNameThenTypeScript), ...folders];
+  return [...files, ...folders];
 }
 
 function entryFor(

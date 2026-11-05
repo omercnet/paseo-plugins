@@ -115,7 +115,7 @@ describe("scanning the documented folders", () => {
     expect(await scanExtensions(project, agentDir)).toEqual([]);
   });
 
-  test("one row per name: a direct file beats a folder index, then TypeScript beats JavaScript", async () => {
+  test("one row per name, as OMP resolves it: a direct file beats a folder index, and path order picks among files", async () => {
     const ext = join(agentDir, "extensions");
     await file(join(ext, "dup.js"));
     await file(join(ext, "dup.ts"));
@@ -126,7 +126,7 @@ describe("scanning the documented folders", () => {
     const items = await scanExtensions(undefined, agentDir);
     const relativeToAgent = (path: string) => relative(agentDir, path).split(sep).join("/");
     expect(items.map(({ id, path }) => [id, relativeToAgent(path)])).toEqual([
-      ["extension-module:dup", "extensions/dup.ts"],
+      ["extension-module:dup", "extensions/dup.js"],
       ["extension-module:dup2", "extensions/dup2.js"],
       ["tool:same", "tools/same.py"],
     ]);
