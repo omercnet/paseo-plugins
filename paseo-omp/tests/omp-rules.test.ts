@@ -255,7 +255,9 @@ describe("OMP rule listing", () => {
     const { dependencies } = fakeOmp();
     const failing = {
       ...dependencies,
-      removeDir: async () => {
+      // Removes its real scratch directory, then reports a failure the listing must survive.
+      removeDir: async (path: string) => {
+        await dependencies.removeDir(path);
         throw new Error("EBUSY");
       },
     };

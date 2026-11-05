@@ -143,6 +143,8 @@ async function readSetting<T>(
 async function readRuleFile(path: string): Promise<string | null> {
   let handle: FileHandle | undefined;
   try {
+    // O_NOFOLLOW does not exist on Windows, so reject a symlink before opening it too.
+    if (!(await lstat(path)).isFile()) return null;
     handle = await open(
       path,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
@@ -171,7 +173,7 @@ async function isNonEmptyDirectory(path: string): Promise<boolean> {
 
 async function isRealDirectory(path: string): Promise<boolean> {
   return lstat(path).then(
-    (stat) => stat.isDirectory(),
+    (info) => info.isDirectory(),
     () => false,
   );
 }
