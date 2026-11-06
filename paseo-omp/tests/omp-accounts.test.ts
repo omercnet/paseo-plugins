@@ -297,7 +297,9 @@ afterEach(async () => {
   for (const accounts of created.splice(0)) accounts.stop();
   if (previousCommand === undefined) delete process.env.OMP_COMMAND;
   else process.env.OMP_COMMAND = previousCommand;
-  await rm(directory, { recursive: true, force: true });
+  // stop() kills the fake omp children without waiting; one still starting up can append to
+  // calls.jsonl while rm walks the folder (ENOTEMPTY), so let rm retry until they are gone.
+  await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 describe.skipIf(ON_WINDOWS)("listing", () => {
