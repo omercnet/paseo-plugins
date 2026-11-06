@@ -12,7 +12,7 @@ The plugin's own `omp-plugin` and `omp-plugin-<profile>` providers are off by de
 { "agents": { "providers": { "omp-plugin": { "enabled": true } } } }
 ```
 
-A host counts as existing when its Paseo home has an agent record or schedule on an `omp-plugin*` provider (latched in `plugin-data/paseo-omp/provider-opt-in.json`, so deleting the agents later does not hide the providers), or when `config.json` names or extends an `omp-plugin*` provider, lists one in `daemon.agentProfiles`, or uses one in `agents.metadataGeneration.providers` (read on every start). An unreadable or malformed Paseo home keeps the providers on. An entry for any plugin provider registers all of them; disabling is per provider, so set `enabled: false` on each provider ID you want off.
+A host counts as existing when its Paseo home has an agent record or schedule on an `omp-plugin*` provider (latched in `plugin-data/paseo-omp/provider-opt-in.json`, so deleting the agents later does not hide the providers), or when `config.json` names or extends an `omp-plugin*` provider, lists one in `daemon.agentProfiles`, or uses one in `agents.metadataGeneration.providers` (read on every start). If the latch file cannot be written, nothing is latched; check that it exists, or add an `agents.providers.omp-plugin` entry, before deleting the last such record. An unreadable or malformed Paseo home keeps the providers on. An entry for any plugin provider registers all of them; disabling is per provider, so set `enabled: false` on each provider ID you want off.
 
 ## Provider profile launch overrides
 
