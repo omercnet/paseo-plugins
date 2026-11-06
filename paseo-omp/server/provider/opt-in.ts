@@ -17,10 +17,7 @@ const MAX_EVIDENCE_FILES = 10_000;
 const MAX_EVIDENCE_BYTES = 1024 * 1024;
 
 const MarkerSchema = z.object({ version: z.literal(1), legacyUse: z.literal(true) });
-const ProviderEntrySchema = z.object({
-  enabled: z.boolean().optional(),
-  extends: z.string().optional(),
-});
+const ProviderEntrySchema = z.object({ extends: z.string().optional() });
 const ConfigSchema = z.object({
   agents: z
     .object({
@@ -114,10 +111,8 @@ function configUsesPluginProvider(home: string): boolean {
     ...(config.daemon?.agentProfiles ?? []),
   ];
   return (
-    providers.some(
-      ([id, entry]) =>
-        (isPluginProviderId(id) && entry.enabled !== false) || isPluginProviderId(entry.extends),
-    ) || referenced.some((entry) => isPluginProviderId(entry.provider))
+    providers.some(([id, entry]) => isPluginProviderId(id) || isPluginProviderId(entry.extends)) ||
+    referenced.some((entry) => isPluginProviderId(entry.provider))
   );
 }
 

@@ -54,7 +54,7 @@ describe("plugin providers are opt-in for new installs", () => {
     [
       "a config entry for the provider",
       "config.json",
-      { agents: { providers: { "omp-plugin": { enabled: true } } } },
+      { agents: { providers: { "omp-plugin": { enabled: false } } } },
     ],
     [
       "a config provider extending the plugin provider",
@@ -80,11 +80,6 @@ describe("plugin providers are opt-in for new installs", () => {
 
   test("a schedule that targets an existing agent is not evidence", () => {
     write("schedules/s.json", { target: { type: "agent", agentId: "x" } });
-    expect(decide()).toBe(true);
-  });
-
-  test("an entry that only disables the plugin provider is not evidence", () => {
-    write("config.json", { agents: { providers: { "omp-plugin": { enabled: false } } } });
     expect(decide()).toBe(true);
   });
 

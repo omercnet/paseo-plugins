@@ -12,7 +12,7 @@ The plugin's own `omp-plugin` and `omp-plugin-<profile>` providers are off by de
 { "agents": { "providers": { "omp-plugin": { "enabled": true } } } }
 ```
 
-A host counts as existing when its Paseo home has an agent record or schedule on an `omp-plugin*` provider (latched in `plugin-data/paseo-omp/provider-opt-in.json`, so deleting the agents later does not hide the providers), or when `config.json` has an `omp-plugin*` entry that is not `enabled: false`, extends one, lists one in `daemon.agentProfiles`, or uses one in `agents.metadataGeneration.providers` (read on every start). An unreadable or malformed Paseo home keeps the providers on. Enabling any plugin provider enables all of them.
+A host counts as existing when its Paseo home has an agent record or schedule on an `omp-plugin*` provider (latched in `plugin-data/paseo-omp/provider-opt-in.json`, so deleting the agents later does not hide the providers), or when `config.json` names or extends an `omp-plugin*` provider, lists one in `daemon.agentProfiles`, or uses one in `agents.metadataGeneration.providers` (read on every start). An unreadable or malformed Paseo home keeps the providers on. Enabling any plugin provider enables all of them.
 
 ## Provider profile launch overrides
 
