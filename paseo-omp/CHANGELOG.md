@@ -1,5 +1,43 @@
 # Changelog
 
+## [5.5.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.4.0...paseo-omp-v5.5.0) (2026-11-06)
+
+
+### Features
+
+* **paseo-omp:** add a read-only Rules tab ([#506](https://github.com/omercnet/paseo-plugins/issues/506)) ([8c4ac69](https://github.com/omercnet/paseo-plugins/commit/8c4ac692e02947af376d048ec770d91ac83c8bc4))
+* **paseo-omp:** add a read-only Security tab with scan phase and finding counts ([#523](https://github.com/omercnet/paseo-plugins/issues/523)) ([7cd5bbe](https://github.com/omercnet/paseo-plugins/commit/7cd5bbed6fbb8303e87b89bd659517854a4e4696))
+* **paseo-omp:** add a Tool policy card to the Configuration tab ([#518](https://github.com/omercnet/paseo-plugins/issues/518)) ([4f89c49](https://github.com/omercnet/paseo-plugins/commit/4f89c496e3cf79f76bbb1f7c06e75f0924001eb6))
+* **paseo-omp:** add Budget settings for session spend warning and limit ([#507](https://github.com/omercnet/paseo-plugins/issues/507)) ([b5e4666](https://github.com/omercnet/paseo-plugins/commit/b5e466642759c4da6ee9faf54583b971b4255ce6))
+* **paseo-omp:** add Extensions tab for extensions, hooks and custom tools ([#514](https://github.com/omercnet/paseo-plugins/issues/514)) ([fdc7973](https://github.com/omercnet/paseo-plugins/commit/fdc7973b6b73302bf8a56c125afa03a662f2ce0b))
+* **paseo-omp:** add Skills tab with per-skill on/off and learned-skill delete ([#512](https://github.com/omercnet/paseo-plugins/issues/512)) ([0d37c15](https://github.com/omercnet/paseo-plugins/commit/0d37c15ee01962f2b2ff632dea28c8bf9cad3bcd))
+* **paseo-omp:** check models.yml for errors and add a Refresh models action in Diagnostics ([#520](https://github.com/omercnet/paseo-plugins/issues/520)) ([08114e2](https://github.com/omercnet/paseo-plugins/commit/08114e222ef596545856421fb35265de45aa9efb))
+* **paseo-omp:** edit lsp.json and dap.json in the Configuration tab ([#527](https://github.com/omercnet/paseo-plugins/issues/527)) ([f2d194a](https://github.com/omercnet/paseo-plugins/commit/f2d194ada83eee7a785b3f31b0f434d2144f49a4))
+* **paseo-omp:** explain OMP's magic keywords and their off switches in the Help tab ([#526](https://github.com/omercnet/paseo-plugins/issues/526)) ([5dec591](https://github.com/omercnet/paseo-plugins/commit/5dec59145c5dd270ed2a925473faa446130defca))
+* **paseo-omp:** explain the secrets setting and its limits in the Configuration tab ([#511](https://github.com/omercnet/paseo-plugins/issues/511)) ([bbee836](https://github.com/omercnet/paseo-plugins/commit/bbee8362bb6f242584adc099b8c3731013f89944))
+* **paseo-omp:** group the optional-tool switches in the Configuration Tools category ([#515](https://github.com/omercnet/paseo-plugins/issues/515)) ([692431c](https://github.com/omercnet/paseo-plugins/commit/692431c20e04d4fed807785249dc8407078dab6e))
+* **paseo-omp:** link each rule-fired notice to that rule ([#532](https://github.com/omercnet/paseo-plugins/issues/532)) ([53cced1](https://github.com/omercnet/paseo-plugins/commit/53cced1f3fe33a98140725be0a6ad9c8c7bc5eeb))
+* **paseo-omp:** list, download and assign OMP local models in the Configuration tab ([#528](https://github.com/omercnet/paseo-plugins/issues/528)) ([38efe42](https://github.com/omercnet/paseo-plugins/commit/38efe42d07aa89781b0a6ad38f2038a28ad948dd))
+* **paseo-omp:** manage OMP marketplace catalogs from the plugins tab ([#508](https://github.com/omercnet/paseo-plugins/issues/508)) ([32cb260](https://github.com/omercnet/paseo-plugins/commit/32cb26062890b50cc3343641434941cbc7093547))
+* **paseo-omp:** pick subagent names and switch agents off in the routing editor ([#516](https://github.com/omercnet/paseo-plugins/issues/516)) ([790dd74](https://github.com/omercnet/paseo-plugins/commit/790dd74c153f72260ac62be503db5a21848dd768))
+* **paseo-omp:** remove the Sessions composer pill ([#505](https://github.com/omercnet/paseo-plugins/issues/505)) ([29e62fc](https://github.com/omercnet/paseo-plugins/commit/29e62fce7183566a18edc628094d7dfb21de31e9))
+* **paseo-omp:** show ast_edit previews as a read-only diff card ([#519](https://github.com/omercnet/paseo-plugins/issues/519)) ([1a9a62d](https://github.com/omercnet/paseo-plugins/commit/1a9a62d0cc9d714d1a6f3a08a76d0c05208d1305))
+* **paseo-omp:** show eval screenshots on bundled omp agents ([#525](https://github.com/omercnet/paseo-plugins/issues/525)) ([a49863a](https://github.com/omercnet/paseo-plugins/commit/a49863a38d0ec7fb65b52ec94ea7532ed6c73061))
+* **paseo-omp:** show generate_image results with a thumbnail and download ([#513](https://github.com/omercnet/paseo-plugins/issues/513)) ([eb747df](https://github.com/omercnet/paseo-plugins/commit/eb747dffb89de27765330622a292ee109c800901))
+* **paseo-omp:** show how often each rule fired in the Rules tab ([#533](https://github.com/omercnet/paseo-plugins/issues/533)) ([2605f75](https://github.com/omercnet/paseo-plugins/commit/2605f75a13a08755393b0d3f5ae2f4ff74c457da))
+* **paseo-omp:** show lsp diagnostics as a card on bundled omp agents ([#510](https://github.com/omercnet/paseo-plugins/issues/510)) ([cb7cab3](https://github.com/omercnet/paseo-plugins/commit/cb7cab3b38aa6f54bb5e4fab2924293f898aaaf0))
+* **paseo-omp:** show OMP rule notices for bundled omp agents ([#504](https://github.com/omercnet/paseo-plugins/issues/504)) ([b198fcc](https://github.com/omercnet/paseo-plugins/commit/b198fccfb7eb5a1912389121a59aee5314a0f97a))
+* **paseo-omp:** show OMP update status and an Update button in Diagnostics ([#509](https://github.com/omercnet/paseo-plugins/issues/509)) ([10aba27](https://github.com/omercnet/paseo-plugins/commit/10aba27245c77179f9da8fd8ec37a3b081c15e4c))
+* **paseo-omp:** test what a rule would catch from the Rules tab ([#531](https://github.com/omercnet/paseo-plugins/issues/531)) ([a566cec](https://github.com/omercnet/paseo-plugins/commit/a566cece4a5379165d7342da93fe833316d391ee))
+* **paseo-omp:** turn a rule on or off from the Rules tab ([#529](https://github.com/omercnet/paseo-plugins/issues/529)) ([07e9ccb](https://github.com/omercnet/paseo-plugins/commit/07e9ccb97d4aa99c2d1f2d8db9eda2b3c468bcc7))
+* **paseo-omp:** warn in Diagnostics when SYSTEM.md or Paseo's Append system prompt affects OMP prompt files ([#517](https://github.com/omercnet/paseo-plugins/issues/517)) ([a38fa4f](https://github.com/omercnet/paseo-plugins/commit/a38fa4f6d6b433c0ab0712dfe6bc7080b8bc33f1))
+
+
+### Bug Fixes
+
+* **paseo-omp:** list OMP session files in the Sessions pill ([#502](https://github.com/omercnet/paseo-plugins/issues/502)) ([a4b98c9](https://github.com/omercnet/paseo-plugins/commit/a4b98c91e653171393ad4d32111d6f9d8f9e4191))
+* **paseo-omp:** rename Plugin tab to Plugin provider and hide it when the provider is off ([#537](https://github.com/omercnet/paseo-plugins/issues/537)) ([ddd5b1c](https://github.com/omercnet/paseo-plugins/commit/ddd5b1c1008a0c899433d796d9cb778238b33feb))
+
 ## [5.4.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.3.0...paseo-omp-v5.4.0) (2026-11-05)
 
 
