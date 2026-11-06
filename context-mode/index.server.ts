@@ -10,10 +10,8 @@ import {
   fetchAndIndexContextMode,
   getContextModeAnalyticsDashboard,
   getContextModeDoctorReport,
-  getContextModeInstallAction,
   getContextModeIntegrationAudit,
   getContextModeStatus,
-  getContextModeUpgradeAction,
   indexContextModePath,
   purgeContextModeKnowledge,
   resumeContextModeSession,
@@ -41,8 +39,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(resumeContextModeSession, knowledgeHandlers.resume);
   server.handle(purgeContextModeKnowledge, knowledgeHandlers.purge);
   server.handle(getContextModeDoctorReport, actionHandlers.doctor);
-  server.handle(getContextModeInstallAction, actionHandlers.install);
-  server.handle(getContextModeUpgradeAction, actionHandlers.upgrade);
   server.before("agent.create", async ({ request }, { paseo }) => {
     const current = await settings.read();
     if (current.status !== "ready") return request;

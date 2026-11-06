@@ -63,7 +63,6 @@ export const CONTEXT_MODE_TOOL_TIMEOUT_MS = {
   ctx_resume: 20_000,
   ctx_stats: 15_000,
   ctx_doctor: 30_000,
-  ctx_upgrade: 120_000,
   ctx_purge: 120_000,
 } as const;
 
@@ -384,7 +383,7 @@ export async function inspectContextMode(
     const doctorOnly = tools.length === 1 && tools[0] === "ctx_doctor";
     const reason = doctorOnly
       ? "Context Mode needs Node.js 24.15 or later with node:sqlite; run ctx_doctor for details."
-      : "Context Mode 2.x is required: run `context-mode upgrade` or `npm install -g context-mode@latest`.";
+      : "Context Mode 2.x is required; clear the configured binary path to use the bundled runtime.";
     throw new ProcessFailure(
       "unsupported",
       `Context Mode ${version ?? "(unknown version)"} lacks ${missing.join(", ")}. ${reason}`,

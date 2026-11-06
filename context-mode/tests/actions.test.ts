@@ -1,12 +1,7 @@
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import { describe, expect, test } from "vitest";
 import { createContextModeActionHandlers, parseContextModeDoctorOutput } from "../server/actions";
-import {
-  ContextModeActionSchema,
-  getContextModeDoctorReport,
-  getContextModeInstallAction,
-  getContextModeUpgradeAction,
-} from "../shared/actions";
+import { getContextModeDoctorReport } from "../shared/actions";
 import type { ContextModePlatform } from "../shared/knowledge";
 import {
   type ContextModeSettings,
@@ -60,51 +55,15 @@ const DOCTOR_ROWS = [
 ];
 
 describe("action RPC contracts", () => {
-  test("accepts only the four supported providers and rejects unrelated input", () => {
-    for (const contract of [
-      getContextModeDoctorReport,
-      getContextModeInstallAction,
-      getContextModeUpgradeAction,
-    ]) {
-      for (const provider of ["claude", "codex", "copilot", "opencode"]) {
-        expect(contract.input.safeParse({ provider }).success).toBe(true);
-      }
-      for (const provider of ["cursor", "pi", "omp", "omp-plugin", "unknown"]) {
-        expect(contract.input.safeParse({ provider }).success).toBe(false);
-      }
-      expect(contract.input.safeParse({ provider: "codex", execute: true }).success).toBe(false);
+  test("doctor accepts only the four supported providers and rejects unrelated input", () => {
+    for (const provider of ["claude", "codex", "copilot", "opencode"]) {
+      expect(getContextModeDoctorReport.input.safeParse({ provider }).success).toBe(true);
     }
-  });
-
-  test("accepts argv descriptors with an optional follow-up and rejects shell strings", () => {
-    const descriptor = {
-      program: "npm",
-      args: ["install", "-g", "context-mode@2.1.4", "--no-audit", "--no-fund"],
-      followUp: { program: "context-mode", args: ["setup", "--agents", "codex"] },
-      currentVersion: null,
-      targetVersion: "2.1.4",
-      platform: "codex",
-      requiresRestart: true,
-    };
-    expect(ContextModeActionSchema.safeParse(descriptor).success).toBe(true);
-    expect(ContextModeActionSchema.safeParse({ ...descriptor, followUp: undefined }).success).toBe(
-      true,
-    );
+    for (const provider of ["cursor", "pi", "omp", "omp-plugin", "unknown"]) {
+      expect(getContextModeDoctorReport.input.safeParse({ provider }).success).toBe(false);
+    }
     expect(
-      ContextModeActionSchema.safeParse({ ...descriptor, command: "npm install -g context-mode" })
-        .success,
-    ).toBe(false);
-    expect(
-      ContextModeActionSchema.safeParse({
-        ...descriptor,
-        followUp: { ...descriptor.followUp, command: "context-mode setup" },
-      }).success,
-    ).toBe(false);
-    expect(
-      ContextModeActionSchema.safeParse({ ...descriptor, args: ["x".repeat(4_097)] }).success,
-    ).toBe(false);
-    expect(
-      ContextModeActionSchema.safeParse({ ...descriptor, targetVersion: "1.0.169" }).success,
+      getContextModeDoctorReport.input.safeParse({ provider: "codex", execute: true }).success,
     ).toBe(false);
   });
 });
@@ -135,84 +94,6 @@ describe("structured actions", () => {
       platform: "codex",
       rows: DOCTOR_ROWS,
       rawOutput: DOCTOR_OUTPUT,
-    });
-  });
-
-  test("returns install and upgrade argv for review without executing either", async () => {
-    let toolCalls = 0;
-    const handlers = createContextModeActionHandlers(settingsHandle(), {
-      osPlatform: "linux",
-      resolveBinary: async () => ({
-        state: "found",
-        path: "/opt/context-mode/cli.mjs",
-        source: "bundled",
-        launch: { program: "/usr/bin/node", args: ["/opt/context-mode/cli.mjs"] },
-      }),
-      probeOptions,
-      inspect: async (_launch, _dependencies, options) => {
-        expect(options).toEqual({ platform: "copilot-cli", ...PROBE });
-        return { version: "2.1.3", tools: ["ctx_doctor"] };
-      },
-      callTool: async () => {
-        toolCalls += 1;
-        return "unexpected";
-      },
-    });
-
-    await expect(handlers.install({ provider: "copilot" })).resolves.toEqual({
-      program: "npm",
-      args: ["install", "-g", "context-mode@2.1.4", "--no-audit", "--no-fund"],
-      followUp: { program: "context-mode", args: ["setup", "--agents", "copilot-cli"] },
-      currentVersion: "2.1.3",
-      targetVersion: "2.1.4",
-      platform: "copilot-cli",
-      requiresRestart: true,
-    });
-    await expect(handlers.upgrade({ provider: "copilot" })).resolves.toEqual({
-      program: "/usr/bin/node",
-      args: ["/opt/context-mode/cli.mjs", "upgrade", "--agents", "copilot-cli"],
-      currentVersion: "2.1.3",
-      targetVersion: "latest",
-      platform: "copilot-cli",
-      requiresRestart: true,
-    });
-    expect(toolCalls).toBe(0);
-  });
-
-  test("still returns an install descriptor when Context Mode is absent or unsupported", async () => {
-    const absent = createContextModeActionHandlers(settingsHandle(), {
-      osPlatform: "win32",
-      resolveBinary: async () => ({
-        state: "missing",
-        code: "not-installed",
-        message: "not installed",
-      }),
-    });
-    await expect(absent.install({ provider: "opencode" })).resolves.toMatchObject({
-      program: "npm.cmd",
-      followUp: { program: "context-mode", args: ["setup", "--agents", "opencode"] },
-      currentVersion: null,
-      platform: "opencode",
-      targetVersion: "2.1.4",
-    });
-
-    const legacy = createContextModeActionHandlers(settingsHandle(), {
-      osPlatform: "linux",
-      resolveBinary: async () => ({
-        state: "found",
-        path: "/usr/bin/context-mode",
-        source: "path",
-        launch: { program: "/usr/bin/context-mode", args: [] },
-      }),
-      probeOptions,
-      inspect: async () => {
-        throw new Error("Context Mode 1.x is unsupported");
-      },
-    });
-    await expect(legacy.upgrade({ provider: "claude" })).resolves.toMatchObject({
-      program: "/usr/bin/context-mode",
-      args: ["upgrade", "--agents", "claude-code"],
-      currentVersion: null,
     });
   });
 });

@@ -10,14 +10,7 @@ import {
   View,
   type ViewStyle,
 } from "react-native";
-import {
-  CONTEXT_MODE_TARGET_VERSION,
-  type ContextModeAction,
-  type DoctorReport,
-  getContextModeDoctorReport,
-  getContextModeInstallAction,
-  getContextModeUpgradeAction,
-} from "../shared/actions";
+import { type DoctorReport, getContextModeDoctorReport } from "../shared/actions";
 import type { ContextModeProvider } from "../shared/knowledge";
 
 const PROVIDERS = [
@@ -68,20 +61,11 @@ interface ActionsStyles {
   doctorDetail: TextStyle;
   rawFrame: ViewStyle;
   rawOutput: TextStyle;
-  commandCard: ViewStyle;
-  commandTitle: TextStyle;
-  property: ViewStyle;
   propertyLabel: TextStyle;
-  propertyValue: TextStyle;
   argumentFrame: ViewStyle;
-  argumentRow: ViewStyle;
-  argumentIndex: TextStyle;
-  argumentValue: TextStyle;
   metaRow: ViewStyle;
   badge: ViewStyle;
   badgeText: TextStyle;
-  warningBadge: ViewStyle;
-  warningBadgeText: TextStyle;
 }
 
 function ActionButton({
@@ -224,152 +208,31 @@ function DoctorResult({
   );
 }
 
-function CommandArgv({
-  command,
-  label,
-  styles,
-}: {
-  command: { program: string; args: string[] };
-  label: string;
-  styles: ActionsStyles;
-}) {
-  const seenArguments = new Map<string, number>();
-  const argumentsWithKeys = command.args.map((argument, index) => {
-    const occurrence = seenArguments.get(argument) ?? 0;
-    seenArguments.set(argument, occurrence + 1);
-    return { argument, position: index + 1, key: `${argument}:${occurrence}` };
-  });
-  return (
-    <>
-      <View style={styles.property}>
-        <Text style={styles.propertyLabel}>{label}</Text>
-        <Text selectable style={styles.propertyValue}>
-          {command.program}
-        </Text>
-      </View>
-      <View style={styles.property}>
-        <Text style={styles.propertyLabel}>Arguments ({command.args.length})</Text>
-        <ScrollView nestedScrollEnabled style={styles.argumentFrame}>
-          {command.args.length ? (
-            argumentsWithKeys.map(({ argument, key, position }) => (
-              <View key={key} style={styles.argumentRow}>
-                <Text style={styles.argumentIndex}>{position}</Text>
-                <Text selectable style={styles.argumentValue}>
-                  {argument}
-                </Text>
-              </View>
-            ))
-          ) : (
-            <Text style={styles.muted}>No arguments.</Text>
-          )}
-        </ScrollView>
-      </View>
-    </>
-  );
-}
-
-function CommandResult({
-  title,
-  action,
-  pending,
-  error,
-  styles,
-}: {
-  title: string;
-  action: ContextModeAction | undefined;
-  pending: boolean;
-  error: unknown;
-  styles: ActionsStyles;
-}) {
-  if (pending) {
-    return (
-      <View accessibilityLiveRegion="polite" style={styles.pendingRow}>
-        <ActivityIndicator size="small" color={styles.activity.color} />
-        <Text style={styles.muted}>Preparing {title.toLowerCase()}…</Text>
-      </View>
-    );
-  }
-  if (error) {
-    return (
-      <Text accessibilityRole="alert" style={styles.error}>
-        {error instanceof Error ? error.message : String(error)}
-      </Text>
-    );
-  }
-  if (!action) return null;
-
-  return (
-    <View accessibilityLiveRegion="polite" style={styles.commandCard}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.commandTitle}>{title}</Text>
-        <Text style={styles.muted}>
-          Review this executable and argument list before running it outside Paseo.
-        </Text>
-      </View>
-      <CommandArgv command={action} label="Program" styles={styles} />
-      {action.followUp ? (
-        <CommandArgv command={action.followUp} label="Then run" styles={styles} />
-      ) : null}
-      <View style={styles.metaRow}>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>{action.platform}</Text>
-        </View>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>
-            {action.currentVersion ? `${action.currentVersion} → ` : "Install "}
-            {action.targetVersion}
-          </Text>
-        </View>
-        {action.requiresRestart ? (
-          <View style={styles.warningBadge}>
-            <Text style={styles.warningBadgeText}>Restart required</Text>
-          </View>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 export function ActionsSection({ theme, layout }: ActionsSectionProps) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [layout.compact, theme]);
   const loadDoctor = useRpc(getContextModeDoctorReport);
-  const loadInstall = useRpc(getContextModeInstallAction);
-  const loadUpgrade = useRpc(getContextModeUpgradeAction);
   const [provider, setProvider] = useState<ContextModeProvider | null>("claude");
+  const providerLabel = PROVIDERS.find((item) => item.value === provider)?.label ?? null;
   const doctor = useMutation({
     mutationFn: () => {
       if (!provider) throw new Error("Select a provider before running diagnostics.");
       return loadDoctor({ provider });
     },
   });
-  const install = useMutation({
-    mutationFn: () => {
-      if (!provider) throw new Error("Select a provider before preparing an install command.");
-      return loadInstall({ provider });
-    },
-  });
-  const upgrade = useMutation({
-    mutationFn: () => {
-      if (!provider) throw new Error("Select a provider before preparing an upgrade command.");
-      return loadUpgrade({ provider });
-    },
-  });
 
   const changeProvider = (next: ContextModeProvider) => {
     setProvider(next);
     doctor.reset();
-    install.reset();
-    upgrade.reset();
   };
-  const busy = doctor.isPending || install.isPending || upgrade.isPending;
+  const busy = doctor.isPending;
 
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
         <Text accessibilityRole="header" style={styles.sectionTitle}>
-          Diagnostics and setup
+          Diagnostics
         </Text>
-        <Text style={styles.muted}>Health checks, installation, and upgrades.</Text>
+        <Text style={styles.muted}>Health checks for the bundled Context Mode runtime.</Text>
       </View>
 
       <View style={styles.card}>
@@ -399,9 +262,9 @@ export function ActionsSection({ theme, layout }: ActionsSectionProps) {
           })}
         </View>
         <Text accessibilityLiveRegion="polite" style={styles.scopeNote}>
-          {provider
-            ? `Diagnostics and commands will target ${PROVIDERS.find((item) => item.value === provider)?.label}.`
-            : "Select a provider before requesting a diagnostic or command."}
+          {providerLabel
+            ? `Diagnostics will target ${providerLabel}.`
+            : "Select a provider before running diagnostics."}
         </Text>
       </View>
 
@@ -429,46 +292,6 @@ export function ActionsSection({ theme, layout }: ActionsSectionProps) {
           pending={doctor.isPending}
           report={doctor.data}
           styles={styles}
-        />
-      </View>
-
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <Text accessibilityRole="header" style={styles.cardTitle}>
-            Install or upgrade
-          </Text>
-          <Text style={styles.muted}>
-            Install requests pin Context Mode {CONTEXT_MODE_TARGET_VERSION}; upgrades target the
-            latest release. Paseo shows the exact command; run it yourself.
-          </Text>
-        </View>
-        <View style={styles.actions}>
-          <ActionButton
-            disabled={!provider || busy}
-            label={install.isPending ? "Preparing install…" : "Prepare install"}
-            onPress={() => install.mutate()}
-            styles={styles}
-          />
-          <ActionButton
-            disabled={!provider || busy}
-            label={upgrade.isPending ? "Preparing upgrade…" : "Prepare upgrade"}
-            onPress={() => upgrade.mutate()}
-            styles={styles}
-          />
-        </View>
-        <CommandResult
-          action={install.data}
-          error={install.error}
-          pending={install.isPending}
-          styles={styles}
-          title="Install command"
-        />
-        <CommandResult
-          action={upgrade.data}
-          error={upgrade.error}
-          pending={upgrade.isPending}
-          styles={styles}
-          title="Upgrade command"
         />
       </View>
     </View>
@@ -574,49 +397,12 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean): Act
       fontSize: compact ? 11 : 12,
       lineHeight: compact ? 16 : 18,
     },
-    commandCard: {
-      gap: 10,
-      padding: 11,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      borderRadius: 8,
-      backgroundColor: theme.colors.surface0,
-    },
-    commandTitle: { color: theme.colors.foreground, fontSize: 14, fontWeight: "700" },
-    property: { gap: 4 },
     propertyLabel: {
       color: theme.colors.foregroundMuted,
       fontSize: 11,
       fontWeight: "600",
     },
-    propertyValue: {
-      color: theme.colors.foreground,
-      fontFamily: "monospace",
-      fontSize: compact ? 11 : 12,
-      lineHeight: compact ? 16 : 18,
-    },
     argumentFrame: { maxHeight: compact ? 160 : 220 },
-    argumentRow: {
-      flexDirection: "row",
-      alignItems: "flex-start",
-      gap: 8,
-      paddingVertical: 4,
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
-    },
-    argumentIndex: {
-      width: 22,
-      color: theme.colors.foregroundMuted,
-      fontFamily: "monospace",
-      fontSize: 11,
-    },
-    argumentValue: {
-      flex: 1,
-      color: theme.colors.foreground,
-      fontFamily: "monospace",
-      fontSize: compact ? 11 : 12,
-      lineHeight: compact ? 16 : 18,
-    },
     metaRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7 },
     badge: {
       paddingHorizontal: 8,
@@ -627,14 +413,5 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean): Act
       backgroundColor: theme.colors.surface2,
     },
     badgeText: { color: theme.colors.foreground, fontSize: 11, fontWeight: "600" },
-    warningBadge: {
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      borderWidth: 1,
-      borderColor: theme.colors.statusWarning,
-      borderRadius: 999,
-      backgroundColor: theme.colors.surface1,
-    },
-    warningBadgeText: { color: theme.colors.statusWarning, fontSize: 11, fontWeight: "600" },
   };
 }

@@ -149,9 +149,6 @@ function ReadyContextModeSettings({
           <SettingsRow label="Context Mode runtime">
             <Text style={styles.muted}>Bundled with this Paseo plugin</Text>
           </SettingsRow>
-          <SettingsRow label="Upgrades">
-            <Text style={styles.muted}>Explicit command only</Text>
-          </SettingsRow>
         </SettingsCard>
       </SettingsSection>
 

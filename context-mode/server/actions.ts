@@ -1,27 +1,18 @@
 import { rm } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
-import {
-  CONTEXT_MODE_TARGET_VERSION,
-  type ContextModeAction,
-  type ContextModeActionInput,
-  type DoctorReport,
-  type DoctorStatusRow,
-} from "../shared/actions";
-import type { ContextModePlatform } from "../shared/knowledge";
+import type { ContextModeActionInput, DoctorReport, DoctorStatusRow } from "../shared/actions";
 import type { contextModeSettings } from "../shared/settings";
 import { type BinaryResolution, resolveContextModeBinary } from "./binary";
 import { contextModeProbeOptions } from "./handlers";
 import type { ProviderConfigSource } from "./integration";
 import { contextModePlatformFor } from "./knowledge";
-import { callContextModeTool, inspectContextMode } from "./mcp-process";
+import { callContextModeTool } from "./mcp-process";
 
 type SettingsHandle = PluginSettings<typeof contextModeSettings.schema>;
 
 export interface ActionHandlerDependencies {
-  osPlatform?: NodeJS.Platform;
   resolveBinary?: typeof resolveContextModeBinary;
-  inspect?: typeof inspectContextMode;
   callTool?: typeof callContextModeTool;
   probeOptions?: typeof contextModeProbeOptions;
 }
@@ -30,8 +21,6 @@ type ActionContext = { paseo?: ProviderConfigSource };
 
 export interface ContextModeActionHandlers {
   doctor(input: ContextModeActionInput, context?: ActionContext): Promise<DoctorReport>;
-  install(input: ContextModeActionInput, context?: ActionContext): Promise<ContextModeAction>;
-  upgrade(input: ContextModeActionInput, context?: ActionContext): Promise<ContextModeAction>;
 }
 
 const DOCTOR_STATUS = { PASS: "ok", WARN: "warning", FAIL: "error", UNKNOWN: "error" } as const;
@@ -88,10 +77,8 @@ export function createContextModeActionHandlers(
   dependencies: ActionHandlerDependencies = {},
 ): ContextModeActionHandlers {
   const resolveBinary = dependencies.resolveBinary ?? resolveContextModeBinary;
-  const inspect = dependencies.inspect ?? inspectContextMode;
   const callTool = dependencies.callTool ?? callContextModeTool;
   const probeOptions = dependencies.probeOptions ?? contextModeProbeOptions;
-  const osPlatform = dependencies.osPlatform ?? process.platform;
 
   async function resolvedBinary(
     paseo: ProviderConfigSource | undefined,
@@ -105,18 +92,6 @@ export function createContextModeActionHandlers(
     return binary;
   }
 
-  async function versionOf(
-    binary: Extract<BinaryResolution, { state: "found" }>,
-    platform: ContextModePlatform,
-  ): Promise<string | null> {
-    try {
-      const inspection = await inspect(binary.launch, {}, await probeOptions(platform));
-      return inspection.version?.slice(0, 128) ?? null;
-    } catch {
-      return null;
-    }
-  }
-
   return {
     async doctor(input, context) {
       const platform = contextModePlatformFor(input.provider);
@@ -126,39 +101,6 @@ export function createContextModeActionHandlers(
       const rawOutput = await callTool(binary.launch, "ctx_doctor", {}, {}, options);
       await discardDoctorReport(rawOutput, options.dataDir);
       return { platform, rows: parseContextModeDoctorOutput(rawOutput), rawOutput };
-    },
-    async install(input, context) {
-      const platform = contextModePlatformFor(input.provider);
-      const currentVersion = await resolvedBinary(context?.paseo)
-        .then((binary) => versionOf(binary, platform))
-        .catch(() => null);
-      return {
-        program: osPlatform === "win32" ? "npm.cmd" : "npm",
-        args: [
-          "install",
-          "-g",
-          `context-mode@${CONTEXT_MODE_TARGET_VERSION}`,
-          "--no-audit",
-          "--no-fund",
-        ],
-        followUp: { program: "context-mode", args: ["setup", "--agents", platform] },
-        currentVersion,
-        targetVersion: CONTEXT_MODE_TARGET_VERSION,
-        platform,
-        requiresRestart: true,
-      };
-    },
-    async upgrade(input, context) {
-      const platform = contextModePlatformFor(input.provider);
-      const binary = await resolvedBinary(context?.paseo);
-      return {
-        program: binary.launch.program,
-        args: [...binary.launch.args, "upgrade", "--agents", platform],
-        currentVersion: await versionOf(binary, platform),
-        targetVersion: "latest",
-        platform,
-        requiresRestart: true,
-      };
     },
   };
 }

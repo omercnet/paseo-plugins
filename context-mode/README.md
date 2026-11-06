@@ -30,7 +30,6 @@ These previews were captured from an isolated Paseo test daemon with Context Mod
 - Context Mode 2 keeps one database per project, shared by every agent, so storage is no longer isolated per provider.
 - Provides project-scoped knowledge search (worktree or project scope, relevance or timeline order, with a More results button that follows upstream's page cursor), local-path indexing, URL indexing, indexed-source visibility with per-source forget, and a Recent sessions list on the dashboard. A session row can show Context Mode's `ctx_resume` state block (the last task, changed files and open errors an agent gets after a compact or restart) or forget that session. Index labels are chosen by Context Mode (the project-relative path or the final URL), so only content indexed by an agent carries a custom label. The agent selected in Knowledge only labels the Context Mode process; the project path decides which database is used. Plugin-initiated calls share one fixed `paseo-context-mode` session, which the sessions list leaves out.
 - Requires an explicit provider, project path, scope review, and second confirmation before forgetting a project, session, or source. Deletion remains delegated to Context Mode's own `ctx_purge` contract.
-- Returns structured install and upgrade argv for review, with a follow-up setup command when needed; Paseo never executes those commands automatically.
 - Registers the `context-mode` screen with URL-persisted `section`, `agentId`, and `workspaceId` params. Composer pills open Knowledge using the selected host's agent provider and working directory. URL params never carry paths or queries.
 - Providers that Context Mode does not support, and missing agents or mismatched workspaces, require explicit scope selection.
 - Adds a live Healthy/Failing sidebar footer row, reusing the screen's health data.
@@ -61,9 +60,9 @@ The npm install and update flow requires Paseo `^0.12.0 || ^0.13.0 || ^0.14.0 ||
 
 ## Commands and limits
 
-The daemon launches Context Mode directly with an argv array and no shell. MCP calls cover diagnostics, stats, search, indexing (path or URL), and explicitly confirmed purge. Each subprocess has a 192 KiB combined output cap and a per-tool timeout: 15 seconds for stats, 20 for search and resume, 30 for doctor, and 120 for indexing, purge, execute, batch, and upgrade. The version and tool-list handshake has a 12-second timeout. Status is cached for 10 seconds and raw stats for 5 seconds.
+The daemon launches Context Mode directly with an argv array and no shell. MCP calls cover diagnostics, stats, search, indexing (path or URL), and explicitly confirmed purge. Each subprocess has a 192 KiB combined output cap and a per-tool timeout: 15 seconds for stats, 20 for search and resume, 30 for doctor, and 120 for indexing, purge, execute, and batch. The version and tool-list handshake has a 12-second timeout. Status is cached for 10 seconds and raw stats for 5 seconds.
 
-Install and upgrade actions return separate program and argument fields. They are displayed for review and never executed by the plugin. Older Context Mode builds that lack required tools are reported as unsupported. Missing executables, launch failures, timeouts, protocol errors, output limits, unsupported database schemas, locked databases, and partial database scans are surfaced as typed states or warnings.
+Context Mode updates arrive with plugin updates, since the runtime is bundled. Older Context Mode builds that lack required tools are reported as unsupported. Missing executables, launch failures, timeouts, protocol errors, output limits, unsupported database schemas, locked databases, and partial database scans are surfaced as typed states or warnings.
 
 ## Development
 
