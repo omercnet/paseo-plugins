@@ -24,7 +24,7 @@ import {
 } from "./helpers/provider-harness";
 
 const sessionLimitReached = (maxSessions: number) =>
-  `OMP session limit reached (${maxSessions} open sessions). Archive idle agents or raise the session limit in OMP → Plugin.`;
+  `OMP session limit reached (${maxSessions} open sessions). Archive idle agents or raise the session limit in OMP → Plugin provider.`;
 
 async function openOutcome(connection: ProviderConnection, events: EventLog, sessionId: string) {
   await connection.send({

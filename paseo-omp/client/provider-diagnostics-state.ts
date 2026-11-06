@@ -8,7 +8,7 @@ import type {
   OmpVersionStatus,
   PathState,
 } from "../shared/provider-diagnostics";
-import { isOmpProvider } from "./omp-store-state";
+import { isOmpPluginProvider, isOmpProvider } from "./omp-store-state";
 import type { PaseoApi, PaseoProviderSnapshotResult } from "./paseo-types";
 
 export type ProviderHealthTone = "ok" | "warning" | "danger" | "muted";
@@ -258,6 +258,15 @@ export function selectKnownOmpProviders(
           },
         ]
       : [],
+  );
+}
+
+/** True while any provider this plugin registers (`omp-plugin`, `omp-plugin-<profile>`) is enabled. */
+export function hasEnabledPluginProvider(
+  entries: readonly PaseoProviderSnapshotResult["entries"][number][],
+): boolean {
+  return selectKnownOmpProviders(entries).some(
+    (provider) => provider.enabled && isOmpPluginProvider(provider.id),
   );
 }
 
