@@ -54,14 +54,14 @@ Run this workflow from the `paseo-omp` directory.
    printf 'modelRoles:\n  default: localtest/stub\n' > "$OMP_DEMO_DIR/config.yml"
    ```
 
-   Pre-seed `$OMP_DEMO_DIR/mcp.json` or other state with whatever the change needs a human to try. The plugin passes `PI_CODING_AGENT_DIR` through but not provider API keys, so the stub model is the only way in. For agents that must answer, point `baseUrl` at `canary/mock-llm.ts` (`PORT=<port> bun canary/mock-llm.ts`) instead of the dead port 9.
+   Pre-seed `$OMP_DEMO_DIR/mcp.json` or other state with whatever the change needs a human to try. The plugin forwards `PI_CODING_AGENT_DIR` and recognized provider credentials such as `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the daemon's environment, so launch the daemon from a shell without real keys and use the stub model. For agents that must answer, point `baseUrl` at `canary/mock-llm.ts` (`PORT=<port> bun canary/mock-llm.ts`) instead of the dead port 9.
 
    To test features for Paseo's bundled `omp` provider, also add `"agents": { "providers": { "omp": { "enabled": true } } }` to `.paseo-dev/config.json`.
 
-3. Start only that home with the project-pinned Paseo CLI. The config owns the listen, relay, web UI, and plugin settings:
+3. Start only that home with the project-pinned Paseo CLI. The config owns the listen, relay, web UI, and plugin settings. If a `.paseo-dev` daemon from an earlier run is still up, `daemon start` returns it unchanged and the new environment never applies; once the human is done with it, stop it first with the command in step 6. Clear `OMP_PROFILE` and `PI_PROFILE`, or OMP uses that profile instead of `PI_CODING_AGENT_DIR`:
 
    ```sh
-   HOME="$OMP_DEMO_HOME" PI_CODING_AGENT_DIR="$OMP_DEMO_DIR" npx --no-install paseo daemon start --home "$PWD/.paseo-dev"
+   env -u OMP_PROFILE -u PI_PROFILE HOME="$OMP_DEMO_HOME" PI_CODING_AGENT_DIR="$OMP_DEMO_DIR" npx --no-install paseo daemon start --home "$PWD/.paseo-dev"
    npx --no-install paseo daemon status --home "$PWD/.paseo-dev" --json
    ```
 
