@@ -164,10 +164,13 @@ describe("plugin providers are opt-in for new installs", () => {
   );
 
   test("more records than the startup bound keeps the providers on without claiming use", () => {
+    const unrelated = JSON.stringify({
+      target: { type: "new-agent", config: { provider: "claude", cwd: "/x" } },
+    });
     const schedules = join(home, "schedules");
     mkdirSync(schedules, { recursive: true });
     for (let index = 0; index <= 10_000; index += 1) {
-      writeFileSync(join(schedules, `${index}.json`), "{}");
+      writeFileSync(join(schedules, `${index}.json`), unrelated);
     }
     expect(decide()).toBe(false);
     expect(existsSync(markerPath())).toBe(false);
