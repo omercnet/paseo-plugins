@@ -169,7 +169,7 @@ function DocumentationLink({
 
 function ProviderSetupSection({ styles }: { styles: OmpConfigStyles }) {
   return (
-    <SectionCard styles={styles} title="OMP Plugin">
+    <SectionCard styles={styles} title="Provider">
       <Text style={styles.muted}>
         Host-wide inherited environment names apply to every OMP provider. Profile launch overrides
         remain available for narrower exceptions.
