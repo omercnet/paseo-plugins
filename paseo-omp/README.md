@@ -1,6 +1,6 @@
 # Paseo OMP plugin
 
-Community OMP integration for Paseo. The plugin registers the distinct `omp-plugin` provider plus named profile providers and coexists with Paseo's bundled `omp` provider.
+Community OMP integration for Paseo. The plugin's own `omp-plugin` provider plus named profile providers are off by default for new installs while they are retired in favor of Paseo's bundled `omp` provider; the plugin's configuration tabs and timeline cards also work on the bundled `omp` provider. See [Plugin provider opt-in](#plugin-provider-opt-in).
 
 > **Stable:** see [Support](SUPPORT.md) for supported versions and known limitations, and review release notes for any migration requirements before upgrading.
 
@@ -31,7 +31,7 @@ paseo plugin install npm:@omercnet/paseo-omp@<version>
 paseo plugin ls paseo-omp
 ```
 
-Open the **OMP** sidebar to review the provider-profile contract, choose which composer pills appear, browse and edit native scalar settings, manage OMP-native plugins, verify runtime health, and generate a bounded support report under **Help**. The same tabs are available in the workspace OMP panel, except for the global Composer preference and the Accounts and MCPs tabs. Then create an agent and select **OMP Plugin**. Its optional **MCP** composer control runs OMP-native management commands in the current session; setup questions and authorization stay in that chat timeline, where OAuth can open in a workspace-scoped Paseo Browser or on the current device. While OMP subagents run, a row under each `task` card in the conversation lets you steer or stop one of them; this needs OMP 18.4.9 or newer. Composer pill preferences are shared by clients connected to the same host; normal use requires no other plugin-specific settings.
+Open the **OMP** sidebar to review the provider-profile contract, choose which composer pills appear, browse and edit native scalar settings, manage OMP-native plugins, verify runtime health, and generate a bounded support report under **Help**. The same tabs are available in the workspace OMP panel, except for the global Composer preference and the Accounts and MCPs tabs. Then create an agent and select **OMP Plugin**; on a new install, [enable it](#plugin-provider-opt-in) and restart the daemon first. Its optional **MCP** composer control runs OMP-native management commands in the current session; setup questions and authorization stay in that chat timeline, where OAuth can open in a workspace-scoped Paseo Browser or on the current device. While OMP subagents run, a row under each `task` card in the conversation lets you steer or stop one of them; this needs OMP 18.4.9 or newer. Composer pill preferences are shared by clients connected to the same host; normal use requires no other plugin-specific settings.
 
 Open the **Accounts** tab of the **OMP** sidebar to see the logins in OMP's own credential store with their usage and banked resets, add a login through OMP's own sign-in, sign one out, spend a banked reset, and steer OMP's balancing: prefer a login, keep part of its quota in reserve, and set what OMP does at a limit. Steering is written to OMP's own config. See [OMP accounts](docs/configuration.md#omp-accounts).
 
@@ -46,6 +46,18 @@ Open the **MCPs** tab of the **OMP** sidebar to list the MCP servers OMP connect
 - [Release checklist](docs/release-checklist.md)
 
 The plugin uses public Paseo 0.14 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
+
+## Plugin provider opt-in
+
+On a new install, `omp-plugin` and `omp-plugin-<profile>` are not offered. To turn them on, add the provider to the Paseo config and restart the daemon:
+
+```json
+{ "agents": { "providers": { "omp-plugin": { "enabled": true } } } }
+```
+
+An entry for any plugin provider registers all of them, as before. Disabling is per provider: `enabled: false` on `omp-plugin` turns off only `omp-plugin`, so give each `omp-plugin-<profile>` you do not want its own `enabled: false` entry. Paseo versions whose provider grid lists opt-in plugin providers also offer **Add** there.
+
+Hosts that already use the plugin provider are not affected and need no step. The first start after upgrading looks for agents or schedules on `omp-plugin*` and, if it finds one, records that in `<PASEO_HOME>/plugin-data/paseo-omp/provider-opt-in.json`. Config entries that name or extend an `omp-plugin*` provider (including agent profiles and metadata generation providers) are read on every start. If the Paseo home cannot be read or parsed, the providers stay on. Deleting old agents later does not turn them off; disable each provider you no longer want with its own `agents.providers.<id>.enabled: false` entry. If that file cannot be written (for example a read-only Paseo home), the providers stay on for that start but nothing is latched; check that the file exists, or add an `agents.providers.omp-plugin` entry, before deleting the last such agent or schedule.
 
 ## Named OMP profiles
 
@@ -135,7 +147,7 @@ Paseo 0.14 is the minimum supported release. The controlled Docker canary is pin
 
 Paseo releases idle resumable agent runtimes after one hour; the agent stays listed as `closed` and the next prompt resumes the same OMP session. The plugin vetoes that release while the session has a running turn, a pending permission, an active subagent, or OMP background async work, and while OMP does not report a settled state (the plugin needs the `hasPendingAsyncWork` and `isSettled` fields in OMP's `get_state`; builds without them are never released). Set `agents.idleRuntimeCleanup: false` in the Paseo config to disable idle release for every provider.
 
-Install, update, disable, or remove `paseo-omp` independently of the bundled provider. Verify the provider snapshot contains `omp-plugin` after installation; a bundled `omp` entry may remain present and is not modified by this plugin.
+Install, update, disable, or remove `paseo-omp` independently of the bundled provider. On a new install the snapshot lists only the bundled `omp` provider until you enable `omp-plugin` as described in [Plugin provider opt-in](#plugin-provider-opt-in); a bundled `omp` entry is never modified by this plugin.
 
 ## Output and credential boundary
 

@@ -42,6 +42,7 @@ import { withOmpStore } from "./server/paths";
 import { OmpProtocolViolationCollector } from "./server/protocol-violation-diagnostics";
 import { withOmpSessionOpenEnv } from "./server/provider/host-tools";
 import { ompImageCache, resolveGetOmpImage } from "./server/provider/image-cache";
+import { pluginProvidersRequireConfiguration } from "./server/provider/opt-in";
 import {
   createProfileOmpProvider,
   discoverOmpProfiles,
@@ -143,10 +144,11 @@ export default function contribute(server: PluginServerContext) {
   const accounts = new OmpAccounts();
   const mcps = new OmpMcps();
   const profiles = discoverOmpProfilesSync();
+  const requiresConfiguration = pluginProvidersRequireConfiguration();
   server.handle(listOmpStores, async () => ({ profiles: await discoverOmpProfiles() }));
   for (const profile of profiles) {
-    server.registerProvider(
-      createProfileOmpProvider(profile, {
+    server.registerProvider({
+      ...createProfileOmpProvider(profile, {
         browserAuthorizationRegistry,
         sessionLimit,
         subagentControlRegistry,
@@ -154,7 +156,8 @@ export default function contribute(server: PluginServerContext) {
         reportOperationalFailure: operationalFailures.report,
         resolveHostInheritEnv,
       }),
-    );
+      requiresConfiguration,
+    });
   }
   server.handle(listHubProcesses, resolveListHubProcesses);
   server.handle(tailHubLog, resolveTailHubLog);
@@ -285,8 +288,8 @@ export default function contribute(server: PluginServerContext) {
     if (request.provider !== "omp-plugin" && !request.provider.startsWith("omp-plugin-")) return;
     return withOmpSessionOpenEnv(request);
   });
-  server.registerProvider(
-    createOmpProvider({
+  server.registerProvider({
+    ...createOmpProvider({
       browserAuthorizationRegistry,
       sessionLimit,
       subagentControlRegistry,
@@ -294,7 +297,8 @@ export default function contribute(server: PluginServerContext) {
       reportOperationalFailure: operationalFailures.report,
       resolveHostInheritEnv,
     }),
-  );
+    requiresConfiguration,
+  });
   return () => {
     browserAuthorizationRegistry.clear();
     accounts.stop();

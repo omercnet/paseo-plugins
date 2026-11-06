@@ -1,6 +1,13 @@
 {
   "version": 1,
   "pluginsEnabled": true,
+  "agents": {
+    "providers": {
+      "omp-plugin": {
+        "enabled": true
+      }
+    }
+  },
   "features": {
     "webUi": {
       "enabled": true
