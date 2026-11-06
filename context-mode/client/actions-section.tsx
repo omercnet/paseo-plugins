@@ -23,12 +23,8 @@ import type { ContextModeProvider } from "../shared/knowledge";
 const PROVIDERS = [
   { value: "claude", label: "Claude" },
   { value: "codex", label: "Codex" },
-  { value: "cursor", label: "Cursor" },
   { value: "copilot", label: "Copilot" },
   { value: "opencode", label: "OpenCode" },
-  { value: "pi", label: "Pi" },
-  { value: "omp", label: "OMP" },
-  { value: "omp-plugin", label: "OMP plugin" },
 ] as const satisfies ReadonlyArray<{ value: ContextModeProvider; label: string }>;
 
 export type ActionsSectionProps = Pick<PluginSurfaceProps, "theme" | "layout">;
@@ -205,6 +201,11 @@ function DoctorResult({
                   {row.detail}
                 </Text>
               ) : null}
+              {row.fix ? (
+                <Text selectable style={styles.doctorDetail}>
+                  Fix: {row.fix}
+                </Text>
+              ) : null}
             </View>
           </View>
         );
@@ -220,6 +221,50 @@ function DoctorResult({
         </View>
       ) : null}
     </View>
+  );
+}
+
+function CommandArgv({
+  command,
+  label,
+  styles,
+}: {
+  command: { program: string; args: string[] };
+  label: string;
+  styles: ActionsStyles;
+}) {
+  const seenArguments = new Map<string, number>();
+  const argumentsWithKeys = command.args.map((argument, index) => {
+    const occurrence = seenArguments.get(argument) ?? 0;
+    seenArguments.set(argument, occurrence + 1);
+    return { argument, position: index + 1, key: `${argument}:${occurrence}` };
+  });
+  return (
+    <>
+      <View style={styles.property}>
+        <Text style={styles.propertyLabel}>{label}</Text>
+        <Text selectable style={styles.propertyValue}>
+          {command.program}
+        </Text>
+      </View>
+      <View style={styles.property}>
+        <Text style={styles.propertyLabel}>Arguments ({command.args.length})</Text>
+        <ScrollView nestedScrollEnabled style={styles.argumentFrame}>
+          {command.args.length ? (
+            argumentsWithKeys.map(({ argument, key, position }) => (
+              <View key={key} style={styles.argumentRow}>
+                <Text style={styles.argumentIndex}>{position}</Text>
+                <Text selectable style={styles.argumentValue}>
+                  {argument}
+                </Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.muted}>No arguments.</Text>
+          )}
+        </ScrollView>
+      </View>
+    </>
   );
 }
 
@@ -253,13 +298,6 @@ function CommandResult({
   }
   if (!action) return null;
 
-  const seenArguments = new Map<string, number>();
-  const argumentsWithKeys = action.args.map((argument, index) => {
-    const occurrence = seenArguments.get(argument) ?? 0;
-    seenArguments.set(argument, occurrence + 1);
-    return { argument, position: index + 1, key: `${argument}:${occurrence}` };
-  });
-
   return (
     <View accessibilityLiveRegion="polite" style={styles.commandCard}>
       <View style={styles.cardHeader}>
@@ -268,29 +306,10 @@ function CommandResult({
           Review this executable and argument list before running it outside Paseo.
         </Text>
       </View>
-      <View style={styles.property}>
-        <Text style={styles.propertyLabel}>Program</Text>
-        <Text selectable style={styles.propertyValue}>
-          {action.program}
-        </Text>
-      </View>
-      <View style={styles.property}>
-        <Text style={styles.propertyLabel}>Arguments ({action.args.length})</Text>
-        <ScrollView nestedScrollEnabled style={styles.argumentFrame}>
-          {action.args.length ? (
-            argumentsWithKeys.map(({ argument, key, position }) => (
-              <View key={key} style={styles.argumentRow}>
-                <Text style={styles.argumentIndex}>{position}</Text>
-                <Text selectable style={styles.argumentValue}>
-                  {argument}
-                </Text>
-              </View>
-            ))
-          ) : (
-            <Text style={styles.muted}>No arguments.</Text>
-          )}
-        </ScrollView>
-      </View>
+      <CommandArgv command={action} label="Program" styles={styles} />
+      {action.followUp ? (
+        <CommandArgv command={action.followUp} label="Then run" styles={styles} />
+      ) : null}
       <View style={styles.metaRow}>
         <View style={styles.badge}>
           <Text style={styles.badgeText}>{action.platform}</Text>
@@ -392,8 +411,8 @@ export function ActionsSection({ theme, layout }: ActionsSectionProps) {
             Doctor
           </Text>
           <Text style={styles.muted}>
-            Run read-only checks. Structured rows are shown first; the original diagnostic text
-            remains available as a fallback.
+            Run checks against a Paseo-owned probe store, so your project data is untouched.
+            Structured rows are shown first; the original diagnostic text remains available.
           </Text>
         </View>
         <View style={styles.actions}>

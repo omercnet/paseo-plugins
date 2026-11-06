@@ -6,14 +6,14 @@ import { dirname, join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { resolveContextModeBinary } from "../server/binary";
-import { createContextModeHandlers } from "../server/handlers";
+import { readContextModeVersion, resolveContextModeBinary } from "../server/binary";
+import { contextModeProbeOptions, createContextModeHandlers } from "../server/handlers";
 import type { ProviderConfigSource } from "../server/integration";
 import {
   CONTEXT_MODE_TOOL_TIMEOUT_MS,
   callContextModeTool,
   inspectContextMode,
-  ProcessFailure,
+  serverArgs,
 } from "../server/mcp-process";
 import {
   type ContextModeSettings,
@@ -45,6 +45,21 @@ function launch(program: string) {
     : { program, args: [] };
 }
 
+const PROBE = { platform: "claude-code", cwd: "/probe/cwd", dataDir: "/probe" } as const;
+const options = { platform: "codex" } as const;
+const noVersion = { readVersion: async () => null };
+const ALL_TOOLS = [
+  "ctx_execute",
+  "ctx_batch",
+  "ctx_index",
+  "ctx_search",
+  "ctx_resume",
+  "ctx_stats",
+  "ctx_doctor",
+  "ctx_upgrade",
+  "ctx_purge",
+];
+
 function settingsHandle(
   values: ContextModeSettings,
 ): PluginSettings<typeof contextModeSettings.schema> {
@@ -55,18 +70,25 @@ function settingsHandle(
 }
 
 const fakeMcpSource = `
+if (process.argv.includes("--version")) {
+  console.log("context-mode 2.1.4");
+  process.exit(0);
+}
 const readline = require("node:readline");
 const lines = readline.createInterface({ input: process.stdin });
 lines.on("line", (line) => {
   const request = JSON.parse(line);
   if (request.id === 1) {
-    console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "context-mode", version: "2.0.5" } } }));
+    console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "context-mode", version: "dev" } } }));
   }
   if (request.method === "tools/list") {
-    console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { tools: [{ name: "ctx_doctor" }, { name: "ctx_stats" }] } }));
+    console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { tools: process.env.FAKE_TOOLS ? JSON.parse(process.env.FAKE_TOOLS) : [{ name: "ctx_execute" }, { name: "ctx_batch" }, { name: "ctx_index" }, { name: "ctx_search" }, { name: "ctx_resume" }, { name: "ctx_stats" }, { name: "ctx_doctor" }, { name: "ctx_upgrade" }, { name: "ctx_purge" }] } }));
   }
   if (request.method === "tools/call") {
-    const text = request.params.name === "ctx_stats" ? "17.4 MB kept out · 96%" : "[x] FTS5 ready\\n[x] hooks ready";
+    const text =
+      request.params.name === "ctx_stats" ? "| Scope | Saved |" :
+      request.params.name === "ctx_resume" ? [process.argv.slice(2).join(" "), process.cwd(), process.env.CONTEXT_MODE_DATA_DIR, JSON.stringify(request.params.arguments), JSON.stringify(request.params._meta), process.env.CLAUDE_PROJECT_DIR].join("\\n") :
+      "| D1 version | PASS |";
     console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text }] } }));
   }
 });
@@ -104,6 +126,29 @@ describe("external binary resolution", () => {
     });
   });
 
+  test("skips a Context Mode 1.x binary so the 2.x runtime is used", async () => {
+    const versions: Record<string, string> = {
+      "/first/context-mode": "1.0.169",
+      "/second/context-mode": "2.1.4",
+    };
+    const result = await resolveContextModeBinary(ContextModeSettingsSchema.parse({}), {
+      env: { PATH: "/first:/second" },
+      platform: "linux",
+      canExecute: async (path) => path in versions,
+      readVersion: async ({ program }) => versions[program] ?? null,
+    });
+    expect(result).toMatchObject({ state: "found", path: "/second/context-mode" });
+
+    await expect(
+      resolveContextModeBinary(ContextModeSettingsSchema.parse({}), {
+        env: { PATH: "/first" },
+        platform: "linux",
+        canExecute: async (path) => path in versions,
+        readVersion: async ({ program }) => versions[program] ?? null,
+      }),
+    ).resolves.toMatchObject({ state: "missing", code: "not-installed" });
+  });
+
   test("reports relative configured paths and PATH fallbacks", async () => {
     const relative = {
       ...ContextModeSettingsSchema.parse({}),
@@ -136,7 +181,7 @@ describe("external binary resolution", () => {
     "resolves a Windows npm %s shim through node and its CLI module",
     async (extension) => {
       const shim = `C:\\npm\\context-mode${extension}`;
-      const modulePath = "C:\\npm\\node_modules\\context-mode\\cli.bundle.mjs";
+      const modulePath = "C:\\npm\\node_modules\\context-mode\\cli.mjs";
       const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
       const result = await resolveContextModeBinary(settings, {
         platform: "win32",
@@ -213,12 +258,17 @@ describe("external binary resolution", () => {
       await writeFile(path, JSON.stringify(value));
     }
     async function contextModePackage(directory: string) {
+      // 2.x exports only its OpenCode plugin; the CLI is not an export.
       await writeJson(join(directory, "package.json"), {
         name: "context-mode",
-        exports: { "./cli": "./cli.bundle.mjs" },
+        version: "2.1.4",
+        main: "./opencode/plugin.js",
+        exports: { ".": "./opencode/plugin.js", "./server": "./opencode/plugin.js" },
       });
-      await writeFile(join(directory, "cli.bundle.mjs"), "");
-      return realpath(join(directory, "cli.bundle.mjs"));
+      await mkdir(join(directory, "opencode"), { recursive: true });
+      await writeFile(join(directory, "opencode", "plugin.js"), "");
+      await writeFile(join(directory, "cli.mjs"), "");
+      return realpath(join(directory, "cli.mjs"));
     }
     // npm layout: the plugin package and its dependencies are siblings under node_modules.
     const plugin = join(root, "context-mode", "install", "node_modules", "@omercnet", "plugin");
@@ -263,6 +313,9 @@ describe("external binary resolution", () => {
       source: "bundled",
       launch: { program: "/usr/bin/node", args: [cli] },
     });
+    await expect(readContextModeVersion({ program: "/usr/bin/node", args: [cli] })).resolves.toBe(
+      "2.1.4",
+    );
   });
 
   test("launches the bundled runtime as Node when the host is Electron", async () => {
@@ -297,42 +350,97 @@ describe("external binary resolution", () => {
 });
 
 describe("bounded Context Mode process", () => {
-  test("reports version and preserves upstream doctor and stats text", async () => {
+  test("runs the stdio server for the requested agent", () => {
+    expect(serverArgs({ program: "/usr/bin/node", args: ["/pkg/cli.mjs"] }, "copilot-cli")).toEqual(
+      {
+        command: "/usr/bin/node",
+        args: ["/pkg/cli.mjs", "server", "--agent", "copilot-cli"],
+      },
+    );
+  });
+
+  test("reports the CLI version instead of the handshake's dev label", async () => {
     const binary = await executable(fakeMcpSource);
     await expect(inspectContextMode(launch(binary))).resolves.toEqual({
-      version: "2.0.5",
-      tools: ["ctx_doctor", "ctx_stats"],
+      version: "2.1.4",
+      tools: ALL_TOOLS,
     });
-    await expect(callContextModeTool(launch(binary), "ctx_doctor")).resolves.toBe(
-      "[x] FTS5 ready\n[x] hooks ready",
+  });
+
+  test("reads the version from the package.json beside the CLI", async () => {
+    const binary = await executable(fakeMcpSource);
+    await writeFile(
+      join(dirname(binary), "package.json"),
+      JSON.stringify({ name: "context-mode", version: "2.1.9" }),
     );
-    await expect(callContextModeTool(launch(binary), "ctx_stats")).resolves.toBe(
-      "17.4 MB kept out · 96%",
+    await expect(inspectContextMode(launch(binary))).resolves.toMatchObject({ version: "2.1.9" });
+  });
+
+  test("reports a runtime without the 2.x core tools as unsupported", async () => {
+    const binary = await executable(fakeMcpSource);
+    await expect(
+      inspectContextMode({
+        ...launch(binary),
+        env: { FAKE_TOOLS: JSON.stringify([{ name: "ctx_doctor" }, { name: "ctx_stats" }]) },
+      }),
+    ).rejects.toMatchObject({
+      code: "unsupported",
+      message: expect.stringContaining("ctx_index, ctx_search, ctx_purge"),
+    });
+  });
+
+  test("explains a doctor-only runtime as a Node.js problem", async () => {
+    const binary = await executable(fakeMcpSource);
+    await expect(
+      inspectContextMode({
+        ...launch(binary),
+        env: { FAKE_TOOLS: JSON.stringify([{ name: "ctx_doctor" }]) },
+      }),
+    ).rejects.toMatchObject({
+      code: "unsupported",
+      message: expect.stringContaining("Node.js 24.15"),
+    });
+  });
+
+  test("passes agent, cwd, data dir and the plugin session to the server", async () => {
+    const binary = await executable(fakeMcpSource);
+    const cwd = await realpath(dirname(binary));
+    await expect(
+      callContextModeTool(launch(binary), "ctx_resume", { session: "s1" }, noVersion, {
+        platform: "opencode",
+        cwd,
+        dataDir: "/data/cm",
+      }),
+    ).resolves.toBe(
+      `server --agent opencode\n${cwd}\n/data/cm\n{"session":"s1"}\n{"sessionId":"paseo-context-mode"}\n`,
     );
+    await expect(callContextModeTool(launch(binary), "ctx_doctor", {}, {}, options)).resolves.toBe(
+      "| D1 version | PASS |",
+    );
+  });
+
+  test("pins Claude Code's project to the requested cwd", async () => {
+    const binary = await executable(fakeMcpSource);
+    const cwd = await realpath(dirname(binary));
+    vi.stubEnv("CLAUDE_PROJECT_DIR", "/elsewhere");
+    const output = await callContextModeTool(launch(binary), "ctx_resume", {}, noVersion, {
+      platform: "claude-code",
+      cwd,
+    });
+    expect(output.split("\n").at(-1)).toBe(cwd);
   });
 
   test("starts the process with the launch environment", async () => {
-    const binary = await executable(
-      fakeMcpSource.replace('version: "2.0.5"', "version: process.env.LAUNCH_PROBE"),
-    );
+    const binary = await executable(fakeMcpSource);
     await expect(
-      inspectContextMode({ ...launch(binary), env: { LAUNCH_PROBE: "from-launch" } }),
-    ).resolves.toMatchObject({ version: "from-launch" });
-  });
-
-  test("keeps the launch environment when dependencies also supply one", async () => {
-    const binary = await executable(
-      fakeMcpSource.replace(
-        'version: "2.0.5"',
-        'version: process.env.LAUNCH_PROBE + "/" + process.env.DEPENDENCY_PROBE',
+      callContextModeTool(
+        { ...launch(binary), env: { CONTEXT_MODE_DATA_DIR: "/from-launch" } },
+        "ctx_resume",
+        {},
+        {},
+        options,
       ),
-    );
-    await expect(
-      inspectContextMode(
-        { ...launch(binary), env: { LAUNCH_PROBE: "from-launch" } },
-        { env: { DEPENDENCY_PROBE: "from-dependencies" } },
-      ),
-    ).resolves.toMatchObject({ version: "from-launch/from-dependencies" });
+    ).resolves.toContain("/from-launch");
   });
 
   test("rejects a failed initialize response with the upstream message", async () => {
@@ -343,7 +451,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "boot failed" } }));
 });
 `);
-    await expect(inspectContextMode(launch(binary))).rejects.toMatchObject({
+    await expect(inspectContextMode(launch(binary), noVersion)).rejects.toMatchObject({
       code: "protocol-error",
       message: "boot failed",
     });
@@ -354,24 +462,27 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 const readline = require("node:readline");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
-  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "2.0.5" } } }));
+  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "dev" } } }));
   if (request.method === "tools/call") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "tool not found" } }));
 });
 `);
-    await expect(callContextModeTool(launch(binary), "ctx_doctor")).rejects.toMatchObject({
+    await expect(
+      callContextModeTool(launch(binary), "ctx_doctor", {}, {}, options),
+    ).rejects.toMatchObject({
       code: "unsupported",
       message: "tool not found",
     });
   });
 
-  test("budgets long-running Context Mode tools beyond upstream fetch timeouts", () => {
-    expect(CONTEXT_MODE_TOOL_TIMEOUT_MS.ctx_fetch_and_index).toBeGreaterThan(30_000);
+  test("budgets long-running Context Mode tools", () => {
     expect(CONTEXT_MODE_TOOL_TIMEOUT_MS.ctx_index).toBeGreaterThan(30_000);
     expect(CONTEXT_MODE_TOOL_TIMEOUT_MS.ctx_purge).toBeGreaterThan(30_000);
+    expect(CONTEXT_MODE_TOOL_TIMEOUT_MS.ctx_execute).toBeGreaterThan(30_000);
   });
 
   test("allows Context Mode to exit cleanly after a successful exchange", async () => {
     const signals: NodeJS.Signals[] = [];
+    const spawned: string[][] = [];
     const stdout = new PassThrough();
     const emitter = new EventEmitter();
     const stdin = new Writable({
@@ -381,12 +492,14 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         if (request.id === 1) {
           queueMicrotask(() =>
             stdout.write(
-              `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "1.0.169" } } })}\n`,
+              `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "dev" } } })}\n`,
             ),
           );
         } else if (request.id === 2) {
           queueMicrotask(() =>
-            stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [] } })}\n`),
+            stdout.write(
+              `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [{ name: "ctx_execute" }, { name: "ctx_batch" }, { name: "ctx_index" }, { name: "ctx_search" }, { name: "ctx_resume" }, { name: "ctx_stats" }, { name: "ctx_doctor" }, { name: "ctx_upgrade" }, { name: "ctx_purge" }] } })}\n`,
+            ),
           );
         }
       },
@@ -406,28 +519,36 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         return true;
       },
     }) as unknown as ChildProcessWithoutNullStreams;
-    const spawnProcess = (() => child) as unknown as typeof spawn;
+    const spawnProcess = ((command: string, args: string[]) => {
+      spawned.push([command, ...args]);
+      return child;
+    }) as unknown as typeof spawn;
 
     await expect(
-      inspectContextMode(launch("ignored"), { spawnProcess, terminationGraceMs: 20 }),
-    ).resolves.toEqual({ version: "1.0.169", tools: [] });
+      inspectContextMode(launch("ignored"), {
+        spawnProcess,
+        terminationGraceMs: 20,
+        readVersion: async () => "2.1.4",
+      }),
+    ).resolves.toEqual({ version: "2.1.4", tools: ALL_TOOLS });
     expect(signals).toEqual(["SIGTERM"]);
+    expect(spawned[0]?.slice(-3)).toEqual(["server", "--agent", "claude-code"]);
   });
 
   test("terminates commands that time out", async () => {
     const binary = await executable("process.stdin.resume();");
-    await expect(inspectContextMode(launch(binary), { timeoutMs: 30 })).rejects.toMatchObject({
-      code: "timeout",
-    });
+    await expect(
+      inspectContextMode(launch(binary), { ...noVersion, timeoutMs: 30 }),
+    ).rejects.toMatchObject({ code: "timeout" });
   });
 
   test("terminates commands that exceed the output cap", async () => {
     const binary = await executable(
       'process.stdout.write("x".repeat(4096)); process.stdin.resume();',
     );
-    await expect(inspectContextMode(launch(binary), { outputLimit: 128 })).rejects.toMatchObject({
-      code: "output-limit",
-    });
+    await expect(
+      inspectContextMode(launch(binary), { ...noVersion, outputLimit: 128 }),
+    ).rejects.toMatchObject({ code: "output-limit" });
   });
 
   test("turns a closed protocol input into a typed failure", async () => {
@@ -452,6 +573,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const spawnProcess = (() => child) as unknown as typeof spawn;
     await expect(
       inspectContextMode(launch("ignored"), {
+        ...noVersion,
         spawnProcess,
         timeoutMs: 1_000,
         terminationGraceMs: 1,
@@ -468,11 +590,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 const readline = require("node:readline");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
-  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "2.0.5" } } }));
+  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "dev" } } }));
   if (request.method === "tools/call") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "" }], structuredContent: { savedBytes: 17825792 } } }));
 });
 `);
-    await expect(callContextModeTool(launch(binary), "ctx_stats")).resolves.toBe(
+    await expect(callContextModeTool(launch(binary), "ctx_stats", {}, {}, options)).resolves.toBe(
       '{\n  "savedBytes": 17825792\n}',
     );
   });
@@ -482,11 +604,13 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 const readline = require("node:readline");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
-  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "2.0.5" } } }));
+  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "dev" } } }));
   if (request.method === "tools/call") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "upstream failure" }], isError: true } }));
 });
 `);
-    await expect(callContextModeTool(launch(binary), "ctx_doctor")).rejects.toMatchObject({
+    await expect(
+      callContextModeTool(launch(binary), "ctx_doctor", {}, {}, options),
+    ).rejects.toMatchObject({
       code: "command-failed",
       message: "upstream failure",
     });
@@ -512,10 +636,9 @@ describe("RPC behavior", () => {
     });
   });
 
-  test("caches brief status probes and keeps reports separate", async () => {
+  test("caches brief status probes until a fresh read is requested", async () => {
     const settings = ContextModeSettingsSchema.parse({});
     let inspections = 0;
-    const calls: string[] = [];
     const handlers = createContextModeHandlers(settingsHandle(settings), {
       now: () => new Date("2026-09-20T00:00:00.000Z"),
       resolveBinary: async () => ({
@@ -524,37 +647,26 @@ describe("RPC behavior", () => {
         source: "path",
         launch: launch("/bin/context-mode"),
       }),
+      probeOptions: async () => PROBE,
       inspect: async () => {
         inspections += 1;
-        return { version: "2.0.5", tools: ["ctx_doctor", "ctx_stats"] };
-      },
-      callTool: async (_launch, name) => {
-        calls.push(name);
-        return name === "ctx_doctor" ? "doctor" : "stats";
+        return { version: "2.1.4", tools: ALL_TOOLS };
       },
     });
 
     const status = await handlers.status({ fresh: false });
     const cachedStatus = await handlers.status({ fresh: false });
     const refreshedStatus = await handlers.status({ fresh: true });
-    const doctor = await handlers.doctor({ fresh: false });
-    const stats = await handlers.stats({ fresh: false });
-    const refreshedStats = await handlers.stats({ fresh: true });
 
     expect(status).toEqual(cachedStatus);
-    expect(status).toMatchObject({ state: "ready", supportsDoctor: true, supportsStats: true });
-    expect(refreshedStatus).toMatchObject({ state: "ready", version: "2.0.5" });
-    expect(doctor).toMatchObject({ state: "ready", output: "doctor" });
-    expect(stats).toMatchObject({ state: "ready", output: "stats" });
-    expect(refreshedStats).toMatchObject({ state: "ready", output: "stats" });
+    expect(status).toMatchObject({ state: "ready", version: "2.1.4" });
+    expect(refreshedStatus).toMatchObject({ state: "ready", version: "2.1.4" });
     expect(inspections).toBe(2);
-    expect(calls).toEqual(["ctx_doctor", "ctx_stats", "ctx_stats"]);
   });
 
-  test("runs every panel probe against a plugin-owned storage root, never a provider root", async () => {
-    vi.stubEnv("PASEO_HOME", "/srv/paseo");
+  test("runs every panel probe with the same plugin-owned options", async () => {
     const settings = ContextModeSettingsSchema.parse({});
-    const environments: Array<NodeJS.ProcessEnv | undefined> = [];
+    const seen: unknown[] = [];
     const handlers = createContextModeHandlers(settingsHandle(settings), {
       resolveBinary: async () => ({
         state: "found",
@@ -562,13 +674,10 @@ describe("RPC behavior", () => {
         source: "path",
         launch: launch("/bin/context-mode"),
       }),
-      inspect: async (_launch, options) => {
-        environments.push(options?.env);
-        return { version: "2.0.5", tools: ["ctx_doctor", "ctx_stats"] };
-      },
-      callTool: async (_launch, _name, _arguments, options) => {
-        environments.push(options?.env);
-        return "report";
+      probeOptions: async () => PROBE,
+      inspect: async (_launch, probe) => {
+        seen.push(probe);
+        return { version: "2.1.4", tools: ALL_TOOLS };
       },
       createAudit: async () => ({
         runtimePath: "",
@@ -580,12 +689,22 @@ describe("RPC behavior", () => {
     });
 
     await handlers.status({ fresh: true });
-    await handlers.doctor({ fresh: true });
-    await handlers.stats({ fresh: true });
     await handlers.audit({ fresh: true });
 
-    const probeRoot = join("/srv/paseo", "plugin-data", "context-mode", "probe");
-    expect(environments).toEqual(Array(4).fill({ CONTEXT_MODE_DIR: probeRoot }));
+    expect(seen).toEqual([PROBE, PROBE]);
+  });
+
+  test("keeps probe stores and cwd under PASEO_HOME, never the user's data dir", async () => {
+    const home = await mkdtemp(join(tmpdir(), "paseo-context-mode-home-"));
+    temporaryDirectories.push(home);
+    const dataDir = join(home, "plugin-data", "context-mode", "probe");
+
+    await expect(contextModeProbeOptions("codex", { PASEO_HOME: home })).resolves.toEqual({
+      platform: "codex",
+      cwd: join(dataDir, "cwd"),
+      dataDir,
+    });
+    await expect(realpath(join(dataDir, "cwd"))).resolves.toBeTruthy();
   });
 
   test("maps settings read failures to invalid settings reports", async () => {
@@ -636,6 +755,7 @@ describe("RPC behavior", () => {
         source: "path",
         launch: launch("/bin/context-mode"),
       }),
+      probeOptions: async () => PROBE,
       inspect: async () => {
         throw new Error("probe failed");
       },
@@ -648,45 +768,6 @@ describe("RPC behavior", () => {
     });
   });
 
-  test("caches brief status probes and keeps reports separate", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    let inspections = 0;
-    const calls: string[] = [];
-    const handlers = createContextModeHandlers(settingsHandle(settings), {
-      now: () => new Date("2026-09-20T00:00:00.000Z"),
-      resolveBinary: async () => ({
-        state: "found",
-        path: "/bin/context-mode",
-        source: "path",
-        launch: launch("/bin/context-mode"),
-      }),
-      inspect: async () => {
-        inspections += 1;
-        return { version: "2.0.5", tools: ["ctx_doctor", "ctx_stats"] };
-      },
-      callTool: async (_launch, name) => {
-        calls.push(name);
-        return name === "ctx_doctor" ? "doctor" : "stats";
-      },
-    });
-
-    const status = await handlers.status({ fresh: false });
-    const cachedStatus = await handlers.status({ fresh: false });
-    const refreshedStatus = await handlers.status({ fresh: true });
-    const doctor = await handlers.doctor({ fresh: false });
-    const stats = await handlers.stats({ fresh: false });
-    const refreshedStats = await handlers.stats({ fresh: true });
-
-    expect(status).toEqual(cachedStatus);
-    expect(status).toMatchObject({ state: "ready", supportsDoctor: true, supportsStats: true });
-    expect(refreshedStatus).toMatchObject({ state: "ready", version: "2.0.5" });
-    expect(doctor).toMatchObject({ state: "ready", output: "doctor" });
-    expect(stats).toMatchObject({ state: "ready", output: "stats" });
-    expect(refreshedStats).toMatchObject({ state: "ready", output: "stats" });
-    expect(inspections).toBe(2);
-    expect(calls).toEqual(["ctx_doctor", "ctx_stats", "ctx_stats"]);
-  });
-
   test("falls back to a null audit version when inspection fails", async () => {
     const settings = ContextModeSettingsSchema.parse({});
     const handlers = createContextModeHandlers(settingsHandle(settings), {
@@ -697,6 +778,7 @@ describe("RPC behavior", () => {
         source: "path",
         launch: launch("/bin/context-mode"),
       }),
+      probeOptions: async () => PROBE,
       inspect: async () => {
         throw new Error("probe failed");
       },
@@ -724,6 +806,7 @@ describe("RPC behavior", () => {
         source: "path",
         launch: launch("/bin/context-mode"),
       }),
+      probeOptions: async () => PROBE,
       inspect: async () => ({ version: null, tools: [] }),
       createAudit,
     });
@@ -759,27 +842,6 @@ describe("RPC behavior", () => {
       injectionEnabled: false,
       providers: [],
       checkedAt: "2026-09-20T00:00:00.000Z",
-    });
-  });
-
-  test("maps bounded process failures to clean RPC errors", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const handlers = createContextModeHandlers(settingsHandle(settings), {
-      now: () => new Date("2026-09-20T00:00:00.000Z"),
-      resolveBinary: async () => ({
-        state: "found",
-        path: "/bin/context-mode",
-        source: "path",
-        launch: launch("/bin/context-mode"),
-      }),
-      callTool: async () => {
-        throw new ProcessFailure("timeout", "Context Mode timed out.");
-      },
-    });
-    await expect(handlers.stats({ fresh: false })).resolves.toMatchObject({
-      state: "unavailable",
-      code: "timeout",
-      message: "Context Mode timed out.",
     });
   });
 });

@@ -1,11 +1,9 @@
 import { describe, expect, test } from "vitest";
 import {
   BinaryStatusSchema,
-  CommandReportSchema,
   ContextModeSettingsSchema,
-  getContextModeDoctor,
-  getContextModeStats,
   getContextModeStatus,
+  ProviderIntegrationSchema,
 } from "../shared";
 
 describe("Context Mode public contracts", () => {
@@ -40,32 +38,44 @@ describe("Context Mode public contracts", () => {
   });
 
   test("accepts typed cache bypass and rejects unrelated RPC input", () => {
-    for (const contract of [getContextModeStatus, getContextModeDoctor, getContextModeStats]) {
-      expect(contract.input.parse({})).toEqual({ fresh: false });
-      expect(contract.input.parse({ fresh: true })).toEqual({ fresh: true });
-      expect(contract.input.safeParse({ binaryPath: "/tmp/context-mode" }).success).toBe(false);
-    }
+    expect(getContextModeStatus.input.parse({})).toEqual({ fresh: false });
+    expect(getContextModeStatus.input.parse({ fresh: true })).toEqual({ fresh: true });
+    expect(getContextModeStatus.input.safeParse({ binaryPath: "/tmp/context-mode" }).success).toBe(
+      false,
+    );
   });
 
-  test("rejects oversized upstream output and malformed states", () => {
-    expect(
-      CommandReportSchema.safeParse({
-        state: "ready",
-        binaryPath: "/usr/bin/context-mode",
-        output: "x".repeat(196_609),
-        checkedAt: "2026-09-20T00:00:00.000Z",
-      }).success,
-    ).toBe(false);
+  test("validates runtime status states", () => {
+    const ready = {
+      state: "ready",
+      binaryPath: "/usr/bin/context-mode",
+      source: "path",
+      version: "2.1.4",
+      checkedAt: "2026-09-20T00:00:00.000Z",
+    };
+    expect(BinaryStatusSchema.safeParse(ready).success).toBe(true);
+    expect(BinaryStatusSchema.safeParse({ ...ready, source: "global" }).success).toBe(false);
     expect(
       BinaryStatusSchema.safeParse({
-        state: "ready",
-        binaryPath: "/usr/bin/context-mode",
-        source: "path",
-        version: "2.0.5",
-        supportsDoctor: true,
-        supportsStats: true,
-        checkedAt: "2026-09-20T00:00:00.000Z",
+        state: "unavailable",
+        code: "unsupported",
+        message: "x".repeat(4_097),
+        checkedAt: ready.checkedAt,
       }).success,
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  test("reports one shared data dir and null platforms for unsupported providers", () => {
+    const integration = {
+      provider: "pi",
+      platform: null,
+      activation: "disabled",
+      storageRoot: "/home/test/.context-mode",
+      detail: "Unsupported.",
+    };
+    expect(ProviderIntegrationSchema.parse(integration)).toEqual(integration);
+    expect(ProviderIntegrationSchema.safeParse({ ...integration, platform: "pi" }).success).toBe(
+      false,
+    );
   });
 });

@@ -2,7 +2,7 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { ContextModePlatformSchema, ContextModeProviderSchema } from "./knowledge";
 
-export const CONTEXT_MODE_TARGET_VERSION = "1.0.169" as const;
+export const CONTEXT_MODE_TARGET_VERSION = "2.1.4" as const;
 
 const providerInput = z.object({ provider: ContextModeProviderSchema }).strict();
 
@@ -11,6 +11,7 @@ export const DoctorStatusRowSchema = z
     status: z.enum(["ok", "warning", "error"]),
     check: z.string().trim().min(1).max(256),
     detail: z.string().max(4_096),
+    fix: z.string().max(4_096).optional(),
   })
   .strict();
 
@@ -22,16 +23,21 @@ export const DoctorReportSchema = z
   })
   .strict();
 
-export const ContextModeActionSchema = z
+const CommandSchema = z
   .object({
     program: z.string().trim().min(1).max(4_096),
     args: z.array(z.string().max(4_096)).max(32),
-    currentVersion: z.string().trim().min(1).max(128).nullable(),
-    targetVersion: z.union([z.literal(CONTEXT_MODE_TARGET_VERSION), z.literal("latest")]),
-    platform: ContextModePlatformSchema,
-    requiresRestart: z.boolean(),
   })
   .strict();
+
+export const ContextModeActionSchema = CommandSchema.extend({
+  /** A second command to run after `program`, e.g. `context-mode setup` after the npm install. */
+  followUp: CommandSchema.optional(),
+  currentVersion: z.string().trim().min(1).max(128).nullable(),
+  targetVersion: z.union([z.literal(CONTEXT_MODE_TARGET_VERSION), z.literal("latest")]),
+  platform: ContextModePlatformSchema,
+  requiresRestart: z.boolean(),
+}).strict();
 
 export const getContextModeDoctorReport = defineRpc({
   name: "context-mode.actions.doctor",

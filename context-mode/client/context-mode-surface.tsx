@@ -5,9 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import {
   type BinaryStatus,
+  ContextModePlatformSchema,
   contextModeSettings,
   getContextModeIntegrationAudit,
-  getContextModeStats,
   getContextModeStatus,
   type IntegrationAudit,
 } from "../shared";
@@ -44,7 +44,6 @@ export function ContextModeSurface({
 }: ContextModeSurfaceProps) {
   const settings = useSettings(contextModeSettings);
   const loadStatus = useRpc(getContextModeStatus);
-  const loadStats = useRpc(getContextModeStats);
   const loadIntegrationAudit = useRpc(getContextModeIntegrationAudit);
   const queryClient = useQueryClient();
   const screenParams = parseScreenParams(params ?? {});
@@ -56,7 +55,6 @@ export function ContextModeSurface({
   const readySettings = settings.status === "ready" ? settings : null;
   const refreshInterval = readySettings?.values.refreshIntervalMs ?? 15_000;
   const statusKey = ["context-mode", host.id, "status"] as const;
-  const statsKey = ["context-mode", host.id, "stats"] as const;
   const integrationKey = ["context-mode", host.id, "integration"] as const;
   const status = useQuery({
     queryKey: statusKey,
@@ -64,19 +62,16 @@ export function ContextModeSurface({
     refetchInterval: refreshInterval,
     enabled: readySettings !== null,
   });
-  const stats = useQuery({
-    queryKey: statsKey,
-    queryFn: () => loadStats({ fresh: false }),
-    refetchInterval: refreshInterval,
-    enabled: readySettings !== null && status.data?.state === "ready",
-  });
   const integration = useQuery({
     queryKey: integrationKey,
     queryFn: () => loadIntegrationAudit({ fresh: false }),
     refetchInterval: refreshInterval,
     enabled: readySettings !== null,
   });
-  const auditedProviders = integration.data?.providers.map(({ provider }) => provider) ?? [];
+  const auditedProviders =
+    integration.data?.providers
+      .filter(({ platform }) => ContextModePlatformSchema.safeParse(platform).success)
+      .map(({ provider }) => provider) ?? [];
   const knowledgeProviders = auditedProviders.length
     ? auditedProviders
     : BUILTIN_KNOWLEDGE_PROVIDERS;
@@ -84,16 +79,11 @@ export function ContextModeSurface({
     mutationFn: async () => {
       const nextStatus = await loadStatus({ fresh: true });
       const nextIntegration = await loadIntegrationAudit({ fresh: true });
-      const nextStats =
-        nextStatus.state === "ready" && nextStatus.supportsStats
-          ? await loadStats({ fresh: true })
-          : undefined;
-      return { nextStatus, nextIntegration, nextStats };
+      return { nextStatus, nextIntegration };
     },
-    onSuccess({ nextStatus, nextIntegration, nextStats }) {
+    onSuccess({ nextStatus, nextIntegration }) {
       queryClient.setQueryData(statusKey, nextStatus);
       queryClient.setQueryData(integrationKey, nextIntegration);
-      if (nextStats) queryClient.setQueryData(statsKey, nextStats);
       void queryClient.invalidateQueries({
         queryKey: ["context-mode", host.id, "analytics-dashboard"],
       });
@@ -234,7 +224,6 @@ export function ContextModeSurface({
 
       <AnalyticsDashboard
         display="hero"
-        fallback={stats.data?.state === "ready" ? stats.data.output : null}
         health={
           <HealthStrip
             audit={integration.data}
@@ -275,13 +264,7 @@ export function ContextModeSurface({
       </View>
 
       <View style={[styles.tabPanel, activeTab === "savings" ? null : styles.tabPanelHidden]}>
-        <AnalyticsDashboard
-          display="details"
-          fallback={stats.data?.state === "ready" ? stats.data.output : null}
-          host={host}
-          layout={layout}
-          theme={theme}
-        />
+        <AnalyticsDashboard display="details" host={host} layout={layout} theme={theme} />
       </View>
       <View style={[styles.tabPanel, activeTab === "knowledge" ? null : styles.tabPanelHidden]}>
         {activeTab !== "knowledge" ? null : integration.isLoading ? (
@@ -384,11 +367,6 @@ function HealthStrip({
           {error instanceof Error ? error.message : String(error)}
         </Text>
       ) : null}
-      {statusReady && (!status.supportsDoctor || !status.supportsStats) ? (
-        <Text style={styles.warning}>
-          Some Context Mode health or savings tools are unavailable.
-        </Text>
-      ) : null}
 
       <View style={styles.actions}>
         <Pressable
@@ -425,11 +403,13 @@ function HealthStrip({
               <View key={provider.provider} style={styles.chip}>
                 <Text style={styles.chipText}>
                   {provider.provider} ·{" "}
-                  {provider.activation === "native"
-                    ? "Native"
-                    : provider.activation === "mcp"
-                      ? "MCP · new agents"
-                      : "Off"}
+                  {provider.platform === null
+                    ? "Unsupported"
+                    : provider.activation === "native"
+                      ? "Native"
+                      : provider.activation === "mcp"
+                        ? "MCP · new agents"
+                        : "Off"}
                 </Text>
               </View>
             ))}

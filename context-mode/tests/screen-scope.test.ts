@@ -42,7 +42,7 @@ describe("screen scope", () => {
     ).toEqual({
       provider: null,
       projectPath: "",
-      note: "The agent this screen was opened from is not on this host. Select a provider and project.",
+      note: "The agent this screen was opened from is not on this host. Select an agent and project.",
     });
   });
   test("rejects mismatched workspace and requires provider selection for workspace-only links", async () => {
@@ -74,7 +74,7 @@ describe("screen scope", () => {
     ).toEqual({
       provider: null,
       projectPath: "",
-      note: "The workspace this screen was opened from is not on this host. Select a provider and project.",
+      note: "The workspace this screen was opened from is not on this host. Select an agent and project.",
     });
   });
   test("a failed lookup still surfaces as an error", async () => {

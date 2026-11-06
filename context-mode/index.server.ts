@@ -3,25 +3,20 @@ import { createContextModeActionHandlers } from "./server/actions";
 import { createContextModeAnalyticsHandler } from "./server/analytics";
 import { resolveContextModeBinary } from "./server/binary";
 import { createContextModeHandlers } from "./server/handlers";
-import {
-  injectContextModeEnvironment,
-  injectContextModeOnCreate,
-  readProviderOverrides,
-} from "./server/integration";
+import { injectContextModeOnCreate, readProviderOverrides } from "./server/integration";
 import { createContextModeKnowledgeHandlers } from "./server/knowledge";
 import {
   contextModeSettings,
   fetchAndIndexContextMode,
   getContextModeAnalyticsDashboard,
-  getContextModeDoctor,
   getContextModeDoctorReport,
   getContextModeInstallAction,
   getContextModeIntegrationAudit,
-  getContextModeStats,
   getContextModeStatus,
   getContextModeUpgradeAction,
   indexContextModePath,
   purgeContextModeKnowledge,
+  resumeContextModeSession,
   searchContextModeKnowledge,
 } from "./shared";
 
@@ -31,13 +26,19 @@ export default function contribute(server: PluginServerContext) {
   const knowledgeHandlers = createContextModeKnowledgeHandlers(settings);
   const actionHandlers = createContextModeActionHandlers(settings);
   server.handle(getContextModeStatus, handlers.status);
-  server.handle(getContextModeDoctor, handlers.doctor);
-  server.handle(getContextModeStats, handlers.stats);
   server.handle(getContextModeIntegrationAudit, handlers.audit);
-  server.handle(getContextModeAnalyticsDashboard, createContextModeAnalyticsHandler());
+  server.handle(getContextModeAnalyticsDashboard, (_input, context) =>
+    createContextModeAnalyticsHandler({
+      resolveVersion: async () => {
+        const status = await handlers.status({ fresh: false }, context).catch(() => null);
+        return status?.state === "ready" ? status.version : null;
+      },
+    })(),
+  );
   server.handle(searchContextModeKnowledge, knowledgeHandlers.search);
   server.handle(indexContextModePath, knowledgeHandlers.indexPath);
   server.handle(fetchAndIndexContextMode, knowledgeHandlers.fetchAndIndex);
+  server.handle(resumeContextModeSession, knowledgeHandlers.resume);
   server.handle(purgeContextModeKnowledge, knowledgeHandlers.purge);
   server.handle(getContextModeDoctorReport, actionHandlers.doctor);
   server.handle(getContextModeInstallAction, actionHandlers.install);
@@ -49,12 +50,6 @@ export default function contribute(server: PluginServerContext) {
     if (binary.state !== "found") return request;
     const providers = await readProviderOverrides(paseo);
     return injectContextModeOnCreate(request, current.values, binary.launch, { providers });
-  });
-  server.before("agent.session_open", async ({ request }, { paseo }) => {
-    const current = await settings.read();
-    if (current.status !== "ready") return request;
-    const providers = await readProviderOverrides(paseo);
-    return injectContextModeEnvironment(request, current.values, { providers });
   });
   return () => {};
 }

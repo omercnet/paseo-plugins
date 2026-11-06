@@ -107,14 +107,14 @@ function ReadyContextModeSettings({
         <SettingsCard>
           <SettingsSwitch
             label="Automatically activate Context Mode"
-            hint="Inject the bundled MCP server into new agents and provider-specific storage variables whenever sessions open."
+            hint="Inject the bundled MCP server into new Claude, Codex, Copilot, and OpenCode agents."
             value={settings.values.autoInject}
             disabled={settings.saving}
             onValueChange={(autoInject) => void save({ autoInject })}
           />
           <SettingsSwitch
             label="Prefer native integrations"
-            hint="Keep OMP, Pi, and OpenCode native plugins when detected instead of registering duplicate MCP tools."
+            hint="Skip injection when Context Mode is already installed natively for a provider, so its tools are not registered twice."
             value={settings.values.preferNativeIntegrations}
             disabled={settings.saving || !settings.values.autoInject}
             onValueChange={(preferNativeIntegrations) => void save({ preferNativeIntegrations })}
@@ -141,10 +141,10 @@ function ReadyContextModeSettings({
       <SettingsSection title="Safety">
         <SettingsCard>
           <SettingsRow
-            label="Storage reuse"
-            hint="Existing provider-specific Context Mode roots are reused. Session databases are never merged across providers."
+            label="Storage"
+            hint="Context Mode keeps one store per project, shared by every provider."
           >
-            <Text style={styles.value}>Provider scoped</Text>
+            <Text style={styles.value}>Per project</Text>
           </SettingsRow>
           <SettingsRow label="Context Mode runtime">
             <Text style={styles.muted}>Bundled with this Paseo plugin</Text>

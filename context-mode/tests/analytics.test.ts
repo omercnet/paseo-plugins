@@ -8,8 +8,8 @@ import {
   createContextModeAnalyticsHandler,
 } from "../server/analytics";
 import {
-  discoverContextModeStorageRoots,
-  listRegularContextModeDatabases,
+  discoverContextModeDatabases,
+  resolveContextModeDataDir,
 } from "../server/storage-discovery";
 import {
   ContextModeAnalyticsDashboardSchema,
@@ -18,160 +18,160 @@ import {
 
 const temporaryDirectories: string[] = [];
 
+/** Context Mode 2.1.4 `context.db` layout (PRAGMA user_version = 6). */
+const SCHEMA = `
+  CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    worktree TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('prompt','edit','cmd','toolerr','index','cost','decision')),
+    tool TEXT,
+    key TEXT,
+    path TEXT,
+    ok INTEGER,
+    exit_code INTEGER,
+    bytes INTEGER,
+    body TEXT,
+    turn INTEGER NOT NULL,
+    sandbox_bytes INTEGER NOT NULL DEFAULT 0,
+    returned_bytes INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    accessed_at INTEGER NOT NULL
+  );
+  CREATE TABLE sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    worktree TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('path','content','url')),
+    label TEXT NOT NULL,
+    bytes_total INTEGER NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    created_ts INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    accessed_ts INTEGER NOT NULL
+  );
+  CREATE VIRTUAL TABLE chunks USING fts5(
+    source_id UNINDEXED, session_id UNINDEXED, worktree UNINDEXED, agent UNINDEXED, ord UNINDEXED,
+    body, title, tokenize = 'porter unicode61 remove_diacritics 2'
+  );
+`;
+
 interface EventFixture {
-  sessionId: string;
-  category: string;
-  data: string;
-  project: string;
-  avoided: number;
+  session: string;
+  agent: string;
+  kind: string;
+  tool: string | null;
+  sandbox: number;
   returned: number;
-  createdAt: string;
+  at: string;
 }
 
-async function temporaryHome(): Promise<string> {
-  const home = await mkdtemp(join(tmpdir(), "paseo-context-mode-analytics-"));
-  temporaryDirectories.push(home);
-  return home;
+interface SourceFixture {
+  session: string;
+  agent: string;
+  kind: "path" | "content" | "url";
+  label: string;
+  bytes: number;
+  chunks: number;
+  at: string;
 }
 
-async function openSessionDatabase(
-  home: string,
-  providerDirectory: string,
-  filename: string,
-  events: EventFixture[],
-  wal = false,
+interface DatabaseFixture {
+  worktree: string;
+  events: EventFixture[];
+  sources?: SourceFixture[];
+  wal?: boolean;
+}
+
+async function temporaryDataDir(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "paseo-context-mode-analytics-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+async function openDatabase(
+  dataDir: string,
+  project: string,
+  fixture: DatabaseFixture,
 ): Promise<DatabaseSync> {
-  const directory = join(home, providerDirectory, "context-mode", "sessions");
-  await mkdir(directory, { recursive: true });
-  const database = new DatabaseSync(join(directory, filename));
-  if (wal) {
-    database.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;");
-  }
-  database.exec(`
-    CREATE TABLE session_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      type TEXT NOT NULL,
-      category TEXT NOT NULL,
-      priority INTEGER NOT NULL DEFAULT 2,
-      data TEXT NOT NULL,
-      project_dir TEXT NOT NULL DEFAULT '',
-      attribution_source TEXT NOT NULL DEFAULT 'unknown',
-      attribution_confidence REAL NOT NULL DEFAULT 0,
-      bytes_avoided INTEGER NOT NULL DEFAULT 0,
-      bytes_returned INTEGER NOT NULL DEFAULT 0,
-      source_hook TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      data_hash TEXT NOT NULL DEFAULT ''
-    );
-    CREATE TABLE session_meta (
-      session_id TEXT PRIMARY KEY,
-      project_dir TEXT NOT NULL,
-      started_at TEXT NOT NULL,
-      last_event_at TEXT,
-      event_count INTEGER NOT NULL DEFAULT 0,
-      compact_count INTEGER NOT NULL DEFAULT 0,
-      usage_cursor TEXT
-    );
-    CREATE TABLE session_resume (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL UNIQUE,
-      snapshot TEXT NOT NULL,
-      event_count INTEGER NOT NULL,
-      created_at TEXT NOT NULL,
-      consumed INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE TABLE tool_calls (
-      session_id TEXT NOT NULL,
-      tool TEXT NOT NULL,
-      calls INTEGER NOT NULL DEFAULT 0,
-      bytes_returned INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (session_id, tool)
-    );
-  `);
-  const insertEvent = database.prepare(`INSERT INTO session_events (
-    session_id, type, category, data, project_dir, bytes_avoided, bytes_returned,
-    source_hook, created_at
-  ) VALUES (?, 'tool', ?, ?, ?, ?, ?, 'PostToolUse', ?)`);
-  const insertMeta = database.prepare(`INSERT OR IGNORE INTO session_meta (
-    session_id, project_dir, started_at, event_count
-  ) VALUES (?, ?, ?, 1)`);
-  for (const event of events) {
+  const directory = join(dataDir, "projects", project);
+  await mkdir(join(directory, "owners"), { recursive: true });
+  const database = new DatabaseSync(join(directory, "context.db"));
+  database.exec(
+    fixture.wal
+      ? "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;"
+      : "PRAGMA journal_mode = DELETE;",
+  );
+  database.exec(SCHEMA);
+  database.exec("PRAGMA user_version = 6");
+  const insertEvent = database.prepare(`INSERT INTO events (
+    session_id, worktree, agent, kind, tool, ok, bytes, body, turn,
+    sandbox_bytes, returned_bytes, created_at, accessed_at
+  ) VALUES (?, ?, ?, ?, ?, 1, ?, 'output', 0, ?, ?, ?, ?)`);
+  for (const event of fixture.events) {
+    const at = Date.parse(event.at);
     insertEvent.run(
-      event.sessionId,
-      event.category,
-      event.data,
-      event.project,
-      event.avoided,
+      event.session,
+      fixture.worktree,
+      event.agent,
+      event.kind,
+      event.tool,
+      event.sandbox,
+      event.sandbox,
       event.returned,
-      event.createdAt,
+      at,
+      at,
     );
-    insertMeta.run(event.sessionId, event.project, event.createdAt);
+  }
+  const insertSource = database.prepare(`INSERT INTO sources (
+    session_id, worktree, agent, kind, label, bytes_total, chunk_count, created_ts, created_at, accessed_ts
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const source of fixture.sources ?? []) {
+    const at = Date.parse(source.at);
+    insertSource.run(
+      source.session,
+      fixture.worktree,
+      source.agent,
+      source.kind,
+      source.label,
+      source.bytes,
+      source.chunks,
+      at,
+      new Date(at).toISOString(),
+      at,
+    );
   }
   return database;
 }
 
-async function createContentDatabase(home: string): Promise<void> {
-  const directory = join(home, ".claude", "context-mode", "content");
-  await mkdir(directory, { recursive: true });
-  const database = new DatabaseSync(join(directory, "project.db"));
-  try {
-    database.exec(`
-      CREATE TABLE sources (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        label TEXT NOT NULL,
-        chunk_count INTEGER NOT NULL DEFAULT 0,
-        code_chunk_count INTEGER NOT NULL DEFAULT 0,
-        indexed_at TEXT NOT NULL,
-        file_path TEXT,
-        content_hash TEXT
-      );
-      CREATE VIRTUAL TABLE chunks USING fts5(
-        title,
-        content,
-        source_id UNINDEXED,
-        content_type UNINDEXED,
-        source_category UNINDEXED,
-        session_id UNINDEXED,
-        event_id UNINDEXED,
-        timestamp UNINDEXED,
-        tokenize='porter unicode61'
-      );
-    `);
-    database
-      .prepare(
-        "INSERT INTO sources (id, label, chunk_count, code_chunk_count, indexed_at) VALUES (1, ?, 2, 1, ?)",
-      )
-      .run("Context docs", "2026-09-20 09:00:00");
-    const insertChunk = database.prepare(
-      "INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, 1, ?)",
-    );
-    insertChunk.run("A", "hello", "prose");
-    insertChunk.run("B", "é", "code");
-  } finally {
-    database.close();
-  }
+async function createDatabase(
+  dataDir: string,
+  project: string,
+  fixture: DatabaseFixture,
+): Promise<void> {
+  (await openDatabase(dataDir, project, fixture)).close();
 }
 
-async function createMinimalSessionDatabase(
-  home: string,
-  providerDirectory: string,
-  sessionId: string,
-  project: string,
-): Promise<void> {
-  const database = await openSessionDatabase(home, providerDirectory, "project.db", [
-    {
-      sessionId,
-      category: "file",
-      data: "data",
-      project,
-      avoided: 12,
-      returned: 4,
-      createdAt: "2026-09-20 10:00:00",
-    },
-  ]);
-  database.close();
+function singleCall(session: string, agent: string, sandbox: number, returned: number) {
+  return {
+    session,
+    agent,
+    kind: "cmd",
+    tool: "ctx_execute",
+    sandbox,
+    returned,
+    at: "2026-09-20T10:00:00.000Z",
+  };
+}
+
+function collect(dataDir: string) {
+  return collectContextModeAnalytics({
+    env: { CONTEXT_MODE_DATA_DIR: dataDir },
+    home: "/nonexistent-home",
+  });
 }
 
 afterEach(async () => {
@@ -180,389 +180,496 @@ afterEach(async () => {
   );
 });
 
+describe("Context Mode data dir", () => {
+  test("uses an absolute CONTEXT_MODE_DATA_DIR and falls back to ~/.context-mode", () => {
+    expect(resolveContextModeDataDir({ CONTEXT_MODE_DATA_DIR: "/srv/ctx/" }, "/home/u")).toBe(
+      "/srv/ctx",
+    );
+    expect(resolveContextModeDataDir({ CONTEXT_MODE_DATA_DIR: "relative" }, "/home/u")).toBe(
+      "/home/u/.context-mode",
+    );
+    expect(resolveContextModeDataDir({}, "/home/u")).toBe("/home/u/.context-mode");
+  });
+});
+
 describe("structured Context Mode analytics", () => {
-  test("aggregates the 1.0.169 session and content schemas while reading live WAL data", async () => {
-    const home = await temporaryHome();
-    const sessionDatabase = await openSessionDatabase(
-      home,
-      ".claude",
-      "project.db",
-      [
+  test("matches ctx_stats savings math while reading live WAL data", async () => {
+    const dataDir = await temporaryDataDir();
+    const writer = await openDatabase(dataDir, "a1b2c3d4e5f60718", {
+      worktree: "/work/alpha",
+      wal: true,
+      events: [
         {
-          sessionId: "session-1",
-          category: "file",
-          data: "abcd",
-          project: "/work/project",
-          avoided: 12,
-          returned: 4,
-          createdAt: "2026-09-19 10:00:00",
+          session: "mcp:s1",
+          agent: "claude-code",
+          kind: "cmd",
+          tool: "ctx_execute",
+          sandbox: 10_000,
+          returned: 400,
+          at: "2026-09-19T10:00:00.000Z",
         },
         {
-          sessionId: "session-1",
-          category: "rule",
-          data: "é",
-          project: "/work/project",
-          avoided: 6,
+          session: "mcp:s1",
+          agent: "claude-code",
+          kind: "index",
+          tool: "ctx_index",
+          sandbox: 2_000,
+          returned: 100,
+          at: "2026-09-19T10:05:00.000Z",
+        },
+        {
+          session: "mcp:s1",
+          agent: "claude-code",
+          kind: "cmd",
+          tool: "ctx_stats",
+          sandbox: 0,
+          returned: 3_000,
+          at: "2026-09-19T10:06:00.000Z",
+        },
+        {
+          session: "mcp:s1",
+          agent: "claude-code",
+          kind: "prompt",
+          tool: null,
+          sandbox: 0,
           returned: 0,
-          createdAt: "2026-09-19 11:00:00",
+          at: "2026-09-19T10:07:00.000Z",
+        },
+        {
+          session: "mcp:s2",
+          agent: "codex",
+          kind: "cmd",
+          tool: "ctx_search",
+          sandbox: 0,
+          returned: 500,
+          at: "2026-09-20T09:00:00.000Z",
+        },
+        {
+          session: "mcp:s2",
+          agent: "codex",
+          kind: "cmd",
+          tool: "ctx_batch",
+          sandbox: 4_000,
+          returned: 1_000,
+          at: "2026-09-20T09:10:00.000Z",
+        },
+        {
+          session: "mcp:s2",
+          agent: "codex",
+          kind: "cost",
+          tool: null,
+          sandbox: 0,
+          returned: 0,
+          at: "2026-09-20T09:20:00.000Z",
+        },
+        {
+          session: "mcp:s3",
+          agent: "codex",
+          kind: "cmd",
+          tool: "ctx_search",
+          sandbox: 0,
+          returned: 300,
+          at: "2026-09-20T11:00:00.000Z",
         },
       ],
-      true,
-    );
-    sessionDatabase
-      .prepare(
-        "INSERT INTO session_resume (session_id, snapshot, event_count, created_at, consumed) VALUES (?, ?, 2, ?, 1)",
-      )
-      .run("session-1", "12345678", "2026-09-20 08:00:00");
-    const insertTool = sessionDatabase.prepare(
-      "INSERT INTO tool_calls (session_id, tool, calls, bytes_returned, updated_at) VALUES (?, ?, ?, ?, ?)",
-    );
-    insertTool.run("session-1", "ctx_search", 2, 8, "2026-09-20 08:30:00");
-    insertTool.run("session-1", "ctx_execute", 3, 100, "2026-09-20 08:45:00");
-    await createContentDatabase(home);
+      sources: [
+        {
+          session: "mcp:s1",
+          agent: "claude-code",
+          kind: "path",
+          label: "docs/guide.md",
+          bytes: 2_048,
+          chunks: 4,
+          at: "2026-09-19T10:05:00.000Z",
+        },
+        {
+          session: "mcp:s2",
+          agent: "codex",
+          kind: "content",
+          label: "notes",
+          bytes: 52,
+          chunks: 1,
+          at: "2026-09-20T09:00:00.000Z",
+        },
+      ],
+    });
 
     try {
       const result = await collectContextModeAnalytics({
-        home,
-        env: {},
-        now: () => new Date("2026-09-20T12:00:00.000Z"),
+        env: { CONTEXT_MODE_DATA_DIR: dataDir },
+        now: () => new Date("2026-09-21T12:00:00.000Z"),
       });
       expect(getContextModeAnalyticsDashboard.input.parse({})).toEqual({});
       expect(() => ContextModeAnalyticsDashboardSchema.parse(result)).not.toThrow();
 
       expect(result).toMatchObject({
-        schemaVersion: 1,
-        contextModeVersion: "1.0.169",
+        schemaVersion: 2,
+        contextModeVersion: null,
         completeness: "complete",
         warnings: [],
         totals: {
-          providers: 1,
-          databases: 2,
+          agents: 2,
+          projects: 1,
+          sessions: 3,
+          events: 8,
+          toolCalls: 5,
+          indexedSources: 2,
+          indexedChunks: 5,
+          inputTokens: 4_000,
+          outputTokens: 575,
+          savedTokens: 3_500,
+          savingsPercent: 87.5,
+          byteAccounting: {
+            producedBytes: 16_000,
+            returnedBytes: 2_300,
+            savedBytes: 14_000,
+            indexedBytes: 2_100,
+          },
+          lastActivityAt: "2026-09-20T11:00:00.000Z",
+        },
+        generatedAt: "2026-09-21T12:00:00.000Z",
+      });
+      expect(result.byAgent).toEqual([
+        {
+          agent: "claude-code",
           projects: 1,
           sessions: 1,
-          events: 2,
-          toolCalls: 5,
+          toolCalls: 2,
           indexedSources: 1,
-          indexedChunks: 2,
-          inputTokens: 13,
-          outputTokens: 3,
-          savedTokens: 10,
-          savingsPercent: 77.4,
+          savedTokens: 2_875,
+          savingsPercent: 95.8,
           byteAccounting: {
-            eventDataBytes: 6,
-            avoidedBytes: 18,
-            returnedBytes: 12,
-            snapshotBytes: 8,
-            indexedBytes: 9,
-            savedBytes: 41,
+            producedBytes: 12_000,
+            returnedBytes: 500,
+            savedBytes: 11_500,
+            indexedBytes: 2_048,
           },
         },
-        generatedAt: "2026-09-20T12:00:00.000Z",
-      });
+        {
+          agent: "codex",
+          projects: 1,
+          sessions: 2,
+          toolCalls: 3,
+          indexedSources: 1,
+          savedTokens: 625,
+          savingsPercent: 62.5,
+          byteAccounting: {
+            producedBytes: 4_000,
+            returnedBytes: 1_800,
+            savedBytes: 2_500,
+            indexedBytes: 52,
+          },
+        },
+      ]);
+      expect(result.byProject).toEqual([
+        {
+          path: "/work/alpha",
+          worktrees: 1,
+          sessions: 3,
+          toolCalls: 5,
+          indexedSources: 2,
+          savedTokens: 3_500,
+          savingsPercent: 87.5,
+          byteAccounting: {
+            producedBytes: 16_000,
+            returnedBytes: 2_300,
+            savedBytes: 14_000,
+            indexedBytes: 2_100,
+          },
+          lastActivityAt: "2026-09-20T11:00:00.000Z",
+        },
+      ]);
       expect(result.byCategory).toEqual([
-        { category: "file", count: 1, savedTokens: 4 },
-        { category: "rule", count: 1, savedTokens: 2 },
+        { category: "ctx_execute", count: 1, savedTokens: 2_400 },
+        { category: "ctx_batch", count: 1, savedTokens: 750 },
+        { category: "ctx_index", count: 1, savedTokens: 475 },
+        { category: "ctx_search", count: 2, savedTokens: 0 },
       ]);
       expect(result.byDay).toEqual([
-        { date: "2026-09-19", calls: 2, savedTokens: 6 },
-        { date: "2026-09-20", calls: 0, savedTokens: 4 },
+        { date: "2026-09-19", calls: 2, savedTokens: 2_875 },
+        { date: "2026-09-20", calls: 3, savedTokens: 750 },
       ]);
       expect(result.sources).toEqual([
         {
-          provider: "claude-code",
-          source: "Context docs",
-          chunks: 2,
-          codeChunks: 1,
-          indexedBytes: 9,
+          agent: "codex",
+          projectPath: "/work/alpha",
+          source: "notes",
+          kind: "content",
+          chunks: 1,
+          indexedBytes: 52,
           indexedAt: "2026-09-20T09:00:00.000Z",
-          state: "ready",
+        },
+        {
+          agent: "claude-code",
+          projectPath: "/work/alpha",
+          source: "docs/guide.md",
+          kind: "path",
+          chunks: 4,
+          indexedBytes: 2_048,
+          indexedAt: "2026-09-19T10:05:00.000Z",
         },
       ]);
     } finally {
-      sessionDatabase.close();
+      writer.close();
     }
   });
 
-  test("reports a missing active-schema column without attempting a migration", async () => {
-    const home = await temporaryHome();
-    const directory = join(home, ".claude", "context-mode", "sessions");
-    await mkdir(directory, { recursive: true });
-    const database = new DatabaseSync(join(directory, "old.db"));
-    database.exec(`
-      CREATE TABLE session_events (
-        session_id TEXT, category TEXT, data TEXT, project_dir TEXT,
-        bytes_avoided INTEGER, created_at TEXT
-      );
-      CREATE TABLE session_meta (session_id TEXT, project_dir TEXT);
-      CREATE TABLE session_resume (session_id TEXT, snapshot TEXT, created_at TEXT);
-      CREATE TABLE tool_calls (session_id TEXT, tool TEXT, calls INTEGER, bytes_returned INTEGER);
-    `);
-    database.close();
+  test("aggregates every project database under the data dir", async () => {
+    const dataDir = await temporaryDataDir();
+    await createDatabase(dataDir, "1111111111111111", {
+      worktree: "/work/a",
+      events: [singleCall("mcp:a", "claude-code", 1_000, 200)],
+    });
+    await createDatabase(dataDir, "2222222222222222", {
+      worktree: "/work/b",
+      events: [
+        singleCall("mcp:b", "claude-code", 4_000, 400),
+        singleCall("mcp:c", "opencode", 800, 400),
+      ],
+    });
+    await mkdir(join(dataDir, "projects", "3333333333333333", "owners"), { recursive: true });
 
-    const result = await collectContextModeAnalytics({ home, env: {} });
+    const result = await collect(dataDir);
 
-    expect(result.completeness).toBe("unsupported");
-    expect(result.totals.databases).toBe(0);
+    expect(result.completeness).toBe("complete");
+    expect(result.totals).toMatchObject({
+      agents: 2,
+      projects: 2,
+      sessions: 3,
+      toolCalls: 3,
+      byteAccounting: { savedBytes: 800 + 3_600 + 400 },
+    });
+    expect(result.byAgent).toEqual([
+      expect.objectContaining({ agent: "claude-code", projects: 2, sessions: 2, toolCalls: 2 }),
+      expect.objectContaining({ agent: "opencode", projects: 1, sessions: 1, toolCalls: 1 }),
+    ]);
+    expect(result.byProject.map((project) => project.path)).toEqual(["/work/b", "/work/a"]);
+  });
+
+  test("keeps the plugin's own calls out of sessions and totals, newest session first", async () => {
+    const dataDir = await temporaryDataDir();
+    await createDatabase(dataDir, "1111111111111111", {
+      worktree: "/work/a",
+      events: [
+        { ...singleCall("mcp:old", "codex", 10, 1), at: "2026-09-19T10:00:00.000Z" },
+        singleCall("paseo-context-mode", "codex", 10, 1),
+      ],
+    });
+    await createDatabase(dataDir, "2222222222222222", {
+      worktree: "/work/b",
+      events: [
+        singleCall("mcp:new", "claude-code", 10, 1),
+        { ...singleCall("mcp:new", "claude-code", 10, 1), at: "2026-09-21T10:00:00.000Z" },
+      ],
+    });
+
+    const result = await collect(dataDir);
+
+    expect(result.totals).toMatchObject({ sessions: 2, events: 3, toolCalls: 3 });
+    expect(result.byAgent.find(({ agent }) => agent === "codex")).toMatchObject({
+      sessions: 1,
+      toolCalls: 1,
+    });
+    expect(result.byCategory).toEqual([
+      expect.objectContaining({ category: "ctx_execute", count: 3 }),
+    ]);
+    expect(result.recentSessions).toEqual([
+      {
+        sessionId: "mcp:new",
+        agent: "claude-code",
+        projectPath: "/work/b",
+        events: 2,
+        lastActivityAt: "2026-09-21T10:00:00.000Z",
+      },
+      {
+        sessionId: "mcp:old",
+        agent: "codex",
+        projectPath: "/work/a",
+        events: 1,
+        lastActivityAt: "2026-09-19T10:00:00.000Z",
+      },
+    ]);
+  });
+
+  test("isolates a corrupt project database and preserves healthy results", async () => {
+    const dataDir = await temporaryDataDir();
+    await createDatabase(dataDir, "1111111111111111", {
+      worktree: "/work/good",
+      events: [singleCall("mcp:good", "codex", 100, 10)],
+    });
+    const broken = join(dataDir, "projects", "2222222222222222");
+    await mkdir(broken, { recursive: true });
+    await writeFile(join(broken, "context.db"), "not sqlite");
+
+    const result = await collect(dataDir);
+
+    expect(result.completeness).toBe("partial");
+    expect(result.totals).toMatchObject({ projects: 1, sessions: 1, toolCalls: 1 });
     expect(result.warnings).toContainEqual(
-      expect.objectContaining({
-        code: "unsupported-schema",
-        provider: "claude-code",
-        database: "old.db",
-        message: expect.stringContaining("bytes_returned"),
-      }),
+      expect.objectContaining({ code: "database-open-failed", project: "2222222222222222" }),
     );
   });
 
-  test("rejects a database that declares an unknown schema version", async () => {
-    const home = await temporaryHome();
-    const database = await openSessionDatabase(home, ".claude", "future.db", [
-      {
-        sessionId: "future-session",
-        category: "file",
-        data: "future",
-        project: "/work/future",
-        avoided: 12,
-        returned: 4,
-        createdAt: "2026-09-20 10:00:00",
-      },
-    ]);
-    database.exec("PRAGMA user_version = 2");
+  test("rejects an unsupported user_version without reading it", async () => {
+    const dataDir = await temporaryDataDir();
+    const database = await openDatabase(dataDir, "1111111111111111", {
+      worktree: "/work/old",
+      events: [singleCall("mcp:old", "codex", 100, 10)],
+    });
+    database.exec("PRAGMA user_version = 5");
     database.close();
 
-    const result = await collectContextModeAnalytics({ home, env: {} });
+    const result = await collect(dataDir);
 
     expect(result.completeness).toBe("unsupported");
     expect(result.totals.events).toBe(0);
     expect(result.warnings).toContainEqual(
       expect.objectContaining({
         code: "unsupported-schema",
-        database: "future.db",
-        message: expect.stringContaining("version 2"),
+        project: "1111111111111111",
+        message: expect.stringContaining("version 5"),
       }),
     );
   });
 
-  test("isolates a corrupt provider database and preserves healthy results", async () => {
-    const home = await temporaryHome();
-    await createMinimalSessionDatabase(home, ".claude", "good", "/work/good");
-    const corruptDirectory = join(home, ".codex", "context-mode", "sessions");
-    await mkdir(corruptDirectory, { recursive: true });
-    await writeFile(join(corruptDirectory, "broken.db"), "not sqlite");
+  test("reports a missing required column", async () => {
+    const dataDir = await temporaryDataDir();
+    const directory = join(dataDir, "projects", "1111111111111111");
+    await mkdir(directory, { recursive: true });
+    const database = new DatabaseSync(join(directory, "context.db"));
+    database.exec(`
+      CREATE TABLE events (session_id TEXT, worktree TEXT, agent TEXT, kind TEXT, tool TEXT,
+        sandbox_bytes INTEGER, created_at INTEGER);
+      CREATE TABLE sources (id INTEGER, worktree TEXT, agent TEXT, kind TEXT, label TEXT,
+        bytes_total INTEGER, chunk_count INTEGER, created_ts INTEGER);
+      PRAGMA user_version = 6;
+    `);
+    database.close();
 
-    const result = await collectContextModeAnalytics({ home, env: {} });
+    const result = await collect(dataDir);
 
-    expect(result.completeness).toBe("partial");
-    expect(result.totals).toMatchObject({ providers: 2, databases: 1, sessions: 1, events: 1 });
-    expect(result.byProvider).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ provider: "claude-code", databases: 1, events: 1 }),
-        expect.objectContaining({ provider: "codex", databases: 0, events: 0 }),
-      ]),
-    );
+    expect(result.completeness).toBe("unsupported");
     expect(result.warnings).toContainEqual(
-      expect.objectContaining({ provider: "codex", database: "broken.db" }),
+      expect.objectContaining({
+        code: "unsupported-schema",
+        message: expect.stringContaining("returned_bytes"),
+      }),
     );
   });
 
-  test("accumulates distinct sessions and projects across providers", async () => {
-    const home = await temporaryHome();
-    await createMinimalSessionDatabase(home, ".claude", "claude-session", "/work/a");
-    await createMinimalSessionDatabase(home, ".codex", "codex-session", "/work/b");
-
-    const result = await collectContextModeAnalytics({ home, env: {} });
-
-    expect(result.completeness).toBe("complete");
-    expect(result.totals).toMatchObject({
-      providers: 2,
-      databases: 2,
-      projects: 2,
-      sessions: 2,
-      events: 2,
-      savedTokens: 8,
+  test("reports a database locked by a writer as partial coverage", async () => {
+    const dataDir = await temporaryDataDir();
+    await createDatabase(dataDir, "1111111111111111", {
+      worktree: "/work/free",
+      events: [singleCall("mcp:free", "codex", 100, 10)],
     });
-    expect(result.byProvider).toEqual([
-      expect.objectContaining({ provider: "claude-code", sessions: 1, savedTokens: 4 }),
-      expect.objectContaining({ provider: "codex", sessions: 1, savedTokens: 4 }),
-    ]);
-  });
-
-  test("the handler reads providers from the Paseo config", async () => {
-    const home = await temporaryHome();
-    await createMinimalSessionDatabase(home, ".claude_work", "profile-session", "/work/b");
-    const paseo = {
-      config: {
-        get: async () => ({
-          config: {
-            providers: {
-              "claude-work": {
-                extends: "claude",
-                env: { CLAUDE_CONFIG_DIR: join(home, ".claude_work") },
-              },
-            },
-          },
-        }),
-      },
-    };
-
-    const result = await createContextModeAnalyticsHandler({ home, env: {} })({}, { paseo });
-
-    expect(result.byProvider).toEqual([
-      expect.objectContaining({ provider: "claude-work", sessions: 1 }),
-    ]);
-  });
-
-  test("aggregates storage of configured providers under their own ids", async () => {
-    const home = await temporaryHome();
-    await createMinimalSessionDatabase(home, ".claude", "daemon-session", "/work/a");
-    await createMinimalSessionDatabase(home, ".claude_work", "profile-session", "/work/b");
-    await createMinimalSessionDatabase(home, ".codex_work", "codex-session", "/work/c");
-
-    const result = await collectContextModeAnalytics({
-      home,
-      env: {},
-      providers: {
-        "claude-work": {
-          extends: "claude",
-          env: { CLAUDE_CONFIG_DIR: join(home, ".claude_work") },
-        },
-        "codex-work": { extends: "codex", env: { CODEX_HOME: join(home, ".codex_work") } },
-        "claude-default": { extends: "claude" },
-        "unsupported-work": { extends: "not-a-builtin" },
-      },
+    const writer = await openDatabase(dataDir, "2222222222222222", {
+      worktree: "/work/busy",
+      events: [singleCall("mcp:busy", "codex", 100, 10)],
     });
+    writer.exec("BEGIN EXCLUSIVE");
 
-    expect(result.totals).toMatchObject({
-      providers: 3,
-      databases: 3,
-      sessions: 3,
-      savedTokens: 12,
-    });
-    expect(result.byProvider.map((entry) => entry.provider)).toEqual([
-      "claude-code",
-      "claude-work",
-      "codex-work",
-    ]);
-  });
+    try {
+      const result = await collect(dataDir);
 
-  test("lists a built-in provider id with its own env override as a separate row", async () => {
-    const home = await temporaryHome();
-    await createMinimalSessionDatabase(home, ".claude", "daemon-session", "/work/a");
-    await createMinimalSessionDatabase(home, ".claude_override", "override-session", "/work/b");
-
-    const result = await collectContextModeAnalytics({
-      home,
-      env: {},
-      providers: { claude: { env: { CLAUDE_CONFIG_DIR: join(home, ".claude_override") } } },
-    });
-
-    expect(result.byProvider.map((entry) => entry.provider)).toEqual(["claude-code", "claude"]);
-  });
-
-  test("discovers configured provider roots without double counting shared storage", async () => {
-    const home = await temporaryHome();
-    await createMinimalSessionDatabase(home, ".claude", "shared", "/work/a");
-
-    const result = await discoverContextModeStorageRoots({
-      home,
-      env: {},
-      providers: { "claude-shared": { extends: "claude" } },
-    });
-
-    expect(result.roots.map((root) => root.provider)).toEqual(["claude-code"]);
+      expect(result.completeness).toBe("partial");
+      expect(result.totals.projects).toBe(1);
+      expect(result.warnings).toContainEqual(
+        expect.objectContaining({ code: "database-locked", project: "2222222222222222" }),
+      );
+    } finally {
+      writer.exec("ROLLBACK");
+      writer.close();
+    }
   });
 
   test("leaves database bytes and directory contents unchanged", async () => {
-    const home = await temporaryHome();
-    await createMinimalSessionDatabase(home, ".claude", "session", "/work/project");
-    const directory = join(home, ".claude", "context-mode", "sessions");
-    const path = join(directory, "project.db");
+    const dataDir = await temporaryDataDir();
+    await createDatabase(dataDir, "1111111111111111", {
+      worktree: "/work/project",
+      events: [singleCall("mcp:s", "codex", 100, 10)],
+    });
+    const directory = join(dataDir, "projects", "1111111111111111");
+    const path = join(directory, "context.db");
     const beforeBytes = await readFile(path);
     const beforeStat = await stat(path);
     const beforeEntries = await readdir(directory);
 
-    const result = await collectContextModeAnalytics({ home, env: {} });
+    const result = await collect(dataDir);
 
-    const afterBytes = await readFile(path);
-    const afterStat = await stat(path);
-    const afterEntries = await readdir(directory);
     expect(result.totals.events).toBe(1);
-    expect(afterBytes.equals(beforeBytes)).toBe(true);
-    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
-    expect(afterEntries).toEqual(beforeEntries);
+    expect((await readFile(path)).equals(beforeBytes)).toBe(true);
+    expect((await stat(path)).mtimeMs).toBe(beforeStat.mtimeMs);
+    expect(await readdir(directory)).toEqual(beforeEntries);
   });
 
-  test("warns about invalid and non-directory storage roots", async () => {
-    const home = await temporaryHome();
-    const customRoot = join(home, "custom-data-root");
-    await mkdir(customRoot, { recursive: true });
-    await writeFile(join(customRoot, "context-mode"), "not a directory");
+  test("the handler reports the resolved runtime version", async () => {
+    const dataDir = await temporaryDataDir();
 
-    const result = await discoverContextModeStorageRoots({
-      home,
-      platform: "linux",
-      env: {
-        CONTEXT_MODE_DIR: "relative/root",
-        CONTEXT_MODE_DATA_DIR: customRoot,
-      },
+    const result = await createContextModeAnalyticsHandler({
+      env: { CONTEXT_MODE_DATA_DIR: dataDir },
+      resolveVersion: async () => "2.1.4",
+    })();
+
+    expect(result).toMatchObject({
+      contextModeVersion: "2.1.4",
+      completeness: "complete",
+      totals: { projects: 0 },
     });
-
-    expect(result.warnings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: "invalid-storage-root",
-          message: expect.stringContaining("CONTEXT_MODE_DIR"),
-        }),
-        expect.objectContaining({
-          code: "storage-unavailable",
-          provider: "custom-data",
-          message: expect.stringContaining("not a regular directory"),
-        }),
-      ]),
-    );
   });
+});
 
-  test("lists only regular database files and ignores missing directories", async () => {
-    const home = await temporaryHome();
-    const directory = join(home, "provider", "context-mode", "sessions");
-    await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, "good.db"), "sqlite");
-    await mkdir(join(directory, "nested.db"));
-
-    await expect(
-      listRegularContextModeDatabases("claude-code", join(home, "missing")),
-    ).resolves.toEqual({
-      files: [],
+describe("Context Mode database discovery", () => {
+  test("returns nothing for a missing data dir", async () => {
+    const dataDir = await temporaryDataDir();
+    await expect(discoverContextModeDatabases(join(dataDir, "missing"))).resolves.toEqual({
+      databases: [],
       warnings: [],
     });
-
-    const result = await listRegularContextModeDatabases("claude-code", directory);
-    expect(result.files).toEqual([join(directory, "good.db")]);
-    expect(result.warnings).toContainEqual(
-      expect.objectContaining({
-        code: "not-regular-database",
-        provider: "claude-code",
-        database: "nested.db",
-      }),
-    );
   });
 
-  test("truncates very large database directories", async () => {
-    const home = await temporaryHome();
-    const directory = join(home, "provider", "context-mode", "sessions");
-    await mkdir(directory, { recursive: true });
+  test("skips project dirs without a database and flags non-regular entries", async () => {
+    const dataDir = await temporaryDataDir();
+    await mkdir(join(dataDir, "projects", "empty"), { recursive: true });
+    await mkdir(join(dataDir, "projects", "nested", "context.db"), { recursive: true });
+    await mkdir(join(dataDir, "projects", "real"), { recursive: true });
+    await writeFile(join(dataDir, "projects", "real", "context.db"), "");
 
-    for (let index = 0; index < 513; index += 1) {
-      await writeFile(join(directory, `${String(index).padStart(3, "0")}.db`), "sqlite");
+    const result = await discoverContextModeDatabases(dataDir);
+
+    expect(result.databases).toEqual([
+      { project: "real", path: join(dataDir, "projects", "real", "context.db") },
+    ]);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ code: "not-regular-database", project: "nested" }),
+    ]);
+  });
+
+  test("caps the number of inspected projects and warns", async () => {
+    const dataDir = await temporaryDataDir();
+    await createDatabase(dataDir, "000", {
+      worktree: "/work/first",
+      events: [singleCall("mcp:first", "codex", 100, 10)],
+    });
+    for (let index = 1; index <= 256; index += 1) {
+      await mkdir(join(dataDir, "projects", String(index).padStart(3, "0")), { recursive: true });
     }
+    await createDatabase(dataDir, "zzz", {
+      worktree: "/work/last",
+      events: [singleCall("mcp:last", "codex", 100, 10)],
+    });
 
-    const result = await listRegularContextModeDatabases("claude-code", directory);
-    expect(result.files).toHaveLength(512);
-    expect(result.warnings).toContainEqual(
+    const discovery = await discoverContextModeDatabases(dataDir);
+    expect(discovery.databases.map((database) => database.project)).toEqual(["000"]);
+    expect(discovery.warnings).toContainEqual(
       expect.objectContaining({
         code: "result-truncated",
-        provider: "claude-code",
-        message: expect.stringContaining("Only the first 512 database files"),
+        message: expect.stringContaining("Only the first 256 of 258"),
       }),
     );
+
+    const result = await collect(dataDir);
+    expect(result.completeness).toBe("partial");
+    expect(result.totals.projects).toBe(1);
   });
 });

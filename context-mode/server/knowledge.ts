@@ -1,50 +1,44 @@
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
-import type {
-  ContextModePlatform,
-  ContextModeProvider,
-  FetchAndIndexInput,
-  IndexPathInput,
-  KnowledgeToolResult,
-  PurgeKnowledgeInput,
-  SearchKnowledgeInput,
+import {
+  type ContextModePlatform,
+  type ContextModeProvider,
+  ContextModeProviderSchema,
+  type FetchAndIndexInput,
+  type IndexPathInput,
+  type KnowledgeToolResult,
+  type PurgeKnowledgeInput,
+  type ResumeSessionInput,
+  type SearchKnowledgeInput,
+  type SearchKnowledgeResult,
+  type SearchPage,
 } from "../shared/knowledge";
 import type { contextModeSettings } from "../shared/settings";
 import { type LaunchDescriptor, resolveContextModeBinary } from "./binary";
-import {
-  contextModeStorageRootFor,
-  type ProviderConfigSource,
-  type ProviderOverrides,
-  readProviderOverrides,
-  resolveProvider,
-} from "./integration";
+import { type ProviderConfigSource, readProviderOverrides } from "./integration";
 import {
   type ContextModeToolName,
   callContextModeTool,
-  type McpProcessDependencies,
   type McpToolArguments,
 } from "./mcp-process";
+import { resolveContextModeDataDir } from "./storage-discovery";
 
 type SettingsHandle = PluginSettings<typeof contextModeSettings.schema>;
 
-type KnowledgeToolCaller = (
-  launch: LaunchDescriptor,
-  name: ContextModeToolName,
-  arguments_: McpToolArguments,
-  dependencies: McpProcessDependencies,
-) => Promise<string>;
-
 export interface KnowledgeHandlerDependencies {
   now?: () => Date;
+  env?: NodeJS.ProcessEnv;
+  home?: string;
   resolveBinary?: typeof resolveContextModeBinary;
-  callTool?: KnowledgeToolCaller;
+  callTool?: typeof callContextModeTool;
 }
 
 type KnowledgeContext = { paseo?: ProviderConfigSource };
 
 export interface ContextModeKnowledgeHandlers {
-  search(input: SearchKnowledgeInput, context?: KnowledgeContext): Promise<KnowledgeToolResult>;
+  search(input: SearchKnowledgeInput, context?: KnowledgeContext): Promise<SearchKnowledgeResult>;
+  resume(input: ResumeSessionInput, context?: KnowledgeContext): Promise<KnowledgeToolResult>;
   indexPath(input: IndexPathInput, context?: KnowledgeContext): Promise<KnowledgeToolResult>;
   fetchAndIndex(
     input: FetchAndIndexInput,
@@ -53,36 +47,37 @@ export interface ContextModeKnowledgeHandlers {
   purge(input: PurgeKnowledgeInput, context?: KnowledgeContext): Promise<KnowledgeToolResult>;
 }
 
+/** Search replies end with `More: ctx_search({..., offset:N})`, or `more: ... after:MS` for timeline. */
+const NEXT_PAGE_LINE = /^[Mm]ore: ctx_search\(\{.*\b(offset|after):(\d+)\}\)\s*$/gm;
+
+/** The cursor of the last footer; the UI searches one query at a time, so there is one. */
+function nextSearchPage(output: string): SearchPage | null {
+  const last = [...output.matchAll(NEXT_PAGE_LINE)].at(-1);
+  if (!last) return null;
+  const cursor = Number(last[2]);
+  return last[1] === "after" ? { after: cursor } : { offset: cursor };
+}
+
+function purgeArguments(input: PurgeKnowledgeInput): McpToolArguments {
+  switch (input.scope) {
+    case "project":
+      return { project: true };
+    case "session":
+      return { session: input.sessionId };
+    case "source":
+      return { source: input.source };
+  }
+}
+
 const PROVIDER_PLATFORMS: Readonly<Record<ContextModeProvider, ContextModePlatform>> = {
   claude: "claude-code",
   codex: "codex",
   copilot: "copilot-cli",
-  cursor: "cursor",
   opencode: "opencode",
-  pi: "pi",
-  omp: "omp",
-  "omp-plugin": "omp",
 };
 
 export function contextModePlatformFor(provider: ContextModeProvider): ContextModePlatform {
   return PROVIDER_PLATFORMS[provider];
-}
-
-/**
- * `provider` is a Paseo provider id: a built-in, or a configured one whose own `extends` and env
- * decide the storage root (`providers` is `agents.providers`).
- */
-export function contextModeEnvironmentFor(
-  provider: string,
-  home = homedir(),
-  env: NodeJS.ProcessEnv = process.env,
-  providers: ProviderOverrides = {},
-): NodeJS.ProcessEnv {
-  const { base, policy, env: providerEnv } = resolveProvider(provider, providers);
-  const storageRoot = contextModeStorageRootFor(base, { home, env: { ...env, ...providerEnv } });
-  if (!policy || !storageRoot)
-    throw new Error(`Context Mode does not support provider ${provider}.`);
-  return { CONTEXT_MODE_PLATFORM: policy.platform, CONTEXT_MODE_DIR: storageRoot };
 }
 
 function definedArguments(values: Record<string, unknown>): McpToolArguments {
@@ -96,6 +91,8 @@ export function createContextModeKnowledgeHandlers(
   dependencies: KnowledgeHandlerDependencies = {},
 ): ContextModeKnowledgeHandlers {
   const now = dependencies.now ?? (() => new Date());
+  const env = dependencies.env ?? process.env;
+  const home = dependencies.home ?? homedir();
   const resolveBinary = dependencies.resolveBinary ?? resolveContextModeBinary;
   const callTool = dependencies.callTool ?? callContextModeTool;
 
@@ -117,104 +114,54 @@ export function createContextModeKnowledgeHandlers(
     name: ContextModeToolName,
     arguments_: McpToolArguments,
     context: KnowledgeContext | undefined,
-    environmentOverrides: NodeJS.ProcessEnv = {},
   ): Promise<KnowledgeToolResult> {
+    // A configured provider inherits its parent's agent id; its own env may move the data dir.
+    const overrides = await readProviderOverrides(context?.paseo);
+    const own = Object.hasOwn(overrides, provider) ? overrides[provider] : undefined;
+    const base = ContextModeProviderSchema.safeParse(own?.extends ?? provider);
+    if (!base.success) throw new Error(`Context Mode does not support provider ${provider}.`);
+    const parent =
+      own?.extends && Object.hasOwn(overrides, own.extends) ? overrides[own.extends] : undefined;
     const launch = await launchDescriptor(context?.paseo);
-    const providers = await readProviderOverrides(context?.paseo);
-    const output = await callTool(launch, name, arguments_, {
-      env: {
-        ...contextModeEnvironmentFor(provider, homedir(), process.env, providers),
-        ...environmentOverrides,
+    const output = await callTool(
+      launch,
+      name,
+      arguments_,
+      {},
+      {
+        platform: PROVIDER_PLATFORMS[base.data],
+        cwd: projectPath,
+        dataDir: resolveContextModeDataDir({ ...env, ...parent?.env, ...own?.env }, home),
       },
-      cwd: projectPath,
-    });
+    );
     return { provider, output, completedAt: now().toISOString() };
   }
 
   return {
-    search({ provider, projectPath, queries, limit, source, contentType, sort }, context) {
-      return run(
+    async search({ provider, projectPath, queries, scope, source, sort, page }, context) {
+      const result = await run(
         provider,
         projectPath,
         "ctx_search",
-        definedArguments({ queries, limit, source, contentType, sort }),
+        definedArguments({ queries, scope, source, sort, ...page }),
         context,
       );
+      return { ...result, next: nextSearchPage(result.output) };
     },
-    indexPath(
-      {
-        provider,
-        projectPath,
-        path,
-        source,
-        include,
-        exclude,
-        maxDepth,
-        maxFiles,
-        extensions,
-        respectGitignore,
-        followSymlinks,
-      },
-      context,
-    ) {
+    resume({ provider, projectPath, sessionId }, context) {
+      return run(provider, projectPath, "ctx_resume", { session: sessionId }, context);
+    },
+    indexPath({ provider, projectPath, path }, context) {
       if (!isAbsolute(path)) {
         throw new Error("Knowledge indexing requires an absolute path on this host.");
       }
-      return run(
-        provider,
-        projectPath,
-        "ctx_index",
-        definedArguments({
-          path,
-          source,
-          include,
-          exclude,
-          maxDepth,
-          maxFiles,
-          extensions,
-          respectGitignore,
-          followSymlinks,
-        }),
-        context,
-      );
+      return run(provider, projectPath, "ctx_index", { path }, context);
     },
-    fetchAndIndex({ provider, projectPath, url, source, force, ttl }, context) {
-      return run(
-        provider,
-        projectPath,
-        "ctx_fetch_and_index",
-        definedArguments({ url, source, force, ttl }),
-        context,
-        { CTX_FETCH_STRICT: "1" },
-      );
+    fetchAndIndex({ provider, projectPath, url }, context) {
+      return run(provider, projectPath, "ctx_index", { url }, context);
     },
-    async purge(input, context) {
-      const raw = input as PurgeKnowledgeInput & { sessionId?: string };
-      if (raw.confirm !== true) {
-        throw new Error("Purge requires exact confirmation with confirm: true.");
-      }
-      if (raw.scope === "project") {
-        if (raw.sessionId !== undefined) {
-          throw new Error("Purge requires exactly one scope.");
-        }
-        return await run(
-          raw.provider,
-          raw.projectPath,
-          "ctx_purge",
-          { confirm: true, scope: "project" },
-          context,
-        );
-      }
-      if (raw.scope !== "session" || !raw.sessionId) {
-        throw new Error("Session purge requires exactly one non-empty sessionId scope.");
-      }
-      return await run(
-        raw.provider,
-        raw.projectPath,
-        "ctx_purge",
-        { confirm: true, scope: "session", sessionId: raw.sessionId },
-        context,
-      );
+    purge(input, context) {
+      return run(input.provider, input.projectPath, "ctx_purge", purgeArguments(input), context);
     },
   };
 }

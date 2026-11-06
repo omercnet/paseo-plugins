@@ -1,8 +1,22 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { getContextModeAnalyticsDashboard } from "../shared/analytics";
+import { getContextModeAnalyticsDashboard, type SessionAnalytics } from "../shared/analytics";
+import { resumeContextModeSession } from "../shared/knowledge";
+import {
+  ForgetSessionButton,
+  ForgetSourceButton,
+  presentKnowledgeOutput,
+} from "./knowledge-section";
+
+/** Paseo provider that owns each Context Mode `--agent` id, for per-row purge and resume. */
+const AGENT_PROVIDERS: Partial<Record<string, string>> = {
+  "claude-code": "claude",
+  codex: "codex",
+  "copilot-cli": "copilot",
+  opencode: "opencode",
+};
 
 const integerFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 const compactFormatter = new Intl.NumberFormat(undefined, {
@@ -51,21 +65,7 @@ function warningText(warning: unknown): string {
   return JSON.stringify(warning) ?? String(warning);
 }
 
-function optionalFallback(value: unknown): string | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  const fallback =
-    record.raw ?? record.fallback ?? record.rawReport ?? record.fallbackReport ?? null;
-  if (typeof fallback === "string") return fallback.trim() || null;
-  if (fallback === null || fallback === undefined) return null;
-  try {
-    return JSON.stringify(fallback, null, 2) ?? String(fallback);
-  } catch {
-    return String(fallback);
-  }
-}
 interface AnalyticsDashboardProps extends Pick<PluginSurfaceProps, "theme" | "host" | "layout"> {
-  fallback?: string | null;
   health?: ReactNode;
   display?: "full" | "hero" | "details";
 }
@@ -73,14 +73,12 @@ export function AnalyticsDashboard({
   theme,
   host,
   layout,
-  fallback,
   health,
   display = "full",
 }: AnalyticsDashboardProps) {
   const showHero = display !== "details";
   const showDetails = display !== "hero";
   const loadDashboard = useRpc(getContextModeAnalyticsDashboard);
-  const [rawExpanded, setRawExpanded] = useState(false);
   const [sourceLimit, setSourceLimit] = useState(20);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [warningsExpanded, setWarningsExpanded] = useState(false);
@@ -220,6 +218,7 @@ export function AnalyticsDashboard({
         width: layout.compact ? 58 : 76,
         textAlign: "right" as const,
       },
+      sourceRow: { gap: 8 },
       sourceMeta: {
         color: theme.colors.foregroundMuted,
         fontSize: 11,
@@ -292,14 +291,15 @@ export function AnalyticsDashboard({
   const data = dashboard.data;
   const visibleDays = data.byDay.slice(-dayLimit).reverse();
   const maxDailySavings = Math.max(1, ...visibleDays.map((day) => day.savedTokens));
-  const rawFallback = fallback?.trim() || optionalFallback(data);
   const isEmpty =
     data.totals.sessions === 0 &&
     data.totals.toolCalls === 0 &&
-    data.byProvider.length === 0 &&
+    data.byAgent.length === 0 &&
+    data.byProject.length === 0 &&
     data.byCategory.length === 0 &&
     data.byDay.length === 0 &&
-    data.sources.length === 0;
+    data.sources.length === 0 &&
+    data.recentSessions.length === 0;
   const visibleSources = data.sources.slice(0, sourceLimit);
   const completenessLabel =
     data.completeness === "complete"
@@ -374,7 +374,7 @@ export function AnalyticsDashboard({
                     const text = warningText(warning);
                     return (
                       <Text
-                        key={`${warning.code}:${warning.provider ?? ""}:${warning.database ?? ""}:${warning.message}`}
+                        key={`${warning.code}:${warning.project ?? ""}:${warning.message}`}
                         style={styles.subtitle}
                       >
                         {text}
@@ -404,11 +404,7 @@ export function AnalyticsDashboard({
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>At a glance</Text>
               <View style={styles.metricGrid}>
-                <Metric
-                  label="Providers"
-                  value={formatInteger(data.totals.providers)}
-                  styles={styles}
-                />
+                <Metric label="Agents" value={formatInteger(data.totals.agents)} styles={styles} />
                 <Metric
                   label="Sessions"
                   value={formatInteger(data.totals.sessions)}
@@ -442,8 +438,12 @@ export function AnalyticsDashboard({
                 <>
                   <View style={styles.metricGrid}>
                     <Metric
-                      label="Databases"
-                      value={formatInteger(data.totals.databases)}
+                      label="Last activity"
+                      value={
+                        data.totals.lastActivityAt
+                          ? formatDate(data.totals.lastActivityAt, true)
+                          : "None"
+                      }
                       styles={styles}
                     />
                     <Metric
@@ -477,12 +477,11 @@ export function AnalyticsDashboard({
                     <Text style={styles.subtitle}>
                       {formatBytes(data.totals.byteAccounting.savedBytes)} saved ·{" "}
                       {formatBytes(data.totals.byteAccounting.returnedBytes)} returned ·{" "}
-                      {formatBytes(data.totals.byteAccounting.avoidedBytes)} avoided
+                      {formatBytes(data.totals.byteAccounting.producedBytes)} produced
                     </Text>
                     <Text style={styles.label}>
-                      {formatBytes(data.totals.byteAccounting.eventDataBytes)} event data ·{" "}
-                      {formatBytes(data.totals.byteAccounting.snapshotBytes)} snapshots ·{" "}
                       {formatBytes(data.totals.byteAccounting.indexedBytes)} indexed
+                      {data.contextModeVersion ? ` · Context Mode ${data.contextModeVersion}` : ""}
                     </Text>
                   </View>
                 </>
@@ -539,33 +538,33 @@ export function AnalyticsDashboard({
               </View>
             </View>
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Providers</Text>
+              <Text style={styles.sectionTitle}>Agents</Text>
               <View style={styles.card}>
-                {data.byProvider.length === 0 ? (
-                  <Text style={styles.subtitle}>No provider-attributed activity is available.</Text>
+                {data.byAgent.length === 0 ? (
+                  <Text style={styles.subtitle}>No agent activity is available.</Text>
                 ) : (
-                  data.byProvider.map((provider, index) => (
-                    <View key={provider.provider}>
+                  data.byAgent.map((agent, index) => (
+                    <View key={agent.agent}>
                       {index > 0 ? <View style={styles.divider} /> : null}
                       <View
                         accessible
-                        accessibilityLabel={`${provider.provider}: ${formatInteger(provider.projects)} projects, ${formatInteger(provider.sessions)} sessions, ${formatInteger(provider.toolCalls)} tool calls, ${formatInteger(provider.savedTokens)} tokens saved, ${percentFormatter.format(provider.savingsPercent)} percent reduction`}
+                        accessibilityLabel={`${agent.agent}: ${formatInteger(agent.projects)} projects, ${formatInteger(agent.sessions)} sessions, ${formatInteger(agent.toolCalls)} tool calls, ${formatInteger(agent.savedTokens)} tokens saved, ${percentFormatter.format(agent.savingsPercent)} percent reduction`}
                         style={styles.listRow}
                       >
                         <View style={styles.grow}>
-                          <Text style={styles.rowTitle}>{provider.provider}</Text>
+                          <Text style={styles.rowTitle}>{agent.agent}</Text>
                           <Text style={styles.label}>
-                            {formatInteger(provider.projects)} projects ·{" "}
-                            {formatInteger(provider.sessions)} sessions ·{" "}
-                            {formatInteger(provider.toolCalls)} calls
+                            {formatInteger(agent.projects)} projects ·{" "}
+                            {formatInteger(agent.sessions)} sessions ·{" "}
+                            {formatInteger(agent.toolCalls)} calls
                           </Text>
                         </View>
                         <View>
                           <Text style={styles.rowValue}>
-                            {formatCompact(provider.savedTokens)} saved
+                            {formatCompact(agent.savedTokens)} saved
                           </Text>
                           <Text style={styles.sourceMeta}>
-                            {percentFormatter.format(provider.savingsPercent)}% reduction
+                            {percentFormatter.format(agent.savingsPercent)}% reduction
                           </Text>
                         </View>
                       </View>
@@ -574,6 +573,71 @@ export function AnalyticsDashboard({
                 )}
               </View>
             </View>
+
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Projects</Text>
+              <View style={styles.card}>
+                {data.byProject.length === 0 ? (
+                  <Text style={styles.subtitle}>No project activity is available.</Text>
+                ) : (
+                  data.byProject.map((project, index) => (
+                    <View key={project.path}>
+                      {index > 0 ? <View style={styles.divider} /> : null}
+                      <View
+                        accessible
+                        accessibilityLabel={`${project.path}: ${formatInteger(project.sessions)} sessions, ${formatInteger(project.toolCalls)} tool calls, ${formatInteger(project.indexedSources)} indexed sources, ${formatInteger(project.savedTokens)} tokens saved`}
+                        style={styles.listRow}
+                      >
+                        <View style={styles.grow}>
+                          <Text style={styles.rowTitle}>{project.path}</Text>
+                          <Text style={styles.label}>
+                            {formatInteger(project.sessions)} sessions ·{" "}
+                            {formatInteger(project.toolCalls)} calls ·{" "}
+                            {formatInteger(project.indexedSources)} sources
+                            {project.worktrees > 1
+                              ? ` · ${formatInteger(project.worktrees)} worktrees`
+                              : ""}
+                          </Text>
+                        </View>
+                        <View>
+                          <Text style={styles.rowValue}>
+                            {formatBytes(project.byteAccounting.savedBytes)} saved
+                          </Text>
+                          <Text style={styles.sourceMeta}>
+                            {percentFormatter.format(project.savingsPercent)}% reduction
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  ))
+                )}
+                {data.totals.projects > data.byProject.length ? (
+                  <Text style={styles.label}>
+                    Top {formatInteger(data.byProject.length)} of{" "}
+                    {formatInteger(data.totals.projects)} projects by savings
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+
+            {data.recentSessions.length > 0 ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Recent sessions</Text>
+                <View style={styles.card}>
+                  {data.recentSessions.map((session, index) => (
+                    <View key={`${session.agent}:${session.projectPath}:${session.sessionId}`}>
+                      {index > 0 ? <View style={styles.divider} /> : null}
+                      <RecentSessionRow
+                        host={host}
+                        session={session}
+                        styles={styles}
+                        theme={theme}
+                      />
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Where savings come from</Text>
@@ -590,7 +654,7 @@ export function AnalyticsDashboard({
                         style={styles.listRow}
                       >
                         <Text style={[styles.rowTitle, styles.grow]}>{category.category}</Text>
-                        <Text style={styles.label}>{formatInteger(category.count)} events</Text>
+                        <Text style={styles.label}>{formatInteger(category.count)} calls</Text>
                         <Text style={styles.rowValue}>
                           {formatCompact(category.savedTokens)} saved
                         </Text>
@@ -608,37 +672,44 @@ export function AnalyticsDashboard({
                   <Text style={styles.subtitle}>No indexed sources were found.</Text>
                 ) : (
                   visibleSources.map((source, index) => {
-                    const stateStyle =
-                      source.state === "ready"
-                        ? styles.success
-                        : source.state === "empty"
-                          ? styles.warning
-                          : styles.danger;
+                    const provider = AGENT_PROVIDERS[source.agent];
                     return (
-                      <View key={`${source.provider}:${source.source}`}>
+                      <View
+                        key={`${source.agent}:${source.projectPath}:${source.source}:${source.indexedAt ?? ""}`}
+                      >
                         {index > 0 ? <View style={styles.divider} /> : null}
-                        <View
-                          accessible
-                          accessibilityLabel={`${source.source} from ${source.provider}: ${formatInteger(source.chunks)} chunks, ${formatInteger(source.codeChunks)} code chunks, ${source.state}`}
-                          style={styles.listRow}
-                        >
-                          <View style={styles.grow}>
-                            <Text style={styles.rowTitle}>{source.source}</Text>
-                            <Text style={styles.label}>
-                              {source.provider} · {formatBytes(source.indexedBytes)}
-                              {source.indexedAt ? ` · ${formatDate(source.indexedAt, true)}` : ""}
-                            </Text>
-                            {source.detail ? (
-                              <Text style={styles.label}>{source.detail}</Text>
-                            ) : null}
+                        <View style={styles.sourceRow}>
+                          <View
+                            accessible
+                            accessibilityLabel={`${source.source} from ${source.agent} in ${source.projectPath}: ${formatInteger(source.chunks)} chunks, ${source.kind}`}
+                            style={[styles.listRow, styles.grow]}
+                          >
+                            <View style={styles.grow}>
+                              <Text numberOfLines={2} style={styles.rowTitle}>
+                                {source.source}
+                              </Text>
+                              <Text style={styles.label}>
+                                {source.agent} · {formatBytes(source.indexedBytes)}
+                                {source.indexedAt ? ` · ${formatDate(source.indexedAt, true)}` : ""}
+                              </Text>
+                              <Text style={styles.label}>{source.projectPath}</Text>
+                            </View>
+                            <View>
+                              <Text style={[styles.label, styles.badgeText]}>{source.kind}</Text>
+                              <Text style={styles.sourceMeta}>
+                                {formatInteger(source.chunks)} chunks
+                              </Text>
+                            </View>
                           </View>
-                          <View>
-                            <Text style={[styles.badgeText, stateStyle]}>{source.state}</Text>
-                            <Text style={styles.sourceMeta}>
-                              {formatInteger(source.chunks)} chunks ·{" "}
-                              {formatInteger(source.codeChunks)} code
-                            </Text>
-                          </View>
+                          {provider ? (
+                            <ForgetSourceButton
+                              theme={theme}
+                              host={host}
+                              provider={provider}
+                              projectPath={source.projectPath}
+                              source={source.source}
+                            />
+                          ) : null}
                         </View>
                       </View>
                     );
@@ -672,28 +743,115 @@ export function AnalyticsDashboard({
           </>
         )
       ) : null}
+    </View>
+  );
+}
 
-      {showDetails && rawFallback ? (
-        <View style={styles.section}>
+function RecentSessionRow({
+  theme,
+  host,
+  session,
+  styles,
+}: Pick<PluginSurfaceProps, "theme" | "host"> & {
+  session: SessionAnalytics;
+  styles: {
+    button: object;
+    buttonText: object;
+    danger: object;
+    grow: object;
+    label: object;
+    listRow: object;
+    raw: object;
+    rowTitle: object;
+    rowValue: object;
+    sourceMeta: object;
+    sourceRow: object;
+    subtitle: object;
+  };
+}) {
+  const provider = AGENT_PROVIDERS[session.agent];
+  const resumeSession = useRpc(resumeContextModeSession);
+  const [resumeExpanded, setResumeExpanded] = useState(false);
+  const resume = useMutation({
+    mutationFn: (target: { provider: string; projectPath: string; sessionId: string }) =>
+      resumeSession(target),
+  });
+  const lastActivity = session.lastActivityAt
+    ? formatDate(session.lastActivityAt, true)
+    : "No recorded activity";
+  const toggleResume = () => {
+    if (resumeExpanded) {
+      setResumeExpanded(false);
+      return;
+    }
+    if (!provider) return;
+    setResumeExpanded(true);
+    resume.mutate({ provider, projectPath: session.projectPath, sessionId: session.sessionId });
+  };
+
+  return (
+    <View style={styles.sourceRow}>
+      <View
+        accessible
+        accessibilityLabel={`Session ${session.sessionId} from ${session.agent} in ${session.projectPath}: ${formatInteger(session.events)} events, last activity ${lastActivity}`}
+        style={styles.listRow}
+      >
+        <View style={styles.grow}>
+          <Text numberOfLines={2} style={styles.rowTitle}>
+            {session.projectPath}
+          </Text>
+          <Text style={styles.label}>
+            {session.agent} · {lastActivity}
+          </Text>
+          <Text selectable style={styles.label}>
+            Session {session.sessionId}
+          </Text>
+        </View>
+        <View>
+          <Text style={styles.rowValue}>{formatInteger(session.events)}</Text>
+          <Text style={styles.sourceMeta}>events</Text>
+        </View>
+      </View>
+      {provider ? (
+        <>
           <Pressable
-            accessibilityLabel={`${rawExpanded ? "Hide" : "Show"} raw analytics fallback`}
+            accessibilityLabel={
+              resumeExpanded
+                ? `Hide resume state for session ${session.sessionId}`
+                : `Show resume state for session ${session.sessionId}`
+            }
             accessibilityRole="button"
-            accessibilityState={{ expanded: rawExpanded }}
-            onPress={() => setRawExpanded((expanded) => !expanded)}
+            accessibilityState={{ expanded: resumeExpanded }}
+            onPress={toggleResume}
             style={styles.button}
           >
-            <Text style={styles.buttonText}>
-              {rawExpanded ? "Hide raw fallback" : "Show raw fallback"}
-            </Text>
+            <Text style={styles.buttonText}>{resumeExpanded ? "Hide" : "Resume state"}</Text>
           </Pressable>
-          {rawExpanded ? (
-            <View style={styles.card}>
-              <Text selectable style={styles.raw}>
-                {rawFallback}
-              </Text>
+          {resumeExpanded && resume.isPending ? (
+            <View accessibilityLiveRegion="polite" style={styles.listRow}>
+              <ActivityIndicator size="small" color={theme.colors.accent} />
+              <Text style={styles.subtitle}>Loading…</Text>
             </View>
           ) : null}
-        </View>
+          {resumeExpanded && resume.error ? (
+            <Text accessibilityRole="alert" style={styles.danger}>
+              {resume.error instanceof Error ? resume.error.message : String(resume.error)}
+            </Text>
+          ) : null}
+          {resumeExpanded && resume.data ? (
+            <Text selectable style={styles.raw}>
+              {presentKnowledgeOutput(resume.data.output) ||
+                "Context Mode returned no resume state for this session."}
+            </Text>
+          ) : null}
+          <ForgetSessionButton
+            host={host}
+            projectPath={session.projectPath}
+            provider={provider}
+            sessionId={session.sessionId}
+            theme={theme}
+          />
+        </>
       ) : null}
     </View>
   );

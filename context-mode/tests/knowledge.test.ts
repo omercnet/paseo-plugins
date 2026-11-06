@@ -1,10 +1,9 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { contextModeEnvironmentFor, createContextModeKnowledgeHandlers } from "../server/knowledge";
-import { callContextModeTool } from "../server/mcp-process";
+import { afterEach, describe, expect, test } from "vitest";
+import { createContextModeKnowledgeHandlers } from "../server/knowledge";
 import {
   FetchAndIndexInputSchema,
   IndexPathInputSchema,
@@ -21,29 +20,55 @@ import {
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
   );
 });
 
-async function executable(source: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "paseo-context-mode-knowledge-"));
+async function temporaryDirectory(): Promise<string> {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "paseo-context-mode-knowledge-")));
   temporaryDirectories.push(directory);
-  const path = join(directory, process.platform === "win32" ? "context-mode.cjs" : "context-mode");
-  await writeFile(path, `#!/usr/bin/env node\n${source}\n`);
-  if (process.platform !== "win32") await chmod(path, 0o755);
-  return path;
+  return directory;
 }
 
-function launch(program: string) {
-  return process.platform === "win32"
-    ? { program: process.execPath, args: [program] }
-    : { program, args: [] };
+/** A stdio MCP server exposing the 9 v2 tools; every call echoes what it received. */
+const FAKE_SERVER = `
+const readline = require("node:readline");
+const tools = ["ctx_execute", "ctx_batch", "ctx_index", "ctx_search", "ctx_resume", "ctx_stats", "ctx_doctor", "ctx_upgrade", "ctx_purge"];
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const request = JSON.parse(line);
+  const reply = (result) => console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+  if (request.method === "initialize") {
+    reply({ protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "context-mode", version: "dev" } });
+  } else if (request.method === "tools/list") {
+    reply({ tools: tools.map((name) => ({ name, inputSchema: { type: "object" } })) });
+  } else if (request.method === "tools/call") {
+    const text = JSON.stringify({
+      name: request.params.name,
+      arguments: request.params.arguments,
+      argv: process.argv.slice(2),
+      cwd: process.cwd(),
+      dataDir: process.env.CONTEXT_MODE_DATA_DIR,
+    });
+    reply({ content: [{ type: "text", text }] });
+  }
+});
+`;
+
+async function fakeContextMode() {
+  const directory = await temporaryDirectory();
+  const path = join(directory, process.platform === "win32" ? "context-mode.cjs" : "context-mode");
+  await writeFile(path, `#!/usr/bin/env node\n${FAKE_SERVER}\n`);
+  if (process.platform !== "win32") await chmod(path, 0o755);
+  const launch =
+    process.platform === "win32"
+      ? { program: process.execPath, args: [path] }
+      : { program: path, args: [] };
+  return { state: "found" as const, path, source: "path" as const, launch };
 }
 
 function settingsHandle(
-  values: ContextModeSettings,
+  values: ContextModeSettings = ContextModeSettingsSchema.parse({}),
 ): PluginSettings<typeof contextModeSettings.schema> {
   return {
     read: async () => ({ status: "ready", revision: "test", values }),
@@ -51,8 +76,15 @@ function settingsHandle(
   };
 }
 
+const found = {
+  state: "found" as const,
+  path: "/bin/context-mode",
+  source: "path" as const,
+  launch: { program: "/bin/context-mode", args: [] },
+};
+
 describe("knowledge RPC contracts", () => {
-  test("accepts bounded search input and rejects invalid provider ids or excess results", () => {
+  test("search defaults to the worktree scope and rejects v1-only fields", () => {
     expect(
       SearchKnowledgeInputSchema.parse({
         provider: "codex",
@@ -63,40 +95,38 @@ describe("knowledge RPC contracts", () => {
       provider: "codex",
       projectPath: "/repo",
       queries: ["cache invalidation"],
-      limit: 3,
+      scope: "worktree",
       sort: "relevance",
     });
-    for (const provider of ["", "  ", "x".repeat(129)]) {
-      expect(
-        SearchKnowledgeInputSchema.safeParse({
-          provider,
-          projectPath: "/repo",
-          queries: ["cache"],
-        }).success,
-      ).toBe(false);
+    const base = { provider: "codex", projectPath: "/repo", queries: ["cache"] };
+    // "session" is unsearchable: every panel call runs in a fresh Context Mode session.
+    for (const extra of [
+      { limit: 3 },
+      { contentType: "code" },
+      { scope: "all" },
+      { scope: "session" },
+    ]) {
+      expect(SearchKnowledgeInputSchema.safeParse({ ...base, ...extra }).success).toBe(false);
     }
+    for (const provider of ["", "  ", "x".repeat(129)]) {
+      expect(SearchKnowledgeInputSchema.safeParse({ ...base, provider }).success).toBe(false);
+    }
+    expect(SearchKnowledgeInputSchema.parse({ ...base, provider: " claude-work " }).provider).toBe(
+      "claude-work",
+    );
     expect(
-      SearchKnowledgeInputSchema.parse({
-        provider: " claude-work ",
-        projectPath: "/repo",
-        queries: ["cache"],
-      }).provider,
-    ).toBe("claude-work");
-    expect(
-      SearchKnowledgeInputSchema.safeParse({
-        provider: "codex",
-        projectPath: "/repo",
-        queries: ["cache"],
-        limit: 11,
-      }).success,
+      SearchKnowledgeInputSchema.safeParse({ ...base, queries: ["x".repeat(1_025)] }).success,
     ).toBe(false);
-    expect(
-      SearchKnowledgeInputSchema.safeParse({
-        provider: "codex",
-        projectPath: "/repo",
-        queries: ["x".repeat(1_025)],
-      }).success,
-    ).toBe(false);
+  });
+
+  test("search pages are one cursor, offset or after", () => {
+    const base = { provider: "codex", projectPath: "/repo", queries: ["cache"] };
+    for (const page of [{ offset: 4 }, { after: 1793966330248 }]) {
+      expect(SearchKnowledgeInputSchema.safeParse({ ...base, page }).success).toBe(true);
+    }
+    for (const page of [{ offset: 4, after: 5 }, { offset: -1 }, { offset: 1.5 }, {}]) {
+      expect(SearchKnowledgeInputSchema.safeParse({ ...base, page }).success).toBe(false);
+    }
   });
 
   test("bounds returned tool output", () => {
@@ -111,250 +141,209 @@ describe("knowledge RPC contracts", () => {
     ).toBe(false);
   });
 
-  test("requires absolute paths and absolute HTTP(S) URLs", () => {
-    expect(
-      IndexPathInputSchema.safeParse({
-        provider: "omp",
-        projectPath: "/repo",
-        path: "/repo/docs",
-      }).success,
-    ).toBe(true);
-    expect(
-      IndexPathInputSchema.safeParse({
-        provider: "omp",
-        projectPath: "/repo",
-        path: "docs/spec.md",
-      }).success,
-    ).toBe(false);
-    expect(
-      FetchAndIndexInputSchema.safeParse({
-        provider: "claude",
-        projectPath: "/repo",
-        url: "https://example.com/docs",
-      }).success,
-    ).toBe(true);
-    for (const url of ["file:///etc/passwd", "javascript:alert(1)", "//example.com/docs"]) {
+  test("requires absolute paths and HTTP(S) URLs, and takes no source label or index options", () => {
+    const scope = { provider: "claude", projectPath: "/repo" };
+    expect(IndexPathInputSchema.safeParse({ ...scope, path: "/repo/docs" }).success).toBe(true);
+    expect(IndexPathInputSchema.safeParse({ ...scope, path: "docs/spec.md" }).success).toBe(false);
+    for (const extra of [{ maxFiles: 5 }, { source: "docs" }]) {
       expect(
-        FetchAndIndexInputSchema.safeParse({ provider: "claude", projectPath: "/repo", url })
+        IndexPathInputSchema.safeParse({ ...scope, path: "/repo/docs", ...extra }).success,
+      ).toBe(false);
+    }
+    expect(
+      FetchAndIndexInputSchema.safeParse({ ...scope, url: "https://example.com/docs" }).success,
+    ).toBe(true);
+    for (const extra of [{ force: true }, { source: "docs" }]) {
+      expect(
+        FetchAndIndexInputSchema.safeParse({ ...scope, url: "https://example.com", ...extra })
           .success,
       ).toBe(false);
+    }
+    for (const url of ["file:///etc/passwd", "javascript:alert(1)", "//example.com/docs"]) {
+      expect(FetchAndIndexInputSchema.safeParse({ ...scope, url }).success).toBe(false);
     }
   });
 
   test("purge requires literal confirmation and exactly one explicit scope", () => {
-    expect(
-      PurgeKnowledgeInputSchema.safeParse({
-        provider: "pi",
-        projectPath: "/repo",
-        confirm: true,
-        scope: "project",
-      }).success,
-    ).toBe(true);
-    expect(
-      PurgeKnowledgeInputSchema.safeParse({
-        provider: "pi",
-        projectPath: "/repo",
-        confirm: true,
-        scope: "session",
-        sessionId: "session-1",
-      }).success,
-    ).toBe(true);
+    const base = { provider: "codex", projectPath: "/repo", confirm: true };
     for (const input of [
-      { provider: "pi", projectPath: "/repo", confirm: false, scope: "project" },
-      { provider: "pi", projectPath: "/repo", confirm: true },
-      { provider: "pi", projectPath: "/repo", confirm: true, scope: "session" },
-      {
-        provider: "pi",
-        projectPath: "/repo",
-        confirm: true,
-        scope: "project",
-        sessionId: "session-1",
-      },
+      { ...base, scope: "project" },
+      { ...base, scope: "session", sessionId: "session-1" },
+      { ...base, scope: "source", source: "docs/notes.md" },
+    ]) {
+      expect(PurgeKnowledgeInputSchema.safeParse(input).success).toBe(true);
+    }
+    for (const input of [
+      { ...base, confirm: false, scope: "project" },
+      { ...base },
+      { ...base, scope: "session" },
+      { ...base, scope: "source", source: " " },
+      { ...base, scope: "project", sessionId: "session-1" },
+      { ...base, scope: "session", sessionId: "session-1", source: "docs" },
     ]) {
       expect(PurgeKnowledgeInputSchema.safeParse(input).success).toBe(false);
     }
   });
 });
 
-describe("provider storage isolation", () => {
-  test("uses separate provider roots instead of a merged store", () => {
-    expect(contextModeEnvironmentFor("claude", "/home/test", {})).toEqual({
-      CONTEXT_MODE_PLATFORM: "claude-code",
-      CONTEXT_MODE_DIR: join("/home/test", ".claude", "context-mode"),
-    });
-    expect(contextModeEnvironmentFor("omp-plugin", "/home/test", {})).toEqual({
-      CONTEXT_MODE_PLATFORM: "omp",
-      CONTEXT_MODE_DIR: join("/home/test", ".omp", "context-mode"),
-    });
-    expect(contextModeEnvironmentFor("cursor", "/home/test", {})).toEqual({
-      CONTEXT_MODE_PLATFORM: "cursor",
-      CONTEXT_MODE_DIR: join("/home/test", ".cursor", "context-mode"),
-    });
-    expect(contextModeEnvironmentFor("codex", "/home/test", { CODEX_HOME: "/srv/codex" })).toEqual({
-      CONTEXT_MODE_PLATFORM: "codex",
-      CONTEXT_MODE_DIR: join("/srv/codex", "context-mode"),
-    });
-    expect(
-      contextModeEnvironmentFor("opencode", "/home/test", {
-        CONTEXT_MODE_DATA_DIR: "/srv/context-data",
-      }),
-    ).toEqual({
-      CONTEXT_MODE_PLATFORM: "opencode",
-      CONTEXT_MODE_DIR: join(resolve("/srv/context-data"), "context-mode"),
-    });
-  });
-});
-
 describe("knowledge handlers", () => {
-  test("sends typed arguments and provider scope through MCP", async () => {
-    const calls: Array<{
-      name: string;
-      arguments_: unknown;
-      platform: string | undefined;
-      cwd: string | undefined;
-      strictFetch: string | undefined;
-    }> = [];
-    const settings = ContextModeSettingsSchema.parse({});
-    const handlers = createContextModeKnowledgeHandlers(settingsHandle(settings), {
-      now: () => new Date("2026-09-20T12:00:00.000Z"),
-      resolveBinary: async () => ({
-        state: "found",
-        path: "/bin/context-mode",
-        source: "path",
-        launch: { program: "/bin/context-mode", args: [] },
-      }),
-      callTool: async (_launch, name, arguments_, dependencies) => {
-        calls.push({
-          name,
-          arguments_,
-          platform: dependencies.env?.CONTEXT_MODE_PLATFORM,
-          cwd: dependencies.cwd,
-          strictFetch: dependencies.env?.CTX_FETCH_STRICT,
-        });
-        return "indexed";
-      },
+  test("calls the v2 tools with exact arguments, agent id, project cwd and data dir", async () => {
+    const projectPath = await temporaryDirectory();
+    const dataDir = await temporaryDirectory();
+    const binary = await fakeContextMode();
+    const handlers = createContextModeKnowledgeHandlers(settingsHandle(), {
+      env: { CONTEXT_MODE_DATA_DIR: dataDir },
+      resolveBinary: async () => binary,
     });
+    const received = async (result: Promise<{ provider: string; output: string }>) =>
+      JSON.parse((await result).output);
 
-    await handlers.search({
-      provider: "codex",
-      projectPath: "/repo",
-      queries: ["cache invalidation"],
-      limit: 3,
-      sort: "relevance",
-    });
-
-    await expect(
-      handlers.indexPath({
-        provider: "copilot",
-        projectPath: "/repo",
-        path: "/repo/docs",
-        source: "docs",
-        maxFiles: 50,
-      }),
-    ).resolves.toEqual({
-      provider: "copilot",
-      output: "indexed",
-      completedAt: "2026-09-20T12:00:00.000Z",
-    });
-    await handlers.fetchAndIndex({
-      provider: "pi",
-      projectPath: "/repo",
-      url: "https://example.com/docs",
-      source: "web-docs",
-      force: false,
-    });
-    await handlers.purge({
-      provider: "omp",
-      projectPath: "/repo",
-      confirm: true,
-      scope: "project",
+    const calls = [
+      await received(
+        handlers.search({
+          provider: "codex",
+          projectPath,
+          queries: ["cache invalidation"],
+          scope: "project",
+          source: "docs",
+          sort: "timeline",
+          page: { after: 1793966330248 },
+        }),
+      ),
+      await received(
+        handlers.indexPath({
+          provider: "copilot",
+          projectPath,
+          path: join(projectPath, "docs"),
+        }),
+      ),
+      await received(
+        handlers.fetchAndIndex({
+          provider: "opencode",
+          projectPath,
+          url: "https://example.com/docs",
+        }),
+      ),
+      await received(
+        handlers.resume({ provider: "codex", projectPath, sessionId: "mcp:session-1" }),
+      ),
+      await received(
+        handlers.purge({ provider: "claude", projectPath, confirm: true, scope: "project" }),
+      ),
+      await received(
+        handlers.purge({
+          provider: "claude",
+          projectPath,
+          confirm: true,
+          scope: "session",
+          sessionId: "mcp:session-1",
+        }),
+      ),
+      await received(
+        handlers.purge({
+          provider: "claude",
+          projectPath,
+          confirm: true,
+          scope: "source",
+          source: "docs/notes.md",
+        }),
+      ),
+    ];
+    const expected = (name: string, arguments_: unknown, agent: string) => ({
+      name,
+      arguments: arguments_,
+      argv: ["server", "--agent", agent],
+      cwd: projectPath,
+      dataDir,
     });
     expect(calls).toEqual([
-      {
-        name: "ctx_search",
-        arguments_: { queries: ["cache invalidation"], limit: 3, sort: "relevance" },
-        platform: "codex",
-        cwd: "/repo",
-        strictFetch: undefined,
-      },
-      {
-        name: "ctx_index",
-        arguments_: { path: "/repo/docs", source: "docs", maxFiles: 50 },
-        platform: "copilot-cli",
-        cwd: "/repo",
-        strictFetch: undefined,
-      },
-      {
-        name: "ctx_fetch_and_index",
-        arguments_: {
-          url: "https://example.com/docs",
-          source: "web-docs",
-          force: false,
+      expected(
+        "ctx_search",
+        {
+          queries: ["cache invalidation"],
+          scope: "project",
+          source: "docs",
+          sort: "timeline",
+          after: 1793966330248,
         },
-        platform: "pi",
-        cwd: "/repo",
-        strictFetch: "1",
-      },
-      {
-        name: "ctx_purge",
-        arguments_: { confirm: true, scope: "project" },
-        platform: "omp",
-        cwd: "/repo",
-        strictFetch: undefined,
-      },
+        "codex",
+      ),
+      expected("ctx_index", { path: join(projectPath, "docs") }, "copilot-cli"),
+      expected("ctx_index", { url: "https://example.com/docs" }, "opencode"),
+      expected("ctx_resume", { session: "mcp:session-1" }, "codex"),
+      expected("ctx_purge", { project: true }, "claude-code"),
+      expected("ctx_purge", { session: "mcp:session-1" }, "claude-code"),
+      expected("ctx_purge", { source: "docs/notes.md" }, "claude-code"),
     ]);
   });
 
-  test("guards purge again at the handler boundary", async () => {
-    let calls = 0;
-    const handlers = createContextModeKnowledgeHandlers(
-      settingsHandle(ContextModeSettingsSchema.parse({})),
-      {
-        resolveBinary: async () => ({
-          state: "found",
-          path: "/bin/context-mode",
-          source: "path",
-          launch: { program: "/bin/context-mode", args: [] },
-        }),
-        callTool: async () => {
-          calls += 1;
-          return "purged";
-        },
+  test("uses the real user data dir by default, never the probe store", async () => {
+    const options: unknown[] = [];
+    const handlers = createContextModeKnowledgeHandlers(settingsHandle(), {
+      now: () => new Date("2026-09-20T12:00:00.000Z"),
+      env: {},
+      home: "/home/test",
+      resolveBinary: async () => found,
+      callTool: async (_launch, _name, _arguments, _dependencies, callOptions) => {
+        options.push(callOptions);
+        return "ok";
       },
-    );
+    });
     await expect(
-      handlers.purge({ provider: "codex", confirm: false, scope: "project" } as never),
-    ).rejects.toThrow("exact confirmation");
-    await expect(
-      handlers.purge({
-        provider: "codex",
-        confirm: true,
-        scope: "project",
-        sessionId: "ambiguous",
-      } as never),
-    ).rejects.toThrow("exactly one scope");
-    expect(calls).toBe(0);
+      handlers.search({
+        provider: "claude",
+        projectPath: "/repo",
+        queries: ["q"],
+        scope: "worktree",
+        sort: "relevance",
+      }),
+    ).resolves.toEqual({
+      provider: "claude",
+      output: "ok",
+      completedAt: "2026-09-20T12:00:00.000Z",
+      next: null,
+    });
+    expect(options).toEqual([
+      { platform: "claude-code", cwd: "/repo", dataDir: join("/home/test", ".context-mode") },
+    ]);
   });
 
-  test("scopes a configured provider to its own storage root and rejects unsupported ids", async () => {
-    vi.stubEnv("CONTEXT_MODE_DIR", undefined);
-    vi.stubEnv("CONTEXT_MODE_DATA_DIR", undefined);
-    const envs: Array<NodeJS.ProcessEnv | undefined> = [];
-    const handlers = createContextModeKnowledgeHandlers(
-      settingsHandle(ContextModeSettingsSchema.parse({})),
-      {
-        resolveBinary: async () => ({
-          state: "found",
-          path: "/bin/context-mode",
-          source: "path",
-          launch: { program: "/bin/context-mode", args: [] },
-        }),
-        callTool: async (_launch, _name, _arguments, dependencies) => {
-          envs.push(dependencies.env);
-          return "ok";
-        },
+  test("returns the cursor of the next search page from the reply footer", async () => {
+    const replies = [
+      'Query "q":\na #0: x\nMore: ctx_search({queries:["q"], scope:"worktree", offset:4})',
+      'Query "q":\na #0: x\nmore: ctx_search({queries:["q"], scope:"worktree", sort:"timeline", after:1793966330248})',
+      'Query "q":\na #0: x',
+    ];
+    const handlers = createContextModeKnowledgeHandlers(settingsHandle(), {
+      resolveBinary: async () => found,
+      callTool: async () => replies.shift() ?? "",
+    });
+    const input = {
+      provider: "codex",
+      projectPath: "/repo",
+      queries: ["q"],
+      scope: "worktree" as const,
+      sort: "relevance" as const,
+    };
+    const cursors = [
+      (await handlers.search(input)).next,
+      (await handlers.search(input)).next,
+      (await handlers.search(input)).next,
+    ];
+    expect(cursors).toEqual([{ offset: 4 }, { after: 1793966330248 }, null]);
+  });
+
+  test("maps configured providers through extends and rejects unsupported ids", async () => {
+    const options: unknown[] = [];
+    const handlers = createContextModeKnowledgeHandlers(settingsHandle(), {
+      env: {},
+      home: "/home/test",
+      resolveBinary: async () => found,
+      callTool: async (_launch, _name, _arguments, _dependencies, callOptions) => {
+        options.push(callOptions);
+        return "ok";
       },
-    );
+    });
     const paseo = {
       config: {
         get: async () => ({
@@ -362,48 +351,35 @@ describe("knowledge handlers", () => {
             providers: {
               "claude-work": {
                 extends: "claude",
-                env: { CLAUDE_CONFIG_DIR: "/srv/claude-work" },
+                env: { CONTEXT_MODE_DATA_DIR: "/srv/context-work" },
               },
-              "mystery-work": { extends: "not-a-builtin" },
+              "cursor-work": { extends: "cursor" },
             },
           },
         }),
       },
     };
-    const scope = { projectPath: "/repo", queries: ["q"], limit: 3, sort: "relevance" as const };
+    const search = {
+      projectPath: "/repo",
+      queries: ["q"],
+      scope: "worktree" as const,
+      sort: "relevance" as const,
+    };
 
     await expect(
-      handlers.search({ provider: "claude-work", ...scope }, { paseo }),
+      handlers.search({ provider: "claude-work", ...search }, { paseo }),
     ).resolves.toMatchObject({ provider: "claude-work" });
-    expect(envs[0]).toMatchObject({
-      CONTEXT_MODE_PLATFORM: "claude-code",
-      CONTEXT_MODE_DIR: join("/srv/claude-work", "context-mode"),
-    });
-    await expect(
-      handlers.search({ provider: "mystery-work", ...scope }, { paseo }),
-    ).rejects.toThrow("does not support provider mystery-work");
-    await expect(handlers.search({ provider: "claude-work", ...scope })).rejects.toThrow(
+    expect(options).toEqual([
+      { platform: "claude-code", cwd: "/repo", dataDir: "/srv/context-work" },
+    ]);
+    for (const provider of ["cursor", "pi", "omp", "omp-plugin", "cursor-work"]) {
+      await expect(handlers.search({ provider, ...search }, { paseo })).rejects.toThrow(
+        `does not support provider ${provider}`,
+      );
+    }
+    await expect(handlers.search({ provider: "claude-work", ...search })).rejects.toThrow(
       "does not support provider claude-work",
     );
-    expect(envs).toHaveLength(1);
-  });
-
-  test("serializes typed tool arguments into tools/call", async () => {
-    const binary = await executable(`
-const readline = require("node:readline");
-readline.createInterface({ input: process.stdin }).on("line", (line) => {
-  const request = JSON.parse(line);
-  if (request.id === 1) console.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { version: "1.0.169" } } }));
-  if (request.method === "tools/call") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: JSON.stringify(request.params) }] } }));
-});
-`);
-    const output = await callContextModeTool(launch(binary), "ctx_search", {
-      queries: ["alpha", "beta"],
-      limit: 4,
-    });
-    expect(JSON.parse(output)).toEqual({
-      name: "ctx_search",
-      arguments: { queries: ["alpha", "beta"], limit: 4 },
-    });
+    expect(options).toHaveLength(1);
   });
 });

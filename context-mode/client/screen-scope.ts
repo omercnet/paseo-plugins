@@ -25,7 +25,7 @@ function notOnThisHost(kind: "agent" | "workspace"): KnowledgeScope {
   return {
     provider: null,
     projectPath: "",
-    note: `The ${kind} this screen was opened from is not on this host. Select a provider and project.`,
+    note: `The ${kind} this screen was opened from is not on this host. Select an agent and project.`,
   };
 }
 
@@ -38,7 +38,7 @@ export async function resolveKnowledgeScope(
     if (!result) return notOnThisHost("agent");
     if (params.workspaceId && result.agent.workspaceId !== params.workspaceId) {
       throw new Error(
-        "Agent no longer belongs to this workspace. Select a provider and project explicitly.",
+        "Agent no longer belongs to this workspace. Select an agent and project explicitly.",
       );
     }
     return { provider: result.agent.provider, projectPath: result.agent.cwd };
@@ -50,6 +50,6 @@ export async function resolveKnowledgeScope(
   return {
     provider: null,
     projectPath: workspace.workspaceDirectory,
-    note: "Select a provider store for this workspace.",
+    note: "Select which agent to record knowledge work as for this workspace.",
   };
 }

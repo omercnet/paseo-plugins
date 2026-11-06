@@ -1,8 +1,7 @@
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
   createIntegrationAudit,
-  injectContextModeEnvironment,
   injectContextModeOnCreate,
   readProviderOverrides,
 } from "../server/integration";
@@ -10,433 +9,377 @@ import { ContextModeSettingsSchema } from "../shared";
 
 const launch = {
   program: "/usr/bin/node",
-  args: ["/plugin/node_modules/context-mode/cli.bundle.mjs"],
+  args: ["/plugin/node_modules/context-mode/cli.mjs"],
 };
 
-const AMBIENT_ENVIRONMENT = [
-  "CONTEXT_MODE_DIR",
-  "CONTEXT_MODE_DATA_DIR",
-  "CLAUDE_CONFIG_DIR",
-  "CODEX_HOME",
-  "COPILOT_HOME",
-  "XDG_CONFIG_HOME",
-  "PI_CODING_AGENT_DIR",
-];
+const settings = ContextModeSettingsSchema.parse({});
+const noNative = {
+  home: "/home/test",
+  env: {},
+  pathExists: async () => false,
+  fileContains: async () => false,
+};
 
-beforeEach(() => {
-  for (const name of AMBIENT_ENVIRONMENT) vi.stubEnv(name, undefined);
-});
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
+function server(platform: string, env: Record<string, string> = {}) {
+  return {
+    type: "stdio",
+    command: "/usr/bin/node",
+    args: ["/plugin/node_modules/context-mode/cli.mjs", "server", "--agent", platform],
+    env: { CONTEXT_MODE_DATA_DIR: "/home/test/.context-mode", ...env },
+  };
+}
 
 describe("provider-aware Context Mode activation", () => {
-  test("prefers a native registration found in the provider's authoritative config", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const request = {
-      config: { provider: "claude", cwd: "/work", mcpServers: {} },
-    };
-    const probes: Array<[string, string]> = [];
-    const result = await injectContextModeOnCreate(request, settings, launch, {
-      home: "/home/test",
-      pathExists: async () => false,
-      fileContains: async (path, marker) => {
-        probes.push([path, marker]);
-        return path === join("/home/test", ".claude", "settings.json") && marker === "context-mode";
-      },
-    });
+  test.each([
+    ["claude", "claude-code"],
+    ["codex", "codex"],
+    ["copilot", "copilot-cli"],
+    ["opencode", "opencode"],
+  ])("injects the v2 MCP server for %s as --agent %s", async (provider, platform) => {
+    const result = await injectContextModeOnCreate(
+      { config: { provider, cwd: "/work", mcpServers: {} } },
+      settings,
+      launch,
+      noNative,
+    );
 
-    expect(result).toBe(request);
-    expect(probes).toEqual([[join("/home/test", ".claude", "settings.json"), "context-mode"]]);
+    expect(result.config.mcpServers).toEqual({ "context-mode": server(platform) });
   });
 
-  test("injects the bundled MCP fallback while preserving existing MCP and request environment", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
+  test.each(["cursor", "pi", "omp", "omp-plugin", "omp-plugin-team", "acp"])(
+    "leaves %s unchanged",
+    async (provider) => {
+      const request = { config: { provider, cwd: "/work", mcpServers: {} } };
+
+      expect(await injectContextModeOnCreate(request, settings, launch, noNative)).toBe(request);
+    },
+  );
+
+  test("preserves existing MCP servers, request env, and the launch env", async () => {
     const request = {
       config: {
-        provider: "cursor",
+        provider: "codex",
         cwd: "/work",
         mcpServers: { existing: { type: "http", url: "https://example.test/mcp" } },
       },
       env: { KEEP: "yes" },
     };
-    const result = await injectContextModeOnCreate(request, settings, launch, {
-      home: "/home/test",
-      pathExists: async (path) => path === join("/home/test", ".cursor", "context-mode"),
-      fileContains: async () => false,
-    });
-
-    expect(result.env).toBe(request.env);
-    expect(result.config.mcpServers).toEqual({
-      existing: { type: "http", url: "https://example.test/mcp" },
-      "context-mode": {
-        type: "stdio",
-        command: "/usr/bin/node",
-        args: ["/plugin/node_modules/context-mode/cli.bundle.mjs"],
-        env: {
-          CONTEXT_MODE_PLATFORM: "cursor",
-          CONTEXT_MODE_DIR: join("/home/test", ".cursor", "context-mode"),
-        },
-      },
-    });
-  });
-
-  test("carries the launch environment into the injected MCP server", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const request = {
-      config: { provider: "cursor", cwd: "/work", mcpServers: {} as Record<string, unknown> },
-    };
     const result = await injectContextModeOnCreate(
       request,
       settings,
       { ...launch, env: { ELECTRON_RUN_AS_NODE: "1" } },
-      { home: "/home/test", pathExists: async () => false, fileContains: async () => false },
+      noNative,
     );
 
-    expect(result.config.mcpServers["context-mode"]).toMatchObject({
-      command: "/usr/bin/node",
-      env: { ELECTRON_RUN_AS_NODE: "1", CONTEXT_MODE_PLATFORM: "cursor" },
+    expect(result.env).toBe(request.env);
+    expect(result.config.mcpServers).toEqual({
+      existing: { type: "http", url: "https://example.test/mcp" },
+      "context-mode": server("codex", { ELECTRON_RUN_AS_NODE: "1" }),
     });
+  });
+
+  test("pins the data dir agents write to, honoring a provider or request override", async () => {
+    const inject = async (
+      env: Record<string, string> | undefined,
+      providers: Record<string, { extends: string; env?: Record<string, string> }>,
+    ) => {
+      const result = await injectContextModeOnCreate(
+        { config: { provider: "claude-work", cwd: "/work", mcpServers: {} }, env },
+        settings,
+        launch,
+        { ...noNative, providers },
+      );
+      return (result.config.mcpServers as Record<string, { env: Record<string, string> }>)[
+        "context-mode"
+      ]?.env;
+    };
+
+    expect(await inject(undefined, { "claude-work": { extends: "claude" } })).toEqual({
+      CONTEXT_MODE_DATA_DIR: "/home/test/.context-mode",
+    });
+    expect(
+      await inject(undefined, {
+        "claude-work": { extends: "claude", env: { CONTEXT_MODE_DATA_DIR: "/srv/work" } },
+      }),
+    ).toEqual({ CONTEXT_MODE_DATA_DIR: "/srv/work" });
+    expect(
+      await inject(
+        { CONTEXT_MODE_DATA_DIR: "/srv/request" },
+        { "claude-work": { extends: "claude", env: { CONTEXT_MODE_DATA_DIR: "/srv/work" } } },
+      ),
+    ).toEqual({ CONTEXT_MODE_DATA_DIR: "/srv/request" });
   });
 
   test("never replaces an explicitly configured Context Mode MCP server", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
     const request = {
       config: {
         provider: "codex",
-        mcpServers: {
-          "context-mode": { type: "http", url: "https://context.example.test/mcp" },
-          existing: { type: "http", url: "https://example.test/mcp" },
-        },
+        mcpServers: { "context-mode": { type: "http", url: "https://context.example.test/mcp" } },
       },
-      env: { KEEP: "yes" },
     };
 
-    expect(await injectContextModeOnCreate(request, settings, launch)).toBe(request);
+    expect(await injectContextModeOnCreate(request, settings, launch, noNative)).toBe(request);
   });
 
-  test("leaves unknown providers unchanged on creation and session open", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const createRequest = {
-      config: { provider: "omp-pluginish", cwd: "/work", mcpServers: {} },
-      env: { KEEP: "yes" },
-    };
-    const openRequest = {
-      provider: "omp-pluginish",
-      cwd: "/work",
-      env: { KEEP: "yes" },
-    };
+  test("does nothing for internal agents or when activation is off", async () => {
+    const internal = { config: { provider: "claude", internal: true, mcpServers: {} } };
+    const request = { config: { provider: "claude", mcpServers: {} } };
 
-    expect(await injectContextModeOnCreate(createRequest, settings, launch)).toBe(createRequest);
-    expect(await injectContextModeEnvironment(openRequest, settings)).toBe(openRequest);
+    expect(await injectContextModeOnCreate(internal, settings, launch, noNative)).toBe(internal);
+    expect(
+      await injectContextModeOnCreate(
+        request,
+        ContextModeSettingsSchema.parse({ autoInject: false }),
+        launch,
+        noNative,
+      ),
+    ).toBe(request);
   });
+});
 
-  test("maps OMP plugin profile provider IDs to the OMP adapter", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const request = {
-      config: { provider: "omp-plugin-team-beta", cwd: "/work", mcpServers: {} },
-    };
+describe("native registration detection", () => {
+  async function detected(
+    provider: string,
+    match: (path: string, marker: string) => boolean,
+    options: { cwd?: string; env?: Record<string, string>; exists?: string } = {},
+  ) {
+    const request = { config: { provider, cwd: options.cwd, mcpServers: {} } };
     const result = await injectContextModeOnCreate(request, settings, launch, {
       home: "/home/test",
-      pathExists: async (path) => path === join("/home/test", ".omp", "context-mode"),
-      fileContains: async () => false,
+      env: options.env ?? {},
+      pathExists: async (path) => path === options.exists,
+      fileContains: async (path, marker) => match(path, marker),
     });
+    return result === request;
+  }
 
-    expect(result.config.mcpServers).toMatchObject({
-      "context-mode": {
-        env: {
-          CONTEXT_MODE_PLATFORM: "omp",
-          CONTEXT_MODE_DIR: join("/home/test", ".omp", "context-mode"),
-        },
-      },
-    });
+  test("finds the Claude Code marketplace plugin and user MCP entries", async () => {
+    expect(
+      await detected(
+        "claude",
+        (path, marker) =>
+          path === join("/home/test", ".claude", "plugins", "installed_plugins.json") &&
+          marker === '"context-mode@context-mode"',
+      ),
+    ).toBe(true);
+    expect(
+      await detected(
+        "claude",
+        (path, marker) =>
+          path === join("/home/test", ".claude.json") && marker === '"context-mode":',
+      ),
+    ).toBe(true);
+    expect(
+      await detected(
+        "claude",
+        (path) => path === join("/srv/claude", "plugins", "installed_plugins.json"),
+        { env: { CLAUDE_CONFIG_DIR: "/srv/claude" } },
+      ),
+    ).toBe(true);
   });
 
-  test("honors explicit Context Mode environment values over generated defaults", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const createRequest = {
-      config: { provider: "codex", cwd: "/work", mcpServers: {} },
-      env: {
-        CONTEXT_MODE_PLATFORM: "manual-platform",
-        CONTEXT_MODE_DIR: "/data/manual-context-mode",
-        KEEP: "yes",
-      },
-    };
-    const created = await injectContextModeOnCreate(createRequest, settings, launch, {
-      home: "/home/test",
-      pathExists: async () => true,
-      fileContains: async () => false,
-    });
-    expect(created.config.mcpServers).toMatchObject({
-      "context-mode": {
-        env: {
-          CONTEXT_MODE_PLATFORM: "manual-platform",
-          CONTEXT_MODE_DIR: "/data/manual-context-mode",
-        },
-      },
-    });
-    expect(created.env).toEqual({
-      CONTEXT_MODE_PLATFORM: "manual-platform",
-      CONTEXT_MODE_DIR: "/data/manual-context-mode",
-      KEEP: "yes",
-    });
-
-    const openRequest = {
-      agentId: "agent-1",
-      workspaceId: "workspace-1",
-      provider: "codex",
-      cwd: "/work",
-      reason: "resume",
-      purpose: "interactive",
-      env: createRequest.env,
-    };
-    const opened = await injectContextModeEnvironment(openRequest, settings, {
-      home: "/home/test",
-      pathExists: async () => true,
-    });
-    expect(opened.env).toEqual(createRequest.env);
+  test("finds the Codex config.toml MCP entry or plugin under CODEX_HOME", async () => {
+    const config = join("/srv/codex", "config.toml");
+    for (const section of ["[mcp_servers.context-mode]", '[plugins."context-mode@context-mode"]']) {
+      expect(
+        await detected("codex", (path, marker) => path === config && marker === section, {
+          env: { CODEX_HOME: "/srv/codex" },
+        }),
+      ).toBe(true);
+    }
   });
 
-  test("reuses storage under an explicitly configured provider root", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const request = {
-      config: { provider: "codex", cwd: "/work", mcpServers: {} },
-      env: { CODEX_HOME: "/srv/codex-profile" },
-    };
-    const result = await injectContextModeOnCreate(request, settings, launch, {
-      home: "/home/test",
-      pathExists: async (path) => path === join("/srv/codex-profile", "context-mode"),
-      fileContains: async () => false,
-    });
-
-    expect(result.config.mcpServers).toMatchObject({
-      "context-mode": {
-        env: {
-          CONTEXT_MODE_PLATFORM: "codex",
-          CONTEXT_MODE_DIR: join("/srv/codex-profile", "context-mode"),
-        },
-      },
-    });
+  test("finds the Copilot MCP entry or setup hook file", async () => {
+    expect(
+      await detected(
+        "copilot",
+        (path) => path === join("/home/test", ".copilot", "mcp-config.json"),
+      ),
+    ).toBe(true);
+    expect(
+      await detected("copilot", () => false, {
+        exists: join("/home/test", ".copilot", "hooks", "context-mode.json"),
+      }),
+    ).toBe(true);
   });
 
-  test("reports current adapter mappings and the existing-agent activation limitation", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
+  test("finds the OpenCode plugin in global and project config", async () => {
+    expect(
+      await detected("opencode", (path) => path === join("/srv/oc", "opencode.json"), {
+        env: { OPENCODE_CONFIG_DIR: "/srv/oc", XDG_CONFIG_HOME: "/srv/xdg" },
+      }),
+    ).toBe(true);
+    expect(
+      await detected(
+        "opencode",
+        (path) => path === join("/srv/xdg", "opencode", "opencode.jsonc"),
+        {
+          env: { XDG_CONFIG_HOME: "/srv/xdg" },
+        },
+      ),
+    ).toBe(true);
+    expect(
+      await detected("opencode", (path) => path === join("/work", ".opencode", "opencode.json"), {
+        cwd: "/work",
+      }),
+    ).toBe(true);
+  });
+
+  test("is skipped when native integrations are not preferred", async () => {
+    const request = { config: { provider: "claude", mcpServers: {} } };
+    const result = await injectContextModeOnCreate(
+      request,
+      ContextModeSettingsSchema.parse({ preferNativeIntegrations: false }),
+      launch,
+      { ...noNative, fileContains: async () => true },
+    );
+
+    expect(result.config.mcpServers).toEqual({ "context-mode": server("claude-code") });
+  });
+});
+
+describe("integration audit", () => {
+  test("reports supported mappings, unsupported providers, and one shared data dir", async () => {
     const audit = await createIntegrationAudit(
       settings,
-      { path: launch.args[0], version: "1.0.169" },
+      { path: launch.args[0], version: "2.1.4" },
       {
-        home: "/home/test",
-        pathExists: async (path) => path === join("/home/test", ".omp", "context-mode"),
-        fileContains: async (path, marker) =>
-          path === join("/home/test", ".omp", "agent", "mcp.json") && marker === "context-mode",
+        ...noNative,
+        fileContains: async (path) => path === join("/home/test", ".codex", "config.toml"),
         now: () => new Date("2026-09-20T00:00:00.000Z"),
       },
     );
 
-    expect(audit.providers.map(({ provider, platform }) => [provider, platform])).toEqual([
-      ["claude", "claude-code"],
-      ["codex", "codex"],
-      ["copilot", "copilot-cli"],
-      ["cursor", "cursor"],
-      ["opencode", "opencode"],
-      ["pi", "pi"],
-      ["omp", "omp"],
-      ["omp-plugin", "omp"],
+    expect(
+      audit.providers.map(({ provider, platform, activation }) => [provider, platform, activation]),
+    ).toEqual([
+      ["claude", "claude-code", "mcp"],
+      ["codex", "codex", "native"],
+      ["copilot", "copilot-cli", "mcp"],
+      ["opencode", "opencode", "mcp"],
+      ["cursor", null, "disabled"],
+      ["pi", null, "disabled"],
+      ["omp", null, "disabled"],
+      ["omp-plugin", null, "disabled"],
     ]);
-    expect(audit.providers.find(({ provider }) => provider === "omp-plugin")).toMatchObject({
-      activation: "native",
-      reusesExistingStorage: true,
-      detail: expect.stringContaining("Already-running agents"),
-    });
-    expect(audit.providers.find(({ provider }) => provider === "claude")).toMatchObject({
-      activation: "mcp",
-      reusesExistingStorage: false,
-      detail: expect.stringContaining("only when a new Paseo agent is created"),
-    });
+    expect(new Set(audit.providers.map(({ storageRoot }) => storageRoot))).toEqual(
+      new Set([join("/home/test", ".context-mode")]),
+    );
+    expect(audit.providers.find(({ provider }) => provider === "pi")?.detail).toContain(
+      "pi install npm:context-mode",
+    );
+    expect(audit.runtimeVersion).toBe("2.1.4");
     expect(audit.checkedAt).toBe("2026-09-20T00:00:00.000Z");
   });
 
-  describe("providers derived through extends", () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const providers = {
-      "claude-work": { extends: "claude", env: { CLAUDE_CONFIG_DIR: "/srv/claude-work" } },
-      "codex-full-access": { extends: "codex" },
-      mystery: { extends: "acp" },
-    };
-    const noNative = {
-      home: "/home/test",
-      pathExists: async () => false,
-      fileContains: async () => false,
-    };
+  test("honors CONTEXT_MODE_DATA_DIR and disabled activation", async () => {
+    const audit = await createIntegrationAudit(
+      ContextModeSettingsSchema.parse({ autoInject: false }),
+      { path: launch.args[0], version: null },
+      { ...noNative, env: { CONTEXT_MODE_DATA_DIR: "/data/cm" } },
+    );
 
-    test("injects with the base policy and the derived provider's own storage root", async () => {
-      const result = await injectContextModeOnCreate(
-        { config: { provider: "claude-work", cwd: "/work", mcpServers: {} } },
-        settings,
-        launch,
-        { ...noNative, providers },
-      );
+    expect(audit.injectionEnabled).toBe(false);
+    expect(audit.providers.every(({ activation }) => activation === "disabled")).toBe(true);
+    expect(audit.providers[0]?.storageRoot).toBe("/data/cm");
+  });
+});
 
-      expect(result.config.mcpServers).toMatchObject({
-        "context-mode": {
-          env: {
-            CONTEXT_MODE_PLATFORM: "claude-code",
-            CONTEXT_MODE_DIR: join("/srv/claude-work", "context-mode"),
-          },
-        },
-      });
-      expect(
-        await injectContextModeOnCreate(
-          { config: { provider: "codex-full-access", cwd: "/work", mcpServers: {} } },
-          settings,
-          launch,
-          { ...noNative, providers },
-        ),
-      ).toMatchObject({
-        config: {
-          mcpServers: {
-            "context-mode": {
-              env: {
-                CONTEXT_MODE_PLATFORM: "codex",
-                CONTEXT_MODE_DIR: join("/home/test", ".codex", "context-mode"),
-              },
-            },
-          },
-        },
-      });
+describe("providers derived through extends", () => {
+  const providers = {
+    "claude-work": { extends: "claude", env: { CLAUDE_CONFIG_DIR: "/srv/claude-work" } },
+    "codex-full-access": { extends: "codex" },
+    "pi-work": { extends: "pi" },
+    mystery: { extends: "acp" },
+  };
+
+  test("inject with the parent's agent id", async () => {
+    const result = await injectContextModeOnCreate(
+      { config: { provider: "codex-full-access", cwd: "/work", mcpServers: {} } },
+      settings,
+      launch,
+      { ...noNative, providers },
+    );
+
+    expect(result.config.mcpServers).toEqual({ "context-mode": server("codex") });
+  });
+
+  test("probe native registrations under the derived provider's config dir", async () => {
+    const request = { config: { provider: "claude-work", cwd: "/work", mcpServers: {} } };
+    const result = await injectContextModeOnCreate(request, settings, launch, {
+      ...noNative,
+      providers,
+      fileContains: async (path) =>
+        path === join("/srv/claude-work", "plugins", "installed_plugins.json"),
     });
 
-    test("probes native registrations under the derived provider's config directory", async () => {
-      const request = { config: { provider: "claude-work", cwd: "/work", mcpServers: {} } };
-      const result = await injectContextModeOnCreate(request, settings, launch, {
+    expect(result).toBe(request);
+  });
+
+  test("leave providers extending an unsupported base unchanged", async () => {
+    for (const provider of ["mystery", "pi-work"]) {
+      const request = { config: { provider, cwd: "/work", mcpServers: {} } };
+      expect(
+        await injectContextModeOnCreate(request, settings, launch, { ...noNative, providers }),
+      ).toBe(request);
+    }
+  });
+
+  test("are audited after the canonical rows; unknown bases are skipped", async () => {
+    const audit = await createIntegrationAudit(
+      settings,
+      { path: launch.args[0], version: "2.1.4" },
+      {
         ...noNative,
         providers,
-        fileContains: async (path) => path === join("/srv/claude-work", "settings.json"),
-      });
+        fileContains: async (path) =>
+          path === join("/srv/claude-work", "plugins", "installed_plugins.json"),
+      },
+    );
 
-      expect(result).toBe(request);
+    expect(audit.providers.slice(-3)).toMatchObject([
+      { provider: "claude-work", platform: "claude-code", activation: "native" },
+      { provider: "codex-full-access", platform: "codex", activation: "mcp" },
+      { provider: "pi-work", platform: null, activation: "disabled" },
+    ]);
+    expect(audit.providers.find(({ provider }) => provider === "claude")).toMatchObject({
+      activation: "mcp",
     });
+  });
+});
 
-    test("lets request env override provider env", async () => {
-      const result = await injectContextModeOnCreate(
-        {
-          config: { provider: "claude-work", cwd: "/work", mcpServers: {} },
-          env: { CLAUDE_CONFIG_DIR: "/tmp/req" },
-        },
-        settings,
-        launch,
-        { ...noNative, providers },
-      );
-
-      expect(result.config.mcpServers).toMatchObject({
-        "context-mode": { env: { CONTEXT_MODE_DIR: join("/tmp/req", "context-mode") } },
-      });
-    });
-
-    test("applies provider env to built-in provider ids as well", async () => {
-      const result = await injectContextModeOnCreate(
-        { config: { provider: "claude", cwd: "/work", mcpServers: {} } },
-        settings,
-        launch,
-        { ...noNative, providers: { claude: { env: { CLAUDE_CONFIG_DIR: "/srv/builtin" } } } },
-      );
-
-      expect(result.config.mcpServers).toMatchObject({
-        "context-mode": { env: { CONTEXT_MODE_DIR: join("/srv/builtin", "context-mode") } },
-      });
-    });
-
-    test("keeps the derived storage root when a session is reopened with an empty env", async () => {
-      const result = await injectContextModeEnvironment(
-        { provider: "claude-work", cwd: "/work", env: {} },
-        settings,
-        { home: "/home/test", providers },
-      );
-
-      expect(result.env).toEqual({
-        CONTEXT_MODE_PLATFORM: "claude-code",
-        CONTEXT_MODE_DIR: join("/srv/claude-work", "context-mode"),
-      });
-    });
-
-    test("leaves providers extending an unsupported base unchanged", async () => {
-      const createRequest = { config: { provider: "mystery", cwd: "/work", mcpServers: {} } };
-      const openRequest = { provider: "mystery", cwd: "/work", env: {} };
-
-      expect(
-        await injectContextModeOnCreate(createRequest, settings, launch, {
-          ...noNative,
-          providers,
+describe("readProviderOverrides", () => {
+  test("keeps only string extends and string env values", async () => {
+    const paseo = {
+      config: {
+        get: async () => ({
+          config: {
+            providers: {
+              a: { extends: "claude", env: { X: "1", Y: 2 } },
+              b: { extends: 5, env: "bad" },
+              c: null,
+            },
+          },
         }),
-      ).toBe(createRequest);
-      expect(await injectContextModeEnvironment(openRequest, settings, { providers })).toBe(
-        openRequest,
-      );
-    });
+      },
+    };
 
-    test("audits configured derived providers with their own roots after the canonical rows", async () => {
-      const audit = await createIntegrationAudit(
-        settings,
-        { path: launch.args[0], version: "1.0.169" },
-        {
-          ...noNative,
-          providers,
-          fileContains: async (path) => path === join("/srv/claude-work", "settings.json"),
-        },
-      );
-      const ids = audit.providers.map(({ provider }) => provider);
-
-      expect(ids.slice(-2)).toEqual(["claude-work", "codex-full-access"]);
-      expect(audit.providers.find(({ provider }) => provider === "claude-work")).toMatchObject({
-        platform: "claude-code",
-        activation: "native",
-        storageRoot: join("/srv/claude-work", "context-mode"),
-      });
-      expect(audit.providers.find(({ provider }) => provider === "claude")).toMatchObject({
-        activation: "mcp",
-      });
-      expect(
-        audit.providers.find(({ provider }) => provider === "codex-full-access"),
-      ).toMatchObject({
-        activation: "mcp",
-      });
+    expect(await readProviderOverrides(paseo)).toEqual({
+      a: { extends: "claude", env: { X: "1" } },
+      b: {},
     });
   });
 
-  describe("readProviderOverrides", () => {
-    test("keeps only string extends and string env values", async () => {
-      const paseo = {
-        config: {
-          get: async () => ({
-            config: {
-              providers: {
-                a: { extends: "claude", env: { X: "1", Y: 2 } },
-                b: { extends: 5, env: "bad" },
-                c: null,
-              },
-            },
-          }),
+  test("falls back to no overrides when the daemon config cannot be read", async () => {
+    const paseo = {
+      config: {
+        get: async () => {
+          throw new Error("offline");
         },
-      };
+      },
+    };
 
-      expect(await readProviderOverrides(paseo)).toEqual({
-        a: { extends: "claude", env: { X: "1" } },
-        b: {},
-      });
-    });
-
-    test("falls back to no overrides when the daemon config cannot be read", async () => {
-      const paseo = {
-        config: {
-          get: async () => {
-            throw new Error("offline");
-          },
-        },
-      };
-
-      expect(await readProviderOverrides(paseo)).toEqual({});
-      expect(await readProviderOverrides(undefined)).toEqual({});
-    });
+    expect(await readProviderOverrides(paseo)).toEqual({});
+    expect(await readProviderOverrides(undefined)).toEqual({});
   });
 });

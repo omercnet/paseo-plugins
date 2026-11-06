@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { join, posix, win32 } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
+import { promisify } from "node:util";
 import type { ContextModeSettings } from "../shared";
 import type { ProviderConfigSource } from "./integration";
 
@@ -27,6 +29,7 @@ export interface BinaryResolutionDependencies {
   electron?: boolean;
   canExecute?: (path: string) => Promise<boolean>;
   isFile?: (path: string) => Promise<boolean>;
+  readVersion?: (launch: LaunchDescriptor) => Promise<string | null>;
   paseo?: ProviderConfigSource;
 }
 
@@ -44,7 +47,9 @@ async function findBundledCli(paseo: ProviderConfigSource | undefined): Promise<
     try {
       const manifest = JSON.parse(await readFile(join(directory, "paseo-plugin.json"), "utf8"));
       if (manifest?.id !== "context-mode") continue;
-      return createRequire(join(directory, "package.json")).resolve("context-mode/cli");
+      // The package exports only its OpenCode plugin (`<root>/opencode/plugin.js`); the CLI sits at the root.
+      const main = createRequire(join(directory, "package.json")).resolve("context-mode");
+      return join(dirname(dirname(main)), "cli.mjs");
     } catch {
       // Not this plugin, or its install has no bundled runtime.
     }
@@ -100,10 +105,8 @@ async function windowsLaunchDescriptor(
 
   const directory = win32.dirname(candidate);
   const moduleCandidates = [
-    win32.join(directory, "node_modules", "context-mode", "cli.bundle.mjs"),
-    win32.join(directory, "node_modules", "context-mode", "build", "cli.js"),
-    win32.join(directory, "..", "context-mode", "cli.bundle.mjs"),
-    win32.join(directory, "..", "context-mode", "build", "cli.js"),
+    win32.join(directory, "node_modules", "context-mode", "cli.mjs"),
+    win32.join(directory, "..", "context-mode", "cli.mjs"),
   ];
   for (const modulePath of moduleCandidates) {
     if (await isFile(modulePath)) return { program: nodePath, args: [modulePath] };
@@ -125,6 +128,14 @@ export async function resolveContextModeBinary(
   const configuredPath = settings.binaryPath.trim();
   let unsupportedShim: string | null = null;
 
+  /** A 1.x binary starts a server but has none of the 2.x tool contracts, so the bundled runtime wins. */
+  async function supported(
+    found: Extract<BinaryResolution, { state: "found" }>,
+  ): Promise<Extract<BinaryResolution, { state: "found" }> | null> {
+    const version = await (dependencies.readVersion ?? readContextModeVersion)(found.launch);
+    return version !== null && Number.parseInt(version, 10) < 2 ? null : found;
+  }
+
   async function resolveCandidate(
     candidate: string,
     source: "settings" | "path",
@@ -132,19 +143,19 @@ export async function resolveContextModeBinary(
     if (!(await canExecute(candidate))) return null;
     const canonicalPath = await realpath(candidate).catch(() => candidate);
     if (platform !== "win32") {
-      return {
+      return supported({
         state: "found",
         path: canonicalPath,
         source,
         launch: { program: canonicalPath, args: [] },
-      };
+      });
     }
     const launch = await windowsLaunchDescriptor(canonicalPath, nodePath, isFile);
     if (!launch) {
       unsupportedShim = canonicalPath;
       return null;
     }
-    return { state: "found", path: canonicalPath, source, launch };
+    return supported({ state: "found", path: canonicalPath, source, launch });
   }
 
   if (settings.binaryMode === "path" && configuredPath.length > 0) {
@@ -188,7 +199,7 @@ export async function resolveContextModeBinary(
     return {
       code: "unsupported",
       state: "missing",
-      message: `Context Mode was found at ${unsupportedShim}, but this Windows shim could not be safely resolved to its CLI module. Reinstall Context Mode with npm or configure the absolute cli.bundle.mjs path.`,
+      message: `Context Mode was found at ${unsupportedShim}, but this Windows shim could not be safely resolved to its CLI module. Reinstall Context Mode with npm or configure the absolute cli.mjs path.`,
     };
   }
   const configuredDetail =
@@ -200,4 +211,35 @@ export async function resolveContextModeBinary(
     state: "missing",
     message: `Context Mode is not installed or is not executable on this Paseo host.${configuredDetail}`,
   };
+}
+
+const VERSION_PATTERN = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/;
+
+/**
+ * The MCP handshake reports `dev` for npm builds, so the version comes from the package.json beside
+ * the CLI entry when it is a Context Mode install, else from `context-mode --version`.
+ */
+export async function readContextModeVersion(
+  launch: LaunchDescriptor,
+  timeoutMs = 5_000,
+): Promise<string | null> {
+  const entry = launch.args[0] ?? launch.program;
+  try {
+    const manifest = JSON.parse(await readFile(join(dirname(entry), "package.json"), "utf8"));
+    if (manifest?.name === "context-mode" && typeof manifest.version === "string") {
+      return manifest.version.slice(0, 128);
+    }
+  } catch {
+    // Not a package directory; ask the CLI.
+  }
+  try {
+    const { stdout } = await promisify(execFile)(launch.program, [...launch.args, "--version"], {
+      timeout: timeoutMs,
+      windowsHide: true,
+      env: launch.env ? { ...process.env, ...launch.env } : undefined,
+    });
+    return VERSION_PATTERN.exec(stdout)?.[0] ?? null;
+  } catch {
+    return null;
+  }
 }

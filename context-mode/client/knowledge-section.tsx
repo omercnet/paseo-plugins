@@ -1,5 +1,4 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
-import { ExternalLink } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import {
@@ -16,7 +15,10 @@ import {
   fetchAndIndexContextMode,
   indexContextModePath,
   type KnowledgeToolResult,
+  type PurgeKnowledgeInput,
   purgeContextModeKnowledge,
+  type SearchKnowledgeResult,
+  type SearchPage,
   searchContextModeKnowledge,
 } from "../shared/knowledge";
 import type { KnowledgeScope } from "./screen-scope";
@@ -25,11 +27,7 @@ const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   claude: "Claude",
   codex: "Codex",
   copilot: "Copilot",
-  cursor: "Cursor",
   opencode: "OpenCode",
-  pi: "Pi",
-  omp: "OMP",
-  "omp-plugin": "OMP plugin",
 };
 
 /** Used until the integration audit reports the configured providers. */
@@ -37,12 +35,36 @@ export const BUILTIN_KNOWLEDGE_PROVIDERS = Object.keys(PROVIDER_LABELS);
 
 const providerLabel = (id: string) => PROVIDER_LABELS[id] ?? id;
 
-const INSIGHT_URL = "https://context-mode.com/insight";
 type Provider = string;
-type PurgeScope = "project" | "session";
+type PurgeScope = "project" | "session" | "source";
+type SearchScope = "worktree" | "project";
+const SEARCH_SCOPES: ReadonlyArray<{ value: SearchScope; label: string }> = [
+  { value: "worktree", label: "Worktree" },
+  { value: "project", label: "Project" },
+];
+
+interface SearchRequest {
+  provider: Provider;
+  projectPath: string;
+  queries: string[];
+  scope: SearchScope;
+  source?: string;
+}
+const PURGE_SCOPES: ReadonlyArray<{ value: PurgeScope; label: string }> = [
+  { value: "project", label: "Project" },
+  { value: "session", label: "Session" },
+  { value: "source", label: "Source" },
+];
+
+/** What `ctx_purge` removes per scope: a session purge deletes only its journal, never indexed sources. */
+const PURGE_CONSEQUENCE: Readonly<Record<PurgeScope, string>> = {
+  project: "Every agent working in this project loses its recorded activity and indexed sources.",
+  session: "The session's recorded activity and resume state are deleted; indexed sources stay.",
+  source: "Every agent working in this project loses it.",
+};
 export type KnowledgeSectionProps = Pick<PluginSurfaceProps, "theme" | "layout" | "host"> & {
   initialScope?: KnowledgeScope;
-  /** Paseo provider ids with a Context Mode store: the built-ins plus every configured provider. */
+  /** Paseo provider ids Context Mode supports: the built-ins plus configured providers extending one. */
   providers: readonly string[];
 };
 
@@ -72,8 +94,6 @@ interface KnowledgeStyles {
   buttonText: TextStyle;
   primaryButtonText: TextStyle;
   dangerButtonText: TextStyle;
-  linkButton: ViewStyle;
-  linkText: TextStyle;
   pendingRow: ViewStyle;
   activity: { color: string };
   error: TextStyle;
@@ -124,6 +144,7 @@ function Field({
 
 function ActionButton({
   label,
+  accessibilityLabel,
   onPress,
   disabled = false,
   danger = false,
@@ -131,6 +152,7 @@ function ActionButton({
   styles,
 }: {
   label: string;
+  accessibilityLabel?: string;
   onPress(): void;
   disabled?: boolean;
   danger?: boolean;
@@ -139,7 +161,7 @@ function ActionButton({
 }) {
   return (
     <Pressable
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel ?? label}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
@@ -188,6 +210,52 @@ function WorkflowCard({
   );
 }
 
+function Choices<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+  styles,
+}: {
+  options: ReadonlyArray<{ value: T; label: string }>;
+  value: T | null;
+  onChange(value: T): void;
+  label: (option: string) => string;
+  styles: KnowledgeStyles;
+}) {
+  return (
+    <View accessibilityRole="radiogroup" style={styles.choiceRow}>
+      {options.map((option) => {
+        const selected = value === option.value;
+        return (
+          <Pressable
+            key={option.value}
+            accessibilityLabel={label(option.label)}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: selected }}
+            onPress={() => onChange(option.value)}
+            style={[styles.choice, selected ? styles.choiceSelected : null]}
+          >
+            <Text style={[styles.choiceText, selected ? styles.choiceTextSelected : null]}>
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** Drops agent-only footers (the More results button pages instead) and tool-name prefixes. */
+export function presentKnowledgeOutput(output: string): string {
+  return output
+    .split(/\r?\n/)
+    .filter((line) => !/^[Mm]ore: ctx_search\(/.test(line))
+    .map((line) => line.replace(/^ctx_[a-z_]+: /, ""))
+    .join("\n")
+    .trim();
+}
+
 function ResultPanel({
   result,
   pending,
@@ -222,9 +290,9 @@ function ResultPanel({
   return (
     <View accessibilityLiveRegion="polite" style={styles.result}>
       <View style={styles.metaRow}>
-        <Text style={styles.metaLabel}>Provider</Text>
+        <Text style={styles.metaLabel}>Agent</Text>
         <Text selectable style={styles.metaValue}>
-          {result.provider}
+          {providerLabel(result.provider)}
         </Text>
       </View>
       {source ? (
@@ -237,7 +305,7 @@ function ResultPanel({
       ) : null}
       <ScrollView nestedScrollEnabled style={styles.outputFrame}>
         <Text selectable style={styles.output}>
-          {result.output || emptyLabel}
+          {presentKnowledgeOutput(result.output) || emptyLabel}
         </Text>
       </ScrollView>
     </View>
@@ -267,7 +335,7 @@ export function KnowledgeSection({
   const note =
     initialScope?.note ??
     (scopedProvider && !scopedProviderKnown
-      ? `Provider ${scopedProvider} has no Context Mode store on this host. Select one explicitly.`
+      ? `Provider ${scopedProvider} is not supported by Context Mode 2. Select a supported agent.`
       : undefined);
   const [provider, setProvider] = useState<Provider | null>(
     initialScope ? (scopedProviderKnown ? scopedProvider : null) : "claude",
@@ -275,63 +343,58 @@ export function KnowledgeSection({
   const [projectPath, setProjectPath] = useState(initialScope?.projectPath ?? "");
   const [query, setQuery] = useState("");
   const [searchSource, setSearchSource] = useState("");
+  const [searchScope, setSearchScope] = useState<SearchScope>("worktree");
   const [path, setPath] = useState("");
-  const [pathSource, setPathSource] = useState("");
   const [url, setUrl] = useState("");
-  const [urlSource, setUrlSource] = useState("");
   const [purgeScope, setPurgeScope] = useState<PurgeScope | null>(null);
-  const [searchResultSource, setSearchResultSource] = useState("");
-  const [pathResultSource, setPathResultSource] = useState("");
-  const [urlResultSource, setUrlResultSource] = useState("");
+  const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
+  const [searchPages, setSearchPages] = useState<SearchKnowledgeResult[]>([]);
   const [sessionId, setSessionId] = useState("");
+  const [purgeSource, setPurgeSource] = useState("");
   const [managementExpanded, setManagementExpanded] = useState(false);
   const [purgeArmed, setPurgeArmed] = useState(false);
-  const [linkError, setLinkError] = useState<string | null>(null);
 
   const search = useMutation({
     mutationFn: () => {
-      if (!provider) throw new Error("Select a provider store before searching.");
+      if (!provider) throw new Error("Select an agent before searching.");
       const source = searchSource.trim();
-      setSearchResultSource(source);
-      return searchKnowledge({
+      const request: SearchRequest = {
         provider,
         projectPath: projectPath.trim(),
         queries: [query.trim()],
+        scope: searchScope,
         ...(source ? { source } : {}),
-      });
+      };
+      setSearchRequest(request);
+      setSearchPages([]);
+      return searchKnowledge(request);
     },
+    onSuccess: (result) => setSearchPages([result]),
+  });
+  const moreResults = useMutation({
+    mutationFn: (page: SearchPage) => {
+      if (!searchRequest) throw new Error("Run a search before loading more results.");
+      return searchKnowledge({ ...searchRequest, page });
+    },
+    onSuccess: (result) => setSearchPages((pages) => [...pages, result]),
   });
   const index = useMutation({
-    mutationFn: () => {
-      if (!provider) throw new Error("Select a provider store before indexing.");
-      const source = pathSource.trim();
-      setPathResultSource(source || path.trim());
-      return indexPath({
-        provider,
-        projectPath: projectPath.trim(),
-        path: path.trim(),
-        ...(source ? { source } : {}),
-      });
+    mutationFn: (target: string) => {
+      if (!provider) throw new Error("Select an agent before indexing.");
+      return indexPath({ provider, projectPath: projectPath.trim(), path: target });
     },
     onSuccess: refreshAnalytics,
   });
   const fetch = useMutation({
-    mutationFn: () => {
-      if (!provider) throw new Error("Select a provider store before fetching.");
-      const source = urlSource.trim();
-      setUrlResultSource(source || url.trim());
-      return fetchAndIndex({
-        provider,
-        projectPath: projectPath.trim(),
-        url: url.trim(),
-        ...(source ? { source } : {}),
-      });
+    mutationFn: (target: string) => {
+      if (!provider) throw new Error("Select an agent before indexing a URL.");
+      return fetchAndIndex({ provider, projectPath: projectPath.trim(), url: target });
     },
     onSuccess: refreshAnalytics,
   });
   const purge = useMutation({
     mutationFn: () => {
-      if (!provider || !purgeScope) throw new Error("Select a provider and purge scope.");
+      if (!provider || !purgeScope) throw new Error("Select an agent and purge scope.");
       if (purgeScope === "session") {
         return purgeKnowledge({
           provider,
@@ -339,6 +402,15 @@ export function KnowledgeSection({
           confirm: true,
           scope: "session",
           sessionId: sessionId.trim(),
+        });
+      }
+      if (purgeScope === "source") {
+        return purgeKnowledge({
+          provider,
+          projectPath: projectPath.trim(),
+          confirm: true,
+          scope: "source",
+          source: purgeSource.trim(),
         });
       }
       return purgeKnowledge({
@@ -352,15 +424,28 @@ export function KnowledgeSection({
     onSettled: () => setPurgeArmed(false),
   });
 
-  const busy = search.isPending || index.isPending || fetch.isPending || purge.isPending;
+  const busy =
+    search.isPending ||
+    moreResults.isPending ||
+    index.isPending ||
+    fetch.isPending ||
+    purge.isPending;
   const changeProvider = (next: Provider) => {
     setProvider(next);
     setPurgeArmed(false);
+    setSearchRequest(null);
+    setSearchPages([]);
     search.reset();
+    moreResults.reset();
     index.reset();
     fetch.reset();
     purge.reset();
   };
+  const startSearch = () => {
+    moreResults.reset();
+    search.mutate();
+  };
+  const nextSearchPage = searchPages[searchPages.length - 1]?.next ?? null;
   const changePurgeScope = (next: PurgeScope) => {
     setPurgeScope(next);
     setPurgeArmed(false);
@@ -370,7 +455,15 @@ export function KnowledgeSection({
   const canPreparePurge =
     providerReady &&
     purgeScope !== null &&
-    (purgeScope !== "session" || sessionId.trim().length > 0);
+    (purgeScope !== "session" || sessionId.trim().length > 0) &&
+    (purgeScope !== "source" || purgeSource.trim().length > 0);
+  const purgeTarget =
+    purgeScope === "session"
+      ? `session ${sessionId.trim()}`
+      : purgeScope === "source"
+        ? `source ${purgeSource.trim()}`
+        : "all project";
+  const purgeConsequence = purgeScope ? PURGE_CONSEQUENCE[purgeScope] : "";
 
   return (
     <View style={styles.section}>
@@ -379,13 +472,13 @@ export function KnowledgeSection({
           Knowledge
         </Text>
         <Text style={styles.muted}>
-          Search or add material in one provider-specific store. Nothing is copied between
-          providers.
+          Search or add material in the Context Mode store of one project. Every agent working in
+          that project shares it; the agent only labels who added what.
         </Text>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.fieldLabel}>Provider store</Text>
+        <Text style={styles.fieldLabel}>Agent</Text>
         {note ? <Text style={styles.scopeNote}>{note}</Text> : null}
         <View accessibilityRole="radiogroup" style={styles.choiceRow}>
           {providers.map((id) => {
@@ -393,7 +486,7 @@ export function KnowledgeSection({
             return (
               <Pressable
                 key={id}
-                accessibilityLabel={`${providerLabel(id)} provider store`}
+                accessibilityLabel={`${providerLabel(id)} agent`}
                 disabled={busy}
                 accessibilityRole="radio"
                 accessibilityState={{ checked: selected, disabled: busy }}
@@ -425,8 +518,8 @@ export function KnowledgeSection({
         />
         <Text accessibilityLiveRegion="polite" style={styles.scopeNote}>
           {provider && projectPath.trim()
-            ? `Current destination: ${providerLabel(provider)} storage for ${projectPath.trim()}.`
-            : "Select a provider and absolute project path. No storage destination is selected by default."}
+            ? `Current destination: the project store for ${projectPath.trim()}, recorded as ${providerLabel(provider)}.`
+            : "Select an agent and absolute project path. No destination is selected by default."}
         </Text>
       </View>
 
@@ -453,11 +546,24 @@ export function KnowledgeSection({
           styles={styles}
           value={searchSource}
         />
+        <Text style={styles.fieldLabel}>Scope</Text>
+        <Choices<SearchScope>
+          label={(option) => `Search ${option.toLowerCase()} scope`}
+          onChange={setSearchScope}
+          options={SEARCH_SCOPES}
+          styles={styles}
+          value={searchScope}
+        />
         <View style={styles.actions}>
           <ActionButton
-            disabled={!providerReady || query.trim().length === 0 || search.isPending}
+            disabled={
+              !providerReady ||
+              query.trim().length === 0 ||
+              search.isPending ||
+              moreResults.isPending
+            }
             label={search.isPending ? "Searching…" : "Search knowledge"}
-            onPress={() => search.mutate()}
+            onPress={startSearch}
             primary
             styles={styles}
           />
@@ -467,9 +573,41 @@ export function KnowledgeSection({
           error={search.error}
           pending={search.isPending}
           result={search.data}
-          source={searchResultSource || undefined}
+          source={searchRequest?.source}
           styles={styles}
         />
+        {searchPages.slice(1).map((page, pageIndex) => (
+          <View
+            key={`${page.completedAt}:${pageIndex}`}
+            accessibilityLiveRegion="polite"
+            style={styles.result}
+          >
+            <Text style={styles.metaLabel}>Page {pageIndex + 2}</Text>
+            <ScrollView nestedScrollEnabled style={styles.outputFrame}>
+              <Text selectable style={styles.output}>
+                {presentKnowledgeOutput(page.output) || "No more matching knowledge was returned."}
+              </Text>
+            </ScrollView>
+          </View>
+        ))}
+        {nextSearchPage && !search.isPending ? (
+          <View style={styles.actions}>
+            <ActionButton
+              accessibilityLabel="Load more search results"
+              disabled={moreResults.isPending}
+              label={moreResults.isPending ? "Loading…" : "More results"}
+              onPress={() => moreResults.mutate(nextSearchPage)}
+              styles={styles}
+            />
+          </View>
+        ) : null}
+        {moreResults.error ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {moreResults.error instanceof Error
+              ? moreResults.error.message
+              : String(moreResults.error)}
+          </Text>
+        ) : null}
       </WorkflowCard>
 
       <Pressable
@@ -487,33 +625,8 @@ export function KnowledgeSection({
       {managementExpanded ? (
         <>
           <WorkflowCard
-            title="Source visibility"
-            description="Open Context Mode Insight to inspect indexed sources and understand what is available to search."
-            styles={styles}
-          >
-            <View style={styles.actions}>
-              <ExternalLink
-                accessibilityLabel="Open Context Mode Insight in a browser"
-                href={INSIGHT_URL}
-                onError={(error) =>
-                  setLinkError(error instanceof Error ? error.message : String(error))
-                }
-              >
-                <View style={styles.linkButton}>
-                  <Text style={styles.linkText}>Open Insight</Text>
-                </View>
-              </ExternalLink>
-            </View>
-            {linkError ? (
-              <Text accessibilityRole="alert" style={styles.error}>
-                Could not open Insight: {linkError}
-              </Text>
-            ) : null}
-          </WorkflowCard>
-
-          <WorkflowCard
             title="Index a local path"
-            description="Add a file or directory from the selected provider environment. The source label stays visible with the indexed material."
+            description="Add a file or directory inside the selected project."
             styles={styles}
           >
             <Field
@@ -525,20 +638,11 @@ export function KnowledgeSection({
               styles={styles}
               value={path}
             />
-            <Field
-              accessibilityLabel="Local path source label"
-              label="Source label (optional)"
-              maxLength={512}
-              onChangeText={setPathSource}
-              placeholder="project-docs"
-              styles={styles}
-              value={pathSource}
-            />
             <View style={styles.actions}>
               <ActionButton
                 disabled={!providerReady || path.trim().length === 0 || index.isPending}
                 label={index.isPending ? "Indexing…" : "Index path"}
-                onPress={() => index.mutate()}
+                onPress={() => index.mutate(path.trim())}
                 styles={styles}
               />
             </View>
@@ -547,14 +651,14 @@ export function KnowledgeSection({
               error={index.error}
               pending={index.isPending}
               result={index.data}
-              source={pathResultSource || undefined}
+              source={index.variables}
               styles={styles}
             />
           </WorkflowCard>
 
           <WorkflowCard
-            title="Fetch and index a URL"
-            description="Fetch one HTTP or HTTPS source and add it to the selected provider store."
+            title="Index a URL"
+            description="Fetch one public HTTP or HTTPS page and add it to the selected project store."
             styles={styles}
           >
             <Field
@@ -566,20 +670,11 @@ export function KnowledgeSection({
               styles={styles}
               value={url}
             />
-            <Field
-              accessibilityLabel="Fetched URL source label"
-              label="Source label (optional)"
-              maxLength={512}
-              onChangeText={setUrlSource}
-              placeholder="product-guide"
-              styles={styles}
-              value={urlSource}
-            />
             <View style={styles.actions}>
               <ActionButton
                 disabled={!providerReady || url.trim().length === 0 || fetch.isPending}
-                label={fetch.isPending ? "Fetching…" : "Fetch and index"}
-                onPress={() => fetch.mutate()}
+                label={fetch.isPending ? "Indexing…" : "Index URL"}
+                onPress={() => fetch.mutate(url.trim())}
                 styles={styles}
               />
             </View>
@@ -588,37 +683,24 @@ export function KnowledgeSection({
               error={fetch.error}
               pending={fetch.isPending}
               result={fetch.data}
-              source={urlResultSource || undefined}
+              source={fetch.variables}
               styles={styles}
             />
           </WorkflowCard>
 
           <WorkflowCard
             title="Purge knowledge"
-            description="Purge only the selected provider store and scope. Select a scope, review it, then confirm."
+            description="Purge part of the selected project store for every agent. Select a scope, review it, then confirm."
             styles={styles}
           >
             <Text style={styles.fieldLabel}>Scope</Text>
-            <View accessibilityRole="radiogroup" style={styles.choiceRow}>
-              {(["project", "session"] as const).map((scope) => {
-                const selected = purgeScope === scope;
-                const label = scope === "project" ? "Project" : "Session";
-                return (
-                  <Pressable
-                    key={scope}
-                    accessibilityLabel={`Purge ${label.toLowerCase()} scope`}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: selected }}
-                    onPress={() => changePurgeScope(scope)}
-                    style={[styles.choice, selected ? styles.choiceSelected : null]}
-                  >
-                    <Text style={[styles.choiceText, selected ? styles.choiceTextSelected : null]}>
-                      {label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
+            <Choices
+              label={(option) => `Purge ${option.toLowerCase()} scope`}
+              onChange={changePurgeScope}
+              options={PURGE_SCOPES}
+              styles={styles}
+              value={purgeScope}
+            />
             {purgeScope === "session" ? (
               <Field
                 accessibilityLabel="Session identifier to purge"
@@ -631,6 +713,20 @@ export function KnowledgeSection({
                 placeholder="Exact Context Mode session ID"
                 styles={styles}
                 value={sessionId}
+              />
+            ) : null}
+            {purgeScope === "source" ? (
+              <Field
+                accessibilityLabel="Source label to forget"
+                label="Source label"
+                maxLength={512}
+                onChangeText={(value) => {
+                  setPurgeSource(value);
+                  setPurgeArmed(false);
+                }}
+                placeholder="Exact indexed source label"
+                styles={styles}
+                value={purgeSource}
               />
             ) : null}
             {!purgeArmed ? (
@@ -647,7 +743,7 @@ export function KnowledgeSection({
               <View accessibilityRole="alert" style={styles.confirmation}>
                 <Text style={styles.confirmationTitle}>Confirm permanent purge</Text>
                 <Text style={styles.muted}>
-                  {`Delete ${purgeScope === "session" ? `session ${sessionId.trim()}` : "project"} knowledge from ${provider} storage? This does not affect other providers.`}
+                  {`Delete ${purgeTarget} from the ${projectPath.trim()} store? ${purgeConsequence}`}
                 </Text>
                 <View style={styles.actions}>
                   <ActionButton
@@ -676,6 +772,99 @@ export function KnowledgeSection({
         </>
       ) : null}
     </View>
+  );
+}
+
+type ForgetButtonProps = Pick<PluginSurfaceProps, "theme" | "host"> & {
+  provider: string;
+  projectPath: string;
+};
+
+type ForgetTarget = { scope: "source"; source: string } | { scope: "session"; sessionId: string };
+
+/** Per-row "Forget" with the same review-then-confirm step as purge. */
+function ForgetButton({
+  theme,
+  host,
+  provider,
+  projectPath,
+  target,
+  targetLabel,
+}: ForgetButtonProps & { target: ForgetTarget; targetLabel: string }) {
+  const styles = useMemo(() => createStyles(theme, true), [theme]);
+  const purgeKnowledge = useRpc(purgeContextModeKnowledge);
+  const queryClient = useQueryClient();
+  const [armed, setArmed] = useState(false);
+  const forget = useMutation({
+    mutationFn: () => {
+      const input: PurgeKnowledgeInput = { provider, projectPath, confirm: true, ...target };
+      return purgeKnowledge(input);
+    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["context-mode", host.id, "analytics-dashboard"],
+      }),
+    onSettled: () => setArmed(false),
+  });
+  if (forget.isSuccess) return <Text style={styles.muted}>Forgotten.</Text>;
+  return (
+    <View style={styles.field}>
+      {armed ? (
+        <View accessibilityRole="alert" style={styles.confirmation}>
+          <Text style={styles.muted}>
+            {`Forget ${targetLabel} from the ${projectPath} store? ${PURGE_CONSEQUENCE[target.scope]}`}
+          </Text>
+          <View style={styles.actions}>
+            <ActionButton
+              accessibilityLabel={`Confirm forget ${targetLabel}`}
+              danger
+              label={forget.isPending ? "Forgetting…" : "Confirm forget"}
+              onPress={() => forget.mutate()}
+              styles={styles}
+            />
+            <ActionButton
+              disabled={forget.isPending}
+              label="Cancel"
+              onPress={() => setArmed(false)}
+              styles={styles}
+            />
+          </View>
+        </View>
+      ) : (
+        <ActionButton
+          accessibilityLabel={`Forget ${targetLabel}`}
+          danger
+          label="Forget"
+          onPress={() => setArmed(true)}
+          styles={styles}
+        />
+      )}
+      {forget.error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {forget.error instanceof Error ? forget.error.message : String(forget.error)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+export type ForgetSourceButtonProps = ForgetButtonProps & { source: string };
+
+/** Forgets one indexed source from the project store. */
+export function ForgetSourceButton({ source, ...props }: ForgetSourceButtonProps) {
+  return <ForgetButton {...props} target={{ scope: "source", source }} targetLabel={source} />;
+}
+
+export type ForgetSessionButtonProps = ForgetButtonProps & { sessionId: string };
+
+/** Forgets one recorded session's events from the project store. */
+export function ForgetSessionButton({ sessionId, ...props }: ForgetSessionButtonProps) {
+  return (
+    <ForgetButton
+      {...props}
+      target={{ scope: "session", sessionId }}
+      targetLabel={`session ${sessionId}`}
+    />
   );
 }
 
@@ -755,18 +944,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean): Kno
     buttonText: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const },
     primaryButtonText: { color: theme.colors.accentForeground },
     dangerButtonText: { color: theme.colors.statusDanger },
-    linkButton: {
-      minHeight: 38,
-      alignItems: "center" as const,
-      justifyContent: "center" as const,
-      paddingHorizontal: 13,
-      paddingVertical: 8,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      borderRadius: 8,
-      backgroundColor: theme.colors.surface2,
-    },
-    linkText: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const },
     pendingRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
     activity: { color: theme.colors.accent },
     error: { color: theme.colors.statusDanger, fontSize: 12, lineHeight: 17 },

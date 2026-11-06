@@ -1,27 +1,32 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-export const CONTEXT_MODE_ANALYTICS_SCHEMA_VERSION = 1 as const;
-export const SUPPORTED_CONTEXT_MODE_DATABASE_VERSION = "1.0.169" as const;
+export const CONTEXT_MODE_ANALYTICS_SCHEMA_VERSION = 2 as const;
+export const SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSION = 6 as const;
 
 const nonNegativeInteger = z.number().int().nonnegative();
 const nonNegativeNumber = z.number().finite().nonnegative();
+const timestamp = z.string().datetime().nullable();
 
+/** Byte totals of Context Mode tool calls: produced in the sandbox, returned to the agent, kept out. */
 export const AnalyticsByteAccountingSchema = z
   .object({
-    eventDataBytes: nonNegativeInteger,
-    avoidedBytes: nonNegativeInteger,
+    producedBytes: nonNegativeInteger,
     returnedBytes: nonNegativeInteger,
-    snapshotBytes: nonNegativeInteger,
-    indexedBytes: nonNegativeInteger,
     savedBytes: nonNegativeInteger,
+    indexedBytes: nonNegativeInteger,
   })
   .strict();
+
+const savingsFields = {
+  savedTokens: nonNegativeInteger,
+  savingsPercent: nonNegativeNumber.max(100),
+  byteAccounting: AnalyticsByteAccountingSchema,
+};
 
 export const AnalyticsTotalsSchema = z
   .object({
-    providers: nonNegativeInteger,
-    databases: nonNegativeInteger,
+    agents: nonNegativeInteger,
     projects: nonNegativeInteger,
     sessions: nonNegativeInteger,
     events: nonNegativeInteger,
@@ -30,27 +35,43 @@ export const AnalyticsTotalsSchema = z
     indexedChunks: nonNegativeInteger,
     inputTokens: nonNegativeInteger,
     outputTokens: nonNegativeInteger,
-    savedTokens: nonNegativeInteger,
-    savingsPercent: nonNegativeNumber.max(100),
-    byteAccounting: AnalyticsByteAccountingSchema,
+    ...savingsFields,
+    lastActivityAt: timestamp,
   })
   .strict();
 
-export const ProviderAnalyticsSchema = z
+/** One row per Context Mode `--agent` id recorded in the databases (claude-code, codex, ...). */
+export const AgentAnalyticsSchema = z
   .object({
-    provider: z.string().min(1).max(128),
-    databases: nonNegativeInteger,
+    agent: z.string().min(1).max(128),
     projects: nonNegativeInteger,
     sessions: nonNegativeInteger,
-    events: nonNegativeInteger,
     toolCalls: nonNegativeInteger,
     indexedSources: nonNegativeInteger,
-    indexedChunks: nonNegativeInteger,
-    inputTokens: nonNegativeInteger,
-    outputTokens: nonNegativeInteger,
-    savedTokens: nonNegativeInteger,
-    savingsPercent: nonNegativeNumber.max(100),
-    byteAccounting: AnalyticsByteAccountingSchema,
+    ...savingsFields,
+  })
+  .strict();
+
+export const ProjectAnalyticsSchema = z
+  .object({
+    path: z.string().min(1).max(4_096),
+    worktrees: nonNegativeInteger,
+    sessions: nonNegativeInteger,
+    toolCalls: nonNegativeInteger,
+    indexedSources: nonNegativeInteger,
+    ...savingsFields,
+    lastActivityAt: timestamp,
+  })
+  .strict();
+
+/** One recorded agent session, newest first; the plugin's own `paseo-context-mode` calls are excluded. */
+export const SessionAnalyticsSchema = z
+  .object({
+    sessionId: z.string().min(1).max(256),
+    agent: z.string().min(1).max(128),
+    projectPath: z.string().min(1).max(4_096),
+    events: nonNegativeInteger,
+    lastActivityAt: timestamp,
   })
   .strict();
 
@@ -72,32 +93,29 @@ export const DailyAnalyticsSchema = z
 
 export const IndexedSourceAnalyticsSchema = z
   .object({
-    provider: z.string().min(1).max(128),
+    agent: z.string().min(1).max(128),
+    projectPath: z.string().min(1).max(4_096),
     source: z.string().min(1).max(4_096),
+    kind: z.enum(["path", "content", "url"]),
     chunks: nonNegativeInteger,
-    codeChunks: nonNegativeInteger,
     indexedBytes: nonNegativeInteger,
-    indexedAt: z.string().nullable(),
-    state: z.enum(["ready", "empty", "unavailable"]),
-    detail: z.string().max(512).optional(),
+    indexedAt: timestamp,
   })
   .strict();
 
 export const AnalyticsWarningSchema = z
   .object({
     code: z.enum([
-      "invalid-storage-root",
       "storage-unavailable",
       "not-regular-database",
       "database-open-failed",
+      "database-locked",
       "unsupported-schema",
       "database-query-failed",
-      "inconsistent-index",
       "result-truncated",
       "warning-limit",
     ]),
-    provider: z.string().min(1).max(128).optional(),
-    database: z.string().min(1).max(512).optional(),
+    project: z.string().min(1).max(128).optional(),
     message: z.string().min(1).max(512),
   })
   .strict();
@@ -105,11 +123,13 @@ export const AnalyticsWarningSchema = z
 export const ContextModeAnalyticsDashboardSchema = z
   .object({
     schemaVersion: z.literal(CONTEXT_MODE_ANALYTICS_SCHEMA_VERSION),
-    contextModeVersion: z.literal(SUPPORTED_CONTEXT_MODE_DATABASE_VERSION),
+    contextModeVersion: z.string().min(1).max(64).nullable(),
     completeness: z.enum(["complete", "partial", "unsupported"]),
     warnings: z.array(AnalyticsWarningSchema).max(20),
     totals: AnalyticsTotalsSchema,
-    byProvider: z.array(ProviderAnalyticsSchema).max(32),
+    byAgent: z.array(AgentAnalyticsSchema).max(32),
+    byProject: z.array(ProjectAnalyticsSchema).max(50),
+    recentSessions: z.array(SessionAnalyticsSchema).max(20),
     byCategory: z.array(CategoryAnalyticsSchema).max(128),
     byDay: z.array(DailyAnalyticsSchema).max(400),
     sources: z.array(IndexedSourceAnalyticsSchema).max(2_000),
@@ -125,7 +145,9 @@ export const getContextModeAnalyticsDashboard = defineRpc({
 
 export type AnalyticsByteAccounting = z.infer<typeof AnalyticsByteAccountingSchema>;
 export type AnalyticsTotals = z.infer<typeof AnalyticsTotalsSchema>;
-export type ProviderAnalytics = z.infer<typeof ProviderAnalyticsSchema>;
+export type AgentAnalytics = z.infer<typeof AgentAnalyticsSchema>;
+export type ProjectAnalytics = z.infer<typeof ProjectAnalyticsSchema>;
+export type SessionAnalytics = z.infer<typeof SessionAnalyticsSchema>;
 export type CategoryAnalytics = z.infer<typeof CategoryAnalyticsSchema>;
 export type DailyAnalytics = z.infer<typeof DailyAnalyticsSchema>;
 export type IndexedSourceAnalytics = z.infer<typeof IndexedSourceAnalyticsSchema>;

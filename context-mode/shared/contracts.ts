@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { ContextModePlatformSchema } from "./knowledge";
 
 const refreshInput = z.object({ fresh: z.boolean().default(false) }).strict();
 const binarySource = z.enum(["settings", "path", "bundled"]);
@@ -20,23 +21,6 @@ export const BinaryStatusSchema = z.discriminatedUnion("state", [
     binaryPath: z.string(),
     source: binarySource,
     version: z.string().nullable(),
-    supportsDoctor: z.boolean(),
-    supportsStats: z.boolean(),
-    checkedAt: z.string().datetime(),
-  }),
-  z.object({
-    state: z.literal("unavailable"),
-    code: failureCode,
-    message: z.string().max(4_096),
-    checkedAt: z.string().datetime(),
-  }),
-]);
-
-export const CommandReportSchema = z.discriminatedUnion("state", [
-  z.object({
-    state: z.literal("ready"),
-    binaryPath: z.string(),
-    output: z.string().max(196_608),
     checkedAt: z.string().datetime(),
   }),
   z.object({
@@ -49,10 +33,11 @@ export const CommandReportSchema = z.discriminatedUnion("state", [
 
 export const ProviderIntegrationSchema = z.object({
   provider: z.string(),
-  platform: z.string(),
+  /** `--agent` id, or null when Context Mode 2.x cannot serve this provider over MCP. */
+  platform: ContextModePlatformSchema.nullable(),
   activation: z.enum(["native", "mcp", "disabled"]),
+  /** Context Mode data dir, shared by every provider. */
   storageRoot: z.string(),
-  reusesExistingStorage: z.boolean(),
   detail: z.string().max(4_096),
 });
 
@@ -70,18 +55,6 @@ export const getContextModeStatus = defineRpc({
   output: BinaryStatusSchema,
 });
 
-export const getContextModeDoctor = defineRpc({
-  name: "context-mode.doctor",
-  input: refreshInput,
-  output: CommandReportSchema,
-});
-
-export const getContextModeStats = defineRpc({
-  name: "context-mode.stats",
-  input: refreshInput,
-  output: CommandReportSchema,
-});
-
 export const getContextModeIntegrationAudit = defineRpc({
   name: "context-mode.integration-audit",
   input: refreshInput,
@@ -89,7 +62,6 @@ export const getContextModeIntegrationAudit = defineRpc({
 });
 
 export type BinaryStatus = z.infer<typeof BinaryStatusSchema>;
-export type CommandReport = z.infer<typeof CommandReportSchema>;
 export type IntegrationAudit = z.infer<typeof IntegrationAuditSchema>;
 export type ProviderIntegration = z.infer<typeof ProviderIntegrationSchema>;
 export type ContextModeRefreshInput = z.infer<typeof refreshInput>;
