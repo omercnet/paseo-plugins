@@ -1,6 +1,6 @@
 # Paseo OMP plugin
 
-Community OMP integration for Paseo. The plugin registers the distinct `omp-plugin` provider plus named profile providers and coexists with Paseo's bundled `omp` provider.
+Community OMP integration for Paseo. The plugin's own `omp-plugin` provider plus named profile providers are off by default for new installs while they are retired in favor of Paseo's bundled `omp` provider; the plugin's configuration tabs and timeline cards also work on the bundled `omp` provider. See [Plugin provider opt-in](#plugin-provider-opt-in).
 
 > **Stable:** see [Support](SUPPORT.md) for supported versions and known limitations, and review release notes for any migration requirements before upgrading.
 
@@ -46,6 +46,18 @@ Open the **MCPs** tab of the **OMP** sidebar to list the MCP servers OMP connect
 - [Release checklist](docs/release-checklist.md)
 
 The plugin uses public Paseo 0.14 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
+
+## Plugin provider opt-in
+
+On a new install, `omp-plugin` and `omp-plugin-<profile>` are not offered. To turn them on, add the provider to the Paseo config and restart the daemon:
+
+```json
+{ "agents": { "providers": { "omp-plugin": { "enabled": true } } } }
+```
+
+Enabling any plugin provider enables all of them, as before. Paseo versions whose provider grid lists opt-in plugin providers also offer **Add** there.
+
+Hosts that already use the plugin provider are not affected and need no step. The first start after upgrading looks for agents or schedules on `omp-plugin*` and, if it finds one, records that in `<PASEO_HOME>/plugin-data/paseo-omp/provider-opt-in.json`. Config entries that name or extend an `omp-plugin*` provider (including agent profiles and metadata generation providers) are read on every start. If the Paseo home cannot be read or parsed, the providers stay on. Deleting old agents later does not turn them off; set `agents.providers.omp-plugin.enabled: false` for that.
 
 ## Named OMP profiles
 
@@ -135,7 +147,7 @@ Paseo 0.14 is the minimum supported release. The controlled Docker canary is pin
 
 Paseo releases idle resumable agent runtimes after one hour; the agent stays listed as `closed` and the next prompt resumes the same OMP session. The plugin vetoes that release while the session has a running turn, a pending permission, an active subagent, or OMP background async work, and while OMP does not report a settled state (the plugin needs the `hasPendingAsyncWork` and `isSettled` fields in OMP's `get_state`; builds without them are never released). Set `agents.idleRuntimeCleanup: false` in the Paseo config to disable idle release for every provider.
 
-Install, update, disable, or remove `paseo-omp` independently of the bundled provider. Verify the provider snapshot contains `omp-plugin` after installation; a bundled `omp` entry may remain present and is not modified by this plugin.
+Install, update, disable, or remove `paseo-omp` independently of the bundled provider. On a new install the snapshot lists only the bundled `omp` provider until you enable `omp-plugin` as described in [Plugin provider opt-in](#plugin-provider-opt-in); a bundled `omp` entry is never modified by this plugin.
 
 ## Output and credential boundary
 

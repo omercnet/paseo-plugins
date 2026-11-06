@@ -16,11 +16,11 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { getOmpImage } from "../../shared/provider-image";
 import type { OmpImageMimeType } from "./image";
+import { paseoHomeDir } from "./opt-in";
 
 /** Matches the projector's 8 MiB encoded image bound. */
 export const MAX_CACHED_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -76,9 +76,7 @@ function isPrivateDirectory(stat: Stats): boolean {
 
 /** Paseo resolves its home the same way, so an isolated daemon keeps images in its own home. */
 export function ompImageCacheDir(environment: NodeJS.ProcessEnv = process.env): string {
-  const raw = environment.PASEO_HOME ?? "~/.paseo";
-  const home = raw === "~" || raw.startsWith("~/") ? join(homedir(), raw.slice(1)) : raw;
-  return join(resolve(home), "plugin-data", "paseo-omp", "images");
+  return join(paseoHomeDir(environment), "plugin-data", "paseo-omp", "images");
 }
 
 export function ompImageRef(bytes: Uint8Array): string {

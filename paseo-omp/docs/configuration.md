@@ -2,7 +2,17 @@
 
 Open the global **OMP** sidebar to browse and edit machine-wide state, or open the workspace **OMP** panel from the workspace tab or Explorer to manage project-scoped state. Scalar edits in the global surface use OMP's native `config set` and `config reset` commands. The same view provides bounded row editors for `modelRoles`, `retry.fallbackChains`, `cycleOrder`, `task.agentModelOverrides`, `task.agentServiceTierOverrides`, `task.agentPrewalk`, and `task.agentAdvisor` when OMP includes them in its native settings catalog. Workspace edits create validated overrides in `<workspace>/.omp/config.yml`; removing an override restores the effective global or default value. Other arrays and records, and all credentials, remain read-only.
 
-The **Plugin provider** tab documents and manages host-wide inherited environment names and the session limit, plus the supported `omp-plugin` profile launch options. It only affects agents on this plugin's own **OMP Plugin** provider, not agents on Paseo's built-in `omp` provider, and it is hidden while every `omp-plugin` provider is disabled (for example with `agents.providers.omp-plugin.enabled: false`). Paseo's public plugin API does not expose the effective provider options for active launches, so the tab does not claim profile values are active. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
+The **Plugin provider** tab documents and manages host-wide inherited environment names and the session limit, plus the supported `omp-plugin` profile launch options. It only affects agents on this plugin's own **OMP Plugin** provider, not agents on Paseo's built-in `omp` provider, and it is hidden while every `omp-plugin` provider is disabled or not offered (for example with `agents.providers.omp-plugin.enabled: false`, or on a new install that has not enabled it). Paseo's public plugin API does not expose the effective provider options for active launches, so the tab does not claim profile values are active. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
+
+## Enabling the plugin provider
+
+The plugin's own `omp-plugin` and `omp-plugin-<profile>` providers are off by default on new installs, as a step toward retiring them in favor of Paseo's bundled `omp` provider. Existing hosts keep them with no step. Enable them with:
+
+```json
+{ "agents": { "providers": { "omp-plugin": { "enabled": true } } } }
+```
+
+A host counts as existing when its Paseo home has an agent record or schedule on an `omp-plugin*` provider (latched in `plugin-data/paseo-omp/provider-opt-in.json`, so deleting the agents later does not hide the providers), or when `config.json` names or extends an `omp-plugin*` provider, lists one in `daemon.agentProfiles`, or uses one in `agents.metadataGeneration.providers` (read on every start). An unreadable or malformed Paseo home keeps the providers on. Enabling any plugin provider enables all of them.
 
 ## Provider profile launch overrides
 
