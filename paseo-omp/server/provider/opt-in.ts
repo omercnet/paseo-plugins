@@ -1,4 +1,13 @@
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
@@ -42,23 +51,34 @@ function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-/** Parsed JSON, or undefined when the file does not exist; throws on anything unreadable. */
+/**
+ * Parsed JSON, or undefined when the file does not exist. Anything else that is not a small
+ * regular file (a symlink, a FIFO that would block startup) throws, which keeps providers on.
+ */
 function readJson(path: string): unknown {
-  let size: number;
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+  let descriptor: number;
   try {
-    size = statSync(path).size;
+    descriptor = openSync(path, flags);
   } catch (error) {
     if (isMissing(error)) return undefined;
     throw error;
   }
-  if (size > MAX_EVIDENCE_BYTES) throw new Error(`${path} is too large to inspect`);
-  return JSON.parse(readFileSync(path, "utf8"));
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > MAX_EVIDENCE_BYTES) {
+      throw new Error(`${path} cannot be inspected`);
+    }
+    return JSON.parse(readFileSync(descriptor, "utf8"));
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function jsonFiles(directory: string): string[] {
   try {
     return readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".json"))
       .map((entry) => join(directory, entry.name));
   } catch (error) {
     if (isMissing(error)) return [];
@@ -100,7 +120,9 @@ function configUsesPluginProvider(home: string): boolean {
 function recordsUsePluginProvider(home: string): boolean {
   const schedules = jsonFiles(join(home, "schedules"));
   const agents = agentRecordFiles(home);
-  if (schedules.length + agents.length > MAX_EVIDENCE_FILES) return true;
+  if (schedules.length + agents.length > MAX_EVIDENCE_FILES) {
+    throw new Error("too many Paseo records to inspect at startup");
+  }
   return (
     schedules.some((file) =>
       isPluginProviderId(ScheduleSchema.parse(readJson(file)).target.config?.provider),

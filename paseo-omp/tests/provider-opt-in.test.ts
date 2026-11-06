@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
@@ -115,6 +124,44 @@ describe("plugin providers are opt-in for new installs", () => {
     write("plugin-data/paseo-omp/provider-opt-in.json", "garbage");
     expect(decide()).toBe(false);
     expect(readFileSync(markerPath(), "utf8")).toBe("garbage");
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "a symlinked record is not silently ignored and is not latched",
+    () => {
+      write("elsewhere/a.json", { provider: "omp-plugin" });
+      mkdirSync(join(home, "agents", "project"), { recursive: true });
+      symlinkSync(join(home, "elsewhere", "a.json"), join(home, "agents", "project", "a.json"));
+      expect(decide()).toBe(false);
+      expect(existsSync(markerPath())).toBe(false);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "a FIFO where config.json should be cannot block startup",
+    () => {
+      execFileSync("mkfifo", [join(home, "config.json")]);
+      const script = `import { pluginProvidersRequireConfiguration as decide } from ${JSON.stringify(
+        join(import.meta.dirname, "../server/provider/opt-in.ts"),
+      )}; console.log(decide({ PASEO_HOME: process.env.OPT_IN_HOME }));`;
+      const child = spawnSync(process.execPath, ["--import", "tsx", "-e", script], {
+        env: { ...process.env, OPT_IN_HOME: home },
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      expect(child.error).toBeUndefined();
+      expect(child.stdout.trim()).toBe("false");
+    },
+  );
+
+  test("more records than the startup bound keeps the providers on without claiming use", () => {
+    const schedules = join(home, "schedules");
+    mkdirSync(schedules, { recursive: true });
+    for (let index = 0; index <= 10_000; index += 1) {
+      writeFileSync(join(schedules, `${index}.json`), "{}");
+    }
+    expect(decide()).toBe(false);
+    expect(existsSync(markerPath())).toBe(false);
   });
 });
 
