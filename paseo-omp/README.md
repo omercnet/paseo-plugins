@@ -42,6 +42,7 @@ Open the **MCPs** tab of the **OMP** sidebar to list the MCP servers OMP connect
 - [Compatibility, limitations, and support](SUPPORT.md)
 - [Test matrix and release verification](TESTING.md)
 - [Core-provider issue and parity audit](docs/core-provider-issue-audit.md)
+- [OMP feature research, decisions and known gaps](docs/omp-feature-research/README.md)
 - [Release checklist](docs/release-checklist.md)
 
 The plugin uses public Paseo 0.14 provider and client contracts and registers distinct `omp-plugin` and `omp-plugin-<profile>` identities; it does not modify the bundled `omp` provider.
