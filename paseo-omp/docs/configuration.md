@@ -2,7 +2,7 @@
 
 Open the global **OMP** sidebar to browse and edit machine-wide state, or open the workspace **OMP** panel from the workspace tab or Explorer to manage project-scoped state. Scalar edits in the global surface use OMP's native `config set` and `config reset` commands. The same view provides bounded row editors for `modelRoles`, `retry.fallbackChains`, `cycleOrder`, `task.agentModelOverrides`, `task.agentServiceTierOverrides`, `task.agentPrewalk`, and `task.agentAdvisor` when OMP includes them in its native settings catalog. Workspace edits create validated overrides in `<workspace>/.omp/config.yml`; removing an override restores the effective global or default value. Other arrays and records, and all credentials, remain read-only.
 
-The **Plugin** tab documents and manages host-wide inherited environment names and the session limit, plus the supported `omp-plugin` profile launch options. Paseo's public plugin API does not expose the effective provider options for active launches, so the tab does not claim profile values are active. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
+The **Plugin provider** tab documents and manages host-wide inherited environment names and the session limit, plus the supported `omp-plugin` profile launch options. It only affects agents on this plugin's own **OMP Plugin** provider, not agents on Paseo's built-in `omp` provider, and it is hidden while every `omp-plugin` provider is disabled (for example with `agents.providers.omp-plugin.enabled: false`). Paseo's public plugin API does not expose the effective provider options for active launches, so the tab does not claim profile values are active. Choose **OMP Plugin** when creating an agent. Model, mode, thinking level, system prompt, persistence, MCP servers, workspace, and agent environment use Paseo's standard provider controls.
 
 ## Provider profile launch overrides
 
@@ -28,7 +28,7 @@ Advanced profile-specific launch overrides belong in an `omp-plugin` provider pr
 | --- | --- |
 | `command` | Complete OMP executable and argument prefix. |
 | `env` | Non-secret process overrides applied below the session launch environment. |
-| `inheritEnv` | Additional daemon environment variable names copied only when OMP starts. Host-wide names are configured in **OMP → Plugin**; values are never stored in a profile or displayed in the sidebar. |
+| `inheritEnv` | Additional daemon environment variable names copied only when OMP starts. Host-wide names are configured in **OMP → Plugin provider**; values are never stored in a profile or displayed in the sidebar. |
 | `outputRedaction` | `none` (default) preserves native output. `configured-values` performs best-effort literal replacement only for explicitly supplied configured credential values from profile/session credential environment fields and configured MCP headers or environment. |
 | `params.sessionDir` | Native OMP session directory supplied through `--session-dir`. Used consistently by discovery, import, resume, and launch. |
 | `params.rpcTimeoutMs` | Startup, request, catalog, and availability timeout, from 1 ms through 10 minutes. |
@@ -45,11 +45,11 @@ Paseo's generic provider profile fields remain available:
 | `disallowedTools` | Restricts only the known native OMP built-ins accepted by this plugin. It becomes an explicit OMP allow-list; unknown names fail closed rather than being ignored. It does not filter MCP host tools. |
 | `paseoTools` | Enables or restricts which caller-scoped Paseo orchestration tools the daemon includes before they reach OMP as MCP host tools. |
 
-These options cover plugin-specific profile overrides. Host-wide inherited environment names are configured separately in **OMP → Plugin**. Values that belong to an individual agent, including model, mode, thinking level, title, system prompt, MCP servers, persistence, and cwd, remain standard Paseo session fields rather than duplicate plugin options.
+These options cover plugin-specific profile overrides. Host-wide inherited environment names are configured separately in **OMP → Plugin provider**. Values that belong to an individual agent, including model, mode, thinking level, title, system prompt, MCP servers, persistence, and cwd, remain standard Paseo session fields rather than duplicate plugin options.
 
 ## Session limit
 
-**OMP → Plugin → Session limit** caps how many OMP Plugin sessions can be open on the host at once. One count covers the default provider, every `OMP · <profile>` provider, and every configured provider that extends them. Idle agents count while their sessions are open; archiving an agent closes its session. The default is 32 and the maximum is 64. At the limit, a new agent fails with `OMP session limit reached (<limit> open sessions)` before any OMP process starts. Archive idle agents or raise the limit; a new value applies to the next session that opens and leaves open sessions running.
+**OMP → Plugin provider → Session limit** caps how many OMP Plugin sessions can be open on the host at once. One count covers the default provider, every `OMP · <profile>` provider, and every configured provider that extends them. Idle agents count while their sessions are open; archiving an agent closes its session. The default is 32 and the maximum is 64. At the limit, a new agent fails with `OMP session limit reached (<limit> open sessions)` before any OMP process starts. Archive idle agents or raise the limit; a new value applies to the next session that opens and leaves open sessions running.
 
 ## OMP-native plugins
 
@@ -68,7 +68,7 @@ Use the **MCP** control beside the composer on an **OMP Plugin** agent to run OM
 
 Command output, setup questions, and OAuth prompts appear in the agent timeline. OAuth URLs render as an interactive card and always retain the full provider authorization URL, never substituting OMP's daemon-local `/launch` shortcut. **Open in Paseo Browser** calls the current agent's caller-scoped `browser_new_tab` tool, so the authorization page becomes a browser tab in the same workspace; it requires Paseo tools to be injected into the agent, browser tools to be enabled, and a connected Paseo desktop browser host. **Open on this device** remains available when no browser host is connected. For a loopback callback to complete automatically, the chosen browser host must run on the daemon machine. Otherwise, finish authorization in either browser, copy the final redirect URL or authorization code, and submit it in the OMP authorization prompt. Tokens and refresh material are stored by OMP on the daemon (or its configured auth broker), never in the Paseo client or plugin timeline.
 
-Paseo's exact session `toolPolicy` preapproval grants are not equivalent to OMP's `set_host_tools` contract. The plugin cannot preserve that policy exactly, so any non-empty `toolPolicy` rejects session startup. It never converts exact grants into broader access. `disallowedTools` is separate: it controls only recognized native OMP built-ins and rejects unknown names. The **OMP → Plugin** tab shows the same boundary in its Tool access boundary card.
+Paseo's exact session `toolPolicy` preapproval grants are not equivalent to OMP's `set_host_tools` contract. The plugin cannot preserve that policy exactly, so any non-empty `toolPolicy` rejects session startup. It never converts exact grants into broader access. `disallowedTools` is separate: it controls only recognized native OMP built-ins and rejects unknown names. The **OMP → Plugin provider** tab shows the same boundary in its Tool access boundary card.
 
 ## Subagent controls
 
@@ -116,7 +116,7 @@ Always-applied and rulebook rules are read from OMP's own rule files: `.omp/rule
 
 ## Credentials and environment
 
-The plugin is deny-by-default. It inherits only its fixed built-in allowlist of core provider authentication variables, exact host-wide names an operator selects in **OMP → Plugin**, and additional exact profile names under `providerOptions.inheritEnv`; it does not discover or inherit arbitrary credential-shaped names. Prefer OMP's native credential store or auth broker whenever possible.
+The plugin is deny-by-default. It inherits only its fixed built-in allowlist of core provider authentication variables, exact host-wide names an operator selects in **OMP → Plugin provider**, and additional exact profile names under `providerOptions.inheritEnv`; it does not discover or inherit arbitrary credential-shaped names. Prefer OMP's native credential store or auth broker whenever possible.
 
 For example:
 

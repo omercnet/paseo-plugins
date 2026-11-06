@@ -38,7 +38,11 @@ import { ComposerPillSettingsSection } from "./composer-pill-settings";
 import { openOmpExternalUrl } from "./external-url";
 import { ActionButton, OmpAccountsSection } from "./omp-accounts-section";
 import { type OmpConfigStyles, useConfigStyles } from "./omp-config-styles";
-import { type OmpConfigSurfaceView as SurfaceView, surfaceViewsForScope } from "./omp-config-views";
+import {
+  resolveSurfaceView,
+  type OmpConfigSurfaceView as SurfaceView,
+  surfaceViewsForScope,
+} from "./omp-config-views";
 import {
   documentationForSettingCategory,
   documentationForSettingPath,
@@ -67,6 +71,7 @@ import { ToolPolicyCard } from "./omp-tool-policy";
 import { OmpUpdateRow, UPDATE_QUERY_KEY } from "./omp-update-row";
 import {
   type BinaryHealthSummary,
+  hasEnabledPluginProvider,
   loadReadyProviderSnapshot,
   lspTone,
   mcpTone,
@@ -187,7 +192,7 @@ function ProviderSetupSection({ styles }: { styles: OmpConfigStyles }) {
 function PluginConfigurationSection({ styles }: { styles: OmpConfigStyles }) {
   return (
     <>
-      <SectionCard styles={styles} title="OMP Plugin launch options">
+      <SectionCard styles={styles} title="Plugin provider launch options">
         <Text style={styles.muted}>
           Configure inherited daemon environment names below. Paseo does not expose effective
           profile options for active launches, so this tab documents profile overrides without
@@ -1204,14 +1209,27 @@ function OmpConfigContent({
       ? { error: "Could not list every OMP agent. Typed names remain available." }
       : {}),
   };
-  const [view, setView] = useState<SurfaceView>(focusRule ? "rules" : "overview");
+  const [selectedView, setView] = useState<SurfaceView>(focusRule ? "rules" : "overview");
   const [activeCategory, setActiveCategory] = useState<OmpSettingCategory>("appearance");
   const [search, setSearch] = useState("");
   const [drafts, setDrafts] = useState<Record<string, SettingDraft>>({});
   const [documentationError, setDocumentationError] = useState<string | null>(null);
   const styles = useConfigStyles(theme, layout.compact);
   const normalizedSearch = search.trim().toLocaleLowerCase();
-  const surfaceViews = surfaceViewsForScope(cwd !== undefined);
+  const paseo = usePaseo();
+  const providers = useQuery({
+    queryKey: PROVIDERS_QUERY_KEY,
+    queryFn: () => loadReadyProviderSnapshot(paseo.providers),
+  });
+  // Until the snapshot settles, keep the tab the plugin has always shown.
+  const pluginProviderEnabled = providers.data
+    ? hasEnabledPluginProvider(providers.data.entries)
+    : true;
+  const surfaceViews = surfaceViewsForScope({
+    workspaceScoped: cwd !== undefined,
+    pluginProviderEnabled,
+  });
+  const view = resolveSurfaceView(surfaceViews, selectedView);
   const catalog = useMemo(() => {
     const sourceSettings = settingsQuery.data?.available
       ? settingsQuery.data.settings

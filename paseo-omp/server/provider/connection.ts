@@ -925,7 +925,7 @@ export function createOmpConnection(
           requestFailure(
             input.requestId,
             new OmpPublicError(
-              `OMP session limit reached (${sessionLimit.maxSessions} open sessions). Archive idle agents or raise the session limit in OMP → Plugin.`,
+              `OMP session limit reached (${sessionLimit.maxSessions} open sessions). Archive idle agents or raise the session limit in OMP → Plugin provider.`,
             ),
           );
           return;

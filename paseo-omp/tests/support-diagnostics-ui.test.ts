@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { surfaceViewsForScope } from "../client/omp-config-views";
+import { resolveSurfaceView, surfaceViewsForScope } from "../client/omp-config-views";
 import {
   refreshSupportReport,
   supportDiagnosticsViewState,
@@ -90,7 +90,11 @@ describe("OMP Help surface state", () => {
   });
 
   test("adds Help without changing existing global and workspace tabs", () => {
-    expect(surfaceViewsForScope(false).map((view) => view.id)).toEqual([
+    expect(
+      surfaceViewsForScope({ workspaceScoped: false, pluginProviderEnabled: true }).map(
+        (view) => view.id,
+      ),
+    ).toEqual([
       "overview",
       "accounts",
       "mcps",
@@ -104,7 +108,11 @@ describe("OMP Help surface state", () => {
       "diagnostics",
       "help",
     ]);
-    expect(surfaceViewsForScope(true).map((view) => view.id)).toEqual([
+    expect(
+      surfaceViewsForScope({ workspaceScoped: true, pluginProviderEnabled: true }).map(
+        (view) => view.id,
+      ),
+    ).toEqual([
       "overview",
       "plugin",
       "plugins",
@@ -116,5 +124,22 @@ describe("OMP Help surface state", () => {
       "diagnostics",
       "help",
     ]);
+  });
+
+  test("hides the Plugin provider tab, and only it, while the plugin provider is off", () => {
+    for (const workspaceScoped of [false, true]) {
+      const on = surfaceViewsForScope({ workspaceScoped, pluginProviderEnabled: true });
+      const off = surfaceViewsForScope({ workspaceScoped, pluginProviderEnabled: false });
+      expect(on.find((view) => view.id === "plugin")?.label).toBe("Plugin provider");
+      expect(off).toEqual(on.filter((view) => view.id !== "plugin"));
+    }
+  });
+
+  test("a selected view the scope hides falls back to Overview, a visible one is kept", () => {
+    const off = surfaceViewsForScope({ workspaceScoped: false, pluginProviderEnabled: false });
+    expect(resolveSurfaceView(off, "plugin")).toBe("overview");
+    expect(resolveSurfaceView(off, "rules")).toBe("rules");
+    const on = surfaceViewsForScope({ workspaceScoped: false, pluginProviderEnabled: true });
+    expect(resolveSurfaceView(on, "plugin")).toBe("plugin");
   });
 });

@@ -2,6 +2,7 @@ import type { PaseoProviderSnapshotResult } from "@getpaseo/client";
 import { describe, expect, test } from "vitest";
 import {
   formatOmpVersion,
+  hasEnabledPluginProvider,
   loadReadyProviderSnapshot,
   lspTone,
   mcpTone,
@@ -178,6 +179,31 @@ describe("selectKnownOmpProviders", () => {
       { id: "omp-plugin", label: "OMP Plugin", status: "ready", enabled: true },
       { id: "omp-plugin-team-beta", label: "OMP Team Beta", status: "ready", enabled: true },
     ]);
+  });
+});
+
+describe("hasEnabledPluginProvider", () => {
+  const entry = (
+    provider: string,
+    enabled: boolean,
+  ): PaseoProviderSnapshotResult["entries"][number] => ({
+    provider,
+    status: "ready",
+    enabled,
+  });
+
+  test("the built-in omp provider never counts as the plugin provider", () => {
+    expect(hasEnabledPluginProvider([entry("omp", true), entry("omp-plugin", false)])).toBe(false);
+  });
+
+  test("a missing plugin provider is off", () => {
+    expect(hasEnabledPluginProvider([entry("omp", true), entry("claude", true)])).toBe(false);
+  });
+
+  test("an enabled profile provider keeps the tab when the base provider is off", () => {
+    expect(
+      hasEnabledPluginProvider([entry("omp-plugin", false), entry("omp-plugin-team-beta", true)]),
+    ).toBe(true);
   });
 });
 

@@ -17,7 +17,7 @@ const SURFACE_VIEWS: readonly { id: OmpConfigSurfaceView; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "accounts", label: "Accounts" },
   { id: "mcps", label: "MCPs" },
-  { id: "plugin", label: "Plugin" },
+  { id: "plugin", label: "Plugin provider" },
   { id: "plugins", label: "OMP plugins" },
   { id: "rules", label: "Rules" },
   { id: "skills", label: "Skills" },
@@ -35,7 +35,24 @@ const STORE_ONLY_VIEWS: readonly OmpConfigSurfaceView[] = ["composer", "accounts
 /** Views about one project, which the global OMP screen has no project for. */
 const WORKSPACE_ONLY_VIEWS: readonly OmpConfigSurfaceView[] = ["security"];
 
-export function surfaceViewsForScope(workspaceScoped: boolean) {
+interface SurfaceScope {
+  workspaceScoped: boolean;
+  /** The plugin's own `omp-plugin` providers; the Plugin provider view only applies to them. */
+  pluginProviderEnabled: boolean;
+}
+
+export function surfaceViewsForScope({ workspaceScoped, pluginProviderEnabled }: SurfaceScope) {
   const hidden = workspaceScoped ? STORE_ONLY_VIEWS : WORKSPACE_ONLY_VIEWS;
-  return SURFACE_VIEWS.filter((candidate) => !hidden.includes(candidate.id));
+  return SURFACE_VIEWS.filter(
+    (candidate) =>
+      !hidden.includes(candidate.id) && (pluginProviderEnabled || candidate.id !== "plugin"),
+  );
+}
+
+/** A view the current scope or provider state hides falls back to Overview, never a blank screen. */
+export function resolveSurfaceView(
+  views: readonly { id: OmpConfigSurfaceView }[],
+  selected: OmpConfigSurfaceView,
+): OmpConfigSurfaceView {
+  return views.some((candidate) => candidate.id === selected) ? selected : "overview";
 }
