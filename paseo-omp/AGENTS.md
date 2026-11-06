@@ -58,10 +58,14 @@ Run this workflow from the `paseo-omp` directory.
 
    To test features for Paseo's bundled `omp` provider, also add `"agents": { "providers": { "omp": { "enabled": true } } }` to `.paseo-dev/config.json`.
 
-3. Start only that home with the project-pinned Paseo CLI. The config owns the listen, relay, web UI, and plugin settings. If a `.paseo-dev` daemon from an earlier run is still up, `daemon start` returns it unchanged and the new environment never applies; once the human is done with it, stop it first with the command in step 6. Clear `OMP_PROFILE` and `PI_PROFILE`, or OMP uses that profile instead of `PI_CODING_AGENT_DIR`:
+3. Start only that home with the project-pinned Paseo CLI. The config owns the listen, relay, web UI, and plugin settings. If a `.paseo-dev` daemon from an earlier run is still up, `daemon start` returns it unchanged and the new environment never applies; once the human is done with it, stop it first with the command in step 6. Clear every variable that relocates OMP's directories (the same list as `OMP_LOCATION_ENV` in `server/omp-agents.ts`): a profile makes OMP ignore `PI_CODING_AGENT_DIR`, and `PASEO_OMP_AGENT_DIR` or `OMP_AGENT_DIR` make the plugin edit that directory instead:
 
    ```sh
-   env -u OMP_PROFILE -u PI_PROFILE HOME="$OMP_DEMO_HOME" PI_CODING_AGENT_DIR="$OMP_DEMO_DIR" npx --no-install paseo daemon start --home "$PWD/.paseo-dev"
+   env -u OMP_AGENT_DIR -u PASEO_OMP_AGENT_DIR -u OMP_PROFILE -u PI_PROFILE \
+     -u OMP_SESSION_DIR -u PI_CODING_AGENT_SESSION_DIR -u PI_CONFIG_DIR \
+     -u XDG_CACHE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME \
+     HOME="$OMP_DEMO_HOME" PI_CODING_AGENT_DIR="$OMP_DEMO_DIR" \
+     npx --no-install paseo daemon start --home "$PWD/.paseo-dev"
    npx --no-install paseo daemon status --home "$PWD/.paseo-dev" --json
    ```
 
