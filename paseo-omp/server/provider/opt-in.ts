@@ -132,10 +132,10 @@ function recordsUsePluginProvider(home: string): boolean {
 
 /**
  * The plugin's own providers are opt-in for new installs. A host that already used them keeps
- * them registered without configuration. Config references are read on every start. Agent and
- * schedule use is latched in a marker, so deleting the last old agent never hides the providers.
- * There is no marker for "new install": absence means not latched yet. Anything unreadable
- * keeps the providers on.
+ * them registered without configuration. Agent or schedule use is latched in a marker, so
+ * deleting the last old agent never hides the providers. Config references are read on every
+ * start and never latched. There is no marker for "new install": absence means not latched yet.
+ * Anything unreadable keeps the providers on.
  */
 export function pluginProvidersRequireConfiguration(
   environment: NodeJS.ProcessEnv = process.env,
@@ -149,8 +149,7 @@ export function pluginProvidersRequireConfiguration(
       MarkerSchema.parse(latched);
       return false;
     }
-    if (configUsesPluginProvider(home)) return false;
-    if (!recordsUsePluginProvider(home)) return true;
+    if (!recordsUsePluginProvider(home)) return !configUsesPluginProvider(home);
   } catch {
     return false;
   }

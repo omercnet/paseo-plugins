@@ -58,6 +58,8 @@ Run this workflow from the `paseo-omp` directory.
 
    To test features for Paseo's bundled `omp` provider, also add `"agents": { "providers": { "omp": { "enabled": true } } }` to `.paseo-dev/config.json`.
 
+   The plugin's own `omp-plugin` provider is off by default on a new home. To test it, also add `"omp-plugin": { "enabled": true }` under `agents.providers`; without it the provider is not offered and `paseo run --provider omp-plugin` fails.
+
 3. Start only that home with the project-pinned Paseo CLI. The config owns the listen, relay, web UI, and plugin settings. If a `.paseo-dev` daemon from an earlier run is still up, `daemon start` returns it unchanged and the new environment never applies; once the human is done with it, stop it first with the command in step 6. Clear every variable that relocates OMP's directories (the same list as `OMP_LOCATION_ENV` in `server/omp-agents.ts`): a profile makes OMP ignore `PI_CODING_AGENT_DIR`, and `PASEO_OMP_AGENT_DIR` or `OMP_AGENT_DIR` make the plugin edit that directory instead. Also clear `CLAUDE_CONFIG_DIR`, which makes OMP load Claude's config and MCP servers, and `PI_CONFIG_FILES`, which overlays other settings files:
 
    ```sh

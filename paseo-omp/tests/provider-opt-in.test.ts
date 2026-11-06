@@ -126,6 +126,15 @@ describe("plugin providers are opt-in for new installs", () => {
     expect(readFileSync(markerPath(), "utf8")).toBe("garbage");
   });
 
+  test("agent use is latched even when config already references the provider", () => {
+    write("config.json", { agents: { providers: { "omp-plugin": { enabled: true } } } });
+    write("agents/project/a.json", { provider: "omp-plugin" });
+    expect(decide()).toBe(false);
+    rmSync(join(home, "config.json"));
+    rmSync(join(home, "agents"), { recursive: true });
+    expect(decide()).toBe(false);
+  });
+
   test.skipIf(process.platform === "win32")(
     "a symlinked record is not silently ignored and is not latched",
     () => {
