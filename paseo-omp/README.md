@@ -57,7 +57,7 @@ On a new install, `omp-plugin` and `omp-plugin-<profile>` are not offered. To tu
 
 Enabling any plugin provider enables all of them, as before. Paseo versions whose provider grid lists opt-in plugin providers also offer **Add** there.
 
-Hosts that already use the plugin provider are not affected and need no step. The first start after upgrading looks for agents or schedules on `omp-plugin*` and, if it finds one, records that in `<PASEO_HOME>/plugin-data/paseo-omp/provider-opt-in.json`. Config entries that name or extend an `omp-plugin*` provider (including agent profiles and metadata generation providers) are read on every start. If the Paseo home cannot be read or parsed, the providers stay on. Deleting old agents later does not turn them off; set `agents.providers.omp-plugin.enabled: false` for that.
+Hosts that already use the plugin provider are not affected and need no step. The first start after upgrading looks for agents or schedules on `omp-plugin*` and, if it finds one, records that in `<PASEO_HOME>/plugin-data/paseo-omp/provider-opt-in.json`. Config entries that enable or extend an `omp-plugin*` provider (including agent profiles and metadata generation providers) are read on every start. If the Paseo home cannot be read or parsed, the providers stay on. Deleting old agents later does not turn them off; set `agents.providers.omp-plugin.enabled: false` for that.
 
 ## Named OMP profiles
 
