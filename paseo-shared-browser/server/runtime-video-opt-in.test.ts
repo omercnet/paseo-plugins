@@ -15,7 +15,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
     _args: string[],
     _options: unknown,
     callback: (error: null, result: { stdout: string }) => void,
-  ) => callback(null, { stdout: "0.41.0\n" }),
+  ) => callback(null, { stdout: "0.41.1\n" }),
 }));
 
 const temporary: string[] = [];

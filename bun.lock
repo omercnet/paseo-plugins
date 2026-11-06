@@ -162,7 +162,7 @@
     },
     "paseo-omp": {
       "name": "@omercnet/paseo-omp",
-      "version": "5.4.0",
+      "version": "5.5.0",
       "dependencies": {
         "@getpaseo/protocol": "catalog:",
         "@modelcontextprotocol/sdk": "catalog:",
@@ -196,7 +196,7 @@
       "dependencies": {
         "@getpaseo/plugin": "catalog:",
         "@modelcontextprotocol/sdk": "catalog:",
-        "agent-browser": "0.41.0",
+        "agent-browser": "0.41.1",
         "esbuild": "catalog:",
         "zod": "catalog:",
       },
@@ -1006,7 +1006,7 @@
 
     "agent-base": ["agent-base@7.1.4", "", {}, "sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ=="],
 
-    "agent-browser": ["agent-browser@0.41.0", "", { "hasInstallScript": true, "bin": { "agent-browser": "./bin/agent-browser.js" } }, "sha512-XJtBouE5+gGUKyZU1COSmnxU6MKIlmLE2oEyHzl0ohLVOhuRjx9kqQ9vOqxiiW/Gbvi4JPF4Oz777Mn3FGiHAA=="],
+    "agent-browser": ["agent-browser@0.41.1", "", { "hasInstallScript": true, "bin": { "agent-browser": "./bin/agent-browser.js" } }, "sha512-9DhCeIhcpxu3Mj+f25Bolk6N+BT5SpOttRSZw0Ytz5MZ8zpKeVp2bv9Zxo1gajlvZE3l//rOoiRdq+qTYHBg1Q=="],
 
     "ai": ["ai@5.0.78", "", { "dependencies": { "@ai-sdk/gateway": "2.0.1", "@ai-sdk/provider": "2.0.0", "@ai-sdk/provider-utils": "3.0.12", "@opentelemetry/api": "1.9.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-ec77fmQwJGLduswMrW4AAUGSOiu8dZaIwMmWHHGKsrMUFFS6ugfkTyx0srtuKYHNRRLRC2dT7cPirnUl98VnxA=="],
 
