@@ -71,7 +71,7 @@ export function createRepositoryRefreshCoordinator(
 ): RepositoryRefresh {
   const inFlight = new Map<
     string,
-    { promise: Promise<RepositoryRefreshResult>; signal: AbortSignal | undefined }
+    { promise: Promise<RepositoryRefreshResult>; signal: AbortSignal }
   >();
   const repositoryTails = new Map<string, Promise<void>>();
 

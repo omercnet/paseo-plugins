@@ -250,8 +250,8 @@ describe("worktree refresh", () => {
       calls += 1;
       if (calls === 1) {
         return new Promise<string>((_resolve, reject) => {
-          if (signal?.aborted) reject(new Error("aborted"));
-          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          if (signal.aborted) reject(new Error("aborted"));
+          signal.addEventListener("abort", () => reject(new Error("aborted")));
         });
       }
       return "";
@@ -264,5 +264,22 @@ describe("worktree refresh", () => {
     await expect(first).rejects.toThrow("aborted");
     await expect(second).resolves.toEqual({ kind: "unchanged" });
     expect(calls).toBe(2);
+  });
+
+  test("shares one refresh between callers with the same signal", async () => {
+    const signal = new AbortController().signal;
+    let calls = 0;
+    const refresh = createRepositoryRefreshCoordinator(async () => {
+      calls += 1;
+      return "";
+    });
+
+    const results = await Promise.all([
+      refresh("/repo", "origin", null, null, signal),
+      refresh("/repo", "origin", null, null, signal),
+    ]);
+
+    expect(results).toEqual([{ kind: "unchanged" }, { kind: "unchanged" }]);
+    expect(calls).toBe(1);
   });
 });

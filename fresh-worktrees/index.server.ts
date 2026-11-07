@@ -9,19 +9,23 @@ import {
   workspaceFreshness,
 } from "./shared/workspace-freshness";
 
+// Polls share one never-aborted signal so concurrent ones still dedupe;
+// only a cancellable workspace.create signal runs a separate refresh.
+const pollSignal = new AbortController().signal;
+
 export default function contribute(server: PluginServerContext) {
   const refreshRepository = createRepositoryRefreshCoordinator();
 
   server.handle(workspaceFreshness, ({ projectRootPath, workspaceDirectory }) =>
     inspectWorkspaceFreshness(projectRootPath, workspaceDirectory, {
-      signal: new AbortController().signal,
+      signal: pollSignal,
       refreshRepository,
     }),
   );
 
   server.handle(refreshSourceBranchContract, ({ projectRootPath }) =>
     refreshSourceBranch(projectRootPath, {
-      signal: new AbortController().signal,
+      signal: pollSignal,
       refreshRepository,
     }),
   );
