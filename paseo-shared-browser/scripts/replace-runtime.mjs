@@ -13,3 +13,20 @@ export async function replaceRuntime(stagingRoot, runtimeRoot) {
     await rm(pendingPointer, { force: true });
   }
 }
+
+/**
+ * Removes a staging runtime after a failed preparation and rethrows the
+ * preparation error. Windows file locks can outlast the retries; a cleanup
+ * failure is reported but never replaces the original diagnostic.
+ */
+export async function discardRuntime(stagingRoot, preparationError, remove = rm) {
+  try {
+    await remove(stagingRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch (cleanupError) {
+    console.warn(
+      `Could not remove the failed Shared Browser runtime at ${stagingRoot}:`,
+      cleanupError,
+    );
+  }
+  throw preparationError;
+}

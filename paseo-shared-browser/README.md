@@ -40,7 +40,7 @@ organization names.
   controller when a takeover is needed, and continues the selected action after control is granted.
   Closing a tab or browser still requires its own confirmation. Actions that need a fresh frame wait
   for one before sending input.
-- The plugin owns `agent-browser` version `0.41.1`, its IPC directory, and the Chromium executable.
+- The plugin owns `agent-browser` version `0.41.2`, its IPC directory, and the Chromium executable.
   It strips inherited `AGENT_BROWSER_*` variables and sets `AGENT_BROWSER_SOCKET_DIR`,
   `AGENT_BROWSER_IDLE_TIMEOUT_MS=0`, `AGENT_BROWSER_STREAM_PORT=0`, and
   `AGENT_BROWSER_NO_AUTO_DIALOG=1` itself.
@@ -105,7 +105,14 @@ from `/usr/bin/chromium`. Install a non-Snap Chromium build with the system pack
 adding the plugin. Set `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` to an absolute path when Chromium
 is installed elsewhere. The plugin does not emulate x64 Chromium on Linux.
 
-On Windows, the upstream installer retains its Chrome download cache under the OS user profile.
+Runtime preparation keeps no Chrome download cache. When it uses the upstream installer (every
+platform except Linux ARM64, unless `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` is set), the
+installer runs with a private home inside the staging directory, so each preparation downloads the
+current Chrome for Testing archive (about 200 MiB) and deletes the installer's copy after staging
+it. On a slow network that download can exceed the 180-second install timeout; set
+`PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` to an existing Chromium to skip it. On Windows the
+override is not staged into the runtime, so keep it set in the daemon environment as well.
+
 Before upgrading the plugin on Windows, close active Shared Browser sessions and stop the Paseo
 daemon; Windows does not allow the installer to replace runtime executables that are still running.
 

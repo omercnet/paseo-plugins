@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, cp, lstat, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { arch, homedir, platform, userInfo } from "node:os";
+import { arch, homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
-import { replaceRuntime } from "./replace-runtime.mjs";
+import { installChromiumRelease } from "./chromium-release.mjs";
+import { discardRuntime, replaceRuntime } from "./replace-runtime.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -18,7 +19,7 @@ function resolveDependencyRoot(packageName) {
 }
 
 const execFileAsync = promisify(execFile);
-const expectedVersion = "0.41.1";
+const expectedVersion = "0.41.2";
 const hostPlatform = platform();
 const hostArch = arch();
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -163,26 +164,8 @@ async function installChromium() {
     return executable;
   }
 
-  // Rust's dirs::home_dir() ignores HOME on Windows and resolves the profile
-  // through SHGetKnownFolderPath. Use that cache there; Unix stays isolated.
-  const installHome =
-    hostPlatform === "win32" ? userInfo().homedir : join(stagingRoot, "install-home");
-  if (hostPlatform !== "win32") {
-    await mkdir(installHome, { recursive: true, mode: 0o700 });
-  }
-  await execFileAsync(runtimeEntry, ["install"], {
-    env: hostPlatform === "win32" ? process.env : { ...process.env, HOME: installHome },
-    timeout: 180_000,
-    windowsHide: true,
-  });
-
-  const browsersRoot = join(installHome, ".agent-browser", "browsers");
-  const releases = (await readdir(browsersRoot, { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith("chrome-"))
-    .map((entry) => entry.name)
-    .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
-  const releaseDir = releases[0] && join(browsersRoot, releases[0]);
-  if (!releaseDir) throw new Error("agent-browser install did not produce a Chromium release");
+  const installHome = join(stagingRoot, "install-home");
+  const releaseDir = await installChromiumRelease(runtimeEntry, ["install"], installHome);
   const chrome = installedChromiumExecutable(releaseDir);
   await requireExecutable(chrome, "Installed Chromium executable");
   await cp(releaseDir, join(stagingRoot, "chromium"), {
@@ -200,7 +183,7 @@ async function installChromium() {
     );
     await chmod(runtimeChromiumEntry, 0o700);
   }
-  if (hostPlatform !== "win32") await rm(installHome, { recursive: true, force: true });
+  await rm(installHome, { recursive: true, force: true });
   return runtimeChromiumEntry;
 }
 
@@ -222,32 +205,38 @@ async function stageAgentBrowserEntry() {
 }
 
 await rm(stagingRoot, { recursive: true, force: true });
-await mkdir(join(runtimeModules, ".bin"), { recursive: true, mode: 0o700 });
-await chmod(pluginDataRoot, 0o700);
-await cp(packagedAgentBrowser, join(runtimeModules, "agent-browser"), {
-  recursive: true,
-  force: true,
-});
-await stageAgentBrowserEntry();
+try {
+  await mkdir(join(runtimeModules, ".bin"), { recursive: true, mode: 0o700 });
+  await chmod(pluginDataRoot, 0o700);
+  await cp(packagedAgentBrowser, join(runtimeModules, "agent-browser"), {
+    recursive: true,
+    force: true,
+  });
+  await stageAgentBrowserEntry();
 
-const binaryOverride = process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
-if (binaryOverride)
-  await validateAgentBrowser(
-    await requireExecutable(binaryOverride, "PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY"),
+  const binaryOverride = process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
+  if (binaryOverride)
+    await validateAgentBrowser(
+      await requireExecutable(binaryOverride, "PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY"),
+    );
+  await validateAgentBrowser(await requireExecutable(runtimeEntry, "Packaged agent-browser entry"));
+  const chromiumEntry = await installChromium();
+  await bundleRuntimeEntries();
+
+  await writeFile(
+    join(stagingRoot, "package.json"),
+    `${JSON.stringify({ private: true, type: "commonjs" }, null, 2)}\n`,
+    { mode: 0o600 },
   );
-await validateAgentBrowser(await requireExecutable(runtimeEntry, "Packaged agent-browser entry"));
-const chromiumEntry = await installChromium();
-await bundleRuntimeEntries();
-
-await writeFile(
-  join(stagingRoot, "package.json"),
-  `${JSON.stringify({ private: true, type: "commonjs" }, null, 2)}\n`,
-  { mode: 0o600 },
-);
-await applyPrivatePermissions(stagingRoot);
-if (hostPlatform !== "win32") {
-  await validateChromium(await requireExecutable(chromiumEntry, "Staged Chromium executable"));
+  await applyPrivatePermissions(stagingRoot);
+  if (hostPlatform !== "win32") {
+    await validateChromium(await requireExecutable(chromiumEntry, "Staged Chromium executable"));
+  }
+} catch (error) {
+  // A failed preparation must not leave a partial runtime, which can hold a Chromium download.
+  await discardRuntime(stagingRoot, error);
 }
+// Outside the cleanup: replaceRuntime can reject after publishing, when the stage is the live runtime.
 await replaceRuntime(stagingRoot, runtimeRoot);
 
 console.log(`Prepared immutable Shared Browser runtime assets in ${stagingRoot}`);
