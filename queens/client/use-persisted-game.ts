@@ -669,6 +669,12 @@ export function usePersistedGame(
       return;
     }
 
+    if (CONTROLLERS_BY_HOST.get(hostId) !== controller) {
+      controllerRef.current = null;
+      setController(null);
+      return;
+    }
+
     controllerRef.current = controller;
     controller.setSave(save);
     controller.synchronize(settings.values, settings.revision, settings.saveError);
