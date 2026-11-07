@@ -267,6 +267,14 @@ describe("focus request", () => {
     expect(peekAgentFocus()).toBeNull();
   });
 
+  test("deep focus skips a pending agent that is not in the roster", async () => {
+    const { resolveDeepFocus } = await import("../client/focus-request");
+    expect(resolveDeepFocus("gone", "a1", ["a1"])).toBe("a1");
+    expect(resolveDeepFocus("p1", "a1", ["a1", "p1"])).toBe("p1");
+    expect(resolveDeepFocus("gone", "missing", ["a1"])).toBeNull();
+    expect(resolveDeepFocus(null, undefined, ["a1"])).toBeNull();
+  });
+
   test("agent open keeps the target host and is consumed once", async () => {
     const { peekAgentOpen, requestAgentOpen, takeAgentOpen } = await import(
       "../client/focus-request"

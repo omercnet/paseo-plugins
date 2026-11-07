@@ -323,6 +323,26 @@ describe("createAutoOpenManager", () => {
     manager.dispose();
   });
 
+  test("keeps running through a transient settings read error", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const harness = createMockClient({ initialEnabled: true });
+    const manager = createAutoOpenManager(harness.client);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.subscribeCalls).toBe(1);
+
+    vi.mocked(harness.client.rpc).mockRejectedValueOnce(new Error("settings read failed"));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(harness.releaseCalls).toBe(0);
+
+    harness.emitWorkspace("gap-workspace");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(harness.claimCalls).toEqual([["gap-workspace"]]);
+
+    manager.dispose();
+  });
+
   test("restarts exactly one subscription across disable and re-enable", async () => {
     vi.useFakeTimers();
     const harness = createMockClient();
@@ -344,7 +364,7 @@ describe("createAutoOpenManager", () => {
     manager.dispose();
   });
 
-  test("finishes an already-started chunk after disable and stops before the next chunk", async () => {
+  test("stops before the next chunk and opens no panels after disable", async () => {
     vi.useFakeTimers();
     const claimDeferred = deferred<ClaimResult>();
     const workspaceIds = ids(MAX_AUTO_OPEN_CLAIM_BATCH + 1);
@@ -362,7 +382,35 @@ describe("createAutoOpenManager", () => {
     await Promise.resolve();
 
     expect(harness.claimCalls).toHaveLength(1);
-    expect(harness.client.openPanel).toHaveBeenCalledTimes(MAX_AUTO_OPEN_CLAIM_BATCH);
+    expect(harness.client.openPanel).not.toHaveBeenCalled();
+
+    manager.dispose();
+  });
+
+  test("claims a workspace again after its claim failed twice", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const harness = createMockClient({
+      initialEnabled: true,
+      claimResponder(workspaceIds, callIndex) {
+        if (callIndex <= 2) throw new Error("rpc down");
+        return { claimed: workspaceIds };
+      },
+    });
+    const manager = createAutoOpenManager(harness.client);
+
+    await vi.advanceTimersByTimeAsync(0);
+    harness.emitWorkspace("w1");
+    await vi.advanceTimersByTimeAsync(400);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(harness.claimCalls).toEqual([["w1"], ["w1"]]);
+    expect(harness.client.openPanel).not.toHaveBeenCalled();
+
+    harness.emitWorkspace("w1");
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(harness.claimCalls).toEqual([["w1"], ["w1"], ["w1"]]);
+    expect(harness.client.openPanel).toHaveBeenCalledTimes(1);
 
     manager.dispose();
   });
@@ -389,7 +437,7 @@ describe("createAutoOpenManager", () => {
     await Promise.resolve();
 
     expect(harness.claimCalls).toHaveLength(1);
-    expect(harness.client.openPanel).toHaveBeenCalledTimes(1);
+    expect(harness.client.openPanel).not.toHaveBeenCalled();
 
     manager.dispose();
   });

@@ -3,6 +3,7 @@ import {
   accountGroups,
   accountsPollInterval,
   balanceLine,
+  loginIdToCancelOnClose,
   signInProviders,
   usedPercent,
 } from "../client/omp-accounts-state";
@@ -114,6 +115,23 @@ describe("polling", () => {
     for (const step of ["starting", "waiting", "verifying"] as const) {
       expect(accountsPollInterval(view({ logins: [login(step)] }))).toBe(1_000);
     }
+  });
+});
+
+describe("closing the sign-in modal", () => {
+  test("cancels a started login the poll has not reported yet", () => {
+    expect(loginIdToCancelOnClose("L", undefined)).toBe("L");
+  });
+
+  test("cancels an open login and leaves a settled one alone", () => {
+    expect(loginIdToCancelOnClose("L", { step: "waiting" })).toBe("L");
+    for (const step of ["done", "failed", "canceled"] as const) {
+      expect(loginIdToCancelOnClose("L", { step })).toBeUndefined();
+    }
+  });
+
+  test("cancels nothing before a login has started", () => {
+    expect(loginIdToCancelOnClose(undefined, undefined)).toBeUndefined();
   });
 });
 

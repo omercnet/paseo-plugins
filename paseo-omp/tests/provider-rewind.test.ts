@@ -6,6 +6,7 @@ import { OmpNativeSessionReservations } from "../server/provider/connection";
 import type { OmpMessage, OmpModel } from "../server/provider/omp-rpc-protocol";
 import { OmpRpcRequestRejectedError } from "../server/provider/omp-rpc-transport";
 import { createOmpProvider } from "../server/provider/registration";
+import { OmpCleanupFailure } from "../server/provider/security";
 import { OmpTimelineProjector } from "../server/provider/timeline-projector";
 import {
   ALTERNATE_MODEL,
@@ -659,6 +660,81 @@ describe("OMP direct provider", () => {
         await connection.close();
       }
     }
+  });
+
+  test("a close after a committed rewind failure reports the earlier close's disposal", async () => {
+    const runtime = new FakeOmpRuntime();
+    runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+    runtime.nextHistoryMessages = [
+      { role: "user", entryId: "close-race-entry", content: "earlier" },
+    ];
+    const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+      "prompt.message",
+      "session.persistence",
+      "session.revert.conversation",
+    ]);
+    const sessionId = "close-race-session";
+    await connection.send({
+      type: "session.open",
+      requestId: "close-race-open",
+      sessionId,
+      config: { cwd: "/repo", env: {}, mcpServers: {}, mode: "full", settings: {}, persist: true },
+      persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+      history: "replay",
+    });
+    await events.waitFor(
+      (event) => event.type === "session.ready" && event.requestId === "close-race-open",
+    );
+    const user = events.find(
+      (event) => event.type === "timeline.item" && event.item.type === "user_message",
+    );
+    if (user?.type !== "timeline.item" || user.item.type !== "user_message") {
+      throw new Error("Missing close race rewind token");
+    }
+    const session = sessionAt(runtime);
+    const branch = Promise.withResolvers<void>();
+    const branchStarted = Promise.withResolvers<void>();
+    session.branchGate = branch.promise;
+    session.branchObserved = branchStarted.resolve;
+    session.branchError = new Error("branch transport lost");
+    const runtimeClose = Promise.withResolvers<void>();
+    const runtimeCloseStarted = Promise.withResolvers<void>();
+    const treeCleanup = Promise.withResolvers<void>();
+    session.closeGate = runtimeClose.promise;
+    session.closeObserved = runtimeCloseStarted.resolve;
+    session.closeError = new OmpCleanupFailure("tree cleanup pending", treeCleanup.promise);
+
+    await connection.send({
+      type: "session.revert",
+      requestId: "close-race-revert",
+      sessionId,
+      token: user.item.revertToken ?? null,
+      scope: "conversation",
+    });
+    await branchStarted.promise;
+    await connection.send({ type: "session.close", requestId: "close-race-first", sessionId });
+    await runtimeCloseStarted.promise;
+    branch.resolve();
+    const rewindFailureHandled = Promise.withResolvers<void>();
+    setImmediate(rewindFailureHandled.resolve);
+    await rewindFailureHandled.promise;
+    await connection.send({ type: "session.close", requestId: "close-race-second", sessionId });
+    runtimeClose.resolve();
+    const first = await events.waitFor(
+      (event) =>
+        (event.type === "request.completed" || event.type === "request.failed") &&
+        event.requestId === "close-race-first",
+    );
+    expect(first).toEqual(expect.objectContaining({ type: "request.failed" }));
+    treeCleanup.resolve();
+    const second = await events.waitFor(
+      (event) =>
+        (event.type === "request.completed" || event.type === "request.failed") &&
+        event.requestId === "close-race-second",
+    );
+    expect(second).toEqual({ ...first, requestId: "close-race-second" });
+    expect(session.closes).toBe(1);
+    await connection.close();
   });
 
   test("quarantines committed rewind failure until runtime and host teardown complete", async () => {

@@ -1084,7 +1084,7 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
         this.configRefreshInFlight,
       ].filter((pending): pending is Promise<void> => pending !== null),
     );
-    this.disposalPromise = cleanup;
+    this.disposalPromise ??= cleanup;
     this.quarantineRewindCleanup(cleanup);
     await Promise.allSettled([cleanup]);
   }

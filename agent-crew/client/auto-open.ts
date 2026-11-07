@@ -95,6 +95,7 @@ function startAutoOpen(client: PluginClientContext): () => void {
         const { claimed } = await client.rpc(claimOpenedWorkspaces, {
           workspaceIds: job.workspaceIds,
         });
+        if (closed) return;
         for (const workspaceId of claimed) {
           try {
             client.openPanel("crew", { workspaceId, location: "explorer" });
@@ -113,6 +114,7 @@ function startAutoOpen(client: PluginClientContext): () => void {
           schedule(RETRY_DELAY_MS);
           return;
         }
+        for (const workspaceId of job.workspaceIds) known?.delete(workspaceId);
       }
     }
     pumping = false;
@@ -187,7 +189,6 @@ export function createAutoOpenManager(client: PluginClientContext): AutoOpenMana
     } catch (error) {
       if (disposed || requestGeneration !== generation) return;
       console.error("Agent Crew auto-open settings read failed", error);
-      syncEnabled(DEFAULT_AUTO_OPEN_EXPLORER);
     } finally {
       refreshRunning = false;
     }

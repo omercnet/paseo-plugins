@@ -494,6 +494,34 @@ describe.skipIf(ON_WINDOWS)("sign-in", () => {
     expect(() => accounts.submitCode(started.id, "late")).toThrow(/no longer running/);
   });
 
+  test("a sign-in canceled while omp's listing refreshes stays canceled", async () => {
+    const accounts = await install();
+    const refreshStarted = Promise.withResolvers<void>();
+    const refreshGate = Promise.withResolvers<void>();
+    // The refresh is private; stalling it is the only way to hold a sign-in in "verifying".
+    const internals = accounts as unknown as { refreshAfterChange: () => Promise<void> };
+    internals.refreshAfterChange = () => {
+      refreshStarted.resolve();
+      return refreshGate.promise;
+    };
+    const started = await accounts.startLogin(undefined, "anthropic");
+    await until(
+      async () => login(await accounts.list(undefined, false), started.id),
+      (entry) => entry?.codePrompt != null,
+    );
+
+    accounts.submitCode(started.id, "good");
+    await refreshStarted.promise;
+    expect(accounts.cancelLogin(started.id)).toMatchObject({ step: "canceled" });
+    refreshGate.resolve();
+    await refreshGate.promise;
+
+    expect(login(await accounts.list(undefined, false), started.id)).toMatchObject({
+      step: "canceled",
+      message: "Sign-in was canceled",
+    });
+  });
+
   test("a newer sign-in replaces the one still open", async () => {
     const accounts = await install();
     const first = await accounts.startLogin(undefined, "anthropic");

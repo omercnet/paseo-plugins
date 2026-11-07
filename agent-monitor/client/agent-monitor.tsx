@@ -17,6 +17,7 @@ import {
   peekAgentFocus,
   peekAgentOpen,
   requestAgentFocus,
+  resolveDeepFocus,
   takeAgentFocus,
   takeAgentOpen,
 } from "./focus-request";
@@ -364,9 +365,12 @@ function AgentMonitorRoster({
   const [deepFocusId, setDeepFocusId] = useState<string | null>(null);
   useEffect(() => {
     if (deepFocusId) return;
-    const wanted = peekAgentFocus() ?? agentParam;
-    if (!wanted) return;
-    if (allEntries.some((entry) => entry.agent.id === wanted)) {
+    const wanted = resolveDeepFocus(
+      peekAgentFocus(),
+      agentParam,
+      allEntries.map((entry) => entry.agent.id),
+    );
+    if (wanted) {
       takeAgentFocus();
       setDeepFocusId(wanted);
       setHostSelected(null);

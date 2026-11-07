@@ -418,17 +418,21 @@ export function ConnectedHostsScreen({ theme, layout, host: selected }: PluginSc
   const styles = useMemo(() => makeStyles(theme, layout.compact), [theme, layout.compact]);
   const [form, setForm] = useState<FormTarget | null>(null);
   const [removing, setRemoving] = useState<HostSummary | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
 
   async function run(registrationId: string, action: () => Promise<unknown>, done: string) {
-    setBusyId(registrationId);
+    setBusy((current) => new Set(current).add(registrationId));
     try {
       await action();
       toast.show(done, { variant: "success" });
     } catch (cause) {
       toast.error(errorMessage(cause));
     } finally {
-      setBusyId(null);
+      setBusy((current) => {
+        const next = new Set(current);
+        next.delete(registrationId);
+        return next;
+      });
     }
   }
 
@@ -482,7 +486,7 @@ export function ConnectedHostsScreen({ theme, layout, host: selected }: PluginSc
           host={host}
           styles={styles}
           theme={theme}
-          busy={busyId === host.registrationId}
+          busy={busy.has(host.registrationId)}
           onToggle={() =>
             run(
               host.registrationId,

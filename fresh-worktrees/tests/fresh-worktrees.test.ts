@@ -242,4 +242,63 @@ describe("worktree refresh", () => {
       }),
     ).resolves.toEqual({ kind: "unavailable" });
   });
+
+  test("does not share a refresh between callers with different signals", async () => {
+    const aborted = new AbortController();
+    let calls = 0;
+    const refresh = createRepositoryRefreshCoordinator(async (_cwd, _args, signal) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<string>((_resolve, reject) => {
+          if (signal.aborted) reject(new Error("aborted"));
+          signal.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      }
+      return "";
+    });
+
+    const first = refresh("/repo", "origin", null, null, aborted.signal);
+    const second = refresh("/repo", "origin", null, null, new AbortController().signal);
+    aborted.abort();
+
+    await expect(first).rejects.toThrow("aborted");
+    await expect(second).resolves.toEqual({ kind: "unchanged" });
+    expect(calls).toBe(2);
+  });
+
+  test("shares one refresh between callers with the same signal", async () => {
+    const signal = new AbortController().signal;
+    let calls = 0;
+    const refresh = createRepositoryRefreshCoordinator(async () => {
+      calls += 1;
+      return "";
+    });
+
+    const results = await Promise.all([
+      refresh("/repo", "origin", null, null, signal),
+      refresh("/repo", "origin", null, null, signal),
+    ]);
+
+    expect(results).toEqual([{ kind: "unchanged" }, { kind: "unchanged" }]);
+    expect(calls).toBe(1);
+  });
+
+  test("a later caller rejoins its own signal's run after another signal started one", async () => {
+    const signalA = new AbortController().signal;
+    const signalB = new AbortController().signal;
+    let calls = 0;
+    const refresh = createRepositoryRefreshCoordinator(async () => {
+      calls += 1;
+      return "";
+    });
+
+    const results = await Promise.all([
+      refresh("/repo", "origin", null, null, signalA),
+      refresh("/repo", "origin", null, null, signalB),
+      refresh("/repo", "origin", null, null, signalA),
+    ]);
+
+    expect(results).toEqual([{ kind: "unchanged" }, { kind: "unchanged" }, { kind: "unchanged" }]);
+    expect(calls).toBe(2);
+  });
 });

@@ -34,7 +34,7 @@ import {
   accountGroups,
   accountsPollInterval,
   balanceLine,
-  loginIsOpen,
+  loginIdToCancelOnClose,
   resetsLabel,
   signInProviders,
   usedPercent,
@@ -646,7 +646,8 @@ function SignInModal({
 
   function close() {
     closed.current = true;
-    if (login && loginIsOpen(login)) cancel({ store, loginId: login.id }).catch(() => undefined);
+    const loginId = loginIdToCancelOnClose(state.kind === "login" ? state.id : undefined, login);
+    if (loginId) cancel({ store, loginId }).catch(() => undefined);
     onClose();
   }
 
