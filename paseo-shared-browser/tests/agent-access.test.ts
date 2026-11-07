@@ -592,6 +592,26 @@ describe("agent shared-browser authorization", () => {
     }
   });
 
+  it("does not hold the bridge after a disconnect issued while connecting", async () => {
+    const root = await mkdtemp(join(tmpdir(), "shared-browser-disconnect-"));
+    const paths = resolveSupervisorPaths(root);
+    const server = await startSupervisorServer(new AgentRuntimeOwner(), paths);
+    const stopped = new SupervisorClient({ bridgeId: "stopped-bridge", paths });
+    const next = new SupervisorClient({ bridgeId: "next-bridge", paths });
+    try {
+      const connecting = stopped.connect();
+      stopped.disconnect();
+
+      await expect(connecting).rejects.toThrow();
+      await expect(next.connect()).resolves.toMatchObject({ bridgeId: "next-bridge" });
+    } finally {
+      stopped.disconnect();
+      next.disconnect();
+      await server.close().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a ticket bound to its assigned agent and workspace", async () => {
     const { owner, supervisor, bridge } = createHarness();
     const agentTicket = ticket("bound");
