@@ -105,7 +105,12 @@ from `/usr/bin/chromium`. Install a non-Snap Chromium build with the system pack
 adding the plugin. Set `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` to an absolute path when Chromium
 is installed elsewhere. The plugin does not emulate x64 Chromium on Linux.
 
-On Windows, the upstream installer retains its Chrome download cache under the OS user profile.
+Runtime preparation keeps no Chrome download cache. On every platform the upstream installer runs
+with a private home inside the staging directory, so each preparation downloads the current Chrome
+for Testing archive (about 200 MiB) and deletes the installer's copy after staging it. On a slow
+network that download can exceed the 180-second install timeout; set
+`PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` to an existing Chromium to skip it.
+
 Before upgrading the plugin on Windows, close active Shared Browser sessions and stop the Paseo
 daemon; Windows does not allow the installer to replace runtime executables that are still running.
 
