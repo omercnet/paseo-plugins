@@ -9,12 +9,14 @@ import {
   fetchAndIndexContextMode,
   type IndexPathInput,
   indexContextModePath,
+  type KnowledgeDestination,
   type KnowledgeToolResult,
   type PurgeKnowledgeInput,
   purgeContextModeKnowledge,
   type SearchKnowledgeInput,
   type SearchKnowledgeResult,
   type SearchPage,
+  sameDestination,
   searchContextModeKnowledge,
 } from "../shared/knowledge";
 import { CONTEXT_MODE_PROVIDERS, IN_PROCESS_PROVIDERS } from "../shared/providers";
@@ -61,12 +63,6 @@ const PURGE_CONSEQUENCE: Readonly<Record<PurgeScope, string>> = {
   session: "The session's recorded activity and resume state are deleted; indexed sources stay.",
   source: "Every agent working in this project loses it.",
 };
-
-/** The project store a knowledge action writes to, and the agent it is recorded as. */
-interface Destination {
-  provider: string;
-  projectPath: string;
-}
 
 type PurgeTarget =
   | { scope: "project" }
@@ -354,15 +350,14 @@ export function KnowledgeSection({ theme, host, initialScope, providers }: Knowl
   const [managementExpanded, setManagementExpanded] = useState(false);
   const busy = useIsMutating({ mutationKey: knowledgeMutationKey(host.id) }) > 0;
   const trimmedPath = projectPath.trim();
-  const destination: Destination | null =
+  const destination: KnowledgeDestination | null =
     provider !== null && trimmedPath ? { provider, projectPath: trimmedPath } : null;
   const destinationNote = destination
     ? `Current destination: the project store for ${destination.projectPath}, recorded as ${providerLabel(destination.provider)}.`
     : "Select an agent and absolute project path.";
   const providerOptions = providers.map((id) => ({ value: id, label: providerLabel(id) }));
-  // Results and More results belong to one destination, so a new agent or project starts fresh and
-  // a pending request for the old one lands in an unmounted card.
-  const workflowKey = `${provider ?? "none"}:${trimmedPath}`;
+  // Results belong to the agent they were recorded as, so a new agent starts the workflows fresh.
+  const workflowKey = provider ?? "none";
 
   return (
     <SettingsSection
@@ -428,7 +423,22 @@ export function KnowledgeSection({ theme, host, initialScope, providers }: Knowl
 interface WorkflowProps {
   theme: PluginTheme;
   hostId: string;
-  destination: Destination | null;
+  destination: KnowledgeDestination | null;
+}
+
+/** Result panel state for a mutation, shown only while its destination is still selected. */
+function forDestination(
+  mutation: {
+    variables?: KnowledgeDestination;
+    data?: KnowledgeToolResult;
+    error: unknown;
+    isPending: boolean;
+  },
+  destination: KnowledgeDestination | null,
+) {
+  return sameDestination(mutation.variables, destination)
+    ? { result: mutation.data, error: mutation.error, pending: mutation.isPending }
+    : { result: undefined, error: null, pending: false };
 }
 
 function SearchCard({ theme, hostId, destination }: WorkflowProps) {
@@ -450,6 +460,8 @@ function SearchCard({ theme, hostId, destination }: WorkflowProps) {
     onSuccess: (result) => setExtraPages((pages) => [...pages, result]),
   });
   const request = search.variables;
+  // Results stay with the project they came from; editing the path hides them but keeps the form.
+  const current = sameDestination(request, destination);
   const lastPage = extraPages.at(-1) ?? search.data;
   const nextPage = lastPage?.next ?? null;
   const trimmedQuery = query.trim();
@@ -522,22 +534,22 @@ function SearchCard({ theme, hostId, destination }: WorkflowProps) {
       <ResultPanel
         theme={theme}
         emptyLabel="No matching knowledge"
-        error={search.error}
-        pending={search.isPending}
-        result={search.data}
+        {...forDestination(search, destination)}
         source={request?.source}
       />
-      {extraPages.map((page, pageIndex) => (
-        <View
-          key={`${page.completedAt}:${pageIndex}`}
-          accessibilityLiveRegion="polite"
-          style={styles.result}
-        >
-          <Text style={styles.metaLabel}>Page {pageIndex + 2}</Text>
-          <OutputFrame theme={theme} output={page.output} emptyLabel="No more matches" />
-        </View>
-      ))}
-      {nextPage && !search.isPending ? (
+      {current
+        ? extraPages.map((page, pageIndex) => (
+            <View
+              key={`${page.completedAt}:${pageIndex}`}
+              accessibilityLiveRegion="polite"
+              style={styles.result}
+            >
+              <Text style={styles.metaLabel}>Page {pageIndex + 2}</Text>
+              <OutputFrame theme={theme} output={page.output} emptyLabel="No more matches" />
+            </View>
+          ))
+        : null}
+      {current && nextPage && !search.isPending ? (
         <ActionButton
           theme={theme}
           accessibilityLabel="Load more search results"
@@ -546,7 +558,7 @@ function SearchCard({ theme, hostId, destination }: WorkflowProps) {
           onPress={loadMore}
         />
       ) : null}
-      <ErrorText theme={theme} error={moreResults.error} />
+      {current ? <ErrorText theme={theme} error={moreResults.error} /> : null}
     </WorkflowCard>
   );
 }
@@ -600,9 +612,7 @@ function IndexPathCard({ theme, hostId, destination }: WorkflowProps) {
       <ResultPanel
         theme={theme}
         emptyLabel="No report"
-        error={index.error}
-        pending={index.isPending}
-        result={index.data}
+        {...forDestination(index, destination)}
         source={index.variables?.path}
       />
     </WorkflowCard>
@@ -648,9 +658,7 @@ function IndexUrlCard({ theme, hostId, destination }: WorkflowProps) {
       <ResultPanel
         theme={theme}
         emptyLabel="No report"
-        error={fetch.error}
-        pending={fetch.isPending}
-        result={fetch.data}
+        {...forDestination(fetch, destination)}
         source={fetch.variables?.url}
       />
     </WorkflowCard>
@@ -750,13 +758,7 @@ function PurgeCard({ theme, hostId, destination }: WorkflowProps) {
           onPress={() => setArmedFor(reviewKey)}
         />
       )}
-      <ResultPanel
-        theme={theme}
-        emptyLabel="Purged"
-        error={purge.error}
-        pending={purge.isPending}
-        result={purge.data}
-      />
+      <ResultPanel theme={theme} emptyLabel="Purged" {...forDestination(purge, destination)} />
     </WorkflowCard>
   );
 }

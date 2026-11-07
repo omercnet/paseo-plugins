@@ -9,6 +9,25 @@ const MAX_QUERY_LENGTH = 1_024;
 /** A Paseo provider id: a built-in or one configured in `agents.providers`. */
 export const KnowledgeProviderSchema = z.string().trim().min(1).max(128);
 
+/** The project store a knowledge action writes to, and the agent it is recorded as. */
+export interface KnowledgeDestination {
+  provider: string;
+  projectPath: string;
+}
+
+/** A finished action's result belongs to the destination it ran against, not to a later one. */
+export function sameDestination(
+  ran: KnowledgeDestination | undefined,
+  current: KnowledgeDestination | null,
+): boolean {
+  return (
+    ran !== undefined &&
+    current !== null &&
+    ran.provider === current.provider &&
+    ran.projectPath === current.projectPath
+  );
+}
+
 const boundedLabel = z.string().trim().min(1).max(MAX_LABEL_LENGTH);
 const absoluteLocalPath = z
   .string()

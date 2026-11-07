@@ -80,7 +80,7 @@ describe("provider-aware Context Mode activation", () => {
     });
   });
 
-  test("pins the data dir agents write to, honoring a provider or request override", async () => {
+  test("pins the data dir agents write to: the provider's, never a per-request one", async () => {
     const inject = async (
       env: Record<string, string> | undefined,
       providers: Record<string, { extends: string; env?: Record<string, string> }>,
@@ -109,7 +109,7 @@ describe("provider-aware Context Mode activation", () => {
         { CONTEXT_MODE_DATA_DIR: "/srv/request" },
         { "claude-work": { extends: "claude", env: { CONTEXT_MODE_DATA_DIR: "/srv/work" } } },
       ),
-    ).toEqual({ CONTEXT_MODE_DATA_DIR: "/srv/request" });
+    ).toEqual({ CONTEXT_MODE_DATA_DIR: "/srv/work" });
   });
 
   test("never replaces an explicitly configured Context Mode MCP server", async () => {

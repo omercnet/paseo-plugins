@@ -373,11 +373,12 @@ export async function injectContextModeOnCreate<T extends CreateRequest>(
   const server: McpServer = {
     type: "stdio",
     ...serverArgs(launch, platform),
-    // Agents may start with a different environment than this daemon; the panel reads this root.
+    // Agents may start with a different environment than this daemon. Pin the host or provider
+    // store, never a per-request one, so the dashboard, Resume and Forget reach what agents write.
     env: {
       ...launch.env,
       CONTEXT_MODE_DATA_DIR: resolveContextModeDataDir(
-        { ...(dependencies.env ?? process.env), ...env, ...request.env },
+        { ...(dependencies.env ?? process.env), ...env },
         dependencies.home ?? homedir(),
       ),
     },

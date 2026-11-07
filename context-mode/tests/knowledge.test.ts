@@ -10,6 +10,7 @@ import {
   KnowledgeToolResultSchema,
   PurgeKnowledgeInputSchema,
   SearchKnowledgeInputSchema,
+  sameDestination,
 } from "../shared/knowledge";
 import {
   type ContextModeSettings,
@@ -82,6 +83,17 @@ const found = {
   source: "settings" as const,
   launch: { program: "/bin/context-mode", args: [] },
 };
+
+describe("knowledge results", () => {
+  test("belong to the agent and project they ran against", () => {
+    const ran = { provider: "codex", projectPath: "/work/a" };
+    expect(sameDestination(ran, { provider: "codex", projectPath: "/work/a" })).toBe(true);
+    expect(sameDestination(ran, { provider: "codex", projectPath: "/work/b" })).toBe(false);
+    expect(sameDestination(ran, { provider: "claude", projectPath: "/work/a" })).toBe(false);
+    expect(sameDestination(ran, null)).toBe(false);
+    expect(sameDestination(undefined, ran)).toBe(false);
+  });
+});
 
 describe("knowledge RPC contracts", () => {
   test("search defaults to the worktree scope and rejects v1-only fields", () => {
