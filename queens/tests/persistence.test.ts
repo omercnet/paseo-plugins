@@ -220,6 +220,25 @@ describe("serialized game saves", () => {
     expect(session.getSnapshot().state.progress[0].history).toHaveLength(0);
   });
 
+  test("does not rewrite identical values when the host acks before the save resolves", async () => {
+    const transport = recordingSave();
+    const session = controller(transport.save);
+
+    session.dispatch({ type: "set-cells", indexes: [0], state: "marked", now: 10 });
+    expect(transport.calls).toHaveLength(1);
+
+    session.synchronize(transport.calls[0].values, "revision-2");
+    transport.calls[0].result.resolve(true);
+    await flushSaveCompletion();
+
+    expect(transport.calls).toHaveLength(1);
+    expect(session.getSnapshot().saving).toBe(false);
+
+    session.dispatch({ type: "set-cells", indexes: [1], state: "excluded", now: 20 });
+    expect(transport.calls).toHaveLength(2);
+    expect(transport.calls[1].revision).toBe("revision-2");
+  });
+
   test("hydrates a newer external revision when there is no local draft", () => {
     const transport = recordingSave();
     const session = controller(transport.save);

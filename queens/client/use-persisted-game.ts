@@ -394,6 +394,11 @@ export function createGamePersistenceController(
       publishSaving();
       return;
     }
+    if (sameGameSettings(pending.values, baseline)) {
+      pending = null;
+      publishSaving();
+      return;
+    }
     const nextPending = pending;
     const job: InFlightSave = { ...nextPending, epoch, revision };
     pending = null;
