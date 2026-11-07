@@ -603,7 +603,7 @@ describe("agent shared-browser authorization", () => {
       stopped.disconnect();
 
       await expect(connecting).rejects.toThrow();
-      await expect(next.connect()).resolves.toMatchObject({ bridgeId: "next-bridge" });
+      await expect(next.connect()).resolves.toMatchObject({ bridgeId: "next-bridge", epoch: 1 });
     } finally {
       stopped.disconnect();
       next.disconnect();
