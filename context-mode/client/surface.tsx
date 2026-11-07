@@ -59,10 +59,18 @@ function statusPresentation(status: BinaryStatus): Presentation {
   return { label: "Unavailable", tone: "warning" };
 }
 
-/** Context Mode 2.x serves only providers with an agent id; the rest never count toward coverage. */
+/** Providers the panel can search and index for: those Context Mode serves over MCP. */
 function supportedProviders(audit: IntegrationAudit | undefined): ProviderIntegration[] {
   if (!audit) return [];
   return audit.providers.filter(({ platform }) => platform !== null);
+}
+
+/** Coverage also counts hosts running their own Context Mode, like Pi's extension. */
+function coveredProviders(audit: IntegrationAudit | undefined): ProviderIntegration[] {
+  if (!audit) return [];
+  return audit.providers.filter(
+    ({ platform, activation }) => platform !== null || activation === "native",
+  );
 }
 
 export function ContextModeSurface({
@@ -255,7 +263,7 @@ function KnowledgePanel({
 }
 
 function coverageSummary(audit: IntegrationAudit | undefined): string {
-  const supported = supportedProviders(audit);
+  const supported = coveredProviders(audit);
   if (supported.length === 0) return "Coverage unavailable";
   const covered = supported.filter(({ activation }) => activation !== "disabled").length;
   return `${covered} of ${supported.length} providers covered`;
@@ -283,7 +291,7 @@ function HealthStrip({
   onOpenSettings,
 }: HealthStripProps) {
   const [expanded, setExpanded] = useState(false);
-  const supported = supportedProviders(audit);
+  const supported = coveredProviders(audit);
   const nativeCount = supported.filter(({ activation }) => activation === "native").length;
   const mcpCount = supported.filter(({ activation }) => activation === "mcp").length;
   const offCount = supported.length - nativeCount - mcpCount;
@@ -357,7 +365,8 @@ interface ProviderCoverageProps {
 }
 
 function ProviderCoverage({ provider, theme }: ProviderCoverageProps) {
-  const activation = provider.platform === null ? UNSUPPORTED : ACTIVATION[provider.activation];
+  const unsupported = provider.platform === null && provider.activation !== "native";
+  const activation = unsupported ? UNSUPPORTED : ACTIVATION[provider.activation];
   return (
     <StatusPill
       theme={theme}

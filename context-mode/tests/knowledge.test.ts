@@ -372,7 +372,7 @@ describe("knowledge handlers", () => {
     expect(options).toEqual([
       { platform: "claude-code", cwd: "/repo", dataDir: "/srv/context-work" },
     ]);
-    for (const provider of ["cursor", "pi", "omp", "omp-plugin", "cursor-work"]) {
+    for (const provider of ["cursor", "omp", "omp-plugin", "cursor-work"]) {
       await expect(handlers.search({ provider, ...search }, { paseo })).rejects.toThrow(
         `does not support provider ${provider}`,
       );
@@ -381,5 +381,33 @@ describe("knowledge handlers", () => {
       "does not support provider claude-work",
     );
     expect(options).toHaveLength(1);
+  });
+
+  test("reaches Pi's sessions through the panel's own agent, since `--agent pi` cannot run over MCP", async () => {
+    const options: unknown[] = [];
+    const handlers = createContextModeKnowledgeHandlers(settingsHandle(), {
+      env: {},
+      home: "/home/test",
+      resolveBinary: async () => found,
+      callTool: async (_launch, _name, _arguments, _dependencies, callOptions) => {
+        options.push(callOptions);
+        return "ok";
+      },
+    });
+    await handlers.resume({ provider: "pi", projectPath: "/repo", sessionId: "pi-session" });
+    await handlers.purge({
+      provider: "pi",
+      projectPath: "/repo",
+      confirm: true,
+      scope: "session",
+      sessionId: "pi-session",
+    });
+    expect(options).toEqual(
+      Array(2).fill({
+        platform: "claude-code",
+        cwd: "/repo",
+        dataDir: join("/home/test", ".context-mode"),
+      }),
+    );
   });
 });

@@ -266,6 +266,48 @@ describe("integration audit", () => {
     );
     expect(audit.providers.every(({ activation }) => activation === "disabled")).toBe(true);
   });
+
+  test("reports Pi's own extension and OMP's own server as native, never injected", async () => {
+    const piSettings = join("/srv/pi-agent", "settings.json");
+    const ompMcp = join("/home/test", ".omp", "agent", "mcp.json");
+    const audit = await createIntegrationAudit(settings, {
+      ...noNative,
+      env: { PI_CODING_AGENT_DIR: "/srv/pi-agent" },
+      fileContains: async (path, marker) =>
+        (path === piSettings && marker === "context-mode") ||
+        (path === ompMcp && marker === '"context-mode"'),
+    });
+    const row = (id: string) => audit.providers.find(({ provider }) => provider === id);
+    expect(row("pi")).toMatchObject({ platform: null, activation: "native" });
+    expect(row("cursor")).toMatchObject({ platform: null, activation: "disabled" });
+
+    // OMP honours the same agent-dir variable; without it OMP's default dir is probed.
+    const omp = await createIntegrationAudit(settings, {
+      ...noNative,
+      fileContains: async (path) => path === ompMcp,
+    });
+    expect(omp.providers.find(({ provider }) => provider === "omp")).toMatchObject({
+      activation: "native",
+    });
+    expect(omp.providers.find(({ provider }) => provider === "omp-plugin")).toMatchObject({
+      activation: "native",
+    });
+    expect(omp.providers.find(({ provider }) => provider === "pi")).toMatchObject({
+      activation: "disabled",
+    });
+  });
+
+  test("never injects into Pi or OMP agents, even with their own install present", async () => {
+    for (const provider of ["pi", "omp", "omp-plugin"]) {
+      const request = { config: { provider, cwd: "/work", mcpServers: {} } };
+      expect(
+        await injectContextModeOnCreate(request, settings, launch, {
+          ...noNative,
+          fileContains: async () => true,
+        }),
+      ).toBe(request);
+    }
+  });
 });
 
 describe("providers derived through extends", () => {

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import type { BinaryStatus, ContextModeRefreshInput, IntegrationAudit } from "../shared/contracts";
-import type { ContextModePlatform } from "../shared/providers";
+import { type ContextModePlatform, PANEL_PLATFORM } from "../shared/providers";
 import type { ContextModeSettings, contextModeSettings } from "../shared/settings";
 import { type BinaryResolution, type LaunchDescriptor, resolveContextModeBinary } from "./binary";
 import {
@@ -27,7 +27,7 @@ type FailureReport = Extract<BinaryStatus, { state: "unavailable" }>;
  * the user's stats clean.
  */
 export async function contextModeProbeOptions(
-  platform: ContextModePlatform = "claude-code",
+  platform: ContextModePlatform = PANEL_PLATFORM,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Required<ContextModeProcessOptions>> {
   const home = env.PASEO_HOME?.trim() || join(homedir(), ".paseo");

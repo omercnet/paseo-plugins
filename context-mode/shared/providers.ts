@@ -34,7 +34,29 @@ export function contextModePlatformFor(provider: ContextModeProvider): ContextMo
   return entry.platform;
 }
 
+interface InProcessEntry {
+  provider: string;
+  agent: string;
+  label: string;
+}
+
+/**
+ * Context Mode runs inside these hosts as an extension, so Paseo cannot inject it, but they record
+ * sessions in the same store under their own agent id.
+ */
+export const IN_PROCESS_PROVIDERS: readonly InProcessEntry[] = [
+  { provider: "pi", agent: "pi", label: "Pi" },
+];
+
+/**
+ * Agent id of the panel's own Context Mode process when no injectable agent applies: `--agent pi`
+ * cannot resolve a project over MCP, and the panel's calls are its own session anyway.
+ */
+export const PANEL_PLATFORM: ContextModePlatform = "claude-code";
+
 /** The Paseo provider that owns a Context Mode agent id recorded in a database, if any. */
-export function providerForPlatform(platform: string): ProviderEntry | null {
-  return CONTEXT_MODE_PROVIDERS.find((candidate) => candidate.platform === platform) ?? null;
+export function providerForPlatform(platform: string): { provider: string; label: string } | null {
+  const injected = CONTEXT_MODE_PROVIDERS.find((candidate) => candidate.platform === platform);
+  if (injected) return injected;
+  return IN_PROCESS_PROVIDERS.find((candidate) => candidate.agent === platform) ?? null;
 }

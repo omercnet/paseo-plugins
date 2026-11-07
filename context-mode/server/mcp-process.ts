@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { z } from "zod";
-import type { ContextModePlatform } from "../shared/providers";
+import { type ContextModePlatform, PANEL_PLATFORM } from "../shared/providers";
 import { type LaunchDescriptor, readContextModeVersion } from "./binary";
 
 export const PROCESS_OUTPUT_LIMIT = 192 * 1_024;
@@ -72,7 +72,7 @@ export const PLUGIN_SESSION_ID = "paseo-context-mode";
 
 const CORE_TOOLS = Object.keys(CONTEXT_MODE_TOOL_TIMEOUT_MS);
 
-const DEFAULT_OPTIONS: ContextModeProcessOptions = { platform: "claude-code" };
+const DEFAULT_OPTIONS: ContextModeProcessOptions = { platform: PANEL_PLATFORM };
 
 /** Command line that runs the stdio MCP server for one agent. */
 export function serverArgs(

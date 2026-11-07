@@ -17,7 +17,7 @@ import {
   type SearchPage,
   searchContextModeKnowledge,
 } from "../shared/knowledge";
-import { CONTEXT_MODE_PROVIDERS } from "../shared/providers";
+import { CONTEXT_MODE_PROVIDERS, IN_PROCESS_PROVIDERS } from "../shared/providers";
 import { ActionButton, Card, type ChoiceOption, Choices, ErrorText, Pending } from "./controls";
 import type { KnowledgeScope } from "./screen-scope";
 
@@ -28,7 +28,9 @@ export const BUILTIN_KNOWLEDGE_PROVIDERS: readonly string[] = CONTEXT_MODE_PROVI
 
 /** Built-in providers by name; configured providers (for example `claude-work`) by their id. */
 export function providerLabel(id: string): string {
-  const entry = CONTEXT_MODE_PROVIDERS.find(({ provider }) => provider === id);
+  const entry = [...CONTEXT_MODE_PROVIDERS, ...IN_PROCESS_PROVIDERS].find(
+    ({ provider }) => provider === id,
+  );
   return entry ? entry.label : id;
 }
 

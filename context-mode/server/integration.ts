@@ -13,19 +13,12 @@ import type { LaunchDescriptor } from "./binary";
 import { serverArgs } from "./mcp-process";
 import { resolveContextModeDataDir } from "./storage-discovery";
 
-/** Context Mode 2.x needs an in-process host context for these, so MCP injection cannot work. */
-const UNSUPPORTED_DETAIL: Readonly<Record<string, string>> = {
-  cursor:
-    "Context Mode 2.x has no Cursor integration, so nothing is injected. Its MCP server rejects every tool call without a supported agent.",
-  pi: "Context Mode 2.x runs inside Pi as an in-process extension, so no MCP server is injected. Install it natively with `pi install npm:context-mode`.",
-  omp: "Context Mode 2.x has no OMP integration, so nothing is injected. Its MCP server rejects every tool call without a supported agent.",
-  "omp-plugin":
-    "Context Mode 2.x has no OMP integration, so nothing is injected. Its MCP server rejects every tool call without a supported agent.",
-};
-
 const AUDITED_PROVIDERS = [
   ...CONTEXT_MODE_PROVIDERS.map(({ provider }) => provider),
-  ...Object.keys(UNSUPPORTED_DETAIL),
+  "cursor",
+  "pi",
+  "omp",
+  "omp-plugin",
 ];
 
 type McpServer = {
@@ -189,14 +182,13 @@ async function defaultFileContains(path: string, text: string): Promise<boolean>
   }
 }
 
-async function nativeIntegrationDetected(
-  platform: ContextModePlatform,
-  context: ProbeContext,
+async function anyProbeMatches(
+  probes: readonly NativeProbe[],
   dependencies: IntegrationDependencies,
 ): Promise<boolean> {
   const pathExists = dependencies.pathExists ?? defaultPathExists;
   const fileContains = dependencies.fileContains ?? defaultFileContains;
-  for (const probe of nativeProbes(platform, context)) {
+  for (const probe of probes) {
     if (
       probe.kind === "path"
         ? await pathExists(probe.path)
@@ -206,6 +198,84 @@ async function nativeIntegrationDetected(
     }
   }
   return false;
+}
+
+function nativeIntegrationDetected(
+  platform: ContextModePlatform,
+  context: ProbeContext,
+  dependencies: IntegrationDependencies,
+): Promise<boolean> {
+  return anyProbeMatches(nativeProbes(platform, context), dependencies);
+}
+
+/** Providers Paseo cannot inject: their own Context Mode install is reported, nothing more. */
+interface HostOnlyPolicy {
+  probes(context: ProbeContext): NativeProbe[];
+  installed: string;
+  missing: string;
+}
+
+function piProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
+  // `pi install npm:context-mode` lists the package in Pi's settings, user or project level.
+  const agentDir = env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
+  const probes: NativeProbe[] = [
+    { kind: "file", path: join(agentDir, "settings.json"), marker: "context-mode" },
+  ];
+  if (cwd)
+    probes.push({ kind: "file", path: join(cwd, ".pi", "settings.json"), marker: "context-mode" });
+  return probes;
+}
+
+function ompProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
+  const agentDir = env.PI_CODING_AGENT_DIR || join(home, ".omp", "agent");
+  const probes: NativeProbe[] = [
+    { kind: "file", path: join(agentDir, "mcp.json"), marker: '"context-mode"' },
+  ];
+  if (cwd)
+    probes.push({ kind: "file", path: join(cwd, ".omp", "mcp.json"), marker: '"context-mode"' });
+  return probes;
+}
+
+const OMP_POLICY: HostOnlyPolicy = {
+  probes: ompProbes,
+  installed:
+    "OMP loads its own Context Mode server from its MCP config, so Paseo injects nothing. Context Mode 2 has no OMP integration (upstream keeps OMP on 1.0.169), so OMP's sessions are not shown here.",
+  missing:
+    "Context Mode 2 has no OMP integration, so Paseo injects nothing. Upstream keeps OMP on Context Mode 1.0.169, installed through OMP's own plugins.",
+};
+
+const HOST_ONLY: Readonly<Record<string, HostOnlyPolicy>> = {
+  pi: {
+    probes: piProbes,
+    installed:
+      "Context Mode runs inside Pi as its own extension, so Paseo injects nothing. Pi records its sessions in the shared store, so they appear in Savings.",
+    missing:
+      "Context Mode 2 runs inside Pi only as an extension, so Paseo cannot inject it. Install it in Pi with `pi install npm:context-mode`.",
+  },
+  omp: OMP_POLICY,
+  "omp-plugin": OMP_POLICY,
+};
+
+const UNSUPPORTED_DETAIL: Readonly<Record<string, string>> = {
+  cursor: "Context Mode 2 dropped Cursor, so nothing is injected.",
+};
+
+async function hostOnlyIntegration(
+  base: string,
+  context: ProbeContext,
+  dependencies: IntegrationDependencies,
+): Promise<Pick<ProviderIntegration, "activation" | "detail"> | null> {
+  if (Object.hasOwn(HOST_ONLY, base)) {
+    const policy = HOST_ONLY[base];
+    const installed = await anyProbeMatches(policy.probes(context), dependencies);
+    return installed
+      ? { activation: "native", detail: policy.installed }
+      : { activation: "disabled", detail: policy.missing };
+  }
+  if (Object.hasOwn(UNSUPPORTED_DETAIL, base)) {
+    return { activation: "disabled", detail: UNSUPPORTED_DETAIL[base] };
+  }
+  return null;
 }
 
 const ACTIVATION_DETAIL: Readonly<Record<ProviderIntegration["activation"], string>> = {
@@ -228,14 +298,12 @@ export async function createIntegrationAudit(
   for (const provider of [...AUDITED_PROVIDERS, ...derived]) {
     const { base, platform, env } = resolveProvider(provider, configured);
     if (platform === null) {
-      if (Object.hasOwn(UNSUPPORTED_DETAIL, base)) {
-        providers.push({
-          provider,
-          platform,
-          activation: "disabled",
-          detail: UNSUPPORTED_DETAIL[base],
-        });
-      }
+      const row = await hostOnlyIntegration(
+        base,
+        { home, env: { ...hostEnvironment, ...env } },
+        dependencies,
+      );
+      if (row) providers.push({ provider, platform, ...row });
       continue;
     }
     const nativeChecked = settings.autoInject && settings.preferNativeIntegrations;

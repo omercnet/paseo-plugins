@@ -11,6 +11,7 @@ import type {
   SearchKnowledgeResult,
   SearchPage,
 } from "../shared/knowledge";
+import { IN_PROCESS_PROVIDERS, PANEL_PLATFORM } from "../shared/providers";
 import type { contextModeSettings } from "../shared/settings";
 import { type LaunchDescriptor, resolveContextModeBinary } from "./binary";
 import { type ProviderConfigSource, readProviderOverrides, resolveProvider } from "./integration";
@@ -97,11 +98,15 @@ export function createContextModeKnowledgeHandlers(
     context: KnowledgeContext | undefined,
   ): Promise<KnowledgeToolResult> {
     // A configured provider inherits its parent's agent id; its own env may move the data dir.
-    const { platform, env: providerEnv } = resolveProvider(
-      provider,
-      await readProviderOverrides(context?.paseo),
-    );
-    if (platform === null) throw new Error(`Context Mode does not support provider ${provider}.`);
+    const {
+      base,
+      platform,
+      env: providerEnv,
+    } = resolveProvider(provider, await readProviderOverrides(context?.paseo));
+    const inProcess = IN_PROCESS_PROVIDERS.some((entry) => entry.provider === base);
+    if (platform === null && !inProcess) {
+      throw new Error(`Context Mode does not support provider ${provider}.`);
+    }
     const launch = await launchDescriptor(context?.paseo);
     const output = await callTool(
       launch,
@@ -109,7 +114,7 @@ export function createContextModeKnowledgeHandlers(
       arguments_,
       {},
       {
-        platform,
+        platform: platform ?? PANEL_PLATFORM,
         cwd: projectPath,
         dataDir: resolveContextModeDataDir({ ...env, ...providerEnv }, home),
       },
