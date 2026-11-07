@@ -13,6 +13,7 @@ import {
   CONTEXT_MODE_TOOL_TIMEOUT_MS,
   callContextModeTool,
   inspectContextMode,
+  type McpInspection,
   serverArgs,
 } from "../server/mcp-process";
 import {
@@ -618,6 +619,35 @@ describe("RPC behavior", () => {
     expect(status).toMatchObject({ state: "ready", version: "2.1.4" });
     expect(refreshedStatus).toMatchObject({ state: "ready", version: "2.1.4" });
     expect(inspections).toBe(2);
+  });
+
+  test("a slow failed probe does not evict a newer fresh status", async () => {
+    const settings = ContextModeSettingsSchema.parse({});
+    const slowProbe = Promise.withResolvers<McpInspection>();
+    const inspect = vi
+      .fn()
+      .mockReturnValueOnce(slowProbe.promise)
+      .mockResolvedValue({ version: "2.1.4", tools: ALL_TOOLS });
+    const handlers = createContextModeHandlers(settingsHandle(settings), {
+      now: () => new Date("2026-09-20T00:00:00.000Z"),
+      resolveBinary: async () => ({
+        state: "found",
+        path: "/bin/context-mode",
+        source: "settings",
+        launch: launch("/bin/context-mode"),
+      }),
+      probeOptions: async () => PROBE,
+      inspect,
+    });
+
+    const slow = handlers.status({ fresh: false });
+    const refreshed = await handlers.status({ fresh: true });
+    slowProbe.reject(new Error("probe failed"));
+
+    await expect(slow).resolves.toMatchObject({ state: "unavailable", code: "command-failed" });
+    await expect(handlers.status({ fresh: false })).resolves.toEqual(refreshed);
+    expect(refreshed).toMatchObject({ state: "ready", version: "2.1.4" });
+    expect(inspect).toHaveBeenCalledTimes(2);
   });
 
   test("keeps probe stores and cwd under PASEO_HOME, never the user's data dir", async () => {
