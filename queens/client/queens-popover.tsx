@@ -85,15 +85,16 @@ function QueensPopoverGame({
   const state = session.status === "ready" ? session.state : null;
   const puzzle = state?.puzzles[state.activePuzzleIndex];
   const progress = state?.progress[state.activePuzzleIndex];
+  const dispatch = session.status === "ready" ? session.dispatch : null;
   const timerRunning = progress?.timer.startedAt !== null && progress?.timer.completedAt === null;
 
   useEffect(() => {
-    if (session.status !== "ready" || !timerRunning) return;
+    if (!dispatch || !timerRunning) return;
     const interval = setInterval(() => {
-      session.dispatch({ type: "tick", now: Date.now() });
+      dispatch({ type: "tick", now: Date.now() });
     }, 1_000);
     return () => clearInterval(interval);
-  }, [session, timerRunning]);
+  }, [dispatch, timerRunning]);
 
   if (session.status === "loading") {
     return (
