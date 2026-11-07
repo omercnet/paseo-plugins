@@ -141,7 +141,7 @@ function ReadyContextModeSettings({ settings, theme }: ReadyContextModeSettingsP
       <SettingsSection title="Display">
         <SettingsCard>
           <SettingsSelect
-            label="Refresh interval"
+            label="Status refresh interval"
             value={refreshValue(settings.values.refreshIntervalMs)}
             options={REFRESH_OPTIONS}
             disabled={settings.saving}
@@ -150,7 +150,7 @@ function ReadyContextModeSettings({ settings, theme }: ReadyContextModeSettingsP
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Safety">
+      <SettingsSection title="Storage">
         <SettingsCard>
           <SettingsRow
             label="Storage"

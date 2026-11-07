@@ -44,7 +44,7 @@ export function contributeContextModeComposerPills(client: PluginClientContext):
       workspaceId: agent.workspaceId,
       agentId: agent.id,
       button: {
-        title: "View Context Mode status",
+        title: "Open Context Mode knowledge",
         icon: "Gauge",
         label: "Context Mode",
         behavior: {

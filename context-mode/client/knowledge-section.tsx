@@ -330,7 +330,7 @@ export interface KnowledgeSectionProps extends Pick<PluginSurfaceProps, "theme" 
 }
 
 function initialProvider(scope: KnowledgeScope | undefined, providers: readonly string[]) {
-  if (!scope) return "claude";
+  if (!scope) return providers.includes("claude") ? "claude" : null;
   if (scope.provider !== null && providers.includes(scope.provider)) return scope.provider;
   return null;
 }
@@ -338,7 +338,7 @@ function initialProvider(scope: KnowledgeScope | undefined, providers: readonly 
 function scopeNote(scope: KnowledgeScope | undefined, providers: readonly string[]) {
   if (scope?.note) return scope.note;
   if (!scope?.provider || providers.includes(scope.provider)) return null;
-  return `Provider ${scope.provider} is not supported by Context Mode 2. Select a supported agent.`;
+  return `Knowledge needs an agent Paseo can run Context Mode for, and ${scope.provider} is not one. Select another agent.`;
 }
 
 export function KnowledgeSection({ theme, host, initialScope, providers }: KnowledgeSectionProps) {
@@ -355,7 +355,7 @@ export function KnowledgeSection({ theme, host, initialScope, providers }: Knowl
     provider !== null && trimmedPath ? { provider, projectPath: trimmedPath } : null;
   const destinationNote = destination
     ? `Current destination: the project store for ${destination.projectPath}, recorded as ${providerLabel(destination.provider)}.`
-    : "Select an agent and absolute project path. No destination is selected by default.";
+    : "Select an agent and absolute project path.";
   const providerOptions = providers.map((id) => ({ value: id, label: providerLabel(id) }));
   // Results belong to the agent they were recorded as, so a new agent starts the workflows fresh.
   const workflowKey = provider ?? "none";
@@ -363,7 +363,7 @@ export function KnowledgeSection({ theme, host, initialScope, providers }: Knowl
   return (
     <SettingsSection
       title="Knowledge"
-      info="Search or add material in the Context Mode store of one project. Every agent working in that project shares it; the agent only labels who added what."
+      info="Search or add material in the Context Mode store of one project. Every agent working in that project shares it and the agent labels who added what. A provider with its own CONTEXT_MODE_DATA_DIR uses the store in that directory."
     >
       <View style={{ gap: 16 }}>
         <Card theme={theme}>
@@ -771,6 +771,7 @@ function ForgetButton({ theme, host, provider, projectPath, target }: ForgetProp
   const refreshAnalytics = useRefreshAnalytics(host.id);
   const [armed, setArmed] = useState(false);
   const forget = useMutation({
+    mutationKey: knowledgeMutationKey(host.id),
     mutationFn: (input: PurgeKnowledgeInput) => purgeKnowledge(input),
     onSuccess: refreshAnalytics,
     onSettled: () => setArmed(false),

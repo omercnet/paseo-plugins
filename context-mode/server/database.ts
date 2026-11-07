@@ -33,11 +33,14 @@ const REQUIRED_SCHEMA: Record<string, readonly string[]> = {
 const CALL = "tool IS NOT NULL AND kind <> 'cost' AND tool <> 'ctx_stats'";
 /** The panel's own calls (search, index, resume, forget) are not agent work and stay out of every figure. */
 const AGENT_WORK = `session_id <> '${PLUGIN_SESSION_ID}'`;
+/** Mirrors upstream `ctx_stats` event kinds: cost rows and ctx_stats itself are bookkeeping. */
+const EVENT_COUNT =
+  "SUM(CASE WHEN kind <> 'cost' AND (tool IS NULL OR tool <> 'ctx_stats') THEN 1 ELSE 0 END)";
 /** Savings are clamped per (session, agent), exactly as `ctx_stats` sums its scope rows. */
 const SESSION_GROUPS = `SELECT
     session_id,
     agent,
-    COUNT(*) AS events,
+    ${EVENT_COUNT} AS events,
     SUM(CASE WHEN ${CALL} THEN 1 ELSE 0 END) AS calls,
     SUM(CASE WHEN ${CALL} THEN sandbox_bytes ELSE 0 END) AS produced,
     SUM(CASE WHEN ${CALL} THEN returned_bytes ELSE 0 END) AS returned,
@@ -109,7 +112,7 @@ const SOURCES = `SELECT agent, worktree, label, kind, bytes_total, chunk_count, 
   FROM sources
   ORDER BY created_ts DESC, id DESC
   LIMIT ?`;
-const RECENT_SESSIONS = `SELECT session_id, agent, worktree, COUNT(*) AS events, MAX(created_at) AS last
+const RECENT_SESSIONS = `SELECT session_id, agent, worktree, ${EVENT_COUNT} AS events, MAX(created_at) AS last
   FROM events
   WHERE ${AGENT_WORK}
   GROUP BY session_id, agent, worktree
