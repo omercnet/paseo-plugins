@@ -96,6 +96,8 @@ export class SupervisorClient {
       socket.once("connect", () => resolve(socket));
       socket.once("error", reject);
     });
+    // disconnect() had no socket to destroy while this attempt was still connecting.
+    if (this.closed) throw new Error("Supervisor client disconnected while connecting");
     this.socket.setEncoding("utf8");
     this.socket.on("data", (chunk: string) => this.consume(chunk));
     this.socket.once("close", () => this.handleClose(new Error("Supervisor connection closed")));
