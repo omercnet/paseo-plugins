@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import type {
   AgentAnalytics,
@@ -166,11 +167,16 @@ export async function collectContextModeAnalytics(
   const providers = dependencies.providers ?? {};
   const dataDirOf = (id: string) =>
     resolveContextModeDataDir({ ...env, ...resolveProvider(id, providers).env }, home);
+  // Symlinked aliases of one directory must not count its databases twice.
+  const canonical = (dir: string) => realpath(dir).catch(() => dir);
   // A configured provider's own CONTEXT_MODE_DATA_DIR is where its injected agents write.
-  const dataDirs = new Set([
-    resolveContextModeDataDir(env, home),
-    ...Object.keys(providers).map(dataDirOf),
-  ]);
+  const dataDirs = new Set(
+    await Promise.all(
+      [resolveContextModeDataDir(env, home), ...Object.keys(providers).map(dataDirOf)].map(
+        canonical,
+      ),
+    ),
+  );
   // Resume and Forget run through a provider, so each row names one that reaches its store,
   // preferring the provider that recorded it.
   const actionable = [
@@ -181,10 +187,13 @@ export async function collectContextModeAnalytics(
       return platform !== null || IN_PROCESS_PROVIDERS.some((entry) => entry.provider === base);
     }),
   ];
+  const storeOf = new Map(
+    await Promise.all(actionable.map(async (id) => [id, await canonical(dataDirOf(id))] as const)),
+  );
   const storeProvider = (agent: string, dataDir: string): string | null => {
     const own = providerForPlatform(agent)?.provider;
     const candidates = own ? [own, ...actionable] : actionable;
-    return candidates.find((id) => dataDirOf(id) === dataDir) ?? null;
+    return candidates.find((id) => storeOf.get(id) === dataDir) ?? null;
   };
   const warnings = new WarningCollector();
   const databases: (ContextModeProjectDatabase & { dataDir: string })[] = [];

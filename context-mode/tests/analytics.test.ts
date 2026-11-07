@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -469,6 +469,25 @@ describe("structured Context Mode analytics", () => {
 
     expect(result.completeness).toBe("complete");
     expect(result.byProject.map((project) => project.path)).toEqual(["/work/b", "/work/a"]);
+  });
+
+  test("counts a store once when a provider reaches it through a symlink", async () => {
+    const hostDir = await temporaryDataDir();
+    const alias = join(await temporaryDataDir(), "alias");
+    await symlink(hostDir, alias, "junction");
+    await createDatabase(hostDir, "1111111111111111", {
+      worktree: "/work/a",
+      events: [singleCall("mcp:a", "codex", 1_000, 200)],
+    });
+
+    const result = await collectContextModeAnalytics({
+      env: { CONTEXT_MODE_DATA_DIR: hostDir },
+      home: "/nonexistent-home",
+      providers: { codex: { env: { CONTEXT_MODE_DATA_DIR: alias } } },
+    });
+
+    expect(result.totals).toMatchObject({ projects: 1, sessions: 1, toolCalls: 1 });
+    expect(result.recentSessions.map((session) => session.provider)).toEqual(["codex"]);
   });
 
   test("routes each row's Resume and Forget to a provider that reaches its store", async () => {
