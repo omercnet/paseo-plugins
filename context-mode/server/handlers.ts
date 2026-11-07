@@ -145,7 +145,9 @@ export function createContextModeHandlers(
     const value = load();
     cache.set(key, { expiresAt: timestamp + ttlMs, value });
     const result = await value;
-    if (result.state === "unavailable" && result.code !== "not-installed") cache.delete(key);
+    if (result.state === "unavailable" && result.code !== "not-installed") {
+      if (cache.get(key)?.value === value) cache.delete(key);
+    }
     return result;
   }
 
