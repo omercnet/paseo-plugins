@@ -222,6 +222,7 @@ export async function readContextModeVersion(
   } catch {
     // Unknown version: not treated as 1.x.
   }
-  if (mtimeMs !== undefined) cliVersions.set(entry, { mtimeMs, version });
+  // An unknown version is not cached: a timed-out probe must not let a 1.x binary past the gate.
+  if (mtimeMs !== undefined && version !== null) cliVersions.set(entry, { mtimeMs, version });
   return version;
 }

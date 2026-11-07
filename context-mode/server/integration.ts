@@ -173,17 +173,30 @@ async function defaultPathExists(path: string): Promise<boolean> {
   }
 }
 
+/** Scan results per (path, marker); audit polls and agent creation repeat the same probes. */
+const fileScans = new Map<string, { mtimeMs: number; size: number; found: boolean }>();
+
 /** Streams the file, so a large `~/.claude.json` is still searched without loading it whole. */
 async function defaultFileContains(path: string, text: string): Promise<boolean> {
   try {
-    if (!(await stat(path)).isFile()) return false;
+    const metadata = await stat(path);
+    if (!metadata.isFile()) return false;
+    const { mtimeMs, size } = metadata;
+    const key = `${path}\0${text}`;
+    const cached = fileScans.get(key);
+    if (cached?.mtimeMs === mtimeMs && cached.size === size) return cached.found;
+    let found = false;
     let tail = "";
     for await (const chunk of createReadStream(path, { encoding: "utf8" })) {
       const window = tail + chunk;
-      if (window.includes(text)) return true;
+      if (window.includes(text)) {
+        found = true;
+        break;
+      }
       tail = window.slice(window.length - text.length + 1);
     }
-    return false;
+    fileScans.set(key, { mtimeMs, size, found });
+    return found;
   } catch {
     return false;
   }

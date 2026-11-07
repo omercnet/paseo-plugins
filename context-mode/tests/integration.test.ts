@@ -182,15 +182,23 @@ describe("native registration detection", () => {
 
   test("finds the Claude user MCP entry at the end of a ~/.claude.json over 1 MiB", async () => {
     const home = await mkdtemp(join(tmpdir(), "paseo-context-mode-home-"));
+    const create = () => {
+      const request = { config: { provider: "claude", mcpServers: {} } };
+      return injectContextModeOnCreate(request, settings, launch, { home, env: {} }).then(
+        (result) => result === request,
+      );
+    };
     try {
       const history = JSON.stringify("x".repeat(2 * 1024 * 1024));
+      await writeFile(join(home, ".claude.json"), `{"history":${history}}`);
+      expect(await create()).toBe(false);
+
+      // A later native install is seen even though the earlier scan was a miss.
       await writeFile(
         join(home, ".claude.json"),
         `{"history":${history},"mcpServers":{"context-mode":{}}}`,
       );
-      const request = { config: { provider: "claude", mcpServers: {} } };
-      const result = await injectContextModeOnCreate(request, settings, launch, { home, env: {} });
-      expect(result).toBe(request);
+      expect(await create()).toBe(true);
     } finally {
       await rm(home, { recursive: true, force: true });
     }

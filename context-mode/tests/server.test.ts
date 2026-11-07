@@ -269,6 +269,17 @@ describe("Context Mode runtime resolution", () => {
     expect(await runs()).toBe(2);
   });
 
+  test("asks --version again after a failed probe instead of caching the miss", async () => {
+    const program = await executable(
+      `const fs = require("node:fs"); const marker = __filename + ".ran";
+      if (!fs.existsSync(marker)) { fs.writeFileSync(marker, ""); process.exit(1); }
+      console.log("context-mode 1.0.169");`,
+    );
+
+    await expect(readContextModeVersion(launch(program))).resolves.toBeNull();
+    await expect(readContextModeVersion(launch(program))).resolves.toBe("1.0.169");
+  });
+
   test("launches the bundled runtime as Node when the host is Electron", async () => {
     const { paseo, cli } = await pluginInstall();
     const result = await resolveContextModeBinary(ContextModeSettingsSchema.parse({}), {
