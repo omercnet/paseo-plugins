@@ -52,27 +52,50 @@ vi.mock("../client/hosts", async (importActual) => ({
 
 import { ConnectedHostsScreen } from "../client/screen";
 
-type Props = { host?: { registrationId: string }; busy?: boolean; onToggle?: () => void };
-type El = { props?: Props & { children?: unknown } } | unknown[] | null | undefined | string;
+type Props = Record<string, unknown> & { children?: unknown };
+type El = { type?: unknown; props?: Props } | unknown[] | null | undefined | string;
+type Component = (props: Props) => El;
 
-function cards(node: El, out: Props[] = []): Props[] {
-  if (Array.isArray(node)) for (const child of node) cards(child as El, out);
+function collect(
+  node: El,
+  match: (props: Props) => boolean,
+  out: Array<{ type: Component; props: Props }> = [],
+) {
+  if (Array.isArray(node)) for (const child of node) collect(child as El, match, out);
   else if (node && typeof node === "object" && node.props) {
-    if (node.props.host) out.push(node.props);
-    cards(node.props.children as El, out);
+    if (match(node.props)) out.push(node as { type: Component; props: Props });
+    collect(node.props.children as El, match, out);
   }
   return out;
 }
 
 function render() {
   state.index = 0;
-  return cards(
-    ConnectedHostsScreen({
-      theme: { colors: {} },
-      layout: { compact: false },
-      host: { label: "x" },
-    } as unknown as PluginScreenProps) as El,
-  );
+  return ConnectedHostsScreen({
+    theme: { colors: {} },
+    layout: { compact: false },
+    host: { label: "x" },
+  } as unknown as PluginScreenProps) as El;
+}
+
+// Expand each HostCard, then each Action, down to the Pressable and read its disabled prop.
+function rows() {
+  return collect(render(), (props) => "host" in props).map((card) => {
+    const actions = collect(
+      card.type(card.props),
+      (props) => "onPress" in props && "label" in props,
+    );
+    return {
+      onToggle: card.props.onToggle as () => Promise<void>,
+      disabled: actions.map((action) => {
+        const [pressable] = collect(
+          action.type(action.props),
+          (props) => "accessibilityRole" in props,
+        );
+        return pressable.props.disabled;
+      }),
+    };
+  });
 }
 
 describe("ConnectedHostsScreen busy tracking", () => {
@@ -81,18 +104,28 @@ describe("ConnectedHostsScreen busy tracking", () => {
     state.update.mockImplementation(() => new Promise<void>((resolve) => pending.push(resolve)));
     state.rerender = () => {};
 
-    const [a, b] = render();
-    const runA = a.onToggle?.();
-    const runB = b.onToggle?.();
-    const busy = () => render().map((card) => card.busy);
-    expect(busy()).toEqual([true, true]);
+    const [a, b] = rows();
+    expect(a.disabled).toEqual([false, false, false]);
+    const runA = a.onToggle();
+    const runB = b.onToggle();
+    const disabled = () => rows().map((row) => row.disabled);
+    expect(disabled()).toEqual([
+      [true, true, true],
+      [true, true, true],
+    ]);
 
     pending[0]();
     await runA;
-    expect(busy()).toEqual([false, true]);
+    expect(disabled()).toEqual([
+      [false, false, false],
+      [true, true, true],
+    ]);
 
     pending[1]();
     await runB;
-    expect(busy()).toEqual([false, false]);
+    expect(disabled()).toEqual([
+      [false, false, false],
+      [false, false, false],
+    ]);
   });
 });
