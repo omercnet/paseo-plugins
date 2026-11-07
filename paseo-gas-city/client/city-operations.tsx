@@ -392,15 +392,6 @@ export function CityOperations({
   const [interactionResponse, setInteractionResponse] = useState<InteractionResponse>("allow");
   const [eventCursor, setEventCursor] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!slingIntent) return;
-    setDispatchBeadId(slingIntent.beadId);
-    setDispatchAgent(slingIntent.agent);
-    setDispatchDraftError(slingIntent.parseError);
-    setDispatchOpen(true);
-    onDismissSlingIntent?.(slingIntent.id);
-  }, [onDismissSlingIntent, slingIntent]);
-
   const scope = useMemo(() => ({ cityName, rigName }), [cityName, rigName]);
   const queryRoot = useMemo(
     () => cityQueryRoot(host.id, settings.endpointUrl, cityName, rigName),
@@ -517,6 +508,15 @@ export function CityOperations({
       await queryClient.invalidateQueries({ queryKey: queryRoot });
     },
   });
+
+  useEffect(() => {
+    if (!slingIntent || dispatchMutation.isPending) return;
+    setDispatchBeadId(slingIntent.beadId);
+    setDispatchAgent(slingIntent.agent);
+    setDispatchDraftError(slingIntent.parseError);
+    setDispatchOpen(true);
+    onDismissSlingIntent?.(slingIntent.id);
+  }, [dispatchMutation.isPending, onDismissSlingIntent, slingIntent]);
 
   const sessionMutation = useMutation({
     mutationFn: async () => {
