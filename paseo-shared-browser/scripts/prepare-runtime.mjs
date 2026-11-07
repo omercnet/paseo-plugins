@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
 import { installChromiumRelease } from "./chromium-release.mjs";
-import { replaceRuntime } from "./replace-runtime.mjs";
+import { discardRuntime, replaceRuntime } from "./replace-runtime.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -234,9 +234,9 @@ try {
   }
 } catch (error) {
   // A failed preparation must not leave a partial runtime, which can hold a Chromium download.
-  await rm(stagingRoot, { recursive: true, force: true });
-  throw error;
+  await discardRuntime(stagingRoot, error);
 }
+// Outside the cleanup: replaceRuntime can reject after publishing, when the stage is the live runtime.
 await replaceRuntime(stagingRoot, runtimeRoot);
 
 console.log(`Prepared immutable Shared Browser runtime assets in ${stagingRoot}`);
