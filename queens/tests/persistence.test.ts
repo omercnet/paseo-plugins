@@ -314,6 +314,21 @@ describe("serialized game saves", () => {
     expect(session.getSnapshot().state.progress[0].cells[4]).toBe("empty");
     expect(session.getSnapshot().saveError).toBeNull();
   });
+  test("clears the save error when the draft returns to the stored values", async () => {
+    const transport = recordingSave();
+    const session = controller(transport.save);
+
+    session.dispatch({ type: "set-cells", indexes: [4], state: "excluded", now: 10 });
+    transport.calls[0].result.resolve(false);
+    await flushSaveCompletion();
+    expect(session.getSnapshot().saveError).not.toBeNull();
+
+    session.dispatch({ type: "reset", now: 20 });
+
+    expect(transport.calls).toHaveLength(1);
+    expect(session.getSnapshot().saving).toBe(false);
+    expect(session.getSnapshot().saveError).toBeNull();
+  });
 
   test("tracks hint usage and only records unassisted completions", async () => {
     const unassistedTransport = recordingSave();

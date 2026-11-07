@@ -396,6 +396,8 @@ export function createGamePersistenceController(
     }
     if (sameGameSettings(pending.values, baseline)) {
       pending = null;
+      blocked = false;
+      publish({ saveError: null });
       publishSaving();
       return;
     }
