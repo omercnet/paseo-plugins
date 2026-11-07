@@ -34,6 +34,19 @@ export function takeAgentFocus(): string | null {
   return id;
 }
 
+/**
+ * The agent a deep link should focus: the pending request or the screen param,
+ * whichever is in the roster first. A stale pending id (archived or absent
+ * agent) must not shadow a valid param.
+ */
+export function resolveDeepFocus(
+  pending: string | null,
+  param: string | undefined,
+  entryIds: readonly string[],
+): string | null {
+  return [pending, param].find((id) => id && entryIds.includes(id)) ?? null;
+}
+
 export function requestAgentOpen(request: AgentOpenRequest): void {
   pendingOpen = { ...request };
 }
