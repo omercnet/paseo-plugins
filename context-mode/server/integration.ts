@@ -1,29 +1,26 @@
-import { readFile, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
-import type { ContextModeSettings, IntegrationAudit, ProviderIntegration } from "../shared";
+import { join } from "node:path";
+import type { IntegrationAudit, ProviderIntegration } from "../shared/contracts";
+import {
+  CONTEXT_MODE_PROVIDERS,
+  type ContextModePlatform,
+  ContextModeProviderSchema,
+  contextModePlatformFor,
+} from "../shared/providers";
+import type { ContextModeSettings } from "../shared/settings";
 import type { LaunchDescriptor } from "./binary";
+import { serverArgs } from "./mcp-process";
+import { resolveContextModeDataDir } from "./storage-discovery";
 
 const AUDITED_PROVIDERS = [
-  "claude",
-  "codex",
-  "copilot",
+  ...CONTEXT_MODE_PROVIDERS.map(({ provider }) => provider),
   "cursor",
-  "opencode",
   "pi",
   "omp",
   "omp-plugin",
-] as const;
-
-type AuditedProvider = (typeof AUDITED_PROVIDERS)[number];
-type ContextModePlatform =
-  | "claude-code"
-  | "codex"
-  | "copilot-cli"
-  | "cursor"
-  | "opencode"
-  | "pi"
-  | "omp";
+];
 
 type McpServer = {
   type: "stdio";
@@ -42,17 +39,10 @@ type CreateRequest = {
   env?: Readonly<Record<string, string>>;
 };
 
-type SessionOpenRequest = {
-  provider: string;
-  cwd?: string;
-  env: Readonly<Record<string, string>>;
-};
-
 export interface IntegrationDependencies {
   home?: string;
   pathExists?: (path: string) => Promise<boolean>;
   fileContains?: (path: string, text: string) => Promise<boolean>;
-  now?: () => Date;
   env?: NodeJS.ProcessEnv;
   providers?: ProviderOverrides;
 }
@@ -67,9 +57,9 @@ export interface ProviderConfigSource {
 }
 
 /**
- * Reads `agents.providers` from the daemon. Paseo applies a provider's own `env` and `extends`
- * after the `agent.create` hook runs, so the hooks must look them up to find the right storage.
- * Failures degrade to "no overrides" (canonical provider behavior).
+ * Reads `agents.providers` from the daemon so a derived provider (`extends`) maps like its parent
+ * and its own `env` (for example `CODEX_HOME`) locates its native config. Failures degrade to
+ * "no overrides" (canonical provider behavior).
  */
 export async function readProviderOverrides(
   paseo: ProviderConfigSource | undefined,
@@ -102,13 +92,26 @@ export async function readProviderOverrides(
   }
 }
 
-export interface ContextModeStorageOptions {
-  home?: string;
-  cwd?: string;
-  env?: Readonly<Record<string, string | undefined>>;
+/**
+ * Mirrors Paseo's single-level `extends`: a derived provider maps like its parent, and its
+ * effective env is the parent's override env overlaid with its own. `platform` is null when
+ * Context Mode 2 cannot serve the provider over MCP.
+ */
+export function resolveProvider(
+  id: string,
+  providers: ProviderOverrides,
+): { base: string; platform: ContextModePlatform | null; env: Record<string, string> } {
+  const own = Object.hasOwn(providers, id) ? providers[id] : undefined;
+  const parent = own?.extends ?? id;
+  const inherited =
+    parent !== id && Object.hasOwn(providers, parent) ? providers[parent] : undefined;
+  const base = parent.startsWith("omp-plugin-") ? "omp-plugin" : parent;
+  const supported = ContextModeProviderSchema.safeParse(base);
+  const platform = supported.success ? contextModePlatformFor(supported.data) : null;
+  return { base, platform, env: { ...inherited?.env, ...own?.env } };
 }
 
-type ProviderContext = {
+type ProbeContext = {
   home: string;
   cwd?: string;
   env: Readonly<Record<string, string | undefined>>;
@@ -116,194 +119,49 @@ type ProviderContext = {
 
 type NativeProbe = { kind: "path"; path: string } | { kind: "file"; path: string; marker: string };
 
-type ProviderPolicy = {
-  platform: ContextModePlatform;
-  storageRoot: (context: ProviderContext) => string;
-  nativeProbes: (context: ProviderContext) => readonly NativeProbe[];
-};
-
-function configuredRoot(
-  value: string | undefined,
-  fallback: string,
-  { home, cwd }: Pick<ProviderContext, "home" | "cwd">,
-): string {
-  const candidate = value?.trim();
-  if (!candidate) return fallback;
-  if (candidate === "~") return home;
-  if (candidate.startsWith("~/") || candidate.startsWith("~\\")) {
-    return join(home, candidate.slice(2));
-  }
-  return isAbsolute(candidate) ? candidate : resolve(cwd ?? home, candidate);
-}
-
-function claudeRoot(context: ProviderContext): string {
-  return configuredRoot(context.env.CLAUDE_CONFIG_DIR, join(context.home, ".claude"), context);
-}
-
-function codexRoot(context: ProviderContext): string {
-  return configuredRoot(context.env.CODEX_HOME, join(context.home, ".codex"), context);
-}
-
-function copilotRoot(context: ProviderContext): string {
-  return configuredRoot(context.env.COPILOT_HOME, join(context.home, ".copilot"), context);
-}
-
-function opencodeRoot(context: ProviderContext): string {
-  const configHome = configuredRoot(
-    context.env.XDG_CONFIG_HOME,
-    join(context.home, ".config"),
-    context,
-  );
-  return join(configHome, "opencode");
-}
-
-function ompAgentRoot(context: ProviderContext): string {
-  return configuredRoot(
-    context.env.PI_CODING_AGENT_DIR,
-    join(context.home, ".omp", "agent"),
-    context,
-  );
-}
-
-function projectProbe(context: ProviderContext, ...segments: string[]): NativeProbe[] {
-  return context.cwd
-    ? [{ kind: "file", path: join(context.cwd, ...segments), marker: "context-mode" }]
-    : [];
-}
-
-const OMP_POLICY: ProviderPolicy = {
-  platform: "omp",
-  storageRoot: ({ home }) => join(home, ".omp", "context-mode"),
-  nativeProbes: (context) => [
-    ...projectProbe(context, ".omp", "mcp.json"),
-    { kind: "file", path: join(ompAgentRoot(context), "mcp.json"), marker: "context-mode" },
-    {
-      kind: "file",
-      path: join(context.home, ".omp", "plugins", "package.json"),
-      marker: '"context-mode"',
-    },
-    { kind: "path", path: join(context.home, ".omp", "plugins", "node_modules", "context-mode") },
-  ],
-};
-
-const PROVIDER_POLICIES: Readonly<Record<Exclude<AuditedProvider, "omp-plugin">, ProviderPolicy>> =
-  {
-    claude: {
-      platform: "claude-code",
-      storageRoot: (context) => join(claudeRoot(context), "context-mode"),
-      nativeProbes: (context) => [
-        {
-          kind: "file",
-          path: join(claudeRoot(context), "settings.json"),
-          marker: "context-mode",
-        },
-        { kind: "file", path: join(context.home, ".claude.json"), marker: "context-mode" },
-        {
-          kind: "file",
-          path: join(claudeRoot(context), "plugins", "installed_plugins.json"),
-          marker: "context-mode",
-        },
-        { kind: "path", path: join(claudeRoot(context), "plugins", "cache", "context-mode") },
-      ],
-    },
-    codex: {
-      platform: "codex",
-      storageRoot: (context) => join(codexRoot(context), "context-mode"),
-      nativeProbes: (context) => {
-        const configPath = join(codexRoot(context), "config.toml");
-        return [
-          { kind: "file", path: configPath, marker: '[plugins."context-mode@context-mode"]' },
-          { kind: "file", path: configPath, marker: "[mcp_servers.context-mode]" },
-        ];
-      },
-    },
-    copilot: {
-      platform: "copilot-cli",
-      storageRoot: (context) => join(copilotRoot(context), "context-mode"),
-      nativeProbes: (context) => [
-        {
-          kind: "file",
-          path: join(copilotRoot(context), "mcp-config.json"),
-          marker: "context-mode",
-        },
-      ],
-    },
-    cursor: {
-      platform: "cursor",
-      storageRoot: ({ home }) => join(home, ".cursor", "context-mode"),
-      nativeProbes: (context) => [
-        ...projectProbe(context, ".cursor", "mcp.json"),
-        {
-          kind: "file",
-          path: join(context.home, ".cursor", "mcp.json"),
-          marker: "context-mode",
-        },
-        {
-          kind: "path",
-          path: join(context.home, ".cursor", "plugins", "local", "context-mode"),
-        },
-      ],
-    },
-    opencode: {
-      platform: "opencode",
-      storageRoot: (context) => join(opencodeRoot(context), "context-mode"),
-      nativeProbes: (context) => [
-        ...(context.cwd
-          ? [
-              "opencode.jsonc",
-              "opencode.json",
-              join(".opencode", "opencode.jsonc"),
-              join(".opencode", "opencode.json"),
-            ].map(
-              (path): NativeProbe => ({
-                kind: "file",
-                path: join(context.cwd as string, path),
-                marker: "context-mode",
-              }),
-            )
-          : []),
-        {
-          kind: "file",
-          path: join(opencodeRoot(context), "opencode.jsonc"),
-          marker: "context-mode",
-        },
-        {
-          kind: "file",
-          path: join(opencodeRoot(context), "opencode.json"),
-          marker: "context-mode",
-        },
-      ],
-    },
-    pi: {
-      platform: "pi",
-      storageRoot: ({ home }) => join(home, ".pi", "context-mode"),
-      nativeProbes: ({ home }) => [
-        { kind: "file", path: join(home, ".pi", "agent", "settings.json"), marker: "context-mode" },
-        { kind: "path", path: join(home, ".pi", "extensions", "context-mode", "package.json") },
-      ],
-    },
-    omp: OMP_POLICY,
-  };
-
-function providerPolicy(provider: string): ProviderPolicy | null {
-  if (provider === "omp-plugin" || provider.startsWith("omp-plugin-")) return OMP_POLICY;
-  return Object.hasOwn(PROVIDER_POLICIES, provider)
-    ? PROVIDER_POLICIES[provider as keyof typeof PROVIDER_POLICIES]
-    : null;
-}
-
 /**
- * Mirrors Paseo's single-level `extends`: a derived provider uses its parent's policy, and its
- * effective env is the parent's override env overlaid with its own.
+ * Where `context-mode setup` (or the agent's own plugin install) registers Context Mode, with
+ * config homes resolved as setup resolves them (an empty variable means unset).
  */
-export function resolveProvider(
-  id: string,
-  providers: ProviderOverrides = {},
-): { base: string; policy: ProviderPolicy | null; env: Record<string, string> } {
-  const own = Object.hasOwn(providers, id) ? providers[id] : undefined;
-  const base = own?.extends ?? id;
-  const parent = base !== id && Object.hasOwn(providers, base) ? providers[base] : undefined;
-  return { base, policy: providerPolicy(base), env: { ...parent?.env, ...own?.env } };
+function nativeProbes(platform: ContextModePlatform, { home, cwd, env }: ProbeContext) {
+  const probes: NativeProbe[] = [];
+  const file = (path: string, marker = "context-mode") =>
+    probes.push({ kind: "file", path, marker });
+  switch (platform) {
+    case "claude-code": {
+      const claude = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+      file(join(claude, "plugins", "installed_plugins.json"), '"context-mode@context-mode"');
+      file(join(claude, "settings.json"), '"context-mode@context-mode"');
+      file(join(home, ".claude.json"), '"context-mode":');
+      break;
+    }
+    case "codex": {
+      const config = join(env.CODEX_HOME || join(home, ".codex"), "config.toml");
+      file(config, "[mcp_servers.context-mode]");
+      file(config, '[plugins."context-mode@context-mode"]');
+      break;
+    }
+    case "copilot-cli": {
+      const copilot = env.COPILOT_HOME || join(home, ".copilot");
+      file(join(copilot, "mcp-config.json"), '"context-mode"');
+      probes.push({ kind: "path", path: join(copilot, "hooks", "context-mode.json") });
+      break;
+    }
+    case "opencode": {
+      const opencode =
+        env.OPENCODE_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(home, ".config"), "opencode");
+      const names = ["opencode.jsonc", "opencode.json"];
+      for (const name of names) file(join(opencode, name));
+      if (cwd) {
+        for (const name of names) {
+          file(join(cwd, name));
+          file(join(cwd, ".opencode", name));
+        }
+      }
+      break;
+    }
+  }
+  return probes;
 }
 
 async function defaultPathExists(path: string): Promise<boolean> {
@@ -315,131 +173,172 @@ async function defaultPathExists(path: string): Promise<boolean> {
   }
 }
 
+/** Scan results per (path, marker); audit polls and agent creation repeat the same probes. */
+const fileScans = new Map<string, { mtimeMs: number; size: number; found: boolean }>();
+
+/** Streams the file, so a large `~/.claude.json` is still searched without loading it whole. */
 async function defaultFileContains(path: string, text: string): Promise<boolean> {
   try {
     const metadata = await stat(path);
-    if (!metadata.isFile() || metadata.size > 1024 * 1024) return false;
-    return (await readFile(path, "utf8")).includes(text);
+    if (!metadata.isFile()) return false;
+    const { mtimeMs, size } = metadata;
+    const key = `${path}\0${text}`;
+    const cached = fileScans.get(key);
+    if (cached?.mtimeMs === mtimeMs && cached.size === size) return cached.found;
+    let found = false;
+    let tail = "";
+    for await (const chunk of createReadStream(path, { encoding: "utf8" })) {
+      const window = tail + chunk;
+      if (window.includes(text)) {
+        found = true;
+        break;
+      }
+      tail = window.slice(window.length - text.length + 1);
+    }
+    fileScans.set(key, { mtimeMs, size, found });
+    return found;
   } catch {
     return false;
   }
 }
 
-async function nativeIntegrationDetected(
-  policy: ProviderPolicy,
-  context: ProviderContext,
-  pathExists: (path: string) => Promise<boolean>,
-  fileContains: (path: string, text: string) => Promise<boolean>,
+async function anyProbeMatches(
+  probes: readonly NativeProbe[],
+  dependencies: IntegrationDependencies,
 ): Promise<boolean> {
-  for (const probe of policy.nativeProbes(context)) {
-    if (probe.kind === "path") {
-      if (await pathExists(probe.path)) return true;
-    } else if (await fileContains(probe.path, probe.marker)) {
+  const pathExists = dependencies.pathExists ?? defaultPathExists;
+  const fileContains = dependencies.fileContains ?? defaultFileContains;
+  for (const probe of probes) {
+    if (
+      probe.kind === "path"
+        ? await pathExists(probe.path)
+        : await fileContains(probe.path, probe.marker)
+    ) {
       return true;
     }
   }
   return false;
 }
 
-function serverEnvironment(
-  policy: ProviderPolicy,
-  storageRoot: string,
-  explicitEnvironment: Readonly<Record<string, string>> = {},
-): Record<string, string> {
-  return {
-    CONTEXT_MODE_PLATFORM: explicitEnvironment.CONTEXT_MODE_PLATFORM ?? policy.platform,
-    CONTEXT_MODE_DIR: explicitEnvironment.CONTEXT_MODE_DIR ?? storageRoot,
-  };
+function nativeIntegrationDetected(
+  platform: ContextModePlatform,
+  context: ProbeContext,
+  dependencies: IntegrationDependencies,
+): Promise<boolean> {
+  return anyProbeMatches(nativeProbes(platform, context), dependencies);
 }
 
-function providerContext(
-  home: string,
-  cwd: string | undefined,
-  env: Readonly<Record<string, string | undefined>> | undefined,
-): ProviderContext {
-  return { home, cwd, env: env ?? {} };
+/** Providers Paseo cannot inject: their own Context Mode install is reported, nothing more. */
+interface HostOnlyPolicy {
+  probes(context: ProbeContext): NativeProbe[];
+  installed: string;
+  missing: string;
 }
 
-export function contextModeStorageRootFor(
-  provider: string,
-  options: ContextModeStorageOptions = {},
-): string | null {
-  const policy = providerPolicy(provider);
-  if (!policy) return null;
-  const home = options.home ?? homedir();
-  const context = providerContext(home, options.cwd, options.env);
-  const explicitRoot = options.env?.CONTEXT_MODE_DIR?.trim();
-  if (explicitRoot && isAbsolute(explicitRoot)) return resolve(explicitRoot);
-  const dataRoot = options.env?.CONTEXT_MODE_DATA_DIR?.trim();
-  if (dataRoot && isAbsolute(dataRoot)) return join(resolve(dataRoot), "context-mode");
-  return policy.storageRoot(context);
+function piProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
+  // `pi install npm:context-mode` lists the package in Pi's settings, user or project level.
+  const agentDir = env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
+  const probes: NativeProbe[] = [
+    { kind: "file", path: join(agentDir, "settings.json"), marker: "context-mode" },
+  ];
+  if (cwd)
+    probes.push({ kind: "file", path: join(cwd, ".pi", "settings.json"), marker: "context-mode" });
+  return probes;
 }
+
+function ompProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
+  const agentDir = env.PI_CODING_AGENT_DIR || join(home, ".omp", "agent");
+  const probes: NativeProbe[] = [
+    { kind: "file", path: join(agentDir, "mcp.json"), marker: '"context-mode"' },
+  ];
+  if (cwd)
+    probes.push({ kind: "file", path: join(cwd, ".omp", "mcp.json"), marker: '"context-mode"' });
+  return probes;
+}
+
+const OMP_POLICY: HostOnlyPolicy = {
+  probes: ompProbes,
+  installed:
+    "OMP loads its own Context Mode server from its MCP config, so Paseo injects nothing. Context Mode 2 has no OMP integration (upstream keeps OMP on 1.0.169), so OMP's sessions are not shown here.",
+  missing:
+    "Context Mode 2 has no OMP integration, so Paseo injects nothing. Upstream keeps OMP on Context Mode 1.0.169, installed through OMP's own plugins.",
+};
+
+const HOST_ONLY: Readonly<Record<string, HostOnlyPolicy>> = {
+  pi: {
+    probes: piProbes,
+    installed:
+      "Context Mode runs inside Pi as its own extension, so Paseo injects nothing. Pi records its sessions in the shared store, so they appear in Savings.",
+    missing:
+      "Context Mode 2 runs inside Pi only as an extension, so Paseo cannot inject it. Install it in Pi with `pi install npm:context-mode`.",
+  },
+  omp: OMP_POLICY,
+  "omp-plugin": OMP_POLICY,
+};
+
+const UNSUPPORTED_DETAIL: Readonly<Record<string, string>> = {
+  cursor: "Context Mode 2 dropped Cursor, so nothing is injected.",
+};
+
+async function hostOnlyIntegration(
+  base: string,
+  context: ProbeContext,
+  dependencies: IntegrationDependencies,
+): Promise<Pick<ProviderIntegration, "activation" | "detail"> | null> {
+  if (Object.hasOwn(HOST_ONLY, base)) {
+    const policy = HOST_ONLY[base];
+    const installed = await anyProbeMatches(policy.probes(context), dependencies);
+    return installed
+      ? { activation: "native", detail: policy.installed }
+      : { activation: "disabled", detail: policy.missing };
+  }
+  if (Object.hasOwn(UNSUPPORTED_DETAIL, base)) {
+    return { activation: "disabled", detail: UNSUPPORTED_DETAIL[base] };
+  }
+  return null;
+}
+
+const ACTIVATION_DETAIL: Readonly<Record<ProviderIntegration["activation"], string>> = {
+  native:
+    "Context Mode is already registered natively for this provider, so duplicate MCP injection is disabled. Already-running agents may need a provider refresh or restart to load it.",
+  mcp: "The Context Mode MCP server is injected only when a new Paseo agent is created. Existing agents keep their saved MCP configuration and must be recreated or configured manually to gain its tools.",
+  disabled:
+    "Automatic activation is disabled. Existing and new agents keep their current MCP configuration.",
+};
 
 export async function createIntegrationAudit(
   settings: ContextModeSettings,
-  runtime: { path: string; version: string | null },
   dependencies: IntegrationDependencies = {},
 ): Promise<IntegrationAudit> {
   const home = dependencies.home ?? homedir();
-  const pathExists = dependencies.pathExists ?? defaultPathExists;
-  const fileContains = dependencies.fileContains ?? defaultFileContains;
   const hostEnvironment = dependencies.env ?? process.env;
-  const nativeByPolicy = new Map<string, Promise<boolean>>();
-  const detectNative = (
-    policy: ProviderPolicy,
-    env: Readonly<Record<string, string | undefined>>,
-    key: string,
-  ) => {
-    const cacheKey = `${policy.platform}\0${key}`;
-    const existing = nativeByPolicy.get(cacheKey);
-    if (existing) return existing;
-    const detected = nativeIntegrationDetected(
-      policy,
-      providerContext(home, undefined, env),
-      pathExists,
-      fileContains,
-    );
-    nativeByPolicy.set(cacheKey, detected);
-    return detected;
-  };
   const configured = dependencies.providers ?? {};
-  const derived = Object.keys(configured).filter(
-    (id) => !(AUDITED_PROVIDERS as readonly string[]).includes(id),
-  );
+  const derived = Object.keys(configured).filter((id) => !AUDITED_PROVIDERS.includes(id));
   const providers: ProviderIntegration[] = [];
   for (const provider of [...AUDITED_PROVIDERS, ...derived]) {
-    const { base, policy, env: providerEnv } = resolveProvider(provider, configured);
-    if (!policy) continue;
-    const env = { ...hostEnvironment, ...providerEnv };
-    const storageRoot = contextModeStorageRootFor(base, { home, env });
-    if (!storageRoot) continue;
-    const reusesExistingStorage = await pathExists(storageRoot);
+    const { base, platform, env } = resolveProvider(provider, configured);
+    if (platform === null) {
+      const row = await hostOnlyIntegration(
+        base,
+        { home, env: { ...hostEnvironment, ...env } },
+        dependencies,
+      );
+      if (row) providers.push({ provider, platform, ...row });
+      continue;
+    }
+    const nativeChecked = settings.autoInject && settings.preferNativeIntegrations;
     const native =
-      settings.autoInject &&
-      settings.preferNativeIntegrations &&
-      (await detectNative(policy, env, JSON.stringify(providerEnv)));
-    const activation = !settings.autoInject ? "disabled" : native ? "native" : "mcp";
-    providers.push({
-      provider,
-      platform: policy.platform,
-      activation,
-      storageRoot,
-      reusesExistingStorage,
-      detail:
-        activation === "native"
-          ? "An existing native Context Mode registration was found in an authoritative provider config location, so duplicate MCP injection is disabled. Already-running agents may need a provider refresh or restart to load it."
-          : activation === "mcp"
-            ? "The bundled Context Mode MCP server is injected only when a new Paseo agent is created. Existing agents keep their saved MCP configuration and must be recreated or configured manually to gain its tools."
-            : "Automatic activation is disabled. Existing and new agents keep their current MCP configuration.",
-    });
+      nativeChecked &&
+      (await nativeIntegrationDetected(
+        platform,
+        { home, env: { ...hostEnvironment, ...env } },
+        dependencies,
+      ));
+    let activation: ProviderIntegration["activation"] = "disabled";
+    if (settings.autoInject) activation = native ? "native" : "mcp";
+    providers.push({ provider, platform, activation, detail: ACTIVATION_DETAIL[activation] });
   }
-  return {
-    runtimePath: runtime.path,
-    runtimeVersion: runtime.version,
-    injectionEnabled: settings.autoInject,
-    providers,
-    checkedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
-  };
+  return { providers };
 }
 
 export async function injectContextModeOnCreate<T extends CreateRequest>(
@@ -455,70 +354,40 @@ export async function injectContextModeOnCreate<T extends CreateRequest>(
   ) {
     return request;
   }
-  const {
-    base,
-    policy,
-    env: providerEnv,
-  } = resolveProvider(request.config.provider, dependencies.providers);
-  if (!policy) return request;
-  const home = dependencies.home ?? homedir();
-  const hostEnvironment = dependencies.env ?? process.env;
-  const pathExists = dependencies.pathExists ?? defaultPathExists;
-  const fileContains = dependencies.fileContains ?? defaultFileContains;
-  const env = { ...hostEnvironment, ...providerEnv, ...request.env };
+  const { platform, env } = resolveProvider(request.config.provider, dependencies.providers ?? {});
+  if (platform === null) return request;
   if (
     settings.preferNativeIntegrations &&
     (await nativeIntegrationDetected(
-      policy,
-      providerContext(home, request.config.cwd, env),
-      pathExists,
-      fileContains,
+      platform,
+      {
+        home: dependencies.home ?? homedir(),
+        cwd: request.config.cwd,
+        env: { ...(dependencies.env ?? process.env), ...env, ...request.env },
+      },
+      dependencies,
     ))
   ) {
     return request;
   }
-  const storageRoot = contextModeStorageRootFor(base, { home, cwd: request.config.cwd, env });
-  if (!storageRoot) return request;
   const server: McpServer = {
     type: "stdio",
-    command: launch.program,
-    args: launch.args,
-    env: { ...serverEnvironment(policy, storageRoot, request.env), ...launch.env },
+    ...serverArgs(launch, platform),
+    // Agents may start with a different environment than this daemon. Pin the host or provider
+    // store, never a per-request one, so the dashboard, Resume and Forget reach what agents write.
+    env: {
+      ...launch.env,
+      CONTEXT_MODE_DATA_DIR: resolveContextModeDataDir(
+        { ...(dependencies.env ?? process.env), ...env },
+        dependencies.home ?? homedir(),
+      ),
+    },
   };
   return {
     ...request,
     config: {
       ...request.config,
       mcpServers: { ...request.config.mcpServers, "context-mode": server },
-    },
-  };
-}
-
-export async function injectContextModeEnvironment<T extends SessionOpenRequest>(
-  request: T,
-  settings: ContextModeSettings,
-  dependencies: IntegrationDependencies = {},
-): Promise<T> {
-  if (!settings.autoInject) return request;
-  const {
-    base,
-    policy,
-    env: providerEnv,
-  } = resolveProvider(request.provider, dependencies.providers);
-  if (!policy) return request;
-  const home = dependencies.home ?? homedir();
-  const hostEnvironment = dependencies.env ?? process.env;
-  const storageRoot = contextModeStorageRootFor(base, {
-    home,
-    cwd: request.cwd,
-    env: { ...hostEnvironment, ...providerEnv, ...request.env },
-  });
-  if (!storageRoot) return request;
-  return {
-    ...request,
-    env: {
-      ...serverEnvironment(policy, storageRoot),
-      ...request.env,
     },
   };
 }

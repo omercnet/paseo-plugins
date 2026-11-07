@@ -1,5 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import type { LaunchDescriptor } from "./binary";
+import { z } from "zod";
+import { type ContextModePlatform, PANEL_PLATFORM } from "../shared/providers";
+import { type LaunchDescriptor, readContextModeVersion } from "./binary";
 
 export const PROCESS_OUTPUT_LIMIT = 192 * 1_024;
 export const PROCESS_TIMEOUT_MS = 12_000;
@@ -33,9 +35,15 @@ export interface McpProcessDependencies {
   spawnProcess?: typeof spawn;
   timeoutMs?: number;
   outputLimit?: number;
-  env?: NodeJS.ProcessEnv;
-  cwd?: string;
   terminationGraceMs?: number;
+  readVersion?: (launch: LaunchDescriptor) => Promise<string | null>;
+}
+
+/** `--agent` label, project cwd (Context Mode keys its store by cwd) and optional data dir. */
+export interface ContextModeProcessOptions {
+  platform: ContextModePlatform;
+  cwd?: string;
+  dataDir?: string;
 }
 
 export type McpJsonValue =
@@ -48,87 +56,107 @@ export type McpJsonValue =
 
 export type McpToolArguments = Readonly<Record<string, McpJsonValue>>;
 
-export type ContextModeToolName =
-  | "ctx_doctor"
-  | "ctx_stats"
-  | "ctx_upgrade"
-  | "ctx_search"
-  | "ctx_index"
-  | "ctx_fetch_and_index"
-  | "ctx_purge";
-
-export const CONTEXT_MODE_TOOL_TIMEOUT_MS: Readonly<Record<ContextModeToolName, number>> = {
-  ctx_doctor: 15_000,
-  ctx_stats: 15_000,
-  ctx_search: 20_000,
+export const CONTEXT_MODE_TOOL_TIMEOUT_MS = {
   ctx_index: 120_000,
-  ctx_fetch_and_index: 45_000,
+  ctx_search: 20_000,
+  ctx_resume: 20_000,
+  ctx_doctor: 30_000,
   ctx_purge: 120_000,
-  ctx_upgrade: 120_000,
-};
+} as const;
 
-type JsonRpcResponse = {
-  id?: number;
-  result?: unknown;
-  error?: { code?: number; message?: string };
-};
+/** The tools the plugin calls; a runtime missing any of them (Context Mode 1.x) is unsupported. */
+export type ContextModeToolName = keyof typeof CONTEXT_MODE_TOOL_TIMEOUT_MS;
+
+/** Every plugin-initiated call shares this journal session, so it never shows up as agent work. */
+export const PLUGIN_SESSION_ID = "paseo-context-mode";
+
+const CORE_TOOLS = Object.keys(CONTEXT_MODE_TOOL_TIMEOUT_MS);
+
+const DEFAULT_OPTIONS: ContextModeProcessOptions = { platform: PANEL_PLATFORM };
+
+/** Command line that runs the stdio MCP server for one agent. */
+export function serverArgs(
+  launch: LaunchDescriptor,
+  platform: ContextModePlatform,
+): { command: string; args: string[] } {
+  return { command: launch.program, args: [...launch.args, "server", "--agent", platform] };
+}
+
+const JsonRpcResponseSchema = z.looseObject({
+  id: z.number().optional(),
+  result: z.unknown().optional(),
+  error: z.looseObject({ code: z.number().optional(), message: z.string().optional() }).optional(),
+});
+
+type JsonRpcResponse = z.infer<typeof JsonRpcResponseSchema>;
+
+interface McpRequest {
+  method: "tools/list" | "tools/call";
+  params: Record<string, McpJsonValue>;
+}
 
 function safeMessage(value: unknown): string {
   if (value instanceof Error && value.message) return value.message;
   return String(value);
 }
 
+const ToolResultSchema = z.looseObject({
+  content: z.array(z.looseObject({ type: z.string().optional(), text: z.unknown() })).optional(),
+  structuredContent: z.unknown().optional(),
+  isError: z.boolean().optional(),
+});
+
 function extractToolOutput(result: unknown): string {
-  if (!result || typeof result !== "object") {
+  const parsed = ToolResultSchema.safeParse(result);
+  if (!parsed.success) {
     throw new ProcessFailure("protocol-error", "Context Mode returned an invalid tool result.");
   }
-  const value = result as {
-    content?: Array<{ type?: string; text?: unknown }>;
-    structuredContent?: unknown;
-    isError?: boolean;
-  };
-  const text = value.content
-    ?.filter((item) => item?.type === "text" && typeof item.text === "string")
-    .map((item) => item.text as string)
+  const { content = [], structuredContent, isError } = parsed.data;
+  const text = content
+    .flatMap((item) => (item.type === "text" && typeof item.text === "string" ? [item.text] : []))
     .join("\n");
-  const output =
-    text && text.trim().length > 0
-      ? text
-      : value.structuredContent === undefined
-        ? ""
-        : JSON.stringify(value.structuredContent, null, 2);
-  if (value.isError) {
+  let output = text;
+  if (text.trim().length === 0) {
+    output = structuredContent === undefined ? "" : JSON.stringify(structuredContent, null, 2);
+  }
+  if (isError) {
     throw new ProcessFailure("command-failed", output || "Context Mode reported a tool error.");
   }
   return output;
 }
 
-async function exchange(
+/** One MCP session: initialize, send `request`, and parse its result. */
+async function exchange<T>(
   launch: LaunchDescriptor,
-  operation:
-    | { kind: "inspect" }
-    | { kind: "tool"; name: ContextModeToolName; arguments: McpToolArguments },
+  request: McpRequest,
+  parseResult: (result: unknown) => T,
+  defaultTimeoutMs: number,
   dependencies: McpProcessDependencies,
-): Promise<McpInspection | string> {
+  options: ContextModeProcessOptions,
+): Promise<T> {
   const spawnProcess = dependencies.spawnProcess ?? spawn;
-  const timeoutMs =
-    dependencies.timeoutMs ??
-    (operation.kind === "tool" ? CONTEXT_MODE_TOOL_TIMEOUT_MS[operation.name] : PROCESS_TIMEOUT_MS);
+  const timeoutMs = dependencies.timeoutMs ?? defaultTimeoutMs;
   const terminationGraceMs = dependencies.terminationGraceMs ?? PROCESS_TERMINATION_GRACE_MS;
   const outputLimit = dependencies.outputLimit ?? PROCESS_OUTPUT_LIMIT;
 
-  const { promise, resolve, reject } = Promise.withResolvers<McpInspection | string>();
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
+  const { command, args } = serverArgs(launch, options.platform);
+  const env = {
+    ...launch.env,
+    ...(options.dataDir ? { CONTEXT_MODE_DATA_DIR: options.dataDir } : {}),
+    // Claude Code resolves its project from this variable before cwd.
+    ...(options.platform === "claude-code" && options.cwd
+      ? { CLAUDE_PROJECT_DIR: options.cwd }
+      : {}),
+  };
   let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawnProcess(launch.program, launch.args, {
+    child = spawnProcess(command, args, {
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      cwd: dependencies.cwd,
-      env:
-        launch.env || dependencies.env
-          ? { ...process.env, ...launch.env, ...dependencies.env }
-          : undefined,
+      cwd: options.cwd,
+      env: Object.keys(env).length > 0 ? { ...process.env, ...env } : undefined,
     });
   } catch (error) {
     throw new ProcessFailure(
@@ -142,7 +170,6 @@ async function exchange(
   let stderrBytes = 0;
   let lineBuffer = "";
   let stderr = "";
-  let version: string | null = null;
 
   const finish = (callback: () => void) => {
     if (settled) return;
@@ -263,7 +290,7 @@ async function exchange(
       if (!line.trim()) continue;
       let response: JsonRpcResponse;
       try {
-        response = JSON.parse(line) as JsonRpcResponse;
+        response = JsonRpcResponseSchema.parse(JSON.parse(line));
       } catch {
         fail(
           new ProcessFailure("protocol-error", "Context Mode emitted invalid MCP protocol output."),
@@ -280,20 +307,8 @@ async function exchange(
           );
           return;
         }
-        const result = response.result as { serverInfo?: { version?: unknown } } | undefined;
-        version =
-          typeof result?.serverInfo?.version === "string" ? result.serverInfo.version : null;
         writeMessage({ jsonrpc: "2.0", method: "notifications/initialized" });
-        writeMessage(
-          operation.kind === "inspect"
-            ? { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }
-            : {
-                jsonrpc: "2.0",
-                id: 2,
-                method: "tools/call",
-                params: { name: operation.name, arguments: operation.arguments },
-              },
-        );
+        writeMessage({ jsonrpc: "2.0", id: 2, ...request });
         continue;
       }
       if (response.id !== 2) continue;
@@ -304,17 +319,9 @@ async function exchange(
         fail(new ProcessFailure(unsupported ? "unsupported" : "command-failed", message));
         return;
       }
-      if (operation.kind === "inspect") {
-        const result = response.result as { tools?: Array<{ name?: unknown }> } | undefined;
-        const tools = (result?.tools ?? [])
-          .map((tool) => tool.name)
-          .filter((name): name is string => typeof name === "string");
-        finish(() => resolve({ version, tools }));
-        return;
-      }
       try {
-        const output = extractToolOutput(response.result);
-        finish(() => resolve(output));
+        const value = parseResult(response.result);
+        finish(() => resolve(value));
       } catch (error) {
         fail(
           error instanceof ProcessFailure
@@ -339,22 +346,64 @@ async function exchange(
   return await promise;
 }
 
+const ToolListSchema = z.looseObject({
+  tools: z.array(z.looseObject({ name: z.string() })).default([]),
+});
+
+function extractToolNames(result: unknown): string[] {
+  const parsed = ToolListSchema.safeParse(result ?? {});
+  if (!parsed.success) {
+    throw new ProcessFailure("protocol-error", "Context Mode returned an invalid tool list.");
+  }
+  return parsed.data.tools.map(({ name }) => name);
+}
+
 export async function inspectContextMode(
   launch: LaunchDescriptor,
   dependencies: McpProcessDependencies = {},
+  options: ContextModeProcessOptions = DEFAULT_OPTIONS,
 ): Promise<McpInspection> {
-  return (await exchange(launch, { kind: "inspect" }, dependencies)) as McpInspection;
+  const [tools, version] = await Promise.all([
+    exchange(
+      launch,
+      { method: "tools/list", params: {} },
+      extractToolNames,
+      PROCESS_TIMEOUT_MS,
+      dependencies,
+      options,
+    ),
+    (dependencies.readVersion ?? readContextModeVersion)(launch),
+  ]);
+  const missing = CORE_TOOLS.filter((tool) => !tools.includes(tool));
+  if (missing.length > 0) {
+    const doctorOnly = tools.length === 1 && tools[0] === "ctx_doctor";
+    const reason = doctorOnly
+      ? "Context Mode needs Node.js 24.15 or later with node:sqlite; run ctx_doctor for details."
+      : "Context Mode 2.x is required; clear the configured binary path to use the bundled runtime.";
+    throw new ProcessFailure(
+      "unsupported",
+      `Context Mode ${version ?? "(unknown version)"} lacks ${missing.join(", ")}. ${reason}`,
+    );
+  }
+  return { version, tools };
 }
 
 export async function callContextModeTool(
   launch: LaunchDescriptor,
   name: ContextModeToolName,
-  arguments_: McpToolArguments = {},
-  dependencies: McpProcessDependencies = {},
+  arguments_: McpToolArguments,
+  dependencies: McpProcessDependencies,
+  options: ContextModeProcessOptions,
 ): Promise<string> {
-  return (await exchange(
+  return exchange(
     launch,
-    { kind: "tool", name, arguments: arguments_ },
+    {
+      method: "tools/call",
+      params: { name, arguments: arguments_, _meta: { sessionId: PLUGIN_SESSION_ID } },
+    },
+    extractToolOutput,
+    CONTEXT_MODE_TOOL_TIMEOUT_MS[name],
     dependencies,
-  )) as string;
+    options,
+  );
 }

@@ -1,69 +1,58 @@
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
-import type {
-  BinaryStatus,
-  CommandReport,
-  ContextModeRefreshInput,
-  ContextModeSettings,
-  contextModeSettings,
-  IntegrationAudit,
-} from "../shared";
+import type { BinaryStatus, ContextModeRefreshInput, IntegrationAudit } from "../shared/contracts";
+import { type ContextModePlatform, PANEL_PLATFORM } from "../shared/providers";
+import type { ContextModeSettings, contextModeSettings } from "../shared/settings";
 import { type BinaryResolution, type LaunchDescriptor, resolveContextModeBinary } from "./binary";
 import {
   createIntegrationAudit,
-  type IntegrationDependencies,
   type ProviderConfigSource,
   readProviderOverrides,
 } from "./integration";
 import {
-  callContextModeTool,
+  type ContextModeProcessOptions,
   inspectContextMode,
   type McpInspection,
   ProcessFailure,
 } from "./mcp-process";
 
 type SettingsHandle = PluginSettings<typeof contextModeSettings.schema>;
-type ToolName = "ctx_doctor" | "ctx_stats";
-type FailureReport = Extract<CommandReport, { state: "unavailable" }>;
-
-interface ProbeOptions {
-  env: NodeJS.ProcessEnv;
-}
+type FailureReport = Extract<BinaryStatus, { state: "unavailable" }>;
 
 /**
- * Panel probes belong to no provider. Without an explicit storage root Context Mode falls back to
- * whichever provider config directory exists, and writes its sidecar and content store there.
+ * Panel probes belong to no project. Context Mode records every tool call (doctor and stats
+ * included) in the store of its cwd, so probes run in a plugin-owned data dir and cwd to keep
+ * the user's stats clean.
  */
-function contextModeProbeOptions(env: NodeJS.ProcessEnv = process.env): ProbeOptions {
+export async function contextModeProbeOptions(
+  platform: ContextModePlatform = PANEL_PLATFORM,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<Required<ContextModeProcessOptions>> {
   const home = env.PASEO_HOME?.trim() || join(homedir(), ".paseo");
-  return { env: { CONTEXT_MODE_DIR: join(home, "plugin-data", "context-mode", "probe") } };
+  const dataDir = join(home, "plugin-data", "context-mode", "probe");
+  const cwd = join(dataDir, "cwd");
+  await mkdir(cwd, { recursive: true });
+  return { platform, cwd, dataDir };
 }
 
 export interface ContextModeHandlerDependencies {
   now?: () => Date;
   resolveBinary?: typeof resolveContextModeBinary;
-  inspect?: (launch: LaunchDescriptor, options: ProbeOptions) => Promise<McpInspection>;
-  callTool?: (
+  probeOptions?: () => Promise<ContextModeProcessOptions>;
+  inspect?: (
     launch: LaunchDescriptor,
-    name: ToolName,
-    arguments_: Record<string, never>,
-    options: ProbeOptions,
-  ) => Promise<string>;
-  createAudit?: (
-    settings: ContextModeSettings,
-    runtime: { path: string; version: string | null },
-    dependencies?: IntegrationDependencies,
-  ) => Promise<IntegrationAudit>;
+    options: ContextModeProcessOptions,
+  ) => Promise<McpInspection>;
+  createAudit?: typeof createIntegrationAudit;
 }
 
 type HandlerContext = { paseo?: ProviderConfigSource };
 
 export interface ContextModeHandlers {
   status(input: ContextModeRefreshInput, context?: HandlerContext): Promise<BinaryStatus>;
-  doctor(input: ContextModeRefreshInput, context?: HandlerContext): Promise<CommandReport>;
-  stats(input: ContextModeRefreshInput, context?: HandlerContext): Promise<CommandReport>;
-  audit(input: ContextModeRefreshInput, context?: HandlerContext): Promise<IntegrationAudit>;
+  audit(input: Record<string, never>, context?: HandlerContext): Promise<IntegrationAudit>;
 }
 
 interface CacheEntry<T> {
@@ -86,11 +75,13 @@ export function createContextModeHandlers(
 ): ContextModeHandlers {
   const now = dependencies.now ?? (() => new Date());
   const resolveBinary = dependencies.resolveBinary ?? resolveContextModeBinary;
-  const inspect = dependencies.inspect ?? inspectContextMode;
-  const callTool = dependencies.callTool ?? callContextModeTool;
+  const inspect =
+    dependencies.inspect ??
+    ((launch: LaunchDescriptor, options: ContextModeProcessOptions) =>
+      inspectContextMode(launch, {}, options));
+  const probeOptions = dependencies.probeOptions ?? (() => contextModeProbeOptions());
   const buildAudit = dependencies.createAudit ?? createIntegrationAudit;
-  const cache = new Map<string, CacheEntry<BinaryStatus | CommandReport>>();
-  const probe = contextModeProbeOptions();
+  const cache = new Map<string, CacheEntry<BinaryStatus>>();
 
   async function settingsAndBinary(paseo: ProviderConfigSource | undefined): Promise<
     | {
@@ -142,14 +133,14 @@ export function createContextModeHandlers(
     }
   }
 
-  async function cached<T extends BinaryStatus | CommandReport>(
+  async function cached(
     key: string,
     ttlMs: number,
     fresh: boolean,
-    load: () => Promise<T>,
-  ): Promise<T> {
+    load: () => Promise<BinaryStatus>,
+  ): Promise<BinaryStatus> {
     const timestamp = now().getTime();
-    const existing = cache.get(key) as CacheEntry<T> | undefined;
+    const existing = cache.get(key);
     if (!fresh && existing && existing.expiresAt > timestamp) return existing.value;
     const value = load();
     cache.set(key, { expiresAt: timestamp + ttlMs, value });
@@ -168,14 +159,12 @@ export function createContextModeHandlers(
     return cached(cacheKey, 10_000, fresh, async () => {
       const checkedAt = now().toISOString();
       try {
-        const inspection = await inspect(resolved.binary.launch, probe);
+        const inspection = await inspect(resolved.binary.launch, await probeOptions());
         return {
           state: "ready",
           binaryPath: resolved.binary.path,
           source: resolved.binary.source,
           version: inspection.version,
-          supportsDoctor: inspection.tools.includes("ctx_doctor"),
-          supportsStats: inspection.tools.includes("ctx_stats"),
           checkedAt,
         };
       } catch (error) {
@@ -184,58 +173,14 @@ export function createContextModeHandlers(
     });
   }
 
-  async function report(
-    name: ToolName,
-    ttlMs: number,
-    fresh: boolean,
-    context: HandlerContext | undefined,
-  ): Promise<CommandReport> {
+  /** Provider activation only: no Context Mode process is started, so polling it is cheap. */
+  async function audit(context?: HandlerContext): Promise<IntegrationAudit> {
     const resolved = await settingsAndBinary(context?.paseo);
-    if (resolved.state === "unavailable") return resolved.report;
-    return cached(`${name}:${resolved.binary.path}`, ttlMs, fresh, async () => {
-      const checkedAt = now().toISOString();
-      try {
-        return {
-          state: "ready",
-          binaryPath: resolved.binary.path,
-          output: await callTool(resolved.binary.launch, name, {}, probe),
-          checkedAt,
-        };
-      } catch (error) {
-        return failureResult(error, checkedAt);
-      }
+    if (resolved.state === "unavailable") return { providers: [] };
+    return buildAudit(resolved.settings, {
+      providers: await readProviderOverrides(context?.paseo),
     });
   }
 
-  async function audit(
-    _input: ContextModeRefreshInput,
-    context?: HandlerContext,
-  ): Promise<IntegrationAudit> {
-    const resolved = await settingsAndBinary(context?.paseo);
-    if (resolved.state === "unavailable") {
-      return {
-        runtimePath: "",
-        runtimeVersion: null,
-        injectionEnabled: false,
-        providers: [],
-        checkedAt: resolved.report.checkedAt,
-      };
-    }
-    const inspection = await inspect(resolved.binary.launch, probe).catch(() => ({
-      version: null,
-      tools: [],
-    }));
-    return buildAudit(
-      resolved.settings,
-      { path: resolved.binary.path, version: inspection.version },
-      { providers: await readProviderOverrides(context?.paseo) },
-    );
-  }
-
-  return {
-    status,
-    doctor: ({ fresh }, context) => report("ctx_doctor", 10_000, fresh, context),
-    stats: ({ fresh }, context) => report("ctx_stats", 5_000, fresh, context),
-    audit,
-  };
+  return { status, audit: (_input, context) => audit(context) };
 }

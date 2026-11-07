@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { contributeContextModeComposerPills } from "../client/context-mode-pill";
+import { contributeContextModeComposerPills } from "../client/pill";
 
 test("pill opens the Knowledge section scoped by agent and workspace", async () => {
   let press: () => void = () => {};

@@ -1,7 +1,6 @@
-import { join } from "node:path";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import contribute from "../index.server";
-import { ContextModeSettingsSchema } from "../shared";
+import { ContextModeSettingsSchema } from "../shared/settings";
 
 vi.mock("../server/binary", () => ({
   resolveContextModeBinary: async () => ({
@@ -11,16 +10,6 @@ vi.mock("../server/binary", () => ({
     launch: { program: "/bin/context-mode", args: [] },
   }),
 }));
-
-beforeEach(() => {
-  for (const name of ["CONTEXT_MODE_DIR", "CONTEXT_MODE_DATA_DIR", "CLAUDE_CONFIG_DIR"]) {
-    vi.stubEnv(name, undefined);
-  }
-});
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
 
 type BeforeHandler = (input: { request: unknown }, context: { paseo: unknown }) => Promise<unknown>;
 
@@ -45,34 +34,26 @@ function capture() {
 const paseo = {
   config: {
     get: async () => ({
-      config: {
-        providers: {
-          "claude-work": { extends: "claude", env: { CLAUDE_CONFIG_DIR: "/srv/claude-work" } },
-        },
-      },
+      config: { providers: { "claude-work": { extends: "claude" } } },
     }),
   },
 };
+
+test("registers only the agent.create hook", () => {
+  expect([...capture().keys()]).toEqual(["agent.create"]);
+});
 
 test("agent.create hook resolves derived providers through the hook context", async () => {
   const hook = capture().get("agent.create");
   const result = (await hook?.(
     { request: { config: { provider: "claude-work", cwd: "/work" } } },
     { paseo },
-  )) as { config: { mcpServers: Record<string, { env: Record<string, string> }> } };
+  )) as { config: { mcpServers: Record<string, unknown> } };
 
-  expect(result.config.mcpServers["context-mode"].env).toEqual({
-    CONTEXT_MODE_PLATFORM: "claude-code",
-    CONTEXT_MODE_DIR: join("/srv/claude-work", "context-mode"),
+  expect(result.config.mcpServers["context-mode"]).toEqual({
+    type: "stdio",
+    command: "/bin/context-mode",
+    args: ["server", "--agent", "claude-code"],
+    env: { CONTEXT_MODE_DATA_DIR: expect.any(String) },
   });
-});
-
-test("agent.session_open hook resolves derived providers through the hook context", async () => {
-  const hook = capture().get("agent.session_open");
-  const result = (await hook?.(
-    { request: { provider: "claude-work", cwd: "/work", env: {} } },
-    { paseo },
-  )) as { env: Record<string, string> };
-
-  expect(result.env.CONTEXT_MODE_DIR).toBe(join("/srv/claude-work", "context-mode"));
 });

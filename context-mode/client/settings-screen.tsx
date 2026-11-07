@@ -1,5 +1,7 @@
+import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, type SettingsState, useSettings } from "@getpaseo/plugin/client";
 import {
+  Loading,
   SettingsAction,
   SettingsCard,
   SettingsInput,
@@ -8,95 +10,109 @@ import {
   SettingsSelect,
   SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
-import { useCallback, useMemo, useState } from "react";
+import { useState } from "react";
 import { Text, View } from "react-native";
 import {
   type ContextModeSettings,
   ContextModeSettingsSchema,
   contextModeSettings,
-} from "../shared";
+} from "../shared/settings";
+import { type ChoiceOption, ErrorText } from "./controls";
 
 type ReadySettings = Extract<SettingsState<typeof contextModeSettings.schema>, { status: "ready" }>;
+type RefreshInterval = ContextModeSettings["refreshIntervalMs"];
+type RefreshValue = `${RefreshInterval}`;
+type RuntimeChoice = "bundled" | "own";
 
-const binaryModeOptions = [
-  { label: "Configured path, PATH, then bundled", value: "path" },
-  { label: "PATH, then bundled", value: "automatic" },
+const RUNTIME_OPTIONS: readonly ChoiceOption<RuntimeChoice>[] = [
+  { label: "Bundled", value: "bundled" },
+  { label: "Your own binary", value: "own" },
 ];
-const refreshOptions = [
+
+const REFRESH_INTERVALS: Record<RefreshValue, RefreshInterval> = {
+  "5000": 5_000,
+  "15000": 15_000,
+  "30000": 30_000,
+  "60000": 60_000,
+};
+
+const REFRESH_OPTIONS: readonly ChoiceOption<RefreshValue>[] = [
   { label: "5 seconds", value: "5000" },
   { label: "15 seconds", value: "15000" },
   { label: "30 seconds", value: "30000" },
   { label: "60 seconds", value: "60000" },
 ];
 
-function ReadyContextModeSettings({
-  settings,
-  theme,
-}: {
+function refreshValue(interval: RefreshInterval): RefreshValue {
+  return `${interval}`;
+}
+
+interface ReadyContextModeSettingsProps {
   settings: ReadySettings;
-  theme: PluginSurfaceProps["theme"];
-}) {
-  const [binaryPath, setBinaryPath] = useState(settings.values.binaryPath);
-  const styles = useMemo(
-    () => ({
-      root: { gap: 16 },
-      value: { color: theme.colors.foreground },
-      muted: { color: theme.colors.foregroundMuted },
-      error: { color: theme.colors.statusDanger },
-    }),
-    [theme],
-  );
-  const save = useCallback(
-    (patch: Partial<ContextModeSettings>) =>
-      settings.save({ ...settings.values, ...patch }, settings.revision),
-    [settings],
-  );
+  theme: PluginTheme;
+}
+
+function ReadyContextModeSettings({ settings, theme }: ReadyContextModeSettingsProps) {
+  const savedPath = settings.values.binaryPath;
+  const [runtime, setRuntime] = useState<RuntimeChoice>(savedPath === null ? "bundled" : "own");
+  const [binaryPath, setBinaryPath] = useState(savedPath ?? "");
+  const textStyle = { color: theme.colors.foreground };
+  const mutedStyle = { color: theme.colors.foregroundMuted };
+
+  function save(patch: Partial<ContextModeSettings>) {
+    void settings.save({ ...settings.values, ...patch }, settings.revision);
+  }
+
+  function chooseRuntime(next: RuntimeChoice) {
+    setRuntime(next);
+    if (next === "bundled" && savedPath !== null) save({ binaryPath: null });
+  }
+
   const normalizedPath = binaryPath.trim();
+  const pathChanged = normalizedPath !== savedPath;
   const pathResult = ContextModeSettingsSchema.safeParse({
     ...settings.values,
-    binaryMode: "path",
     binaryPath: normalizedPath,
   });
-  const pathError = pathResult.success
-    ? null
-    : (pathResult.error.issues[0]?.message ?? "Enter an absolute executable path.");
+  const pathError =
+    pathResult.success || normalizedPath === ""
+      ? null
+      : pathResult.error.issues.map((issue) => issue.message).join(" ");
+  const canSavePath = !settings.saving && pathChanged && pathResult.success;
 
   return (
-    <View style={styles.root}>
+    <View style={{ gap: 16 }}>
       <SettingsSection
-        title="Executable"
-        info="The daemon checks a configured absolute path first, then PATH, then the bundled runtime."
+        title="Runtime"
+        info="Context Mode runs from the runtime bundled with this plugin unless you point it at your own executable."
       >
         <SettingsCard>
           <SettingsSelect
-            label="Binary lookup"
-            value={settings.values.binaryMode}
-            options={binaryModeOptions}
+            label="Runtime"
+            value={runtime}
+            options={RUNTIME_OPTIONS}
             disabled={settings.saving}
-            onValueChange={(binaryMode) =>
-              void save({ binaryMode: binaryMode as ContextModeSettings["binaryMode"] })
-            }
+            onValueChange={chooseRuntime}
           />
-          <SettingsInput
-            label="Absolute binary path"
-            hint="Optional external override. Leave empty to use PATH or the bundled runtime."
-            error={normalizedPath === settings.values.binaryPath ? null : pathError}
-            initialValue={binaryPath}
-            onChangeText={setBinaryPath}
-            placeholder="/usr/local/bin/context-mode"
-            disabled={settings.saving || settings.values.binaryMode === "automatic"}
-          />
-          <SettingsAction
-            label="Save binary path"
-            actionLabel="Save"
-            disabled={
-              settings.saving ||
-              settings.values.binaryMode === "automatic" ||
-              normalizedPath === settings.values.binaryPath ||
-              !pathResult.success
-            }
-            onPress={() => void save({ binaryPath: normalizedPath })}
-          />
+          {runtime === "own" ? (
+            <>
+              <SettingsInput
+                label="Absolute binary path"
+                hint="The Context Mode executable the daemon should run"
+                error={pathChanged ? pathError : null}
+                initialValue={binaryPath}
+                onChangeText={setBinaryPath}
+                placeholder="/usr/local/bin/context-mode"
+                disabled={settings.saving}
+              />
+              <SettingsAction
+                label="Use this binary"
+                actionLabel="Save"
+                disabled={!canSavePath}
+                onPress={() => save({ binaryPath: normalizedPath })}
+              />
+            </>
+          ) : null}
         </SettingsCard>
       </SettingsSection>
 
@@ -107,17 +123,17 @@ function ReadyContextModeSettings({
         <SettingsCard>
           <SettingsSwitch
             label="Automatically activate Context Mode"
-            hint="Inject the bundled MCP server into new agents and provider-specific storage variables whenever sessions open."
+            hint="Inject the Context Mode MCP server into new Claude, Codex, Copilot, and OpenCode agents"
             value={settings.values.autoInject}
             disabled={settings.saving}
-            onValueChange={(autoInject) => void save({ autoInject })}
+            onValueChange={(autoInject) => save({ autoInject })}
           />
           <SettingsSwitch
             label="Prefer native integrations"
-            hint="Keep OMP, Pi, and OpenCode native plugins when detected instead of registering duplicate MCP tools."
+            hint="Skip injection when Context Mode is already installed natively for a provider, so its tools are not registered twice"
             value={settings.values.preferNativeIntegrations}
             disabled={settings.saving || !settings.values.autoInject}
-            onValueChange={(preferNativeIntegrations) => void save({ preferNativeIntegrations })}
+            onValueChange={(preferNativeIntegrations) => save({ preferNativeIntegrations })}
           />
         </SettingsCard>
       </SettingsSection>
@@ -125,32 +141,27 @@ function ReadyContextModeSettings({
       <SettingsSection title="Display">
         <SettingsCard>
           <SettingsSelect
-            label="Refresh interval"
-            value={String(settings.values.refreshIntervalMs)}
-            options={refreshOptions}
+            label="Status refresh interval"
+            value={refreshValue(settings.values.refreshIntervalMs)}
+            options={REFRESH_OPTIONS}
             disabled={settings.saving}
-            onValueChange={(value) =>
-              void save({
-                refreshIntervalMs: Number(value) as ContextModeSettings["refreshIntervalMs"],
-              })
-            }
+            onValueChange={(value) => save({ refreshIntervalMs: REFRESH_INTERVALS[value] })}
           />
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title="Safety">
+      <SettingsSection title="Storage">
         <SettingsCard>
           <SettingsRow
-            label="Storage reuse"
-            hint="Existing provider-specific Context Mode roots are reused. Session databases are never merged across providers."
+            label="Data location"
+            hint="Context Mode keeps one store per project, shared by every provider"
           >
-            <Text style={styles.value}>Provider scoped</Text>
+            <Text style={textStyle}>Per project</Text>
           </SettingsRow>
           <SettingsRow label="Context Mode runtime">
-            <Text style={styles.muted}>Bundled with this Paseo plugin</Text>
-          </SettingsRow>
-          <SettingsRow label="Upgrades">
-            <Text style={styles.muted}>Explicit command only</Text>
+            <Text selectable style={mutedStyle}>
+              {savedPath ?? "Bundled with this plugin"}
+            </Text>
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
@@ -158,7 +169,7 @@ function ReadyContextModeSettings({
       <SettingsSection title="Persistence">
         <SettingsCard>
           <SettingsRow label="Settings" hint="Shared by clients connected to this host">
-            <Text style={styles.value}>{settings.saving ? "Saving…" : "Saved on host"}</Text>
+            <Text style={textStyle}>{settings.saving ? "Saving..." : "Saved on host"}</Text>
           </SettingsRow>
           <SettingsAction
             label="Restore defaults"
@@ -176,11 +187,6 @@ function ReadyContextModeSettings({
             />
           ) : null}
         </SettingsCard>
-        {settings.saveError ? (
-          <Text accessibilityRole="alert" style={styles.error}>
-            {settings.saveError}
-          </Text>
-        ) : null}
       </SettingsSection>
     </View>
   );
@@ -188,21 +194,12 @@ function ReadyContextModeSettings({
 
 export function ContextModeSettingsScreen({ theme }: PluginSurfaceProps) {
   const settings = useSettings(contextModeSettings);
-  const styles = useMemo(
-    () => ({
-      text: { color: theme.colors.foreground },
-      error: { color: theme.colors.statusDanger },
-    }),
-    [theme],
-  );
 
-  if (settings.status === "loading") return <Text style={styles.text}>Loading settings…</Text>;
+  if (settings.status === "loading") return <Loading />;
   if (settings.status !== "ready") {
     return (
       <SettingsSection title="Context Mode settings">
-        <Text accessibilityRole="alert" style={styles.error}>
-          {settings.error}
-        </Text>
+        <ErrorText theme={theme} error={settings.error} />
         <SettingsCard>
           <SettingsAction
             label="Read settings again"

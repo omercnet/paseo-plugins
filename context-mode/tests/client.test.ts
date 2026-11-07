@@ -1,10 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 
-vi.mock("../client/context-mode-footer", () => ({ ContextModeFooter: () => null }));
-vi.mock("../client/context-mode-pill", () => ({
+vi.mock("../client/footer", () => ({ ContextModeFooter: () => null }));
+vi.mock("../client/pill", () => ({
   contributeContextModeComposerPills: () => () => {},
 }));
-vi.mock("../client/context-mode-surface", () => ({ ContextModeSurface: () => null }));
+vi.mock("../client/surface", () => ({ ContextModeSurface: () => null }));
 vi.mock("../client/settings-screen", () => ({ ContextModeSettingsScreen: () => null }));
 
 import contribute from "../index.client";

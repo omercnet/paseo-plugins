@@ -20,27 +20,25 @@ These previews were captured from an isolated Paseo test daemon with Context Mod
 
 ## Current scope
 
-- Bundles Context Mode as a runtime dependency; a separately installed global executable remains optional.
-- Resolves a configured absolute executable first, then the daemon's `PATH`, then the bundled runtime.
-- Shows Context Mode version, structured diagnostics, provider activation, storage roots, lifetime savings, activity, categories, and indexed sources. Savings lists the built-in harness storage plus the storage of every provider configured in Paseo (including ones derived with `extends`), the latter under its Paseo provider id and the root its own `env` resolves to. `ctx_stats` and the Setup tab run against a plugin-owned probe store (`<PASEO_HOME>/plugin-data/context-mode/probe`) so they never write into a provider root; it starts empty.
-- Reads Context Mode 1.0.169 SQLite databases in query-only mode, honors active WAL state, isolates corrupt databases, and reports partial coverage instead of mutating schemas.
-- Injects the bundled stdio MCP server into new supported agents through Paseo's `agent.create` hook.
-- Injects provider identity and an existing provider-specific storage root on create, resume, refresh, and import.
-- Preserves existing MCP servers and explicit environment overrides.
+- Bundles Context Mode 2.1.4 and runs it by default. To bring your own, set an absolute path to a Context Mode 2.x executable (or its `cli.mjs`) under Runtime in the plugin settings; clearing it returns to the bundled runtime. `PATH` is not searched.
+- Settings saved by earlier versions migrate automatically: an explicitly configured binary path is kept, and everything else returns to the bundled runtime.
+- Shows Context Mode version, structured diagnostics, provider activation, lifetime savings, activity, per-agent and per-project breakdowns, categories, and indexed sources. The Diagnostics tab runs `ctx_doctor` against a plugin-owned probe store (`<PASEO_HOME>/plugin-data/context-mode/probe`) so it never writes into your real project databases.
+- Reads Context Mode 2 `context.db` files (`<data dir>/projects/<key>/context.db`, schema `user_version` 6) in query-only mode, honors active WAL state, isolates corrupt or locked databases, and reports partial coverage instead of mutating schemas. The data directory is `CONTEXT_MODE_DATA_DIR`, else `~/.context-mode`. Injected agents get the daemon's or their Paseo provider's data directory, never a per-agent override, so the dashboard reads what they write.
+- Injects the bundled stdio MCP server (`context-mode server --agent <id>`, with the data directory pinned to the one the dashboard reads) into new Claude, Codex, Copilot, and OpenCode agents through Paseo's `agent.create` hook. Pi and OMP agents never get an injected server: Context Mode 2 runs inside Pi only as its own extension (`pi install npm:context-mode`), and has no OMP integration (upstream keeps OMP on 1.0.169). Coverage shows each as Native when its own install is found (Pi's `settings.json` packages, OMP's `mcp.json`). Pi records its sessions in the shared store, so they appear in Savings with Resume state and Forget; OMP's 1.x sessions are not shown. Cursor, which Context Mode 2 dropped, is shown as unsupported.
+- Preserves existing MCP servers and the agent's environment, except that the injected server pins `CONTEXT_MODE_DATA_DIR`.
 - Prefers detected native provider integrations to avoid duplicate `ctx_*` tools.
-- Reuses existing provider-specific databases. It does not merge session databases across providers because Context Mode intentionally isolates their session identities.
-- Provides provider- and project-scoped knowledge search, local-path indexing, URL fetch/index, indexed-source visibility, and an Insight link. Knowledge covers the built-in providers and every configured provider that resolves to a Context Mode store, using that provider's own `env`.
-- Requires an explicit provider, project path, scope review, and second confirmation before purge. Purge remains delegated to Context Mode's own MCP contract.
-- Returns structured install and provider-specific upgrade argv for review; Paseo never executes those commands automatically.
+- Context Mode 2 keeps one database per project, shared by every agent, so storage is no longer isolated per provider.
+- Provides project-scoped knowledge search (worktree or project scope, relevance or timeline order, with a More results button that follows upstream's page cursor), local-path indexing, URL indexing, indexed-source visibility with per-source forget, and a Recent sessions list on the dashboard. A session row can show Context Mode's `ctx_resume` state block (the last task, changed files and open errors an agent gets after a compact or restart) or forget that session. Index labels are chosen by Context Mode (the project-relative path or the final URL), so only content indexed by an agent carries a custom label. The agent selected in Knowledge labels the Context Mode process and the project path decides which database is used, unless that agent's Paseo provider sets its own `CONTEXT_MODE_DATA_DIR`. The dashboard reads those provider data directories too. Plugin-initiated calls share one fixed `paseo-context-mode` session, which the sessions list leaves out.
+- Requires an explicit provider, project path, scope review, and second confirmation before forgetting a project, session, or source. Deletion remains delegated to Context Mode's own `ctx_purge` contract.
 - Registers the `context-mode` screen with URL-persisted `section`, `agentId`, and `workspaceId` params. Composer pills open Knowledge using the selected host's agent provider and working directory. URL params never carry paths or queries.
 - Providers that Context Mode does not support, and missing agents or mismatched workspaces, require explicit scope selection.
 - Adds a live Healthy/Failing sidebar footer row, reusing the screen's health data.
 
-Context Mode currently couples sessions, stats, and indexed content under `CONTEXT_MODE_DIR`. Until upstream supports separate session and content roots, this plugin keeps storage provider-scoped instead of risking cross-provider session contamination.
+Upgrading from 3.x: Context Mode 2 is a rewrite with a new storage layout. The plugin only reads 2.x databases; existing 1.x data under provider directories is left untouched and is not shown. Agents created by an older plugin version keep a saved MCP entry that points at the removed 1.x entry file, so recreate them to pick up the new server. A custom runtime path saved in 3.x is kept; if it points at a 1.x install, the status reports it as unsupported until you clear it or point it at a 2.x binary. Saved agents hold absolute paths to Node and the runtime, so also recreate them after moving either. Run Context Mode's own `context-mode setup` if you also use it natively.
 
 ## Prerequisites
 
-Node.js 24 or later is required by this plugin. The bundled Context Mode runtime is installed with the plugin. Native provider integrations such as OMP's plugin remain recommended because generic MCP injection provides tools but cannot add provider-native lifecycle hooks.
+Node.js 24.15 or later is required by this plugin and by Context Mode 2. The bundled Context Mode runtime is installed with the plugin. Native provider integrations remain recommended because generic MCP injection provides tools but cannot add provider-native lifecycle hooks.
 
 The plugin depends on the upstream `context-mode` npm package under the Elastic License 2.0. See [NOTICE](NOTICE).
 ## Install
@@ -62,9 +60,9 @@ The npm install and update flow requires Paseo `^0.12.0 || ^0.13.0 || ^0.14.0 ||
 
 ## Commands and limits
 
-The daemon launches Context Mode directly with an argv array and no shell. MCP calls cover diagnostics, raw stats fallback, search, indexing, fetch/index, and explicitly confirmed purge. Each subprocess has a 12-second timeout and a 192 KiB combined output cap. Status is cached for 10 seconds and raw stats for 5 seconds.
+The daemon launches Context Mode directly with an argv array and no shell. MCP calls cover diagnostics, search, resume, indexing (path or URL), and explicitly confirmed purge. Each subprocess has a 192 KiB combined output cap and a per-tool timeout: 20 seconds for search and resume, 30 for doctor, and 120 for indexing and purge. The version and tool-list handshake has a 12-second timeout. Status is cached for 10 seconds; the provider coverage check reads config files only and starts no process.
 
-Install and upgrade actions return separate program and argument fields. They are displayed for review and never executed by the plugin. Older Context Mode builds that lack required tools are reported as unsupported. Missing executables, launch failures, timeouts, protocol errors, output limits, unsupported database schemas, locked databases, and partial database scans are surfaced as typed states or warnings.
+With the bundled runtime, Context Mode updates arrive with plugin updates. The doctor therefore never suggests `ctx_upgrade` or `context-mode setup`: an outdated bundled runtime is a warning whose fix is to update the plugin, and the host-config (D3) and hook (D5) checks, which fail for every agent Paseo injects, are shown as warnings without a fix. A configured binary that is missing, not executable, or older than 2.x is reported as unavailable; the plugin never silently falls back to the bundled one. Missing executables, launch failures, timeouts, protocol errors, output limits, unsupported database schemas, locked databases, and partial database scans are surfaced as typed states or warnings.
 
 ## Development
 
