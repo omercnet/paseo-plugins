@@ -139,6 +139,7 @@ interface FieldProps {
   placeholder: string;
   accessibilityLabel: string;
   maxLength: number;
+  disabled?: boolean;
 }
 
 function Field({
@@ -149,6 +150,7 @@ function Field({
   placeholder,
   accessibilityLabel,
   maxLength,
+  disabled = false,
 }: FieldProps) {
   const styles = createStyles(theme);
   return (
@@ -158,6 +160,7 @@ function Field({
         accessibilityLabel={accessibilityLabel}
         autoCapitalize="none"
         autoCorrect={false}
+        editable={!disabled}
         maxLength={maxLength}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -382,6 +385,7 @@ export function KnowledgeSection({ theme, host, initialScope, providers }: Knowl
             theme={theme}
             accessibilityLabel="Knowledge project path"
             label="Project path"
+            disabled={busy}
             maxLength={4_096}
             onChangeText={setProjectPath}
             placeholder="/absolute/path/to/project"
