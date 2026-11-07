@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v3.1.4...paseo-context-mode-v4.0.0) (2026-11-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **context-mode:** bundles Context Mode 2.1.4 and requires Node.js 24.15 or later. Cursor, Pi and OMP agents no longer get an injected server because Context Mode 2 cannot serve them over MCP. Only Context Mode 2 databases are read; 1.x data is left untouched and not shown. Agents created by an older plugin version must be recreated to pick up the new server entry.
+
+### Features
+
+* **context-mode:** run on Context Mode 2.1.4 ([#544](https://github.com/omercnet/paseo-plugins/issues/544)) ([91781c6](https://github.com/omercnet/paseo-plugins/commit/91781c6b3525322bafaa0a342f0764d6097420ad))
+
 ## [3.1.4](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v3.1.3...paseo-context-mode-v3.1.4) (2026-11-03)
 
 

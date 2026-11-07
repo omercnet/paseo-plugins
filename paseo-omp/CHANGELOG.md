@@ -1,5 +1,17 @@
 # Changelog
 
+## [5.6.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.5.0...paseo-omp-v5.6.0) (2026-11-07)
+
+
+### Features
+
+* **paseo-omp:** make the plugin's own providers opt-in for new installs ([#541](https://github.com/omercnet/paseo-plugins/issues/541)) ([f2835a2](https://github.com/omercnet/paseo-plugins/commit/f2835a2cd12e04ea5ed3b6a4c01a750e94989774))
+
+
+### Bug Fixes
+
+* **paseo-omp:** title the Overview provider card Provider ([#539](https://github.com/omercnet/paseo-plugins/issues/539)) ([9306a17](https://github.com/omercnet/paseo-plugins/commit/9306a176e6079928f16cb7f87edcae9f542f2a6a))
+
 ## [5.5.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.4.0...paseo-omp-v5.5.0) (2026-11-06)
 
 
