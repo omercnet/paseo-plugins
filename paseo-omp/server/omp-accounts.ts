@@ -1093,6 +1093,7 @@ export class OmpAccounts {
   }
 
   private settle(login: LoginState, step: OmpLoginStep, message: string | null): void {
+    if (!isOpen(login.step)) return;
     login.step = step;
     login.message = message;
     login.codePrompt = null;
