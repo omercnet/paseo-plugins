@@ -357,8 +357,9 @@ export function KnowledgeSection({ theme, host, initialScope, providers }: Knowl
     ? `Current destination: the project store for ${destination.projectPath}, recorded as ${providerLabel(destination.provider)}.`
     : "Select an agent and absolute project path.";
   const providerOptions = providers.map((id) => ({ value: id, label: providerLabel(id) }));
-  // Results belong to the agent they were recorded as, so a new agent starts the workflows fresh.
-  const workflowKey = provider ?? "none";
+  // Results and More results belong to one destination, so a new agent or project starts fresh and
+  // a pending request for the old one lands in an unmounted card.
+  const workflowKey = `${provider ?? "none"}:${trimmedPath}`;
 
   return (
     <SettingsSection
