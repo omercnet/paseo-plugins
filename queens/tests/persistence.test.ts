@@ -314,6 +314,33 @@ describe("serialized game saves", () => {
     expect(session.getSnapshot().state.progress[0].cells[4]).toBe("empty");
     expect(session.getSnapshot().saveError).toBeNull();
   });
+  test("rewrites the draft when another writer moves the revision before the save resolves", async () => {
+    const transport = recordingSave();
+    const session = controller(transport.save);
+    const foreignCells = Array<CellState>(puzzle.size * puzzle.size).fill("empty");
+    foreignCells[3] = "marked";
+    const foreign: GameSettings = {
+      ...DEFAULT_GAME_SETTINGS,
+      currentPuzzleId: puzzle.id,
+      puzzleStates: {
+        [puzzle.id]: { cells: foreignCells, startedAtMs: 5, completedAtMs: null, hintUsed: false },
+      },
+    };
+
+    session.dispatch({ type: "set-cells", indexes: [0], state: "marked", now: 10 });
+    session.synchronize(foreign, "revision-2");
+    transport.calls[0].result.resolve(true);
+    await flushSaveCompletion();
+
+    expect(transport.calls).toHaveLength(2);
+    expect(transport.calls[1].revision).toBe("revision-2");
+    expect(transport.calls[1].values.puzzleStates[puzzle.id]?.cells[0]).toBe("marked");
+    transport.calls[1].result.resolve(true);
+    await flushSaveCompletion();
+    session.synchronize(transport.calls[1].values, "revision-3");
+    expect(session.getSnapshot().saving).toBe(false);
+  });
+
   test("clears the save error when the draft returns to the stored values", async () => {
     const transport = recordingSave();
     const session = controller(transport.save);

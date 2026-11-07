@@ -378,9 +378,9 @@ export function createGamePersistenceController(
       return;
     }
 
-    baseline = job.values;
     publish({ saveError: null });
     if (revision === job.revision) {
+      baseline = job.values;
       awaitingRevision = job.revision;
       awaitingValues = job.values;
       publishSaving();
