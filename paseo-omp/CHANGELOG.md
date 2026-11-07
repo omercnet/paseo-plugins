@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.6.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.6.0...paseo-omp-v5.6.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **paseo-omp:** cancel the login by id when the sign-in modal closes early ([#551](https://github.com/omercnet/paseo-plugins/issues/551)) ([a1250d5](https://github.com/omercnet/paseo-plugins/commit/a1250d5f81fc7964a4c30ae6735784837ffb29ef))
+* **paseo-omp:** do not replace an in-progress disposal after a rewind failure ([#556](https://github.com/omercnet/paseo-plugins/issues/556)) ([d7cc81f](https://github.com/omercnet/paseo-plugins/commit/d7cc81f541d5cab74fba41857f7384431ed0badb))
+* **paseo-omp:** keep a canceled sign-in canceled after omp finishes ([#554](https://github.com/omercnet/paseo-plugins/issues/554)) ([f73b382](https://github.com/omercnet/paseo-plugins/commit/f73b382d165ea22a5a37de661df3ce26361d598c))
+
 ## [5.6.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.5.0...paseo-omp-v5.6.0) (2026-11-07)
 
 

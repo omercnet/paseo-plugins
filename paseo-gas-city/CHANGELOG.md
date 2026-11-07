@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.2](https://github.com/omercnet/paseo-plugins/compare/paseo-gas-city-v2.1.1...paseo-gas-city-v2.1.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **paseo-gas-city:** hold a /sling intent until the running dispatch settles ([#555](https://github.com/omercnet/paseo-plugins/issues/555)) ([3aac432](https://github.com/omercnet/paseo-plugins/commit/3aac43204b9e22142221355fa37a5585e842db4a))
+
 ## [2.1.1](https://github.com/omercnet/paseo-plugins/compare/paseo-gas-city-v2.1.0...paseo-gas-city-v2.1.1) (2026-11-02)
 
 
