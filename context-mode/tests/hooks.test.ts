@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import contribute from "../index.server";
-import { ContextModeSettingsSchema } from "../shared";
+import { ContextModeSettingsSchema } from "../shared/settings";
 
 vi.mock("../server/binary", () => ({
   resolveContextModeBinary: async () => ({

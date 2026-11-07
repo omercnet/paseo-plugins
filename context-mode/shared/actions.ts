@@ -1,6 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { ContextModePlatformSchema, ContextModeProviderSchema } from "./knowledge";
+import { ContextModePlatformSchema, ContextModeProviderSchema } from "./providers";
 
 const providerInput = z.object({ provider: ContextModeProviderSchema }).strict();
 

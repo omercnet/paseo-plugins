@@ -1,23 +1,17 @@
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type {
-  ContextModePlatform,
-  ContextModeSettings,
-  IntegrationAudit,
-  ProviderIntegration,
-} from "../shared";
+import type { IntegrationAudit, ProviderIntegration } from "../shared/contracts";
+import {
+  CONTEXT_MODE_PROVIDERS,
+  type ContextModePlatform,
+  ContextModeProviderSchema,
+  contextModePlatformFor,
+} from "../shared/providers";
+import type { ContextModeSettings } from "../shared/settings";
 import type { LaunchDescriptor } from "./binary";
 import { serverArgs } from "./mcp-process";
 import { resolveContextModeDataDir } from "./storage-discovery";
-
-/** Paseo providers whose agents can run the Context Mode 2.x stdio MCP server. */
-const SUPPORTED_PLATFORMS: Readonly<Record<string, ContextModePlatform>> = {
-  claude: "claude-code",
-  codex: "codex",
-  copilot: "copilot-cli",
-  opencode: "opencode",
-};
 
 /** Context Mode 2.x needs an in-process host context for these, so MCP injection cannot work. */
 const UNSUPPORTED_DETAIL: Readonly<Record<string, string>> = {
@@ -29,7 +23,10 @@ const UNSUPPORTED_DETAIL: Readonly<Record<string, string>> = {
     "Context Mode 2.x has no OMP integration, so nothing is injected. Its MCP server rejects every tool call without a supported agent.",
 };
 
-const AUDITED_PROVIDERS = [...Object.keys(SUPPORTED_PLATFORMS), ...Object.keys(UNSUPPORTED_DETAIL)];
+const AUDITED_PROVIDERS = [
+  ...CONTEXT_MODE_PROVIDERS.map(({ provider }) => provider),
+  ...Object.keys(UNSUPPORTED_DETAIL),
+];
 
 type McpServer = {
   type: "stdio";
@@ -52,7 +49,6 @@ export interface IntegrationDependencies {
   home?: string;
   pathExists?: (path: string) => Promise<boolean>;
   fileContains?: (path: string, text: string) => Promise<boolean>;
-  now?: () => Date;
   env?: NodeJS.ProcessEnv;
   providers?: ProviderOverrides;
 }
@@ -104,18 +100,21 @@ export async function readProviderOverrides(
 
 /**
  * Mirrors Paseo's single-level `extends`: a derived provider maps like its parent, and its
- * effective env is the parent's override env overlaid with its own.
+ * effective env is the parent's override env overlaid with its own. `platform` is null when
+ * Context Mode 2 cannot serve the provider over MCP.
  */
-function resolveProvider(
+export function resolveProvider(
   id: string,
   providers: ProviderOverrides,
-): { base: string; env: Record<string, string> } {
+): { base: string; platform: ContextModePlatform | null; env: Record<string, string> } {
   const own = Object.hasOwn(providers, id) ? providers[id] : undefined;
   const parent = own?.extends ?? id;
   const inherited =
     parent !== id && Object.hasOwn(providers, parent) ? providers[parent] : undefined;
   const base = parent.startsWith("omp-plugin-") ? "omp-plugin" : parent;
-  return { base, env: { ...inherited?.env, ...own?.env } };
+  const supported = ContextModeProviderSchema.safeParse(base);
+  const platform = supported.success ? contextModePlatformFor(supported.data) : null;
+  return { base, platform, env: { ...inherited?.env, ...own?.env } };
 }
 
 type ProbeContext = {
@@ -209,53 +208,49 @@ async function nativeIntegrationDetected(
   return false;
 }
 
+const ACTIVATION_DETAIL: Readonly<Record<ProviderIntegration["activation"], string>> = {
+  native:
+    "Context Mode is already registered natively for this provider, so duplicate MCP injection is disabled. Already-running agents may need a provider refresh or restart to load it.",
+  mcp: "The Context Mode MCP server is injected only when a new Paseo agent is created. Existing agents keep their saved MCP configuration and must be recreated or configured manually to gain its tools.",
+  disabled:
+    "Automatic activation is disabled. Existing and new agents keep their current MCP configuration.",
+};
+
 export async function createIntegrationAudit(
   settings: ContextModeSettings,
-  runtime: { path: string; version: string | null },
   dependencies: IntegrationDependencies = {},
 ): Promise<IntegrationAudit> {
   const home = dependencies.home ?? homedir();
   const hostEnvironment = dependencies.env ?? process.env;
-  const storageRoot = resolveContextModeDataDir(hostEnvironment, home);
   const configured = dependencies.providers ?? {};
   const derived = Object.keys(configured).filter((id) => !AUDITED_PROVIDERS.includes(id));
   const providers: ProviderIntegration[] = [];
   for (const provider of [...AUDITED_PROVIDERS, ...derived]) {
-    const { base, env } = resolveProvider(provider, configured);
-    const platform = Object.hasOwn(SUPPORTED_PLATFORMS, base) ? SUPPORTED_PLATFORMS[base] : null;
-    const unsupported = Object.hasOwn(UNSUPPORTED_DETAIL, base) ? UNSUPPORTED_DETAIL[base] : null;
-    if (!platform && !unsupported) continue;
+    const { base, platform, env } = resolveProvider(provider, configured);
+    if (platform === null) {
+      if (Object.hasOwn(UNSUPPORTED_DETAIL, base)) {
+        providers.push({
+          provider,
+          platform,
+          activation: "disabled",
+          detail: UNSUPPORTED_DETAIL[base],
+        });
+      }
+      continue;
+    }
+    const nativeChecked = settings.autoInject && settings.preferNativeIntegrations;
     const native =
-      platform !== null &&
-      settings.autoInject &&
-      settings.preferNativeIntegrations &&
+      nativeChecked &&
       (await nativeIntegrationDetected(
         platform,
         { home, env: { ...hostEnvironment, ...env } },
         dependencies,
       ));
-    const activation = !platform || !settings.autoInject ? "disabled" : native ? "native" : "mcp";
-    providers.push({
-      provider,
-      platform,
-      activation,
-      storageRoot,
-      detail: !platform
-        ? (unsupported as string)
-        : activation === "native"
-          ? "Context Mode is already registered natively for this provider, so duplicate MCP injection is disabled. Already-running agents may need a provider refresh or restart to load it."
-          : activation === "mcp"
-            ? "The bundled Context Mode MCP server is injected only when a new Paseo agent is created. Existing agents keep their saved MCP configuration and must be recreated or configured manually to gain its tools."
-            : "Automatic activation is disabled. Existing and new agents keep their current MCP configuration.",
-    });
+    let activation: ProviderIntegration["activation"] = "disabled";
+    if (settings.autoInject) activation = native ? "native" : "mcp";
+    providers.push({ provider, platform, activation, detail: ACTIVATION_DETAIL[activation] });
   }
-  return {
-    runtimePath: runtime.path,
-    runtimeVersion: runtime.version,
-    injectionEnabled: settings.autoInject,
-    providers,
-    checkedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
-  };
+  return { providers };
 }
 
 export async function injectContextModeOnCreate<T extends CreateRequest>(
@@ -271,9 +266,8 @@ export async function injectContextModeOnCreate<T extends CreateRequest>(
   ) {
     return request;
   }
-  const { base, env } = resolveProvider(request.config.provider, dependencies.providers ?? {});
-  if (!Object.hasOwn(SUPPORTED_PLATFORMS, base)) return request;
-  const platform = SUPPORTED_PLATFORMS[base];
+  const { platform, env } = resolveProvider(request.config.provider, dependencies.providers ?? {});
+  if (platform === null) return request;
   if (
     settings.preferNativeIntegrations &&
     (await nativeIntegrationDetected(

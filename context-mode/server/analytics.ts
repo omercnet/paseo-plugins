@@ -14,7 +14,7 @@ import {
   type ContextModeDatabaseSnapshot,
   type DatabaseSavings,
   readContextModeDatabase,
-} from "./context-mode-db";
+} from "./database";
 import { discoverContextModeDatabases, resolveContextModeDataDir } from "./storage-discovery";
 
 const MAX_WARNINGS = 20;

@@ -1,25 +1,23 @@
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
-import {
-  type ContextModePlatform,
-  type ContextModeProvider,
-  ContextModeProviderSchema,
-  type FetchAndIndexInput,
-  type IndexPathInput,
-  type KnowledgeToolResult,
-  type PurgeKnowledgeInput,
-  type ResumeSessionInput,
-  type SearchKnowledgeInput,
-  type SearchKnowledgeResult,
-  type SearchPage,
+import type {
+  FetchAndIndexInput,
+  IndexPathInput,
+  KnowledgeToolResult,
+  PurgeKnowledgeInput,
+  ResumeSessionInput,
+  SearchKnowledgeInput,
+  SearchKnowledgeResult,
+  SearchPage,
 } from "../shared/knowledge";
 import type { contextModeSettings } from "../shared/settings";
 import { type LaunchDescriptor, resolveContextModeBinary } from "./binary";
-import { type ProviderConfigSource, readProviderOverrides } from "./integration";
+import { type ProviderConfigSource, readProviderOverrides, resolveProvider } from "./integration";
 import {
   type ContextModeToolName,
   callContextModeTool,
+  type McpJsonValue,
   type McpToolArguments,
 } from "./mcp-process";
 import { resolveContextModeDataDir } from "./storage-discovery";
@@ -69,23 +67,6 @@ function purgeArguments(input: PurgeKnowledgeInput): McpToolArguments {
   }
 }
 
-const PROVIDER_PLATFORMS: Readonly<Record<ContextModeProvider, ContextModePlatform>> = {
-  claude: "claude-code",
-  codex: "codex",
-  copilot: "copilot-cli",
-  opencode: "opencode",
-};
-
-export function contextModePlatformFor(provider: ContextModeProvider): ContextModePlatform {
-  return PROVIDER_PLATFORMS[provider];
-}
-
-function definedArguments(values: Record<string, unknown>): McpToolArguments {
-  return Object.fromEntries(
-    Object.entries(values).filter(([, value]) => value !== undefined),
-  ) as McpToolArguments;
-}
-
 export function createContextModeKnowledgeHandlers(
   settingsHandle: SettingsHandle,
   dependencies: KnowledgeHandlerDependencies = {},
@@ -116,12 +97,11 @@ export function createContextModeKnowledgeHandlers(
     context: KnowledgeContext | undefined,
   ): Promise<KnowledgeToolResult> {
     // A configured provider inherits its parent's agent id; its own env may move the data dir.
-    const overrides = await readProviderOverrides(context?.paseo);
-    const own = Object.hasOwn(overrides, provider) ? overrides[provider] : undefined;
-    const base = ContextModeProviderSchema.safeParse(own?.extends ?? provider);
-    if (!base.success) throw new Error(`Context Mode does not support provider ${provider}.`);
-    const parent =
-      own?.extends && Object.hasOwn(overrides, own.extends) ? overrides[own.extends] : undefined;
+    const { platform, env: providerEnv } = resolveProvider(
+      provider,
+      await readProviderOverrides(context?.paseo),
+    );
+    if (platform === null) throw new Error(`Context Mode does not support provider ${provider}.`);
     const launch = await launchDescriptor(context?.paseo);
     const output = await callTool(
       launch,
@@ -129,9 +109,9 @@ export function createContextModeKnowledgeHandlers(
       arguments_,
       {},
       {
-        platform: PROVIDER_PLATFORMS[base.data],
+        platform,
         cwd: projectPath,
-        dataDir: resolveContextModeDataDir({ ...env, ...parent?.env, ...own?.env }, home),
+        dataDir: resolveContextModeDataDir({ ...env, ...providerEnv }, home),
       },
     );
     return { provider, output, completedAt: now().toISOString() };
@@ -139,13 +119,9 @@ export function createContextModeKnowledgeHandlers(
 
   return {
     async search({ provider, projectPath, queries, scope, source, sort, page }, context) {
-      const result = await run(
-        provider,
-        projectPath,
-        "ctx_search",
-        definedArguments({ queries, scope, source, sort, ...page }),
-        context,
-      );
+      const arguments_: Record<string, McpJsonValue> = { queries, scope, sort, ...page };
+      if (source !== undefined) arguments_.source = source;
+      const result = await run(provider, projectPath, "ctx_search", arguments_, context);
       return { ...result, next: nextSearchPage(result.output) };
     },
     resume({ provider, projectPath, sessionId }, context) {

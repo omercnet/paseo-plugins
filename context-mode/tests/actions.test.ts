@@ -2,7 +2,7 @@ import type { PluginSettings } from "@getpaseo/plugin/server";
 import { describe, expect, test } from "vitest";
 import { createContextModeActionHandlers, parseContextModeDoctorOutput } from "../server/actions";
 import { getContextModeDoctorReport } from "../shared/actions";
-import type { ContextModePlatform } from "../shared/knowledge";
+import type { ContextModePlatform } from "../shared/providers";
 import {
   type ContextModeSettings,
   ContextModeSettingsSchema,
@@ -44,12 +44,7 @@ const DOCTOR_ROWS = [
     detail: "2.1.4 (b496e20): latest unknown, npm registry: fetch failed",
     fix: "npm view context-mode dist-tags",
   },
-  {
-    status: "warning",
-    check: "D3 host config",
-    detail: "wrong: MCP entry, hook entries",
-    fix: "context-mode setup --agents claude-code",
-  },
+  { status: "warning", check: "D3 host config", detail: "wrong: MCP entry, hook entries" },
   { status: "warning", check: "D4 old entries", detail: "a | b" },
   { status: "ok", check: "D5b double-fire", detail: "ok" },
 ];
@@ -70,8 +65,32 @@ describe("action RPC contracts", () => {
 
 describe("structured actions", () => {
   test("parses the v2 doctor table and ignores everything else", () => {
-    expect(parseContextModeDoctorOutput(DOCTOR_OUTPUT)).toEqual(DOCTOR_ROWS);
-    expect(parseContextModeDoctorOutput("[OK] Runtimes: 8/11 available")).toEqual([]);
+    expect(parseContextModeDoctorOutput(DOCTOR_OUTPUT, "settings")).toEqual(DOCTOR_ROWS);
+    expect(parseContextModeDoctorOutput("[OK] Runtimes: 8/11 available", "settings")).toEqual([]);
+  });
+
+  test("never offers ctx_upgrade or setup, and fits upgrade advice to the runtime", () => {
+    const outdated = [
+      "| D1 version | FAIL | 2.1.4 (b496e20): update available, latest on npm is 2.1.5 | Fix: run ctx_upgrade |",
+      "| D5 hook round trip | FAIL | hook output is not the agent's native shape | Fix: run ctx_upgrade |",
+    ].join("\n");
+    expect(parseContextModeDoctorOutput(outdated, "bundled")).toEqual([
+      {
+        status: "warning",
+        check: "D1 version",
+        detail: "2.1.4 (b496e20): update available, latest on npm is 2.1.5",
+        fix: "Update the Context Mode plugin in Paseo",
+      },
+      {
+        status: "warning",
+        check: "D5 hook round trip",
+        detail: "hook output is not the agent's native shape",
+      },
+    ]);
+    expect(parseContextModeDoctorOutput(outdated, "settings")[0]).toMatchObject({
+      status: "error",
+      fix: "Upgrade the Context Mode install configured in settings",
+    });
   });
 
   test("runs ctx_doctor against the plugin-owned probe store", async () => {
@@ -79,7 +98,7 @@ describe("structured actions", () => {
       resolveBinary: async () => ({
         state: "found",
         path: "/bin/context-mode",
-        source: "path",
+        source: "settings",
         launch: { program: "/bin/context-mode", args: [] },
       }),
       probeOptions,

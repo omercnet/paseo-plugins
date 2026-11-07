@@ -1,16 +1,16 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 
-type PillAgent = {
+interface PillAgent {
   id: string;
   workspaceId?: string | null;
   status: string;
   archivedAt?: string | null;
-};
+}
 
-type PillEntry = {
+interface PillEntry {
   workspaceId: string;
   registration: PluginButtonRegistration;
-};
+}
 
 function shouldShowPill(agent: PillAgent): agent is PillAgent & { workspaceId: string } {
   return Boolean(agent.workspaceId) && !agent.archivedAt && agent.status !== "closed";

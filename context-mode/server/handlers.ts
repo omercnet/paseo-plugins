@@ -2,18 +2,12 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
-import type {
-  BinaryStatus,
-  ContextModePlatform,
-  ContextModeRefreshInput,
-  ContextModeSettings,
-  contextModeSettings,
-  IntegrationAudit,
-} from "../shared";
+import type { BinaryStatus, ContextModeRefreshInput, IntegrationAudit } from "../shared/contracts";
+import type { ContextModePlatform } from "../shared/providers";
+import type { ContextModeSettings, contextModeSettings } from "../shared/settings";
 import { type BinaryResolution, type LaunchDescriptor, resolveContextModeBinary } from "./binary";
 import {
   createIntegrationAudit,
-  type IntegrationDependencies,
   type ProviderConfigSource,
   readProviderOverrides,
 } from "./integration";
@@ -51,18 +45,14 @@ export interface ContextModeHandlerDependencies {
     launch: LaunchDescriptor,
     options: ContextModeProcessOptions,
   ) => Promise<McpInspection>;
-  createAudit?: (
-    settings: ContextModeSettings,
-    runtime: { path: string; version: string | null },
-    dependencies?: IntegrationDependencies,
-  ) => Promise<IntegrationAudit>;
+  createAudit?: typeof createIntegrationAudit;
 }
 
 type HandlerContext = { paseo?: ProviderConfigSource };
 
 export interface ContextModeHandlers {
   status(input: ContextModeRefreshInput, context?: HandlerContext): Promise<BinaryStatus>;
-  audit(input: ContextModeRefreshInput, context?: HandlerContext): Promise<IntegrationAudit>;
+  audit(input: Record<string, never>, context?: HandlerContext): Promise<IntegrationAudit>;
 }
 
 interface CacheEntry<T> {
@@ -183,29 +173,14 @@ export function createContextModeHandlers(
     });
   }
 
-  async function audit(
-    _input: ContextModeRefreshInput,
-    context?: HandlerContext,
-  ): Promise<IntegrationAudit> {
+  /** Provider activation only: no Context Mode process is started, so polling it is cheap. */
+  async function audit(context?: HandlerContext): Promise<IntegrationAudit> {
     const resolved = await settingsAndBinary(context?.paseo);
-    if (resolved.state === "unavailable") {
-      return {
-        runtimePath: "",
-        runtimeVersion: null,
-        injectionEnabled: false,
-        providers: [],
-        checkedAt: resolved.report.checkedAt,
-      };
-    }
-    const inspection = await probeOptions()
-      .then((options) => inspect(resolved.binary.launch, options))
-      .catch(() => ({ version: null }));
-    return buildAudit(
-      resolved.settings,
-      { path: resolved.binary.path, version: inspection.version },
-      { providers: await readProviderOverrides(context?.paseo) },
-    );
+    if (resolved.state === "unavailable") return { providers: [] };
+    return buildAudit(resolved.settings, {
+      providers: await readProviderOverrides(context?.paseo),
+    });
   }
 
-  return { status, audit };
+  return { status, audit: (_input, context) => audit(context) };
 }

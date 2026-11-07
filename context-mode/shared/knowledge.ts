@@ -6,15 +6,6 @@ const MAX_PATH_LENGTH = 4_096;
 const MAX_LABEL_LENGTH = 512;
 const MAX_QUERY_LENGTH = 1_024;
 
-export const ContextModeProviderSchema = z.enum(["claude", "codex", "copilot", "opencode"]);
-
-export const ContextModePlatformSchema = z.enum([
-  "claude-code",
-  "codex",
-  "copilot-cli",
-  "opencode",
-]);
-
 /** A Paseo provider id: a built-in or one configured in `agents.providers`. */
 export const KnowledgeProviderSchema = z.string().trim().min(1).max(128);
 
@@ -130,8 +121,6 @@ export const purgeContextModeKnowledge = defineRpc({
   output: KnowledgeToolResultSchema,
 });
 
-export type ContextModeProvider = z.infer<typeof ContextModeProviderSchema>;
-export type ContextModePlatform = z.infer<typeof ContextModePlatformSchema>;
 export type KnowledgeToolResult = z.infer<typeof KnowledgeToolResultSchema>;
 export type SearchPage = z.infer<typeof SearchPageSchema>;
 export type SearchKnowledgeResult = z.infer<typeof SearchKnowledgeResultSchema>;

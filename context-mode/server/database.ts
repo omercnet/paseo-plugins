@@ -216,6 +216,10 @@ function boundedText(value: unknown, fallback: string, maximum: number): string 
   return trimmed.length <= maximum ? trimmed : trimmed.slice(0, maximum);
 }
 
+function isSourceKind(value: unknown): value is DatabaseSourceKind {
+  return value === "path" || value === "url" || value === "content";
+}
+
 function isoFromMilliseconds(value: unknown): string | null {
   const milliseconds = nonNegativeInteger(value);
   if (milliseconds === 0 || milliseconds > MAX_DATE_MS) return null;
@@ -324,11 +328,7 @@ function readSnapshot(database: DatabaseSync): ContextModeDatabaseSnapshot {
     agent: boundedText(row.agent, "unknown", 128),
     projectPath: boundedText(row.worktree, "unknown", 4_096),
     label: boundedText(row.label, "(unnamed source)", 4_096),
-    kind: (row.kind === "path"
-      ? "path"
-      : row.kind === "url"
-        ? "url"
-        : "content") as DatabaseSourceKind,
+    kind: isSourceKind(row.kind) ? row.kind : "content",
     bytes: nonNegativeInteger(row.bytes_total),
     chunks: nonNegativeInteger(row.chunk_count),
     createdAt: isoFromMilliseconds(row.created_ts),

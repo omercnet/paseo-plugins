@@ -64,7 +64,7 @@ async function fakeContextMode() {
     process.platform === "win32"
       ? { program: process.execPath, args: [path] }
       : { program: path, args: [] };
-  return { state: "found" as const, path, source: "path" as const, launch };
+  return { state: "found" as const, path, source: "settings" as const, launch };
 }
 
 function settingsHandle(
@@ -79,7 +79,7 @@ function settingsHandle(
 const found = {
   state: "found" as const,
   path: "/bin/context-mode",
-  source: "path" as const,
+  source: "settings" as const,
   launch: { program: "/bin/context-mode", args: [] },
 };
 

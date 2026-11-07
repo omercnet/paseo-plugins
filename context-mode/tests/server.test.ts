@@ -19,7 +19,7 @@ import {
   type ContextModeSettings,
   ContextModeSettingsSchema,
   type contextModeSettings,
-} from "../shared";
+} from "../shared/settings";
 
 const temporaryDirectories: string[] = [];
 
@@ -94,159 +94,96 @@ lines.on("line", (line) => {
 });
 `;
 
-describe("external binary resolution", () => {
-  test("prefers an executable absolute setting before PATH", async () => {
+describe("Context Mode runtime resolution", () => {
+  test("runs the user's own binary when one is configured", async () => {
     const settings = ContextModeSettingsSchema.parse({ binaryPath: "/opt/context-mode" });
-    const checked: string[] = [];
     const result = await resolveContextModeBinary(settings, {
-      env: { PATH: "/usr/bin" },
       platform: "linux",
-      canExecute: async (path) => {
-        checked.push(path);
-        return path === "/opt/context-mode";
-      },
+      canExecute: async (path) => path === "/opt/context-mode",
+      readVersion: async () => "2.1.5",
     });
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       state: "found",
+      path: "/opt/context-mode",
       source: "settings",
       launch: { program: "/opt/context-mode", args: [] },
     });
-    expect(checked).toEqual(["/opt/context-mode"]);
-  });
-  test("uses filesystem-backed executable checks for a real binary path", async () => {
-    const executablePath = await realpath(process.execPath);
-    const settings = ContextModeSettingsSchema.parse({ binaryPath: executablePath });
-    const result = await resolveContextModeBinary(settings, { env: { PATH: "" } });
-
-    expect(result).toMatchObject({
-      state: "found",
-      path: executablePath,
-      source: "settings",
-      launch: { program: executablePath, args: [] },
-    });
   });
 
-  test("skips a Context Mode 1.x binary so the 2.x runtime is used", async () => {
-    const versions: Record<string, string> = {
-      "/first/context-mode": "1.0.169",
-      "/second/context-mode": "2.1.4",
-    };
-    const result = await resolveContextModeBinary(ContextModeSettingsSchema.parse({}), {
-      env: { PATH: "/first:/second" },
+  test("never falls back to the bundled runtime when the configured binary cannot run", async () => {
+    const { paseo } = await pluginInstall();
+    const settings = ContextModeSettingsSchema.parse({ binaryPath: "/missing/context-mode" });
+    const missing = await resolveContextModeBinary(settings, {
       platform: "linux",
-      canExecute: async (path) => path in versions,
-      readVersion: async ({ program }) => versions[program] ?? null,
+      canExecute: async () => false,
+      paseo,
     });
-    expect(result).toMatchObject({ state: "found", path: "/second/context-mode" });
+    expect(missing).toMatchObject({ state: "missing", code: "not-installed" });
 
-    await expect(
-      resolveContextModeBinary(ContextModeSettingsSchema.parse({}), {
-        env: { PATH: "/first" },
-        platform: "linux",
-        canExecute: async (path) => path in versions,
-        readVersion: async ({ program }) => versions[program] ?? null,
-      }),
-    ).resolves.toMatchObject({ state: "missing", code: "not-installed" });
-  });
-
-  test("reports relative configured paths and PATH fallbacks", async () => {
-    const relative = {
-      ...ContextModeSettingsSchema.parse({}),
-      binaryPath: "bin/context-mode",
-    } as ContextModeSettings;
-    await expect(resolveContextModeBinary(relative)).resolves.toMatchObject({
-      state: "missing",
-      code: "not-installed",
-      message: expect.stringContaining("not absolute"),
+    const legacy = await resolveContextModeBinary(settings, {
+      platform: "linux",
+      canExecute: async () => true,
+      readVersion: async () => "1.0.169",
+      paseo,
     });
-
-    const found = await resolveContextModeBinary(
-      ContextModeSettingsSchema.parse({ binaryPath: "/missing/context-mode" }),
-      {
-        env: { PATH: "/first:/second" },
-        platform: "linux",
-        canExecute: async (path) => path === "/second/context-mode",
-      },
-    );
-
-    expect(found).toEqual({
-      state: "found",
-      path: "/second/context-mode",
-      source: "path",
-      launch: { program: "/second/context-mode", args: [] },
-    });
+    expect(legacy).toMatchObject({ state: "missing", code: "unsupported" });
   });
 
   test.each(["", ".CMD", ".BAT"])(
-    "resolves a Windows npm %s shim through node and its CLI module",
+    "resolves a configured Windows npm %s shim through node and its CLI module",
     async (extension) => {
       const shim = `C:\\npm\\context-mode${extension}`;
       const modulePath = "C:\\npm\\node_modules\\context-mode\\cli.mjs";
-      const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
+      const settings = ContextModeSettingsSchema.parse({ binaryPath: shim });
       const result = await resolveContextModeBinary(settings, {
         platform: "win32",
         nodePath: "C:\\Program Files\\nodejs\\node.exe",
-        env: { PATH: "C:\\npm", PATHEXT: ".CMD;.BAT" },
         canExecute: async (path) => path === shim,
         isFile: async (path) => path === modulePath,
+        readVersion: async () => "2.1.4",
       });
       expect(result).toEqual({
         state: "found",
         path: shim,
-        source: "path",
-        launch: {
-          program: "C:\\Program Files\\nodejs\\node.exe",
-          args: [modulePath],
-        },
+        source: "settings",
+        launch: { program: "C:\\Program Files\\nodejs\\node.exe", args: [modulePath] },
       });
     },
   );
 
   test("rejects a Windows command shim when its CLI module cannot be resolved", async () => {
-    const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
+    const settings = ContextModeSettingsSchema.parse({ binaryPath: "C:\\npm\\context-mode.CMD" });
     const result = await resolveContextModeBinary(settings, {
       platform: "win32",
-      env: { PATH: "C:\\npm", PATHEXT: ".CMD" },
-      canExecute: async (path) => path.endsWith("context-mode.CMD"),
+      canExecute: async () => true,
       isFile: async () => false,
     });
-    expect(result).toMatchObject({ state: "missing" });
-    if (result.state === "missing")
-      expect(result.message).toContain("could not be safely resolved");
+    expect(result).toMatchObject({ state: "missing", code: "unsupported" });
   });
-  test.each([".exe", ".js", ".mjs"])(
-    "returns direct or node launch descriptors for Windows %s shims",
-    async (extension) => {
-      const shim = `C:\\npm\\context-mode${extension}`;
-      const settings = ContextModeSettingsSchema.parse({
-        binaryMode: "path",
-        binaryPath: shim,
-      });
-      const result = await resolveContextModeBinary(settings, {
-        platform: "win32",
-        nodePath: "C:\\Program Files\\nodejs\\node.exe",
-        canExecute: async (path) => path === shim,
-        isFile: async () => false,
-      });
 
-      expect(result).toEqual(
-        extension === ".exe"
-          ? {
-              state: "found",
-              path: shim,
-              source: "settings",
-              launch: { program: shim, args: [] },
-            }
-          : {
-              state: "found",
-              path: shim,
-              source: "settings",
-              launch: {
-                program: "C:\\Program Files\\nodejs\\node.exe",
-                args: [shim],
-              },
-            },
+  test.each([
+    [".exe", "C:\\npm\\context-mode.exe", []],
+    [".mjs", "C:\\Program Files\\nodejs\\node.exe", ["C:\\npm\\context-mode.mjs"]],
+  ])(
+    "launches a configured Windows %s directly or through node",
+    async (extension, program, args) => {
+      const binaryPath = `C:\\npm\\context-mode${extension}`;
+      const result = await resolveContextModeBinary(
+        ContextModeSettingsSchema.parse({ binaryPath }),
+        {
+          platform: "win32",
+          nodePath: "C:\\Program Files\\nodejs\\node.exe",
+          canExecute: async (path) => path === binaryPath,
+          isFile: async () => false,
+          readVersion: async () => "2.1.4",
+        },
       );
+      expect(result).toEqual({
+        state: "found",
+        path: binaryPath,
+        source: "settings",
+        launch: { program, args },
+      });
     },
   );
 
@@ -297,14 +234,13 @@ describe("external binary resolution", () => {
     return { paseo, cli };
   }
 
-  test("uses the bundled runtime from the plugin directory in the daemon config", async () => {
+  test("runs the bundled runtime by default, even with another context-mode on PATH", async () => {
     const { paseo, cli } = await pluginInstall();
-    const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
-    const result = await resolveContextModeBinary(settings, {
-      env: { PATH: "" },
+    vi.stubEnv("PATH", dirname(process.execPath));
+    const result = await resolveContextModeBinary(ContextModeSettingsSchema.parse({}), {
       nodePath: "/usr/bin/node",
       electron: false,
-      canExecute: async () => false,
+      canExecute: async () => true,
       paseo,
     });
     expect(result).toEqual({
@@ -320,12 +256,9 @@ describe("external binary resolution", () => {
 
   test("launches the bundled runtime as Node when the host is Electron", async () => {
     const { paseo, cli } = await pluginInstall();
-    const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
-    const result = await resolveContextModeBinary(settings, {
-      env: { PATH: "" },
+    const result = await resolveContextModeBinary(ContextModeSettingsSchema.parse({}), {
       nodePath: "/Applications/Paseo.app/Contents/MacOS/Paseo",
       electron: true,
-      canExecute: async () => false,
       paseo,
     });
     expect(result).toMatchObject({
@@ -338,11 +271,9 @@ describe("external binary resolution", () => {
     });
   });
 
-  test("reports not installed when the daemon config lists no Context Mode plugin", async () => {
-    const settings = ContextModeSettingsSchema.parse({ binaryMode: "automatic" });
-    const result = await resolveContextModeBinary(settings, {
-      env: { PATH: "" },
-      canExecute: async () => false,
+  test("reports a missing bundled runtime instead of searching elsewhere", async () => {
+    const result = await resolveContextModeBinary(ContextModeSettingsSchema.parse({}), {
+      canExecute: async () => true,
       paseo: { config: { get: async () => ({ config: { plugins: {} } }) } },
     });
     expect(result).toMatchObject({ state: "missing", code: "not-installed" });
@@ -385,7 +316,7 @@ describe("bounded Context Mode process", () => {
       }),
     ).rejects.toMatchObject({
       code: "unsupported",
-      message: expect.stringContaining("ctx_index, ctx_search, ctx_purge"),
+      message: expect.stringContaining("ctx_index, ctx_search, ctx_resume, ctx_purge"),
     });
   });
 
@@ -477,7 +408,6 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   test("budgets long-running Context Mode tools", () => {
     expect(CONTEXT_MODE_TOOL_TIMEOUT_MS.ctx_index).toBeGreaterThan(30_000);
     expect(CONTEXT_MODE_TOOL_TIMEOUT_MS.ctx_purge).toBeGreaterThan(30_000);
-    expect(CONTEXT_MODE_TOOL_TIMEOUT_MS.ctx_execute).toBeGreaterThan(30_000);
   });
 
   test("allows Context Mode to exit cleanly after a successful exchange", async () => {
@@ -594,7 +524,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.method === "tools/call") console.log(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "" }], structuredContent: { savedBytes: 17825792 } } }));
 });
 `);
-    await expect(callContextModeTool(launch(binary), "ctx_stats", {}, {}, options)).resolves.toBe(
+    await expect(callContextModeTool(launch(binary), "ctx_search", {}, {}, options)).resolves.toBe(
       '{\n  "savedBytes": 17825792\n}',
     );
   });
@@ -644,7 +574,7 @@ describe("RPC behavior", () => {
       resolveBinary: async () => ({
         state: "found",
         path: "/bin/context-mode",
-        source: "path",
+        source: "settings",
         launch: launch("/bin/context-mode"),
       }),
       probeOptions: async () => PROBE,
@@ -662,36 +592,6 @@ describe("RPC behavior", () => {
     expect(status).toMatchObject({ state: "ready", version: "2.1.4" });
     expect(refreshedStatus).toMatchObject({ state: "ready", version: "2.1.4" });
     expect(inspections).toBe(2);
-  });
-
-  test("runs every panel probe with the same plugin-owned options", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const seen: unknown[] = [];
-    const handlers = createContextModeHandlers(settingsHandle(settings), {
-      resolveBinary: async () => ({
-        state: "found",
-        path: "/bin/context-mode",
-        source: "path",
-        launch: launch("/bin/context-mode"),
-      }),
-      probeOptions: async () => PROBE,
-      inspect: async (_launch, probe) => {
-        seen.push(probe);
-        return { version: "2.1.4", tools: ALL_TOOLS };
-      },
-      createAudit: async () => ({
-        runtimePath: "",
-        runtimeVersion: null,
-        injectionEnabled: false,
-        providers: [],
-        checkedAt: "2026-09-20T00:00:00.000Z",
-      }),
-    });
-
-    await handlers.status({ fresh: true });
-    await handlers.audit({ fresh: true });
-
-    expect(seen).toEqual([PROBE, PROBE]);
   });
 
   test("keeps probe stores and cwd under PASEO_HOME, never the user's data dir", async () => {
@@ -752,7 +652,7 @@ describe("RPC behavior", () => {
       resolveBinary: async () => ({
         state: "found",
         path: "/bin/context-mode",
-        source: "path",
+        source: "settings",
         launch: launch("/bin/context-mode"),
       }),
       probeOptions: async () => PROBE,
@@ -768,46 +668,19 @@ describe("RPC behavior", () => {
     });
   });
 
-  test("falls back to a null audit version when inspection fails", async () => {
+  test("audits providers configured in the daemon without starting Context Mode", async () => {
     const settings = ContextModeSettingsSchema.parse({});
-    const handlers = createContextModeHandlers(settingsHandle(settings), {
-      now: () => new Date("2026-09-20T00:00:00.000Z"),
-      resolveBinary: async () => ({
-        state: "found",
-        path: "/bin/context-mode",
-        source: "path",
-        launch: launch("/bin/context-mode"),
-      }),
-      probeOptions: async () => PROBE,
-      inspect: async () => {
-        throw new Error("probe failed");
-      },
-    });
-
-    await expect(handlers.audit({ fresh: false })).resolves.toMatchObject({
-      runtimeVersion: null,
-      injectionEnabled: true,
-    });
-  });
-
-  test("audits providers configured in the daemon through the RPC context", async () => {
-    const settings = ContextModeSettingsSchema.parse({});
-    const createAudit = vi.fn(async () => ({
-      runtimePath: "/bin/context-mode",
-      runtimeVersion: null,
-      injectionEnabled: true,
-      providers: [],
-      checkedAt: "2026-09-20T00:00:00.000Z",
-    }));
+    const createAudit = vi.fn(async () => ({ providers: [] }));
+    const inspect = vi.fn();
     const handlers = createContextModeHandlers(settingsHandle(settings), {
       resolveBinary: async () => ({
         state: "found",
         path: "/bin/context-mode",
-        source: "path",
+        source: "settings",
         launch: launch("/bin/context-mode"),
       }),
       probeOptions: async () => PROBE,
-      inspect: async () => ({ version: null, tools: [] }),
+      inspect,
       createAudit,
     });
     const paseo = {
@@ -818,11 +691,12 @@ describe("RPC behavior", () => {
       },
     };
 
-    await handlers.audit({ fresh: false }, { paseo });
+    await handlers.audit({}, { paseo });
 
-    expect(createAudit).toHaveBeenCalledWith(settings, expect.anything(), {
+    expect(createAudit).toHaveBeenCalledWith(settings, {
       providers: { "claude-work": { extends: "claude", env: { A: "1" } } },
     });
+    expect(inspect).not.toHaveBeenCalled();
   });
 
   test("returns an empty audit when the binary is unavailable", async () => {
@@ -836,12 +710,6 @@ describe("RPC behavior", () => {
       }),
     });
 
-    await expect(handlers.audit({ fresh: false })).resolves.toEqual({
-      runtimePath: "",
-      runtimeVersion: null,
-      injectionEnabled: false,
-      providers: [],
-      checkedAt: "2026-09-20T00:00:00.000Z",
-    });
+    await expect(handlers.audit({})).resolves.toEqual({ providers: [] });
   });
 });

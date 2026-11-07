@@ -2,14 +2,20 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 
 type PaseoApi = PluginClientContext["paseo"];
 
+/** `setup` is the Diagnostics tab; the id stays so links shared before the rename still open it. */
 export type SurfaceTab = "savings" | "knowledge" | "setup";
-export type KnowledgeScope = {
+export interface KnowledgeScope {
   provider: string | null;
   projectPath: string;
   note?: string;
-};
+}
 
-export type ScreenParams = { section: SurfaceTab; agentId?: string; workspaceId?: string };
+export interface ScreenParams {
+  section: SurfaceTab;
+  agentId?: string;
+  workspaceId?: string;
+}
+
 export function parseScreenParams(params: Record<string, string>): ScreenParams {
   const section: SurfaceTab =
     params.section === "knowledge" || params.section === "setup" ? params.section : "savings";

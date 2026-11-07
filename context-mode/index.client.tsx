@@ -1,8 +1,8 @@
 import type { PluginClientContext, PluginScreenProps } from "@getpaseo/plugin/client";
-import { ContextModeFooter } from "./client/context-mode-footer";
-import { contributeContextModeComposerPills } from "./client/context-mode-pill";
-import { ContextModeSurface } from "./client/context-mode-surface";
+import { ContextModeFooter } from "./client/footer";
+import { contributeContextModeComposerPills } from "./client/pill";
 import { ContextModeSettingsScreen } from "./client/settings-screen";
+import { ContextModeSurface } from "./client/surface";
 
 export default function contribute(client: PluginClientContext) {
   function Screen(props: PluginScreenProps) {

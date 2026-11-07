@@ -20,9 +20,9 @@ These previews were captured from an isolated Paseo test daemon with Context Mod
 
 ## Current scope
 
-- Bundles Context Mode 2.1.4 as a runtime dependency; a separately installed global executable remains optional.
-- Resolves a configured absolute executable first, then the daemon's `PATH`, then the bundled runtime. A global Context Mode 1.x is skipped in favor of the bundled 2.x runtime, since 1.x starts a server but lacks the 2.x tool contracts.
-- Shows Context Mode version, structured diagnostics, provider activation, the data directory, lifetime savings, activity, per-agent and per-project breakdowns, categories, and indexed sources. `ctx_stats` and the Setup tab run against a plugin-owned probe store (`<PASEO_HOME>/plugin-data/context-mode/probe`) so they never write into your real project databases; it starts empty.
+- Bundles Context Mode 2.1.4 and runs it by default. To bring your own, set an absolute path to a Context Mode 2.x executable (or its `cli.mjs`) under Runtime in the plugin settings; clearing it returns to the bundled runtime. `PATH` is not searched.
+- Settings saved by earlier versions migrate automatically: an explicitly configured binary path is kept, and everything else returns to the bundled runtime.
+- Shows Context Mode version, structured diagnostics, provider activation, lifetime savings, activity, per-agent and per-project breakdowns, categories, and indexed sources. The Diagnostics tab runs `ctx_doctor` against a plugin-owned probe store (`<PASEO_HOME>/plugin-data/context-mode/probe`) so it never writes into your real project databases.
 - Reads Context Mode 2 `context.db` files (`<data dir>/projects/<key>/context.db`, schema `user_version` 6) in query-only mode, honors active WAL state, isolates corrupt or locked databases, and reports partial coverage instead of mutating schemas. The data directory is `CONTEXT_MODE_DATA_DIR`, else `~/.context-mode`.
 - Injects the bundled stdio MCP server (`context-mode server --agent <id>`, with the data directory pinned to the one the dashboard reads) into new Claude, Codex, Copilot, and OpenCode agents through Paseo's `agent.create` hook. Cursor, Pi, and OMP are shown as disabled: Context Mode 2 dropped Cursor and OMP, and runs inside Pi only as its own in-process extension (`pi install npm:context-mode`).
 - Preserves existing MCP servers and explicit environment overrides.
@@ -60,9 +60,9 @@ The npm install and update flow requires Paseo `^0.12.0 || ^0.13.0 || ^0.14.0 ||
 
 ## Commands and limits
 
-The daemon launches Context Mode directly with an argv array and no shell. MCP calls cover diagnostics, stats, search, indexing (path or URL), and explicitly confirmed purge. Each subprocess has a 192 KiB combined output cap and a per-tool timeout: 15 seconds for stats, 20 for search and resume, 30 for doctor, and 120 for indexing, purge, execute, and batch. The version and tool-list handshake has a 12-second timeout. Status is cached for 10 seconds and raw stats for 5 seconds.
+The daemon launches Context Mode directly with an argv array and no shell. MCP calls cover diagnostics, search, resume, indexing (path or URL), and explicitly confirmed purge. Each subprocess has a 192 KiB combined output cap and a per-tool timeout: 20 seconds for search and resume, 30 for doctor, and 120 for indexing and purge. The version and tool-list handshake has a 12-second timeout. Status is cached for 10 seconds; the provider coverage check reads config files only and starts no process.
 
-Context Mode updates arrive with plugin updates, since the runtime is bundled. Older Context Mode builds that lack required tools are reported as unsupported. Missing executables, launch failures, timeouts, protocol errors, output limits, unsupported database schemas, locked databases, and partial database scans are surfaced as typed states or warnings.
+With the bundled runtime, Context Mode updates arrive with plugin updates. The doctor therefore never suggests `ctx_upgrade` or `context-mode setup`: an outdated bundled runtime is a warning whose fix is to update the plugin, and the host-config (D3) and hook (D5) checks, which fail for every agent Paseo injects, are shown as warnings without a fix. A configured binary that is missing, not executable, or older than 2.x is reported as unavailable; the plugin never silently falls back to the bundled one. Missing executables, launch failures, timeouts, protocol errors, output limits, unsupported database schemas, locked databases, and partial database scans are surfaced as typed states or warnings.
 
 ## Development
 

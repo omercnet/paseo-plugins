@@ -2,9 +2,9 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join, posix, win32 } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { promisify } from "node:util";
-import type { ContextModeSettings } from "../shared";
+import type { ContextModeSettings } from "../shared/settings";
 import type { ProviderConfigSource } from "./integration";
 
 export interface LaunchDescriptor {
@@ -17,13 +17,12 @@ export type BinaryResolution =
   | {
       state: "found";
       path: string;
-      source: "settings" | "path" | "bundled";
+      source: "settings" | "bundled";
       launch: LaunchDescriptor;
     }
   | { state: "missing"; code: "not-installed" | "unsupported"; message: string };
 
 export interface BinaryResolutionDependencies {
-  env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   nodePath?: string;
   electron?: boolean;
@@ -75,21 +74,6 @@ async function defaultCanExecute(path: string, platform: NodeJS.Platform): Promi
   }
 }
 
-function pathCandidates(
-  name: string,
-  directory: string,
-  platform: NodeJS.Platform,
-  env: NodeJS.ProcessEnv,
-) {
-  const pathApi = platform === "win32" ? win32 : posix;
-  if (platform !== "win32") return [pathApi.join(directory, name)];
-  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-  return [
-    pathApi.join(directory, name),
-    ...extensions.map((extension) => pathApi.join(directory, `${name}${extension}`)),
-  ];
-}
-
 async function windowsLaunchDescriptor(
   candidate: string,
   nodePath: string,
@@ -114,103 +98,92 @@ async function windowsLaunchDescriptor(
   return null;
 }
 
+/**
+ * The user's own binary when one is configured, else the runtime bundled with the plugin. A
+ * configured binary that cannot run is reported, never silently replaced by the bundled one.
+ */
 export async function resolveContextModeBinary(
   settings: ContextModeSettings,
   dependencies: BinaryResolutionDependencies = {},
 ): Promise<BinaryResolution> {
-  const env = dependencies.env ?? process.env;
   const platform = dependencies.platform ?? process.platform;
-  const pathApi = platform === "win32" ? win32 : posix;
   const nodePath = dependencies.nodePath ?? process.execPath;
-  const canExecute =
-    dependencies.canExecute ?? ((path: string) => defaultCanExecute(path, platform));
-  const isFile = dependencies.isFile ?? defaultIsFile;
-  const configuredPath = settings.binaryPath.trim();
-  let unsupportedShim: string | null = null;
-
-  /** A 1.x binary starts a server but has none of the 2.x tool contracts, so the bundled runtime wins. */
-  async function supported(
-    found: Extract<BinaryResolution, { state: "found" }>,
-  ): Promise<Extract<BinaryResolution, { state: "found" }> | null> {
-    const version = await (dependencies.readVersion ?? readContextModeVersion)(found.launch);
-    return version !== null && Number.parseInt(version, 10) < 2 ? null : found;
-  }
-
-  async function resolveCandidate(
-    candidate: string,
-    source: "settings" | "path",
-  ): Promise<Extract<BinaryResolution, { state: "found" }> | null> {
-    if (!(await canExecute(candidate))) return null;
-    const canonicalPath = await realpath(candidate).catch(() => candidate);
-    if (platform !== "win32") {
-      return supported({
-        state: "found",
-        path: canonicalPath,
-        source,
-        launch: { program: canonicalPath, args: [] },
-      });
-    }
-    const launch = await windowsLaunchDescriptor(canonicalPath, nodePath, isFile);
-    if (!launch) {
-      unsupportedShim = canonicalPath;
-      return null;
-    }
-    return supported({ state: "found", path: canonicalPath, source, launch });
-  }
-
-  if (settings.binaryMode === "path" && configuredPath.length > 0) {
-    if (!pathApi.isAbsolute(configuredPath)) {
-      return {
-        state: "missing",
-        code: "not-installed",
-        message: "The configured Context Mode binary path is not absolute.",
-      };
-    }
-    const configured = await resolveCandidate(configuredPath, "settings");
-    if (configured) return configured;
-  }
-
-  for (const directory of (env.PATH ?? "").split(pathApi.delimiter).filter(Boolean)) {
-    for (const candidate of pathCandidates("context-mode", directory, platform, env)) {
-      const resolved = await resolveCandidate(candidate, "path");
-      if (resolved) return resolved;
-    }
+  if (settings.binaryPath !== null) {
+    return resolveConfiguredBinary(settings.binaryPath, {
+      platform,
+      nodePath,
+      canExecute: dependencies.canExecute ?? ((path: string) => defaultCanExecute(path, platform)),
+      isFile: dependencies.isFile ?? defaultIsFile,
+      readVersion: dependencies.readVersion ?? readContextModeVersion,
+    });
   }
 
   const bundledCli = await findBundledCli(dependencies.paseo);
-  if (bundledCli) {
-    const canonicalPath = await realpath(bundledCli).catch(() => bundledCli);
-    // Under the desktop app `nodePath` is Electron. Paseo strips this variable from agent
-    // environments, so an injected MCP server needs it to start as Node.
-    const electron = dependencies.electron ?? process.versions.electron !== undefined;
+  if (!bundledCli) {
     return {
-      state: "found",
-      path: canonicalPath,
-      source: "bundled",
-      launch: {
-        program: nodePath,
-        args: [canonicalPath],
-        ...(electron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
-      },
-    };
-  }
-
-  if (unsupportedShim) {
-    return {
-      code: "unsupported",
       state: "missing",
-      message: `Context Mode was found at ${unsupportedShim}, but this Windows shim could not be safely resolved to its CLI module. Reinstall Context Mode with npm or configure the absolute cli.mjs path.`,
+      code: "not-installed",
+      message:
+        "The bundled Context Mode runtime is missing from this plugin install. Reinstall the plugin or configure your own binary.",
     };
   }
-  const configuredDetail =
-    settings.binaryMode === "path" && configuredPath.length > 0
-      ? ` The configured path (${configuredPath}) was unavailable, and no fallback was found on PATH.`
-      : "";
+  const canonicalPath = await realpath(bundledCli).catch(() => bundledCli);
+  // Under the desktop app `nodePath` is Electron. Paseo strips this variable from agent
+  // environments, so an injected MCP server needs it to start as Node.
+  const electron = dependencies.electron ?? process.versions.electron !== undefined;
   return {
-    code: "not-installed",
-    state: "missing",
-    message: `Context Mode is not installed or is not executable on this Paseo host.${configuredDetail}`,
+    state: "found",
+    path: canonicalPath,
+    source: "bundled",
+    launch: {
+      program: nodePath,
+      args: [canonicalPath],
+      ...(electron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
+    },
   };
+}
+
+interface ConfiguredBinaryChecks {
+  platform: NodeJS.Platform;
+  nodePath: string;
+  canExecute: (path: string) => Promise<boolean>;
+  isFile: (path: string) => Promise<boolean>;
+  readVersion: (launch: LaunchDescriptor) => Promise<string | null>;
+}
+
+async function resolveConfiguredBinary(
+  configuredPath: string,
+  checks: ConfiguredBinaryChecks,
+): Promise<BinaryResolution> {
+  if (!(await checks.canExecute(configuredPath))) {
+    return {
+      state: "missing",
+      code: "not-installed",
+      message: `The configured Context Mode binary (${configuredPath}) is missing or not executable.`,
+    };
+  }
+  const canonicalPath = await realpath(configuredPath).catch(() => configuredPath);
+  const launch =
+    checks.platform === "win32"
+      ? await windowsLaunchDescriptor(canonicalPath, checks.nodePath, checks.isFile)
+      : { program: canonicalPath, args: [] };
+  if (!launch) {
+    return {
+      state: "missing",
+      code: "unsupported",
+      message: `The configured Context Mode binary (${canonicalPath}) is a Windows shim whose CLI module could not be found. Configure the absolute cli.mjs path instead.`,
+    };
+  }
+  // 1.x starts a server but lacks the 2.x tool contracts the plugin and injected agents rely on.
+  const version = await checks.readVersion(launch);
+  if (version !== null && Number.parseInt(version, 10) < 2) {
+    return {
+      state: "missing",
+      code: "unsupported",
+      message: `The configured Context Mode binary is version ${version}; Context Mode 2 is required. Point it at a 2.x install or switch back to the bundled runtime.`,
+    };
+  }
+  return { state: "found", path: canonicalPath, source: "settings", launch };
 }
 
 const VERSION_PATTERN = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/;

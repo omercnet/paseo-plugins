@@ -1,9 +1,10 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { ContextModePlatformSchema } from "./knowledge";
+import { ContextModePlatformSchema } from "./providers";
 
 const refreshInput = z.object({ fresh: z.boolean().default(false) }).strict();
-const binarySource = z.enum(["settings", "path", "bundled"]);
+/** `settings`: the user's own binary; `bundled`: the runtime shipped with the plugin. */
+const binarySource = z.enum(["settings", "bundled"]);
 const failureCode = z.enum([
   "not-installed",
   "invalid-settings",
@@ -31,23 +32,19 @@ export const BinaryStatusSchema = z.discriminatedUnion("state", [
   }),
 ]);
 
-export const ProviderIntegrationSchema = z.object({
-  provider: z.string(),
-  /** `--agent` id, or null when Context Mode 2.x cannot serve this provider over MCP. */
-  platform: ContextModePlatformSchema.nullable(),
-  activation: z.enum(["native", "mcp", "disabled"]),
-  /** Context Mode data dir, shared by every provider. */
-  storageRoot: z.string(),
-  detail: z.string().max(4_096),
-});
+export const ProviderIntegrationSchema = z
+  .object({
+    provider: z.string(),
+    /** `--agent` id, or null when Context Mode 2.x cannot serve this provider over MCP. */
+    platform: ContextModePlatformSchema.nullable(),
+    activation: z.enum(["native", "mcp", "disabled"]),
+    detail: z.string().max(4_096),
+  })
+  .strict();
 
-export const IntegrationAuditSchema = z.object({
-  runtimePath: z.string(),
-  runtimeVersion: z.string().nullable(),
-  injectionEnabled: z.boolean(),
-  providers: z.array(ProviderIntegrationSchema),
-  checkedAt: z.string().datetime(),
-});
+export const IntegrationAuditSchema = z
+  .object({ providers: z.array(ProviderIntegrationSchema) })
+  .strict();
 
 export const getContextModeStatus = defineRpc({
   name: "context-mode.status",
@@ -57,7 +54,7 @@ export const getContextModeStatus = defineRpc({
 
 export const getContextModeIntegrationAudit = defineRpc({
   name: "context-mode.integration-audit",
-  input: refreshInput,
+  input: z.object({}).strict(),
   output: IntegrationAuditSchema,
 });
 

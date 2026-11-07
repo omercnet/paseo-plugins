@@ -5,18 +5,17 @@ import { resolveContextModeBinary } from "./server/binary";
 import { createContextModeHandlers } from "./server/handlers";
 import { injectContextModeOnCreate, readProviderOverrides } from "./server/integration";
 import { createContextModeKnowledgeHandlers } from "./server/knowledge";
+import { getContextModeDoctorReport } from "./shared/actions";
+import { getContextModeAnalyticsDashboard } from "./shared/analytics";
+import { getContextModeIntegrationAudit, getContextModeStatus } from "./shared/contracts";
 import {
-  contextModeSettings,
   fetchAndIndexContextMode,
-  getContextModeAnalyticsDashboard,
-  getContextModeDoctorReport,
-  getContextModeIntegrationAudit,
-  getContextModeStatus,
   indexContextModePath,
   purgeContextModeKnowledge,
   resumeContextModeSession,
   searchContextModeKnowledge,
-} from "./shared";
+} from "./shared/knowledge";
+import { contextModeSettings } from "./shared/settings";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(contextModeSettings);
@@ -28,8 +27,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getContextModeAnalyticsDashboard, (_input, context) =>
     createContextModeAnalyticsHandler({
       resolveVersion: async () => {
-        const status = await handlers.status({ fresh: false }, context).catch(() => null);
-        return status?.state === "ready" ? status.version : null;
+        const status = await handlers.status({ fresh: false }, context);
+        return status.state === "ready" ? status.version : null;
       },
     })(),
   );

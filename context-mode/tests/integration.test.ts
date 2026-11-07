@@ -5,7 +5,7 @@ import {
   injectContextModeOnCreate,
   readProviderOverrides,
 } from "../server/integration";
-import { ContextModeSettingsSchema } from "../shared";
+import { ContextModeSettingsSchema } from "../shared/settings";
 
 const launch = {
   program: "/usr/bin/node",
@@ -239,16 +239,11 @@ describe("native registration detection", () => {
 });
 
 describe("integration audit", () => {
-  test("reports supported mappings, unsupported providers, and one shared data dir", async () => {
-    const audit = await createIntegrationAudit(
-      settings,
-      { path: launch.args[0], version: "2.1.4" },
-      {
-        ...noNative,
-        fileContains: async (path) => path === join("/home/test", ".codex", "config.toml"),
-        now: () => new Date("2026-09-20T00:00:00.000Z"),
-      },
-    );
+  test("reports supported mappings and unsupported providers", async () => {
+    const audit = await createIntegrationAudit(settings, {
+      ...noNative,
+      fileContains: async (path) => path === join("/home/test", ".codex", "config.toml"),
+    });
 
     expect(
       audit.providers.map(({ provider, platform, activation }) => [provider, platform, activation]),
@@ -262,26 +257,14 @@ describe("integration audit", () => {
       ["omp", null, "disabled"],
       ["omp-plugin", null, "disabled"],
     ]);
-    expect(new Set(audit.providers.map(({ storageRoot }) => storageRoot))).toEqual(
-      new Set([join("/home/test", ".context-mode")]),
-    );
-    expect(audit.providers.find(({ provider }) => provider === "pi")?.detail).toContain(
-      "pi install npm:context-mode",
-    );
-    expect(audit.runtimeVersion).toBe("2.1.4");
-    expect(audit.checkedAt).toBe("2026-09-20T00:00:00.000Z");
   });
 
-  test("honors CONTEXT_MODE_DATA_DIR and disabled activation", async () => {
+  test("reports every provider disabled when automatic activation is off", async () => {
     const audit = await createIntegrationAudit(
       ContextModeSettingsSchema.parse({ autoInject: false }),
-      { path: launch.args[0], version: null },
-      { ...noNative, env: { CONTEXT_MODE_DATA_DIR: "/data/cm" } },
+      noNative,
     );
-
-    expect(audit.injectionEnabled).toBe(false);
     expect(audit.providers.every(({ activation }) => activation === "disabled")).toBe(true);
-    expect(audit.providers[0]?.storageRoot).toBe("/data/cm");
   });
 });
 
@@ -326,16 +309,12 @@ describe("providers derived through extends", () => {
   });
 
   test("are audited after the canonical rows; unknown bases are skipped", async () => {
-    const audit = await createIntegrationAudit(
-      settings,
-      { path: launch.args[0], version: "2.1.4" },
-      {
-        ...noNative,
-        providers,
-        fileContains: async (path) =>
-          path === join("/srv/claude-work", "plugins", "installed_plugins.json"),
-      },
-    );
+    const audit = await createIntegrationAudit(settings, {
+      ...noNative,
+      providers,
+      fileContains: async (path) =>
+        path === join("/srv/claude-work", "plugins", "installed_plugins.json"),
+    });
 
     expect(audit.providers.slice(-3)).toMatchObject([
       { provider: "claude-work", platform: "claude-code", activation: "native" },
