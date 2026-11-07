@@ -153,7 +153,7 @@ function ReadyContextModeSettings({ settings, theme }: ReadyContextModeSettingsP
       <SettingsSection title="Storage">
         <SettingsCard>
           <SettingsRow
-            label="Storage"
+            label="Data location"
             hint="Context Mode keeps one store per project, shared by every provider"
           >
             <Text style={textStyle}>Per project</Text>

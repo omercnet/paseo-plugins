@@ -127,8 +127,8 @@ describe("structured actions", () => {
     const outside = join(dataDir, "keep.md");
     await writeFile(join(reports, name), "report");
     await writeFile(outside, "not a report");
-    try {
-      const handlers = createContextModeActionHandlers(settingsHandle(), {
+    const doctorReporting = (reportLine: string) =>
+      createContextModeActionHandlers(settingsHandle(), {
         resolveBinary: async () => ({
           state: "found",
           path: "/bin/context-mode",
@@ -140,27 +140,14 @@ describe("structured actions", () => {
           cwd: dataDir,
           dataDir,
         }),
-        callTool: async () => `${DOCTOR_OUTPUT}\nReport file: ~/.paseo/probe/reports/${name}`,
-      });
-      await handlers.doctor({ provider: "codex" });
+        callTool: async () => `${DOCTOR_OUTPUT}\nReport file: ${reportLine}`,
+      }).doctor({ provider: "codex" });
+    try {
+      await doctorReporting(`~/.paseo/probe/reports/${name}`);
       expect(await readdir(reports)).toEqual([]);
 
       // A reported path that is not a doctor report name is never deleted.
-      const crafted = createContextModeActionHandlers(settingsHandle(), {
-        resolveBinary: async () => ({
-          state: "found",
-          path: "/bin/context-mode",
-          source: "bundled",
-          launch: { program: "/bin/context-mode", args: [] },
-        }),
-        probeOptions: async (platform: ContextModePlatform = "claude-code") => ({
-          platform,
-          cwd: dataDir,
-          dataDir,
-        }),
-        callTool: async () => `${DOCTOR_OUTPUT}\nReport file: ${outside}`,
-      });
-      await crafted.doctor({ provider: "codex" });
+      await doctorReporting(outside);
       expect(await readFile(outside, "utf8")).toBe("not a report");
     } finally {
       await rm(dataDir, { recursive: true, force: true });

@@ -31,7 +31,7 @@ const REQUIRED_SCHEMA: Record<string, readonly string[]> = {
 
 /** Mirrors upstream `ctx_stats`: tool calls, excluding cost rows and ctx_stats itself. */
 const CALL = "tool IS NOT NULL AND kind <> 'cost' AND tool <> 'ctx_stats'";
-/** The panel's own calls (search, index, resume, forget) are not agent work and stay out of every figure. */
+/** The panel's own calls stay out of event, session and savings figures; sources it indexes are listed. */
 const AGENT_WORK = `session_id <> '${PLUGIN_SESSION_ID}'`;
 /** Mirrors upstream `ctx_stats` event kinds: cost rows and ctx_stats itself are bookkeeping. */
 const EVENT_COUNT =
