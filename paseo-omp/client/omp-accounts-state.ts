@@ -47,6 +47,17 @@ export function loginIsOpen(login: Pick<OmpLogin, "step">): boolean {
   return login.step === "starting" || login.step === "waiting" || login.step === "verifying";
 }
 
+/**
+ * The login to cancel when the sign-in modal closes. A login that was just started may not be in
+ * the polled view yet, so an unseen one still counts as open; only a login seen settled is left.
+ */
+export function loginIdToCancelOnClose(
+  loginId: string | undefined,
+  login: Pick<OmpLogin, "step"> | undefined,
+): string | undefined {
+  return loginId && (!login || loginIsOpen(login)) ? loginId : undefined;
+}
+
 /** Polls quickly while a sign-in is moving, otherwise slowly: the server already caches reads. */
 export function accountsPollInterval(view: OmpAccountsView | undefined): number {
   return view?.logins.some(loginIsOpen) ? OPEN_LOGIN_POLL_MS : IDLE_POLL_MS;
