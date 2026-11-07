@@ -282,4 +282,23 @@ describe("worktree refresh", () => {
     expect(results).toEqual([{ kind: "unchanged" }, { kind: "unchanged" }]);
     expect(calls).toBe(1);
   });
+
+  test("a later caller rejoins its own signal's run after another signal started one", async () => {
+    const signalA = new AbortController().signal;
+    const signalB = new AbortController().signal;
+    let calls = 0;
+    const refresh = createRepositoryRefreshCoordinator(async () => {
+      calls += 1;
+      return "";
+    });
+
+    const results = await Promise.all([
+      refresh("/repo", "origin", null, null, signalA),
+      refresh("/repo", "origin", null, null, signalB),
+      refresh("/repo", "origin", null, null, signalA),
+    ]);
+
+    expect(results).toEqual([{ kind: "unchanged" }, { kind: "unchanged" }, { kind: "unchanged" }]);
+    expect(calls).toBe(2);
+  });
 });
