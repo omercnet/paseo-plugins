@@ -1,4 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { IntegrationAudit, ProviderIntegration } from "../shared/contracts";
@@ -172,11 +173,17 @@ async function defaultPathExists(path: string): Promise<boolean> {
   }
 }
 
+/** Streams the file, so a large `~/.claude.json` is still searched without loading it whole. */
 async function defaultFileContains(path: string, text: string): Promise<boolean> {
   try {
-    const metadata = await stat(path);
-    if (!metadata.isFile() || metadata.size > 1024 * 1024) return false;
-    return (await readFile(path, "utf8")).includes(text);
+    if (!(await stat(path)).isFile()) return false;
+    let tail = "";
+    for await (const chunk of createReadStream(path, { encoding: "utf8" })) {
+      const window = tail + chunk;
+      if (window.includes(text)) return true;
+      tail = window.slice(window.length - text.length + 1);
+    }
+    return false;
   } catch {
     return false;
   }

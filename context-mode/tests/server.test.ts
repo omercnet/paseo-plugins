@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -252,6 +252,21 @@ describe("Context Mode runtime resolution", () => {
     await expect(readContextModeVersion({ program: "/usr/bin/node", args: [cli] })).resolves.toBe(
       "2.1.4",
     );
+  });
+
+  test("asks a non-package binary for --version once until the file changes", async () => {
+    const program = await executable(
+      `require("node:fs").appendFileSync(__filename + ".runs", "x"); console.log("context-mode 2.1.4");`,
+    );
+    const runs = async () => (await readFile(`${program}.runs`, "utf8")).length;
+
+    await expect(readContextModeVersion(launch(program))).resolves.toBe("2.1.4");
+    await expect(readContextModeVersion(launch(program))).resolves.toBe("2.1.4");
+    expect(await runs()).toBe(1);
+
+    await utimes(program, new Date(), new Date(Date.now() + 60_000));
+    await expect(readContextModeVersion(launch(program))).resolves.toBe("2.1.4");
+    expect(await runs()).toBe(2);
   });
 
   test("launches the bundled runtime as Node when the host is Electron", async () => {

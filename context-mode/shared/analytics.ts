@@ -64,6 +64,9 @@ export const ProjectAnalyticsSchema = z
   })
   .strict();
 
+/** Paseo provider whose Context Mode store holds the row, for Resume and Forget; null when none reaches it. */
+const storeProvider = z.string().min(1).max(128).nullable();
+
 /** One recorded agent session, newest first; the plugin's own `paseo-context-mode` calls are excluded. */
 export const SessionAnalyticsSchema = z
   .object({
@@ -72,6 +75,7 @@ export const SessionAnalyticsSchema = z
     projectPath: z.string().min(1).max(4_096),
     events: nonNegativeInteger,
     lastActivityAt: timestamp,
+    provider: storeProvider,
   })
   .strict();
 
@@ -100,6 +104,7 @@ export const IndexedSourceAnalyticsSchema = z
     chunks: nonNegativeInteger,
     indexedBytes: nonNegativeInteger,
     indexedAt: timestamp,
+    provider: storeProvider,
   })
   .strict();
 

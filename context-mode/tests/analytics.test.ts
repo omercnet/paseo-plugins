@@ -395,6 +395,7 @@ describe("structured Context Mode analytics", () => {
           chunks: 1,
           indexedBytes: 52,
           indexedAt: "2026-09-20T09:00:00.000Z",
+          provider: "codex",
         },
         {
           agent: "claude-code",
@@ -404,6 +405,7 @@ describe("structured Context Mode analytics", () => {
           chunks: 4,
           indexedBytes: 2_048,
           indexedAt: "2026-09-19T10:05:00.000Z",
+          provider: "claude",
         },
       ]);
     } finally {
@@ -469,6 +471,32 @@ describe("structured Context Mode analytics", () => {
     expect(result.byProject.map((project) => project.path)).toEqual(["/work/b", "/work/a"]);
   });
 
+  test("routes each row's Resume and Forget to a provider that reaches its store", async () => {
+    const hostDir = await temporaryDataDir();
+    const workDir = await temporaryDataDir();
+    await createDatabase(hostDir, "1111111111111111", {
+      worktree: "/work/a",
+      events: [singleCall("mcp:host", "codex", 1_000, 200), singleCall("mcp:x", "cursor", 10, 1)],
+    });
+    await createDatabase(workDir, "2222222222222222", {
+      worktree: "/work/b",
+      events: [singleCall("mcp:work", "codex", 4_000, 400)],
+    });
+
+    const result = await collectContextModeAnalytics({
+      env: { CONTEXT_MODE_DATA_DIR: hostDir },
+      home: "/nonexistent-home",
+      // The codex provider itself moved to workDir, so host-dir codex rows need another way in.
+      providers: { codex: { env: { CONTEXT_MODE_DATA_DIR: workDir } } },
+    });
+
+    const providerOf = (sessionId: string) =>
+      result.recentSessions.find((session) => session.sessionId === sessionId)?.provider;
+    expect(providerOf("mcp:work")).toBe("codex");
+    expect(providerOf("mcp:host")).toBe("claude");
+    expect(providerOf("mcp:x")).toBe("claude");
+  });
+
   test("keeps the plugin's own calls out of sessions and totals, newest session first", async () => {
     const dataDir = await temporaryDataDir();
     await createDatabase(dataDir, "1111111111111111", {
@@ -503,6 +531,7 @@ describe("structured Context Mode analytics", () => {
         projectPath: "/work/b",
         events: 2,
         lastActivityAt: "2026-09-21T10:00:00.000Z",
+        provider: "claude",
       },
       {
         sessionId: "mcp:old",
@@ -510,6 +539,7 @@ describe("structured Context Mode analytics", () => {
         projectPath: "/work/a",
         events: 1,
         lastActivityAt: "2026-09-19T10:00:00.000Z",
+        provider: "codex",
       },
     ]);
   });
@@ -600,6 +630,25 @@ describe("structured Context Mode analytics", () => {
       expect(result.warnings).toContainEqual(
         expect.objectContaining({ code: "database-locked", project: "2222222222222222" }),
       );
+    } finally {
+      writer.exec("ROLLBACK");
+      writer.close();
+    }
+  });
+
+  test("keeps a lone locked database partial rather than unsupported", async () => {
+    const dataDir = await temporaryDataDir();
+    const writer = await openDatabase(dataDir, "2222222222222222", {
+      worktree: "/work/busy",
+      events: [singleCall("mcp:busy", "codex", 100, 10)],
+    });
+    writer.exec("BEGIN EXCLUSIVE");
+
+    try {
+      const result = await collect(dataDir);
+
+      expect(result.completeness).toBe("partial");
+      expect(result.totals.projects).toBe(0);
     } finally {
       writer.exec("ROLLBACK");
       writer.close();

@@ -10,6 +10,11 @@ import type {
 } from "../shared/analytics";
 import { CONTEXT_MODE_ANALYTICS_SCHEMA_VERSION } from "../shared/analytics";
 import {
+  CONTEXT_MODE_PROVIDERS,
+  IN_PROCESS_PROVIDERS,
+  providerForPlatform,
+} from "../shared/providers";
+import {
   ContextModeDatabaseError,
   type ContextModeDatabaseSnapshot,
   type DatabaseSavings,
@@ -159,18 +164,33 @@ export async function collectContextModeAnalytics(
   const env = dependencies.env ?? process.env;
   const home = dependencies.home ?? homedir();
   const providers = dependencies.providers ?? {};
+  const dataDirOf = (id: string) =>
+    resolveContextModeDataDir({ ...env, ...resolveProvider(id, providers).env }, home);
   // A configured provider's own CONTEXT_MODE_DATA_DIR is where its injected agents write.
   const dataDirs = new Set([
     resolveContextModeDataDir(env, home),
-    ...Object.keys(providers).map((id) =>
-      resolveContextModeDataDir({ ...env, ...resolveProvider(id, providers).env }, home),
-    ),
+    ...Object.keys(providers).map(dataDirOf),
   ]);
+  // Resume and Forget run through a provider, so each row names one that reaches its store,
+  // preferring the provider that recorded it.
+  const actionable = [
+    ...CONTEXT_MODE_PROVIDERS.map((entry) => entry.provider),
+    ...IN_PROCESS_PROVIDERS.map((entry) => entry.provider),
+    ...Object.keys(providers).filter((id) => {
+      const { base, platform } = resolveProvider(id, providers);
+      return platform !== null || IN_PROCESS_PROVIDERS.some((entry) => entry.provider === base);
+    }),
+  ];
+  const storeProvider = (agent: string, dataDir: string): string | null => {
+    const own = providerForPlatform(agent)?.provider;
+    const candidates = own ? [own, ...actionable] : actionable;
+    return candidates.find((id) => dataDirOf(id) === dataDir) ?? null;
+  };
   const warnings = new WarningCollector();
-  const databases: ContextModeProjectDatabase[] = [];
+  const databases: (ContextModeProjectDatabase & { dataDir: string })[] = [];
   for (const dataDir of dataDirs) {
     const discovery = await discover(dataDir);
-    databases.push(...discovery.databases);
+    databases.push(...discovery.databases.map((database) => ({ ...database, dataDir })));
     for (const warning of discovery.warnings) warnings.add(warning);
   }
 
@@ -186,12 +206,16 @@ export async function collectContextModeAnalytics(
   const days = new Map<string, MutableSummary>();
   const sources: IndexedSourceAnalytics[] = [];
   const recentSessions: SessionAnalytics[] = [];
+  let unsupportedSchema = false;
 
   for (const database of databases) {
     let snapshot: ContextModeDatabaseSnapshot;
     try {
       snapshot = readDatabase(database.path);
     } catch (error) {
+      if (error instanceof ContextModeDatabaseError && error.code === "unsupported-schema") {
+        unsupportedSchema = true;
+      }
       warnings.add(databaseWarning(database.project, error));
       continue;
     }
@@ -239,9 +263,15 @@ export async function collectContextModeAnalytics(
         chunks: source.chunks,
         indexedBytes: source.bytes,
         indexedAt: source.createdAt,
+        provider: storeProvider(source.agent, database.dataDir),
       });
     }
-    recentSessions.push(...snapshot.sessionList);
+    recentSessions.push(
+      ...snapshot.sessionList.map((session) => ({
+        ...session,
+        provider: storeProvider(session.agent, database.dataDir),
+      })),
+    );
     for (const message of snapshot.truncated) {
       warnings.add({ code: "result-truncated", project: database.project, message });
     }
@@ -310,8 +340,8 @@ export async function collectContextModeAnalytics(
     }
   }
 
-  const attempted = databases.length;
-  const unreadable = attempted > 0 && projects.length === 0;
+  // A locked or unopenable store is a transient gap; only a schema mismatch warrants "update Context Mode".
+  const unsupported = projects.length === 0 && unsupportedSchema;
   const coverage = warnings.hasWarnings ? "partial" : "complete";
   const contextModeVersion = dependencies.resolveVersion
     ? await dependencies.resolveVersion()
@@ -320,7 +350,7 @@ export async function collectContextModeAnalytics(
   return {
     schemaVersion: CONTEXT_MODE_ANALYTICS_SCHEMA_VERSION,
     contextModeVersion,
-    completeness: unreadable ? "unsupported" : coverage,
+    completeness: unsupported ? "unsupported" : coverage,
     warnings: warnings.finish(),
     totals: {
       agents: agents.size,

@@ -187,10 +187,13 @@ async function resolveConfiguredBinary(
 }
 
 const VERSION_PATTERN = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/;
+/** `--version` results per entry file; status, audit and every RPC resolve the binary again. */
+const cliVersions = new Map<string, { mtimeMs: number; version: string | null }>();
 
 /**
  * The MCP handshake reports `dev` for npm builds, so the version comes from the package.json beside
- * the CLI entry when it is a Context Mode install, else from `context-mode --version`.
+ * the CLI entry when it is a Context Mode install, else from `context-mode --version`, which only
+ * runs again once the entry file changes.
  */
 export async function readContextModeVersion(
   launch: LaunchDescriptor,
@@ -205,14 +208,20 @@ export async function readContextModeVersion(
   } catch {
     // Not a package directory; ask the CLI.
   }
+  const mtimeMs = (await stat(entry).catch(() => null))?.mtimeMs;
+  const cached = cliVersions.get(entry);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.version;
+  let version: string | null = null;
   try {
     const { stdout } = await promisify(execFile)(launch.program, [...launch.args, "--version"], {
       timeout: timeoutMs,
       windowsHide: true,
       env: launch.env ? { ...process.env, ...launch.env } : undefined,
     });
-    return VERSION_PATTERN.exec(stdout)?.[0] ?? null;
+    version = VERSION_PATTERN.exec(stdout)?.[0] ?? null;
   } catch {
-    return null;
+    // Unknown version: not treated as 1.x.
   }
+  if (mtimeMs !== undefined) cliVersions.set(entry, { mtimeMs, version });
+  return version;
 }

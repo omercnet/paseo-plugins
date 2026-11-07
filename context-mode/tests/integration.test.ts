@@ -1,3 +1,5 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
@@ -176,6 +178,22 @@ describe("native registration detection", () => {
         { env: { CLAUDE_CONFIG_DIR: "/srv/claude" } },
       ),
     ).toBe(true);
+  });
+
+  test("finds the Claude user MCP entry at the end of a ~/.claude.json over 1 MiB", async () => {
+    const home = await mkdtemp(join(tmpdir(), "paseo-context-mode-home-"));
+    try {
+      const history = JSON.stringify("x".repeat(2 * 1024 * 1024));
+      await writeFile(
+        join(home, ".claude.json"),
+        `{"history":${history},"mcpServers":{"context-mode":{}}}`,
+      );
+      const request = { config: { provider: "claude", mcpServers: {} } };
+      const result = await injectContextModeOnCreate(request, settings, launch, { home, env: {} });
+      expect(result).toBe(request);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   test("finds the Codex config.toml MCP entry or plugin under CODEX_HOME", async () => {

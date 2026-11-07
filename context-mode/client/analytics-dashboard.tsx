@@ -13,7 +13,6 @@ import {
   type SessionAnalytics,
 } from "../shared/analytics";
 import { type ResumeSessionInput, resumeContextModeSession } from "../shared/knowledge";
-import { providerForPlatform } from "../shared/providers";
 import { ActionButton, Card, ErrorText, Pending, StatusPill, type StatusTone } from "./controls";
 import {
   ForgetSessionButton,
@@ -708,7 +707,6 @@ interface SourceRowProps extends Pick<PluginSurfaceProps, "theme" | "host"> {
 }
 
 function SourceRow({ host, source, styles, theme }: SourceRowProps) {
-  const owner = providerForPlatform(source.agent);
   const indexedAt = source.indexedAt ? ` · ${formatDate(source.indexedAt, true)}` : "";
   return (
     <View style={styles.stack}>
@@ -732,11 +730,11 @@ function SourceRow({ host, source, styles, theme }: SourceRowProps) {
           <Text style={styles.meta}>{formatInteger(source.chunks)} chunks</Text>
         </View>
       </View>
-      {owner ? (
+      {source.provider ? (
         <ForgetSourceButton
           theme={theme}
           host={host}
-          provider={owner.provider}
+          provider={source.provider}
           projectPath={source.projectPath}
           source={source.source}
         />
@@ -751,7 +749,6 @@ interface RecentSessionRowProps extends Pick<PluginSurfaceProps, "theme" | "host
 }
 
 function RecentSessionRow({ theme, host, session, styles }: RecentSessionRowProps) {
-  const owner = providerForPlatform(session.agent);
   const lastActivity = session.lastActivityAt
     ? formatDate(session.lastActivityAt, true)
     : "No recorded activity";
@@ -778,11 +775,11 @@ function RecentSessionRow({ theme, host, session, styles }: RecentSessionRowProp
           <Text style={styles.meta}>events</Text>
         </View>
       </View>
-      {owner ? (
+      {session.provider ? (
         <>
           <ResumeState
             target={{
-              provider: owner.provider,
+              provider: session.provider,
               projectPath: session.projectPath,
               sessionId: session.sessionId,
             }}
@@ -792,7 +789,7 @@ function RecentSessionRow({ theme, host, session, styles }: RecentSessionRowProp
           <ForgetSessionButton
             host={host}
             projectPath={session.projectPath}
-            provider={owner.provider}
+            provider={session.provider}
             sessionId={session.sessionId}
             theme={theme}
           />
