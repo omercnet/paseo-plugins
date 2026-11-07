@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 type Slot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
-type Instance = { slots: Slot[]; cursor: number; render: () => void; effects: (() => void)[] };
+type Instance = {
+  slots: Slot[];
+  cursor: number;
+  render: () => void;
+  schedule: () => void;
+  effects: (() => void)[];
+};
 
 const runtime = vi.hoisted(() => ({ current: null as Instance | null }));
 
@@ -33,7 +39,7 @@ vi.mock("react", () => {
       const set = (next: T) => {
         if (Object.is(s.value, next)) return;
         s.value = next;
-        instance.render();
+        instance.schedule();
       };
       return [s.value as T, set];
     },
@@ -47,7 +53,21 @@ vi.mock("react", () => {
         s.cleanup = effect() ?? undefined;
       });
     },
-    useSyncExternalStore: <T>(_subscribe: unknown, getSnapshot: () => T) => getSnapshot(),
+    useSyncExternalStore: <T>(
+      subscribe: (listener: () => void) => () => void,
+      getSnapshot: () => T,
+    ) => {
+      const instance = runtime.current as Instance;
+      const s = slot();
+      if (changed(s, [subscribe])) {
+        s.deps = [subscribe];
+        instance.effects.push(() => {
+          s.cleanup?.();
+          s.cleanup = subscribe(() => instance.schedule());
+        });
+      }
+      return getSnapshot();
+    },
   };
 });
 
@@ -62,21 +82,39 @@ import {
 } from "../client/use-persisted-game";
 import { DEFAULT_GAME_SETTINGS } from "../shared/game-settings";
 
+const TEST_PUZZLES = [PUZZLES[0]];
+let renders = 0;
+const mounted: Instance[] = [];
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}
+
 function mountHook(): {
   readonly session: () => Extract<PersistedGameSession, { status: "ready" }>;
   readonly rerender: () => void;
 } {
   let result: PersistedGameSession;
+  let scheduled = false;
   const instance: Instance = {
     slots: [],
     cursor: 0,
     effects: [],
+    schedule() {
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        instance.render();
+      });
+    },
     render() {
+      if (++renders > 50) throw new Error("render loop");
       for (let pass = 0; pass < 20; pass++) {
         instance.cursor = 0;
         instance.effects = [];
         runtime.current = instance;
-        result = usePersistedGame("host:deck", [PUZZLES[0]]);
+        result = usePersistedGame("host:deck", TEST_PUZZLES);
         runtime.current = null;
         if (instance.effects.length === 0) return;
         for (const effect of instance.effects) effect();
@@ -88,34 +126,46 @@ function mountHook(): {
     if (result.status !== "ready") throw new Error("session is not ready");
     return result;
   };
+  mounted.push(instance);
   return { session, rerender: () => instance.render() };
 }
 
 describe("shared controller across hook instances", () => {
-  beforeEach(() => disposePersistedGames());
+  beforeEach(() => {
+    disposePersistedGames();
+    mounted.length = 0;
+    renders = 0;
+  });
 
-  test("an instance keeps saving after another instance recovers the shared controller", async () => {
-    const save = vi.fn(async () => true);
-    const ready = {
+  test("an instance re-acquires the shared controller after another instance reloads", async () => {
+    let revision = 1;
+    let stored: unknown;
+    const base = {
       status: "ready",
-      values: DEFAULT_GAME_SETTINGS,
-      revision: "revision-1",
       saveError: null,
-      save,
       reload: async () => {},
       reset: async () => true,
     };
-    settingsHook.current = ready;
+    const save = vi.fn(async (values: unknown) => {
+      revision += 1;
+      stored = { ...base, values, revision: `revision-${revision}`, save };
+      return true;
+    });
+    settingsHook.current = { ...base, values: DEFAULT_GAME_SETTINGS, revision: "revision-1", save };
     const a = mountHook();
     const b = mountHook();
 
-    await a.session().reload();
-    settingsHook.current = { ...ready, revision: "revision-2" };
-    a.rerender();
-    b.rerender();
     b.session().dispatch({ type: "set-cells", indexes: [0], state: "marked", now: 1 });
-    await Promise.resolve();
+    await flush();
+    settingsHook.current = stored;
+    for (const instance of mounted) instance.render();
+    expect(save).toHaveBeenCalledTimes(1);
 
-    expect(save).toHaveBeenCalled();
+    await a.session().reload();
+    await flush();
+    b.session().dispatch({ type: "set-cells", indexes: [1], state: "marked", now: 2 });
+    await flush();
+
+    expect(save).toHaveBeenCalledTimes(2);
   });
 });

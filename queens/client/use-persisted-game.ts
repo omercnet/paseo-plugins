@@ -288,6 +288,7 @@ export interface GamePersistenceController {
   ): void;
   replace(settings: GameSettings, revision: string, now?: number): void;
   dispose(): void;
+  onDispose(listener: () => void): () => void;
   setSave(save: SaveGameSettings): void;
 }
 
@@ -305,6 +306,7 @@ export function createGamePersistenceController(
   const metadataHistory = new Map<string, AttemptMetadata[]>();
   let completionCredited: Record<string, boolean> = {};
   const listeners = new Set<() => void>();
+  const disposeListeners = new Set<() => void>();
   const activePuzzle = hydrated.state.puzzles[hydrated.state.activePuzzleIndex];
   let snapshot: GamePersistenceControllerSnapshot = {
     state: hydrated.state,
@@ -570,10 +572,20 @@ export function createGamePersistenceController(
     awaitingRevision = null;
     awaitingValues = null;
     listeners.clear();
+    const notify = [...disposeListeners];
+    disposeListeners.clear();
+    for (const listener of notify) listener();
+  }
+
+  function onDispose(listener: () => void): () => void {
+    disposeListeners.add(listener);
+    return () => {
+      disposeListeners.delete(listener);
+    };
   }
 
   resetAttemptMetadata(options.settings);
-  return { getSnapshot, subscribe, dispatch, synchronize, replace, dispose, setSave };
+  return { getSnapshot, subscribe, dispatch, synchronize, replace, dispose, onDispose, setSave };
 }
 
 const CONTROLLERS_BY_HOST = new Map<string, GamePersistenceController>();
@@ -669,16 +681,19 @@ export function usePersistedGame(
       return;
     }
 
-    if (CONTROLLERS_BY_HOST.get(hostId) !== controller) {
-      controllerRef.current = null;
-      setController(null);
-      return;
-    }
-
     controllerRef.current = controller;
     controller.setSave(save);
     controller.synchronize(settings.values, settings.revision, settings.saveError);
   }, [controller, hostId, knownSolutions, puzzles, recovering, save, settings]);
+
+  useEffect(
+    () =>
+      controller?.onDispose(() => {
+        if (controllerRef.current === controller) controllerRef.current = null;
+        setController(null);
+      }),
+    [controller],
+  );
 
   const subscribe = useCallback(
     (listener: () => void) => controller?.subscribe(listener) ?? NOOP_SUBSCRIPTION,
