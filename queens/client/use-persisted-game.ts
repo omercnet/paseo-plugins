@@ -578,6 +578,10 @@ export function createGamePersistenceController(
   }
 
   function onDispose(listener: () => void): () => void {
+    if (disposed) {
+      listener();
+      return () => {};
+    }
     disposeListeners.add(listener);
     return () => {
       disposeListeners.delete(listener);

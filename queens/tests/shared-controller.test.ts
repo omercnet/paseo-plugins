@@ -157,6 +157,8 @@ describe("shared controller across hook instances", () => {
 
     b.session().dispatch({ type: "set-cells", indexes: [0], state: "marked", now: 1 });
     await flush();
+    // Adopts the revision-2 settings from B's first save, before the recovery step.
+    // Not part of the asserted path.
     settingsHook.current = stored;
     for (const instance of mounted) instance.render();
     expect(save).toHaveBeenCalledTimes(1);
