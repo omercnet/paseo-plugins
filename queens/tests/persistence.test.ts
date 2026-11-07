@@ -426,3 +426,26 @@ describe("serialized game saves", () => {
     expect(newHost.getSnapshot().saveError).toBeNull();
   });
 });
+
+describe("controller disposal notification", () => {
+  test("notifies a listener registered before dispose exactly once", () => {
+    const instance = controller(recordingSave().save);
+    const listener = vi.fn();
+    instance.onDispose(listener);
+
+    instance.dispose();
+    instance.dispose();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test("notifies a listener registered after dispose", () => {
+    const instance = controller(recordingSave().save);
+    instance.dispose();
+    const listener = vi.fn();
+
+    instance.onDispose(listener);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
