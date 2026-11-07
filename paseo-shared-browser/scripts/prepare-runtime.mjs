@@ -205,31 +205,37 @@ async function stageAgentBrowserEntry() {
 }
 
 await rm(stagingRoot, { recursive: true, force: true });
-await mkdir(join(runtimeModules, ".bin"), { recursive: true, mode: 0o700 });
-await chmod(pluginDataRoot, 0o700);
-await cp(packagedAgentBrowser, join(runtimeModules, "agent-browser"), {
-  recursive: true,
-  force: true,
-});
-await stageAgentBrowserEntry();
+try {
+  await mkdir(join(runtimeModules, ".bin"), { recursive: true, mode: 0o700 });
+  await chmod(pluginDataRoot, 0o700);
+  await cp(packagedAgentBrowser, join(runtimeModules, "agent-browser"), {
+    recursive: true,
+    force: true,
+  });
+  await stageAgentBrowserEntry();
 
-const binaryOverride = process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
-if (binaryOverride)
-  await validateAgentBrowser(
-    await requireExecutable(binaryOverride, "PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY"),
+  const binaryOverride = process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
+  if (binaryOverride)
+    await validateAgentBrowser(
+      await requireExecutable(binaryOverride, "PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY"),
+    );
+  await validateAgentBrowser(await requireExecutable(runtimeEntry, "Packaged agent-browser entry"));
+  const chromiumEntry = await installChromium();
+  await bundleRuntimeEntries();
+
+  await writeFile(
+    join(stagingRoot, "package.json"),
+    `${JSON.stringify({ private: true, type: "commonjs" }, null, 2)}\n`,
+    { mode: 0o600 },
   );
-await validateAgentBrowser(await requireExecutable(runtimeEntry, "Packaged agent-browser entry"));
-const chromiumEntry = await installChromium();
-await bundleRuntimeEntries();
-
-await writeFile(
-  join(stagingRoot, "package.json"),
-  `${JSON.stringify({ private: true, type: "commonjs" }, null, 2)}\n`,
-  { mode: 0o600 },
-);
-await applyPrivatePermissions(stagingRoot);
-if (hostPlatform !== "win32") {
-  await validateChromium(await requireExecutable(chromiumEntry, "Staged Chromium executable"));
+  await applyPrivatePermissions(stagingRoot);
+  if (hostPlatform !== "win32") {
+    await validateChromium(await requireExecutable(chromiumEntry, "Staged Chromium executable"));
+  }
+} catch (error) {
+  // A failed preparation must not leave a partial runtime, which can hold a Chromium download.
+  await rm(stagingRoot, { recursive: true, force: true });
+  throw error;
 }
 await replaceRuntime(stagingRoot, runtimeRoot);
 
