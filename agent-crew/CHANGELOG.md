@@ -10,6 +10,14 @@
 - add an explicit pending-permission modal with Allow and Deny actions
 - pin Paseo plugin packages to `0.8.0-beta.1`
 
+## [4.1.2](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v4.1.1...agent-crew-v4.1.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **agent-crew:** keep auto-open claims after repeated failures and stop opening panels once disabled ([#552](https://github.com/omercnet/paseo-plugins/issues/552)) ([41a6784](https://github.com/omercnet/paseo-plugins/commit/41a678470dc938b60724f7a8249cc01394082df8))
+* **agent-crew:** keep auto-open running through a transient settings read error ([#553](https://github.com/omercnet/paseo-plugins/issues/553)) ([6c890e2](https://github.com/omercnet/paseo-plugins/commit/6c890e232733f0af37842cf4d5c999fddecd65c9))
+
 ## [4.1.1](https://github.com/omercnet/paseo-plugins/compare/agent-crew-v4.1.0...agent-crew-v4.1.1) (2026-11-02)
 
 

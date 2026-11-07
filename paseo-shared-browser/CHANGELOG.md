@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.8](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.7...shared-browser-v4.1.8) (2026-11-07)
+
+
+### Bug Fixes
+
+* **paseo-shared-browser:** do not hold a bridge lease after disconnect ([#558](https://github.com/omercnet/paseo-plugins/issues/558)) ([17c1a3a](https://github.com/omercnet/paseo-plugins/commit/17c1a3a22ca718d2c56169592aed135ed4f52132))
+
 ## [4.1.7](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.6...shared-browser-v4.1.7) (2026-11-07)
 
 

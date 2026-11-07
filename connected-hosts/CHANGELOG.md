@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/omercnet/paseo-plugins/compare/connected-hosts-v0.2.1...connected-hosts-v0.2.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **connected-hosts:** track busy hosts per row ([#545](https://github.com/omercnet/paseo-plugins/issues/545)) ([dd59e29](https://github.com/omercnet/paseo-plugins/commit/dd59e291ada014ffb8c08d9fa17f3134810554ec))
+
 ## [0.2.1](https://github.com/omercnet/paseo-plugins/compare/connected-hosts-v0.2.0...connected-hosts-v0.2.1) (2026-11-02)
 
 

@@ -10,6 +10,13 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [4.4.2](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.4.1...agent-monitor-v4.4.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **agent-monitor:** let a deep link win over a stale pending focus ([#549](https://github.com/omercnet/paseo-plugins/issues/549)) ([e27b280](https://github.com/omercnet/paseo-plugins/commit/e27b2803201fcb6e1ffa415b979bff9e0e9cc14c))
+
 ## [4.4.1](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.4.0...agent-monitor-v4.4.1) (2026-11-02)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v4.0.0...paseo-context-mode-v4.0.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **context-mode:** evict only the cache entry that failed ([#550](https://github.com/omercnet/paseo-plugins/issues/550)) ([fc261cf](https://github.com/omercnet/paseo-plugins/commit/fc261cf50435254414096b5aa17977f771b3fa46))
+
 ## [4.0.0](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v3.1.4...paseo-context-mode-v4.0.0) (2026-11-07)
 
 

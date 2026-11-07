@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.1.2](https://github.com/omercnet/paseo-plugins/compare/queens-v4.1.1...queens-v4.1.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **queens:** keep the popover timer on a steady cadence ([#557](https://github.com/omercnet/paseo-plugins/issues/557)) ([e6cf113](https://github.com/omercnet/paseo-plugins/commit/e6cf113374374d7a697bb86ab1ddc7b4b27f071d))
+* **queens:** re-acquire the shared controller after another instance recovers ([#548](https://github.com/omercnet/paseo-plugins/issues/548)) ([3b7e83f](https://github.com/omercnet/paseo-plugins/commit/3b7e83fe3767f403afa11fa36f12e802cf5f54c7))
+* **queens:** skip no-op writes so an unchanged revision cannot strand the save queue ([#546](https://github.com/omercnet/paseo-plugins/issues/546)) ([38da636](https://github.com/omercnet/paseo-plugins/commit/38da636217b32afbe4ba792b8a5a9c3310c57d5b))
+
 ## [4.1.1](https://github.com/omercnet/paseo-plugins/compare/queens-v4.1.0...queens-v4.1.1) (2026-11-02)
 
 
