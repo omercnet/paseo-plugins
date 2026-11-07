@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import { describe, expect, test } from "vitest";
 import { createContextModeActionHandlers, parseContextModeDoctorOutput } from "../server/actions";
@@ -114,5 +117,53 @@ describe("structured actions", () => {
       rows: DOCTOR_ROWS,
       rawOutput: DOCTOR_OUTPUT,
     });
+  });
+
+  test("deletes the doctor report even when upstream prints its path with ~", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "paseo-context-mode-doctor-"));
+    const reports = join(dataDir, "reports");
+    await mkdir(reports);
+    const name = "doctor-2026-11-07T09-30-00-000Z.md";
+    const outside = join(dataDir, "keep.md");
+    await writeFile(join(reports, name), "report");
+    await writeFile(outside, "not a report");
+    try {
+      const handlers = createContextModeActionHandlers(settingsHandle(), {
+        resolveBinary: async () => ({
+          state: "found",
+          path: "/bin/context-mode",
+          source: "bundled",
+          launch: { program: "/bin/context-mode", args: [] },
+        }),
+        probeOptions: async (platform: ContextModePlatform = "claude-code") => ({
+          platform,
+          cwd: dataDir,
+          dataDir,
+        }),
+        callTool: async () => `${DOCTOR_OUTPUT}\nReport file: ~/.paseo/probe/reports/${name}`,
+      });
+      await handlers.doctor({ provider: "codex" });
+      expect(await readdir(reports)).toEqual([]);
+
+      // A reported path that is not a doctor report name is never deleted.
+      const crafted = createContextModeActionHandlers(settingsHandle(), {
+        resolveBinary: async () => ({
+          state: "found",
+          path: "/bin/context-mode",
+          source: "bundled",
+          launch: { program: "/bin/context-mode", args: [] },
+        }),
+        probeOptions: async (platform: ContextModePlatform = "claude-code") => ({
+          platform,
+          cwd: dataDir,
+          dataDir,
+        }),
+        callTool: async () => `${DOCTOR_OUTPUT}\nReport file: ${outside}`,
+      });
+      await crafted.doctor({ provider: "codex" });
+      expect(await readFile(outside, "utf8")).toBe("not a report");
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 });

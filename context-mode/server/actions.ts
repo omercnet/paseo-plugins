@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { basename, join } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import type { ContextModeActionInput, DoctorReport, DoctorStatusRow } from "../shared/actions";
 import { contextModePlatformFor } from "../shared/providers";
@@ -95,12 +95,14 @@ export function parseContextModeDoctorOutput(
   return rows;
 }
 
+/** Upstream's report file name; the shown path may be `~`-abbreviated, so only the name is trusted. */
+const DOCTOR_REPORT_NAME = /^doctor-[\w-]+\.md$/;
+
 /** ctx_doctor writes a report file per failing check and nothing prunes them; the panel keeps none. */
 async function discardDoctorReport(output: string, dataDir: string): Promise<void> {
   const reported = /^Report file: (.+)$/m.exec(output)?.[1]?.trim();
-  if (reported && resolve(reported).startsWith(resolve(dataDir) + sep)) {
-    await rm(reported, { force: true });
-  }
+  const name = reported ? basename(reported) : "";
+  if (DOCTOR_REPORT_NAME.test(name)) await rm(join(dataDir, "reports", name), { force: true });
 }
 
 export function createContextModeActionHandlers(

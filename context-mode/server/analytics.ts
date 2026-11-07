@@ -15,7 +15,12 @@ import {
   type DatabaseSavings,
   readContextModeDatabase,
 } from "./database";
-import { discoverContextModeDatabases, resolveContextModeDataDir } from "./storage-discovery";
+import { type ProviderOverrides, resolveProvider } from "./integration";
+import {
+  type ContextModeProjectDatabase,
+  discoverContextModeDatabases,
+  resolveContextModeDataDir,
+} from "./storage-discovery";
 
 const MAX_WARNINGS = 20;
 const MAX_SOURCES = 2_000;
@@ -49,6 +54,8 @@ export interface ContextModeAnalyticsDependencies {
   readDatabase?: (path: string) => ContextModeDatabaseSnapshot;
   /** Detected Context Mode runtime version; must resolve to null rather than reject. */
   resolveVersion?: () => Promise<string | null>;
+  /** Paseo's configured providers; each may move its agents' data dir through its own env. */
+  providers?: ProviderOverrides;
 }
 
 class WarningCollector {
@@ -149,13 +156,23 @@ export async function collectContextModeAnalytics(
 ): Promise<AnalyticsDashboard> {
   const discover = dependencies.discover ?? discoverContextModeDatabases;
   const readDatabase = dependencies.readDatabase ?? readContextModeDatabase;
-  const dataDir = resolveContextModeDataDir(
-    dependencies.env ?? process.env,
-    dependencies.home ?? homedir(),
-  );
+  const env = dependencies.env ?? process.env;
+  const home = dependencies.home ?? homedir();
+  const providers = dependencies.providers ?? {};
+  // A configured provider's own CONTEXT_MODE_DATA_DIR is where its injected agents write.
+  const dataDirs = new Set([
+    resolveContextModeDataDir(env, home),
+    ...Object.keys(providers).map((id) =>
+      resolveContextModeDataDir({ ...env, ...resolveProvider(id, providers).env }, home),
+    ),
+  ]);
   const warnings = new WarningCollector();
-  const discovery = await discover(dataDir);
-  for (const warning of discovery.warnings) warnings.add(warning);
+  const databases: ContextModeProjectDatabase[] = [];
+  for (const dataDir of dataDirs) {
+    const discovery = await discover(dataDir);
+    databases.push(...discovery.databases);
+    for (const warning of discovery.warnings) warnings.add(warning);
+  }
 
   const total = emptyBytes();
   let sessions = 0;
@@ -170,7 +187,7 @@ export async function collectContextModeAnalytics(
   const sources: IndexedSourceAnalytics[] = [];
   const recentSessions: SessionAnalytics[] = [];
 
-  for (const database of discovery.databases) {
+  for (const database of databases) {
     let snapshot: ContextModeDatabaseSnapshot;
     try {
       snapshot = readDatabase(database.path);
@@ -293,7 +310,7 @@ export async function collectContextModeAnalytics(
     }
   }
 
-  const attempted = discovery.databases.length;
+  const attempted = databases.length;
   const unreadable = attempted > 0 && projects.length === 0;
   const coverage = warnings.hasWarnings ? "partial" : "complete";
   const contextModeVersion = dependencies.resolveVersion
@@ -326,10 +343,4 @@ export async function collectContextModeAnalytics(
     sources: sources.slice(0, MAX_SOURCES),
     generatedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
   };
-}
-
-export function createContextModeAnalyticsHandler(
-  dependencies: ContextModeAnalyticsDependencies = {},
-): () => Promise<AnalyticsDashboard> {
-  return () => collectContextModeAnalytics(dependencies);
 }

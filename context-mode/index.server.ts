@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { createContextModeActionHandlers } from "./server/actions";
-import { createContextModeAnalyticsHandler } from "./server/analytics";
+import { collectContextModeAnalytics } from "./server/analytics";
 import { resolveContextModeBinary } from "./server/binary";
 import { createContextModeHandlers } from "./server/handlers";
 import { injectContextModeOnCreate, readProviderOverrides } from "./server/integration";
@@ -24,13 +24,14 @@ export default function contribute(server: PluginServerContext) {
   const actionHandlers = createContextModeActionHandlers(settings);
   server.handle(getContextModeStatus, handlers.status);
   server.handle(getContextModeIntegrationAudit, handlers.audit);
-  server.handle(getContextModeAnalyticsDashboard, (_input, context) =>
-    createContextModeAnalyticsHandler({
+  server.handle(getContextModeAnalyticsDashboard, async (_input, context) =>
+    collectContextModeAnalytics({
+      providers: await readProviderOverrides(context.paseo),
       resolveVersion: async () => {
         const status = await handlers.status({ fresh: false }, context);
         return status.state === "ready" ? status.version : null;
       },
-    })(),
+    }),
   );
   server.handle(searchContextModeKnowledge, knowledgeHandlers.search);
   server.handle(indexContextModePath, knowledgeHandlers.indexPath);

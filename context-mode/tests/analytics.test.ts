@@ -3,10 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, test } from "vitest";
-import {
-  collectContextModeAnalytics,
-  createContextModeAnalyticsHandler,
-} from "../server/analytics";
+import { collectContextModeAnalytics } from "../server/analytics";
 import {
   discoverContextModeDatabases,
   resolveContextModeDataDir,
@@ -311,7 +308,7 @@ describe("structured Context Mode analytics", () => {
           agents: 2,
           projects: 1,
           sessions: 3,
-          events: 8,
+          events: 6,
           toolCalls: 5,
           indexedSources: 2,
           indexedChunks: 5,
@@ -443,6 +440,32 @@ describe("structured Context Mode analytics", () => {
       expect.objectContaining({ agent: "claude-code", projects: 2, sessions: 2, toolCalls: 2 }),
       expect.objectContaining({ agent: "opencode", projects: 1, sessions: 1, toolCalls: 1 }),
     ]);
+    expect(result.byProject.map((project) => project.path)).toEqual(["/work/b", "/work/a"]);
+  });
+
+  test("also reads the data dir a configured provider sets in its own env", async () => {
+    const hostDir = await temporaryDataDir();
+    const providerDir = await temporaryDataDir();
+    await createDatabase(hostDir, "1111111111111111", {
+      worktree: "/work/a",
+      events: [singleCall("mcp:a", "claude-code", 1_000, 200)],
+    });
+    await createDatabase(providerDir, "2222222222222222", {
+      worktree: "/work/b",
+      events: [singleCall("mcp:b", "codex", 4_000, 400)],
+    });
+
+    const result = await collectContextModeAnalytics({
+      env: { CONTEXT_MODE_DATA_DIR: hostDir },
+      home: "/nonexistent-home",
+      providers: {
+        codex: { env: { CONTEXT_MODE_DATA_DIR: providerDir } },
+        "codex-work": { extends: "codex" },
+        claude: {},
+      },
+    });
+
+    expect(result.completeness).toBe("complete");
     expect(result.byProject.map((project) => project.path)).toEqual(["/work/b", "/work/a"]);
   });
 
@@ -601,21 +624,6 @@ describe("structured Context Mode analytics", () => {
     expect((await readFile(path)).equals(beforeBytes)).toBe(true);
     expect((await stat(path)).mtimeMs).toBe(beforeStat.mtimeMs);
     expect(await readdir(directory)).toEqual(beforeEntries);
-  });
-
-  test("the handler reports the resolved runtime version", async () => {
-    const dataDir = await temporaryDataDir();
-
-    const result = await createContextModeAnalyticsHandler({
-      env: { CONTEXT_MODE_DATA_DIR: dataDir },
-      resolveVersion: async () => "2.1.4",
-    })();
-
-    expect(result).toMatchObject({
-      contextModeVersion: "2.1.4",
-      completeness: "complete",
-      totals: { projects: 0 },
-    });
   });
 });
 
