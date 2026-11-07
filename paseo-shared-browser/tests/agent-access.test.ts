@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import type * as NodeNet from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,19 @@ import {
 import { AgentSupervisorClient, SupervisorClient } from "../server/supervisor-client";
 import type { BrowserState } from "../shared/browser";
 import { DEFAULT_CAPTURE_QUALITY, JPEG_QUALITY } from "../shared/capture-settings";
+
+const afterCreateConnection = vi.hoisted(() => vi.fn());
+vi.mock("node:net", async (importOriginal) => {
+  const net = await importOriginal<typeof NodeNet>();
+  return {
+    ...net,
+    createConnection: (...args: Parameters<typeof net.createConnection>) => {
+      const socket = net.createConnection(...args);
+      afterCreateConnection();
+      return socket;
+    },
+  };
+});
 
 interface AgentRuntime extends RuntimeInstance {
   workspaceId: string;
@@ -592,7 +606,7 @@ describe("agent shared-browser authorization", () => {
     }
   });
 
-  it("does not hold the bridge after a disconnect issued while connecting", async () => {
+  it("does not hold the bridge after a disconnect issued while reading the endpoint", async () => {
     const root = await mkdtemp(join(tmpdir(), "shared-browser-disconnect-"));
     const paths = resolveSupervisorPaths(root);
     const server = await startSupervisorServer(new AgentRuntimeOwner(), paths);
@@ -605,6 +619,26 @@ describe("agent shared-browser authorization", () => {
       await expect(connecting).rejects.toThrow();
       await expect(next.connect()).resolves.toMatchObject({ bridgeId: "next-bridge", epoch: 1 });
     } finally {
+      stopped.disconnect();
+      next.disconnect();
+      await server.close().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not hold the bridge after a disconnect issued while the socket connects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "shared-browser-disconnect-"));
+    const paths = resolveSupervisorPaths(root);
+    const server = await startSupervisorServer(new AgentRuntimeOwner(), paths);
+    const stopped = new SupervisorClient({ bridgeId: "stopped-bridge", paths });
+    const next = new SupervisorClient({ bridgeId: "next-bridge", paths });
+    try {
+      afterCreateConnection.mockImplementationOnce(() => stopped.disconnect());
+
+      await expect(stopped.connect()).rejects.toThrow();
+      await expect(next.connect()).resolves.toMatchObject({ bridgeId: "next-bridge", epoch: 1 });
+    } finally {
+      afterCreateConnection.mockReset();
       stopped.disconnect();
       next.disconnect();
       await server.close().catch(() => undefined);
