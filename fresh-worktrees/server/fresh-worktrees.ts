@@ -69,13 +69,16 @@ export async function executeGit(
 export function createRepositoryRefreshCoordinator(
   runGit: GitRunner = executeGit,
 ): RepositoryRefresh {
-  const inFlight = new Map<string, Promise<RepositoryRefreshResult>>();
+  const inFlight = new Map<
+    string,
+    { promise: Promise<RepositoryRefreshResult>; signal: AbortSignal | undefined }
+  >();
   const repositoryTails = new Map<string, Promise<void>>();
 
   return async (cwd, remote, localBranch, upstream, signal) => {
     const targetKey = `${cwd}\0${remote}\0${localBranch ?? ""}\0${upstream ?? ""}`;
     const existingRefresh = inFlight.get(targetKey);
-    if (existingRefresh) return existingRefresh;
+    if (existingRefresh && existingRefresh.signal === signal) return existingRefresh.promise;
 
     const previousRefresh = repositoryTails.get(cwd) ?? Promise.resolve();
     const refresh = previousRefresh
@@ -119,13 +122,14 @@ export function createRepositoryRefreshCoordinator(
       () => {},
       () => {},
     );
-    inFlight.set(targetKey, refresh);
+    const entry = { promise: refresh, signal };
+    inFlight.set(targetKey, entry);
     repositoryTails.set(cwd, tail);
 
     try {
       return await refresh;
     } finally {
-      if (inFlight.get(targetKey) === refresh) inFlight.delete(targetKey);
+      if (inFlight.get(targetKey) === entry) inFlight.delete(targetKey);
       if (repositoryTails.get(cwd) === tail) repositoryTails.delete(cwd);
     }
   };
