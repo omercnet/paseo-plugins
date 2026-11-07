@@ -378,9 +378,9 @@ export function createGamePersistenceController(
       return;
     }
 
-    baseline = job.values;
     publish({ saveError: null });
     if (revision === job.revision) {
+      baseline = job.values;
       awaitingRevision = job.revision;
       awaitingValues = job.values;
       publishSaving();
@@ -391,6 +391,13 @@ export function createGamePersistenceController(
 
   function pump(): void {
     if (disposed || blocked || inFlight !== null || awaitingRevision !== null || pending === null) {
+      publishSaving();
+      return;
+    }
+    if (sameGameSettings(pending.values, baseline)) {
+      pending = null;
+      blocked = false;
+      publish({ saveError: null });
       publishSaving();
       return;
     }
