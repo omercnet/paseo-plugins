@@ -323,6 +323,26 @@ describe("createAutoOpenManager", () => {
     manager.dispose();
   });
 
+  test("keeps running through a transient settings read error", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const harness = createMockClient({ initialEnabled: true });
+    const manager = createAutoOpenManager(harness.client);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.subscribeCalls).toBe(1);
+
+    vi.mocked(harness.client.rpc).mockRejectedValueOnce(new Error("settings read failed"));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(harness.releaseCalls).toBe(0);
+
+    harness.emitWorkspace("gap-workspace");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(harness.claimCalls).toEqual([["gap-workspace"]]);
+
+    manager.dispose();
+  });
+
   test("restarts exactly one subscription across disable and re-enable", async () => {
     vi.useFakeTimers();
     const harness = createMockClient();

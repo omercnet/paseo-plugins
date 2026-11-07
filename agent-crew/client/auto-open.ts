@@ -189,7 +189,6 @@ export function createAutoOpenManager(client: PluginClientContext): AutoOpenMana
     } catch (error) {
       if (disposed || requestGeneration !== generation) return;
       console.error("Agent Crew auto-open settings read failed", error);
-      syncEnabled(DEFAULT_AUTO_OPEN_EXPLORER);
     } finally {
       refreshRunning = false;
     }
