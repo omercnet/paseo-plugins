@@ -8,15 +8,15 @@
       "name": "@omercnet/paseo-omp",
       "version": "5.6.1",
       "dependencies": {
-        "@getpaseo/protocol": "0.15.0",
+        "@getpaseo/protocol": "0.15.2",
         "@modelcontextprotocol/sdk": "1.32.2",
         "yaml": "^2.9.0"
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.15.0",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.15.0.tgz",
-      "integrity": "sha512-UqB9eB6h1X5AXeeTdTQsS0CmfG31KgTdxbw5Wrp9nYc7kk0uBqRbVgGx7uqVAzJYjdcDGUiYpQv+649T2POA5w==",
+      "version": "0.15.2",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.15.2.tgz",
+      "integrity": "sha512-+OaRl9s8SMVIYPhHnck11jUM0pXnvuyCNvtd6g2p2uD/hieB5PtUq3BX7gmPFSZakvmUupUvtmtpGN+N7WhaRw==",
       "dependencies": {
         "semver": "^7.8.5",
         "zod": "^4.4.3"
@@ -610,9 +610,9 @@
       }
     },
     "node_modules/hono": {
-      "version": "4.13.16",
-      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.16.tgz",
-      "integrity": "sha512-AOLOEhvrV+iH92xXCnFr/5+3KjPKcI3xP63XJtX5spAnkznPdHijlIsUTpi7/9EhWqrTCekw5c5zh1K+YsVw7A==",
+      "version": "4.13.17",
+      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.17.tgz",
+      "integrity": "sha512-vZIcbkvjOR5hHRWERbGkr8fGfF0GGM1ooYkuH448iO3b2AdVEr3AXZSw4Z3Kn+1L5z0CVoVeyV29VGYmFh05kQ==",
       "license": "MIT",
       "engines": {
         "node": ">=16.9.0"
@@ -661,9 +661,9 @@
       "license": "ISC"
     },
     "node_modules/ip-address": {
-      "version": "10.7.5",
-      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.5.tgz",
-      "integrity": "sha512-t2v0rkILYv9WXmSL7TpAaU3HXgaFYOPUcH3QHgwQ++gpJuH3bqyMy4Fvt/DJCTKwzH3Cf+bAp5W/mFL39KPLzA==",
+      "version": "10.7.6",
+      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.6.tgz",
+      "integrity": "sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg==",
       "license": "MIT",
       "engines": {
         "node": ">= 12"
