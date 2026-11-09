@@ -432,6 +432,96 @@ process.stdout.write(String(descendant.pid) + "\\n", () => {
     expect(cleanupCalls).toBe(2);
   });
 
+  test("keeps the startup cleanup reverify promise when tree cleanup is unverified", async () => {
+    const child = new FakeRpcChild();
+    child.stdin.removeAllListeners("finish");
+    let cleanupCalls = 0;
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({ type: "response", id: command.id, success: false });
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: () => {
+        cleanupCalls += 1;
+        if (cleanupCalls === 1) return Promise.resolve(false);
+        child.close(null, "SIGKILL");
+        return Promise.resolve(true);
+      },
+      environment: TEST_RUNTIME_ENV,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+
+    const failure: unknown = await opening.catch((error: unknown) => error);
+    expect(isOmpCleanupFailure(failure)).toBe(true);
+    if (!isOmpCleanupFailure(failure)) return;
+    // The reverify promise must survive the wrap, exactly as it does for a session close.
+    await expect(failure.cleanup).resolves.toBeUndefined();
+    expect(cleanupCalls).toBe(2);
+  });
+
+  test("keeps waiting for the root exit when a Windows taskkill fails once and then reports 128", async () => {
+    const child = new FakeRpcChild();
+    child.stdin.removeAllListeners("finish");
+    const taskkillCodes = [1, 128];
+    const observedCodes: Array<number | null> = [];
+    const secondTaskkill = Promise.withResolvers<void>();
+    const spawnTaskkill = (() => {
+      const code = taskkillCodes.shift() ?? null;
+      observedCodes.push(code);
+      if (observedCodes.length === 2) secondTaskkill.resolve();
+      const taskkill = Object.assign(new EventEmitter(), {
+        stdout: { resume() {} },
+        stderr: { resume() {} },
+        kill() {},
+      });
+      queueMicrotask(() => taskkill.emit("close", code, null));
+      return taskkill;
+    }) as unknown as typeof spawn;
+    observeCommands(child, (command) => {
+      if (command.type !== "negotiate_protocol") return;
+      child.write({
+        type: "response",
+        id: command.id,
+        success: true,
+        data: { protocolVersion: 2 },
+      });
+    });
+    const runtime = new OmpRpcRuntime({
+      spawnProcess: () => child.asChildProcess(),
+      terminateProcessTree: async (pid) =>
+        (await stopWindowsTree(pid, spawnTaskkill)) === "verified",
+      environment: TEST_RUNTIME_ENV,
+    });
+    const opening = runtime.startSession({ cwd: "/repo", mode: "full" });
+    child.write(READY_FRAME);
+    const session = await opening;
+
+    const failure: unknown = await session.close().catch((error: unknown) => error);
+    expect(isOmpCleanupFailure(failure)).toBe(true);
+    if (!isOmpCleanupFailure(failure)) return;
+
+    // The retry reports 128 (process already gone), which is verified, but the root still has to
+    // exit before the cleanup promise settles.
+    await secondTaskkill.promise;
+    let settled = false;
+    void failure.cleanup.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    for (let turn = 0; turn < 25; turn += 1) await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(observedCodes).toEqual([1, 128]);
+
+    child.close(0);
+    await expect(failure.cleanup).resolves.toBeUndefined();
+  });
+
   test("never reports cleanup success without invoking process-tree termination", async () => {
     const child = new FakeRpcChild();
     child.stdin.removeAllListeners("finish");

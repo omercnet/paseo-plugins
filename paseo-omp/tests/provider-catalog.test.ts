@@ -5,9 +5,11 @@ import type { ProviderInput } from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import { mapOmpModels, ompModelId } from "../server/provider/catalog";
-import { OmpRpcRuntime } from "../server/provider/omp-rpc";
+import { OmpRpcRuntime, type OmpRuntimeSession } from "../server/provider/omp-rpc";
+import type { OmpStartOptions } from "../server/provider/omp-rpc-environment";
 import type { OmpModel } from "../server/provider/omp-rpc-protocol";
 import { createOmpProvider } from "../server/provider/registration";
+import { OmpCleanupFailure } from "../server/provider/security";
 import {
   ALTERNATE_MODEL,
   ALTERNATE_MODEL_PUBLIC_ID,
@@ -26,6 +28,100 @@ import {
   TEST_RUNTIME_ENV,
   turnIdFrom,
 } from "./helpers/provider-harness";
+
+/**
+ * Holds every catalog startup until the test releases it, so two discoveries can be in flight at
+ * once and fail independently. `starts` records one entry per startup, failures are thrown in
+ * release order.
+ */
+class ConcurrentCatalogRuntime extends FakeOmpRuntime {
+  private readonly startGates: Array<PromiseWithResolvers<void>> = [];
+  private readonly queuedFailures: OmpCleanupFailure[] = [];
+  private readonly startWaiters = new Map<number, () => void>();
+
+  enqueueStartFailure(failure: OmpCleanupFailure): void {
+    this.queuedFailures.push(failure);
+  }
+
+  waitForStart(index: number): Promise<void> {
+    if (this.starts.length > index) return Promise.resolve();
+    const waiter = Promise.withResolvers<void>();
+    this.startWaiters.set(index, waiter.resolve);
+    return waiter.promise;
+  }
+
+  releaseStart(index: number): void {
+    const gate = this.startGates[index];
+    if (!gate) throw new Error(`Missing concurrent catalog start gate ${index}`);
+    gate.resolve();
+  }
+
+  override startSession(options: OmpStartOptions): Promise<OmpRuntimeSession> {
+    this.starts.push(options);
+    for (const [index, resolve] of [...this.startWaiters]) {
+      if (this.starts.length <= index) continue;
+      this.startWaiters.delete(index);
+      resolve();
+    }
+    const failure = this.queuedFailures.shift();
+    if (!failure) {
+      // An unexpected extra start fails immediately instead of waiting on a gate forever.
+      return Promise.reject(new Error("Concurrent catalog runtime has no queued start failure"));
+    }
+    const gate = Promise.withResolvers<void>();
+    this.startGates.push(gate);
+    return gate.promise.then(() => {
+      throw failure;
+    });
+  }
+}
+
+async function flushMicrotasks(turns = 25): Promise<void> {
+  for (let index = 0; index < turns; index += 1) await Promise.resolve();
+}
+
+/** Starts two catalog discoveries, fails both with independent cleanups, and waits for both. */
+async function beginConcurrentCatalogFailures() {
+  const runtime = new ConcurrentCatalogRuntime();
+  const failures: OmpOperationalFailure[] = [];
+  const cleanupA = Promise.withResolvers<void>();
+  const cleanupB = Promise.withResolvers<void>();
+  runtime.enqueueStartFailure(
+    new OmpCleanupFailure("OMP runtime startup cleanup A pending", cleanupA.promise),
+  );
+  runtime.enqueueStartFailure(
+    new OmpCleanupFailure("OMP runtime startup cleanup B pending", cleanupB.promise),
+  );
+  const { connection, events } = await createHarness(
+    runtime,
+    new ManualScheduler(),
+    undefined,
+    undefined,
+    (failure) => failures.push(failure),
+  );
+  const first = connection.send({
+    type: "catalog",
+    requestId: "catalog-concurrent-a",
+    cwd: "/repo",
+  });
+  await runtime.waitForStart(0);
+  const second = connection.send({
+    type: "catalog",
+    requestId: "catalog-concurrent-b",
+    cwd: "/repo",
+  });
+  await runtime.waitForStart(1);
+  runtime.releaseStart(0);
+  runtime.releaseStart(1);
+  await events.waitFor(
+    (event) => event.type === "request.failed" && event.requestId === "catalog-concurrent-a",
+  );
+  await events.waitFor(
+    (event) => event.type === "request.failed" && event.requestId === "catalog-concurrent-b",
+  );
+  await Promise.all([first, second]);
+  return { connection, events, failures, runtime, cleanupA, cleanupB };
+}
 
 describe("OMP direct provider", () => {
   test("discovers real models and all approval modes", async () => {
@@ -1158,10 +1254,14 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("blocks repeated catalog discovery after unverified cleanup", async () => {
+  test("holds catalog discovery until the failed discovery cleanup is verified", async () => {
     const runtime = new FakeOmpRuntime();
     const failures: OmpOperationalFailure[] = [];
-    runtime.nextCloseError = new Error("catalog cleanup failed");
+    const cleanup = Promise.withResolvers<void>();
+    runtime.nextStartError = new OmpCleanupFailure(
+      "OMP runtime startup cleanup pending",
+      cleanup.promise,
+    );
     const { connection, events } = await createHarness(
       runtime,
       new ManualScheduler(),
@@ -1169,14 +1269,238 @@ describe("OMP direct provider", () => {
       undefined,
       (failure) => failures.push(failure),
     );
-    for (const requestId of ["catalog-cleanup-failure", "catalog-cleanup-retry"]) {
+
+    await connection.send({ type: "catalog", requestId: "catalog-cleanup-failure", cwd: "/repo" });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "catalog-cleanup-failure",
+    );
+
+    await connection.send({ type: "catalog", requestId: "catalog-cleanup-pending", cwd: "/repo" });
+    await expect(
+      events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === "catalog-cleanup-pending",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        error: { message: "OMP catalog cleanup is incomplete" },
+      }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+
+    cleanup.resolve();
+    await cleanup.promise;
+    await Promise.resolve();
+
+    await connection.send({
+      type: "catalog",
+      requestId: "catalog-cleanup-recovered",
+      cwd: "/repo",
+    });
+    await expect(
+      events.waitFor(
+        (event) => event.type === "catalog" && event.requestId === "catalog-cleanup-recovered",
+      ),
+    ).resolves.toEqual(expect.objectContaining({ requestId: "catalog-cleanup-recovered" }));
+    expect(runtime.starts).toHaveLength(2);
+    expect(failures).toEqual([{ category: "session-open", stage: "catalog" }]);
+    await connection.close();
+  });
+
+  test("retries catalog discovery after the transport reverify confirms cleanup", async () => {
+    const runtime = new FakeOmpRuntime();
+    const failures: OmpOperationalFailure[] = [];
+    const reverify = Promise.withResolvers<void>();
+    runtime.nextCloseError = new OmpCleanupFailure(
+      "OMP RPC process tree cleanup failed",
+      reverify.promise,
+    );
+    const { connection, events } = await createHarness(
+      runtime,
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
+
+    await connection.send({ type: "catalog", requestId: "catalog-reverify-failure", cwd: "/repo" });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "catalog-reverify-failure",
+    );
+
+    // The latch tracks the transport's reverify promise, not the already-rejected close promise.
+    await connection.send({ type: "catalog", requestId: "catalog-reverify-pending", cwd: "/repo" });
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "request.failed" && event.requestId === "catalog-reverify-pending",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ error: { message: "OMP catalog cleanup is incomplete" } }),
+    );
+
+    reverify.resolve();
+    await reverify.promise;
+    await Promise.resolve();
+
+    await connection.send({ type: "catalog", requestId: "catalog-reverify-done", cwd: "/repo" });
+    await expect(
+      events.waitFor(
+        (event) => event.type === "catalog" && event.requestId === "catalog-reverify-done",
+      ),
+    ).resolves.toEqual(expect.objectContaining({ requestId: "catalog-reverify-done" }));
+    expect(runtime.starts).toHaveLength(2);
+    expect(failures).toEqual([{ category: "session-open", stage: "catalog" }]);
+    await connection.close();
+  });
+
+  test("keeps the catalog gate closed when the transport reverify rejects", async () => {
+    const runtime = new FakeOmpRuntime();
+    const failures: OmpOperationalFailure[] = [];
+    const reverify = Promise.withResolvers<void>();
+    runtime.nextCloseError = new OmpCleanupFailure(
+      "OMP RPC process tree cleanup failed",
+      reverify.promise,
+    );
+    const { connection, events } = await createHarness(
+      runtime,
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
+
+    await connection.send({ type: "catalog", requestId: "catalog-reverify-failure", cwd: "/repo" });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "catalog-reverify-failure",
+    );
+    expect(runtime.starts).toHaveLength(1);
+
+    reverify.reject(new Error("OMP RPC process tree cleanup is unverified"));
+    await reverify.promise.catch(() => undefined);
+    await Promise.resolve();
+
+    for (const requestId of ["catalog-reverify-blocked-1", "catalog-reverify-blocked-2"]) {
       await connection.send({ type: "catalog", requestId, cwd: "/repo" });
-      await events.waitFor(
-        (event) => event.type === "request.failed" && event.requestId === requestId,
+      await expect(
+        events.waitFor((event) => event.type === "request.failed" && event.requestId === requestId),
+      ).resolves.toEqual(
+        expect.objectContaining({ error: { message: "OMP catalog cleanup is incomplete" } }),
       );
     }
     expect(runtime.starts).toHaveLength(1);
+    expect(failures).toEqual([
+      { category: "session-open", stage: "catalog" },
+      { category: "session-open", stage: "catalog" },
+    ]);
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
+  });
+
+  test("keeps the catalog gate closed while a concurrent failed discovery cleanup is pending", async () => {
+    const { connection, events, runtime, cleanupA, cleanupB } =
+      await beginConcurrentCatalogFailures();
+    expect(runtime.starts).toHaveLength(2);
+
+    cleanupB.resolve();
+    await cleanupB.promise;
+
+    await connection.send({
+      type: "catalog",
+      requestId: "catalog-after-partial-cleanup",
+      cwd: "/repo",
+    });
+    const blocked = await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "catalog-after-partial-cleanup",
+    );
+    expect(blocked).toEqual(
+      expect.objectContaining({ error: { message: "OMP catalog cleanup is incomplete" } }),
+    );
+    expect(runtime.starts).toHaveLength(2);
+
+    cleanupA.resolve();
+    await cleanupA.promise;
+    await connection.close();
+  });
+
+  test("keeps the catalog gate closed after a concurrent failed discovery cleanup rejects", async () => {
+    const { connection, events, runtime, cleanupA, cleanupB } =
+      await beginConcurrentCatalogFailures();
+
+    cleanupB.resolve();
+    cleanupA.reject(new Error("OMP process tree cleanup is unverified"));
+    await cleanupB.promise;
+    await cleanupA.promise.catch(() => undefined);
+
+    await connection.send({
+      type: "catalog",
+      requestId: "catalog-after-rejected-cleanup",
+      cwd: "/repo",
+    });
+    const blocked = await events.waitFor(
+      (event) =>
+        event.type === "request.failed" && event.requestId === "catalog-after-rejected-cleanup",
+    );
+    expect(blocked).toEqual(
+      expect.objectContaining({ error: { message: "OMP catalog cleanup is incomplete" } }),
+    );
+    expect(runtime.starts).toHaveLength(2);
+
+    await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
+  });
+
+  test("waits for every pending catalog cleanup when the connection closes", async () => {
+    const { connection, runtime, cleanupA, cleanupB } = await beginConcurrentCatalogFailures();
+
+    cleanupB.resolve();
+    await cleanupB.promise;
+
+    let settled = false;
+    const closing = connection.close().then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+    expect(runtime.starts).toHaveLength(2);
+
+    cleanupA.resolve();
+    await closing;
+    expect(settled).toBe(true);
+  });
+
+  test("counts one operational failure when a plain catalog close failure leaves cleanup unverified", async () => {
+    const runtime = new FakeOmpRuntime();
+    const failures: OmpOperationalFailure[] = [];
+    runtime.nextCloseError = new Error("catalog close failed");
+    const { connection, events } = await createHarness(
+      runtime,
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
+
+    await connection.send({ type: "catalog", requestId: "catalog-plain-failure", cwd: "/repo" });
+    await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "catalog-plain-failure",
+    );
+
+    await connection.send({ type: "catalog", requestId: "catalog-plain-retry", cwd: "/repo" });
+    await expect(
+      events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === "catalog-plain-retry",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ error: { message: "OMP catalog cleanup is incomplete" } }),
+    );
+    expect(runtime.starts).toHaveLength(1);
+    await flushMicrotasks();
     expect(failures).toEqual([{ category: "session-open", stage: "catalog" }]);
+
     await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
 

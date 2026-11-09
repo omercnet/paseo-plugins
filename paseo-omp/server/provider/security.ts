@@ -201,6 +201,12 @@ export class OmpCleanupFailure extends Error {
     message: string,
     readonly cleanup: Promise<void>,
     readonly nativeSessionId?: string,
+    /**
+     * True when `cleanup` is the rejection that already produced this failure, such as an
+     * already-rejected `session.close()`. Callers that reported the failure once use it to avoid
+     * reporting the same rejection a second time when the cleanup settles.
+     */
+    readonly cleanupAlreadyRejected = false,
   ) {
     void cleanup.catch(() => undefined);
     super(message);

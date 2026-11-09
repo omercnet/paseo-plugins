@@ -10,6 +10,7 @@ import type { OmpRuntime, OmpRuntimeSession } from "./omp-rpc";
 import type { OmpModel } from "./omp-rpc-protocol";
 import {
   configuredOutputRedactionValues,
+  isOmpCleanupFailure,
   OmpCleanupFailure,
   OmpPublicDataSerializer,
   OmpPublicError,
@@ -141,8 +142,13 @@ async function closeCatalogSession(session: OmpRuntimeSession): Promise<void> {
   const cleanup = session.close();
   try {
     await cleanup;
-  } catch {
-    throw new OmpCleanupFailure("OMP catalog cleanup failed", cleanup);
+  } catch (error) {
+    // The RPC transport already carries a reverify promise that keeps retrying tree cleanup;
+    // wrapping that rejection with `cleanup` (an already-rejected promise) would discard it.
+    if (isOmpCleanupFailure(error)) throw error;
+    // The close rejection has already been reported by the caller; the gate only has to stay
+    // closed on the same settled promise, without counting the failure twice.
+    throw new OmpCleanupFailure("OMP catalog cleanup failed", cleanup, undefined, true);
   }
 }
 
