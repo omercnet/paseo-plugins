@@ -1593,4 +1593,103 @@ describe("OMP direct provider", () => {
     await finishTurn(events, session, turnId);
     await connection.close();
   });
+
+  test("redacts, bounds and falls back on OMP ask cards", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHarness(runtime);
+    await openSession(
+      connection,
+      events,
+      "configured-output-open",
+      "session-1",
+      // SECRET_PHRASE only appears once the card joins a question to its answer.
+      { SECRET_NAME: "hunter2-ask-secret", SECRET_PHRASE: "Rotate now?\nvault-7" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      true,
+      { providerOptions: { outputRedaction: "configured-values" } },
+    );
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "ask-bounds", "work"));
+    const askItem = (toolCallId: string, args: unknown, result: unknown) => {
+      session.emit({ type: "tool_execution_start", toolCallId, toolName: "ask", args });
+      session.emit({ type: "tool_execution_end", toolCallId, toolName: "ask", result });
+      const view = events.findLast(
+        (event) => event.type === "timeline.item" && event.item.type === "tool_call",
+      );
+      if (view?.type !== "timeline.item" || view.item.type !== "tool_call") {
+        throw new Error("Expected ask card");
+      }
+      return view.item;
+    };
+
+    const redacted = askItem(
+      "ask-redacted",
+      {
+        questions: [
+          { id: "key", question: "Rotate hunter2-ask-secret?", options: [{ label: "Yes" }] },
+        ],
+      },
+      {
+        content: [{ type: "text", text: "User provided custom input: use hunter2-ask-secret" }],
+        details: {
+          question: "Rotate hunter2-ask-secret?",
+          options: ["Yes"],
+          multi: false,
+          selectedOptions: [],
+          customInput: "use hunter2-ask-secret",
+        },
+      },
+    );
+    expect(redacted.detail.type).toBe("plain_text");
+    expect(JSON.stringify(redacted)).not.toContain("hunter2-ask-secret");
+
+    const joined = askItem(
+      "ask-redacted-joined",
+      { questions: [{ id: "now", question: "Rotate now?", options: [{ label: "vault-7" }] }] },
+      {
+        content: [{ type: "text", text: "User selected: vault-7" }],
+        details: {
+          question: "Rotate now?",
+          options: ["vault-7"],
+          multi: false,
+          selectedOptions: ["vault-7"],
+        },
+      },
+    );
+    expect(joined.detail.type).toBe("plain_text");
+    expect(JSON.stringify(joined.detail)).not.toContain("Rotate now?\\nvault-7");
+
+    // Multi-byte answers past the cap stay inside Paseo's UTF-16 unit budget.
+    const wide = askItem(
+      "ask-wide",
+      { questions: [{ id: "a", question: "Price?", options: [{ label: "A" }] }] },
+      {
+        content: [{ type: "text", text: "User provided custom input: wide" }],
+        details: {
+          question: "Price?",
+          options: ["A"],
+          multi: false,
+          selectedOptions: [],
+          customInput: "€🙂".repeat(20_000),
+        },
+      },
+    );
+    expect(wide.detail.type).toBe("plain_text");
+    const wideText = wide.detail.type === "plain_text" ? (wide.detail.text ?? "") : "";
+    expect(wideText.startsWith("Price?\n€🙂")).toBe(true);
+    expect(wideText.length).toBeLessThanOrEqual(32_768);
+    expect(Buffer.byteLength(wideText)).toBeLessThanOrEqual(32 * 1024);
+
+    // Shapes without questions, answers or text keep the previous unknown rendering.
+    const malformedInput = { questions: "not a list" };
+    const malformedOutput = { details: { results: "not a list" } };
+    expect(askItem("ask-malformed", malformedInput, malformedOutput).detail).toEqual({
+      type: "unknown",
+      input: malformedInput,
+      output: malformedOutput,
+    });
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
 });
