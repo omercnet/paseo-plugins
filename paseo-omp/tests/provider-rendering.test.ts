@@ -1376,16 +1376,12 @@ describe("OMP direct provider", () => {
         },
         {
           content: [{ type: "text", text: "User selected: Lint, Unit" }],
+          // A single question is reported flat, never as `results` (OMP ask.ts:934).
           details: {
-            results: [
-              {
-                id: "checks",
-                question: "Which checks?",
-                options: ["Lint", "Unit"],
-                multi: true,
-                selectedOptions: ["Lint", "Unit"],
-              },
-            ],
+            question: "Which checks?",
+            options: ["Lint", "Unit"],
+            multi: true,
+            selectedOptions: ["Lint", "Unit"],
           },
         },
       ).detail,
@@ -1404,16 +1400,11 @@ describe("OMP direct provider", () => {
         {
           content: [{ type: "text", text: "User provided custom input: Ship it" }],
           details: {
-            results: [
-              {
-                id: "note",
-                question: "Anything else?",
-                options: [],
-                multi: false,
-                selectedOptions: [],
-                customInput: "Ship it",
-              },
-            ],
+            question: "Anything else?",
+            options: [],
+            multi: false,
+            selectedOptions: [],
+            customInput: "Ship it",
           },
         },
       ).detail,
@@ -1445,6 +1436,160 @@ describe("OMP direct provider", () => {
         text: "Which environment?\n\nAsk input was cancelled",
       },
     });
+
+    const option = (label: string) => ({ label });
+    expect(
+      askItem(
+        "ask-several",
+        {
+          questions: [
+            { id: "env", question: "Which environment?", options: [option("Staging")] },
+            { id: "checks", question: "Which checks?", multi: true, options: [option("Lint")] },
+            { id: "extra", question: "Anything else?", options: [option("No")] },
+          ],
+        },
+        {
+          content: [
+            { type: "text", text: "User answers:\nchecks: []\nenv: Staging\nextra: (cancelled)" },
+          ],
+          details: {
+            results: [
+              {
+                id: "checks",
+                question: "Which checks?",
+                options: ["Lint"],
+                multi: true,
+                selectedOptions: [],
+              },
+              {
+                id: "env",
+                question: "Which environment?",
+                options: ["Staging"],
+                multi: false,
+                selectedOptions: ["Staging"],
+                note: "rollback ready",
+                noteOption: "Staging",
+                timedOut: true,
+              },
+              {
+                id: "extra",
+                question: "Anything else?",
+                options: ["No"],
+                multi: false,
+                selectedOptions: [],
+              },
+            ],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text:
+        "Which environment?\nStaging (auto-selected after timeout)\nNote on Staging: rollback ready" +
+        "\n\nWhich checks?\n(none selected)\n\nAnything else?\n(no answer)",
+    });
+
+    const chatText =
+      "User chose to chat about this instead of answering.\n\nQuestions asked:\nWhich environment?";
+    expect(
+      askItem(
+        "ask-chat",
+        {
+          questions: [{ id: "env", question: "Which environment?", options: [option("Staging")] }],
+        },
+        {
+          content: [{ type: "text", text: chatText }],
+          details: { chatRedirect: true, questions: ["Which environment?"] },
+        },
+      ).detail,
+    ).toEqual({ type: "plain_text", label: "ask", text: chatText });
+
+    // OMP folds `\r` in ids and questions only inside execute, after the args were published.
+    expect(
+      askItem(
+        "ask-carriage-return",
+        {
+          questions: [
+            { id: "deploy\rmode", question: "Deploy\rmode?", options: [option("Blue")] },
+            { id: "checks", question: "Which checks?", options: [option("Lint")] },
+          ],
+        },
+        {
+          content: [{ type: "text", text: "User answers:\ndeploy mode: Blue\nchecks: Lint" }],
+          details: {
+            results: [
+              {
+                id: "deploy mode",
+                question: "Deploy mode?",
+                options: ["Blue"],
+                multi: false,
+                selectedOptions: ["Blue"],
+              },
+              {
+                id: "checks",
+                question: "Which checks?",
+                options: ["Lint"],
+                multi: false,
+                selectedOptions: ["Lint"],
+              },
+            ],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text: "Deploy\rmode?\nBlue\n\nWhich checks?\nLint",
+    });
+
+    // An oversized preview cuts the published args down to the first question.
+    expect(
+      askItem(
+        "ask-cut-input",
+        {
+          questions: [
+            {
+              id: "a",
+              question: "First?",
+              options: [{ label: "A", preview: "p".repeat(300_000) }],
+            },
+            { id: "b", question: "Second?", options: [option("B")] },
+          ],
+        },
+        {
+          content: [{ type: "text", text: "User answers:\na: A\nb: B" }],
+          details: {
+            results: [
+              { id: "a", question: "First?", options: ["A"], multi: false, selectedOptions: ["A"] },
+              {
+                id: "b",
+                question: "Second?",
+                options: ["B"],
+                multi: false,
+                selectedOptions: ["B"],
+              },
+            ],
+          },
+        },
+      ).detail,
+    ).toEqual({ type: "plain_text", label: "ask", text: "First?\nA\n\nSecond?\nB" });
+
+    const large = askItem(
+      "ask-large-answer",
+      { questions: [{ id: "a", question: "Details?", options: [option("A")] }] },
+      {
+        content: [{ type: "text", text: "User provided custom input: long" }],
+        details: {
+          question: "Details?",
+          options: ["A"],
+          multi: false,
+          selectedOptions: [],
+          customInput: "c".repeat(100_000),
+        },
+      },
+    );
+    expect(Buffer.byteLength(JSON.stringify(large))).toBeLessThan(40 * 1024);
     await finishTurn(events, session, turnId);
     await connection.close();
   });
