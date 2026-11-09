@@ -621,6 +621,9 @@ describe("OMP direct provider", () => {
           (event) => event.type === "request.failed" && event.requestId === requestId,
         ),
       );
+      expect(
+        events.filter((event) => event.type === "session.closed" && event.sessionId === sessionId),
+      ).toHaveLength(1);
       expect(session.closes).toBe(1);
       expect(failures).toEqual([{ category: "replay-recovery", stage: "rewind" }]);
 
