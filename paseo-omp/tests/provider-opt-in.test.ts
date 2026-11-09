@@ -186,7 +186,7 @@ describe("registration", () => {
     const providers: Array<{ id: string; requiresConfiguration?: boolean }> = [];
     const cleanup = contribute({
       handle: () => {},
-      addHook: () => () => {},
+      on: () => () => {},
       before: () => () => {},
       registerSettings: () => ({ subscribe: () => () => {}, read: async () => ({ status: "x" }) }),
       registerProvider: (provider: { id: string; requiresConfiguration?: boolean }) => {

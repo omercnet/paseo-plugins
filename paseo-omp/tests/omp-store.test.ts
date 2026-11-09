@@ -213,7 +213,7 @@ test("registered RPC handlers carry store selection across asynchronous resolver
     handle(contract: { name: string }, handler: (input: unknown) => unknown) {
       handlers.set(contract.name, handler);
     },
-    addHook: () => () => {},
+    on: () => () => {},
     before: () => () => {},
     registerSettings: () => ({ subscribe: () => () => {} }),
     registerProvider: () => {},
