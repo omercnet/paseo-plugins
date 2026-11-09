@@ -710,6 +710,26 @@ export class OmpNativeSessionReservations {
   }
 }
 
+export type OmpCatalogCleanupLatch = { cleanup: Promise<void> | null };
+
+/**
+ * Keeps catalog discovery off an unverified cleanup from a failed discovery. Only a cleanup that
+ * fulfills opens the gate again; a rejected cleanup reports once and leaves the gate closed, so a
+ * later discovery never starts a new OMP process over a process tree that was not confirmed gone.
+ * A cleanup promise that no longer owns the latch cannot release it, so a stale settle never drops
+ * a newer, still-unverified cleanup.
+ */
+export function latchOmpCatalogCleanup(
+  latch: OmpCatalogCleanupLatch,
+  cleanup: Promise<void>,
+  onCleanupRejected: () => void,
+): void {
+  latch.cleanup = cleanup;
+  void cleanup.then(() => {
+    if (latch.cleanup === cleanup) latch.cleanup = null;
+  }, onCleanupRejected);
+}
+
 export function createOmpConnection(
   runtime: OmpRuntime,
   capabilities: readonly string[],
@@ -779,7 +799,7 @@ export function createOmpConnection(
     return new Set([...sessions.keys(), ...opening.keys(), ...failedCleanup.keys()]).size;
   });
   const shutdown = new AbortController();
-  let catalogCleanup: Promise<void> | null = null;
+  const catalogCleanupLatch: OmpCatalogCleanupLatch = { cleanup: null };
   const activeOperations = new Set<Promise<void>>();
   let closing = false;
   let closed = false;
@@ -830,7 +850,7 @@ export function createOmpConnection(
   const dispatch = async (input: ProviderInput): Promise<void> => {
     switch (input.type) {
       case "catalog":
-        if (catalogCleanup) {
+        if (catalogCleanupLatch.cleanup) {
           requestFailure(input.requestId, new OmpPublicError("OMP catalog cleanup is incomplete"));
           return;
         }
@@ -867,7 +887,13 @@ export function createOmpConnection(
           if (!closing) {
             recordOperationalFailure({ category: "session-open", stage: "catalog" });
           }
-          if (isOmpCleanupFailure(error)) catalogCleanup = error.cleanup;
+          if (isOmpCleanupFailure(error)) {
+            latchOmpCatalogCleanup(catalogCleanupLatch, error.cleanup, () => {
+              if (!closing) {
+                recordOperationalFailure({ category: "session-open", stage: "catalog" });
+              }
+            });
+          }
           if (!closing) requestFailure(input.requestId, error, "OMP catalog discovery failed");
         }
         return;
@@ -1250,9 +1276,9 @@ export function createOmpConnection(
       seenCleanups.add(cleanup);
       cleanupBatch.push(cleanup);
     }
-    if (catalogCleanup && !seenCleanups.has(catalogCleanup)) {
-      seenCleanups.add(catalogCleanup);
-      cleanupBatch.push(catalogCleanup);
+    if (catalogCleanupLatch.cleanup && !seenCleanups.has(catalogCleanupLatch.cleanup)) {
+      seenCleanups.add(catalogCleanupLatch.cleanup);
+      cleanupBatch.push(catalogCleanupLatch.cleanup);
     }
     const results = await Promise.allSettled(cleanupBatch);
     for (const result of results) {
@@ -1266,7 +1292,7 @@ export function createOmpConnection(
     sessions.clear();
     opening.clear();
     failedCleanup.clear();
-    catalogCleanup = null;
+    catalogCleanupLatch.cleanup = null;
   };
   return {
     version: 1,
