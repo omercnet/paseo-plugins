@@ -92,51 +92,125 @@ describe("OMP rule notices", () => {
     },
   );
 
-  test("appends one row per bundled omp turn from its first start, ignoring other providers", async () => {
-    const turnStart = Date.parse("2026-11-05T09:10:00.000Z");
-    const file = await sessionFile(
-      injection("fired", new Date(turnStart + 1_000).toISOString(), ["no-canary"]),
-    );
-    const hooks = new Map<string, (payload: unknown, context: unknown) => Promise<void>>();
-    const server = {
-      on: (name: string, handler: (payload: unknown, context: unknown) => Promise<void>) => {
-        hooks.set(name, handler);
-        return () => hooks.delete(name);
-      },
-    } as unknown as Pick<PluginServerContext, "on">;
-    const append = vi.fn(async () => ({ seq: 1, epoch: "epoch" }));
-    const paseo = {
-      agents: {
-        ref: () => ({
-          refresh: async () => ({ agent: { persistence: { nativeHandle: file } } }),
-          timeline: { append },
-        }),
-      },
-    };
-    registerOmpTurnRows(server, [ompRuleNoticeRow]);
+  test.each([
+    ["0.14 host with only on()", hostWithOnOnly],
+    ["0.15 host with on() and addHook()", hostWithAddHook],
+  ])(
+    "on a %s, registers both turn hooks and appends one row per bundled omp turn",
+    async (_, makeHost) => {
+      const turnStart = Date.parse("2026-11-05T09:10:00.000Z");
+      const file = await sessionFile(
+        injection("fired", new Date(turnStart + 1_000).toISOString(), ["no-canary"]),
+      );
+      const host = makeHost();
+      const append = vi.fn(async () => ({ seq: 1, epoch: "epoch" }));
+      const paseo = {
+        agents: {
+          ref: () => ({
+            refresh: async () => ({ agent: { persistence: { nativeHandle: file } } }),
+            timeline: { append },
+          }),
+        },
+      };
+      const remove = registerOmpTurnRows(host.server, [ompRuleNoticeRow]);
 
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      for (const provider of ["claude", "omp"]) {
-        const agent = { id: provider, provider };
-        vi.setSystemTime(turnStart);
-        await hooks.get("agent.turn_started")?.({ agent, turnId: "turn" }, { paseo });
-        // A tool or retry iteration reports another start for the same Paseo turn.
-        vi.setSystemTime(turnStart + 5_000);
-        await hooks.get("agent.turn_started")?.({ agent, turnId: "turn" }, { paseo });
-        await hooks.get("agent.turn_ended")?.({ agent, turnId: "turn" }, { paseo });
+      expect(host.handlers.size).toBe(2);
+      expect(host.handlers.get(host.started)).toHaveLength(1);
+      expect(host.handlers.get(host.ended)).toHaveLength(1);
+      const fire = async (hook: string, agent: { id: string; provider: string }) => {
+        for (const handler of host.handlers.get(hook) ?? []) {
+          await handler({ agent, turnId: "turn" }, { paseo });
+        }
+      };
+
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        for (const provider of ["claude", "omp"]) {
+          const agent = { id: provider, provider };
+          vi.setSystemTime(turnStart);
+          await fire(host.started, agent);
+          // A tool or retry iteration reports another start for the same Paseo turn.
+          vi.setSystemTime(turnStart + 5_000);
+          await fire(host.started, agent);
+          await fire(host.ended, agent);
+        }
+      } finally {
+        vi.useRealTimers();
       }
-    } finally {
-      vi.useRealTimers();
-    }
 
-    expect(append).toHaveBeenCalledTimes(1);
-    expect(append).toHaveBeenCalledWith({
-      type: "plugin",
-      id: "rule-notice:fired",
-      kind: "omp-rule-notice",
-      version: 1,
-      data: { rules: [{ name: "no-canary", matched: null }] },
-    });
-  });
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(append).toHaveBeenCalledWith({
+        type: "plugin",
+        id: "rule-notice:fired",
+        kind: "omp-rule-notice",
+        version: 1,
+        data: { rules: [{ name: "no-canary", matched: null }] },
+      });
+
+      remove();
+      expect([...host.handlers.values()].flat()).toEqual([]);
+    },
+  );
 });
+
+type TurnHookHandler = (payload: unknown, context: unknown) => Promise<void>;
+
+interface TurnHookHost {
+  server: Pick<PluginServerContext, "on">;
+  /** Registered handlers by the name the host dispatches them under. */
+  handlers: Map<string, TurnHookHandler[]>;
+  started: string;
+  ended: string;
+}
+
+function registry(): {
+  handlers: Map<string, TurnHookHandler[]>;
+  register: (name: string, handler: TurnHookHandler) => () => void;
+} {
+  const handlers = new Map<string, TurnHookHandler[]>();
+  const register = (name: string, handler: TurnHookHandler) => {
+    handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+    return () => {
+      const rest = (handlers.get(name) ?? []).filter((entry) => entry !== handler);
+      if (rest.length > 0) handlers.set(name, rest);
+      else handlers.delete(name);
+    };
+  };
+  return { handlers, register };
+}
+
+/** Paseo 0.14: only the legacy event names, no `addHook`. */
+function hostWithOnOnly(): TurnHookHost {
+  const { handlers, register } = registry();
+  const server = { on: register, before: () => () => {} };
+  return {
+    server: server as unknown as Pick<PluginServerContext, "on">,
+    handlers,
+    started: "agent.turn_started",
+    ended: "agent.turn_ended",
+  };
+}
+
+/** Paseo 0.15: `on` routes the legacy names to the canonical hooks, as the SDK adapter does. */
+function hostWithAddHook(): TurnHookHost {
+  const { handlers, register } = registry();
+  const legacy: Record<string, string> = {
+    "agent.turn_started": "agent.turn.before",
+    "agent.turn_ended": "agent.turn.after",
+  };
+  const server = {
+    addHook: register,
+    on: (name: string, handler: TurnHookHandler) => {
+      const hook = legacy[name];
+      if (!hook) throw new Error(`Unknown lifecycle event: ${name}`);
+      return register(hook, handler);
+    },
+    before: () => () => {},
+  };
+  return {
+    server: server as unknown as Pick<PluginServerContext, "on">,
+    handlers,
+    started: "agent.turn.before",
+    ended: "agent.turn.after",
+  };
+}
