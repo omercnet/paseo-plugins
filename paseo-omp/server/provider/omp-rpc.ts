@@ -68,7 +68,7 @@ import {
   validateBoundedText,
 } from "./omp-rpc-values";
 import { buildOmpPromptRequest } from "./prompt-payload";
-import { OmpCleanupFailure, OmpPublicError } from "./security";
+import { isOmpCleanupFailure, OmpCleanupFailure, OmpPublicError } from "./security";
 import {
   listOmpSessionDescriptors,
   type OmpSessionDescriptor,
@@ -695,8 +695,12 @@ export class OmpRpcRuntime implements OmpRuntime {
       const cleanup = process.close();
       try {
         await cleanup;
-      } catch {
-        throw new OmpCleanupFailure("OMP runtime startup cleanup failed", cleanup);
+      } catch (cleanupError) {
+        // The RPC transport carries a reverify promise that keeps retrying tree cleanup. Wrapping
+        // its rejection with `cleanup` (an already-rejected promise) would discard that promise, so
+        // a startup cleanup failure could never reopen the catalog gate.
+        if (isOmpCleanupFailure(cleanupError)) throw cleanupError;
+        throw new OmpCleanupFailure("OMP runtime startup cleanup failed", cleanup, undefined, true);
       }
       throw error;
     }

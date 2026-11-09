@@ -710,24 +710,35 @@ export class OmpNativeSessionReservations {
   }
 }
 
-export type OmpCatalogCleanupLatch = { cleanup: Promise<void> | null };
-
 /**
- * Keeps catalog discovery off an unverified cleanup from a failed discovery. Only a cleanup that
- * fulfills opens the gate again; a rejected cleanup reports once and leaves the gate closed, so a
- * later discovery never starts a new OMP process over a process tree that was not confirmed gone.
- * A cleanup promise that no longer owns the latch cannot release it, so a stale settle never drops
- * a newer, still-unverified cleanup.
+ * Catalog cleanups that are still unverified. Every failed discovery contributes its own cleanup,
+ * so two discoveries that fail concurrently cannot overwrite each other: a fulfilled cleanup leaves
+ * the set, a rejected cleanup stays in it, and a non-empty set keeps later discoveries from starting
+ * a new OMP process over a process tree that was not confirmed gone.
  */
-export function latchOmpCatalogCleanup(
-  latch: OmpCatalogCleanupLatch,
-  cleanup: Promise<void>,
-  onCleanupRejected: () => void,
-): void {
-  latch.cleanup = cleanup;
-  void cleanup.then(() => {
-    if (latch.cleanup === cleanup) latch.cleanup = null;
-  }, onCleanupRejected);
+class OmpCatalogCleanupRegistry {
+  private readonly pending = new Set<Promise<void>>();
+
+  get size(): number {
+    return this.pending.size;
+  }
+
+  track(cleanup: Promise<void>, onCleanupRejected: () => void): void {
+    this.pending.add(cleanup);
+    void cleanup.then(
+      () => this.pending.delete(cleanup),
+      // A rejected cleanup stays tracked: the tree was never confirmed gone.
+      onCleanupRejected,
+    );
+  }
+
+  values(): IterableIterator<Promise<void>> {
+    return this.pending.values();
+  }
+
+  clear(): void {
+    this.pending.clear();
+  }
 }
 
 export function createOmpConnection(
@@ -799,7 +810,7 @@ export function createOmpConnection(
     return new Set([...sessions.keys(), ...opening.keys(), ...failedCleanup.keys()]).size;
   });
   const shutdown = new AbortController();
-  const catalogCleanupLatch: OmpCatalogCleanupLatch = { cleanup: null };
+  const catalogCleanups = new OmpCatalogCleanupRegistry();
   const activeOperations = new Set<Promise<void>>();
   let closing = false;
   let closed = false;
@@ -850,7 +861,7 @@ export function createOmpConnection(
   const dispatch = async (input: ProviderInput): Promise<void> => {
     switch (input.type) {
       case "catalog":
-        if (catalogCleanupLatch.cleanup) {
+        if (catalogCleanups.size > 0) {
           requestFailure(input.requestId, new OmpPublicError("OMP catalog cleanup is incomplete"));
           return;
         }
@@ -888,8 +899,10 @@ export function createOmpConnection(
             recordOperationalFailure({ category: "session-open", stage: "catalog" });
           }
           if (isOmpCleanupFailure(error)) {
-            latchOmpCatalogCleanup(catalogCleanupLatch, error.cleanup, () => {
-              if (!closing) {
+            catalogCleanups.track(error.cleanup, () => {
+              // A cleanup that had already rejected is the failure reported above; counting its
+              // rejection again would report one close failure twice.
+              if (!closing && !error.cleanupAlreadyRejected) {
                 recordOperationalFailure({ category: "session-open", stage: "catalog" });
               }
             });
@@ -1276,9 +1289,10 @@ export function createOmpConnection(
       seenCleanups.add(cleanup);
       cleanupBatch.push(cleanup);
     }
-    if (catalogCleanupLatch.cleanup && !seenCleanups.has(catalogCleanupLatch.cleanup)) {
-      seenCleanups.add(catalogCleanupLatch.cleanup);
-      cleanupBatch.push(catalogCleanupLatch.cleanup);
+    for (const cleanup of catalogCleanups.values()) {
+      if (seenCleanups.has(cleanup)) continue;
+      seenCleanups.add(cleanup);
+      cleanupBatch.push(cleanup);
     }
     const results = await Promise.allSettled(cleanupBatch);
     for (const result of results) {
@@ -1292,7 +1306,7 @@ export function createOmpConnection(
     sessions.clear();
     opening.clear();
     failedCleanup.clear();
-    catalogCleanupLatch.cleanup = null;
+    catalogCleanups.clear();
   };
   return {
     version: 1,
