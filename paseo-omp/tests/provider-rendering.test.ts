@@ -1306,4 +1306,146 @@ describe("OMP direct provider", () => {
     ]);
     await connection.close();
   });
+
+  test("renders OMP ask questions and chosen answers as plain text", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "ask-render", "work"));
+    const askItem = (toolCallId: string, args: unknown, result: unknown, isError = false) => {
+      session.emit({ type: "tool_execution_start", toolCallId, toolName: "ask", args });
+      session.emit({
+        type: "tool_execution_end",
+        toolCallId,
+        toolName: "ask",
+        result,
+        ...(isError ? { isError: true } : {}),
+      });
+      const snapshots = events.flatMap((event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "ask"
+          ? [event.item]
+          : [],
+      );
+      const view = snapshots.at(-1);
+      if (!view) throw new Error("Expected ask card");
+      return view;
+    };
+
+    expect(
+      askItem(
+        "ask-single",
+        {
+          questions: [
+            {
+              id: "env",
+              question: "Which environment?",
+              options: [{ label: "Staging" }, { label: "Production" }],
+            },
+          ],
+        },
+        {
+          content: [{ type: "text", text: "User selected: Staging" }],
+          details: {
+            question: "Which environment?",
+            options: ["Staging", "Production"],
+            multi: false,
+            selectedOptions: ["Staging"],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text: "Which environment?\nStaging",
+    });
+
+    expect(
+      askItem(
+        "ask-multi",
+        {
+          questions: [
+            {
+              id: "checks",
+              question: "Which checks?",
+              multi: true,
+              options: [{ label: "Lint" }, { label: "Unit" }],
+            },
+          ],
+        },
+        {
+          content: [{ type: "text", text: "User selected: Lint, Unit" }],
+          details: {
+            results: [
+              {
+                id: "checks",
+                question: "Which checks?",
+                options: ["Lint", "Unit"],
+                multi: true,
+                selectedOptions: ["Lint", "Unit"],
+              },
+            ],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text: "Which checks?\nLint, Unit",
+    });
+
+    expect(
+      askItem(
+        "ask-custom",
+        {
+          questions: [{ id: "note", question: "Anything else?", options: [] }],
+        },
+        {
+          content: [{ type: "text", text: "User provided custom input: Ship it" }],
+          details: {
+            results: [
+              {
+                id: "note",
+                question: "Anything else?",
+                options: [],
+                multi: false,
+                selectedOptions: [],
+                customInput: "Ship it",
+              },
+            ],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text: "Anything else?\nShip it",
+    });
+
+    const cancelled = askItem(
+      "ask-cancelled",
+      {
+        questions: [
+          {
+            id: "env",
+            question: "Which environment?",
+            options: [{ label: "Staging" }, { label: "Production" }],
+          },
+        ],
+      },
+      { content: [{ type: "text", text: "Ask input was cancelled" }] },
+      true,
+    );
+    expect(cancelled).toMatchObject({
+      status: "failed",
+      detail: {
+        type: "plain_text",
+        label: "ask",
+        text: "Which environment?\n\nAsk input was cancelled",
+      },
+    });
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
 });

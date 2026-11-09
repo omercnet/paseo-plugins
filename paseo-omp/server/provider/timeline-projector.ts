@@ -261,6 +261,111 @@ function resultDetails(value: JsonValue): Record<string, JsonValue> | undefined 
   return jsonRecord(envelope?.details);
 }
 
+type AskProjectedAnswer = {
+  id?: string;
+  question: string;
+  selected: string[];
+  custom?: string;
+  note?: string;
+};
+
+function askQuestionRecords(
+  input: Record<string, JsonValue> | undefined,
+): Array<{ id?: string; question: string }> {
+  const questions = input?.questions;
+  if (!Array.isArray(questions)) return [];
+  return questions.flatMap((value) => {
+    const record = jsonRecord(value);
+    const question = firstString(record, "question");
+    return question === undefined ? [] : [{ id: firstString(record, "id"), question }];
+  });
+}
+
+function askAnswerRecord(value: JsonValue | undefined): AskProjectedAnswer | undefined {
+  const record = jsonRecord(value);
+  const question = firstString(record, "question");
+  if (question === undefined) return undefined;
+  const selectedOptions = record?.selectedOptions;
+  return {
+    id: firstString(record, "id"),
+    question,
+    selected: Array.isArray(selectedOptions)
+      ? selectedOptions.flatMap((option) => (typeof option === "string" ? [option] : []))
+      : [],
+    custom: firstString(record, "customInput"),
+    note: firstString(record, "note"),
+  };
+}
+
+/** OMP reports a single answered question inline and several as `results`; both carry labels. */
+function askAnswerRecords(details: Record<string, JsonValue> | undefined): AskProjectedAnswer[] {
+  const results = details?.results;
+  if (Array.isArray(results)) {
+    return results.flatMap((value) => {
+      const answer = askAnswerRecord(value);
+      return answer ? [answer] : [];
+    });
+  }
+  const single = askAnswerRecord(details);
+  return single ? [single] : [];
+}
+
+function pickAskAnswer(
+  id: string | undefined,
+  index: number,
+  answers: readonly AskProjectedAnswer[],
+): AskProjectedAnswer | undefined {
+  if (id !== undefined) {
+    const match = answers.find((answer) => answer.id === id);
+    if (match) return match;
+    // Legacy single-answer payloads omit the id but still describe the one asked question.
+    if (answers.length === 1 && answers[0]?.id === undefined) return answers[0];
+  }
+  const positional = answers[index];
+  if (id === undefined || positional?.id === undefined || positional.id === id) return positional;
+  return undefined;
+}
+
+/** Renders OMP's `ask` tool as the questions asked plus the answers a user chose. */
+function askToolText(
+  input: Record<string, JsonValue> | undefined,
+  details: Record<string, JsonValue> | undefined,
+  resultText: string | undefined,
+): string | undefined {
+  const answers = askAnswerRecords(details);
+  const asked = askQuestionRecords(input);
+  const chatQuestions = Array.isArray(details?.questions)
+    ? details.questions.flatMap((value) => (typeof value === "string" ? [value] : []))
+    : [];
+  const questions =
+    asked.length > 0
+      ? asked.map((entry, index) => ({
+          question: entry.question,
+          answer: pickAskAnswer(entry.id, index, answers),
+        }))
+      : answers.map((answer) => ({ question: answer.question, answer }));
+  let hasAnswer = false;
+  const blocks = questions.map(({ question, answer }) => {
+    const lines = [question];
+    if (answer) {
+      const selected = [...answer.selected];
+      if (answer.custom) selected.push(answer.custom);
+      if (selected.length > 0) {
+        hasAnswer = true;
+        lines.push(selected.join(", "));
+      }
+      if (answer.note) lines.push(`Note: ${answer.note}`);
+    }
+    return lines.join("\n");
+  });
+  if (blocks.length === 0 && chatQuestions.length > 0) blocks.push(...chatQuestions);
+  if (blocks.length === 0) return resultText;
+  const text = blocks.join("\n\n");
+  // Unanswered questions (cancelled, running, or a dropped details payload) keep OMP's own
+  // result text, which says why no answer is there without inventing a label for it.
+  return hasAnswer || resultText === undefined ? text : `${text}\n\n${resultText}`;
+}
+
 type NativeImageEnvelope = {
   images: NativeImage[];
   text?: string;
@@ -1810,6 +1915,16 @@ export class OmpTimelineProjector {
     }
     if (name === "todo") {
       return { type: "plan", text: resultText ?? JSON.stringify(snapshot.input) };
+    }
+    if (name === "ask") {
+      const text = askToolText(nestedInput, details, resultText);
+      if (text !== undefined) {
+        return {
+          type: "plain_text",
+          label: snapshot.name,
+          text: this.dataFilter.text(text, MAX_PUBLIC_TOOL_PAYLOAD_BYTES),
+        };
+      }
     }
     return { type: "unknown", input: snapshot.input, output: snapshot.output };
   }
