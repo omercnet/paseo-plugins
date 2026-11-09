@@ -1306,4 +1306,390 @@ describe("OMP direct provider", () => {
     ]);
     await connection.close();
   });
+
+  test("renders OMP ask questions and chosen answers as plain text", async () => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "ask-render", "work"));
+    const askItem = (toolCallId: string, args: unknown, result: unknown, isError = false) => {
+      session.emit({ type: "tool_execution_start", toolCallId, toolName: "ask", args });
+      session.emit({
+        type: "tool_execution_end",
+        toolCallId,
+        toolName: "ask",
+        result,
+        ...(isError ? { isError: true } : {}),
+      });
+      const snapshots = events.flatMap((event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "tool_call" &&
+        event.item.name === "ask"
+          ? [event.item]
+          : [],
+      );
+      const view = snapshots.at(-1);
+      if (!view) throw new Error("Expected ask card");
+      return view;
+    };
+
+    expect(
+      askItem(
+        "ask-single",
+        {
+          questions: [
+            {
+              id: "env",
+              question: "Which environment?",
+              options: [{ label: "Staging" }, { label: "Production" }],
+            },
+          ],
+        },
+        {
+          content: [{ type: "text", text: "User selected: Staging" }],
+          details: {
+            question: "Which environment?",
+            options: ["Staging", "Production"],
+            multi: false,
+            selectedOptions: ["Staging"],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text: "Which environment?\nStaging",
+    });
+
+    expect(
+      askItem(
+        "ask-multi",
+        {
+          questions: [
+            {
+              id: "checks",
+              question: "Which checks?",
+              multi: true,
+              options: [{ label: "Lint" }, { label: "Unit" }],
+            },
+          ],
+        },
+        {
+          content: [{ type: "text", text: "User selected: Lint, Unit" }],
+          // A single question is reported flat, never as `results` (OMP ask.ts:934).
+          details: {
+            question: "Which checks?",
+            options: ["Lint", "Unit"],
+            multi: true,
+            selectedOptions: ["Lint", "Unit"],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text: "Which checks?\nLint, Unit",
+    });
+
+    expect(
+      askItem(
+        "ask-custom",
+        {
+          questions: [{ id: "note", question: "Anything else?", options: [] }],
+        },
+        {
+          content: [{ type: "text", text: "User provided custom input: Ship it" }],
+          details: {
+            question: "Anything else?",
+            options: [],
+            multi: false,
+            selectedOptions: [],
+            customInput: "Ship it",
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text: "Anything else?\nShip it",
+    });
+
+    const cancelled = askItem(
+      "ask-cancelled",
+      {
+        questions: [
+          {
+            id: "env",
+            question: "Which environment?",
+            options: [{ label: "Staging" }, { label: "Production" }],
+          },
+        ],
+      },
+      { content: [{ type: "text", text: "Ask input was cancelled" }] },
+      true,
+    );
+    expect(cancelled).toMatchObject({
+      status: "failed",
+      detail: {
+        type: "plain_text",
+        label: "ask",
+        text: "Which environment?\n\nAsk input was cancelled",
+      },
+    });
+
+    const option = (label: string) => ({ label });
+    expect(
+      askItem(
+        "ask-several",
+        {
+          questions: [
+            { id: "env", question: "Which environment?", options: [option("Staging")] },
+            { id: "checks", question: "Which checks?", multi: true, options: [option("Lint")] },
+            { id: "extra", question: "Anything else?", options: [option("No")] },
+          ],
+        },
+        {
+          content: [
+            { type: "text", text: "User answers:\nchecks: []\nenv: Staging\nextra: (cancelled)" },
+          ],
+          details: {
+            results: [
+              {
+                id: "checks",
+                question: "Which checks?",
+                options: ["Lint"],
+                multi: true,
+                selectedOptions: [],
+              },
+              {
+                id: "env",
+                question: "Which environment?",
+                options: ["Staging"],
+                multi: false,
+                selectedOptions: ["Staging"],
+                note: "rollback ready",
+                noteOption: "Staging",
+                timedOut: true,
+              },
+              {
+                id: "extra",
+                question: "Anything else?",
+                options: ["No"],
+                multi: false,
+                selectedOptions: [],
+              },
+            ],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text:
+        "Which environment?\nStaging (auto-selected after timeout)\nNote on Staging: rollback ready" +
+        "\n\nWhich checks?\n(none selected)\n\nAnything else?\n(no answer)",
+    });
+
+    const chatText =
+      "User chose to chat about this instead of answering.\n\nQuestions asked:\nWhich environment?";
+    expect(
+      askItem(
+        "ask-chat",
+        {
+          questions: [{ id: "env", question: "Which environment?", options: [option("Staging")] }],
+        },
+        {
+          content: [{ type: "text", text: chatText }],
+          details: { chatRedirect: true, questions: ["Which environment?"] },
+        },
+      ).detail,
+    ).toEqual({ type: "plain_text", label: "ask", text: chatText });
+
+    // OMP folds `\r` in ids and questions only inside execute, after the args were published.
+    expect(
+      askItem(
+        "ask-carriage-return",
+        {
+          questions: [
+            { id: "deploy\rmode", question: "Deploy\rmode?", options: [option("Blue")] },
+            { id: "checks", question: "Which checks?", options: [option("Lint")] },
+          ],
+        },
+        {
+          content: [{ type: "text", text: "User answers:\ndeploy mode: Blue\nchecks: Lint" }],
+          details: {
+            results: [
+              {
+                id: "deploy mode",
+                question: "Deploy mode?",
+                options: ["Blue"],
+                multi: false,
+                selectedOptions: ["Blue"],
+              },
+              {
+                id: "checks",
+                question: "Which checks?",
+                options: ["Lint"],
+                multi: false,
+                selectedOptions: ["Lint"],
+              },
+            ],
+          },
+        },
+      ).detail,
+    ).toEqual({
+      type: "plain_text",
+      label: "ask",
+      text: "Deploy\rmode?\nBlue\n\nWhich checks?\nLint",
+    });
+
+    // An oversized preview cuts the published args down to the first question.
+    expect(
+      askItem(
+        "ask-cut-input",
+        {
+          questions: [
+            {
+              id: "a",
+              question: "First?",
+              options: [{ label: "A", preview: "p".repeat(300_000) }],
+            },
+            { id: "b", question: "Second?", options: [option("B")] },
+          ],
+        },
+        {
+          content: [{ type: "text", text: "User answers:\na: A\nb: B" }],
+          details: {
+            results: [
+              { id: "a", question: "First?", options: ["A"], multi: false, selectedOptions: ["A"] },
+              {
+                id: "b",
+                question: "Second?",
+                options: ["B"],
+                multi: false,
+                selectedOptions: ["B"],
+              },
+            ],
+          },
+        },
+      ).detail,
+    ).toEqual({ type: "plain_text", label: "ask", text: "First?\nA\n\nSecond?\nB" });
+
+    const large = askItem(
+      "ask-large-answer",
+      { questions: [{ id: "a", question: "Details?", options: [option("A")] }] },
+      {
+        content: [{ type: "text", text: "User provided custom input: long" }],
+        details: {
+          question: "Details?",
+          options: ["A"],
+          multi: false,
+          selectedOptions: [],
+          customInput: "c".repeat(100_000),
+        },
+      },
+    );
+    expect(Buffer.byteLength(JSON.stringify(large))).toBeLessThan(40 * 1024);
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
+
+  test("redacts, bounds and falls back on OMP ask cards", async () => {
+    const runtime = new FakeOmpRuntime();
+    const { connection, events } = await createHarness(runtime);
+    await openSession(
+      connection,
+      events,
+      "configured-output-open",
+      "session-1",
+      // SECRET_PHRASE only appears once the card joins a question to its answer.
+      { SECRET_NAME: "hunter2-ask-secret", SECRET_PHRASE: "Rotate now?\nvault-7" },
+      MODEL_PUBLIC_ID,
+      "medium",
+      true,
+      { providerOptions: { outputRedaction: "configured-values" } },
+    );
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events, "ask-bounds", "work"));
+    const askItem = (toolCallId: string, args: unknown, result: unknown) => {
+      session.emit({ type: "tool_execution_start", toolCallId, toolName: "ask", args });
+      session.emit({ type: "tool_execution_end", toolCallId, toolName: "ask", result });
+      const view = events.findLast(
+        (event) => event.type === "timeline.item" && event.item.type === "tool_call",
+      );
+      if (view?.type !== "timeline.item" || view.item.type !== "tool_call") {
+        throw new Error("Expected ask card");
+      }
+      return view.item;
+    };
+
+    const redacted = askItem(
+      "ask-redacted",
+      {
+        questions: [
+          { id: "key", question: "Rotate hunter2-ask-secret?", options: [{ label: "Yes" }] },
+        ],
+      },
+      {
+        content: [{ type: "text", text: "User provided custom input: use hunter2-ask-secret" }],
+        details: {
+          question: "Rotate hunter2-ask-secret?",
+          options: ["Yes"],
+          multi: false,
+          selectedOptions: [],
+          customInput: "use hunter2-ask-secret",
+        },
+      },
+    );
+    expect(redacted.detail.type).toBe("plain_text");
+    expect(JSON.stringify(redacted)).not.toContain("hunter2-ask-secret");
+
+    const joined = askItem(
+      "ask-redacted-joined",
+      { questions: [{ id: "now", question: "Rotate now?", options: [{ label: "vault-7" }] }] },
+      {
+        content: [{ type: "text", text: "User selected: vault-7" }],
+        details: {
+          question: "Rotate now?",
+          options: ["vault-7"],
+          multi: false,
+          selectedOptions: ["vault-7"],
+        },
+      },
+    );
+    expect(joined.detail.type).toBe("plain_text");
+    expect(JSON.stringify(joined.detail)).not.toContain("Rotate now?\\nvault-7");
+
+    // Multi-byte answers past the cap stay inside Paseo's UTF-16 unit budget.
+    const wide = askItem(
+      "ask-wide",
+      { questions: [{ id: "a", question: "Price?", options: [{ label: "A" }] }] },
+      {
+        content: [{ type: "text", text: "User provided custom input: wide" }],
+        details: {
+          question: "Price?",
+          options: ["A"],
+          multi: false,
+          selectedOptions: [],
+          customInput: "€🙂".repeat(20_000),
+        },
+      },
+    );
+    expect(wide.detail.type).toBe("plain_text");
+    const wideText = wide.detail.type === "plain_text" ? (wide.detail.text ?? "") : "";
+    expect(wideText.startsWith("Price?\n€🙂")).toBe(true);
+    expect(wideText.length).toBeLessThanOrEqual(32_768);
+    expect(Buffer.byteLength(wideText)).toBeLessThanOrEqual(32 * 1024);
+
+    // Shapes without questions, answers or text keep the previous unknown rendering.
+    const malformedInput = { questions: "not a list" };
+    const malformedOutput = { details: { results: "not a list" } };
+    expect(askItem("ask-malformed", malformedInput, malformedOutput).detail).toEqual({
+      type: "unknown",
+      input: malformedInput,
+      output: malformedOutput,
+    });
+    await finishTurn(events, session, turnId);
+    await connection.close();
+  });
 });

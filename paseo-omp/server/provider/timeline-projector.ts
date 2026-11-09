@@ -32,6 +32,8 @@ const MAX_TODOS = 256;
 const MAX_TURN_NATIVE_IDENTITIES = 1_024;
 const MAX_REPLAY_NATIVE_IDENTITIES = 100_000;
 const MAX_PUBLIC_TOOL_PAYLOAD_BYTES = 256 * 1024;
+/** Paseo caps a whole tool_call item at 64K units (0.15), so the ask card keeps clear of it. */
+const MAX_ASK_TEXT_BYTES = 32 * 1024;
 const MAX_ACTIVE_TOOL_BYTES = 4 * 1024 * 1024;
 const MAX_REVERT_TARGETS = MAX_REPLAY_NATIVE_IDENTITIES;
 const REVERT_TOKEN_PATTERN = /^omp-revert:[A-Za-z0-9_-]{43}$/u;
@@ -259,6 +261,154 @@ function toolResultText(value: JsonValue): string | undefined {
 function resultDetails(value: JsonValue): Record<string, JsonValue> | undefined {
   const envelope = jsonRecord(value);
   return jsonRecord(envelope?.details);
+}
+
+type AskProjectedAnswer = {
+  id?: string;
+  question: string;
+  multi: boolean;
+  selected: string[];
+  custom?: string;
+  note?: string;
+  noteOption?: string;
+  timedOut: boolean;
+};
+
+/** OMP folds `\r` runs in ids and questions inside `execute`, after the call args are published. */
+function askKey(value: string): string {
+  return value.replaceAll("\r\n", "\n").replace(/\r+/gu, " ");
+}
+
+function askQuestionRecords(
+  input: Record<string, JsonValue> | undefined,
+): Array<{ id?: string; question: string }> {
+  const questions = input?.questions;
+  if (!Array.isArray(questions)) return [];
+  return questions.flatMap((value) => {
+    const record = jsonRecord(value);
+    const question = firstString(record, "question");
+    return question === undefined ? [] : [{ id: firstString(record, "id"), question }];
+  });
+}
+
+function askAnswerRecord(value: JsonValue | undefined): AskProjectedAnswer | undefined {
+  const record = jsonRecord(value);
+  const question = firstString(record, "question");
+  if (question === undefined) return undefined;
+  const selectedOptions = record?.selectedOptions;
+  return {
+    id: firstString(record, "id"),
+    question,
+    multi: record?.multi === true,
+    selected: Array.isArray(selectedOptions)
+      ? selectedOptions.flatMap((option) => (typeof option === "string" ? [option] : []))
+      : [],
+    custom: firstString(record, "customInput"),
+    note: firstString(record, "note"),
+    noteOption: firstString(record, "noteOption"),
+    timedOut: record?.timedOut === true,
+  };
+}
+
+/** OMP reports a single answered question inline and several as `results`; both carry labels. */
+function askAnswerRecords(details: Record<string, JsonValue> | undefined): AskProjectedAnswer[] {
+  const results = details?.results;
+  if (Array.isArray(results)) {
+    return results.flatMap((value) => {
+      const answer = askAnswerRecord(value);
+      return answer ? [answer] : [];
+    });
+  }
+  const single = askAnswerRecord(details);
+  return single ? [single] : [];
+}
+
+/** Claims the answer for one asked question; claimed answers are never rendered twice. */
+function takeAskAnswer(
+  asked: { id?: string; question: string },
+  index: number,
+  answers: readonly AskProjectedAnswer[],
+  used: Set<number>,
+): AskProjectedAnswer | undefined {
+  const open = (candidate: number) => candidate >= 0 && !used.has(candidate);
+  const askedId = asked.id === undefined ? undefined : askKey(asked.id);
+  let found =
+    askedId === undefined
+      ? -1
+      : answers.findIndex(
+          (answer, candidate) =>
+            open(candidate) && answer.id !== undefined && askKey(answer.id) === askedId,
+        );
+  // Single-question results are flat and carry no id.
+  if (found < 0 && answers.length === 1 && answers[0]?.id === undefined && open(0)) found = 0;
+  if (found < 0) {
+    const askedQuestion = askKey(asked.question);
+    found = answers.findIndex(
+      (answer, candidate) => open(candidate) && askKey(answer.question) === askedQuestion,
+    );
+  }
+  if (found < 0 && open(index)) {
+    const positional = answers[index];
+    if (askedId === undefined || positional?.id === undefined) found = index;
+  }
+  if (found < 0) return undefined;
+  used.add(found);
+  return answers[found];
+}
+
+function askAnswerLines(answer: AskProjectedAnswer): string[] {
+  const lines: string[] = [];
+  const selected = [...answer.selected];
+  if (answer.custom) selected.push(answer.custom);
+  if (selected.length > 0) {
+    lines.push(`${selected.join(", ")}${answer.timedOut ? " (auto-selected after timeout)" : ""}`);
+  } else {
+    lines.push(answer.multi ? "(none selected)" : "(no answer)");
+  }
+  if (answer.note) {
+    lines.push(
+      answer.noteOption === undefined
+        ? `Note: ${answer.note}`
+        : `Note on ${answer.noteOption}: ${answer.note}`,
+    );
+  }
+  return lines;
+}
+
+/** Renders OMP's `ask` tool as the questions asked plus the answers a user chose. */
+function askToolText(
+  input: Record<string, JsonValue> | undefined,
+  details: Record<string, JsonValue> | undefined,
+  resultText: string | undefined,
+): string | undefined {
+  // OMP's chat redirect text already lists every question asked.
+  if (details?.chatRedirect === true && resultText !== undefined) return resultText;
+  const answers = askAnswerRecords(details);
+  const asked = askQuestionRecords(input);
+  const chatQuestions = Array.isArray(details?.questions)
+    ? details.questions.flatMap((value) => (typeof value === "string" ? [value] : []))
+    : [];
+  const used = new Set<number>();
+  let unanswered = false;
+  const blocks = asked.map((entry, index) => {
+    const answer = takeAskAnswer(entry, index, answers, used);
+    if (!answer) unanswered = true;
+    return [entry.question, ...(answer ? askAnswerLines(answer) : [])].join("\n");
+  });
+  // Answers whose question is missing from the published args (cut down, or ids OMP rewrote)
+  // still carry their own question text.
+  answers.forEach((answer, index) => {
+    if (!used.has(index)) blocks.push([answer.question, ...askAnswerLines(answer)].join("\n"));
+  });
+  if (blocks.length === 0 && chatQuestions.length > 0) {
+    blocks.push(...chatQuestions);
+    unanswered = true;
+  }
+  if (blocks.length === 0) return resultText;
+  const text = blocks.join("\n\n");
+  // Unanswered questions (cancelled, running, or a dropped details payload) keep OMP's own
+  // result text, which says why no answer is there without inventing a label for it.
+  return !unanswered || resultText === undefined ? text : `${text}\n\n${resultText}`;
 }
 
 type NativeImageEnvelope = {
@@ -1810,6 +1960,16 @@ export class OmpTimelineProjector {
     }
     if (name === "todo") {
       return { type: "plan", text: resultText ?? JSON.stringify(snapshot.input) };
+    }
+    if (name === "ask") {
+      const text = askToolText(nestedInput, details, resultText);
+      if (text !== undefined) {
+        return {
+          type: "plain_text",
+          label: snapshot.name,
+          text: this.dataFilter.text(text, MAX_ASK_TEXT_BYTES),
+        };
+      }
     }
     return { type: "unknown", input: snapshot.input, output: snapshot.output };
   }
