@@ -612,6 +612,15 @@ describe("OMP direct provider", () => {
           error: { message: "OMP conversation rewind left native state indeterminate" },
         }),
       );
+      expect(
+        events.findIndex(
+          (event) => event.type === "session.closed" && event.sessionId === sessionId,
+        ),
+      ).toBeLessThan(
+        events.findIndex(
+          (event) => event.type === "request.failed" && event.requestId === requestId,
+        ),
+      );
       expect(session.closes).toBe(1);
       expect(failures).toEqual([{ category: "replay-recovery", stage: "rewind" }]);
 

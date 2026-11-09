@@ -1043,11 +1043,13 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
       if (branchMutationPossible) {
         await this.closeAfterCommittedRewindFailure(runtime, failure.message);
       }
-      this.emit({ type: "request.failed", requestId: input.requestId, error: failure });
       if (branchMutationPossible) {
+        // Mark the session terminal before rejecting rewind. The host must not
+        // mistake an indeterminate branch for an unchanged request refusal.
         this.publishSessionClosed(failure);
-        this.retireRewindSession();
       }
+      this.emit({ type: "request.failed", requestId: input.requestId, error: failure });
+      if (branchMutationPossible) this.retireRewindSession();
     } finally {
       this.revertInFlight = false;
       if (this.configRefreshDirty && !this.configMutationInFlight && !this.closed) {
