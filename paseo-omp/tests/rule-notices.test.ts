@@ -99,11 +99,11 @@ describe("OMP rule notices", () => {
     );
     const hooks = new Map<string, (payload: unknown, context: unknown) => Promise<void>>();
     const server = {
-      addHook: (name: string, handler: (payload: unknown, context: unknown) => Promise<void>) => {
+      on: (name: string, handler: (payload: unknown, context: unknown) => Promise<void>) => {
         hooks.set(name, handler);
         return () => hooks.delete(name);
       },
-    } as unknown as Pick<PluginServerContext, "addHook">;
+    } as unknown as Pick<PluginServerContext, "on">;
     const append = vi.fn(async () => ({ seq: 1, epoch: "epoch" }));
     const paseo = {
       agents: {
@@ -120,11 +120,11 @@ describe("OMP rule notices", () => {
       for (const provider of ["claude", "omp"]) {
         const agent = { id: provider, provider };
         vi.setSystemTime(turnStart);
-        await hooks.get("agent.turn.before")?.({ agent, turnId: "turn" }, { paseo });
+        await hooks.get("agent.turn_started")?.({ agent, turnId: "turn" }, { paseo });
         // A tool or retry iteration reports another start for the same Paseo turn.
         vi.setSystemTime(turnStart + 5_000);
-        await hooks.get("agent.turn.before")?.({ agent, turnId: "turn" }, { paseo });
-        await hooks.get("agent.turn.after")?.({ agent, turnId: "turn" }, { paseo });
+        await hooks.get("agent.turn_started")?.({ agent, turnId: "turn" }, { paseo });
+        await hooks.get("agent.turn_ended")?.({ agent, turnId: "turn" }, { paseo });
       }
     } finally {
       vi.useRealTimers();
