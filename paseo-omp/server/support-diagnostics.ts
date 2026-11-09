@@ -8,6 +8,7 @@ import {
   OMP_SUPPORT_REPORT_SCHEMA_VERSION,
   supportReportByteLength,
 } from "../shared/support-diagnostics";
+import { currentHostHookApi, type OmpHostHookApi } from "./hook-compat";
 import type {
   OmpOperationalFailureCollector,
   OmpOperationalFailureSummary,
@@ -61,6 +62,8 @@ export interface OmpSupportReportData {
   scope: "global" | "workspace";
   store: "default" | "named-profile" | "custom-directory";
   health: OmpProviderHealth | null;
+  /** Lifecycle API the running host offered at plugin load. */
+  hooks: OmpHostHookApi;
   violations: readonly OmpProtocolViolationSummary[];
   operationalFailures: readonly OmpOperationalFailureSummary[];
 }
@@ -156,6 +159,8 @@ export function formatOmpSupportReport(data: OmpSupportReportData): string {
     "selection.applies_to: provider-health",
     "diagnostic_counters.scope: plugin-process-all-stores-workspaces",
     "diagnostic_counters.lifetime: since-plugin-load",
+    `compatibility.plugin_hooks: ${data.hooks}`,
+    `compatibility.turn_rows: ${data.hooks === "not-supported" ? "not-supported" : "supported"}`,
     ...formatHealth(data.health),
   ];
   for (const violation of data.violations) {
@@ -257,6 +262,7 @@ export async function resolveGetOmpSupportReport(
             ? "custom-directory"
             : "default",
         health: healthResult.status === "fulfilled" ? healthResult.value : null,
+        hooks: currentHostHookApi(),
         violations: violations.snapshot(),
         operationalFailures: operationalFailures.snapshot(),
       }),
@@ -276,6 +282,7 @@ export async function resolveGetOmpSupportReport(
             ? "custom-directory"
             : "default",
         health: null,
+        hooks: currentHostHookApi(),
         violations: violations.snapshot(),
         operationalFailures: operationalFailures.snapshot(),
       }),

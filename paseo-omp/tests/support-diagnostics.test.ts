@@ -64,6 +64,7 @@ function reportData(
     scope: "workspace",
     store: "named-profile",
     health: providerHealth(),
+    hooks: "addHook",
     violations: collector.snapshot(),
     operationalFailures: new OmpOperationalFailureCollector(
       () => new Date("2026-09-19T12:00:00.000Z"),
@@ -116,6 +117,8 @@ describe("OMP support report", () => {
     expect(first).toContain("selection.applies_to: provider-health");
     expect(first).toContain("diagnostic_counters.scope: plugin-process-all-stores-workspaces");
     expect(first).toContain("diagnostic_counters.lifetime: since-plugin-load");
+    expect(first).toContain("compatibility.plugin_hooks: addHook");
+    expect(first).toContain("compatibility.turn_rows: supported");
     expect(first).toContain("collection.provider_health: complete");
     expect(first).toContain("omp.version: 18.4.2-beta.1");
     expect(first).toContain("compatibility.rpc_ui: supported");

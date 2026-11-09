@@ -1,5 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { resolveGeneratedImages } from "./server/generated-images";
+import { detectHostHookApi, recordHostHookApi } from "./server/hook-compat";
 import { resolveListHubProcesses, resolveTailHubLog } from "./server/hub";
 import {
   OmpBrowserAuthorizationRegistry,
@@ -283,7 +284,13 @@ export default function contribute(server: PluginServerContext) {
   server.handle(steerOmpSubagent, (input) =>
     resolveSteerOmpSubagent(input, subagentControlRegistry),
   );
-  const removeTurnRows = registerOmpTurnRows(server, [ompRuleNoticeRow, ompScreenshotRow]);
+  // 0.15 added `addHook`; older hosts only fire the legacy turn events. Both feed the same rows.
+  const hostHookApi = detectHostHookApi(server);
+  recordHostHookApi(hostHookApi);
+  const removeTurnRows =
+    hostHookApi === "not-supported"
+      ? () => {}
+      : registerOmpTurnRows(server, [ompRuleNoticeRow, ompScreenshotRow]);
   const removeSessionOpenHook = server.before("agent.session_open", ({ request }) => {
     if (request.provider !== "omp-plugin" && !request.provider.startsWith("omp-plugin-")) return;
     return withOmpSessionOpenEnv(request);
