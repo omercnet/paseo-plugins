@@ -6,6 +6,14 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.2.2](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.2.1...pr-radar-v3.2.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.16 ([#574](https://github.com/omercnet/paseo-plugins/issues/574)) ([e53096c](https://github.com/omercnet/paseo-plugins/commit/e53096cea4c11ed81de3757c9f9710fa0042b723))
+* **pr-radar:** pass a profile's provider options when starting an agent ([#576](https://github.com/omercnet/paseo-plugins/issues/576)) ([1707853](https://github.com/omercnet/paseo-plugins/commit/17078535f1972a84d438571c0e28a8cf2fa2b446))
+
 ## [3.2.1](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.2.0...pr-radar-v3.2.1) (2026-11-02)
 
 

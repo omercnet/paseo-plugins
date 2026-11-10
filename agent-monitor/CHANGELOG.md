@@ -10,6 +10,13 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [4.4.3](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.4.2...agent-monitor-v4.4.3) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.16 ([#574](https://github.com/omercnet/paseo-plugins/issues/574)) ([e53096c](https://github.com/omercnet/paseo-plugins/commit/e53096cea4c11ed81de3757c9f9710fa0042b723))
+
 ## [4.4.2](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.4.1...agent-monitor-v4.4.2) (2026-11-07)
 
 
