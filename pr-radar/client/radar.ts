@@ -663,19 +663,26 @@ type AgentProfileLike = {
   model?: string;
   modeId?: string;
   thinkingOptionId?: string;
-  // A host older than 0.16 hands over profiles that keep their options here.
+  // A host older than 0.16 hands over profiles that keep their options here. Its client sends this
+  // field as is, and its daemon reads feature values from nowhere else.
   featureValues?: Record<string, unknown>;
   // Paseo 0.16 profiles store provider options here.
   options?: Record<string, unknown>;
 };
 
+// Each field goes out as the profile holds it. The 0.16 SDK merges them on send (an explicit
+// `options` key wins); an older host's client does no merging, so folding them here would move a
+// pre-0.16 profile's values to a field its daemon does not read for features.
 export function profileAgentConfig(profile: AgentProfileLike) {
-  // An explicit `options` key wins over `featureValues`, as it does in the SDK and on the daemon.
-  const options = { ...profile.featureValues, ...profile.options };
   return {
     provider: profile.model ? `${profile.provider}/${profile.model}` : profile.provider,
     ...(profile.modeId ? { modeId: profile.modeId } : {}),
     ...(profile.thinkingOptionId ? { thinkingOptionId: profile.thinkingOptionId } : {}),
-    ...(Object.keys(options).length > 0 ? { options } : {}),
+    ...(profile.options && Object.keys(profile.options).length > 0
+      ? { options: profile.options }
+      : {}),
+    ...(profile.featureValues && Object.keys(profile.featureValues).length > 0
+      ? { featureValues: profile.featureValues }
+      : {}),
   };
 }

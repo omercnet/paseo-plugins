@@ -15,7 +15,9 @@ describe("profileAgentConfig", () => {
     });
   });
 
-  test("carries featureValues from a profile a pre-0.16 host handed over", () => {
+  test("keeps featureValues as featureValues for a profile a pre-0.16 host handed over", () => {
+    // A pre-0.16 client does not fold featureValues into options, and its daemon reads feature
+    // values only from featureValues, so moving them would silently drop them.
     expect(
       profileAgentConfig({
         provider: "codex",
@@ -27,11 +29,11 @@ describe("profileAgentConfig", () => {
       provider: "codex",
       modeId: "auto",
       thinkingOptionId: "high",
-      options: { fast_mode: true },
+      featureValues: { fast_mode: true },
     });
   });
 
-  test("merges both fields and lets an explicit options key win", () => {
+  test("forwards both fields untouched and leaves merging to the SDK", () => {
     expect(
       profileAgentConfig({
         provider: "codex",
@@ -40,18 +42,18 @@ describe("profileAgentConfig", () => {
       }),
     ).toEqual({
       provider: "codex",
-      options: { fast_mode: true, service_tier: "fast" },
+      featureValues: { fast_mode: true, service_tier: "flex" },
+      options: { service_tier: "fast" },
     });
   });
 
-  test("never sends the deprecated featureValues or an invented providerOptions key", () => {
+  test("never sends a providerOptions key, which the SDK agent config does not define", () => {
     const config = profileAgentConfig({
       provider: "codex",
       featureValues: { fast_mode: true },
       options: { service_tier: "fast" },
     });
 
-    expect(config).not.toHaveProperty("featureValues");
     expect(config).not.toHaveProperty("providerOptions");
   });
 
