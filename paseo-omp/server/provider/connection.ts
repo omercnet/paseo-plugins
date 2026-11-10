@@ -15,7 +15,7 @@ import type {
 } from "../operational-failure-diagnostics";
 import type { OmpSubagentControlRegistry } from "../subagents";
 import { discoverOmpCatalog } from "./catalog";
-import { normalizeOmpCatalogOptions } from "./config-normalization";
+import { hasOmpProviderSettings, normalizeOmpCatalogOptions } from "./config-normalization";
 import type { OmpMcpConnector } from "./host-tools";
 import type { OmpRuntime } from "./omp-rpc";
 import {
@@ -77,14 +77,6 @@ const MAX_NESTED_OPTION_BYTES = 256 * 1024;
 const MAX_ENV_ENTRIES = 256;
 const MAX_NATIVE_SESSION_RESERVATIONS = 256;
 
-function hasOwnEntries(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  for (const key in value) {
-    if (Object.hasOwn(value, key)) return true;
-  }
-  return false;
-}
-
 function providerOptionsExceedPreflightLimits(value: unknown): boolean {
   if (
     boundedJsonBytes(value, MAX_NESTED_OPTION_BYTES, MAX_ENV_ENTRIES) === Number.POSITIVE_INFINITY
@@ -143,7 +135,7 @@ function preflightProviderInput(input: unknown): void {
     if (config?.toolPolicy !== undefined) {
       throw new OmpPublicError("OMP does not support host tool policies");
     }
-    if (hasOwnEntries(config?.settings)) {
+    if (hasOmpProviderSettings(config?.settings, config?.providerOptions)) {
       throw new OmpPublicError("OMP does not expose live provider settings");
     }
   }

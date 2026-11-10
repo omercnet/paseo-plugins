@@ -788,7 +788,6 @@ describe("OMP history through the Paseo host", () => {
       model: MODEL_PUBLIC_ID,
       modeId: "full",
       thinkingOptionId: "medium",
-      featureValues: {},
     };
     return { runtime, registry, manager, handle, overrides, cwd, providerEvents, hookRequests };
   }

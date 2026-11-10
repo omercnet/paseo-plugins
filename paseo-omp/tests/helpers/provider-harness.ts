@@ -67,7 +67,6 @@ export type HostSessionConfig = {
   modeId?: string;
   model?: string;
   thinkingOptionId?: string;
-  featureValues?: Record<string, unknown>;
 };
 export type HostLaunchContext = { env?: Record<string, string> };
 export type HostClient = {

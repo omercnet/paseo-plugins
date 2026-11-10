@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import type { OmpStartOptions } from "./omp-rpc-environment";
 
@@ -14,6 +15,24 @@ import { parseOmpProviderOptions } from "./provider-options";
 import { OmpPublicError } from "./security";
 import { withoutOmpSessionPurpose } from "./session-purpose";
 import { OmpModeSchema } from "./settings";
+
+/**
+ * Whether a session asks for provider settings OMP does not expose. Paseo 0.14/0.15 fill
+ * `settings` from feature values; Paseo 0.16 mirrors `providerOptions` there instead, so a key
+ * that only repeats the same `providerOptions` value is not a setting.
+ */
+export function hasOmpProviderSettings(settings: unknown, providerOptions: unknown): boolean {
+  if (!settings || typeof settings !== "object") return false;
+  const options =
+    providerOptions && typeof providerOptions === "object"
+      ? (providerOptions as Record<string, unknown>)
+      : {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (!Object.hasOwn(options, key)) return true;
+    if (!isDeepStrictEqual(value, options[key])) return true;
+  }
+  return false;
+}
 
 const OMP_BUILTIN_TOOL_NAMES = [
   "read",
@@ -120,7 +139,7 @@ export function normalizeOmpSessionConfig(
   permissionSupported = false,
   hostInheritEnv: readonly string[] = [],
 ): NormalizedOmpStartOptions {
-  if (Object.keys(config.settings).length > 0) {
+  if (hasOmpProviderSettings(config.settings, config.providerOptions)) {
     throw new OmpPublicError("OMP does not expose live provider settings");
   }
   const parsedMode = OmpModeSchema.safeParse(config.mode ?? "full");
