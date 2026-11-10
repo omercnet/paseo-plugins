@@ -1,7 +1,8 @@
-import type { usePaseo } from "@getpaseo/plugin/client";
+import type { PaseoApi as ClientPaseoApi } from "@getpaseo/client";
 import type { AgentSort, MonitorSettings } from "../shared/monitor-settings";
 
-export type PaseoApi = ReturnType<typeof usePaseo>;
+// getPaseoClient() returns the bare client API; usePaseo() returns a superset, so both fit.
+export type PaseoApi = ClientPaseoApi;
 export type PaseoWorkspace = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>["entries"][number];
 export type AgentEntry = Awaited<ReturnType<PaseoApi["agents"]["list"]>>["entries"][number];
 type AgentSnapshot = AgentEntry["agent"];

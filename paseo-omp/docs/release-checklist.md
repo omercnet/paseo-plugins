@@ -7,7 +7,7 @@ This checklist prepares a `paseo-omp` release. It does not authorize publication
 - [ ] Release Please proposes the expected next stable version from the previous release.
 - [ ] Package and tag names are `@omercnet/paseo-omp` and `paseo-omp-v<version>`.
 - [ ] Provider identity remains `omp-plugin`; bundled `omp` remains independent and enabled or disabled by the user.
-- [ ] Paseo requirement remains the reviewed range, currently `^0.14.0 || ^0.15.0`.
+- [ ] Paseo requirement remains the reviewed range, currently `^0.14.0 || ^0.15.0 || ^0.16.0`.
 - [ ] Minimum tested OMP version, checksum, CI job, README, SUPPORT, and TESTING agree.
 
 ## Required gates
@@ -20,6 +20,7 @@ This checklist prepares a `paseo-omp` release. It does not authorize publication
 - [ ] `npm run test:integration:docker`
 - [ ] Windows/WSL host ownership job passes in CI.
 - [ ] Docker canary matrix passes on the exact release candidate.
+- [ ] The canary host image is on the newest Paseo line in the requirement range, and the manual acceptance below was run in the Paseo app of that line, because the canary client is not the app.
 - [ ] GitHub Actions syntax and release-configuration schemas pass.
 
 ## Required manual acceptance

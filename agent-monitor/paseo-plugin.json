@@ -2,5 +2,5 @@
   "id": "agent-monitor",
   "description": "A Paseo plugin that provides a host-wide agent triage roster.",
   "icon": "icon.png",
-  "requirements": { "paseo": "^0.13.0 || ^0.14.0 || ^0.15.0" }
+  "requirements": { "paseo": "^0.13.0 || ^0.14.0 || ^0.15.0 || ^0.16.0" }
 }

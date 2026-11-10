@@ -8,7 +8,7 @@
       "name": "@omercnet/paseo-shared-browser",
       "version": "4.1.8",
       "dependencies": {
-        "@getpaseo/plugin": "0.15.3",
+        "@getpaseo/plugin": "0.16.0-beta.1",
         "@modelcontextprotocol/sdk": "1.32.2",
         "agent-browser": "0.41.2",
         "esbuild": "0.28.2",
@@ -441,29 +441,31 @@
       }
     },
     "node_modules/@getpaseo/client": {
-      "version": "0.15.3",
-      "resolved": "https://registry.npmjs.org/@getpaseo/client/-/client-0.15.3.tgz",
-      "integrity": "sha512-gdZ7pmLIVmFof8lUUEUH5NmaqJ6W3u8SelerwaBn6Ygv+iRzVSZeMt43/OyrEmdr8p3eCMj4D3TrCP3T6ZdrZw==",
+      "version": "0.16.0-beta.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/client/-/client-0.16.0-beta.1.tgz",
+      "integrity": "sha512-uU5+myB+MKU4igthR1vioJEc8VFFeGsJB8t2xUKsrgUC3e1jP3408cBc4iUkDEp7LaMqCV5Nih8I/ECmFqHoHA==",
+      "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
-        "@getpaseo/protocol": "0.15.3",
-        "@getpaseo/relay": "0.15.3",
+        "@getpaseo/protocol": "0.16.0-beta.1",
+        "@getpaseo/relay": "0.16.0-beta.1",
         "ws": "^8.20.0",
         "zod": "^4.4.3"
       }
     },
     "node_modules/@getpaseo/plugin": {
-      "version": "0.15.3",
-      "resolved": "https://registry.npmjs.org/@getpaseo/plugin/-/plugin-0.15.3.tgz",
-      "integrity": "sha512-c5+bi4M5CKSV85vEcms/NDDBrIn0jaihofXm/P73Hni0movbrn3hv/QQdOY3pcaQ07zNqi6P7VzNLanryUIYgA==",
+      "version": "0.16.0-beta.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/plugin/-/plugin-0.16.0-beta.1.tgz",
+      "integrity": "sha512-GKgbq48oMxheir+REDfIRKStIb99EiXAx8S/54JxrsI5x+TvJ+5fV81X9qkQM6JISa3z1Vrkw01lN2XvnGhz8g==",
+      "license": "Apache-2.0",
       "dependencies": {
         "@agentclientprotocol/sdk": "^1.4.0",
         "i18next": "^26.3.0",
         "use-sync-external-store": "^1.6.0"
       },
       "peerDependencies": {
-        "@getpaseo/client": "0.15.3",
-        "@getpaseo/protocol": "0.15.3",
+        "@getpaseo/client": "0.16.0-beta.1",
+        "@getpaseo/protocol": "0.16.0-beta.1",
         "react": ">=19.1.0 <20",
         "react-native": ">=0.81.5",
         "zod": "^4.4.3"
@@ -475,9 +477,10 @@
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.15.3",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.15.3.tgz",
-      "integrity": "sha512-JhAYutwgLUSDdvDhQ8yLjxzqJroR3yqmt+5/rv07iqmOAd/CNtKNJSXZAFaTOavWZcRVlL6DD3tkwaobjgb1Xg==",
+      "version": "0.16.0-beta.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.16.0-beta.1.tgz",
+      "integrity": "sha512-RU/Q8OxRWGJ4NSGSZV0Y9j8/12SCgcA/ulxfldgmtnxBRV1upfW6c6ao7sK9Bz0mQ5vZfxpLNVSzKqheChoKgw==",
+      "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
         "semver": "^7.8.5",
@@ -485,9 +488,10 @@
       }
     },
     "node_modules/@getpaseo/relay": {
-      "version": "0.15.3",
-      "resolved": "https://registry.npmjs.org/@getpaseo/relay/-/relay-0.15.3.tgz",
-      "integrity": "sha512-zLgnVLLo1WsVXIQQF5z1DAt7hg6t6K3Zbxnk22uA/DUKE0ip1brQQSmgN1cNN7a9ss3Hqg5Fdr/4r4Yh401gDA==",
+      "version": "0.16.0-beta.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/relay/-/relay-0.16.0-beta.1.tgz",
+      "integrity": "sha512-iC79qagFcF7ACkja+UMGCqlpX2ID4pnNGPGvpHoaQjaembwWMbFuG3c5FXpXenfR3odhaZuxSGO7NH3chb6uaQ==",
+      "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
         "@noble/ciphers": "^2.4.0",
