@@ -54,13 +54,13 @@ Branch `chore/paseo-<ver>` from `origin/main`. One commit and PR title `fix(deps
 
 The nightly `Paseo SDK compatibility` workflow (`.github/workflows/paseo-latest.yml`) covers `latest` and `beta` for `paseo-omp`; it should go green after this merges.
 
-### 4. Policy decision: floors
+### 4. Floor policy (decided, do not ask)
 
-Everything a new release adds can only run on that release. Dual-range plugins cannot use new APIs or leave deprecated imports (the replacement entry often lacks the export on the old line). Ask the user once, with the recommendation below:
+Everything a new release adds can only run on that release. Dual-range plugins cannot use new APIs or leave deprecated imports (the replacement entry often lacks the export on the old line). The owner decided this once (0.16): do not ask the user again, and do not open a question about it.
 
-- Raise the floor only where new features are adopted (recommended, chosen for 0.13). Those plugins go breaking (`feat(<plugin>)!:` with a `BREAKING CHANGE:` footer) and are stacked on the broad PR. The rest keep the wide range and get only docs, behaviour fixes, and tests.
-- Raise every floor (hygiene-only gains, strands the old line).
-- Keep dual ranges everywhere (no new features).
+- Raise the floor only where new features are adopted. Those plugins go breaking (`feat(<plugin>)!:` with a `BREAKING CHANGE:` footer) and are stacked on the broad PR. The rest keep the wide range and get only docs, behaviour fixes, and tests.
+- A plugin with nothing worth adopting gets no PR. Say so in the report instead of opening a hygiene-only breaking change.
+- Do not raise every floor, and do not keep dual ranges everywhere. Both were considered and rejected.
 
 A deprecated API with a removal date a year out is not a reason by itself to raise a floor.
 
