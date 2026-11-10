@@ -402,6 +402,14 @@ describe("a live process tree", () => {
     const session = sessions.find((s) => s.agentId === agentId);
     expect(session?.processes).toBeGreaterThanOrEqual(2);
     expect(session?.cores).toBeGreaterThanOrEqual(used / TICKS_PER_SECOND / elapsed);
+    // And no more than that. Each counter reading is off by under a tick (ps rounds to hundredths,
+    // Windows floors 100 ns units to ticks, /proc counts whole ticks), so a two-reading delta is off
+    // by under a tick per process; the idle grandchild may also wake for a tick or two. SLACK_TICKS
+    // covers that at every tick rate and is a twentieth of the BUSY_MS the child must use, so
+    // charging the busy process twice cannot hide in it. The bound is held to `used`, which is
+    // itself held to the child's own count above, rather than to `most`: `most` also counts the
+    // CPU the child burned during two scans, which on Windows can be as long as the window.
+    expect(session?.cores).toBeLessThanOrEqual((used + SLACK_TICKS) / TICKS_PER_SECOND / elapsed);
     // Resident memory moves between scans, so only that both processes are counted is checked.
     expect(session?.rss).toBeGreaterThan(2 * 1024 * 1024);
   });
