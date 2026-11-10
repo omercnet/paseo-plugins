@@ -291,8 +291,20 @@ describe("a live process tree", () => {
   const TICKS_PER_SECOND = 100;
   /** CPU time the busy process must use between the two scans, however loaded the runner is. */
   const BUSY_MS = 1000;
-  /** Rounding in the listers' counters: ps prints hundredths, Windows ticks are floored. */
+  /**
+   * How far a scanned tick delta may stray from the child's own count: each reading is cut to a
+   * tick (ps prints hundredths, Windows floors 100 ns units, /proc counts whole ticks), and the
+   * kernel's tick-sampled accounting can lag `process.cpuUsage()` by a tick or so. A twentieth of
+   * BUSY_MS, so a busy process counted twice cannot hide in it.
+   */
   const SLACK_TICKS = 5;
+  /** How long a reply from the busy process may take; it answers between 20 ms slices. */
+  const REPLY_MS = 10_000;
+  /**
+   * Time for the scans until the tree is listed and for the busy process to get its CPU. The
+   * last scan and its two replies then fit in the test's timeout: the lister gives up after 15 s.
+   */
+  const BUDGET_MS = 45_000;
 
   const GRANDCHILD = "setTimeout(() => {}, 120000)";
   // Busy until the test lets go, in short slices so that it can say how much CPU it has used: its
@@ -325,12 +337,16 @@ describe("a live process tree", () => {
 
   // Real waits: this exercises the platform's own process table and clock, which fake timers
   // cannot stand in for.
-  async function until<T>(read: () => Promise<T | undefined>, what: string): Promise<T> {
-    for (let attempt = 0; attempt < 20; attempt++) {
+  async function until<T>(
+    read: () => Promise<T | undefined>,
+    deadline: number,
+    what: string,
+  ): Promise<T> {
+    do {
       const found = await read();
       if (found !== undefined) return found;
       await sleep(500);
-    }
+    } while (Date.now() < deadline);
     throw new Error(`timed out waiting for ${what}`);
   }
 
@@ -342,11 +358,26 @@ describe("a live process tree", () => {
       stdio: ["ignore", "ignore", "ignore", "ipc"],
     });
     spawned.push(child);
+    const deadline = Date.now() + BUDGET_MS;
+    // A child that died or stalled fails the test at once, not at the test's timeout.
     const cpuMs = () => {
-      const { promise, resolve } = Promise.withResolvers<number>();
-      child.once("message", (ms) => resolve(Number(ms)));
-      child.send("cpu");
-      return promise;
+      const { promise, resolve, reject } = Promise.withResolvers<number>();
+      const gone = () => reject(new Error("the busy process went away"));
+      const timer = setTimeout(
+        () => reject(new Error(`the busy process did not answer in ${REPLY_MS} ms`)),
+        REPLY_MS,
+      );
+      const answer = (ms: unknown) => resolve(Number(ms));
+      child.once("message", answer);
+      child.once("exit", gone);
+      child.once("disconnect", gone);
+      child.send("cpu", (error) => error && reject(error));
+      return promise.finally(() => {
+        clearTimeout(timer);
+        child.off("message", answer);
+        child.off("exit", gone);
+        child.off("disconnect", gone);
+      });
     };
     const scan = defaultScan();
     // Timed as the daemon times it: from when the table was read, which on Windows is partway
@@ -367,11 +398,15 @@ describe("a live process tree", () => {
       for (const proc of [root, grand]) if (proc) seenPids.add(proc.pid);
       return root && grand ? { root, grand } : undefined;
     };
-    const { first, root, grand } = await until(async () => {
-      const scanned = await list();
-      const found = scanned && tree(scanned.procs);
-      return scanned && found ? { first: scanned, ...found } : undefined;
-    }, "the process tree to be listed");
+    const { first, root, grand } = await until(
+      async () => {
+        const scanned = await list();
+        const found = scanned && tree(scanned.procs);
+        return scanned && found ? { first: scanned, ...found } : undefined;
+      },
+      deadline,
+      "the process tree to be listed",
+    );
 
     // The listing can say who owns what.
     expect(root.agentId).toBe(agentId);
@@ -380,13 +415,13 @@ describe("a live process tree", () => {
     expect(root.rss).toBeGreaterThan(1024 * 1024);
 
     // Wait for CPU time, not wall time: a starved process still gets there, just later.
-    const deadline = Date.now() + 60_000;
     while ((await cpuMs()) - first.cpuAfter < BUSY_MS) {
       if (Date.now() > deadline) throw new Error("the busy process never got the CPU");
       await sleep(200);
     }
-    const second = await until(list, "a second scan");
+    const second = await until(list, deadline, "a second scan");
     const again = second.procs.find((proc) => proc.key === root.key);
+    const grandAgain = second.procs.find((proc) => proc.key === grand.key);
 
     // The scans read the busy process's own CPU time: at least what it used between them, at most
     // what it used from the start of the first to the end of the second.
@@ -401,15 +436,12 @@ describe("a live process tree", () => {
     const { sessions } = attribute(second.procs, attribute(first.procs, null, 0).ticks, elapsed);
     const session = sessions.find((s) => s.agentId === agentId);
     expect(session?.processes).toBeGreaterThanOrEqual(2);
-    expect(session?.cores).toBeGreaterThanOrEqual(used / TICKS_PER_SECOND / elapsed);
-    // And no more than that. Each counter reading is off by under a tick (ps rounds to hundredths,
-    // Windows floors 100 ns units to ticks, /proc counts whole ticks), so a two-reading delta is off
-    // by under a tick per process; the idle grandchild may also wake for a tick or two. SLACK_TICKS
-    // covers that at every tick rate and is a twentieth of the BUSY_MS the child must use, so
-    // charging the busy process twice cannot hide in it. The bound is held to `used`, which is
-    // itself held to the child's own count above, rather than to `most`: `most` also counts the
-    // CPU the child burned during two scans, which on Windows can be as long as the window.
-    expect(session?.cores).toBeLessThanOrEqual((used + SLACK_TICKS) / TICKS_PER_SECOND / elapsed);
+    // Exactly the two processes' scanned ticks, no more and no less: the busy one's, held to its own
+    // count above, and the idle grandchild's. Both come from the same readings `attribute` diffs,
+    // so only floating point is left between them.
+    const grandUsed = (grandAgain?.ticks ?? Number.NaN) - grand.ticks;
+    expect(grandUsed).toBeGreaterThanOrEqual(0);
+    expect(session?.cores).toBeCloseTo((used + grandUsed) / TICKS_PER_SECOND / elapsed, 9);
     // Resident memory moves between scans, so only that both processes are counted is checked.
     expect(session?.rss).toBeGreaterThan(2 * 1024 * 1024);
   });
