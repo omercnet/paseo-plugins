@@ -657,3 +657,24 @@ export function checkSummary(row: RadarRow): string {
   if (passed < row.checks.length) return `${passed} of ${row.checks.length} checks passed`;
   return passed === 1 ? "1 check passed" : `${passed} checks passed`;
 }
+
+type AgentProfileLike = {
+  provider: string;
+  model?: string;
+  modeId?: string;
+  thinkingOptionId?: string;
+  // Saved before Paseo 0.16; the daemon still reads it until 2027-05-01.
+  featureValues?: Record<string, unknown>;
+  // Paseo 0.16 profiles store provider options here instead of featureValues.
+  options?: Record<string, unknown>;
+};
+
+export function profileAgentConfig(profile: AgentProfileLike) {
+  return {
+    provider: profile.model ? `${profile.provider}/${profile.model}` : profile.provider,
+    ...(profile.modeId ? { modeId: profile.modeId } : {}),
+    ...(profile.thinkingOptionId ? { thinkingOptionId: profile.thinkingOptionId } : {}),
+    ...(profile.options ? { providerOptions: profile.options } : {}),
+    ...(profile.featureValues ? { featureValues: profile.featureValues } : {}),
+  };
+}
