@@ -22,6 +22,7 @@ import {
   hasActiveAgent,
   matchesRow,
   openPullRequestUrl,
+  profileAgentConfig,
   type RadarBucket,
   type RadarRow,
   type SortKey,
@@ -163,14 +164,8 @@ export function PrRadar({
       if (!profile) {
         throw new Error("Configure an agent profile in Paseo before starting an agent.");
       }
-      const provider = profile.model ? `${profile.provider}/${profile.model}` : profile.provider;
       const agentOptions = {
-        config: {
-          provider,
-          ...(profile.modeId ? { modeId: profile.modeId } : {}),
-          ...(profile.thinkingOptionId ? { thinkingOptionId: profile.thinkingOptionId } : {}),
-          ...(profile.featureValues ? { featureValues: profile.featureValues } : {}),
-        },
+        config: profileAgentConfig(profile),
         title: `PR Radar: ${row.repository}#${row.number ?? "PR"}`,
         prompt,
       };
