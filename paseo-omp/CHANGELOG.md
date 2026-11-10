@@ -1,5 +1,15 @@
 # Changelog
 
+## [5.6.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.6.1...paseo-omp-v5.6.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **paseo-omp:** pass the Paseo 0.16.0-beta.1 compatibility lane ([#572](https://github.com/omercnet/paseo-plugins/issues/572)) ([5b66388](https://github.com/omercnet/paseo-plugins/commit/5b6638827ea46bd565057607d95a8998e66e95d8)), refs [#571](https://github.com/omercnet/paseo-plugins/issues/571)
+* **paseo-omp:** project the OMP ask tool as questions and answers ([#564](https://github.com/omercnet/paseo-plugins/issues/564)) ([@code0094](https://github.com/code0094)) ([a5b9400](https://github.com/omercnet/paseo-plugins/commit/a5b940032c8f1b6e9a8e9cacac4725598e47eb9d))
+* **paseo-omp:** register turn hooks on Paseo 0.14 hosts ([#565](https://github.com/omercnet/paseo-plugins/issues/565)) ([@code0094](https://github.com/code0094)) ([e915f0e](https://github.com/omercnet/paseo-plugins/commit/e915f0ed9d114fb2cbf23f88db191d3c0ba2a130))
+* **paseo-omp:** release the catalog gate once cleanup is verified ([#563](https://github.com/omercnet/paseo-plugins/issues/563)) ([@code0094](https://github.com/code0094)) ([4eac20b](https://github.com/omercnet/paseo-plugins/commit/4eac20b323a2fd82465991dfead6b23d57a8b268))
+
 ## [5.6.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.6.0...paseo-omp-v5.6.1) (2026-11-07)
 
 
