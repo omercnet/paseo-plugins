@@ -8,15 +8,16 @@
       "name": "@omercnet/paseo-omp",
       "version": "5.6.1",
       "dependencies": {
-        "@getpaseo/protocol": "0.15.3",
+        "@getpaseo/protocol": "0.16.0-beta.1",
         "@modelcontextprotocol/sdk": "1.32.2",
         "yaml": "^2.9.0"
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.15.3",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.15.3.tgz",
-      "integrity": "sha512-JhAYutwgLUSDdvDhQ8yLjxzqJroR3yqmt+5/rv07iqmOAd/CNtKNJSXZAFaTOavWZcRVlL6DD3tkwaobjgb1Xg==",
+      "version": "0.16.0-beta.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.16.0-beta.1.tgz",
+      "integrity": "sha512-RU/Q8OxRWGJ4NSGSZV0Y9j8/12SCgcA/ulxfldgmtnxBRV1upfW6c6ao7sK9Bz0mQ5vZfxpLNVSzKqheChoKgw==",
+      "license": "Apache-2.0",
       "dependencies": {
         "semver": "^7.8.5",
         "zod": "^4.4.3"

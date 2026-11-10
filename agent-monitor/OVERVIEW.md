@@ -10,4 +10,4 @@ On Paseo 0.14 and later, eligible idle resumable agents are released after about
 
 On Paseo 0.15, restart recovery is off by default and agents that were running when the host stopped or crashed stay in Closed. With the host setting `agents.resumeOnStartup: true`, eligible ones are resumed in the background, and the closed-agent sweep archives any that have not resumed yet, which cancels their resume.
 
-Requires Paseo ^0.13.0 || ^0.14.0 || ^0.15.0.
+Requires Paseo ^0.13.0 || ^0.14.0 || ^0.15.0 || ^0.16.0.

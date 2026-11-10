@@ -1,4 +1,5 @@
-import { getPaseoClient, type usePaseo } from "@getpaseo/plugin/client";
+import type { PaseoApi } from "@getpaseo/client";
+import { getPaseoClient } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { GraphEdge, InteractionData, SubagentInteraction } from "./graph";
@@ -10,8 +11,6 @@ const CONCURRENCY = 4;
 // Matches the monitor roster's 30s backstop. Interaction keys are only agent ids, so a
 // stable roster would otherwise keep serving the first timeline read forever.
 const REFETCH_INTERVAL_MS = 30_000;
-
-type PaseoApi = ReturnType<typeof usePaseo>;
 
 type TimelineItem = {
   type?: string;

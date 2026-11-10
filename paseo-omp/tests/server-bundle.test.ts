@@ -89,7 +89,7 @@ describe("plugin server bundle", () => {
       description:
         "Paseo integration for OMP, including its direct provider and workspace tooling.",
       icon: "icon.png",
-      requirements: { paseo: "^0.14.0 || ^0.15.0" },
+      requirements: { paseo: "^0.14.0 || ^0.15.0 || ^0.16.0" },
       build: [["node", "scripts/prepare-dependencies.mjs"]],
     });
     const packageManifest = JSON.parse(await readFile(join(pluginRoot, "package.json"), "utf8"));
@@ -102,7 +102,7 @@ describe("plugin server bundle", () => {
     expect(packageManifest.files).not.toContain("tests");
     expect(packageManifest.files).toContain("icon.png");
     expect(await readFile(join(pluginRoot, "README.md"), "utf8")).toContain(
-      "Paseo `^0.14.0 || ^0.15.0`",
+      "Paseo `^0.14.0 || ^0.15.0 || ^0.16.0`",
     );
     const releaseConfig = JSON.parse(
       await readFile(join(pluginRoot, "..", "release-please-config.json"), "utf8"),
