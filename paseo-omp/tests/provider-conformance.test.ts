@@ -336,7 +336,6 @@ async function createHarness(
         model: MODEL_ID,
         modeId: "full",
         thinkingOptionId: "medium",
-        featureValues: {},
         providerOptions: {
           params: {
             sessionDir,
@@ -475,7 +474,6 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
           cwd: "/repo",
           model: "fixture-model",
           modeId: "full",
-          featureValues: {},
           providerOptions: {},
         }),
       ).rejects.toThrow("early provider failure");
@@ -628,7 +626,6 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
           cwd: "/repo",
           model: "fixture-model",
           modeId: "full",
-          featureValues: {},
           providerOptions: { command: [process.execPath] },
         }),
       ).rejects.toThrow("not found on PATH");

@@ -2089,7 +2089,6 @@ describe("OMP direct provider", () => {
       mcpServers: {},
       modeId: "full",
       thinkingOptionId: "medium",
-      featureValues: {},
     };
     const launchContext: HostLaunchContext = { env: { TEST_ENV: "test-value" } };
     let session: HostSession | undefined;
