@@ -1,6 +1,7 @@
 import type { ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test } from "vitest";
 import {
+  hasOmpProviderSettings,
   normalizeOmpCatalogOptions,
   normalizeOmpSessionConfig,
   withCommittedOmpSelection,
@@ -316,6 +317,28 @@ describe("OMP provider option normalization", () => {
     expect(() => providerLaunchSettingsSchema.parse({ inheritEnv: ["9INVALID"] })).toThrow();
     expect(() =>
       normalizeOmpSessionConfig(sessionConfig({ settings: { unsupported: true } })),
+    ).toThrow("does not expose live provider settings");
+  });
+
+  test("accepts Paseo 0.16 settings that mirror providerOptions and rejects real settings", () => {
+    const providerOptions = { command: ["omp"], params: { rpcTimeoutMs: 5_000 } };
+    const mirrored = { command: ["omp"], params: { rpcTimeoutMs: 5_000 } };
+    expect(hasOmpProviderSettings({}, undefined)).toBe(false);
+    expect(hasOmpProviderSettings(undefined, providerOptions)).toBe(false);
+    expect(hasOmpProviderSettings(mirrored, providerOptions)).toBe(false);
+    expect(hasOmpProviderSettings({ command: ["omp"] }, providerOptions)).toBe(false);
+    expect(hasOmpProviderSettings({ fast: true }, providerOptions)).toBe(true);
+    expect(hasOmpProviderSettings({ command: ["other"] }, providerOptions)).toBe(true);
+    expect(hasOmpProviderSettings({ command: ["omp"] }, undefined)).toBe(true);
+
+    const normalized = normalizeOmpSessionConfig(
+      sessionConfig({ providerOptions, settings: mirrored }),
+    );
+    expect(normalized.command).toEqual(["omp"]);
+    expect(() =>
+      normalizeOmpSessionConfig(
+        sessionConfig({ providerOptions, settings: { ...mirrored, fast: true } }),
+      ),
     ).toThrow("does not expose live provider settings");
   });
 });
