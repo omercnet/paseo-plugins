@@ -8,15 +8,15 @@
       "name": "@omercnet/paseo-omp",
       "version": "5.6.1",
       "dependencies": {
-        "@getpaseo/protocol": "0.15.2",
+        "@getpaseo/protocol": "0.15.3",
         "@modelcontextprotocol/sdk": "1.32.2",
         "yaml": "^2.9.0"
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.15.2",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.15.2.tgz",
-      "integrity": "sha512-+OaRl9s8SMVIYPhHnck11jUM0pXnvuyCNvtd6g2p2uD/hieB5PtUq3BX7gmPFSZakvmUupUvtmtpGN+N7WhaRw==",
+      "version": "0.15.3",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.15.3.tgz",
+      "integrity": "sha512-JhAYutwgLUSDdvDhQ8yLjxzqJroR3yqmt+5/rv07iqmOAd/CNtKNJSXZAFaTOavWZcRVlL6DD3tkwaobjgb1Xg==",
       "dependencies": {
         "semver": "^7.8.5",
         "zod": "^4.4.3"
@@ -435,9 +435,9 @@
       }
     },
     "node_modules/express-rate-limit": {
-      "version": "8.7.3",
-      "resolved": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.7.3.tgz",
-      "integrity": "sha512-zPLqDI2f0gV2WmGnacLf9XSSqn4VldRyP5LCzOwx0BKH40mO6+2PCFkoSsRO2jePx87/Kf6NUF6P2QOTKXHbQA==",
+      "version": "8.7.4",
+      "resolved": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.7.4.tgz",
+      "integrity": "sha512-LKBXzX700wz3zAGNNmVnjRI5mEbYkLv7UbMI4+9Xa+JPcg2UZh6AgY/2CZh9RrJjFM5ttC/N1lD+KzyFoZITCw==",
       "license": "MIT",
       "dependencies": {
         "debug": "^4.4.3",
@@ -691,9 +691,9 @@
       "license": "ISC"
     },
     "node_modules/jose": {
-      "version": "6.2.15",
-      "resolved": "https://registry.npmjs.org/jose/-/jose-6.2.15.tgz",
-      "integrity": "sha512-qdF6ewcZARtef63fJ9AKKZPgxw+t7USH6HLXYcD4CrdmSvDp79rpJSPFEKc90QBeGS63u1KQtN2MZQHC0yDIzA==",
+      "version": "6.2.17",
+      "resolved": "https://registry.npmjs.org/jose/-/jose-6.2.17.tgz",
+      "integrity": "sha512-wOuK9V1yujQFH5S0ZWmLcDZN7+IKh9bUCC2ZPCf2HDlol3WWHy+PPyNjEI75FXRLMp3vDKQcupP59xhVU95hcg==",
       "license": "MIT",
       "funding": {
         "url": "https://github.com/sponsors/panva"
