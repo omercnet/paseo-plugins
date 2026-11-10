@@ -663,18 +663,19 @@ type AgentProfileLike = {
   model?: string;
   modeId?: string;
   thinkingOptionId?: string;
-  // Saved before Paseo 0.16; the daemon still reads it until 2027-05-01.
+  // A host older than 0.16 hands over profiles that keep their options here.
   featureValues?: Record<string, unknown>;
-  // Paseo 0.16 profiles store provider options here instead of featureValues.
+  // Paseo 0.16 profiles store provider options here.
   options?: Record<string, unknown>;
 };
 
 export function profileAgentConfig(profile: AgentProfileLike) {
+  // An explicit `options` key wins over `featureValues`, as it does in the SDK and on the daemon.
+  const options = { ...profile.featureValues, ...profile.options };
   return {
     provider: profile.model ? `${profile.provider}/${profile.model}` : profile.provider,
     ...(profile.modeId ? { modeId: profile.modeId } : {}),
     ...(profile.thinkingOptionId ? { thinkingOptionId: profile.thinkingOptionId } : {}),
-    ...(profile.options ? { providerOptions: profile.options } : {}),
-    ...(profile.featureValues ? { featureValues: profile.featureValues } : {}),
+    ...(Object.keys(options).length > 0 ? { options } : {}),
   };
 }
