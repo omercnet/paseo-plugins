@@ -31,6 +31,8 @@ jobs:
           persist-credentials: false
       - name: Test affected-plugin detection
         run: node --test .github/scripts/detect-affected.test.mjs
+      - name: Check shipped plugin imports
+        run: node --test .github/scripts/check-shipped-imports.test.mjs
       - name: Detect affected plugins
         id: affected
         env:
