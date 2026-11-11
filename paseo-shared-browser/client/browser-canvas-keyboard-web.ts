@@ -83,6 +83,11 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
   let composing = false;
   let compositionAdmitted = false;
   let altTextPending: string | null = null;
+  // Soft keyboards (Android Chrome) report committed text outside a composition,
+  // such as a space after a word or every key on non-predictive keyboards, as
+  // keydown 229/"Unidentified" followed by beforeinput insertText. That keydown
+  // carries no key to forward, so the insertion itself is the only text source.
+  let imeTextPending = false;
   const focused = () => document.activeElement === sink || document.activeElement === node;
   const keyboard = createBrowserCanvasKeyboard({
     ...options,
@@ -97,6 +102,7 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
     compositionAdmitted = false;
     composing = false;
     altTextPending = null;
+    imeTextPending = false;
     sink.value = "";
   };
   const cancel = () => {
@@ -112,6 +118,8 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
     if (!focused()) {
       return;
     }
+    imeTextPending =
+      event.keyCode === 229 || event.key === "Process" || event.key === "Unidentified";
     // Local paste supplies clipboard bytes separately. Sending Ctrl/Meta+V would
     // additionally paste an unrelated remote clipboard and duplicate the action.
     const pasteShortcut =
@@ -174,7 +182,11 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
   const beforeInput = (event: KeyboardDomEvent) => {
     if (!composing && options.enabled() && focused()) {
       consume(event);
-      if (altTextPending && event.inputType === "insertText" && event.data === altTextPending) {
+      if (
+        event.inputType === "insertText" &&
+        event.data &&
+        (imeTextPending || event.data === altTextPending)
+      ) {
         commitText(event.data);
       }
       altTextPending = null;
