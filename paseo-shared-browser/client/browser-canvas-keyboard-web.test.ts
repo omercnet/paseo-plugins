@@ -111,3 +111,99 @@ describe("web canvas keyboard adapter cancellation", () => {
     expect(dom.events).toHaveLength(1);
   });
 });
+
+/** Android Chrome reports soft-keyboard edits as keydown 229 / "Unidentified". */
+const ime = { ...key, key: "Unidentified", code: "", keyCode: 229 };
+const texts = (dom: ReturnType<typeof bind>) =>
+  dom.events.flatMap((event) => (event.kind === "text" ? [event.text] : []));
+
+/** Gboard-style composition of one word, ending with compositionend. */
+function composeWord(dom: ReturnType<typeof bind>, word: string) {
+  dom.fire("sink", "keydown", ime);
+  dom.fire("sink", "compositionstart", { data: "" });
+  for (let index = 1; index <= word.length; index += 1) {
+    if (index > 1) dom.fire("sink", "keydown", { ...ime, isComposing: true });
+    dom.fire("sink", "beforeinput", {
+      inputType: "insertCompositionText",
+      data: word.slice(0, index),
+    });
+  }
+  dom.fire("sink", "compositionend", { data: word });
+}
+
+describe("web canvas keyboard adapter Android IME sequences", () => {
+  it("commits a composed word exactly once", () => {
+    const dom = bind();
+    composeWord(dom, "hello");
+    expect(texts(dom)).toEqual(["hello"]);
+  });
+
+  it("commits text an IME inserts outside a composition (space after a word)", () => {
+    const dom = bind();
+    composeWord(dom, "hello");
+    dom.fire("sink", "keydown", ime);
+    dom.fire("sink", "beforeinput", { inputType: "insertText", data: " " });
+    composeWord(dom, "world");
+    expect(texts(dom).join("")).toBe("hello world");
+  });
+
+  it("commits insertText that shares the composing keydown of a batched IME edit", () => {
+    const dom = bind();
+    dom.fire("sink", "keydown", ime);
+    dom.fire("sink", "compositionstart", { data: "" });
+    dom.fire("sink", "beforeinput", { inputType: "insertCompositionText", data: "hi" });
+    dom.fire("sink", "keydown", { ...ime, isComposing: true });
+    dom.fire("sink", "compositionend", { data: "hi" });
+    dom.fire("sink", "beforeinput", { inputType: "insertText", data: "." });
+    expect(texts(dom)).toEqual(["hi", "."]);
+  });
+
+  it("commits keyboards that send every character as insertText without composition", () => {
+    const dom = bind();
+    for (const character of "abc123") {
+      dom.fire("sink", "keydown", ime);
+      dom.fire("sink", "beforeinput", { inputType: "insertText", data: character });
+    }
+    expect(texts(dom).join("")).toBe("abc123");
+  });
+
+  it("keeps only the final composition after deleteContentBackward and IME correction", () => {
+    const dom = bind();
+    dom.fire("sink", "keydown", ime);
+    dom.fire("sink", "compositionstart", { data: "" });
+    dom.fire("sink", "beforeinput", { inputType: "insertCompositionText", data: "teh" });
+    dom.fire("sink", "beforeinput", { inputType: "deleteContentBackward", data: null });
+    dom.fire("sink", "beforeinput", { inputType: "insertCompositionText", data: "the" });
+    dom.fire("sink", "compositionend", { data: "the" });
+    expect(texts(dom)).toEqual(["the"]);
+  });
+
+  it("commits Korean syllable compositions exactly once", () => {
+    const dom = bind();
+    composeWord(dom, "한");
+    composeWord(dom, "글");
+    expect(texts(dom).join("")).toBe("한글");
+  });
+
+  it("does not commit insertText after a physical key the adapter consumed or blocked", () => {
+    const dom = bind();
+    dom.fire("sink", "keydown", key);
+    dom.binding.reset();
+    // A held key blocked by reset reaches the browser default insertion.
+    dom.fire("sink", "keydown", { ...key, repeat: true });
+    dom.fire("sink", "beforeinput", { inputType: "insertText", data: "a" });
+    // A non-IME keydown also disarms an earlier IME edge.
+    dom.fire("sink", "keydown", ime);
+    dom.fire("sink", "keydown", { ...key, repeat: true });
+    dom.fire("sink", "beforeinput", { inputType: "insertText", data: "a" });
+    expect(texts(dom)).toEqual([]);
+  });
+
+  it("drops IME insertText once reset or not in control", () => {
+    const dom = bind();
+    dom.fire("sink", "keydown", ime);
+    dom.binding.reset();
+    dom.fire("sink", "beforeinput", { inputType: "insertText", data: "x" });
+    expect(texts(dom)).toEqual([]);
+  });
+});
