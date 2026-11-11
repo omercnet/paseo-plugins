@@ -206,4 +206,22 @@ describe("web canvas keyboard adapter Android IME sequences", () => {
     dom.fire("sink", "beforeinput", { inputType: "insertText", data: "x" });
     expect(texts(dom)).toEqual([]);
   });
+
+  it("commits every insertText of one IME keydown until the next keydown", () => {
+    const dom = bind();
+    dom.fire("sink", "keydown", ime);
+    dom.fire("sink", "beforeinput", { inputType: "insertText", data: "a" });
+    dom.fire("sink", "beforeinput", { inputType: "insertText", data: "b" });
+    expect(texts(dom)).toEqual(["a", "b"]);
+  });
+
+  it.each([
+    ["Unidentified", { ...key, key: "Unidentified", code: "" }],
+    ["Process", { ...key, key: "Process", code: "" }],
+  ])("treats a %s keydown without keyCode 229 as an IME edge", (_name, edge) => {
+    const dom = bind();
+    dom.fire("sink", "keydown", edge);
+    dom.fire("sink", "beforeinput", { inputType: "insertText", data: "x" });
+    expect(texts(dom)).toEqual(["x"]);
+  });
 });
