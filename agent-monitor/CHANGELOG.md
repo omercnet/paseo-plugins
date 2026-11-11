@@ -10,6 +10,13 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [4.4.4](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.4.3...agent-monitor-v4.4.4) (2026-11-11)
+
+
+### Bug Fixes
+
+* **agent-monitor:** stop importing types from @getpaseo/client in shipped client code ([#585](https://github.com/omercnet/paseo-plugins/issues/585)) ([9903409](https://github.com/omercnet/paseo-plugins/commit/990340905511c43731297dd7ebbb376a684118dd))
+
 ## [4.4.3](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.4.2...agent-monitor-v4.4.3) (2026-11-10)
 
 

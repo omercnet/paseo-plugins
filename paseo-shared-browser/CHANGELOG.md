@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.10](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.9...shared-browser-v4.1.10) (2026-11-11)
+
+
+### Bug Fixes
+
+* **paseo-shared-browser:** commit Android IME text inserted outside a composition ([#584](https://github.com/omercnet/paseo-plugins/issues/584)) ([921dc45](https://github.com/omercnet/paseo-plugins/commit/921dc454a9060cfdbc04798492a9feb3b0414154))
+
 ## [4.1.9](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.8...shared-browser-v4.1.9) (2026-11-10)
 
 
