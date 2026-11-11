@@ -1,9 +1,8 @@
-import type { PaseoApi } from "@getpaseo/client";
 import { getPaseoClient } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { GraphEdge, InteractionData, SubagentInteraction } from "./graph";
-import { type AgentEntry, type HostScope, hostOf } from "./monitor";
+import { type AgentEntry, type HostScope, hostOf, type PaseoApi } from "./monitor";
 
 const TIMELINE_LIMIT = 200;
 const MAX_AGENTS = 60;
