@@ -68,6 +68,6 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "context-mode": "2.1.6"
+    "context-mode": "2.1.7"
   }
 }
