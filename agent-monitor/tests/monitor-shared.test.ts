@@ -41,7 +41,11 @@ function directory(
   };
 }
 
-type AgentOverrides = Partial<AgentEntry["agent"]>;
+// Paseo 0.16 fields, declared here so the fixtures typecheck on the older SDK lines too.
+type AgentOverrides = Partial<AgentEntry["agent"]> & {
+  background?: boolean;
+  backgroundWork?: { count: number };
+};
 type ProjectOverrides = Partial<AgentEntry["project"]>;
 const permission = { id: "permission-1", provider: "codex", name: "run", kind: "tool" } as const;
 

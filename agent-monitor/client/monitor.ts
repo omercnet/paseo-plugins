@@ -163,17 +163,22 @@ export type GroupOptions = Pick<MonitorSettings, "floatPinned" | "agentSort"> & 
   hostId: string;
 };
 
+// `background` and `backgroundWork` are Paseo 0.16 fields; read them structurally so the plugin
+// still typechecks against the older SDK lines its manifest supports.
+
 /**
  * A background helper the agent's creator spawned: Paseo hides it from tabs, lists and attention,
  * so the monitor leaves it out of the roster, totals, badge and sweep. Hosts before 0.16 omit it.
  */
 export function isHelper(agent: AgentSnapshot): boolean {
-  return agent.background === true;
+  return "background" in agent && agent.background === true;
 }
 
 /** Shells and monitors the agent left running after its turn; 0 on hosts that do not report it. */
 export function backgroundWorkCount(agent: AgentSnapshot): number {
-  return agent.backgroundWork?.count ?? 0;
+  const work: unknown = "backgroundWork" in agent ? agent.backgroundWork : undefined;
+  if (typeof work !== "object" || work === null || !("count" in work)) return 0;
+  return typeof work.count === "number" ? work.count : 0;
 }
 
 export function bucketOf(agent: AgentSnapshot): Bucket {
