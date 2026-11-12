@@ -347,6 +347,8 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
   private unsupportedThinkingNoticePending = false;
   private unsupportedThinkingNoticePublished = false;
   private degradedMcpServers: readonly OmpDegradedMcpServer[] = [];
+  /** Every OMP session ID this agent's runtimes have used; OMP records each as a service owner. */
+  private readonly hubServiceOwners = new Set<string>();
 
   private constructor(
     id: string,
@@ -376,6 +378,7 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
   ) {
     this.id = id;
     this.cwd = config.cwd;
+    this.hubServiceOwners.add(nativeSessionId);
     this.scheduler = scheduler;
     this.usage = new OmpSessionUsage(
       id,
@@ -994,6 +997,7 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
       if (nextNativeSessionId !== this.nativeSessionId) {
         this.transitionNativeSession(this.nativeSessionId, nextNativeSessionId);
         this.nativeSessionId = nextNativeSessionId;
+        this.hubServiceOwners.add(nextNativeSessionId);
         if (this.persistSession) {
           this.emit({
             type: "session.persistence",
@@ -2065,6 +2069,22 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, "OMP session cleanup failed");
     }
+    // Only after the OMP tree is verified gone, so no live session can start another service.
+    await this.stopOwnedHubServices();
+  }
+
+  private async stopOwnedHubServices(): Promise<void> {
+    if (!this.runtimeFactory.stopOwnedServices) return;
+    try {
+      const result = await this.runtimeFactory.stopOwnedServices(
+        this.recoveryOptions,
+        this.hubServiceOwners,
+      );
+      if (result.failed.length === 0) return;
+    } catch {
+      // Reported below; a leftover service must never fail the agent's close.
+    }
+    this.recordOperationalFailure({ category: "session-close", stage: "hub-cleanup" });
   }
 
   private publishSessionClosed(error?: { message: string }): void {
@@ -2155,6 +2175,7 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
         );
       }
       if (!expectedSessionId) this.nativeSessionId = state.sessionId;
+      this.hubServiceOwners.add(state.sessionId);
       const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
       if (
         !recoverFromNativeConfig &&

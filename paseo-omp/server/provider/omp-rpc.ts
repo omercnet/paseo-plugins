@@ -1,8 +1,18 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { join } from "node:path";
 import { z } from "zod";
+import {
+  type OwnedHubCleanupResult,
+  ownedHubCleanupDependencies,
+  stopOwnedHubProcesses,
+} from "../hub";
 import { ompDataDir } from "../paths";
-import type { OmpSpawnRequest, OmpStartOptions } from "./omp-rpc-environment";
+import { defaultSpawn, runBounded } from "../provider-diagnostics";
+import {
+  buildOmpSpawnRequest,
+  type OmpSpawnRequest,
+  type OmpStartOptions,
+} from "./omp-rpc-environment";
 import { waitMs } from "./omp-rpc-process";
 import {
   inspectJsonBounds,
@@ -153,6 +163,11 @@ export interface OmpRuntime {
     cwd: string;
     signal?: AbortSignal;
   }): Promise<OmpPersistedSubagentMessages>;
+  /** Stops the live Hub services these OMP sessions own once their process tree is gone. */
+  stopOwnedServices?(
+    options: OmpStartOptions,
+    owners: ReadonlySet<string>,
+  ): Promise<OwnedHubCleanupResult>;
 }
 
 export interface OmpRpcRuntimeOptions {
@@ -164,6 +179,37 @@ export interface OmpRpcRuntimeOptions {
   listSessions?: (
     options: OmpSessionListOptions,
   ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
+  /** Runs one bounded OMP CLI command; resolves true only on a clean zero exit. */
+  runOmpCommand?: (
+    command: string,
+    args: readonly string[],
+    env: NodeJS.ProcessEnv,
+    cwd: string,
+  ) => Promise<boolean>;
+  hubRunDir?: string;
+}
+
+const OMP_COMMAND_TIMEOUT_MS = 15_000;
+const OMP_COMMAND_KILL_GRACE_MS = 1_000;
+const OMP_COMMAND_MAX_OUTPUT_BYTES = 64 * 1024;
+
+async function runOmpCommand(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): Promise<boolean> {
+  const run = await runBounded(
+    defaultSpawn,
+    command,
+    args,
+    env,
+    OMP_COMMAND_TIMEOUT_MS,
+    OMP_COMMAND_KILL_GRACE_MS,
+    OMP_COMMAND_MAX_OUTPUT_BYTES,
+    cwd,
+  );
+  return run.outcome === "exited" && run.exitCode === 0 && !run.cleanupFailed;
 }
 
 // OMP accepts an empty message when images carry the prompt.
@@ -599,6 +645,31 @@ export class OmpRpcRuntime implements OmpRuntime {
     return Promise.resolve(
       this.options.listSessions?.(options) ??
         listOmpSessionDescriptors(options, this.options.environment ?? process.env),
+    );
+  }
+  async stopOwnedServices(
+    options: OmpStartOptions,
+    owners: ReadonlySet<string>,
+  ): Promise<OwnedHubCleanupResult> {
+    // Same executable, wrapper arguments and environment as the RPC process, so the CLI reaches
+    // the broker that session used. The broker root is shared across profiles, and an OMP flag
+    // in the configured prefix (such as `--profile`) placed before `ps` could make OMP read the
+    // rest as a prompt instead of a subcommand, so the prefix ends at its first flag.
+    const request = buildOmpSpawnRequest({
+      ...options,
+      environment: options.environment ?? this.options.environment,
+    });
+    const configuredPrefix = request.args.slice(0, Math.max(0, (options.command?.length ?? 1) - 1));
+    const firstFlag = configuredPrefix.findIndex((argument) => argument.startsWith("-"));
+    const prefixArgs = firstFlag === -1 ? configuredPrefix : configuredPrefix.slice(0, firstFlag);
+    const run = this.options.runOmpCommand ?? runOmpCommand;
+    return stopOwnedHubProcesses(
+      request.cwd,
+      owners,
+      ownedHubCleanupDependencies(
+        (args) => run(request.command, [...prefixArgs, ...args], request.env, request.cwd),
+        this.options.hubRunDir,
+      ),
     );
   }
   async readPersistedSessionTranscript(options: {

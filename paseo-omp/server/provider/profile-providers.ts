@@ -159,6 +159,7 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
       reportProtocolViolation: options.reportProtocolViolation,
     });
   const readPersistedSessionTranscript = runtime.readPersistedSessionTranscript?.bind(runtime);
+  const stopOwnedServices = runtime.stopOwnedServices?.bind(runtime);
   const assertSessionDir = (requested?: string) => {
     if (requested !== undefined && resolve(requested) !== sessionDir) {
       throw new OmpPublicError("OMP session directory conflicts with the selected profile");
@@ -203,6 +204,15 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
     readPersistedSubagentTranscript(input) {
       return runtime.readPersistedSubagentTranscript(input);
     },
+    ...(stopOwnedServices
+      ? {
+          stopOwnedServices(start: OmpStartOptions, owners: ReadonlySet<string>) {
+            assertSessionDir(start.sessionDir);
+            assertEnvironment(start.env);
+            return stopOwnedServices({ ...start, environment, sessionDir }, owners);
+          },
+        }
+      : {}),
   };
   const provider = createOmpProvider({
     ...options,
