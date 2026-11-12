@@ -107,7 +107,7 @@ export function crewState(agent: AgentSnapshot): CrewState {
     return "needs-input";
   }
   // Paseo's workspace state bucket counts live background work as running.
-  if (isWorking(agent) || (agent.backgroundWork?.count ?? 0) > 0) return "working";
+  if (isWorking(agent) || backgroundWorkCount(agent) > 0) return "working";
   if (agent.requiresAttention || agent.attentionReason === "finished") return "ready";
   if (agent.status === "closed") return "closed";
   return "idle";
@@ -123,6 +123,13 @@ export function sendOptions(running: boolean, choice: DeliveryChoice) {
 /** True while a turn is running: steer and interrupt apply only then, so background work is excluded. */
 export function isWorking(agent: AgentSnapshot): boolean {
   return agent.status === "running" || agent.status === "initializing";
+}
+
+/** Paseo 0.16 reports live background work; older hosts and SDK types have no such field. */
+function backgroundWorkCount(agent: AgentSnapshot): number {
+  const work: unknown = "backgroundWork" in agent ? agent.backgroundWork : undefined;
+  if (typeof work !== "object" || work === null || !("count" in work)) return 0;
+  return typeof work.count === "number" ? work.count : 0;
 }
 
 export function agentTitle(entry: AgentEntry): string {
@@ -200,7 +207,11 @@ export function buildCrewForest(
   // lists. includeBackground still returns them, so the crew drops them here.
   const entriesById = new Map(
     entries
-      .filter((entry) => !entry.agent.archivedAt && !entry.agent.background)
+      .filter(
+        (entry) =>
+          !entry.agent.archivedAt &&
+          !("background" in entry.agent && entry.agent.background === true),
+      )
       .map((entry) => [entry.agent.id, entry]),
   );
   const childrenByParent = new Map<string, AgentEntry[]>();
