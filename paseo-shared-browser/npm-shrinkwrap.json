@@ -8,7 +8,7 @@
       "name": "@omercnet/paseo-shared-browser",
       "version": "4.1.10",
       "dependencies": {
-        "@getpaseo/plugin": "0.16.0-beta.1",
+        "@getpaseo/plugin": "0.16.0-beta.2",
         "@modelcontextprotocol/sdk": "1.32.2",
         "agent-browser": "0.41.2",
         "esbuild": "0.28.2",
@@ -441,22 +441,22 @@
       }
     },
     "node_modules/@getpaseo/client": {
-      "version": "0.16.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/client/-/client-0.16.0-beta.1.tgz",
-      "integrity": "sha512-uU5+myB+MKU4igthR1vioJEc8VFFeGsJB8t2xUKsrgUC3e1jP3408cBc4iUkDEp7LaMqCV5Nih8I/ECmFqHoHA==",
+      "version": "0.16.0-beta.2",
+      "resolved": "https://registry.npmjs.org/@getpaseo/client/-/client-0.16.0-beta.2.tgz",
+      "integrity": "sha512-T7NInK3/731BzDOn+8Wdl7kYSJ+/CVqbW9EMjXhtZSZy2TSPni42Ag4tv1t5b9tw7Lu4uJP7jpXvUKN2hYZxTw==",
       "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
-        "@getpaseo/protocol": "0.16.0-beta.1",
-        "@getpaseo/relay": "0.16.0-beta.1",
+        "@getpaseo/protocol": "0.16.0-beta.2",
+        "@getpaseo/relay": "0.16.0-beta.2",
         "ws": "^8.20.0",
         "zod": "^4.4.3"
       }
     },
     "node_modules/@getpaseo/plugin": {
-      "version": "0.16.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/plugin/-/plugin-0.16.0-beta.1.tgz",
-      "integrity": "sha512-GKgbq48oMxheir+REDfIRKStIb99EiXAx8S/54JxrsI5x+TvJ+5fV81X9qkQM6JISa3z1Vrkw01lN2XvnGhz8g==",
+      "version": "0.16.0-beta.2",
+      "resolved": "https://registry.npmjs.org/@getpaseo/plugin/-/plugin-0.16.0-beta.2.tgz",
+      "integrity": "sha512-rJL1cOD0nV1wGWJo6dgGVMkIygce5RWwO40n3FYffvDYl/x4ir6xF2ieYLCkYhW/5V4KyDZKFmZ4fQ/Ajh9xvg==",
       "license": "Apache-2.0",
       "dependencies": {
         "@agentclientprotocol/sdk": "^1.4.0",
@@ -464,8 +464,8 @@
         "use-sync-external-store": "^1.6.0"
       },
       "peerDependencies": {
-        "@getpaseo/client": "0.16.0-beta.1",
-        "@getpaseo/protocol": "0.16.0-beta.1",
+        "@getpaseo/client": "0.16.0-beta.2",
+        "@getpaseo/protocol": "0.16.0-beta.2",
         "react": ">=19.1.0 <20",
         "react-native": ">=0.81.5",
         "zod": "^4.4.3"
@@ -477,9 +477,9 @@
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.16.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.16.0-beta.1.tgz",
-      "integrity": "sha512-RU/Q8OxRWGJ4NSGSZV0Y9j8/12SCgcA/ulxfldgmtnxBRV1upfW6c6ao7sK9Bz0mQ5vZfxpLNVSzKqheChoKgw==",
+      "version": "0.16.0-beta.2",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.16.0-beta.2.tgz",
+      "integrity": "sha512-w3LynGf+Q0mT9XlKVHnXlNeH/wCpaZcBATYJMh61kiQMNsjKrf61x1kOp9Vutst3nyts0iABVAYVHd+DnUxESQ==",
       "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
@@ -488,9 +488,9 @@
       }
     },
     "node_modules/@getpaseo/relay": {
-      "version": "0.16.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/relay/-/relay-0.16.0-beta.1.tgz",
-      "integrity": "sha512-iC79qagFcF7ACkja+UMGCqlpX2ID4pnNGPGvpHoaQjaembwWMbFuG3c5FXpXenfR3odhaZuxSGO7NH3chb6uaQ==",
+      "version": "0.16.0-beta.2",
+      "resolved": "https://registry.npmjs.org/@getpaseo/relay/-/relay-0.16.0-beta.2.tgz",
+      "integrity": "sha512-U9asFRYeo72+6DuNGqdtsMjFi9HrowDrEJw+LKMU8958iYM1SzohB9nm1uAZv7KStxgD5naqgEUdbw9x84yuuA==",
       "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
@@ -503,9 +503,9 @@
       }
     },
     "node_modules/@hono/node-server": {
-      "version": "2.1.6",
-      "resolved": "https://registry.npmjs.org/@hono/node-server/-/node-server-2.1.6.tgz",
-      "integrity": "sha512-p/KH9MnfNcsm3sR6x4lNgm5j+QN4Et8srKredl9DZfXiyZ1UQ3aQ2YVpFLbqktYN5JI+DB+VZFKM2PqE5hLKjQ==",
+      "version": "2.1.7",
+      "resolved": "https://registry.npmjs.org/@hono/node-server/-/node-server-2.1.7.tgz",
+      "integrity": "sha512-Wr0E6S+v2Bw9FkpGNP5BQ5QbJvclUa06UVehd65WFZe6XeJwbrKQQ5wPDevc0IC+QyzbO7v3Llh5uo45IZcSnA==",
       "license": "MIT",
       "engines": {
         "node": ">=20"
@@ -870,9 +870,9 @@
       "license": "MIT"
     },
     "node_modules/encodeurl": {
-      "version": "2.0.1",
-      "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.1.tgz",
-      "integrity": "sha512-Ev/hIyePLZtpL98x562lvPtenrUfGr0lfaf44HFZ+hDEwso7ccV9QAZrEVLg0hxNAzygaAFxy2dYaAKKM0G06A==",
+      "version": "2.0.2",
+      "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.2.tgz",
+      "integrity": "sha512-ddmxiyS6ETq/v5/+mdA4fykK7JgEmqcShrGmQFTaKf5o43tL8XLuMzNLLsspuIC3/qGupS7Ci2TF+feJRkYY0w==",
       "license": "MIT",
       "engines": {
         "node": ">= 0.8"
@@ -1208,9 +1208,9 @@
       }
     },
     "node_modules/hono": {
-      "version": "4.13.17",
-      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.17.tgz",
-      "integrity": "sha512-vZIcbkvjOR5hHRWERbGkr8fGfF0GGM1ooYkuH448iO3b2AdVEr3AXZSw4Z3Kn+1L5z0CVoVeyV29VGYmFh05kQ==",
+      "version": "4.13.18",
+      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.18.tgz",
+      "integrity": "sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA==",
       "license": "MIT",
       "engines": {
         "node": ">=16.9.0"
