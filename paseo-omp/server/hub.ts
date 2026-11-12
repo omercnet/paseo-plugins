@@ -210,6 +210,8 @@ const HUB_SERVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/u;
 
 export interface OwnedHubCleanupDependencies {
   scan(cwd: string): Promise<HubProcessScan>;
+  /** A timer that fires after `ms`; scans that outlive it count as incomplete. */
+  expire(ms: number): { fired: Promise<void>; cancel(): void };
   /**
    * Asks omp's broker to stop one service within `timeoutMs`; resolves true only when the
    * command succeeded.
@@ -244,18 +246,37 @@ function ownedPersistentServices(
     .map((process) => process.name);
 }
 
+async function boundedScan(
+  dependencies: OwnedHubCleanupDependencies,
+  cwd: string,
+  ms: number,
+): Promise<HubProcessScan | undefined> {
+  if (ms <= 0) return undefined;
+  const timer = dependencies.expire(ms);
+  try {
+    return await Promise.race([
+      dependencies.scan(cwd).catch(() => undefined),
+      timer.fired.then(() => undefined),
+    ]);
+  } finally {
+    timer.cancel();
+  }
+}
+
 export async function stopOwnedHubProcesses(
   cwd: string,
   owners: ReadonlySet<string>,
   dependencies: OwnedHubCleanupDependencies,
 ): Promise<OwnedHubCleanupResult> {
   if (owners.size === 0) return { stopped: [], failed: [], complete: true };
-  const initial = await dependencies.scan(cwd);
+  // The deadline covers discovery too, so a hung filesystem cannot hold the close either.
+  const deadline = dependencies.now() + HUB_CLEANUP_MS;
+  const initial = await boundedScan(dependencies, cwd, deadline - dependencies.now());
+  if (!initial) return { stopped: [], failed: [], complete: false };
   const owned = ownedPersistentServices(initial.processes, owners, LIVE_HUB_STATES);
   if (owned.length === 0) return { stopped: [], failed: [], complete: initial.complete };
   const failed = new Set<string>();
   const queue = [...owned];
-  const deadline = dependencies.now() + HUB_CLEANUP_MS;
   const stopDeadline = deadline - HUB_CLEANUP_VERIFY_RESERVE_MS;
   const stopNext = async (): Promise<void> => {
     for (let name = queue.shift(); name !== undefined; name = queue.shift()) {
@@ -272,7 +293,7 @@ export async function stopOwnedHubProcesses(
   // be read is unknown, not stopped.
   let unsettled: ReadonlySet<string>;
   while (true) {
-    const current = await dependencies.scan(cwd).catch(() => undefined);
+    const current = await boundedScan(dependencies, cwd, deadline - dependencies.now());
     unsettled = new Set(
       current?.complete
         ? [
@@ -283,6 +304,8 @@ export async function stopOwnedHubProcesses(
     );
     if (unsettled.size === 0 || dependencies.now() >= deadline) break;
     await dependencies.sleep(HUB_CLEANUP_POLL_MS);
+    // Keep the last observation rather than scan with no time left.
+    if (dependencies.now() >= deadline) break;
   }
   for (const name of unsettled) failed.add(name);
   return {
@@ -298,6 +321,11 @@ export function ownedHubCleanupDependencies(
 ): OwnedHubCleanupDependencies {
   return {
     scan: (cwd) => scanHubProcessesFrom(root, cwd),
+    expire: (ms) => {
+      const fired = Promise.withResolvers<void>();
+      const timer = setTimeout(fired.resolve, ms);
+      return { fired: fired.promise, cancel: () => clearTimeout(timer) };
+    },
     stop: (name, cwd, timeoutMs) => runOmp(["ps", "stop", "--dir", cwd, "--", name], timeoutMs),
     sleep: waitMs,
     now: () => Date.now(),

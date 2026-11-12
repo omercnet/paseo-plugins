@@ -147,6 +147,37 @@ describe("owned Hub service cleanup", () => {
     expect(clock.now()).toBeGreaterThanOrEqual(3_000);
   });
 
+  test("bounds the discovery and verification scans by the same deadline", async () => {
+    const root = await runDir({ web: {} });
+    const real = ownedHubCleanupDependencies(async () => true, root);
+    const hung = new Promise<never>(() => {});
+    let stops = 0;
+    const discovery = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
+      ...real,
+      ...fakeClock(),
+      scan: () => hung,
+      expire: () => ({ fired: Promise.resolve(), cancel: () => {} }),
+      stop: async () => {
+        stops += 1;
+        return true;
+      },
+    });
+    expect(discovery).toEqual({ stopped: [], failed: [], complete: false });
+    expect(stops).toBe(0);
+
+    let scans = 0;
+    const verification = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
+      ...real,
+      ...fakeClock(),
+      scan: (cwd) => (scans++ === 0 ? real.scan(cwd) : hung),
+      expire: (ms) => ({
+        fired: scans === 0 ? new Promise<void>(() => {}) : Promise.resolve(),
+        cancel: () => expect(ms).toBeLessThanOrEqual(12_000),
+      }),
+    });
+    expect(verification).toEqual({ stopped: [], failed: ["web"], complete: true });
+  });
+
   test("treats a record it cannot read after the stop as not stopped", async () => {
     const root = await runDir({ web: {}, api: {} });
     const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
@@ -366,24 +397,36 @@ describe("closing an OMP agent", () => {
     expect(runtime.cleanups).toEqual([]);
   });
 
-  test("records a failure when the cleanup cannot confirm every service", async () => {
-    const failures: OmpOperationalFailure[] = [];
-    const runtime = new HubCleanupRuntime();
-    runtime.result = { stopped: [], failed: [], complete: false };
-    const { connection, events } = await createHarness(
-      runtime,
-      undefined,
-      undefined,
-      undefined,
-      (failure) => failures.push(failure),
-    );
-    await openSession(connection, events);
+  for (const [label, result, recorded] of [
+    ["the lookup is incomplete", { stopped: [], failed: [], complete: false }, true],
+    ["a service did not stop", { stopped: ["api"], failed: ["web"], complete: true }, true],
+    ["every service stopped", { stopped: ["web"], failed: [], complete: true }, false],
+  ] as const) {
+    test(`${recorded ? "records" : "records no"} failure when ${label}`, async () => {
+      const failures: OmpOperationalFailure[] = [];
+      const runtime = new HubCleanupRuntime();
+      runtime.result = {
+        stopped: [...result.stopped],
+        failed: [...result.failed],
+        complete: result.complete,
+      };
+      const { connection, events } = await createHarness(
+        runtime,
+        undefined,
+        undefined,
+        undefined,
+        (failure) => failures.push(failure),
+      );
+      await openSession(connection, events);
 
-    await closeSession(connection, events, "close-3");
+      await closeSession(connection, events, "close-3");
 
-    expect(failures).toEqual([{ category: "session-close", stage: "hub-cleanup" }]);
-    await connection.close();
-  });
+      expect(failures).toEqual(
+        recorded ? [{ category: "session-close", stage: "hub-cleanup" }] : [],
+      );
+      await connection.close();
+    });
+  }
 
   test("still stops Hub services when only an MCP host-tool tree fails to close", async () => {
     const runtime = new HubCleanupRuntime();
