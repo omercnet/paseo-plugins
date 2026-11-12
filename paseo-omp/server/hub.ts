@@ -142,8 +142,14 @@ const LIVE_HUB_STATES: Readonly<Record<string, true>> = {
 // The broker records `stopping` before it signals the tree and the terminal state after it
 // settles, so a service is only confirmed gone once its metadata leaves both.
 const UNSETTLED_HUB_STATES: Readonly<Record<string, true>> = { ...LIVE_HUB_STATES, stopping: true };
-const HUB_CLEANUP_VERIFY_MS = 3_000;
 const HUB_CLEANUP_POLL_MS = 100;
+// One deadline for the whole cleanup, so a hung CLI, a service that ignores SIGTERM or many
+// services cannot hold the agent's close. omp's own stop grace is 5s plus 1s to settle. Stops
+// leave the last stretch for verification, and the broker stops each record on its own, so a
+// few stops run at once.
+const HUB_CLEANUP_MS = 12_000;
+const HUB_CLEANUP_VERIFY_RESERVE_MS = 2_000;
+const HUB_CLEANUP_STOP_CONCURRENCY = 4;
 
 // omp's broker rejects any other service name; anything else read from disk is not ours to stop,
 // and the leading-alphanumeric rule keeps a name from ever being parsed as a CLI flag.
@@ -151,8 +157,11 @@ const HUB_SERVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/u;
 
 export interface OwnedHubCleanupDependencies {
   list(cwd: string): Promise<HubProcess[]>;
-  /** Asks omp's broker to stop one service; resolves true only when the command succeeded. */
-  stop(name: string, cwd: string): Promise<boolean>;
+  /**
+   * Asks omp's broker to stop one service within `timeoutMs`; resolves true only when the
+   * command succeeded.
+   */
+  stop(name: string, cwd: string, timeoutMs: number): Promise<boolean>;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -189,11 +198,21 @@ export async function stopOwnedHubProcesses(
   const owned = ownedPersistentServices(await dependencies.list(cwd), owners, LIVE_HUB_STATES);
   if (owned.length === 0) return { stopped: [], failed: [] };
   const failed = new Set<string>();
-  for (const name of owned) {
-    if (!(await dependencies.stop(name, cwd).catch(() => false))) failed.add(name);
-  }
+  const queue = [...owned];
+  const deadline = dependencies.now() + HUB_CLEANUP_MS;
+  const stopDeadline = deadline - HUB_CLEANUP_VERIFY_RESERVE_MS;
+  const stopNext = async (): Promise<void> => {
+    for (let name = queue.shift(); name !== undefined; name = queue.shift()) {
+      const remaining = stopDeadline - dependencies.now();
+      const stopped =
+        remaining > 0 && (await dependencies.stop(name, cwd, remaining).catch(() => false));
+      if (!stopped) failed.add(name);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(HUB_CLEANUP_STOP_CONCURRENCY, owned.length) }, stopNext),
+  );
   // Report success only for services omp's own state confirms have settled.
-  const deadline = dependencies.now() + HUB_CLEANUP_VERIFY_MS;
   let unsettled: ReadonlySet<string>;
   while (true) {
     const current = ownedPersistentServices(
@@ -213,12 +232,12 @@ export async function stopOwnedHubProcesses(
 }
 
 export function ownedHubCleanupDependencies(
-  runOmp: (args: readonly string[]) => Promise<boolean>,
+  runOmp: (args: readonly string[], timeoutMs: number) => Promise<boolean>,
   root = ompRunDir(),
 ): OwnedHubCleanupDependencies {
   return {
     list: (cwd) => listHubProcessesFrom(root, cwd),
-    stop: (name, cwd) => runOmp(["ps", "stop", name, "--dir", cwd]),
+    stop: (name, cwd, timeoutMs) => runOmp(["ps", "stop", name, "--dir", cwd], timeoutMs),
     sleep: waitMs,
     now: () => Date.now(),
   };

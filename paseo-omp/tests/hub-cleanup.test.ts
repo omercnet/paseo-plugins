@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   type OwnedHubCleanupResult,
@@ -129,6 +130,39 @@ describe("owned Hub service cleanup", () => {
     });
     expect(result).toEqual({ stopped: [], failed: expect.arrayContaining(["stuck", "refused"]) });
     expect(clock.now()).toBeGreaterThanOrEqual(3_000);
+  });
+
+  test("bounds every stop command under one deadline and runs a few at once", async () => {
+    const names = Array.from({ length: 10 }, (_, index) => `hung-${index}`);
+    const root = await runDir(Object.fromEntries(names.map((name) => [name, {}])));
+    let now = 0;
+    let running = 0;
+    let peak = 0;
+    const timeouts: number[] = [];
+    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
+      ...ownedHubCleanupDependencies(async (_args, timeoutMs) => {
+        // A hung CLI only returns when the runner kills it at its timeout.
+        const started = now;
+        timeouts.push(timeoutMs);
+        running += 1;
+        peak = Math.max(peak, running);
+        await setImmediate();
+        now = Math.max(now, started + timeoutMs);
+        running -= 1;
+        return false;
+      }, root),
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+
+    expect(result).toEqual({ stopped: [], failed: expect.arrayContaining(names) });
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(Math.max(...timeouts)).toBeLessThanOrEqual(10_000);
+    // One 12s deadline for stops and verification, however many services hang.
+    expect(now).toBeLessThanOrEqual(12_100);
   });
 
   test("runs nothing when the sessions own no live persistent service", async () => {

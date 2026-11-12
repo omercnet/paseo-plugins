@@ -179,12 +179,13 @@ export interface OmpRpcRuntimeOptions {
   listSessions?: (
     options: OmpSessionListOptions,
   ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
-  /** Runs one bounded OMP CLI command; resolves true only on a clean zero exit. */
+  /** Runs one OMP CLI command bounded by `timeoutMs`; resolves true only on a clean zero exit. */
   runOmpCommand?: (
     command: string,
     args: readonly string[],
     env: NodeJS.ProcessEnv,
     cwd: string,
+    timeoutMs: number,
   ) => Promise<boolean>;
   hubRunDir?: string;
 }
@@ -198,13 +199,14 @@ async function runOmpCommand(
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   cwd: string,
+  timeoutMs: number,
 ): Promise<boolean> {
   const run = await runBounded(
     defaultSpawn,
     command,
     args,
     env,
-    OMP_COMMAND_TIMEOUT_MS,
+    Math.min(timeoutMs, OMP_COMMAND_TIMEOUT_MS),
     OMP_COMMAND_KILL_GRACE_MS,
     OMP_COMMAND_MAX_OUTPUT_BYTES,
     cwd,
@@ -667,7 +669,8 @@ export class OmpRpcRuntime implements OmpRuntime {
       request.cwd,
       owners,
       ownedHubCleanupDependencies(
-        (args) => run(request.command, [...prefixArgs, ...args], request.env, request.cwd),
+        (args, timeoutMs) =>
+          run(request.command, [...prefixArgs, ...args], request.env, request.cwd, timeoutMs),
         this.options.hubRunDir,
       ),
     );
