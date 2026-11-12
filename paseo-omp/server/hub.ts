@@ -228,9 +228,22 @@ export interface OwnedHubCleanupResult {
   complete: boolean;
 }
 
+/**
+ * OMP session ids whose services an agent may stop, each mapped to the last `createdAt` it can
+ * claim: `Infinity` for the live id, the hand-off time for an id the agent left (a rewind or
+ * branch releases it, so another agent may resume it and start services of its own).
+ */
+export type HubServiceOwners = ReadonlyMap<string, number>;
+
+function startedWhileOwned(process: HubProcess, ownedUntil: number | undefined): boolean {
+  if (ownedUntil === undefined) return false;
+  if (ownedUntil === Number.POSITIVE_INFINITY) return true;
+  return process.createdAt !== null && process.createdAt <= ownedUntil;
+}
+
 function ownedPersistentServices(
   processes: readonly HubProcess[],
-  owners: ReadonlySet<string>,
+  owners: HubServiceOwners,
   states: Readonly<Record<string, true>>,
 ): string[] {
   return processes
@@ -238,7 +251,7 @@ function ownedPersistentServices(
       (process) =>
         HUB_SERVICE_NAME.test(process.name) &&
         process.owner !== null &&
-        owners.has(process.owner) &&
+        startedWhileOwned(process, owners.get(process.owner)) &&
         process.persist &&
         !process.detached &&
         states[process.state] === true,
@@ -265,7 +278,7 @@ async function boundedScan(
 
 export async function stopOwnedHubProcesses(
   cwd: string,
-  owners: ReadonlySet<string>,
+  owners: HubServiceOwners,
   dependencies: OwnedHubCleanupDependencies,
 ): Promise<OwnedHubCleanupResult> {
   if (owners.size === 0) return { stopped: [], failed: [], complete: true };

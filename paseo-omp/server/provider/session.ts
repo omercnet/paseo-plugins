@@ -348,7 +348,7 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
   private unsupportedThinkingNoticePublished = false;
   private degradedMcpServers: readonly OmpDegradedMcpServer[] = [];
   /** Every OMP session ID this agent's runtimes have used; OMP records each as a service owner. */
-  private readonly hubServiceOwners = new Set<string>();
+  private readonly hubServiceOwners = new Map<string, number>();
 
   private constructor(
     id: string,
@@ -378,7 +378,7 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
   ) {
     this.id = id;
     this.cwd = config.cwd;
-    this.hubServiceOwners.add(nativeSessionId);
+    this.hubServiceOwners.set(nativeSessionId, Number.POSITIVE_INFINITY);
     this.scheduler = scheduler;
     this.usage = new OmpSessionUsage(
       id,
@@ -996,8 +996,11 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
       const nextNativeSessionId = validateNativeSessionId(state.sessionId);
       if (nextNativeSessionId !== this.nativeSessionId) {
         this.transitionNativeSession(this.nativeSessionId, nextNativeSessionId);
+        // The released id may be resumed by another agent; only services it started before now
+        // remain this agent's.
+        this.hubServiceOwners.set(this.nativeSessionId, Date.now());
         this.nativeSessionId = nextNativeSessionId;
-        this.hubServiceOwners.add(nextNativeSessionId);
+        this.hubServiceOwners.set(nextNativeSessionId, Number.POSITIVE_INFINITY);
         if (this.persistSession) {
           this.emit({
             type: "session.persistence",

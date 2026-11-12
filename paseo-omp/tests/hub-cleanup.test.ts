@@ -5,6 +5,7 @@ import { setImmediate } from "node:timers/promises";
 import type { ProviderConnection } from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  type HubServiceOwners,
   type OwnedHubCleanupResult,
   ownedHubCleanupDependencies,
   stopOwnedHubProcesses,
@@ -43,6 +44,7 @@ interface DaemonFixture {
   owner?: string;
   persist?: boolean;
   detached?: boolean;
+  createdAt?: number;
 }
 
 async function runDir(daemons: Record<string, DaemonFixture>, root?: string): Promise<string> {
@@ -70,6 +72,7 @@ async function writeDaemon(root: string, name: string, daemon: DaemonFixture): P
         owner: daemon.owner ?? OWNER,
         persist: daemon.persist ?? true,
         detached: daemon.detached ?? false,
+        ...(daemon.createdAt === undefined ? {} : { createdAt: daemon.createdAt }),
       },
     }),
   );
@@ -105,14 +108,21 @@ describe("owned Hub service cleanup", () => {
       "-flag-like": {},
     });
     const commands: string[][] = [];
-    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER, "branch-session"]), {
-      ...ownedHubCleanupDependencies(async (args) => {
-        commands.push([...args]);
-        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
-        return true;
-      }, root),
-      ...fakeClock(),
-    });
+    const result = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([
+        [OWNER, Number.POSITIVE_INFINITY],
+        ["branch-session", Number.POSITIVE_INFINITY],
+      ]),
+      {
+        ...ownedHubCleanupDependencies(async (args) => {
+          commands.push([...args]);
+          await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+          return true;
+        }, root),
+        ...fakeClock(),
+      },
+    );
 
     expect(commands.sort()).toEqual([
       ["ps", "stop", "--dir", PROJECT, "--", "canary-sleeper-1"],
@@ -128,17 +138,50 @@ describe("owned Hub service cleanup", () => {
     expect(await stateOf(root, "pre-18-18-9")).toBe("running");
   });
 
+  test("stops a released session id's services only if they started before the hand-off", async () => {
+    const root = await runDir({
+      before: { owner: "released", createdAt: 1_000 },
+      after: { owner: "released", createdAt: 3_000 },
+      unknown: { owner: "released" },
+      live: { createdAt: 9_000 },
+    });
+    const commands: string[] = [];
+    const result = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([
+        [OWNER, Number.POSITIVE_INFINITY],
+        ["released", 2_000],
+      ]),
+      {
+        ...ownedHubCleanupDependencies(async (args) => {
+          commands.push(args.at(-1) ?? "");
+          await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+          return true;
+        }, root),
+        ...fakeClock(),
+      },
+    );
+    expect(commands.sort()).toEqual(["before", "live"]);
+    expect(result.failed).toEqual([]);
+    expect(await stateOf(root, "after")).toBe("running");
+    expect(await stateOf(root, "unknown")).toBe("running");
+  });
+
   test("never reports a service as stopped until OMP's metadata settles", async () => {
     const root = await runDir({ stuck: {}, refused: {} });
     const clock = fakeClock();
-    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
-      ...ownedHubCleanupDependencies(async (args) => {
-        // `stuck` acknowledges the stop but its broker never records a terminal state.
-        if (args.at(-1) === "stuck") await writeDaemon(root, "stuck", { state: "stopping" });
-        return args.at(-1) === "stuck";
-      }, root),
-      ...clock,
-    });
+    const result = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([[OWNER, Number.POSITIVE_INFINITY]]),
+      {
+        ...ownedHubCleanupDependencies(async (args) => {
+          // `stuck` acknowledges the stop but its broker never records a terminal state.
+          if (args.at(-1) === "stuck") await writeDaemon(root, "stuck", { state: "stopping" });
+          return args.at(-1) === "stuck";
+        }, root),
+        ...clock,
+      },
+    );
     expect(result).toEqual({
       stopped: [],
       failed: expect.arrayContaining(["stuck", "refused"]),
@@ -152,44 +195,56 @@ describe("owned Hub service cleanup", () => {
     const real = ownedHubCleanupDependencies(async () => true, root);
     const hung = new Promise<never>(() => {});
     let stops = 0;
-    const discovery = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
-      ...real,
-      ...fakeClock(),
-      scan: () => hung,
-      expire: () => ({ fired: Promise.resolve(), cancel: () => {} }),
-      stop: async () => {
-        stops += 1;
-        return true;
+    const discovery = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([[OWNER, Number.POSITIVE_INFINITY]]),
+      {
+        ...real,
+        ...fakeClock(),
+        scan: () => hung,
+        expire: () => ({ fired: Promise.resolve(), cancel: () => {} }),
+        stop: async () => {
+          stops += 1;
+          return true;
+        },
       },
-    });
+    );
     expect(discovery).toEqual({ stopped: [], failed: [], complete: false });
     expect(stops).toBe(0);
 
     let scans = 0;
-    const verification = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
-      ...real,
-      ...fakeClock(),
-      scan: (cwd) => (scans++ === 0 ? real.scan(cwd) : hung),
-      expire: (ms) => ({
-        fired: scans === 0 ? new Promise<void>(() => {}) : Promise.resolve(),
-        cancel: () => expect(ms).toBeLessThanOrEqual(12_000),
-      }),
-    });
+    const verification = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([[OWNER, Number.POSITIVE_INFINITY]]),
+      {
+        ...real,
+        ...fakeClock(),
+        scan: (cwd) => (scans++ === 0 ? real.scan(cwd) : hung),
+        expire: (ms) => ({
+          fired: scans === 0 ? new Promise<void>(() => {}) : Promise.resolve(),
+          cancel: () => expect(ms).toBeLessThanOrEqual(12_000),
+        }),
+      },
+    );
     expect(verification).toEqual({ stopped: [], failed: ["web"], complete: true });
   });
 
   test("treats a record it cannot read after the stop as not stopped", async () => {
     const root = await runDir({ web: {}, api: {} });
-    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
-      ...ownedHubCleanupDependencies(async (args) => {
-        const name = args.at(-1) ?? "";
-        if (name === "api") await writeDaemon(root, name, { state: "exited" });
-        // A partly written or corrupt record is unknown, never proof the service settled.
-        else await writeFile(join(root, "0123456789abcdef", "daemons", name, "meta.json"), "{");
-        return true;
-      }, root),
-      ...fakeClock(),
-    });
+    const result = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([[OWNER, Number.POSITIVE_INFINITY]]),
+      {
+        ...ownedHubCleanupDependencies(async (args) => {
+          const name = args.at(-1) ?? "";
+          if (name === "api") await writeDaemon(root, name, { state: "exited" });
+          // A partly written or corrupt record is unknown, never proof the service settled.
+          else await writeFile(join(root, "0123456789abcdef", "daemons", name, "meta.json"), "{");
+          return true;
+        }, root),
+        ...fakeClock(),
+      },
+    );
     expect(result).toEqual({ stopped: ["api"], failed: ["web"], complete: true });
   });
 
@@ -197,13 +252,17 @@ describe("owned Hub service cleanup", () => {
     const root = await runDir({ web: {} });
     await mkdir(join(root, "fedcba9876543210"));
     await writeFile(join(root, "fedcba9876543210", "scope.json"), "{");
-    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
-      ...ownedHubCleanupDependencies(async (args) => {
-        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
-        return true;
-      }, root),
-      ...fakeClock(),
-    });
+    const result = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([[OWNER, Number.POSITIVE_INFINITY]]),
+      {
+        ...ownedHubCleanupDependencies(async (args) => {
+          await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+          return true;
+        }, root),
+        ...fakeClock(),
+      },
+    );
     expect(result).toEqual({ stopped: [], failed: ["web"], complete: false });
   });
 
@@ -221,13 +280,17 @@ describe("owned Hub service cleanup", () => {
     );
     for (const cwd of [link, `${project}${sep}`]) {
       await writeDaemon(root, "web", {});
-      const result = await stopOwnedHubProcesses(cwd, new Set([OWNER]), {
-        ...ownedHubCleanupDependencies(async (args) => {
-          await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
-          return true;
-        }, root),
-        ...fakeClock(),
-      });
+      const result = await stopOwnedHubProcesses(
+        cwd,
+        new Map([[OWNER, Number.POSITIVE_INFINITY]]),
+        {
+          ...ownedHubCleanupDependencies(async (args) => {
+            await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+            return true;
+          }, root),
+          ...fakeClock(),
+        },
+      );
       expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
     }
   });
@@ -239,23 +302,27 @@ describe("owned Hub service cleanup", () => {
     let running = 0;
     let peak = 0;
     const timeouts: number[] = [];
-    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
-      ...ownedHubCleanupDependencies(async (_args, timeoutMs) => {
-        // A hung CLI only returns when the runner kills it at its timeout.
-        const started = now;
-        timeouts.push(timeoutMs);
-        running += 1;
-        peak = Math.max(peak, running);
-        await setImmediate();
-        now = Math.max(now, started + timeoutMs);
-        running -= 1;
-        return false;
-      }, root),
-      now: () => now,
-      sleep: async (ms) => {
-        now += ms;
+    const result = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([[OWNER, Number.POSITIVE_INFINITY]]),
+      {
+        ...ownedHubCleanupDependencies(async (_args, timeoutMs) => {
+          // A hung CLI only returns when the runner kills it at its timeout.
+          const started = now;
+          timeouts.push(timeoutMs);
+          running += 1;
+          peak = Math.max(peak, running);
+          await setImmediate();
+          now = Math.max(now, started + timeoutMs);
+          running -= 1;
+          return false;
+        }, root),
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
+        },
       },
-    });
+    );
 
     expect(result).toEqual({ stopped: [], failed: expect.arrayContaining(names), complete: true });
     expect(peak).toBeGreaterThan(1);
@@ -268,13 +335,17 @@ describe("owned Hub service cleanup", () => {
   test("runs nothing when the sessions own no live persistent service", async () => {
     const root = await runDir({ "pre-18-18-9": { persist: false } });
     let commands = 0;
-    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
-      ...ownedHubCleanupDependencies(async () => {
-        commands += 1;
-        return true;
-      }, root),
-      ...fakeClock(),
-    });
+    const result = await stopOwnedHubProcesses(
+      PROJECT,
+      new Map([[OWNER, Number.POSITIVE_INFINITY]]),
+      {
+        ...ownedHubCleanupDependencies(async () => {
+          commands += 1;
+          return true;
+        }, root),
+        ...fakeClock(),
+      },
+    );
     expect(result).toEqual({ stopped: [], failed: [], complete: true });
     expect(commands).toBe(0);
   });
@@ -321,7 +392,7 @@ describe("owned Hub service cleanup", () => {
       try {
         const result = await runtime.stopOwnedServices(
           { cwd: PROJECT, command: [...command] },
-          new Set([OWNER]),
+          new Map([[OWNER, Number.POSITIVE_INFINITY]]),
         );
         expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
         expect(calls).toEqual([
@@ -348,14 +419,16 @@ describe("owned Hub service cleanup", () => {
 
 class HubCleanupRuntime extends FakeOmpRuntime {
   readonly cleanups: Array<{ cwd: string; owners: string[]; nativeCloses: number }> = [];
+  lastOwners: HubServiceOwners = new Map();
   result: OwnedHubCleanupResult = { stopped: [], failed: [], complete: true };
   async stopOwnedServices(
     options: OmpStartOptions,
-    owners: ReadonlySet<string>,
+    owners: HubServiceOwners,
   ): Promise<OwnedHubCleanupResult> {
+    this.lastOwners = owners;
     this.cleanups.push({
       cwd: options.cwd,
-      owners: [...owners],
+      owners: [...owners.keys()],
       nativeCloses: this.sessions.reduce((count, session) => count + session.closes, 0),
     });
     return this.result;
@@ -523,6 +596,11 @@ describe("closing an OMP agent", () => {
           ? []
           : [{ cwd: "/repo", owners: [NATIVE_SESSION_ID, branched], nativeCloses: 1 }],
       );
+      if (!cleanupFails) {
+        // The released id keeps only the services it started before the branch.
+        expect(runtime.lastOwners.get(NATIVE_SESSION_ID)).toBeLessThanOrEqual(Date.now());
+        expect(runtime.lastOwners.get(branched)).toBe(Number.POSITIVE_INFINITY);
+      }
     });
   }
 });

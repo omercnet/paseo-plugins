@@ -2,6 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  type HubServiceOwners,
   type OwnedHubCleanupResult,
   ownedHubCleanupDependencies,
   stopOwnedHubProcesses,
@@ -166,7 +167,7 @@ export interface OmpRuntime {
   /** Stops the live Hub services these OMP sessions own once their process tree is gone. */
   stopOwnedServices?(
     options: OmpStartOptions,
-    owners: ReadonlySet<string>,
+    owners: HubServiceOwners,
   ): Promise<OwnedHubCleanupResult>;
 }
 
@@ -671,7 +672,7 @@ export class OmpRpcRuntime implements OmpRuntime {
   }
   async stopOwnedServices(
     options: OmpStartOptions,
-    owners: ReadonlySet<string>,
+    owners: HubServiceOwners,
   ): Promise<OwnedHubCleanupResult> {
     // Same executable, launcher prefix, profile and environment as the RPC process, so the CLI
     // reaches the broker that session used; brokers live under each profile's own config root.
