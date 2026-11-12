@@ -160,6 +160,29 @@ export function ompStateDir(
   return ompStorageDir("state", environment, platform);
 }
 
+/**
+ * OMP's service broker root (`run/daemons`). It hangs off the profile's config root, not the
+ * agent directory, so every named profile has its own brokers (pi-utils `getDaemonRuntimeRoot`).
+ */
+export function ompHubRunDir(
+  environment: NodeJS.ProcessEnv = currentOmpEnvironment(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const profile = ompProfile(environment);
+  const defaultAgentDir = defaultOmpAgentDir(environment, profile);
+  let root = dirname(defaultAgentDir);
+  const xdgHome = environment.XDG_STATE_HOME;
+  if (
+    xdgHome &&
+    (platform === "linux" || platform === "darwin") &&
+    ompAgentDir(environment) === defaultAgentDir
+  ) {
+    const xdgRoot = profile ? join(xdgHome, "omp", "profiles", profile) : join(xdgHome, "omp");
+    if (existsSync(xdgRoot)) root = xdgRoot;
+  }
+  return join(root, "run", "daemons");
+}
+
 function configuredSessionDir(agentDir: string): string | undefined {
   for (const settingsPath of [
     join(agentDir, "settings.json"),

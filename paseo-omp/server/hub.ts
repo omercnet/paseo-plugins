@@ -298,7 +298,7 @@ export function ownedHubCleanupDependencies(
 ): OwnedHubCleanupDependencies {
   return {
     scan: (cwd) => scanHubProcessesFrom(root, cwd),
-    stop: (name, cwd, timeoutMs) => runOmp(["ps", "stop", name, "--dir", cwd], timeoutMs),
+    stop: (name, cwd, timeoutMs) => runOmp(["ps", "stop", "--dir", cwd, "--", name], timeoutMs),
     sleep: waitMs,
     now: () => Date.now(),
   };

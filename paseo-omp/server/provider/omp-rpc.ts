@@ -6,7 +6,7 @@ import {
   ownedHubCleanupDependencies,
   stopOwnedHubProcesses,
 } from "../hub";
-import { ompDataDir } from "../paths";
+import { ompDataDir, ompHubRunDir } from "../paths";
 import { defaultSpawn, runBounded } from "../provider-diagnostics";
 import {
   buildOmpSpawnRequest,
@@ -212,6 +212,16 @@ async function runOmpCommand(
     cwd,
   );
   return run.outcome === "exited" && run.exitCode === 0 && !run.cleanupFailed;
+}
+
+/** The last `--profile` in a configured command, which OMP prefers over `OMP_PROFILE`. */
+function commandProfile(args: readonly string[]): string | undefined {
+  let profile: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--profile") profile = args[++index];
+    else if (args[index]?.startsWith("--profile=")) profile = args[index]?.slice(10);
+  }
+  return profile;
 }
 
 // OMP accepts an empty message when images carry the prompt.
@@ -653,17 +663,17 @@ export class OmpRpcRuntime implements OmpRuntime {
     options: OmpStartOptions,
     owners: ReadonlySet<string>,
   ): Promise<OwnedHubCleanupResult> {
-    // Same executable, wrapper arguments and environment as the RPC process, so the CLI reaches
-    // the broker that session used. The broker root is shared across profiles, and an OMP flag
-    // in the configured prefix (such as `--profile`) placed before `ps` could make OMP read the
-    // rest as a prompt instead of a subcommand, so the prefix ends at its first flag.
+    // Same executable, configured prefix and environment as the RPC process, so the CLI reaches
+    // the broker that session used. omp hoists `ps` past leading flags (`--profile`, `--mode`,
+    // `--thinking`...), but a trailing bare flag (`--resume`, an unknown long flag) takes `ps` as
+    // its value, so those are dropped. Brokers live under each profile's own config root.
     const request = buildOmpSpawnRequest({
       ...options,
       environment: options.environment ?? this.options.environment,
     });
-    const configuredPrefix = request.args.slice(0, Math.max(0, (options.command?.length ?? 1) - 1));
-    const firstFlag = configuredPrefix.findIndex((argument) => argument.startsWith("-"));
-    const prefixArgs = firstFlag === -1 ? configuredPrefix : configuredPrefix.slice(0, firstFlag);
+    const prefixArgs = request.args.slice(0, Math.max(0, (options.command?.length ?? 1) - 1));
+    while (/^-[^=]*$/u.test(prefixArgs.at(-1) ?? "")) prefixArgs.pop();
+    const profile = commandProfile(prefixArgs);
     const run = this.options.runOmpCommand ?? runOmpCommand;
     return stopOwnedHubProcesses(
       request.cwd,
@@ -671,7 +681,11 @@ export class OmpRpcRuntime implements OmpRuntime {
       ownedHubCleanupDependencies(
         (args, timeoutMs) =>
           run(request.command, [...prefixArgs, ...args], request.env, request.cwd, timeoutMs),
-        this.options.hubRunDir,
+        this.options.hubRunDir ??
+          process.env.PASEO_OMP_RUN_DIR ??
+          ompHubRunDir(
+            profile === undefined ? request.env : { ...request.env, OMP_PROFILE: profile },
+          ),
       ),
     );
   }

@@ -2,12 +2,13 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   type OwnedHubCleanupResult,
   ownedHubCleanupDependencies,
   stopOwnedHubProcesses,
 } from "../server/hub";
+import { ompHubRunDir } from "../server/paths";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import type { OmpStartOptions } from "../server/provider/omp-rpc-environment";
 import {
@@ -37,9 +38,11 @@ interface DaemonFixture {
   detached?: boolean;
 }
 
-async function runDir(daemons: Record<string, DaemonFixture>): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "paseo-omp-hub-cleanup-"));
-  temporaryDirectories.push(root);
+async function runDir(daemons: Record<string, DaemonFixture>, root?: string): Promise<string> {
+  if (root === undefined) {
+    root = await mkdtemp(join(tmpdir(), "paseo-omp-hub-cleanup-"));
+    temporaryDirectories.push(root);
+  }
   await mkdir(join(root, "0123456789abcdef"), { recursive: true });
   await writeFile(
     join(root, "0123456789abcdef", "scope.json"),
@@ -98,15 +101,15 @@ describe("owned Hub service cleanup", () => {
     const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER, "branch-session"]), {
       ...ownedHubCleanupDependencies(async (args) => {
         commands.push([...args]);
-        await writeDaemon(root, args[2] ?? "", { state: "exited" });
+        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
         return true;
       }, root),
       ...fakeClock(),
     });
 
     expect(commands.sort()).toEqual([
-      ["ps", "stop", "canary-sleeper-1", "--dir", PROJECT],
-      ["ps", "stop", "earlier-branch", "--dir", PROJECT],
+      ["ps", "stop", "--dir", PROJECT, "--", "canary-sleeper-1"],
+      ["ps", "stop", "--dir", PROJECT, "--", "earlier-branch"],
     ]);
     expect(result).toEqual({
       stopped: expect.arrayContaining(["canary-sleeper-1", "earlier-branch"]),
@@ -124,8 +127,8 @@ describe("owned Hub service cleanup", () => {
     const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
       ...ownedHubCleanupDependencies(async (args) => {
         // `stuck` acknowledges the stop but its broker never records a terminal state.
-        if (args[2] === "stuck") await writeDaemon(root, "stuck", { state: "stopping" });
-        return args[2] === "stuck";
+        if (args.at(-1) === "stuck") await writeDaemon(root, "stuck", { state: "stopping" });
+        return args.at(-1) === "stuck";
       }, root),
       ...clock,
     });
@@ -141,7 +144,7 @@ describe("owned Hub service cleanup", () => {
     const root = await runDir({ web: {}, api: {} });
     const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
       ...ownedHubCleanupDependencies(async (args) => {
-        const name = args[2] ?? "";
+        const name = args.at(-1) ?? "";
         if (name === "api") await writeDaemon(root, name, { state: "exited" });
         // A partly written or corrupt record is unknown, never proof the service settled.
         else await writeFile(join(root, "0123456789abcdef", "daemons", name, "meta.json"), "{");
@@ -158,7 +161,7 @@ describe("owned Hub service cleanup", () => {
     await writeFile(join(root, "fedcba9876543210", "scope.json"), "{");
     const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
       ...ownedHubCleanupDependencies(async (args) => {
-        await writeDaemon(root, args[2] ?? "", { state: "exited" });
+        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
         return true;
       }, root),
       ...fakeClock(),
@@ -182,7 +185,7 @@ describe("owned Hub service cleanup", () => {
       await writeDaemon(root, "web", {});
       const result = await stopOwnedHubProcesses(cwd, new Set([OWNER]), {
         ...ownedHubCleanupDependencies(async (args) => {
-          await writeDaemon(root, args[2] ?? "", { state: "exited" });
+          await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
           return true;
         }, root),
         ...fakeClock(),
@@ -238,31 +241,53 @@ describe("owned Hub service cleanup", () => {
     expect(commands).toBe(0);
   });
 
-  test("uses the session's executable and environment but never its OMP flags", async () => {
-    const root = await runDir({ web: {} });
+  test("keeps a launcher prefix and reaches the profile's own broker root", async () => {
+    vi.stubEnv("PASEO_OMP_RUN_DIR", undefined);
+    const home = await mkdtemp(join(tmpdir(), "paseo-omp-hub-home-"));
+    temporaryDirectories.push(home);
+    // Named profiles keep their brokers under their own config root (pi-utils 18.18.9+).
+    const root = join(home, ".omp", "profiles", "work", "run", "daemons");
+    await mkdir(root, { recursive: true });
+    await runDir({ web: {} }, root);
+    await runDir({ elsewhere: {} }, join(home, ".omp", "run", "daemons"));
     const calls: Array<{ command: string; args: readonly string[]; cwd: string; env: string }> = [];
     const runtime = new OmpRpcRuntime({
-      environment: { PATH: "/usr/bin", HOME: "/home/test" },
-      hubRunDir: root,
+      environment: { PATH: "/usr/bin", HOME: home },
       runOmpCommand: async (command, args, env, cwd) => {
         calls.push({ command, args, cwd, env: env.HOME ?? "" });
-        await writeDaemon(root, "web", { state: "exited" });
+        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
         return true;
       },
     });
-    const result = await runtime.stopOwnedServices(
-      { cwd: PROJECT, command: ["bunx", "omp", "--profile", "work"] },
-      new Set([OWNER]),
+    try {
+      const result = await runtime.stopOwnedServices(
+        {
+          cwd: PROJECT,
+          // A trailing bare flag would take `ps` as its value, so it never reaches the CLI.
+          command: ["npx", "--yes", "omp", "--profile", "work", "--resume"],
+        },
+        new Set([OWNER]),
+      );
+      expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
+      expect(calls).toEqual([
+        {
+          command: "npx",
+          args: ["--yes", "omp", "--profile", "work", "ps", "stop", "--dir", PROJECT, "--", "web"],
+          cwd: PROJECT,
+          env: home,
+        },
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  test("resolves the broker root from the profile environment", () => {
+    const home = join(tmpdir(), "paseo-omp-hub-no-such-home");
+    expect(ompHubRunDir({ HOME: home }, "linux")).toBe(join(home, ".omp", "run", "daemons"));
+    expect(ompHubRunDir({ HOME: home, OMP_PROFILE: "work" }, "linux")).toBe(
+      join(home, ".omp", "profiles", "work", "run", "daemons"),
     );
-    expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
-    expect(calls).toEqual([
-      {
-        command: "bunx",
-        args: ["omp", "ps", "stop", "web", "--dir", PROJECT],
-        cwd: PROJECT,
-        env: "/home/test",
-      },
-    ]);
   });
 });
 
