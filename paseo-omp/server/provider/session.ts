@@ -1079,10 +1079,16 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
     this.hostTools.detach();
     this.runtimeDisposal ??= runtime.close();
     this.hostToolsDisposal ??= this.hostTools.close();
+    // Same gate as a normal close: only once this OMP tree is verified gone.
+    const hubCleanup = this.runtimeDisposal.then(
+      () => this.stopOwnedHubServices(),
+      () => undefined,
+    );
     const cleanup = settleSessionCleanup(
       [
         this.runtimeDisposal,
         this.hostToolsDisposal,
+        hubCleanup,
         this.recoveryPromise,
         configRefresh,
         this.configRefreshInFlight,
@@ -2035,8 +2041,9 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
     const deferredCleanup: Promise<void>[] = [];
     const seenCleanup = new Set<Promise<void>>();
     const seenCoordination = new Set<Promise<void>>();
+    let ompTreeUnverified = false;
     while (true) {
-      const cleanup = [this.runtimeDisposal, this.hostToolsDisposal].filter(
+      const cleanup: Promise<void>[] = [this.runtimeDisposal, this.hostToolsDisposal].filter(
         (promise): promise is Promise<void> => promise !== null && !seenCleanup.has(promise),
       );
       const coordination = [this.recoveryPromise, configRefresh, this.configRefreshInFlight].filter(
@@ -2046,8 +2053,10 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
       for (const promise of cleanup) seenCleanup.add(promise);
       for (const promise of coordination) seenCoordination.add(promise);
       const results = await Promise.allSettled([...cleanup, ...coordination]);
-      for (const result of results.slice(0, cleanup.length)) {
+      for (const [index, result] of results.slice(0, cleanup.length).entries()) {
         if (result.status !== "rejected") continue;
+        // MCP host-tool trees are the plugin's own children and never own an OMP service.
+        if (cleanup[index] !== this.hostToolsDisposal) ompTreeUnverified = true;
         if (isOmpCleanupFailure(result.reason)) {
           if (!seenCleanup.has(result.reason.cleanup)) deferredCleanup.push(result.reason.cleanup);
           continue;
@@ -2055,6 +2064,8 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
         cleanupErrors.push(result.reason);
       }
     }
+    // Only after the OMP tree is verified gone, so no live session can start another service.
+    if (!ompTreeUnverified) await this.stopOwnedHubServices();
     if (deferredCleanup.length > 0) {
       const failed =
         cleanupErrors.length > 0
@@ -2069,8 +2080,6 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, "OMP session cleanup failed");
     }
-    // Only after the OMP tree is verified gone, so no live session can start another service.
-    await this.stopOwnedHubServices();
   }
 
   private async stopOwnedHubServices(): Promise<void> {
@@ -2175,7 +2184,6 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
         );
       }
       if (!expectedSessionId) this.nativeSessionId = state.sessionId;
-      this.hubServiceOwners.add(state.sessionId);
       const recoveredModel = state.model ? nativeOmpModelId(state.model) : undefined;
       if (
         !recoverFromNativeConfig &&

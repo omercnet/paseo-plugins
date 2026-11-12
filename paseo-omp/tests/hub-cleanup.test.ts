@@ -2,21 +2,28 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { setImmediate } from "node:timers/promises";
+import type { ProviderConnection } from "@getpaseo/plugin/server/provider";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   type OwnedHubCleanupResult,
   ownedHubCleanupDependencies,
   stopOwnedHubProcesses,
 } from "../server/hub";
+import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import { ompHubRunDir } from "../server/paths";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import type { OmpStartOptions } from "../server/provider/omp-rpc-environment";
+import { createOmpProvider } from "../server/provider/registration";
 import {
   createHarness,
+  EventLog,
   FakeOmpRuntime,
+  ManualScheduler,
+  MODEL_PUBLIC_ID,
   NATIVE_SESSION_ID,
   openSession,
   sessionAt,
+  TEST_RUNTIME_ENV,
 } from "./helpers/provider-harness";
 
 const PROJECT = "/workspace/project";
@@ -293,6 +300,7 @@ describe("owned Hub service cleanup", () => {
 
 class HubCleanupRuntime extends FakeOmpRuntime {
   readonly cleanups: Array<{ cwd: string; owners: string[]; nativeCloses: number }> = [];
+  result: OwnedHubCleanupResult = { stopped: [], failed: [], complete: true };
   async stopOwnedServices(
     options: OmpStartOptions,
     owners: ReadonlySet<string>,
@@ -302,8 +310,17 @@ class HubCleanupRuntime extends FakeOmpRuntime {
       owners: [...owners],
       nativeCloses: this.sessions.reduce((count, session) => count + session.closes, 0),
     });
-    return { stopped: [], failed: [], complete: true };
+    return this.result;
   }
+}
+
+async function closeSession(connection: ProviderConnection, events: EventLog, requestId: string) {
+  await connection.send({ type: "session.close", requestId, sessionId: "session-1" });
+  return events.waitFor(
+    (event) =>
+      (event.type === "request.completed" || event.type === "request.failed") &&
+      event.requestId === requestId,
+  );
 }
 
 describe("closing an OMP agent", () => {
@@ -312,10 +329,7 @@ describe("closing an OMP agent", () => {
     const { connection, events } = await createHarness(runtime);
     await openSession(connection, events);
 
-    await connection.send({ type: "session.close", requestId: "close-1", sessionId: "session-1" });
-    await events.waitFor(
-      (event) => event.type === "request.completed" && event.requestId === "close-1",
-    );
+    await closeSession(connection, events, "close-1");
 
     expect(runtime.cleanups).toEqual([
       { cwd: runtime.starts[0]?.cwd, owners: [NATIVE_SESSION_ID], nativeCloses: 1 },
@@ -329,11 +343,126 @@ describe("closing an OMP agent", () => {
     await openSession(connection, events);
     sessionAt(runtime).closeError = new Error("native close failed");
 
-    await connection.send({ type: "session.close", requestId: "close-2", sessionId: "session-1" });
-    await events.waitFor(
-      (event) => event.type === "request.failed" && event.requestId === "close-2",
-    );
+    const outcome = await closeSession(connection, events, "close-2");
 
+    expect(outcome.type).toBe("request.failed");
     expect(runtime.cleanups).toEqual([]);
   });
+
+  test("records a failure when the cleanup cannot confirm every service", async () => {
+    const failures: OmpOperationalFailure[] = [];
+    const runtime = new HubCleanupRuntime();
+    runtime.result = { stopped: [], failed: [], complete: false };
+    const { connection, events } = await createHarness(
+      runtime,
+      undefined,
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
+    await openSession(connection, events);
+
+    await closeSession(connection, events, "close-3");
+
+    expect(failures).toEqual([{ category: "session-close", stage: "hub-cleanup" }]);
+    await connection.close();
+  });
+
+  test("still stops Hub services when only an MCP host-tool tree fails to close", async () => {
+    const runtime = new HubCleanupRuntime();
+    const connection = await createOmpProvider({
+      runtime,
+      timelineScheduler: new ManualScheduler(),
+      environment: TEST_RUNTIME_ENV,
+      mcpConnector: async () => ({
+        listTools: async () => ({ tools: [{ name: "read", inputSchema: { type: "object" } }] }),
+        callTool: async () => ({ content: [] }),
+        close: async () => {
+          throw new Error("MCP tree cleanup failed");
+        },
+      }),
+    }).connect({ versions: [1], capabilities: ["prompt.message"] });
+    const events = new EventLog();
+    connection.onEvent((event) => events.push(event));
+    await openSession(
+      connection,
+      events,
+      "open-mcp",
+      "session-1",
+      {},
+      MODEL_PUBLIC_ID,
+      "medium",
+      false,
+      {
+        mcpServers: { repo: { type: "stdio", command: "repo" } },
+      },
+    );
+
+    const outcome = await closeSession(connection, events, "close-4");
+
+    expect(outcome.type).toBe("request.failed");
+    expect(runtime.cleanups).toEqual([
+      { cwd: runtime.starts[0]?.cwd, owners: [NATIVE_SESSION_ID], nativeCloses: 1 },
+    ]);
+  });
+
+  for (const cleanupFails of [false, true]) {
+    test(`after a committed rewind fails, ${cleanupFails ? "skips" : "stops"} Hub services ${cleanupFails ? "when the OMP tree is unverified" : "for every OMP session id"}`, async () => {
+      const branched = "01a08f6b-8da9-72cb-9080-fc50139bdfd3";
+      const runtime = new HubCleanupRuntime();
+      runtime.descriptors.push({ id: NATIVE_SESSION_ID, cwd: "/repo" });
+      runtime.nextHistoryMessages = [{ role: "user", entryId: "replay-entry", content: "earlier" }];
+      const { connection, events } = await createHarness(runtime, new ManualScheduler(), [
+        "prompt.message",
+        "session.list",
+        "session.persistence",
+        "session.revert.conversation",
+      ]);
+      await connection.send({
+        type: "session.open",
+        requestId: "rewind-open",
+        sessionId: "session-1",
+        config: {
+          cwd: "/repo",
+          env: {},
+          mcpServers: {},
+          mode: "full",
+          settings: {},
+          persist: true,
+        },
+        persistence: { version: 1, data: { sessionId: NATIVE_SESSION_ID } },
+        history: "replay",
+      });
+      await events.waitFor(
+        (event) => event.type === "session.ready" && event.requestId === "rewind-open",
+      );
+      const user = events.find(
+        (event) => event.type === "timeline.item" && event.item.type === "user_message",
+      );
+      if (user?.type !== "timeline.item" || user.item.type !== "user_message") {
+        throw new Error("Missing rewind token");
+      }
+      const session = sessionAt(runtime);
+      if (cleanupFails) session.closeError = new Error("cleanup failed");
+      session.branchSessionIdAfter = branched;
+      session.branchHistoryErrorAfter = new Error("replay failed");
+
+      await connection.send({
+        type: "session.revert",
+        requestId: "rewind",
+        sessionId: "session-1",
+        token: user.item.revertToken ?? null,
+        scope: "conversation",
+      });
+      await events.waitFor(
+        (event) => event.type === "request.failed" && event.requestId === "rewind",
+      );
+
+      expect(runtime.cleanups).toEqual(
+        cleanupFails
+          ? []
+          : [{ cwd: "/repo", owners: [NATIVE_SESSION_ID, branched], nativeCloses: 1 }],
+      );
+    });
+  }
 });
