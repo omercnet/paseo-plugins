@@ -1,6 +1,6 @@
 # OMP provider parity audit
 
-Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; 18.2.0; 18.8.4; and 18.10.1, the newest release covered end to end. The full controlled canary is pinned to official Paseo image `0.16.0-beta.1@sha256:9feae06fe11c508b5fc0ff42869cdab2b86b3af23c5beada308a0edb96714bdf`; the required canary matrix validates OMP 18.1.15, 18.8.4, and 18.10.1.
+Validated against the Paseo plugin SDK versions pinned in `package.json` and the real OMP compatibility matrix: high-use historical releases 17.2.15, 17.3.4, 18.0.11, and 18.1.10; minimum supported release 18.1.15; 18.2.0; 18.8.4; and 18.10.1, the newest release covered end to end. The full controlled canary is pinned to official Paseo image `0.16.0-beta.2@sha256:6139c4e247e49431a0d54ef01265b874bd91eb35f755088a7f19b31c66eb3d86`; the required canary matrix validates OMP 18.1.15, 18.8.4, and 18.10.1.
 
 Classifications:
 
