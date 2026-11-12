@@ -1204,12 +1204,14 @@ describe("OMP direct provider", () => {
   test("accepts empty option patches next to a model change", async () => {
     const { connection, events, runtime } = await createHarness();
     await openSession(connection, events);
+    // Spread so older SDK types without `providerOptions` on configure changes still typecheck.
+    const emptyOptions = { providerOptions: {}, settings: {} };
 
     await connection.send({
       type: "session.configure",
       requestId: "configure-empty-options",
       sessionId: "session-1",
-      changes: { model: ALTERNATE_MODEL_PUBLIC_ID, providerOptions: {}, settings: {} },
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID, ...emptyOptions },
     });
     await events.waitFor(
       (event) =>
