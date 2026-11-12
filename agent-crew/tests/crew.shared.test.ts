@@ -9,6 +9,7 @@ import {
   crewPopoverNotice,
   crewState,
   formatAge,
+  isWorking,
   listenToCrewDirectory,
   sendOptions,
 } from "../client/crew";
@@ -64,6 +65,38 @@ describe("crewState", () => {
     ).toBe("ready");
     expect(crewState(entry("closed", "root", { status: "closed" }).agent)).toBe("closed");
   });
+
+  test("counts background work as working, like Paseo's running bucket", () => {
+    const busy = entry("busy", "root", { backgroundWork: { count: 2 } }).agent;
+    expect(crewState(busy)).toBe("working");
+    expect(
+      crewState(
+        entry("finished-busy", "root", {
+          backgroundWork: { count: 1 },
+          requiresAttention: true,
+          attentionReason: "finished",
+        }).agent,
+      ),
+    ).toBe("working");
+    expect(
+      crewState(
+        entry("asking-busy", "root", {
+          backgroundWork: { count: 1 },
+          pendingPermissions: [{}],
+        }).agent,
+      ),
+    ).toBe("needs-input");
+    expect(crewState(entry("drained", "root", { backgroundWork: { count: 0 } }).agent)).toBe(
+      "idle",
+    );
+  });
+
+  test("keeps background work out of the running-turn check that picks steer or interrupt", () => {
+    const busy = entry("busy", "root", { backgroundWork: { count: 1 } }).agent;
+    expect(isWorking(busy)).toBe(false);
+    expect(sendOptions(isWorking(busy), "interrupt")).toBeUndefined();
+    expect(isWorking(entry("running", "root", { status: "running" }).agent)).toBe(true);
+  });
 });
 
 describe("buildCrewForest", () => {
@@ -84,6 +117,33 @@ describe("buildCrewForest", () => {
       ["root", 0],
       ["field-child", 1],
     ]);
+  });
+
+  test("leaves background helpers and their subtrees out of the tree and its totals", () => {
+    const ws = { workspaceId: "ws" };
+    const nodes = buildCrewForest(
+      [
+        entry("lead", null, ws),
+        entry("worker", "lead", { ...ws, status: "running" }),
+        entry("helper", "lead", { ...ws, background: true, status: "running" }),
+        entry("helper-child", "helper", { ...ws, background: true, pendingPermissions: [{}] }),
+        entry("solo-lead", null, ws),
+        entry("solo-helper", "solo-lead", { ...ws, background: true }),
+        entry("loose-helper", null, { ...ws, background: true }),
+      ],
+      "ws",
+    );
+
+    expect(nodes.map(({ entry: item, depth }) => [item.agent.id, depth])).toEqual([
+      ["lead", 0],
+      ["worker", 1],
+      ["solo-lead", 0],
+    ]);
+    expect(nodes.map(({ descendantCount }) => descendantCount)).toEqual([1, 0, 0]);
+    expect(crewCounts(nodes)).toMatchObject({ working: 1, "needs-input": 0, idle: 2 });
+    expect(
+      nodes.filter(({ depth, descendantCount }) => depth === 0 && descendantCount > 0),
+    ).toHaveLength(1);
   });
 
   test("shows every workspace agent and descendants across workspaces", () => {
@@ -338,6 +398,19 @@ describe("activeCrews", () => {
         }),
       ]),
     ).toEqual([["ws", "lead", 1, 1]]);
+  });
+
+  test("ignores background helpers when finding and counting active crews", () => {
+    const ws = { workspaceId: "ws" };
+    expect(
+      summary([
+        entry("lead", null, ws),
+        entry("helper", "lead", { ...ws, background: true, status: "running" }),
+        entry("busy-lead", null, ws),
+        entry("worker", "busy-lead", { ...ws, status: "running" }),
+        entry("asking-helper", "busy-lead", { ...ws, background: true, pendingPermissions: [{}] }),
+      ]),
+    ).toEqual([["ws", "busy-lead", 1, 0]]);
   });
 
   test("lists a cross-workspace crew under each panel that shows it, counting members only", () => {
