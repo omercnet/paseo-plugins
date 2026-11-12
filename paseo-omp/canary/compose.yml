@@ -53,7 +53,7 @@ services:
 
   ollama:
     profiles: ["local-model"]
-    image: ollama/ollama:0.40.6@sha256:265409e1d931028a8f7d5a32bcbafddd7bffbc6cc629d77efe9560adf692a5e7
+    image: ollama/ollama:0.40.8@sha256:2b8eecdb85aa6ea67c381c8ecffec04b2658496cf2821a8f88b0485bdff198e8
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
@@ -64,7 +64,7 @@ services:
 
   ollama-pull:
     profiles: ["local-model"]
-    image: ollama/ollama:0.40.6@sha256:265409e1d931028a8f7d5a32bcbafddd7bffbc6cc629d77efe9560adf692a5e7
+    image: ollama/ollama:0.40.8@sha256:2b8eecdb85aa6ea67c381c8ecffec04b2658496cf2821a8f88b0485bdff198e8
     depends_on:
       ollama:
         condition: service_healthy
