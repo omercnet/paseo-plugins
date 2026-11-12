@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { z } from "zod";
 import {
   type HubServiceOwners,
@@ -233,6 +233,26 @@ function psLauncher(args: readonly string[]): { prefix: string[]; profile?: stri
   }
   while (/^-[^=]*$/u.test(prefix.at(-1) ?? "")) prefix.pop();
   return profile === undefined ? { prefix } : { prefix, profile };
+}
+
+/**
+ * `NAME=value` words an `env` wrapper in the configured command (`env OMP_PROFILE=work omp`)
+ * sets for OMP. They pick the profile and store root, so the broker root scan must see them too.
+ */
+function envAssignments(command: string, args: readonly string[]): NodeJS.ProcessEnv {
+  const assigned: NodeJS.ProcessEnv = {};
+  const words = [command, ...args];
+  for (let index = 0; index < words.length; index += 1) {
+    const executable = basename(words[index] ?? "").toLowerCase();
+    if (executable !== "env" && executable !== "env.exe") continue;
+    for (index += 1; index < words.length; index += 1) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/su.exec(words[index] ?? "");
+      if (!assignment?.[1]) break;
+      assigned[assignment[1]] = assignment[2];
+    }
+    index -= 1;
+  }
+  return assigned;
 }
 
 // OMP accepts an empty message when images carry the prompt.
@@ -683,7 +703,12 @@ export class OmpRpcRuntime implements OmpRuntime {
     const { prefix, profile } = psLauncher(
       request.args.slice(0, Math.max(0, (options.command?.length ?? 1) - 1)),
     );
-    const env = profile === undefined ? request.env : { ...request.env, OMP_PROFILE: profile };
+    // OMP prefers `--profile` over `OMP_PROFILE`, which an `env` wrapper may set.
+    const env = {
+      ...request.env,
+      ...envAssignments(request.command, prefix),
+      ...(profile === undefined ? {} : { OMP_PROFILE: profile }),
+    };
     const run = this.options.runOmpCommand ?? runOmpCommand;
     return stopOwnedHubProcesses(
       request.cwd,

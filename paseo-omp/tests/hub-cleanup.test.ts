@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import type { ProviderConnection } from "@getpaseo/plugin/server/provider";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type HubServiceOwners,
   type OwnedHubCleanupResult,
@@ -32,7 +32,13 @@ const OWNER = "01a1d075-838f-70bd-a76e-3761451eae39";
 const OWNED: HubServiceOwners = new Map([[OWNER, Number.POSITIVE_INFINITY]]);
 const temporaryDirectories: string[] = [];
 
+beforeEach(() => {
+  // Every test passes its own run dir; the ambient override must never leak in or out.
+  vi.stubEnv("PASEO_OMP_RUN_DIR", undefined);
+});
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -401,6 +407,14 @@ describe("owned Hub service cleanup", () => {
       ["npx", ["--yes", "omp"]],
     ],
     [
+      ["env", "OMP_PROFILE=work", "omp"],
+      ["env", ["OMP_PROFILE=work", "omp"]],
+    ],
+    [
+      ["env", "OMP_PROFILE=other", "omp", "--profile", "work"],
+      ["env", ["OMP_PROFILE=other", "omp"]],
+    ],
+    [
       ["omp", "--resume", "--profile", "work"],
       ["omp", []],
     ],
@@ -414,7 +428,6 @@ describe("owned Hub service cleanup", () => {
     ],
   ] as const) {
     test(`runs omp ps through ${command.join(" ")} in the profile's own broker root`, async () => {
-      vi.stubEnv("PASEO_OMP_RUN_DIR", undefined);
       const home = await mkdtemp(join(tmpdir(), "paseo-omp-hub-home-"));
       temporaryDirectories.push(home);
       // Named profiles keep their brokers under their own config root (pi-utils 18.18.9+).
@@ -432,7 +445,7 @@ describe("owned Hub service cleanup", () => {
           return true;
         },
       });
-      try {
+      {
         const result = await runtime.stopOwnedServices(
           { cwd: PROJECT, command: [...command] },
           new Map([[OWNER, Number.POSITIVE_INFINITY]]),
@@ -445,8 +458,6 @@ describe("owned Hub service cleanup", () => {
             env: [home, "work"],
           },
         ]);
-      } finally {
-        vi.unstubAllEnvs();
       }
     });
   }
