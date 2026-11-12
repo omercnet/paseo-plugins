@@ -248,46 +248,63 @@ describe("owned Hub service cleanup", () => {
     expect(commands).toBe(0);
   });
 
-  test("keeps a launcher prefix and reaches the profile's own broker root", async () => {
-    vi.stubEnv("PASEO_OMP_RUN_DIR", undefined);
-    const home = await mkdtemp(join(tmpdir(), "paseo-omp-hub-home-"));
-    temporaryDirectories.push(home);
-    // Named profiles keep their brokers under their own config root (pi-utils 18.18.9+).
-    const root = join(home, ".omp", "profiles", "work", "run", "daemons");
-    await mkdir(root, { recursive: true });
-    await runDir({ web: {} }, root);
-    await runDir({ elsewhere: {} }, join(home, ".omp", "run", "daemons"));
-    const calls: Array<{ command: string; args: readonly string[]; cwd: string; env: string }> = [];
-    const runtime = new OmpRpcRuntime({
-      environment: { PATH: "/usr/bin", HOME: home },
-      runOmpCommand: async (command, args, env, cwd) => {
-        calls.push({ command, args, cwd, env: env.HOME ?? "" });
-        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
-        return true;
-      },
+  // OMP strips `--profile` before it looks for the subcommand, so any bare flag left in front of
+  // `ps` would take it as its value.
+  for (const [command, launcher] of [
+    [
+      ["npx", "--yes", "omp", "--profile", "work"],
+      ["npx", ["--yes", "omp"]],
+    ],
+    [
+      ["omp", "--resume", "--profile", "work"],
+      ["omp", []],
+    ],
+    [
+      ["omp", "--weird", "--profile=work"],
+      ["omp", []],
+    ],
+    [
+      ["bunx", "omp", "--profile", "work", "--mode", "rpc-ui", "--resume"],
+      ["bunx", ["omp", "--mode", "rpc-ui"]],
+    ],
+  ] as const) {
+    test(`runs omp ps through ${command.join(" ")} in the profile's own broker root`, async () => {
+      vi.stubEnv("PASEO_OMP_RUN_DIR", undefined);
+      const home = await mkdtemp(join(tmpdir(), "paseo-omp-hub-home-"));
+      temporaryDirectories.push(home);
+      // Named profiles keep their brokers under their own config root (pi-utils 18.18.9+).
+      const root = join(home, ".omp", "profiles", "work", "run", "daemons");
+      await mkdir(root, { recursive: true });
+      await runDir({ web: {} }, root);
+      await runDir({ elsewhere: {} }, join(home, ".omp", "run", "daemons"));
+      const calls: Array<{ command: string; args: readonly string[]; env: string[] }> = [];
+      const runtime = new OmpRpcRuntime({
+        environment: { PATH: "/usr/bin", HOME: home },
+        runOmpCommand: async (command, args, env, cwd) => {
+          expect(cwd).toBe(PROJECT);
+          calls.push({ command, args, env: [env.HOME ?? "", env.OMP_PROFILE ?? ""] });
+          await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+          return true;
+        },
+      });
+      try {
+        const result = await runtime.stopOwnedServices(
+          { cwd: PROJECT, command: [...command] },
+          new Set([OWNER]),
+        );
+        expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
+        expect(calls).toEqual([
+          {
+            command: launcher[0],
+            args: [...launcher[1], "ps", "stop", "--dir", PROJECT, "--", "web"],
+            env: [home, "work"],
+          },
+        ]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
-    try {
-      const result = await runtime.stopOwnedServices(
-        {
-          cwd: PROJECT,
-          // A trailing bare flag would take `ps` as its value, so it never reaches the CLI.
-          command: ["npx", "--yes", "omp", "--profile", "work", "--resume"],
-        },
-        new Set([OWNER]),
-      );
-      expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
-      expect(calls).toEqual([
-        {
-          command: "npx",
-          args: ["--yes", "omp", "--profile", "work", "ps", "stop", "--dir", PROJECT, "--", "web"],
-          cwd: PROJECT,
-          env: home,
-        },
-      ]);
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
+  }
 
   test("resolves the broker root from the profile environment", () => {
     const home = join(tmpdir(), "paseo-omp-hub-no-such-home");

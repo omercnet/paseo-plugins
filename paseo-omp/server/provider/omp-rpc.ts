@@ -214,14 +214,24 @@ async function runOmpCommand(
   return run.outcome === "exited" && run.exitCode === 0 && !run.cleanupFailed;
 }
 
-/** The last `--profile` in a configured command, which OMP prefers over `OMP_PROFILE`. */
-function commandProfile(args: readonly string[]): string | undefined {
+/**
+ * The configured command prefix as an `omp ps` launcher. OMP strips `--profile` before it looks
+ * for a subcommand, so a bare flag left in front of `ps` (`--resume`, an unknown long flag) would
+ * take `ps` as its value: the profile moves to `OMP_PROFILE`, which OMP reads when no `--profile`
+ * is given, and every bare flag left at the end of the prefix is dropped. The last `--profile`
+ * wins, as in OMP.
+ */
+function psLauncher(args: readonly string[]): { prefix: string[]; profile?: string } {
+  const prefix: string[] = [];
   let profile: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === "--profile") profile = args[++index];
-    else if (args[index]?.startsWith("--profile=")) profile = args[index]?.slice(10);
+    const argument = args[index] ?? "";
+    if (argument === "--profile") profile = args[++index];
+    else if (argument.startsWith("--profile=")) profile = argument.slice(10);
+    else prefix.push(argument);
   }
-  return profile;
+  while (/^-[^=]*$/u.test(prefix.at(-1) ?? "")) prefix.pop();
+  return profile === undefined ? { prefix } : { prefix, profile };
 }
 
 // OMP accepts an empty message when images carry the prompt.
@@ -663,29 +673,24 @@ export class OmpRpcRuntime implements OmpRuntime {
     options: OmpStartOptions,
     owners: ReadonlySet<string>,
   ): Promise<OwnedHubCleanupResult> {
-    // Same executable, configured prefix and environment as the RPC process, so the CLI reaches
-    // the broker that session used. omp hoists `ps` past leading flags (`--profile`, `--mode`,
-    // `--thinking`...), but a trailing bare flag (`--resume`, an unknown long flag) takes `ps` as
-    // its value, so those are dropped. Brokers live under each profile's own config root.
+    // Same executable, launcher prefix, profile and environment as the RPC process, so the CLI
+    // reaches the broker that session used; brokers live under each profile's own config root.
     const request = buildOmpSpawnRequest({
       ...options,
       environment: options.environment ?? this.options.environment,
     });
-    const prefixArgs = request.args.slice(0, Math.max(0, (options.command?.length ?? 1) - 1));
-    while (/^-[^=]*$/u.test(prefixArgs.at(-1) ?? "")) prefixArgs.pop();
-    const profile = commandProfile(prefixArgs);
+    const { prefix, profile } = psLauncher(
+      request.args.slice(0, Math.max(0, (options.command?.length ?? 1) - 1)),
+    );
+    const env = profile === undefined ? request.env : { ...request.env, OMP_PROFILE: profile };
     const run = this.options.runOmpCommand ?? runOmpCommand;
     return stopOwnedHubProcesses(
       request.cwd,
       owners,
       ownedHubCleanupDependencies(
         (args, timeoutMs) =>
-          run(request.command, [...prefixArgs, ...args], request.env, request.cwd, timeoutMs),
-        this.options.hubRunDir ??
-          process.env.PASEO_OMP_RUN_DIR ??
-          ompHubRunDir(
-            profile === undefined ? request.env : { ...request.env, OMP_PROFILE: profile },
-          ),
+          run(request.command, [...prefix, ...args], env, request.cwd, timeoutMs),
+        this.options.hubRunDir ?? process.env.PASEO_OMP_RUN_DIR ?? ompHubRunDir(env),
       ),
     );
   }
