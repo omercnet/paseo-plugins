@@ -125,4 +125,68 @@ describe("Queens running agent count", () => {
 
     expect(signal?.aborted).toBe(true);
   });
+
+  test("does not count running helpers on any page, but counts agents in background workspaces", async () => {
+    let snapshotEntries = [
+      { agent: { id: "helper", status: "running", background: true } },
+      { agent: { id: "idle", status: "idle" } },
+    ];
+    const pages: Record<string, unknown[]> = {
+      "page-2": [{ agent: { id: "helper-2", status: "initializing", background: true } }],
+    };
+    let observer: { update(message: { type: "agent_update" }): void } | undefined;
+    const paseo = {
+      agents: {
+        async list(options: { subscribe?: object; page: { cursor?: string } }) {
+          if (options.subscribe) {
+            const firstPage = {
+              entries: snapshotEntries,
+              pageInfo: { hasMore: true, nextCursor: "page-2" },
+            };
+            return {
+              subscription: {
+                subscribe(next: { snapshot(page: unknown): void } & typeof observer) {
+                  observer = next;
+                  next.snapshot(firstPage);
+                  return () => undefined;
+                },
+                release: async () => undefined,
+              },
+            };
+          }
+          if (options.page.cursor) {
+            return {
+              entries: pages[options.page.cursor] ?? [],
+              pageInfo: { hasMore: false, nextCursor: null },
+            };
+          }
+          return {
+            entries: snapshotEntries,
+            pageInfo: { hasMore: true, nextCursor: "page-2" },
+          };
+        },
+      },
+    };
+    const counts: number[] = [];
+
+    const cleanup = observeRunningAgentCount(
+      paseo as unknown as Parameters<typeof observeRunningAgentCount>[0],
+      (count) => counts.push(count),
+    );
+    await vi.waitFor(() => expect(counts).toEqual([0]));
+
+    // A visible agent in a background workspace has no `background` flag of its own.
+    snapshotEntries = [
+      { agent: { id: "helper", status: "running", background: true } },
+      { agent: { id: "idle", status: "running" } },
+    ];
+    pages["page-2"] = [
+      { agent: { id: "helper-2", status: "running", background: true } },
+      { agent: { id: "bg-workspace", status: "initializing", background: false } },
+    ];
+    observer?.update({ type: "agent_update" });
+    await vi.waitFor(() => expect(counts).toEqual([0, 2]));
+
+    cleanup();
+  });
 });
