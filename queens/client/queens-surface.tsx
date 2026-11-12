@@ -36,7 +36,9 @@ const AGENT_BACKSTOP_REFRESH_MS = 30_000;
 
 type PaseoApi = PluginClientContext["paseo"];
 type AgentDirectoryPage = {
-  readonly entries: readonly { readonly agent: { readonly status: string } }[];
+  readonly entries: readonly {
+    readonly agent: { readonly status: string; readonly background?: boolean };
+  }[];
   readonly pageInfo: { readonly hasMore: boolean; readonly nextCursor?: string | null };
 };
 export function observeRunningAgentCount(
@@ -55,7 +57,7 @@ export function observeRunningAgentCount(
     let cursor: string | undefined;
     try {
       for (let page = 0; page < AGENT_MAX_PAGES; page += 1) {
-        const result =
+        const result: AgentDirectoryPage =
           page === 0 && firstPage
             ? firstPage
             : await paseo.agents.list({
@@ -63,10 +65,10 @@ export function observeRunningAgentCount(
                 sort: [{ key: "updated_at", direction: "desc" }],
                 page: { limit: AGENT_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
               });
-        for (const entry of result.entries) {
-          if (entry.agent.status === "running" || entry.agent.status === "initializing") {
-            running += 1;
-          }
+        for (const { agent } of result.entries) {
+          // Helpers (background agents) work for their creator, not the user, so they never count.
+          if (agent.background === true) continue;
+          if (agent.status === "running" || agent.status === "initializing") running += 1;
         }
         cursor = result.pageInfo.hasMore ? (result.pageInfo.nextCursor ?? undefined) : undefined;
         if (!cursor) break;

@@ -33,7 +33,7 @@ These screenshots use synthetic workspace and agent names on an isolated Paseo d
 - Supports 5×5 through 14×14 boards at Beginner, Easy, Medium, and Hard levels.
 - Stores progress, completion records, selected size, and difficulty in host-scoped settings.
 - Shares progress and undo history between the full surface and composer mini-game.
-- Shows the number of running agents and notifies you when they all become idle.
+- Shows the number of running agents and notifies you when they all become idle. Agents in background workspaces count; hidden helper agents (Paseo 0.16 background agents) do not.
 
 ## How to play
 
