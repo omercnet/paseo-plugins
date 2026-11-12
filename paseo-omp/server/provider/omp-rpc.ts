@@ -1,8 +1,19 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { z } from "zod";
-import { ompDataDir } from "../paths";
-import type { OmpSpawnRequest, OmpStartOptions } from "./omp-rpc-environment";
+import {
+  type HubServiceOwners,
+  type OwnedHubCleanupResult,
+  ownedHubCleanupDependencies,
+  stopOwnedHubProcesses,
+} from "../hub";
+import { ompDataDir, ompHubRunDir } from "../paths";
+import { defaultSpawn, runBounded } from "../provider-diagnostics";
+import {
+  buildOmpSpawnRequest,
+  type OmpSpawnRequest,
+  type OmpStartOptions,
+} from "./omp-rpc-environment";
 import { waitMs } from "./omp-rpc-process";
 import {
   inspectJsonBounds,
@@ -153,6 +164,11 @@ export interface OmpRuntime {
     cwd: string;
     signal?: AbortSignal;
   }): Promise<OmpPersistedSubagentMessages>;
+  /** Stops the live Hub services these OMP sessions own once their process tree is gone. */
+  stopOwnedServices?(
+    options: OmpStartOptions,
+    owners: HubServiceOwners,
+  ): Promise<OwnedHubCleanupResult>;
 }
 
 export interface OmpRpcRuntimeOptions {
@@ -164,6 +180,73 @@ export interface OmpRpcRuntimeOptions {
   listSessions?: (
     options: OmpSessionListOptions,
   ) => OmpSessionDescriptor[] | Promise<OmpSessionDescriptor[]>;
+  /** Runs one OMP CLI command bounded by `timeoutMs`; resolves true only on a clean zero exit. */
+  runOmpCommand?: (
+    command: string,
+    args: readonly string[],
+    env: NodeJS.ProcessEnv,
+    cwd: string,
+    timeoutMs: number,
+  ) => Promise<boolean>;
+  hubRunDir?: string;
+}
+
+const OMP_COMMAND_TIMEOUT_MS = 15_000;
+const OMP_COMMAND_KILL_GRACE_MS = 1_000;
+const OMP_COMMAND_MAX_OUTPUT_BYTES = 64 * 1024;
+
+async function runOmpCommand(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const run = await runBounded(
+    defaultSpawn,
+    command,
+    args,
+    env,
+    Math.min(timeoutMs, OMP_COMMAND_TIMEOUT_MS),
+    OMP_COMMAND_KILL_GRACE_MS,
+    OMP_COMMAND_MAX_OUTPUT_BYTES,
+    cwd,
+  );
+  return run.outcome === "exited" && run.exitCode === 0 && !run.cleanupFailed;
+}
+
+/**
+ * The configured command prefix as an `omp ps` launcher. OMP strips `--profile` before it looks
+ * for a subcommand, so a bare flag left in front of `ps` (`--resume`, an unknown long flag) would
+ * take `ps` as its value: the profile moves to `OMP_PROFILE`, which OMP reads when no `--profile`
+ * is given, and every bare flag left at the end of the prefix is dropped. The last `--profile`
+ * wins, as in OMP.
+ */
+function psLauncher(args: readonly string[]): { prefix: string[]; profile?: string } {
+  const prefix: string[] = [];
+  let profile: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index] ?? "";
+    if (argument === "--profile") profile = args[++index];
+    else if (argument.startsWith("--profile=")) profile = argument.slice(10);
+    else prefix.push(argument);
+  }
+  while (/^-[^=]*$/u.test(prefix.at(-1) ?? "")) prefix.pop();
+  return profile === undefined ? { prefix } : { prefix, profile };
+}
+
+/**
+ * An `env` wrapper or a `NAME=value` word in the launcher can change OMP's profile or store root
+ * in ways the plugin cannot tell apart reliably (`env -i`, `-u`, `-S`, PATH changes), so Hub
+ * cleanup fails closed for such launchers instead of guessing the broker.
+ */
+function wrapsEnvironment(command: string, args: readonly string[]): boolean {
+  return [command, ...args].some((word) => {
+    const executable = basename(word).toLowerCase();
+    return (
+      executable === "env" || executable === "env.exe" || /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word)
+    );
+  });
 }
 
 // OMP accepts an empty message when images carry the prompt.
@@ -599,6 +682,35 @@ export class OmpRpcRuntime implements OmpRuntime {
     return Promise.resolve(
       this.options.listSessions?.(options) ??
         listOmpSessionDescriptors(options, this.options.environment ?? process.env),
+    );
+  }
+  async stopOwnedServices(
+    options: OmpStartOptions,
+    owners: HubServiceOwners,
+  ): Promise<OwnedHubCleanupResult> {
+    // Same executable, launcher prefix, profile and environment as the RPC process, so the CLI
+    // reaches the broker that session used; brokers live under each profile's own config root.
+    const request = buildOmpSpawnRequest({
+      ...options,
+      environment: options.environment ?? this.options.environment,
+    });
+    const { prefix, profile } = psLauncher(
+      request.args.slice(0, Math.max(0, (options.command?.length ?? 1) - 1)),
+    );
+    if (wrapsEnvironment(request.command, prefix)) {
+      return { stopped: [], failed: [], complete: false, unsupportedLauncher: true };
+    }
+    // OMP prefers `--profile` over `OMP_PROFILE`.
+    const env = profile === undefined ? request.env : { ...request.env, OMP_PROFILE: profile };
+    const run = this.options.runOmpCommand ?? runOmpCommand;
+    return stopOwnedHubProcesses(
+      request.cwd,
+      owners,
+      ownedHubCleanupDependencies(
+        (args, timeoutMs) =>
+          run(request.command, [...prefix, ...args], env, request.cwd, timeoutMs),
+        this.options.hubRunDir ?? process.env.PASEO_OMP_RUN_DIR ?? ompHubRunDir(env),
+      ),
     );
   }
   async readPersistedSessionTranscript(options: {

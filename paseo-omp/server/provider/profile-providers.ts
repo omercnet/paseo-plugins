@@ -3,6 +3,7 @@ import { opendir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { isOmpProfileName } from "../../shared/omp-store";
+import type { HubServiceOwners } from "../hub";
 import { ompAgentDir, ompCacheDir, ompDataDir, ompSessionDir, ompStateDir } from "../paths";
 import { OmpRpcRuntime, type OmpRuntime } from "./omp-rpc";
 import type { OmpStartOptions } from "./omp-rpc-environment";
@@ -159,6 +160,7 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
       reportProtocolViolation: options.reportProtocolViolation,
     });
   const readPersistedSessionTranscript = runtime.readPersistedSessionTranscript?.bind(runtime);
+  const stopOwnedServices = runtime.stopOwnedServices?.bind(runtime);
   const assertSessionDir = (requested?: string) => {
     if (requested !== undefined && resolve(requested) !== sessionDir) {
       throw new OmpPublicError("OMP session directory conflicts with the selected profile");
@@ -203,6 +205,15 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
     readPersistedSubagentTranscript(input) {
       return runtime.readPersistedSubagentTranscript(input);
     },
+    ...(stopOwnedServices
+      ? {
+          stopOwnedServices(start: OmpStartOptions, owners: HubServiceOwners) {
+            assertSessionDir(start.sessionDir);
+            assertEnvironment(start.env);
+            return stopOwnedServices({ ...start, environment, sessionDir }, owners);
+          },
+        }
+      : {}),
   };
   const provider = createOmpProvider({
     ...options,
