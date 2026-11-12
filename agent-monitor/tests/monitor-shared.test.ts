@@ -115,6 +115,28 @@ describe("agent triage", () => {
     expect(stateLabel(entry({ status: "initializing" }).agent)).toBe("starting");
     expect(stateLabel(entry().agent)).toBe("idle");
   });
+
+  test("counts live background work as running, as Paseo does, unless it needs an answer", () => {
+    const work = { backgroundWork: { count: 2 } };
+    expect(bucketOf(entry(work).agent)).toBe("running");
+    expect(stateLabel(entry(work).agent)).toBe("2 in background");
+    const finished = { ...work, requiresAttention: true, attentionReason: "finished" as const };
+    expect(bucketOf(entry(finished).agent)).toBe("running");
+    expect(stateLabel(entry(finished).agent)).toBe("2 in background");
+    expect(bucketOf(entry({ ...work, status: "running" }).agent)).toBe("running");
+    expect(stateLabel(entry({ ...work, status: "running" }).agent)).toBe("running");
+
+    const permissionAsked = {
+      ...work,
+      requiresAttention: true,
+      attentionReason: "permission" as const,
+    };
+    expect(bucketOf(entry(permissionAsked).agent)).toBe("attention");
+    expect(bucketOf(entry({ ...work, pendingPermissions: [permission] }).agent)).toBe("attention");
+    expect(bucketOf(entry({ ...work, status: "error" }).agent)).toBe("attention");
+    expect(bucketOf(entry({ ...work, status: "closed" }).agent)).toBe("closed");
+    expect(bucketOf(entry({ backgroundWork: { count: 0 } }).agent)).toBe("idle");
+  });
 });
 
 describe("project grouping", () => {

@@ -32,7 +32,9 @@ screenshot uses the same synthetic project and agent names.
 ## What it shows
 
 - Counts and filters by triage bucket: Attention, Running, Idle, Closed. Attention covers
-  `requiresAttention`, `status === "error"`, and pending permission requests.
+  `requiresAttention`, `status === "error"`, and pending permission requests. As in Paseo, an agent
+  whose turn ended but left shells or monitors running (`backgroundWork`) counts as Running, shown
+  as `N in background`, unless it is waiting on a permission or failed.
 - Grouping and sort are separate. The **Group** row switches the roster between **Project**,
   **Workspace**, **Host**, **Type** and **None** (flat), and the **Sort** row orders rows inside
   every group: **Triage**, **Recent** or **A-Z**. Each chip carries its key: `P`/`W`/`H`/`Y`/`N`
@@ -107,7 +109,9 @@ paged workspace list still lands under its real project. Rows refresh from agent
 project subscription deltas on every host, debounced 750ms, with a 30s backstop refetch. The
 screen, the sidebar row, and its popover share that query, subscription set, and backstop; on web
 and desktop, refreshes pause while the window is hidden and catch up when it returns. The plugin
-opens no socket of its own. Agents and workspaces in background workspaces are included.
+opens no socket of its own. Agents and workspaces in background workspaces are included. Background
+helpers (agents created with `background: true`, which Paseo hides from tabs, lists and attention)
+are not: they stay out of the roster, graph, bucket totals, the sidebar badge and **Archive N closed**.
 
 The graph reads timeline tails (200 entries, up to 60 agents per host, four at a time) to derive message
 and subagent edges. It refreshes every 30 seconds while open in the foreground and when Refresh

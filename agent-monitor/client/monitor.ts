@@ -163,12 +163,28 @@ export type GroupOptions = Pick<MonitorSettings, "floatPinned" | "agentSort"> & 
   hostId: string;
 };
 
+/**
+ * A background helper the agent's creator spawned: Paseo hides it from tabs, lists and attention,
+ * so the monitor leaves it out of the roster, totals, badge and sweep. Hosts before 0.16 omit it.
+ */
+export function isHelper(agent: AgentSnapshot): boolean {
+  return agent.background === true;
+}
+
+/** Shells and monitors the agent left running after its turn; 0 on hosts that do not report it. */
+export function backgroundWorkCount(agent: AgentSnapshot): number {
+  return agent.backgroundWork?.count ?? 0;
+}
+
 export function bucketOf(agent: AgentSnapshot): Bucket {
   if (agent.status === "closed") return "closed";
-  if (agent.requiresAttention || agent.status === "error" || agent.pendingPermissions.length > 0) {
+  if (agent.status === "error" || agent.pendingPermissions.length > 0) return "attention";
+  const working = backgroundWorkCount(agent) > 0;
+  // As in Paseo, live background work outranks a plain "finished" ping, but not a question.
+  if (agent.requiresAttention && !(working && agent.attentionReason === "finished")) {
     return "attention";
   }
-  if (agent.status === "running" || agent.status === "initializing") return "running";
+  if (agent.status === "running" || agent.status === "initializing" || working) return "running";
   return "idle";
 }
 
@@ -230,6 +246,10 @@ export function stateLabel(agent: AgentSnapshot): string {
     return permissionCount === 1 ? "permission" : `${permissionCount} permissions`;
   }
   if (agent.status === "error") return "error";
+  const betweenTurns = agent.status !== "running" && agent.status !== "initializing";
+  if (betweenTurns && bucketOf(agent) === "running") {
+    return `${backgroundWorkCount(agent)} in background`;
+  }
   if (agent.requiresAttention) return agent.attentionReason ?? "attention";
   return agent.status === "initializing" ? "starting" : agent.status;
 }

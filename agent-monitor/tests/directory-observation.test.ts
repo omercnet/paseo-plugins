@@ -6,9 +6,10 @@ import {
 } from "../client/directory-observation";
 import type { PaseoApi } from "../client/monitor";
 
+type UpdateMessage = { type: string; payload?: unknown };
 type DirectoryObserver = {
   snapshot(): void;
-  update(): void;
+  update(message: UpdateMessage): void;
 };
 
 function deferred<T>() {
@@ -21,7 +22,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function createDirectorySubscription() {
+function createDirectorySubscription(type: string) {
   let observer: DirectoryObserver | undefined;
   const release = vi.fn(async () => {});
   const subscription = {
@@ -36,15 +37,15 @@ function createDirectorySubscription() {
   };
   return {
     subscription,
-    emitUpdate() {
-      observer?.update();
+    emitUpdate(payload: unknown = { kind: "upsert", agent: { id: "visible" } }) {
+      observer?.update({ type, payload });
     },
   };
 }
 
 function createPaseoHarness() {
-  const agents = createDirectorySubscription();
-  const workspaces = createDirectorySubscription();
+  const agents = createDirectorySubscription("agent_update");
+  const workspaces = createDirectorySubscription("workspace_update");
   let projectListener: (() => void) | undefined;
   const unsubscribeProjects = vi.fn(() => {
     projectListener = undefined;
@@ -109,6 +110,25 @@ describe("directory invalidation observations", () => {
     expect(invalidate).toHaveBeenCalledTimes(4);
   });
 
+  test("ignores a helper's upserts and removal but not a visible agent's", async () => {
+    const harness = createPaseoHarness();
+    const invalidate = vi.fn();
+    const stop = observeDirectoryInvalidation(harness.paseo, invalidate);
+    await settleObservations();
+    invalidate.mockClear();
+
+    harness.agents.emitUpdate({ kind: "upsert", agent: { id: "helper", background: true } });
+    harness.agents.emitUpdate({ kind: "remove", agentId: "helper" });
+    expect(invalidate).not.toHaveBeenCalled();
+
+    harness.agents.emitUpdate({ kind: "upsert", agent: { id: "lead", background: false } });
+    harness.agents.emitUpdate({ kind: "remove", agentId: "lead" });
+    harness.agents.emitUpdate({ kind: "remove", agentId: "helper" });
+    expect(invalidate).toHaveBeenCalledTimes(3);
+
+    stop();
+  });
+
   test("keeps project updates on their existing subscription", async () => {
     const harness = createPaseoHarness();
     const invalidate = vi.fn();
@@ -123,8 +143,8 @@ describe("directory invalidation observations", () => {
   });
 
   test("reports rejected releases from observations resolving after cleanup", async () => {
-    const agents = createDirectorySubscription();
-    const workspaces = createDirectorySubscription();
+    const agents = createDirectorySubscription("agent_update");
+    const workspaces = createDirectorySubscription("workspace_update");
     const listedAgents = deferred<{ subscription: typeof agents.subscription }>();
     const listedWorkspaces = deferred<{ subscription: typeof workspaces.subscription }>();
     const releaseFailure = new Error("release failed");
