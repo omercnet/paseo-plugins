@@ -1655,7 +1655,12 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
           "OMP approval mode cannot change live; create a new session instead",
         );
       }
-      if (input.changes.settings && Object.keys(input.changes.settings).length > 0) {
+      // Paseo 0.14 and 0.15 send live option patches as `settings`; 0.16 sends `providerOptions`,
+      // and repeats them as the deprecated `settings` only while OMP reports legacy settings.
+      if (
+        (input.changes.settings && Object.keys(input.changes.settings).length > 0) ||
+        (input.changes.providerOptions && Object.keys(input.changes.providerOptions).length > 0)
+      ) {
         throw new OmpPublicError("OMP does not expose live provider settings");
       }
       if (input.changes.model === null || input.changes.thinkingOption === null) {
