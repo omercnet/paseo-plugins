@@ -1,4 +1,36 @@
-import type { PaseoApi } from "./radar";
+import { isHelperAgent, type PaseoApi } from "./radar";
+
+type HelperFlags = Parameters<typeof isHelperAgent>[0];
+
+/**
+ * Tracks helpers seen on the agent stream so their updates do not refetch the directory. Helpers
+ * are fixed at creation, so an upsert identifies one and the later removal reuses that knowledge.
+ * Anything unrecognised still invalidates.
+ */
+function helperUpdateFilter() {
+  const helperIds = new Set<string>();
+  return (message: unknown): boolean => {
+    if (typeof message !== "object" || message === null) return false;
+    const { type, payload } = message as {
+      type?: unknown;
+      payload?: {
+        kind?: unknown;
+        agent?: (HelperFlags & { id?: unknown }) | null;
+        agentId?: unknown;
+      };
+    };
+    if (type !== "agent_update" || !payload) return false;
+    if (payload.kind === "upsert" && payload.agent && typeof payload.agent.id === "string") {
+      if (!isHelperAgent(payload.agent)) return false;
+      helperIds.add(payload.agent.id);
+      return true;
+    }
+    if (payload.kind === "remove" && typeof payload.agentId === "string") {
+      return helperIds.delete(payload.agentId);
+    }
+    return false;
+  };
+}
 
 export function observeDirectoryInvalidation(
   paseo: PaseoApi,
@@ -17,10 +49,13 @@ export function observeDirectoryInvalidation(
       if (!stopped) invalidate();
     }, debounceMs);
   };
-  const attach = (subscription: {
-    subscribe(observer: { snapshot(): void; update(message: unknown): void }): () => void;
-    release(): Promise<void>;
-  }) => {
+  const attach = (
+    subscription: {
+      subscribe(observer: { snapshot(): void; update(message: unknown): void }): () => void;
+      release(): Promise<void>;
+    },
+    ignore: (message: unknown) => boolean = () => false,
+  ) => {
     subscriptions.push(subscription);
     if (stopped) {
       void subscription.release().catch(() => undefined);
@@ -29,14 +64,16 @@ export function observeDirectoryInvalidation(
     unsubscribes.push(
       subscription.subscribe({
         snapshot: scheduleInvalidation,
-        update: scheduleInvalidation,
+        update: (message) => {
+          if (!ignore(message)) scheduleInvalidation();
+        },
       }),
     );
   };
 
   void paseo.agents
     .list({ subscribe: {}, includeBackground: true, signal: lifetime.signal })
-    .then(({ subscription }) => attach(subscription))
+    .then(({ subscription }) => attach(subscription, helperUpdateFilter()))
     .catch(() => undefined);
   void paseo.workspaces
     .list({ subscribe: {}, includeBackground: true })

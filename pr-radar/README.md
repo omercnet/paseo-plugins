@@ -29,7 +29,9 @@ DevTools before capture. Both PNGs come from an isolated Paseo test daemon at 2Ã
 - Ready: authored pull requests that are mergeable with settled checks and reviews.
 - Viewer labels: `YOURS`, `REVIEW`, and `EXTERNAL`.
 - Contextual actions: ask an existing agent or start one in the linked workspace.
-- Linked workspaces and agents include those in background workspaces.
+- Linked workspaces and agents include those in background workspaces. Helpers, meaning background
+  agents that Paseo hides from tabs, lists and attention, never appear on a row. They also do not
+  count toward its active agents, attention, permission state or the sidebar count.
 
 Paseo supplies normalized workspace pull request status. A daemon-side plugin handler uses the authenticated `gh` CLI to distinguish authored pull requests from review requests. If viewer lookup fails, PR Radar falls back conservatively and does not claim that a row needs the user.
 

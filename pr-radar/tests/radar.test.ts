@@ -342,7 +342,7 @@ interface OwnedDirectoryObservation {
   subscription: OwnedDirectorySubscription;
   calls: { subscribes: number; unsubscribes: number; releases: number };
   snapshot(): void;
-  update(): void;
+  update(message?: unknown): void;
 }
 
 function ownedDirectoryObservation(): OwnedDirectoryObservation {
@@ -366,8 +366,8 @@ function ownedDirectoryObservation(): OwnedDirectoryObservation {
     snapshot() {
       observer?.snapshot();
     },
-    update() {
-      observer?.update({});
+    update(message: unknown = {}) {
+      observer?.update(message);
     },
   };
 }
@@ -447,6 +447,23 @@ describe("directory requests", () => {
     }
     expect(list.mock.calls[1]?.[0].page.cursor).toBe("c1");
   });
+
+  test("drops helpers but keeps user agents from background workspaces", async () => {
+    const list = vi.fn().mockResolvedValue({
+      entries: [
+        entry("workspace-1", { id: "user" }),
+        entry("workspace-1", { id: "helper", background: true }),
+        entry("workspace-1", { id: "internal", internal: true }),
+        entry("background-workspace", { id: "background-workspace-user" }),
+      ],
+      pageInfo: { hasMore: false, nextCursor: null },
+    });
+    const paseo = { agents: { list } } as unknown as PaseoApi;
+
+    const { entries } = await loadAgents(paseo);
+
+    expect(entries.map((item) => item.agent.id)).toEqual(["user", "background-workspace-user"]);
+  });
 });
 
 describe("directory invalidation observations", () => {
@@ -521,6 +538,63 @@ describe("directory invalidation observations", () => {
     expect(workspaces.calls.subscribes).toBe(0);
     expect(agents.calls.releases).toBe(1);
     expect(workspaces.calls.releases).toBe(1);
+  });
+
+  describe("helpers", () => {
+    const upsert = (id: string, flags: Record<string, unknown> = {}) => ({
+      type: "agent_update",
+      payload: { kind: "upsert", agent: { id, ...flags } },
+    });
+    const remove = (agentId: string) => ({
+      type: "agent_update",
+      payload: { kind: "remove", agentId },
+    });
+
+    test.each([
+      ["a background helper upsert", [upsert("helper", { background: true })]],
+      ["an internal helper upsert", [upsert("helper", { internal: true })]],
+      ["a helper removal", [upsert("helper", { background: true }), remove("helper")]],
+    ])("ignores %s", async (_name, messages) => {
+      vi.useFakeTimers();
+      const agents = ownedDirectoryObservation();
+      const paseo = paseoWithOwnedDirectoryObservations(agents, ownedDirectoryObservation());
+      const invalidateDirectoryState = vi.fn();
+      const cleanup = observeDirectoryInvalidation(paseo, invalidateDirectoryState, 500);
+
+      try {
+        await Promise.resolve();
+        for (const message of messages) agents.update(message);
+        vi.advanceTimersByTime(500);
+
+        expect(invalidateDirectoryState).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+        vi.useRealTimers();
+      }
+    });
+
+    test.each([
+      ["user agent upsert", upsert("user")],
+      ["removal of an agent not seen as a helper", remove("user")],
+    ])("still invalidates on a %s", async (_name, message) => {
+      vi.useFakeTimers();
+      const agents = ownedDirectoryObservation();
+      const paseo = paseoWithOwnedDirectoryObservations(agents, ownedDirectoryObservation());
+      const invalidateDirectoryState = vi.fn();
+      const cleanup = observeDirectoryInvalidation(paseo, invalidateDirectoryState, 500);
+
+      try {
+        await Promise.resolve();
+        agents.update(upsert("helper", { background: true }));
+        agents.update(message);
+        vi.advanceTimersByTime(500);
+
+        expect(invalidateDirectoryState).toHaveBeenCalledOnce();
+      } finally {
+        cleanup();
+        vi.useRealTimers();
+      }
+    });
   });
 });
 
@@ -1044,6 +1118,79 @@ describe("radar snapshot", () => {
     );
 
     expect(snapshot.rows.map((item) => item.title)).toEqual(["Ready", "Alpha", "Zulu", "Later"]);
+  });
+
+  describe("helpers", () => {
+    const now = new Date("2026-08-30T10:00:00.000Z");
+    const busyHelper = {
+      status: "running",
+      requiresAttention: true,
+      attentionReason: "permission",
+      pendingPermissions: [{ id: "permission-1" }],
+    };
+
+    test.each([
+      ["a background", { background: true }],
+      ["an internal", { internal: true }],
+    ])("%s helper never reaches a row or its state", (_kind, flag) => {
+      const snapshot = buildRadarSnapshot(
+        [workspace("workspace-1")],
+        [
+          entry("workspace-1", { id: "user" }),
+          entry("workspace-1", { id: "helper", ...busyHelper, ...flag }),
+        ],
+        now,
+      );
+      const [only] = snapshot.rows;
+      if (!only) throw new Error("expected one row");
+
+      expect(only.agents.map((item) => item.id)).toEqual(["user"]);
+      expect(hasActiveAgent(only.agents)).toBe(false);
+      expect(only.agents.some((item) => item.pendingPermissions > 0)).toBe(false);
+      expect(only.bucket).not.toBe("needs-you");
+      expect(only.bucket).not.toBe("being-handled");
+      expect(needsYouSummary(snapshot.rows, false, []).items).toEqual([]);
+    });
+
+    test("the same agent without a helper flag drives the row", () => {
+      const snapshot = buildRadarSnapshot(
+        [workspace("workspace-1")],
+        [entry("workspace-1", { id: "user", ...busyHelper })],
+        now,
+      );
+      const [only] = snapshot.rows;
+      if (!only) throw new Error("expected one row");
+
+      expect(only.agents.map((item) => item.id)).toEqual(["user"]);
+      expect(only.bucket).toBe("needs-you");
+      expect(needsYouSummary(snapshot.rows, false, []).items).toHaveLength(1);
+    });
+
+    test.each([
+      ["helper", { background: true }, { kind: "start", workspaceId: "workspace-1" }],
+      ["user agent", {}, { kind: "ask", agentId: "idle" }],
+    ])("a needs-you row with an idle %s gets the matching action", (_kind, flag, action) => {
+      const snapshot = buildRadarSnapshot(
+        [workspace("workspace-1")],
+        [entry("workspace-1", { id: "idle", status: "idle", ...flag })],
+        now,
+      );
+      const [only] = snapshot.rows;
+      if (!only) throw new Error("expected one row");
+
+      expect(agentActionFor({ ...only, bucket: "needs-you" })).toEqual(action);
+    });
+
+    test("user agents in background workspaces still count", () => {
+      const snapshot = buildRadarSnapshot(
+        [{ ...workspace("workspace-1"), background: true } as PaseoWorkspace],
+        [entry("workspace-1", { id: "user", status: "running" })],
+        now,
+      );
+
+      expect(snapshot.rows[0]?.agents.map((item) => item.id)).toEqual(["user"]);
+      expect(snapshot.rows[0]?.bucket).toBe("being-handled");
+    });
   });
 });
 
