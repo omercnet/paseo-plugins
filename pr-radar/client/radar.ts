@@ -117,7 +117,22 @@ function agentTitle(entry: AgentEntry): string {
   return entry.agent.title?.trim() || entry.agent.id.slice(0, 7);
 }
 
-function toRadarAgent(entry: AgentEntry): RadarAgent {
+/**
+ * Helpers are background agents (fixed at creation) or legacy internal agents. Paseo hides them
+ * from tabs, lists and attention. `includeBackground` still admits them, because it also admits
+ * user agents in background workspaces, so callers filter on the agent's own flags. The flags are
+ * read structurally: SDK lines before 0.16 do not declare `background`.
+ */
+export function isHelperAgent(agent: object): boolean {
+  return (
+    ("background" in agent && agent.background === true) ||
+    ("internal" in agent && agent.internal === true)
+  );
+}
+
+/** A PR row's view of an agent, or null for a helper, which never belongs on a row. */
+export function toRadarAgent(entry: AgentEntry): RadarAgent | null {
+  if (isHelperAgent(entry.agent)) return null;
   return {
     id: entry.agent.id,
     title: agentTitle(entry),
@@ -329,8 +344,10 @@ export function buildRadarSnapshot(
   for (const entry of entries) {
     const workspaceId = entry.agent.workspaceId;
     if (!workspaceId) continue;
+    const agent = toRadarAgent(entry);
+    if (!agent) continue;
     const agents = agentsByWorkspace.get(workspaceId) ?? [];
-    agents.push(toRadarAgent(entry));
+    agents.push(agent);
     agentsByWorkspace.set(workspaceId, agents);
   }
   for (const agents of agentsByWorkspace.values()) sortAgents(agents);

@@ -1,8 +1,10 @@
-import type { AgentEntry, PaseoApi, PaseoWorkspace } from "./radar";
+import { type AgentEntry, isHelperAgent, type PaseoApi, type PaseoWorkspace } from "./radar";
 
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 10;
 
+// `includeBackground` keeps user agents in background workspaces, but on hosts with background
+// agents it also returns helpers, so they are dropped here.
 export async function loadAgents(paseo: PaseoApi) {
   const entries: AgentEntry[] = [];
   let cursor: string | undefined;
@@ -13,7 +15,7 @@ export async function loadAgents(paseo: PaseoApi) {
       sort: [{ key: "created_at", direction: "desc" }],
       page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
-    entries.push(...result.entries);
+    entries.push(...result.entries.filter((entry) => !isHelperAgent(entry.agent)));
     truncated = result.pageInfo.hasMore;
     cursor = result.pageInfo.nextCursor ?? undefined;
     if (!truncated || !cursor) break;
