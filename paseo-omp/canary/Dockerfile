@@ -4,13 +4,20 @@ FROM oven/bun:1.4.3-debian@sha256:923bedb355f7746666659f71e724998159a5c8c54bd1cb
 WORKDIR /src/paseo-plugins
 COPY package.json bun.lock .
 COPY paseo-omp ./paseo-omp
+# Only paseo-omp is copied; keep the root catalog but drop absent workspaces, which bun pm pack rejects.
+RUN bun -e 'const p = await Bun.file("package.json").json(); p.workspaces = ["paseo-omp"]; await Bun.write("package.json", JSON.stringify(p, null, 2) + "\n");'
 WORKDIR /src/paseo-plugins/paseo-omp
+# --production implies a frozen lockfile, and the shipped npm-shrinkwrap.json locks only the
+# production tree, so hide devDependencies during install and restore the packed manifest after.
 RUN tarball="$(mktemp /tmp/paseo-omp-XXXXXX.tgz)" && \
   bun pm pack --ignore-scripts --filename "$tarball" && \
   mkdir -p /opt/paseo-omp && \
   tar -xzf "$tarball" -C /opt/paseo-omp --strip-components=1 && \
   cd /opt/paseo-omp && \
-  bun install --production --ignore-scripts
+  cp package.json /tmp/package.json && \
+  bun -e 'const p = await Bun.file("package.json").json(); delete p.devDependencies; await Bun.write("package.json", JSON.stringify(p, null, 2) + "\n");' && \
+  bun install --production --ignore-scripts && \
+  cp /tmp/package.json package.json
 
 FROM ghcr.io/getpaseo/paseo:0.16.0-beta.2@sha256:6139c4e247e49431a0d54ef01265b874bd91eb35f755088a7f19b31c66eb3d86
 
