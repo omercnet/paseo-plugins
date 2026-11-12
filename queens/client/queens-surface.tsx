@@ -57,7 +57,7 @@ export function observeRunningAgentCount(
     let cursor: string | undefined;
     try {
       for (let page = 0; page < AGENT_MAX_PAGES; page += 1) {
-        const result =
+        const result: AgentDirectoryPage =
           page === 0 && firstPage
             ? firstPage
             : await paseo.agents.list({
