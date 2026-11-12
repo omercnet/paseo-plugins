@@ -4,6 +4,7 @@ import {
   age,
   attentionCount,
   attentionItems,
+  backgroundWorkCount,
   bucketOf,
   buildRoster,
   childCounts,
@@ -42,9 +43,10 @@ function directory(
 }
 
 // Paseo 0.16 fields, declared here so the fixtures typecheck on the older SDK lines too.
-type AgentOverrides = Partial<AgentEntry["agent"]> & {
+// `backgroundWork` is `unknown` so tests can also feed shapes a host should never send.
+type AgentOverrides = Omit<Partial<AgentEntry["agent"]>, "backgroundWork"> & {
   background?: boolean;
-  backgroundWork?: { count: number };
+  backgroundWork?: unknown;
 };
 type ProjectOverrides = Partial<AgentEntry["project"]>;
 const permission = { id: "permission-1", provider: "codex", name: "run", kind: "tool" } as const;
@@ -120,7 +122,7 @@ describe("agent triage", () => {
     expect(stateLabel(entry().agent)).toBe("idle");
   });
 
-  test("counts live background work as running, as Paseo does, unless it needs an answer", () => {
+  test("counts live background work as running unless a permission, an error or a non-finished attention outranks it", () => {
     const work = { backgroundWork: { count: 2 } };
     expect(bucketOf(entry(work).agent)).toBe("running");
     expect(stateLabel(entry(work).agent)).toBe("2 in background");
@@ -140,6 +142,15 @@ describe("agent triage", () => {
     expect(bucketOf(entry({ ...work, status: "error" }).agent)).toBe("attention");
     expect(bucketOf(entry({ ...work, status: "closed" }).agent)).toBe("closed");
     expect(bucketOf(entry({ backgroundWork: { count: 0 } }).agent)).toBe("idle");
+  });
+
+  test("reads no background work from a missing or malformed field", () => {
+    expect(backgroundWorkCount(entry().agent)).toBe(0);
+    for (const backgroundWork of [null, 2, "2", {}, { count: "2" }, { count: null }]) {
+      expect(backgroundWorkCount(entry({ backgroundWork }).agent)).toBe(0);
+      expect(bucketOf(entry({ backgroundWork }).agent)).toBe("idle");
+    }
+    expect(backgroundWorkCount(entry({ backgroundWork: { count: 3 } }).agent)).toBe(3);
   });
 });
 

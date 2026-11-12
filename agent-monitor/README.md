@@ -32,9 +32,10 @@ screenshot uses the same synthetic project and agent names.
 ## What it shows
 
 - Counts and filters by triage bucket: Attention, Running, Idle, Closed. Attention covers
-  `requiresAttention`, `status === "error"`, and pending permission requests. As in Paseo, an agent
-  whose turn ended but left shells or monitors running (`backgroundWork`) counts as Running, shown
-  as `N in background`, unless it is waiting on a permission or failed.
+  `requiresAttention`, `status === "error"`, and pending permission requests. An agent whose
+  turn ended but left shells or monitors running (`backgroundWork`, Paseo 0.16 and later) counts as
+  Running, shown as `N in background`, even after a "finished" notice. A pending permission, an
+  error, or any other attention keeps it in Attention.
 - Grouping and sort are separate. The **Group** row switches the roster between **Project**,
   **Workspace**, **Host**, **Type** and **None** (flat), and the **Sort** row orders rows inside
   every group: **Triage**, **Recent** or **A-Z**. Each chip carries its key: `P`/`W`/`H`/`Y`/`N`

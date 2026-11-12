@@ -185,7 +185,8 @@ export function bucketOf(agent: AgentSnapshot): Bucket {
   if (agent.status === "closed") return "closed";
   if (agent.status === "error" || agent.pendingPermissions.length > 0) return "attention";
   const working = backgroundWorkCount(agent) > 0;
-  // As in Paseo, live background work outranks a plain "finished" ping, but not a question.
+  // Live background work outranks only a "finished" attention. Paseo's deriveAgentStateBucket also
+  // ranks it above attention with no reason; the monitor keeps that, errors and permissions here.
   if (agent.requiresAttention && !(working && agent.attentionReason === "finished")) {
     return "attention";
   }
