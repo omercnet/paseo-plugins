@@ -88,10 +88,13 @@ the sidebar is mounted.
 `usePaseo().agents.list()` and `usePaseo().workspaces.list()` page the selected daemon directory at
 200 entries per page, up to 10 pages. Parent relationships come from the first-class
 `parentAgentId` field when the public SDK exposes it, with a legacy label fallback for older
-snapshots. Background workspaces are included. The workspace crew contains local agents, their
-managed descendants, and only the foreign ancestor paths needed to explain local membership.
-Archived agents are omitted, malformed parent cycles are bounded, and siblings are ordered by
-actionable state, creation time, then ID.
+snapshots. Background workspaces are included. Background agents are not: Paseo creates them as
+private helpers and hides them from tabs and subagent tracks, so Agent Crew leaves them and their
+descendants out of the tree, the counts, the crew total, and the Active crews indicator, and offers
+no actions on them. The workspace crew contains local agents, their managed descendants, and only
+the foreign ancestor paths needed to explain local membership. Archived agents are omitted,
+malformed parent cycles are bounded, and siblings are ordered by actionable state, creation time,
+then ID.
 
 State precedence is:
 
@@ -109,6 +112,11 @@ in the host config disables the release.
 
 Failed takes precedence over pending permission state so an errored agent is never presented as an
 agent that can resume normally.
+
+Working covers a running turn and, as in Paseo's own workspace state, an agent whose turn ended while
+its background work (such as a background shell task) is still live. The message dialog offers steer
+or interrupt only for a running turn, since a send to an agent with only background work starts a
+new turn.
 
 ## Limits
 
