@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import {
@@ -111,6 +111,7 @@ describe("owned Hub service cleanup", () => {
     expect(result).toEqual({
       stopped: expect.arrayContaining(["canary-sleeper-1", "earlier-branch"]),
       failed: [],
+      complete: true,
     });
     expect(await stateOf(root, "other-agent")).toBe("running");
     expect(await stateOf(root, "handed_off")).toBe("running");
@@ -128,8 +129,66 @@ describe("owned Hub service cleanup", () => {
       }, root),
       ...clock,
     });
-    expect(result).toEqual({ stopped: [], failed: expect.arrayContaining(["stuck", "refused"]) });
+    expect(result).toEqual({
+      stopped: [],
+      failed: expect.arrayContaining(["stuck", "refused"]),
+      complete: true,
+    });
     expect(clock.now()).toBeGreaterThanOrEqual(3_000);
+  });
+
+  test("treats a record it cannot read after the stop as not stopped", async () => {
+    const root = await runDir({ web: {}, api: {} });
+    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
+      ...ownedHubCleanupDependencies(async (args) => {
+        const name = args[2] ?? "";
+        if (name === "api") await writeDaemon(root, name, { state: "exited" });
+        // A partly written or corrupt record is unknown, never proof the service settled.
+        else await writeFile(join(root, "0123456789abcdef", "daemons", name, "meta.json"), "{");
+        return true;
+      }, root),
+      ...fakeClock(),
+    });
+    expect(result).toEqual({ stopped: ["api"], failed: ["web"], complete: true });
+  });
+
+  test("reports an incomplete lookup when a project's records cannot be read", async () => {
+    const root = await runDir({ web: {} });
+    await mkdir(join(root, "fedcba9876543210"));
+    await writeFile(join(root, "fedcba9876543210", "scope.json"), "{");
+    const result = await stopOwnedHubProcesses(PROJECT, new Set([OWNER]), {
+      ...ownedHubCleanupDependencies(async (args) => {
+        await writeDaemon(root, args[2] ?? "", { state: "exited" });
+        return true;
+      }, root),
+      ...fakeClock(),
+    });
+    expect(result).toEqual({ stopped: [], failed: ["web"], complete: false });
+  });
+
+  test("finds a project's services through a symlinked or trailing-slash cwd", async () => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "paseo-omp-hub-cwd-")));
+    temporaryDirectories.push(base);
+    const project = join(base, "project");
+    const link = join(base, "link");
+    await mkdir(project);
+    await symlink(project, link, "junction");
+    const root = await runDir({ web: {} });
+    await writeFile(
+      join(root, "0123456789abcdef", "scope.json"),
+      JSON.stringify({ projectDir: project }),
+    );
+    for (const cwd of [link, `${project}${sep}`]) {
+      await writeDaemon(root, "web", {});
+      const result = await stopOwnedHubProcesses(cwd, new Set([OWNER]), {
+        ...ownedHubCleanupDependencies(async (args) => {
+          await writeDaemon(root, args[2] ?? "", { state: "exited" });
+          return true;
+        }, root),
+        ...fakeClock(),
+      });
+      expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
+    }
   });
 
   test("bounds every stop command under one deadline and runs a few at once", async () => {
@@ -157,7 +216,7 @@ describe("owned Hub service cleanup", () => {
       },
     });
 
-    expect(result).toEqual({ stopped: [], failed: expect.arrayContaining(names) });
+    expect(result).toEqual({ stopped: [], failed: expect.arrayContaining(names), complete: true });
     expect(peak).toBeGreaterThan(1);
     expect(peak).toBeLessThanOrEqual(4);
     expect(Math.max(...timeouts)).toBeLessThanOrEqual(10_000);
@@ -175,7 +234,7 @@ describe("owned Hub service cleanup", () => {
       }, root),
       ...fakeClock(),
     });
-    expect(result).toEqual({ stopped: [], failed: [] });
+    expect(result).toEqual({ stopped: [], failed: [], complete: true });
     expect(commands).toBe(0);
   });
 
@@ -195,7 +254,7 @@ describe("owned Hub service cleanup", () => {
       { cwd: PROJECT, command: ["bunx", "omp", "--profile", "work"] },
       new Set([OWNER]),
     );
-    expect(result).toEqual({ stopped: ["web"], failed: [] });
+    expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
     expect(calls).toEqual([
       {
         command: "bunx",
@@ -218,7 +277,7 @@ class HubCleanupRuntime extends FakeOmpRuntime {
       owners: [...owners],
       nativeCloses: this.sessions.reduce((count, session) => count + session.closes, 0),
     });
-    return { stopped: [], failed: [] };
+    return { stopped: [], failed: [], complete: true };
   }
 }
 

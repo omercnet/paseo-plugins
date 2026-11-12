@@ -1,6 +1,6 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import { z } from "zod";
 import type { HubProcess, listHubProcesses, tailHubLog } from "../shared/hub";
@@ -47,32 +47,66 @@ function ompRunDir(): string {
   return process.env.PASEO_OMP_RUN_DIR ?? join(homedir(), ".omp", "run", "daemons");
 }
 
-async function readJsonFile(path: string): Promise<unknown | undefined> {
+type Read<T> = { value: T } | { missing: true } | { unreadable: true };
+
+function readFailure(error: unknown): { missing: true } | { unreadable: true } {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR" ? { missing: true } : { unreadable: true };
+}
+
+async function readJson(path: string): Promise<Read<unknown>> {
+  let text: string;
   try {
-    return JSON.parse(await readFile(path, "utf8"));
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    return readFailure(error);
+  }
+  try {
+    return { value: JSON.parse(text) };
   } catch {
-    return undefined;
+    return { unreadable: true };
   }
 }
 
-async function listDirNames(path: string): Promise<string[]> {
+async function readDirNames(path: string): Promise<Read<string[]>> {
   try {
-    return await readdir(path);
-  } catch {
-    return [];
+    return { value: await readdir(path) };
+  } catch (error) {
+    return readFailure(error);
   }
 }
 
-async function findProjectDaemonRoots(root: string, cwd: string): Promise<string[]> {
-  const hashes = await listDirNames(root);
-  const matches: string[] = [];
+// omp keys a project's broker by its realpath (`canonicalProjectDir`), so a symlinked or
+// trailing-slash cwd must be resolved the same way to find its `scope.json`.
+async function canonicalProjectDir(cwd: string): Promise<string> {
+  const resolved = resolve(cwd);
+  try {
+    return await realpath(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+async function findProjectDaemonRoots(
+  root: string,
+  cwd: string,
+): Promise<{ roots: string[]; complete: boolean }> {
+  const [hashes, projectDir] = await Promise.all([readDirNames(root), canonicalProjectDir(cwd)]);
+  if ("unreadable" in hashes) return { roots: [], complete: false };
+  if (!("value" in hashes)) return { roots: [], complete: true };
+  const roots: string[] = [];
+  let complete = true;
   await Promise.all(
-    hashes.map(async (hash) => {
-      const scope = ScopeFileSchema.safeParse(await readJsonFile(join(root, hash, "scope.json")));
-      if (scope.success && scope.data.projectDir === cwd) matches.push(join(root, hash));
+    hashes.value.map(async (hash) => {
+      const read = await readJson(join(root, hash, "scope.json"));
+      if ("unreadable" in read) complete = false;
+      if (!("value" in read)) return;
+      const scope = ScopeFileSchema.safeParse(read.value);
+      if (scope.success && (scope.data.projectDir === projectDir || scope.data.projectDir === cwd))
+        roots.push(join(root, hash));
     }),
   );
-  return matches;
+  return { roots, complete };
 }
 
 function toHubProcess(name: string, value: unknown, specFile: unknown): HubProcess | undefined {
@@ -99,27 +133,46 @@ function toHubProcess(name: string, value: unknown, specFile: unknown): HubProce
   };
 }
 
-export async function listHubProcessesFrom(root: string, cwd: string): Promise<HubProcess[]> {
-  const roots = await findProjectDaemonRoots(root, cwd);
-  const processes: HubProcess[] = [];
+export interface HubProcessScan {
+  processes: HubProcess[];
+  /** Records that exist but could not be read or parsed: their state is unknown. */
+  unreadable: string[];
+  /** False when a directory that could hold this project's records could not be read. */
+  complete: boolean;
+}
+
+export async function scanHubProcessesFrom(root: string, cwd: string): Promise<HubProcessScan> {
+  const found = await findProjectDaemonRoots(root, cwd);
+  const scan: HubProcessScan = { processes: [], unreadable: [], complete: found.complete };
   await Promise.all(
-    roots.map(async (projectRoot) => {
-      const names = await listDirNames(join(projectRoot, "daemons"));
+    found.roots.map(async (projectRoot) => {
+      const names = await readDirNames(join(projectRoot, "daemons"));
+      if ("unreadable" in names) scan.complete = false;
+      if (!("value" in names)) return;
       await Promise.all(
-        names.map(async (name) => {
+        names.value.map(async (name) => {
           const dir = join(projectRoot, "daemons", name);
           const [meta, spec] = await Promise.all([
-            readJsonFile(join(dir, "meta.json")),
-            readJsonFile(join(dir, "spec.json")),
+            readJson(join(dir, "meta.json")),
+            readJson(join(dir, "spec.json")),
           ]);
-          const process = toHubProcess(name, meta, spec);
-          if (process) processes.push(process);
+          if ("missing" in meta) return;
+          const process =
+            "value" in meta
+              ? toHubProcess(name, meta.value, "value" in spec ? spec.value : undefined)
+              : undefined;
+          if (process) scan.processes.push(process);
+          else scan.unreadable.push(name);
         }),
       );
     }),
   );
-  processes.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
-  return processes;
+  scan.processes.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  return scan;
+}
+
+export async function listHubProcessesFrom(root: string, cwd: string): Promise<HubProcess[]> {
+  return (await scanHubProcessesFrom(root, cwd)).processes;
 }
 
 export async function resolveListHubProcesses({
@@ -156,7 +209,7 @@ const HUB_CLEANUP_STOP_CONCURRENCY = 4;
 const HUB_SERVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/u;
 
 export interface OwnedHubCleanupDependencies {
-  list(cwd: string): Promise<HubProcess[]>;
+  scan(cwd: string): Promise<HubProcessScan>;
   /**
    * Asks omp's broker to stop one service within `timeoutMs`; resolves true only when the
    * command succeeded.
@@ -169,6 +222,8 @@ export interface OwnedHubCleanupDependencies {
 export interface OwnedHubCleanupResult {
   stopped: string[];
   failed: string[];
+  /** False when omp's records could not all be read, so an owned service may have been missed. */
+  complete: boolean;
 }
 
 function ownedPersistentServices(
@@ -194,9 +249,10 @@ export async function stopOwnedHubProcesses(
   owners: ReadonlySet<string>,
   dependencies: OwnedHubCleanupDependencies,
 ): Promise<OwnedHubCleanupResult> {
-  if (owners.size === 0) return { stopped: [], failed: [] };
-  const owned = ownedPersistentServices(await dependencies.list(cwd), owners, LIVE_HUB_STATES);
-  if (owned.length === 0) return { stopped: [], failed: [] };
+  if (owners.size === 0) return { stopped: [], failed: [], complete: true };
+  const initial = await dependencies.scan(cwd);
+  const owned = ownedPersistentServices(initial.processes, owners, LIVE_HUB_STATES);
+  if (owned.length === 0) return { stopped: [], failed: [], complete: initial.complete };
   const failed = new Set<string>();
   const queue = [...owned];
   const deadline = dependencies.now() + HUB_CLEANUP_MS;
@@ -212,15 +268,19 @@ export async function stopOwnedHubProcesses(
   await Promise.all(
     Array.from({ length: Math.min(HUB_CLEANUP_STOP_CONCURRENCY, owned.length) }, stopNext),
   );
-  // Report success only for services omp's own state confirms have settled.
+  // Report success only for services omp's own state confirms have settled. A record that cannot
+  // be read is unknown, not stopped.
   let unsettled: ReadonlySet<string>;
   while (true) {
-    const current = ownedPersistentServices(
-      await dependencies.list(cwd),
-      owners,
-      UNSETTLED_HUB_STATES,
+    const current = await dependencies.scan(cwd).catch(() => undefined);
+    unsettled = new Set(
+      current?.complete
+        ? [
+            ...ownedPersistentServices(current.processes, owners, UNSETTLED_HUB_STATES),
+            ...current.unreadable,
+          ].filter((name) => owned.includes(name))
+        : owned,
     );
-    unsettled = new Set(current.filter((name) => owned.includes(name)));
     if (unsettled.size === 0 || dependencies.now() >= deadline) break;
     await dependencies.sleep(HUB_CLEANUP_POLL_MS);
   }
@@ -228,6 +288,7 @@ export async function stopOwnedHubProcesses(
   return {
     stopped: owned.filter((name) => !failed.has(name)),
     failed: owned.filter((name) => failed.has(name)),
+    complete: initial.complete,
   };
 }
 
@@ -236,7 +297,7 @@ export function ownedHubCleanupDependencies(
   root = ompRunDir(),
 ): OwnedHubCleanupDependencies {
   return {
-    list: (cwd) => listHubProcessesFrom(root, cwd),
+    scan: (cwd) => scanHubProcessesFrom(root, cwd),
     stop: (name, cwd, timeoutMs) => runOmp(["ps", "stop", name, "--dir", cwd], timeoutMs),
     sleep: waitMs,
     now: () => Date.now(),
@@ -248,7 +309,7 @@ export async function tailHubLogFrom(
   cwd: string,
   name: string,
 ): Promise<{ content: string; truncated: boolean }> {
-  const roots = await findProjectDaemonRoots(root, cwd);
+  const { roots } = await findProjectDaemonRoots(root, cwd);
   for (const projectRoot of roots) {
     try {
       const buffer = await readFile(join(projectRoot, "daemons", name, "output.log"));
