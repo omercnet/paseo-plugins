@@ -163,12 +163,34 @@ export type GroupOptions = Pick<MonitorSettings, "floatPinned" | "agentSort"> & 
   hostId: string;
 };
 
+// `background` and `backgroundWork` are Paseo 0.16 fields; read them structurally so the plugin
+// still typechecks against the older SDK lines its manifest supports.
+
+/**
+ * A background helper the agent's creator spawned: Paseo hides it from tabs, lists and attention,
+ * so the monitor leaves it out of the roster, totals, badge and sweep. Hosts before 0.16 omit it.
+ */
+export function isHelper(agent: AgentSnapshot): boolean {
+  return "background" in agent && agent.background === true;
+}
+
+/** Shells and monitors the agent left running after its turn; 0 on hosts that do not report it. */
+export function backgroundWorkCount(agent: AgentSnapshot): number {
+  const work: unknown = "backgroundWork" in agent ? agent.backgroundWork : undefined;
+  if (typeof work !== "object" || work === null || !("count" in work)) return 0;
+  return typeof work.count === "number" ? work.count : 0;
+}
+
 export function bucketOf(agent: AgentSnapshot): Bucket {
   if (agent.status === "closed") return "closed";
-  if (agent.requiresAttention || agent.status === "error" || agent.pendingPermissions.length > 0) {
+  if (agent.status === "error" || agent.pendingPermissions.length > 0) return "attention";
+  const working = backgroundWorkCount(agent) > 0;
+  // Live background work outranks only a "finished" attention. Paseo's deriveAgentStateBucket also
+  // ranks it above attention with no reason; the monitor keeps that, errors and permissions here.
+  if (agent.requiresAttention && !(working && agent.attentionReason === "finished")) {
     return "attention";
   }
-  if (agent.status === "running" || agent.status === "initializing") return "running";
+  if (agent.status === "running" || agent.status === "initializing" || working) return "running";
   return "idle";
 }
 
@@ -230,6 +252,10 @@ export function stateLabel(agent: AgentSnapshot): string {
     return permissionCount === 1 ? "permission" : `${permissionCount} permissions`;
   }
   if (agent.status === "error") return "error";
+  const betweenTurns = agent.status !== "running" && agent.status !== "initializing";
+  if (betweenTurns && bucketOf(agent) === "running") {
+    return `${backgroundWorkCount(agent)} in background`;
+  }
   if (agent.requiresAttention) return agent.attentionReason ?? "attention";
   return agent.status === "initializing" ? "starting" : agent.status;
 }

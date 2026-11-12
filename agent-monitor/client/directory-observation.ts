@@ -1,4 +1,8 @@
-import type { PaseoApi } from "./monitor";
+import { type AgentEntry, isHelper, type PaseoApi } from "./monitor";
+
+type AgentUpdatePayload =
+  | { kind: "upsert"; agent: AgentEntry["agent"] }
+  | { kind: "remove"; agentId: string };
 
 export function createDebouncedInvalidator(invalidate: () => void, delayMs: number) {
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -57,6 +61,19 @@ export function observeDirectoryInvalidation(paseo: PaseoApi, invalidate: () => 
     release: () => Promise<void>;
   }>();
   let stopped = false;
+  // Paseo fixes `background` at creation, so a helper's upserts and removal never change the roster.
+  const helperIds = new Set<string>();
+  const onAgentUpdate = (message: { type: string; payload?: unknown }) => {
+    if (message.type === "agent_update") {
+      const payload = message.payload as AgentUpdatePayload;
+      if (payload.kind === "upsert" && isHelper(payload.agent)) {
+        helperIds.add(payload.agent.id);
+        return;
+      }
+      if (payload.kind === "remove" && helperIds.delete(payload.agentId)) return;
+    }
+    invalidate();
+  };
 
   const attachAgents = async () => {
     const { subscription } = await paseo.agents.list({ subscribe: {}, includeBackground: true });
@@ -68,7 +85,7 @@ export function observeDirectoryInvalidation(paseo: PaseoApi, invalidate: () => 
     }
     subscriptions.add({
       kind: "agent",
-      unsubscribe: subscription.subscribe({ snapshot: invalidate, update: invalidate }),
+      unsubscribe: subscription.subscribe({ snapshot: invalidate, update: onAgentUpdate }),
       release: subscription.release,
     });
   };

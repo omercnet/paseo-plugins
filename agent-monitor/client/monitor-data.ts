@@ -10,6 +10,7 @@ import {
   type AgentEntry,
   type HostScope,
   indexProjects,
+  isHelper,
   type MonitorDirectory,
   type PaseoApi,
   type PaseoWorkspace,
@@ -42,7 +43,8 @@ export async function loadAgents(
       sort: [{ key: "created_at", direction: "desc" }],
       page: { limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
-    entries.push(...result.entries);
+    // Helpers ride along with includeBackground, which the monitor needs for background workspaces.
+    entries.push(...result.entries.filter((entry) => !isHelper(entry.agent)));
     cursor = result.pageInfo.hasMore ? (result.pageInfo.nextCursor ?? undefined) : undefined;
     if (!cursor) return { entries, truncated: false };
   }

@@ -49,19 +49,22 @@ beforeEach(() => {
 
 describe("directory loaders", () => {
   test("agent pages include background workspaces and follow the cursor", async () => {
-    const list = pagedList([{ id: "a" }], [{ id: "b" }]);
+    const list = pagedList([{ agent: { id: "a" } }], [{ agent: { id: "b" } }]);
     const paseo = { agents: { list } } as unknown as PaseoApi;
 
     const result = await loadAgents(paseo);
 
-    expect(result).toEqual({ entries: [{ id: "a" }, { id: "b" }], truncated: false });
+    expect(result).toEqual({
+      entries: [{ agent: { id: "a" } }, { agent: { id: "b" } }],
+      truncated: false,
+    });
     expect(list).toHaveBeenCalledTimes(2);
     expect(list.mock.calls.map(([options]) => options.includeBackground)).toEqual([true, true]);
     expect(list.mock.calls[1]?.[0]).toMatchObject({ page: { cursor: "cursor-0" } });
   });
 
   test("agent pages use a key an update cannot reorder, newest first", async () => {
-    const list = pagedList([{ id: "a" }]);
+    const list = pagedList([{ agent: { id: "a" } }]);
     const paseo = { agents: { list } } as unknown as PaseoApi;
 
     await loadAgents(paseo);
@@ -80,9 +83,27 @@ describe("directory loaders", () => {
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ includeBackground: true }));
   });
 
+  test("drops background helpers but keeps agents in background workspaces", async () => {
+    const list = pagedList(
+      [{ agent: { id: "lead", background: false } }, { agent: { id: "title", background: true } }],
+      [
+        { agent: { id: "in-background-workspace" } },
+        { agent: { id: "summary", background: true } },
+      ],
+    );
+    const paseo = { agents: { list } } as unknown as PaseoApi;
+
+    const result = await loadAgents(paseo);
+
+    expect(result.entries.map((entry) => entry.agent.id)).toEqual([
+      "lead",
+      "in-background-workspace",
+    ]);
+  });
+
   test("reports a truncated roster when the page cap is hit", async () => {
     const list = vi.fn(async () => ({
-      entries: [{ id: "a" }],
+      entries: [{ agent: { id: "a" } }],
       pageInfo: { hasMore: true, nextCursor: "next" },
     }));
     const paseo = { agents: { list } } as unknown as PaseoApi;
@@ -102,7 +123,13 @@ describe("useAllHostsMonitor", () => {
       list: vi.fn(async (options: Record<string, unknown>) =>
         options.subscribe
           ? { subscription }
-          : { entries: [{ id: entryId }], pageInfo: { hasMore: false, nextCursor: null } },
+          : {
+              entries: [
+                { id: entryId, agent: { id: entryId } },
+                { id: `${entryId}-helper`, agent: { id: `${entryId}-helper`, background: true } },
+              ],
+              pageInfo: { hasMore: false, nextCursor: null },
+            },
       ),
     };
     const workspaces = {
