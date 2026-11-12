@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { ProviderContent } from "@getpaseo/plugin/server/provider";
+import { type ProviderContent, ProviderInputSchema } from "@getpaseo/plugin/server/provider";
 import { describe, expect, test } from "vitest";
 import { inlinePromptFrameBytes } from "../server/provider/prompt-payload";
 import {
@@ -1166,6 +1166,79 @@ describe("OMP direct provider", () => {
     expect(session.thinkingChanges).toEqual([]);
     await connection.close();
   });
+
+  // The 0.14 and 0.15 SDK schemas have no `providerOptions` on configure changes and reject the
+  // whole request before OMP sees it; those hosts never send it. From 0.16 it reaches OMP.
+  const configureProbe = (changes: Record<string, unknown>) =>
+    ProviderInputSchema.safeParse({
+      type: "session.configure",
+      requestId: "probe",
+      sessionId: "probe",
+      changes,
+    }).success;
+  const configureAcceptsProviderOptions = configureProbe({ providerOptions: {} });
+
+  test("probes the installed SDK's configure schema with a valid request shape", () => {
+    expect(configureProbe({ settings: {} })).toBe(true);
+  });
+
+  test.each([
+    ["Paseo 0.14 and 0.15 settings", { settings: { fast: true } }],
+    ["Paseo 0.16 providerOptions", { providerOptions: { fast: true } }],
+    [
+      "Paseo 0.16 providerOptions with the settings copy",
+      {
+        providerOptions: { fast: true },
+        settings: { fast: true },
+      },
+    ],
+  ])("rejects a live option patch sent as %s", async (_shape, changes) => {
+    const { connection, events, runtime } = await createHarness();
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+
+    await connection.send({
+      type: "session.configure",
+      requestId: "configure-options",
+      sessionId: "session-1",
+      changes: { model: ALTERNATE_MODEL_PUBLIC_ID, ...changes },
+    });
+    const failure = await events.waitFor(
+      (event) => event.type === "request.failed" && event.requestId === "configure-options",
+    );
+
+    const message =
+      "providerOptions" in changes && !configureAcceptsProviderOptions
+        ? "Invalid provider request"
+        : "OMP does not expose live provider settings";
+    expect(failure).toEqual(expect.objectContaining({ error: { message } }));
+    expect(session.modelChanges).toEqual([]);
+    await connection.close();
+  });
+
+  test.skipIf(!configureAcceptsProviderOptions)(
+    "accepts empty option patches next to a model change",
+    async () => {
+      const { connection, events, runtime } = await createHarness();
+      await openSession(connection, events);
+      // Spread so older SDK types without `providerOptions` on configure changes still typecheck.
+      const emptyOptions = { providerOptions: {}, settings: {} };
+
+      await connection.send({
+        type: "session.configure",
+        requestId: "configure-empty-options",
+        sessionId: "session-1",
+        changes: { model: ALTERNATE_MODEL_PUBLIC_ID, ...emptyOptions },
+      });
+      await events.waitFor(
+        (event) =>
+          event.type === "request.completed" && event.requestId === "configure-empty-options",
+      );
+
+      expect(sessionAt(runtime).modelChanges).toEqual([{ provider: "openai", modelId: "gpt-5.4" }]);
+      await connection.close();
+    },
+  );
 
   test("invalidates the runtime when configure observes a catalog escape", async () => {
     const { connection, events, runtime } = await createHarness();

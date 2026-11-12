@@ -341,4 +341,23 @@ describe("OMP provider option normalization", () => {
       ),
     ).toThrow("does not expose live provider settings");
   });
+
+  test("compares mirrored settings by own keys and deep strict equality", () => {
+    const nested = { params: { rpcTimeoutMs: 5_000, maxBuffer: 1 } };
+    expect(hasOmpProviderSettings({ params: { maxBuffer: 1, rpcTimeoutMs: 5_000 } }, nested)).toBe(
+      false,
+    );
+    expect(hasOmpProviderSettings({ command: ["omp", "rpc"] }, { command: ["rpc", "omp"] })).toBe(
+      true,
+    );
+    expect(hasOmpProviderSettings({ env: undefined }, {})).toBe(true);
+    expect(hasOmpProviderSettings({ params: { a: undefined } }, { params: {} })).toBe(true);
+    expect(hasOmpProviderSettings(JSON.parse('{"__proto__":{"command":["omp"]}}'), {})).toBe(true);
+    expect(hasOmpProviderSettings({ toString: "x" }, {})).toBe(true);
+    expect(hasOmpProviderSettings({ value: Number.NaN }, { value: Number.NaN })).toBe(false);
+    expect(hasOmpProviderSettings({ value: Number.NaN }, { value: 0 })).toBe(true);
+    expect(hasOmpProviderSettings({ env: new Map() }, { env: {} })).toBe(true);
+    expect(hasOmpProviderSettings({ command: ["omp"] }, null)).toBe(true);
+    expect(hasOmpProviderSettings({}, null)).toBe(false);
+  });
 });
