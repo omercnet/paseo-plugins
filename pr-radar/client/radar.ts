@@ -120,10 +120,14 @@ function agentTitle(entry: AgentEntry): string {
 /**
  * Helpers are background agents (fixed at creation) or legacy internal agents. Paseo hides them
  * from tabs, lists and attention. `includeBackground` still admits them, because it also admits
- * user agents in background workspaces, so callers filter on the agent's own flags.
+ * user agents in background workspaces, so callers filter on the agent's own flags. The flags are
+ * read structurally: SDK lines before 0.16 do not declare `background`.
  */
-export function isHelperAgent(agent: Pick<AgentEntry["agent"], "background" | "internal">) {
-  return agent.background === true || agent.internal === true;
+export function isHelperAgent(agent: object): boolean {
+  return (
+    ("background" in agent && agent.background === true) ||
+    ("internal" in agent && agent.internal === true)
+  );
 }
 
 /** A PR row's view of an agent, or null for a helper, which never belongs on a row. */

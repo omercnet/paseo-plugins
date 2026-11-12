@@ -1,7 +1,5 @@
 import { isHelperAgent, type PaseoApi } from "./radar";
 
-type HelperFlags = Parameters<typeof isHelperAgent>[0];
-
 /**
  * Tracks helpers seen on the agent stream so their updates do not refetch the directory. Helpers
  * are fixed at creation, so an upsert identifies one and the later removal reuses that knowledge.
@@ -15,7 +13,7 @@ function helperUpdateFilter() {
       type?: unknown;
       payload?: {
         kind?: unknown;
-        agent?: (HelperFlags & { id?: unknown }) | null;
+        agent?: { id?: unknown } | null;
         agentId?: unknown;
       };
     };
