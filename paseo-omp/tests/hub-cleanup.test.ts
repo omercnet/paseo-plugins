@@ -29,6 +29,7 @@ import {
 
 const PROJECT = "/workspace/project";
 const OWNER = "01a1d075-838f-70bd-a76e-3761451eae39";
+const OWNED: HubServiceOwners = new Map([[OWNER, Number.POSITIVE_INFINITY]]);
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -245,6 +246,48 @@ describe("owned Hub service cleanup", () => {
         ...fakeClock(),
       },
     );
+    expect(result).toEqual({ stopped: ["api"], failed: ["web"], complete: true });
+  });
+
+  test("reports an incomplete lookup when a record is corrupt before any stop", async () => {
+    const root = await runDir({ web: {}, broken: {} });
+    await writeFile(join(root, "0123456789abcdef", "daemons", "broken", "meta.json"), "{");
+    const stopped: string[] = [];
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(async (args) => {
+        stopped.push(args.at(-1) ?? "");
+        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+        return true;
+      }, root),
+      ...fakeClock(),
+    });
+    // `broken` may be ours: the live one still stops, but the lookup is reported incomplete.
+    expect(stopped).toEqual(["web"]);
+    expect(result).toEqual({ stopped: ["web"], failed: [], complete: false });
+    const none = await stopOwnedHubProcesses(PROJECT, new Map([["someone-else", Infinity]]), {
+      ...ownedHubCleanupDependencies(async () => true, root),
+      ...fakeClock(),
+    });
+    expect(none).toEqual({ stopped: [], failed: [], complete: false });
+  });
+
+  test("treats an owned record that is no longer a directory as not stopped", async () => {
+    const root = await runDir({ web: {}, api: {} });
+    const daemons = join(root, "0123456789abcdef", "daemons");
+    // omp skips non-directory entries, so a stray file is not a service.
+    await writeFile(join(daemons, ".DS_Store"), "");
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(async (args) => {
+        const name = args.at(-1) ?? "";
+        if (name === "api") await writeDaemon(root, name, { state: "exited" });
+        else {
+          await rm(join(daemons, name), { recursive: true });
+          await writeFile(join(daemons, name), "");
+        }
+        return true;
+      }, root),
+      ...fakeClock(),
+    });
     expect(result).toEqual({ stopped: ["api"], failed: ["web"], complete: true });
   });
 

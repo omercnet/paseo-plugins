@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -51,7 +52,8 @@ type Read<T> = { value: T } | { missing: true } | { unreadable: true };
 
 function readFailure(error: unknown): { missing: true } | { unreadable: true } {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "ENOENT" || code === "ENOTDIR" ? { missing: true } : { unreadable: true };
+  // Only ENOENT proves a record is gone; anything else (ENOTDIR included) leaves it unknown.
+  return code === "ENOENT" ? { missing: true } : { unreadable: true };
 }
 
 async function readJson(path: string): Promise<Read<unknown>> {
@@ -65,6 +67,14 @@ async function readJson(path: string): Promise<Read<unknown>> {
     return { value: JSON.parse(text) };
   } catch {
     return { unreadable: true };
+  }
+}
+
+async function readDirEntries(path: string): Promise<Read<Dirent[]>> {
+  try {
+    return { value: await readdir(path, { withFileTypes: true }) };
+  } catch (error) {
+    return readFailure(error);
   }
 }
 
@@ -137,20 +147,35 @@ export interface HubProcessScan {
   processes: HubProcess[];
   /** Records that exist but could not be read or parsed: their state is unknown. */
   unreadable: string[];
+  /**
+   * Entries under `daemons/` that are not directories. omp skips them too (`readPersistedDaemons`),
+   * so they are not services, but an owned service whose record turned into one is unknown.
+   */
+  strays: string[];
   /** False when a directory that could hold this project's records could not be read. */
   complete: boolean;
 }
 
 export async function scanHubProcessesFrom(root: string, cwd: string): Promise<HubProcessScan> {
   const found = await findProjectDaemonRoots(root, cwd);
-  const scan: HubProcessScan = { processes: [], unreadable: [], complete: found.complete };
+  const scan: HubProcessScan = {
+    processes: [],
+    unreadable: [],
+    strays: [],
+    complete: found.complete,
+  };
   await Promise.all(
     found.roots.map(async (projectRoot) => {
-      const names = await readDirNames(join(projectRoot, "daemons"));
-      if ("unreadable" in names) scan.complete = false;
-      if (!("value" in names)) return;
+      const entries = await readDirEntries(join(projectRoot, "daemons"));
+      if ("unreadable" in entries) scan.complete = false;
+      if (!("value" in entries)) return;
       await Promise.all(
-        names.value.map(async (name) => {
+        entries.value.map(async (entry) => {
+          const name = entry.name;
+          if (!entry.isDirectory()) {
+            scan.strays.push(name);
+            return;
+          }
           const dir = join(projectRoot, "daemons", name);
           const [meta, spec] = await Promise.all([
             readJson(join(dir, "meta.json")),
@@ -287,7 +312,9 @@ export async function stopOwnedHubProcesses(
   const initial = await boundedScan(dependencies, cwd, deadline - dependencies.now());
   if (!initial) return { stopped: [], failed: [], complete: false };
   const owned = ownedPersistentServices(initial.processes, owners, LIVE_HUB_STATES);
-  if (owned.length === 0) return { stopped: [], failed: [], complete: initial.complete };
+  // A record that cannot be read may be one of ours, so the lookup is not complete.
+  const complete = initial.complete && initial.unreadable.length === 0;
+  if (owned.length === 0) return { stopped: [], failed: [], complete };
   const failed = new Set<string>();
   const queue = [...owned];
   const stopDeadline = deadline - HUB_CLEANUP_VERIFY_RESERVE_MS;
@@ -312,6 +339,7 @@ export async function stopOwnedHubProcesses(
         ? [
             ...ownedPersistentServices(current.processes, owners, UNSETTLED_HUB_STATES),
             ...current.unreadable,
+            ...current.strays,
           ].filter((name) => owned.includes(name))
         : owned,
     );
@@ -324,7 +352,7 @@ export async function stopOwnedHubProcesses(
   return {
     stopped: owned.filter((name) => !failed.has(name)),
     failed: owned.filter((name) => failed.has(name)),
-    complete: initial.complete,
+    complete,
   };
 }
 
