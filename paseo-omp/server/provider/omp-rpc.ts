@@ -236,23 +236,17 @@ function psLauncher(args: readonly string[]): { prefix: string[]; profile?: stri
 }
 
 /**
- * `NAME=value` words an `env` wrapper in the configured command (`env OMP_PROFILE=work omp`)
- * sets for OMP. They pick the profile and store root, so the broker root scan must see them too.
+ * An `env` wrapper or a `NAME=value` word in the launcher can change OMP's profile or store root
+ * in ways the plugin cannot tell apart reliably (`env -i`, `-u`, `-S`, PATH changes), so Hub
+ * cleanup fails closed for such launchers instead of guessing the broker.
  */
-function envAssignments(command: string, args: readonly string[]): NodeJS.ProcessEnv {
-  const assigned: NodeJS.ProcessEnv = {};
-  const words = [command, ...args];
-  for (let index = 0; index < words.length; index += 1) {
-    const executable = basename(words[index] ?? "").toLowerCase();
-    if (executable !== "env" && executable !== "env.exe") continue;
-    for (index += 1; index < words.length; index += 1) {
-      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/su.exec(words[index] ?? "");
-      if (!assignment?.[1]) break;
-      assigned[assignment[1]] = assignment[2];
-    }
-    index -= 1;
-  }
-  return assigned;
+function wrapsEnvironment(command: string, args: readonly string[]): boolean {
+  return [command, ...args].some((word) => {
+    const executable = basename(word).toLowerCase();
+    return (
+      executable === "env" || executable === "env.exe" || /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word)
+    );
+  });
 }
 
 // OMP accepts an empty message when images carry the prompt.
@@ -703,12 +697,11 @@ export class OmpRpcRuntime implements OmpRuntime {
     const { prefix, profile } = psLauncher(
       request.args.slice(0, Math.max(0, (options.command?.length ?? 1) - 1)),
     );
-    // OMP prefers `--profile` over `OMP_PROFILE`, which an `env` wrapper may set.
-    const env = {
-      ...request.env,
-      ...envAssignments(request.command, prefix),
-      ...(profile === undefined ? {} : { OMP_PROFILE: profile }),
-    };
+    if (wrapsEnvironment(request.command, prefix)) {
+      return { stopped: [], failed: [], complete: false, unsupportedLauncher: true };
+    }
+    // OMP prefers `--profile` over `OMP_PROFILE`.
+    const env = profile === undefined ? request.env : { ...request.env, OMP_PROFILE: profile };
     const run = this.options.runOmpCommand ?? runOmpCommand;
     return stopOwnedHubProcesses(
       request.cwd,

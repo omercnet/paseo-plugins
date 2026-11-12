@@ -2092,6 +2092,13 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
         this.recoveryOptions,
         this.hubServiceOwners,
       );
+      if (result.unsupportedLauncher) {
+        this.recordOperationalFailure({
+          category: "session-close",
+          stage: "hub-cleanup-unsupported-launcher",
+        });
+        return;
+      }
       if (result.complete && result.failed.length === 0) return;
     } catch {
       // Reported below; a leftover service must never fail the agent's close.

@@ -16,6 +16,7 @@ export const OMP_OPERATIONAL_FAILURES = [
   { category: "terminal-outcome", stage: "failed" },
   { category: "terminal-outcome", stage: "unresolved" },
   { category: "session-close", stage: "hub-cleanup" },
+  { category: "session-close", stage: "hub-cleanup-unsupported-launcher" },
 ] as const;
 
 export type OmpOperationalFailure = (typeof OMP_OPERATIONAL_FAILURES)[number];

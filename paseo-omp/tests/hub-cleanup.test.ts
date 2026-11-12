@@ -8,6 +8,7 @@ import {
   type HubServiceOwners,
   type OwnedHubCleanupResult,
   ownedHubCleanupDependencies,
+  readFailure,
   stopOwnedHubProcesses,
 } from "../server/hub";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
@@ -407,14 +408,6 @@ describe("owned Hub service cleanup", () => {
       ["npx", ["--yes", "omp"]],
     ],
     [
-      ["env", "OMP_PROFILE=work", "omp"],
-      ["env", ["OMP_PROFILE=work", "omp"]],
-    ],
-    [
-      ["env", "OMP_PROFILE=other", "omp", "--profile", "work"],
-      ["env", ["OMP_PROFILE=other", "omp"]],
-    ],
-    [
       ["omp", "--resume", "--profile", "work"],
       ["omp", []],
     ],
@@ -461,6 +454,82 @@ describe("owned Hub service cleanup", () => {
       }
     });
   }
+
+  // An env wrapper can move OMP to another profile or store root (or change PATH, or clear the
+  // environment) in ways the plugin cannot follow, so cleanup fails closed instead of guessing.
+  for (const command of [
+    ["env", "OMP_PROFILE=other", "omp", "--profile", "work"],
+    ["env", "PATH=/x", "omp"],
+    ["env", "-i", "OMP_PROFILE=work", "omp"],
+    ["/usr/bin/env", "omp"],
+    ["OMP_PROFILE=work", "omp"],
+  ]) {
+    test(`runs no omp ps and reports an unsupported launcher for ${command.join(" ")}`, async () => {
+      const root = await runDir({ web: {} });
+      let runs = 0;
+      const runtime = new OmpRpcRuntime({
+        environment: { PATH: "/usr/bin", HOME: "/home/test" },
+        hubRunDir: root,
+        runOmpCommand: async () => {
+          runs += 1;
+          return true;
+        },
+      });
+      const result = await runtime.stopOwnedServices({ cwd: PROJECT, command }, OWNED);
+      expect(result).toEqual({
+        stopped: [],
+        failed: [],
+        complete: false,
+        unsupportedLauncher: true,
+      });
+      expect(runs).toBe(0);
+      expect(await stateOf(root, "web")).toBe("running");
+    });
+  }
+
+  test("still stops services through a plain bunx omp launcher", async () => {
+    const root = await runDir({ web: {} });
+    const calls: string[][] = [];
+    const runtime = new OmpRpcRuntime({
+      environment: { PATH: "/usr/bin", HOME: "/home/test" },
+      hubRunDir: root,
+      runOmpCommand: async (command, args) => {
+        calls.push([command, ...args]);
+        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+        return true;
+      },
+    });
+    const result = await runtime.stopOwnedServices(
+      { cwd: PROJECT, command: ["bunx", "omp"] },
+      OWNED,
+    );
+    expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
+    expect(calls).toEqual([["bunx", "omp", "ps", "stop", "--dir", PROJECT, "--", "web"]]);
+  });
+
+  test("treats only ENOENT as a gone record and any other read error as unknown", () => {
+    expect(readFailure(Object.assign(new Error("gone"), { code: "ENOENT" }))).toEqual({
+      missing: true,
+    });
+    for (const code of ["ENOTDIR", "EACCES", "EIO", undefined]) {
+      expect(readFailure(Object.assign(new Error("read failed"), { code }))).toEqual({
+        unreadable: true,
+      });
+    }
+  });
+
+  test("ignores stray files beside broker scopes", async () => {
+    const root = await runDir({ web: {} });
+    await writeFile(join(root, ".DS_Store"), "");
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(async (args) => {
+        await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+        return true;
+      }, root),
+      ...fakeClock(),
+    });
+    expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
+  });
 
   test("resolves the broker root from the profile environment", () => {
     const home = join(tmpdir(), "paseo-omp-hub-no-such-home");
@@ -522,6 +591,27 @@ describe("closing an OMP agent", () => {
 
     expect(outcome.type).toBe("request.failed");
     expect(runtime.cleanups).toEqual([]);
+  });
+
+  test("records an unsupported launcher as its own failure", async () => {
+    const failures: OmpOperationalFailure[] = [];
+    const runtime = new HubCleanupRuntime();
+    runtime.result = { stopped: [], failed: [], complete: false, unsupportedLauncher: true };
+    const { connection, events } = await createHarness(
+      runtime,
+      undefined,
+      undefined,
+      undefined,
+      (failure) => failures.push(failure),
+    );
+    await openSession(connection, events);
+
+    await closeSession(connection, events, "close-launcher");
+
+    expect(failures).toEqual([
+      { category: "session-close", stage: "hub-cleanup-unsupported-launcher" },
+    ]);
+    await connection.close();
   });
 
   for (const [label, result, recorded] of [

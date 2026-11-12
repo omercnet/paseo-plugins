@@ -50,7 +50,7 @@ function ompRunDir(): string {
 
 type Read<T> = { value: T } | { missing: true } | { unreadable: true };
 
-function readFailure(error: unknown): { missing: true } | { unreadable: true } {
+export function readFailure(error: unknown): { missing: true } | { unreadable: true } {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   // Only ENOENT proves a record is gone; anything else (ENOTDIR included) leaves it unknown.
   return code === "ENOENT" ? { missing: true } : { unreadable: true };
@@ -78,14 +78,6 @@ async function readDirEntries(path: string): Promise<Read<Dirent[]>> {
   }
 }
 
-async function readDirNames(path: string): Promise<Read<string[]>> {
-  try {
-    return { value: await readdir(path) };
-  } catch (error) {
-    return readFailure(error);
-  }
-}
-
 // omp keys a project's broker by its realpath (`canonicalProjectDir`), so a symlinked or
 // trailing-slash cwd must be resolved the same way to find its `scope.json`.
 async function canonicalProjectDir(cwd: string): Promise<string> {
@@ -101,13 +93,16 @@ async function findProjectDaemonRoots(
   root: string,
   cwd: string,
 ): Promise<{ roots: string[]; complete: boolean }> {
-  const [hashes, projectDir] = await Promise.all([readDirNames(root), canonicalProjectDir(cwd)]);
+  const [hashes, projectDir] = await Promise.all([readDirEntries(root), canonicalProjectDir(cwd)]);
   if ("unreadable" in hashes) return { roots: [], complete: false };
   if (!("value" in hashes)) return { roots: [], complete: true };
   const roots: string[] = [];
   let complete = true;
   await Promise.all(
-    hashes.value.map(async (hash) => {
+    hashes.value.map(async (entry) => {
+      // Only directories can be broker scopes; a stray file (`.DS_Store`) is not one.
+      if (!entry.isDirectory()) return;
+      const hash = entry.name;
       const read = await readJson(join(root, hash, "scope.json"));
       if ("unreadable" in read) complete = false;
       if (!("value" in read)) return;
@@ -251,6 +246,8 @@ export interface OwnedHubCleanupResult {
   failed: string[];
   /** False when omp's records could not all be read, so an owned service may have been missed. */
   complete: boolean;
+  /** Set when the launcher wraps OMP's environment, so the broker could not be located. */
+  unsupportedLauncher?: true;
 }
 
 /**
