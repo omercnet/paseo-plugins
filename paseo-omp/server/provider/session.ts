@@ -1658,6 +1658,7 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
       // Paseo 0.14 and 0.15 send live option patches as `settings`; 0.16 sends `providerOptions`,
       // and repeats them as the deprecated `settings` only while OMP reports legacy settings.
       // Older SDK types lack `providerOptions` on configure changes, so read it structurally.
+      // Open accepts `settings` that only mirror `providerOptions`; a live patch is never accepted.
       const changes: { settings?: object; providerOptions?: object } = input.changes;
       if (
         (changes.settings && Object.keys(changes.settings).length > 0) ||
