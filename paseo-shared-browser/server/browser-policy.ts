@@ -20,6 +20,7 @@ import {
   type DevicePresetId,
   type endBrowserGestureRpc,
   FRAME_MAX_BYTES,
+  type keepAliveBrowserGestureRpc,
   MAX_VIEWPORT,
   MIN_VIEWPORT,
   mapDisplayedPoint,
@@ -67,6 +68,7 @@ type UpdateGestureReply = Omit<RpcOutput<typeof updateBrowserGestureRpc>, "state
   state: BrowserState;
 };
 type EndGestureInput = RpcInput<typeof endBrowserGestureRpc>;
+type KeepAliveGestureInput = RpcInput<typeof keepAliveBrowserGestureRpc>;
 
 const VIEWER_TTL_MS = 45_000;
 const CONTROL_LEASE_MS = 30_000;
@@ -472,33 +474,74 @@ export class SessionManager {
         throw new Error("Browser session is stale");
 
       this.deliberatelyClosed.add(session.workspaceId);
-      const workspaceSessions = [...this.sessions.values()].filter(
-        (candidate) => candidate.workspaceId === session.workspaceId,
-      );
-      for (const candidate of workspaceSessions) {
-        candidate.videoLifetime?.cancel();
-        await this.cancelGesture(candidate);
-        candidate.archived = true;
-        for (const token of candidate.viewers.keys()) {
-          this.viewerSessions.delete(token);
-          this.closedViewerWorkspaces.set(token, session.workspaceId);
-        }
-        candidate.viewers.clear();
-        candidate.controller = null;
-      }
-      try {
-        await this.client.closeWorkspace(session.workspaceId, session.runtimeId);
-      } finally {
-        for (const candidate of workspaceSessions) this.sessions.delete(candidate.key);
-      }
+      await this.stopWorkspaceSessions(session, true);
     });
-    this.sessionClosures.set(session.workspaceId, closing);
+    await this.awaitWorkspaceClosure(session.workspaceId, closing);
+    return { closed: true };
+  }
+
+  /**
+   * Tear down every page session of one workspace runtime. A deliberate close fences
+   * the old viewer tokens as closed; a relaunch leaves them simply invalid, so viewers
+   * reattach through the one-shot expired-viewer recovery.
+   */
+  private async stopWorkspaceSessions(session: BrowserSession, fenceViewers: boolean) {
+    const workspaceSessions = [...this.sessions.values()].filter(
+      (candidate) => candidate.workspaceId === session.workspaceId,
+    );
+    for (const candidate of workspaceSessions) {
+      candidate.videoLifetime?.cancel();
+      await this.cancelGesture(candidate);
+      candidate.archived = true;
+      for (const token of candidate.viewers.keys()) {
+        this.viewerSessions.delete(token);
+        if (fenceViewers) this.closedViewerWorkspaces.set(token, session.workspaceId);
+      }
+      candidate.viewers.clear();
+      candidate.controller = null;
+    }
+    try {
+      await this.client.closeWorkspace(session.workspaceId, session.runtimeId);
+    } finally {
+      for (const candidate of workspaceSessions) this.sessions.delete(candidate.key);
+    }
+  }
+
+  /** Attach and reopen wait for a pending closure before creating the next runtime. */
+  private async awaitWorkspaceClosure(workspaceId: string, closing: Promise<void>) {
+    this.sessionClosures.set(workspaceId, closing);
     try {
       await closing;
-      return { closed: true };
     } finally {
-      if (this.sessionClosures.get(session.workspaceId) === closing)
-        this.sessionClosures.delete(session.workspaceId);
+      if (this.sessionClosures.get(workspaceId) === closing)
+        this.sessionClosures.delete(workspaceId);
+    }
+  }
+
+  /**
+   * Apply a host-wide launch option for a current viewer and, when `apply` reports a
+   * change, relaunch every open workspace browser so it takes effect. Profiles persist
+   * and nothing is replayed; open pages restart at the launch page. A failed relaunch
+   * surfaces on the next attach.
+   */
+  async relaunchOpenBrowsers(viewerToken: string, apply: () => Promise<boolean>): Promise<void> {
+    this.assertOpen();
+    this.requireViewer(viewerToken);
+    if (!(await apply())) return;
+    const workspaceIds = new Set(
+      [...this.sessions.values()]
+        .filter((candidate) => !candidate.archived)
+        .map((candidate) => candidate.workspaceId),
+    );
+    for (const workspaceId of workspaceIds) {
+      const session = [...this.sessions.values()].find(
+        (candidate) => candidate.workspaceId === workspaceId && !candidate.archived,
+      );
+      if (!session) continue;
+      const closing = this.serialize(session, () => this.stopWorkspaceSessions(session, false));
+      await this.awaitWorkspaceClosure(workspaceId, closing).catch(() => undefined);
+      // Keep the browser open for agents and other devices, as before the change.
+      await this.getOrCreateSession(workspaceId).catch(() => undefined);
     }
   }
 
@@ -1181,9 +1224,34 @@ export class SessionManager {
     });
   }
 
+  /**
+   * Renew a quiet held channel's idle bound after the same identity, sequence and
+   * attachment checks as an update. Dispatches no input and revokes no receipt. A
+   * channel with nothing held must end instead, so the idle bound still reclaims it.
+   */
+  async keepAliveGesture(input: KeepAliveGestureInput) {
+    const session = this.requireViewer(input.viewerToken);
+    return this.serialize(session, async () => {
+      const gesture = this.requireGesture(session, input);
+      try {
+        this.assertGesturePacketContext(gesture, input.expected);
+        gesture.assertSequence(input.sequence, this.now());
+        await this.assertGestureCurrent(session, gesture);
+        if (!gesture.isHeld()) throw new Error("Browser gesture has no held input");
+        gesture.renew(this.now());
+        this.renewController(session, input.viewerToken);
+        this.scheduleGestureTimeout(session, gesture);
+        return { gestureId: gesture.id, nextSequence: gesture.nextSequence };
+      } catch (error) {
+        await this.cancelGesture(session, gesture);
+        throw error;
+      }
+    });
+  }
+
   private requireGesture(
     session: BrowserSession,
-    input: UpdateGestureInput | EndGestureInput,
+    input: UpdateGestureInput | EndGestureInput | KeepAliveGestureInput,
   ): BrowserGesture {
     const gesture = session.gesture;
     if (

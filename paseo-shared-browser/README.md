@@ -45,8 +45,10 @@ organization names.
   `AGENT_BROWSER_IDLE_TIMEOUT_MS=0`, `AGENT_BROWSER_STREAM_PORT=0`, and
   `AGENT_BROWSER_NO_AUTO_DIALOG=1` itself.
 - By default every client receives JPEG frames from CDP `Page.startScreencast` or bounded
-  screenshots, and no capture extension is loaded into Chromium. When the daemon is started with
-  `PASEO_SHARED_BROWSER_VIDEO=1`, desktop/web clients with usable WebCodecs receive encoded
+  screenshots, and no capture extension is loaded into Chromium. When **Encoded video** is turned
+  on in the resolution menu (host-wide, any viewer can change it, open browsers restart to apply
+  it) or the daemon is started with `PASEO_SHARED_BROWSER_VIDEO=1` (which forces it on),
+  desktop/web clients with usable WebCodecs receive encoded
   workspace-tab video instead; other clients keep JPEG.
   Remote input supports mouse hover, wheel scrolling, continuous dragging, native touch pan/pinch,
   tap, double-tap, right-click, text, and special keys.
@@ -198,7 +200,8 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
   page instead. Fitting images stay centered without empty scroll ranges; a scrollbar on
   one axis does not force one on the other. Returning to Fit resets local offsets without
   reloading the page or image.
-- With `PASEO_SHARED_BROWSER_VIDEO=1` set in the daemon environment, desktop and web clients
+- With **Encoded video** on (resolution menu toggle, or `PASEO_SHARED_BROWSER_VIDEO=1` in the
+  daemon environment), desktop and web clients
   with WebCodecs play genuine encoded tab video (H264 when supported, otherwise VP8). The
   bundled capture helper, which holds `tabCapture` and `debugger` permissions, is then
   loaded into every workspace Chromium profile and captures the exact workspace tab, not a

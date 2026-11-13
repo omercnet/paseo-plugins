@@ -172,6 +172,7 @@ function setup(retainDocumentDisplay = false) {
   let active = true;
   let bitrate: 2_000_000 | 5_000_000 | 12_000_000 | 24_000_000 = 12_000_000;
   let fps: 15 | 30 | 60 = 30;
+  let hostVideoEnabled: boolean | undefined;
   const environment: BrowserVideoDecodeEnvironment = {
     createDecoder(callbacks) {
       return {
@@ -211,6 +212,7 @@ function setup(retainDocumentDisplay = false) {
       active,
       bitrate,
       fps,
+      ...(hostVideoEnabled === undefined ? {} : { hostVideoEnabled }),
       epoch: () => mutationEpoch,
       viewport: () => ({ width: 1280, height: 800 }),
       // The mounted panel's real source predicate, fed a fake panel context, so a drift
@@ -275,6 +277,9 @@ function setup(retainDocumentDisplay = false) {
     },
     active(value: boolean) {
       active = value;
+    },
+    hostVideo(value: boolean) {
+      hostVideoEnabled = value;
     },
     token(value: string) {
       viewerToken = value;
@@ -601,6 +606,23 @@ describe("video presentation lifecycle", () => {
     expect(harness.disposals).toBe(1);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(harness.reads).toHaveLength(1);
+  });
+  it("resumes reading after the host turns video on, without a new viewer or reload", async () => {
+    const f = setup();
+    f.disabled(0);
+    await drain();
+    f.render();
+    f.commit();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const stopped = harness.reads.length;
+    f.hostVideo(true);
+    f.render();
+    f.commit();
+    await drain();
+    expect(stopped).toBe(1);
+    expect(harness.reads).toHaveLength(2);
+    expect(harness.reads.at(-1)!.input.viewerToken).toBe(harness.reads[0]!.input.viewerToken);
+    expect(harness.disposals).toBeGreaterThanOrEqual(1);
   });
   it("hidden/unmounted viewers cancel the capacity retry timer and cannot restart background reads", async () => {
     const f = setup();

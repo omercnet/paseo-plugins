@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserGestureEvent, BrowserState } from "../shared/browser";
 import { createBrowserCanvasInput } from "./browser-canvas-input";
 import {
@@ -57,6 +57,7 @@ function fixture(
   let control: BrowserGestureControl | null = authority;
   const sent: Parameters<BrowserGestureTransport["update"]>[0][] = [];
   const ended: Parameters<BrowserGestureTransport["end"]>[0][] = [];
+  const keptAlive: Parameters<BrowserGestureTransport["keepAlive"]>[0][] = [];
   const errors: unknown[] = [];
   const cursors: unknown[] = [];
   const navigationCompleted: boolean[] = [];
@@ -80,6 +81,10 @@ function fixture(
       ended.push(input);
       return { state, cursor: null };
     },
+    keepAlive: async (input) => {
+      keptAlive.push(input);
+      return { gestureId: input.gestureId, nextSequence: input.sequence };
+    },
   };
   const queue = createBrowserInputQueue({
     transport,
@@ -102,6 +107,7 @@ function fixture(
     queue,
     sent,
     ended,
+    keptAlive,
     errors,
     cursors,
     beginGate,
@@ -712,6 +718,103 @@ describe("bounded browser input queue", () => {
     expect(begins).toBe(1);
     expect(f.sent).toHaveLength(1);
     expect(f.errors).toEqual([]);
+  });
+
+  describe("held-input keep-alive", () => {
+    const down = (x: number): BrowserGestureEvent => ({
+      kind: "down",
+      button: "left",
+      clickCount: 1,
+      point: point(x),
+    });
+    const up = (x: number): BrowserGestureEvent => ({
+      kind: "up",
+      button: "left",
+      clickCount: 1,
+      point: point(x),
+    });
+    const heldContext = {
+      viewerToken: authority.viewerToken,
+      controlToken: authority.controlToken,
+      expected: authority.expected,
+    };
+    afterEach(() => vi.useRealTimers());
+
+    it("renews a motionless held press below the server idle bound and stops on release", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      f.queue.enqueue(down(10));
+      f.beginGate.resolve({ state, gestureId: "held", nextSequence: 1 });
+      await flush();
+      expect(f.sent.map(({ event }) => event.kind)).toEqual(["down"]);
+      // Holding still for longer than the server's five-second idle bound.
+      await vi.advanceTimersByTimeAsync(6_500);
+      expect(f.keptAlive).toEqual([
+        { ...heldContext, gestureId: "held", sequence: 2 },
+        { ...heldContext, gestureId: "held", sequence: 2 },
+        { ...heldContext, gestureId: "held", sequence: 2 },
+      ]);
+      // Keep-alive consumed no sequence: the release continues the same order.
+      f.queue.enqueue(up(40));
+      await flush();
+      expect(f.sent.map(({ event, sequence }) => [event.kind, sequence])).toEqual([
+        ["down", 1],
+        ["up", 2],
+      ]);
+      f.queue.finish();
+      await flush();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.keptAlive).toHaveLength(3);
+      expect(f.ended).toEqual([
+        expect.objectContaining({ gestureId: "held", sequence: 3, cancel: false }),
+      ]);
+      expect(f.errors).toEqual([]);
+    });
+
+    it("never keeps an unpressed hover channel alive", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      f.queue.enqueue(move(10));
+      f.beginGate.resolve({ state, gestureId: "hover", nextSequence: 1 });
+      await flush();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.sent).toHaveLength(1);
+      expect(f.keptAlive).toEqual([]);
+    });
+
+    it("stops and cancels the held channel instead of renewing it after control is lost", async () => {
+      vi.useFakeTimers();
+      const f = fixture(undefined, true);
+      f.queue.enqueue(down(10));
+      f.beginGate.resolve({ state, gestureId: "held", nextSequence: 1 });
+      await flush();
+      f.changeControl({ ...authority, controlToken: "taken-over" });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await flush();
+      expect(f.keptAlive).toEqual([]);
+      expect(f.ended).toEqual([
+        expect.objectContaining({ gestureId: "held", sequence: 2, cancel: true }),
+      ]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.keptAlive).toEqual([]);
+      expect(f.ended).toHaveLength(1);
+    });
+
+    it("a rejected keep-alive fails closed without retrying", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      let attempts = 0;
+      f.transport.keepAlive = async () => {
+        attempts += 1;
+        throw new Error("Browser gesture is unavailable");
+      };
+      f.queue.enqueue(down(10));
+      f.beginGate.resolve({ state, gestureId: "held", nextSequence: 1 });
+      await flush();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(attempts).toBe(1);
+      expect(f.errors).toEqual([new Error("Browser gesture is unavailable")]);
+    });
   });
 });
 

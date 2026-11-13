@@ -16,6 +16,8 @@ import type {
   createBrowserTabRpc,
   detachBrowserRpc,
   endBrowserGestureRpc,
+  getBrowserVideoSettingsRpc,
+  keepAliveBrowserGestureRpc,
   listBrowserTabsRpc,
   listOpenBrowserWorkspacesRpc,
   navigateBrowserRpc,
@@ -23,6 +25,7 @@ import type {
   reopenBrowserRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
+  setBrowserVideoSettingsRpc,
   setCaptureDensityRpc,
   updateBrowserGestureRpc,
 } from "../shared/browser";
@@ -75,6 +78,10 @@ type UpdateGestureInput = RpcInput<typeof updateBrowserGestureRpc>;
 type UpdateGestureOutput = RpcOutput<typeof updateBrowserGestureRpc>;
 type EndGestureInput = RpcInput<typeof endBrowserGestureRpc>;
 type EndGestureOutput = RpcOutput<typeof endBrowserGestureRpc>;
+type KeepAliveGestureInput = RpcInput<typeof keepAliveBrowserGestureRpc>;
+type KeepAliveGestureOutput = RpcOutput<typeof keepAliveBrowserGestureRpc>;
+type VideoSettingsOutput = RpcOutput<typeof getBrowserVideoSettingsRpc>;
+type SetVideoSettingsInput = RpcInput<typeof setBrowserVideoSettingsRpc>;
 
 function paseoHome(): string {
   return process.env.PASEO_HOME ?? join(homedir(), ".paseo");
@@ -185,6 +192,18 @@ class RemoteBrowserManager {
 
   endGesture(input: EndGestureInput): Promise<EndGestureOutput> {
     return this.requestBrowser("gesture.end", input as unknown as JsonValue);
+  }
+
+  keepAliveGesture(input: KeepAliveGestureInput): Promise<KeepAliveGestureOutput> {
+    return this.requestBrowser("gesture.keepalive", input as unknown as JsonValue);
+  }
+
+  videoSettings(): Promise<VideoSettingsOutput> {
+    return this.requestBrowser("video.settings", {});
+  }
+
+  setVideoSettings(input: SetVideoSettingsInput): Promise<VideoSettingsOutput> {
+    return this.requestBrowser("video.set", input as unknown as JsonValue);
   }
 
   async listOpenWorkspaceIds(): Promise<string[]> {
@@ -419,6 +438,23 @@ export async function handleUpdateBrowserGesture(
 
 export async function handleEndBrowserGesture(input: EndGestureInput): Promise<EndGestureOutput> {
   return (await getProductionManager()).endGesture(input);
+}
+
+export async function handleKeepAliveBrowserGesture(
+  input: KeepAliveGestureInput,
+): Promise<KeepAliveGestureOutput> {
+  return (await getProductionManager()).keepAliveGesture(input);
+}
+
+export async function handleGetBrowserVideoSettings(): Promise<VideoSettingsOutput> {
+  return (await getProductionManager()).videoSettings();
+}
+
+/** Host-wide: any current viewer may flip it, and open browsers relaunch to apply it. */
+export async function handleSetBrowserVideoSettings(
+  input: SetVideoSettingsInput,
+): Promise<VideoSettingsOutput> {
+  return (await getProductionManager()).setVideoSettings(input);
 }
 
 export async function cleanupBrowserServer(): Promise<void> {

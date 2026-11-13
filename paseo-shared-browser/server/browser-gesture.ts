@@ -113,6 +113,16 @@ export class BrowserGesture {
     this.idleUntil = now + GESTURE_IDLE_MS;
   }
 
+  /** Physical input that a quiet client still holds; only this justifies a keep-alive. */
+  isHeld(): boolean {
+    return this.buttons.size > 0 || this.touches.size > 0 || this.keys.size > 0;
+  }
+
+  /** Extend only the idle bound; the absolute lifetime and sequence are unchanged. */
+  renew(now: number): void {
+    this.idleUntil = Math.min(now + GESTURE_IDLE_MS, this.expiresAt);
+  }
+
   /** Only an unpressed mouse move leaves existing bounded frame authority usable for a new press. */
   isHover(event: BrowserGestureEvent): boolean {
     return (event.kind === "move" || event.kind === "leave") && this.buttons.size === 0;

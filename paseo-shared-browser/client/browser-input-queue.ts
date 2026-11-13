@@ -14,6 +14,7 @@ import type {
   BrowserState,
   beginBrowserGestureRpc,
   endBrowserGestureRpc,
+  keepAliveBrowserGestureRpc,
   updateBrowserGestureRpc,
 } from "../shared/browser";
 
@@ -40,6 +41,9 @@ export interface BrowserGestureTransport {
       state: BrowserState;
     }
   >;
+  keepAlive(
+    input: RpcInput<typeof keepAliveBrowserGestureRpc>,
+  ): Promise<RpcOutput<typeof keepAliveBrowserGestureRpc>>;
 }
 interface QueueOptions {
   transport: BrowserGestureTransport;
@@ -62,7 +66,7 @@ interface QueueOptions {
   /** Resolves only after a different actionable decoded receipt commits, never visual-only pixels or a timer. */
   waitForFrame?(afterFrameId: string, maxWaitMs?: number): Promise<void>;
 }
-type Command = { event: BrowserGestureEvent } | { end: true };
+type Command = { event: BrowserGestureEvent } | { end: true } | { keepAlive: true };
 interface Channel {
   authority: BrowserGestureAuthority;
   pointerKind: "mouse" | "touch";
@@ -76,6 +80,8 @@ interface Channel {
 }
 /** Retire empty client channels before the native service's five-second idle bound. */
 export const BROWSER_INPUT_IDLE_MS = 4_000;
+/** Renew a motionless held press well inside the server's five-second idle bound. */
+export const BROWSER_INPUT_KEEPALIVE_MS = 2_000;
 const MAX_QUEUED_COMMANDS = 64;
 const MAX_WHEEL_DELTA = 4_000;
 const MAX_FRAME_ADMISSION_ATTEMPTS = 3;
@@ -138,6 +144,12 @@ export function createBrowserInputQueue(options: QueueOptions) {
   // Buffer real physical edges while begin is pending. This context grants no
   // reusable admission and publishes nothing until the server acknowledges it.
   let pendingAdmission: { authority: BrowserGestureAuthority; epoch: number } | null = null;
+  // Renews only a quiet held channel; real input already renews the server's idle bound.
+  let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  const stopKeepAlive = () => {
+    clearInterval(keepAliveTimer ?? undefined);
+    keepAliveTimer = null;
+  };
 
   const cancelChannel = async (old: Channel) => {
     try {
@@ -159,6 +171,7 @@ export function createBrowserInputQueue(options: QueueOptions) {
     pendingAdmission = null;
     const old = channel;
     channel = null;
+    stopKeepAlive();
     options.onCursor(null);
     if (old && !running) void cancelChannel(old);
   };
@@ -174,6 +187,29 @@ export function createBrowserInputQueue(options: QueueOptions) {
     const control = currentControl();
     const decoded = options.authority();
     return control && decoded && sameAuthority(decoded, control) ? decoded : null;
+  };
+
+  /** Keep a motionless held press alive; stop on release, cancellation or lost control. */
+  const syncKeepAlive = () => {
+    if (!channel || !hasHeldInput(channel)) {
+      stopKeepAlive();
+      return;
+    }
+    keepAliveTimer ??= setInterval(() => {
+      const held = channel;
+      if (!held || !hasHeldInput(held)) {
+        stopKeepAlive();
+        return;
+      }
+      if (!sameAuthority(held.authority, currentControl())) {
+        cancel();
+        return;
+      }
+      // Queued or in-flight input renews the server's idle bound on its own.
+      if (running || commands.length) return;
+      commands.push({ keepAlive: true });
+      void drain();
+    }, BROWSER_INPUT_KEEPALIVE_MS);
   };
 
   const drain = async () => {
@@ -197,6 +233,24 @@ export function createBrowserInputQueue(options: QueueOptions) {
           owned = null;
           channel = null;
           options.onFinish();
+        }
+        if ("keepAlive" in command) {
+          if (!owned || !hasHeldInput(owned)) continue;
+          const held = owned;
+          if (!sameAuthority(held.authority, currentControl())) {
+            throw new Error("Browser input context changed. Release the gesture and try again.");
+          }
+          const startedAt = performance.now();
+          const result = await options.transport.keepAlive({
+            ...transportContext(held.authority),
+            gestureId: held.gestureId,
+            sequence: held.sequence,
+          });
+          if (currentEpoch !== epoch) break;
+          if (result.gestureId !== held.gestureId || result.nextSequence !== held.sequence)
+            throw new Error("Browser gesture identity changed.");
+          held.idleNotAfter = startedAt + BROWSER_INPUT_IDLE_MS;
+          continue;
         }
         if ("end" in command) {
           if (!owned) continue;
@@ -449,6 +503,7 @@ export function createBrowserInputQueue(options: QueueOptions) {
         if (channel === owned) channel = null;
       }
       running = false;
+      syncKeepAlive();
       if (commands.length) void drain();
     }
   };

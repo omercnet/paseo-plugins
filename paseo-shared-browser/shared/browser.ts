@@ -173,6 +173,27 @@ export const listOpenBrowserWorkspacesRpc = defineRpc({
   output: z.object({ workspaceIds: z.array(workspaceIdSchema).max(32) }),
 });
 
+/**
+ * Host-wide encoded-video launch option. `enabled` is effective: the daemon's
+ * PASEO_SHARED_BROWSER_VIDEO=1 forces it on (`forcedByHost`) over the persisted choice.
+ */
+export const browserVideoSettingsSchema = z.object({
+  enabled: z.boolean(),
+  forcedByHost: z.boolean(),
+});
+export type BrowserVideoSettings = z.output<typeof browserVideoSettingsSchema>;
+export const getBrowserVideoSettingsRpc = defineRpc({
+  name: "shared-browser.video.settings",
+  input: z.object({}),
+  output: browserVideoSettingsSchema,
+});
+/** Any current viewer may change it. Open browsers relaunch so the change takes effect. */
+export const setBrowserVideoSettingsRpc = defineRpc({
+  name: "shared-browser.video.set",
+  input: z.object({ viewerToken: opaqueTokenSchema, enabled: z.boolean() }),
+  output: browserVideoSettingsSchema,
+});
+
 export const captureBrowserRpc = defineRpc({
   name: "shared-browser.capture",
   input: z.object({
@@ -531,6 +552,16 @@ export const endBrowserGestureRpc = defineRpc({
   name: "shared-browser.gesture.end",
   input: gestureContinuationSchema.extend({ cancel: z.boolean().default(false) }),
   output: z.object({ state: browserStateSchema, cursor: browserCursorSchema.nullable() }),
+});
+/**
+ * Keep a quiet held channel (button, key or touch still down) inside the server's
+ * idle bound. Sends no input, does not advance the sequence and revokes no receipt.
+ * The absolute gesture lifetime still applies.
+ */
+export const keepAliveBrowserGestureRpc = defineRpc({
+  name: "shared-browser.gesture.keepalive",
+  input: gestureContinuationSchema,
+  output: z.object({ gestureId: opaqueTokenSchema, nextSequence: z.number().int().positive() }),
 });
 
 export type BrowserState = z.output<typeof browserStateSchema>;

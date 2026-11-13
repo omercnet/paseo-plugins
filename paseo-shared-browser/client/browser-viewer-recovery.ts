@@ -1,7 +1,8 @@
 /**
  * Recover viewing after its short-lived viewer token expires during background
- * suspension. Only a viewing capture/video error can use this policy; mutation failure must
- * never trigger action replay, control acquisition or lease takeover.
+ * suspension. Only a viewing read (capture, video or the tab list poll) can use this
+ * policy; mutation failure must never trigger action replay, control acquisition or
+ * lease takeover.
  */
 const VIEWER_EXPIRED_MESSAGE = "Viewer token is invalid or expired";
 const BROWSER_CLOSED_MESSAGE = "Browser is closed";
@@ -52,6 +53,44 @@ export interface BrowserViewerRecoveryObservation {
   failedViewerToken: string | null;
   captureError: unknown;
   pending: boolean;
+}
+
+export interface BrowserViewingFailures {
+  viewerToken: string | null;
+  /** The video reader reports the exact token it failed with. */
+  video: { error: unknown; viewerToken: string | null };
+  /** Capture and tab list queries are keyed to the current viewer token. */
+  captureError: unknown;
+  tabsError: unknown;
+}
+
+/**
+ * Pick the viewing failure that may claim recovery. Video and capture keep their
+ * priority; an expired tab poll also qualifies, so a panel whose only live read is
+ * the tab list reattaches once instead of polling a dead token forever.
+ */
+export function selectViewerRecoveryFailure(
+  failures: BrowserViewingFailures,
+): Pick<BrowserViewerRecoveryObservation, "failedViewerToken" | "captureError"> {
+  const { viewerToken, video, captureError, tabsError } = failures;
+  if (video.viewerToken === viewerToken && isExpiredBrowserViewerError(video.error))
+    return { failedViewerToken: video.viewerToken, captureError: video.error };
+  if (!isExpiredBrowserViewerError(captureError) && isExpiredBrowserViewerError(tabsError))
+    return { failedViewerToken: viewerToken, captureError: tabsError };
+  return { failedViewerToken: viewerToken, captureError };
+}
+
+const TABS_POLL_MS = 2_000;
+/** React Query's default retry budget, kept for every failure except an expired viewer. */
+const TABS_RETRY_LIMIT = 3;
+
+/** An expired viewer token never becomes valid again; stop polling it and let recovery reattach. */
+export function browserTabsRefetchInterval(error: unknown): number | false {
+  return isExpiredBrowserViewerError(error) ? false : TABS_POLL_MS;
+}
+
+export function shouldRetryBrowserTabs(failureCount: number, error: unknown): boolean {
+  return !isExpiredBrowserViewerError(error) && failureCount < TABS_RETRY_LIMIT;
 }
 
 /**
