@@ -42,3 +42,16 @@ export function withLocalModelRole(
   const { [role]: _replaced, ...rest } = roles;
   return selector === null ? rest : { ...rest, [role]: selector };
 }
+
+/**
+ * What pressing a model's role button may do. OMP merges a project `modelRoles` override with the
+ * global record key by key and has no value that clears a role, so a workspace write can set a role
+ * but never stop an inherited one: there the "Stop using" press is unavailable.
+ */
+export function localModelRoleAction(
+  assigned: boolean,
+  workspaceScoped: boolean,
+): "use" | "stop" | "unavailable" {
+  if (!assigned) return "use";
+  return workspaceScoped ? "unavailable" : "stop";
+}
