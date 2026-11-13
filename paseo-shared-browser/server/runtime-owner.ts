@@ -13,6 +13,7 @@ import { CdpUnknownOutcomeError } from "./cdp";
 import { resolveBrowserRuntimeRoot } from "./runtime-path";
 import type { JsonValue } from "./runtime-protocol";
 import type { RuntimeOwner } from "./supervisor";
+import { readVideoSettings, writeVideoEnabled } from "./video-preference";
 import {
   createPrivateVirtualDisplay,
   PrivateDisplayError,
@@ -41,7 +42,11 @@ interface RuntimeOwnerOptions {
    * Explicit false overrides the environment.
    */
   virtualDisplay?: boolean;
-  /** Encoded video is opt-in; defaults to PASEO_SHARED_BROWSER_VIDEO=1 in the daemon environment. */
+  /**
+   * Encoded video is opt-in. When omitted, each runtime creation reads the effective
+   * host setting: PASEO_SHARED_BROWSER_VIDEO=1 in this process's environment, or the
+   * persisted toggle. Image-only runtimes never load the capture extension.
+   */
   nativeVideo?: boolean;
 }
 
@@ -125,6 +130,8 @@ export async function createRuntimeOwner(
     process.env.PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE ??
     join(runtimeRoot, "chromium", process.platform === "win32" ? "chrome.exe" : "chrome");
   return {
+    videoSettings: () => readVideoSettings(root),
+    setVideoEnabled: (enabled) => writeVideoEnabled(root, enabled),
     async create(workspaceId) {
       const hash = createHash("sha256").update(workspaceId).digest("hex");
       // Explicit headed mode uses the caller's real display. An opted-in hidden Linux mode
@@ -157,7 +164,7 @@ export async function createRuntimeOwner(
           session: `ws-${hash.slice(0, 16)}`,
           initialUrl: options.initialUrl ?? DEFAULT_BROWSER_URL,
           headed: display ? true : (options.headed ?? false),
-          nativeVideo: options.nativeVideo ?? process.env.PASEO_SHARED_BROWSER_VIDEO === "1",
+          nativeVideo: options.nativeVideo ?? (await readVideoSettings(root)).enabled,
           ...(display ? { launchEnvironment: display.launchEnvironment } : {}),
         };
         runtime = new AgentBrowserRuntime(runtimeOptions);

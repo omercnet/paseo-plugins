@@ -1,10 +1,13 @@
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import {
+  browserTabsRefetchInterval,
   createBrowserViewerRecovery,
   isBrowserClosedError,
   isBrowserTabUnavailableError,
   isExpiredBrowserViewerError,
+  selectViewerRecoveryFailure,
+  shouldRetryBrowserTabs,
 } from "./browser-viewer-recovery";
 
 const expired = Object.assign(
@@ -109,6 +112,72 @@ it("the actual capture query observer discards old token errors when its token k
     unsubscribe();
     client.clear();
   }
+});
+
+describe("expired tab list poll", () => {
+  const transient = new Error("socket closed");
+
+  it("lets an expired tab poll claim the one-shot reattachment when capture and video are quiet", () => {
+    const claim = createBrowserViewerRecovery();
+    const observation = (viewerToken: string) => ({
+      identity: "host/workspace",
+      viewerToken,
+      pending: false,
+      ...selectViewerRecoveryFailure({
+        viewerToken,
+        video: { error: null, viewerToken: null },
+        captureError: null,
+        tabsError: expired,
+      }),
+    });
+    expect(claim(observation("old-viewer"))).toBe(true);
+    // The same dead token never loops; the replacement token gets its own single attempt.
+    expect(claim(observation("old-viewer"))).toBe(false);
+    expect(claim(observation("new-viewer"))).toBe(true);
+  });
+
+  it("keeps video and capture priority and ignores non-expiry tab failures", () => {
+    const videoError = new Error("Viewer token is invalid or expired");
+    expect(
+      selectViewerRecoveryFailure({
+        viewerToken: "viewer",
+        video: { error: videoError, viewerToken: "viewer" },
+        captureError: transient,
+        tabsError: expired,
+      }),
+    ).toEqual({ failedViewerToken: "viewer", captureError: videoError });
+    expect(
+      selectViewerRecoveryFailure({
+        viewerToken: "viewer",
+        video: { error: videoError, viewerToken: "older" },
+        captureError: transient,
+        tabsError: transient,
+      }),
+    ).toEqual({ failedViewerToken: "viewer", captureError: transient });
+    expect(
+      createBrowserViewerRecovery()({
+        identity: "scope",
+        viewerToken: "viewer",
+        pending: false,
+        ...selectViewerRecoveryFailure({
+          viewerToken: "viewer",
+          video: { error: null, viewerToken: null },
+          captureError: null,
+          tabsError: transient,
+        }),
+      }),
+    ).toBe(false);
+  });
+
+  // React Query skips intervals without a window, so the poll decision is checked directly.
+  it("stops polling and retrying an expired token but keeps polling through transient failures", () => {
+    expect(browserTabsRefetchInterval(expired)).toBe(false);
+    expect(shouldRetryBrowserTabs(0, expired)).toBe(false);
+    expect(shouldRetryBrowserTabs(0, transient)).toBe(true);
+    expect(shouldRetryBrowserTabs(3, transient)).toBe(false);
+    expect(browserTabsRefetchInterval(transient)).toBe(2_000);
+    expect(browserTabsRefetchInterval(null)).toBe(2_000);
+  });
 });
 
 describe("remembered tab recovery", () => {

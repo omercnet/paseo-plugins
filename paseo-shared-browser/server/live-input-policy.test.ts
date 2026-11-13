@@ -111,6 +111,7 @@ async function fixture(
     },
     end: async (cancel = false, overrideSequence?: number) =>
       manager.endGesture({ ...context, gestureId, sequence: overrideSequence ?? sequence, cancel }),
+    keepAlive: async () => manager.keepAliveGesture({ ...context, gestureId, sequence }),
     changeUrl: (value: string) => {
       url = value;
     },
@@ -835,6 +836,61 @@ describe("owned ordered live input", () => {
       expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
       state.manager.disconnect();
     }
+  });
+
+  it("keep-alive holds a motionless pressed drag past the idle bound without dispatching input", async () => {
+    vi.useFakeTimers();
+    const state = await fixture();
+    await state.begin();
+    await state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true);
+    const before = state.calls.length;
+    for (let elapsed = 0; elapsed < 12_000; elapsed += 2_000) {
+      await vi.advanceTimersByTimeAsync(2_000);
+      const reply = await state.keepAlive();
+      // The sequence is not consumed, so the release continues the same order.
+      expect(reply.nextSequence).toBe(2);
+    }
+    // Only the attachment check runs; nothing reaches the page and nothing is released.
+    expect(new Set(state.calls.slice(before).map((call) => call.operation))).toEqual(
+      new Set(["input.check"]),
+    );
+    await state.update({ kind: "up", button: "left", clickCount: 1, point: point(80, 60) });
+    await state.end();
+    expect(state.calls.filter((call) => call.operation === "mouse.up")).toHaveLength(1);
+    expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
+    state.manager.disconnect();
+  });
+
+  it("keep-alive refuses an idle channel with nothing held and closes it", async () => {
+    const state = await fixture();
+    await state.begin();
+    await state.update({ kind: "move", point: point() });
+    await expect(state.keepAlive()).rejects.toThrow("Browser gesture has no held input");
+    expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
+    await expect(state.keepAlive()).rejects.toThrow("Browser gesture is unavailable");
+    state.manager.disconnect();
+  });
+
+  it("keep-alive cannot extend a held gesture past its absolute lifetime", async () => {
+    vi.useFakeTimers();
+    const state = await fixture();
+    await state.begin();
+    await state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true);
+    let elapsed = 0;
+    let failure: unknown = null;
+    while (!failure && elapsed <= 6 * 60_000) {
+      await vi.advanceTimersByTimeAsync(4_000);
+      elapsed += 4_000;
+      failure = await state.keepAlive().then(
+        () => null,
+        (error: unknown) => error,
+      );
+    }
+    expect(elapsed).toBeGreaterThanOrEqual(5 * 60_000);
+    expect(elapsed).toBeLessThan(5 * 60_000 + 8_000);
+    expect(String(failure)).toMatch(/Browser gesture (expired|is unavailable)/);
+    expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
+    state.manager.disconnect();
   });
 
   it("viewer or lease expiry releases the held gesture and rejects its late events", async () => {

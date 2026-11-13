@@ -34,7 +34,9 @@ import {
   detachBrowserRpc,
   didBrowserRuntimeRestart,
   endBrowserGestureRpc,
+  getBrowserVideoSettingsRpc,
   isBrowserStateCurrent,
+  keepAliveBrowserGestureRpc,
   listBrowserTabsRpc,
   MAX_BROWSER_TABS,
   MAX_VIEWPORT,
@@ -44,6 +46,7 @@ import {
   reopenBrowserRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
+  setBrowserVideoSettingsRpc,
   setCaptureDensityRpc,
   updateBrowserGestureRpc,
 } from "../shared/browser";
@@ -88,9 +91,12 @@ import {
 import { isFrameCurrent, isVideoSourceCurrent } from "./browser-video-currency";
 import { BrowserVideoSurface } from "./browser-video-surface";
 import {
+  browserTabsRefetchInterval,
   isBrowserClosedError,
   isBrowserTabUnavailableError,
   isExpiredBrowserViewerError,
+  selectViewerRecoveryFailure,
+  shouldRetryBrowserTabs,
 } from "./browser-viewer-recovery";
 import { createFrameLifecycle } from "./frame-lifecycle";
 import { useBrowserAutoCaptureDensity } from "./use-browser-auto-capture-density";
@@ -222,6 +228,9 @@ export function SharedBrowserPanel({
   const beginBrowserGesture = useRpc(beginBrowserGestureRpc);
   const updateBrowserGesture = useRpc(updateBrowserGestureRpc);
   const endBrowserGesture = useRpc(endBrowserGestureRpc);
+  const keepAliveBrowserGesture = useRpc(keepAliveBrowserGestureRpc);
+  const getVideoSettings = useRpc(getBrowserVideoSettingsRpc);
+  const setVideoSettings = useRpc(setBrowserVideoSettingsRpc);
 
   const mountedRef = useRef(false);
   const activeViewerTokenRef = useRef<string | null>(null);
@@ -443,13 +452,43 @@ export function SharedBrowserPanel({
     reconnecting || closedView || !attachedTabMatches
       ? null
       : (attachQuery.data?.viewerToken ?? null);
-  const tabsQueryKey = ["shared-browser", "tabs", host.id, workspaceId];
+  // Keyed by viewer token, so an expired token's error never outlives the reattachment
+  // that replaced it. The previous list stays visible while the new token loads.
+  const tabsQueryKey = ["shared-browser", "tabs", host.id, workspaceId, viewerToken];
   const tabsQuery = useQuery({
     queryKey: tabsQueryKey,
     queryFn: () => listTabs({ viewerToken: viewerToken! }),
     enabled: Boolean(viewerToken),
-    refetchInterval: 2_000,
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[2] === host.id && previousQuery.queryKey[3] === workspaceId
+        ? previous
+        : undefined,
+    refetchInterval: (query) => browserTabsRefetchInterval(query.state.error),
+    retry: shouldRetryBrowserTabs,
   });
+  const tabsViewerExpired = isExpiredBrowserViewerError(tabsQuery.error);
+  const videoSettingsKey = ["shared-browser", "video-settings", host.id];
+  const videoSettingsQuery = useQuery({
+    queryKey: videoSettingsKey,
+    queryFn: () => getVideoSettings({}),
+    staleTime: 30_000,
+  });
+  const [videoSettingsPending, setVideoSettingsPending] = useState(false);
+  /** Any current viewer may flip this host-wide option; open browsers then relaunch. */
+  const changeEncodedVideo = async (enabled: boolean) => {
+    const token = activeViewerTokenRef.current;
+    if (!token || videoSettingsPending) return;
+    setVideoSettingsPending(true);
+    setOperationError(null);
+    try {
+      const next = await setVideoSettings({ viewerToken: token, enabled });
+      queryClient.setQueryData(videoSettingsKey, next);
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setVideoSettingsPending(false);
+    }
+  };
 
   useEffect(() => {
     const tabs = tabsQuery.data?.tabs;
@@ -538,6 +577,7 @@ export function SharedBrowserPanel({
 
   const video = useBrowserVideo({
     viewerToken,
+    ...(videoSettingsQuery.data ? { hostVideoEnabled: videoSettingsQuery.data.enabled } : {}),
     quality: "high",
     bitrate: preferences.videoBitrate,
     fps: preferences.videoFps,
@@ -978,7 +1018,12 @@ export function SharedBrowserPanel({
       return input && context ? { ...context, target: input.target } : null;
     },
     controlAuthority: gestureControlContext,
-    transport: { begin: beginBrowserGesture, update: updateBrowserGesture, end: endBrowserGesture },
+    transport: {
+      begin: beginBrowserGesture,
+      update: updateBrowserGesture,
+      end: endBrowserGesture,
+      keepAlive: keepAliveBrowserGesture,
+    },
     ownershipKey: JSON.stringify([
       viewerToken,
       controlToken,
@@ -1488,8 +1533,12 @@ export function SharedBrowserPanel({
   useBrowserViewerRecovery({
     identity: JSON.stringify([host.id, workspaceId]),
     viewerToken,
-    failedViewerToken: videoViewerExpired ? video.errorViewerToken : viewerToken,
-    captureError: videoViewerExpired ? video.error : captureQuery.error,
+    ...selectViewerRecoveryFailure({
+      viewerToken,
+      video: { error: video.error, viewerToken: video.errorViewerToken },
+      captureError: captureQuery.error,
+      tabsError: tabsQuery.error,
+    }),
     pending: reconnecting || attachQuery.isFetching,
     reconnect,
   });
@@ -1507,7 +1556,7 @@ export function SharedBrowserPanel({
     recoveryError ??
     state?.error ??
     (connectionError ? errorMessage(connectionError) : null) ??
-    (tabsQuery.error ? errorMessage(tabsQuery.error) : null);
+    (tabsQuery.error && !tabsViewerExpired ? errorMessage(tabsQuery.error) : null);
   const statusColor =
     state?.status === "ready"
       ? theme.colors.statusSuccess
@@ -1916,6 +1965,15 @@ export function SharedBrowserPanel({
                 )
               }
               favoritePresetIds={preferences.favoritePresetIds}
+              {...(videoSettingsQuery.data
+                ? {
+                    encodedVideo: {
+                      ...videoSettingsQuery.data,
+                      disabled: !viewerToken || videoSettingsPending,
+                      onChange: (enabled: boolean) => void changeEncodedVideo(enabled),
+                    },
+                  }
+                : {})}
               selectDisabled={!viewerToken || anyMutationPending}
               favoriteDisabled={preferences.disabled}
               density={state?.captureScale ?? 1}

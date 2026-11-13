@@ -83,6 +83,7 @@ it("recovers a captured-before-wheel frame that decodes after invalidation witho
     transport: {
       begin: (input) => manager.beginGesture(input),
       end: (input) => manager.endGesture(input),
+      keepAlive: (input) => manager.keepAliveGesture(input),
       update: async (input) => {
         // A different capture is already issued before input; its slow decoder commits after the wheel reply.
         now++;

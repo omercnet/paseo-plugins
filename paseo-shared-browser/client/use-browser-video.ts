@@ -30,6 +30,11 @@ interface BrowserVideoOptions {
   fps?: import("../shared/video-settings").VideoEncoderSettings["fps"];
   /** Explicit host panel suspension, when supplied. Unmount also stops decoding. */
   active?: boolean;
+  /**
+   * The host's effective encoded-video setting, when known. A change restarts reading,
+   * so turning video on resumes it after a "video-disabled" stop without a reload.
+   */
+  hostVideoEnabled?: boolean;
   epoch(): number;
   viewport(): Viewport | null;
   isCurrent(packet: BrowserVideoPacket, epoch: number): boolean;
@@ -454,7 +459,15 @@ export function useBrowserVideo(options: BrowserVideoOptions) {
       runningCleanup?.();
       runningCleanup = null;
     };
-  }, [node, options.viewerToken, options.quality, options.active, options.bitrate, options.fps]);
+  }, [
+    node,
+    options.viewerToken,
+    options.quality,
+    options.active,
+    options.bitrate,
+    options.fps,
+    options.hostVideoEnabled,
+  ]);
 
   return {
     active,

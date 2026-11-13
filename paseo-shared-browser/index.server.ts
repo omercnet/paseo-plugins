@@ -15,6 +15,8 @@ import {
   handleCreateBrowserTab,
   handleDetachBrowser,
   handleEndBrowserGesture,
+  handleGetBrowserVideoSettings,
+  handleKeepAliveBrowserGesture,
   handleListBrowserTabs,
   handleListOpenBrowserWorkspaces,
   handleNavigateBrowser,
@@ -23,6 +25,7 @@ import {
   handleReopenBrowser,
   handleResizeBrowser,
   handleSendBrowserInput,
+  handleSetBrowserVideoSettings,
   handleSetCaptureDensity,
   handleUpdateBrowserGesture,
   handleWorkspaceArchived,
@@ -41,6 +44,8 @@ import {
   createBrowserTabRpc,
   detachBrowserRpc,
   endBrowserGestureRpc,
+  getBrowserVideoSettingsRpc,
+  keepAliveBrowserGestureRpc,
   listBrowserTabsRpc,
   listOpenBrowserWorkspacesRpc,
   navigateBrowserRpc,
@@ -48,6 +53,7 @@ import {
   reopenBrowserRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
+  setBrowserVideoSettingsRpc,
   setCaptureDensityRpc,
   updateBrowserGestureRpc,
 } from "./shared/browser";
@@ -105,6 +111,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(beginBrowserGestureRpc, handleBeginBrowserGesture);
   server.handle(updateBrowserGestureRpc, handleUpdateBrowserGesture);
   server.handle(endBrowserGestureRpc, handleEndBrowserGesture);
+  server.handle(keepAliveBrowserGestureRpc, handleKeepAliveBrowserGesture);
+  server.handle(getBrowserVideoSettingsRpc, handleGetBrowserVideoSettings);
+  server.handle(setBrowserVideoSettingsRpc, handleSetBrowserVideoSettings);
   server.handle(navigateBrowserRpc, handleNavigateBrowser);
   server.handle(resizeBrowserRpc, handleResizeBrowser);
   server.handle(applyDevicePresetRpc, handleApplyDevicePreset);
