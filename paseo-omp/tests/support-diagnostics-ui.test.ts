@@ -4,6 +4,7 @@ import {
   refreshSupportReport,
   supportDiagnosticsViewState,
 } from "../client/support-diagnostics-state";
+import { updateOmpSettings } from "../shared/omp-settings";
 import { OMP_SUPPORT_ISSUE_URL } from "../shared/support-diagnostics";
 
 describe("OMP Help surface state", () => {
@@ -89,7 +90,7 @@ describe("OMP Help surface state", () => {
     expect(OMP_SUPPORT_ISSUE_URL).not.toContain("body=");
   });
 
-  test("adds Help without changing existing global and workspace tabs", () => {
+  test("adds Help without changing existing global tabs; workspace gains the store-level tabs", () => {
     expect(
       surfaceViewsForScope({ workspaceScoped: false, pluginProviderEnabled: true }).map(
         (view) => view.id,
@@ -114,16 +115,41 @@ describe("OMP Help surface state", () => {
       ),
     ).toEqual([
       "overview",
+      "accounts",
+      "mcps",
       "plugin",
       "plugins",
       "rules",
       "skills",
       "extensions",
       "security",
+      "composer",
       "configuration",
       "diagnostics",
       "help",
     ]);
+  });
+
+  test("the workspace panel offers every global tab, and adds only Security", () => {
+    for (const pluginProviderEnabled of [true, false]) {
+      const global = surfaceViewsForScope({ workspaceScoped: false, pluginProviderEnabled });
+      const workspace = surfaceViewsForScope({ workspaceScoped: true, pluginProviderEnabled });
+      const workspaceIds = workspace.map((view) => view.id);
+      for (const view of global) expect(workspaceIds).toContain(view.id);
+      expect(workspace.filter((view) => !global.some((g) => g.id === view.id))).toEqual([
+        { id: "security", label: "Security" },
+      ]);
+    }
+  });
+
+  test("a local-model role set from a workspace is a project override request", () => {
+    const input = updateOmpSettings.input.parse({
+      cwd: "/work/project",
+      revision: "r1",
+      changes: [{ operation: "set", path: "modelRoles", value: { tiny: "local/x" } }],
+    });
+    expect(input.cwd).toBe("/work/project");
+    expect(input.changes[0]).toMatchObject({ operation: "set", path: "modelRoles" });
   });
 
   test("hides the Plugin provider tab, and only it, while the plugin provider is off", () => {

@@ -3,6 +3,7 @@ import type {
   PluginButtonRegistration,
   PluginClientContext,
   PluginSurfaceProps,
+  PluginWorkspacePanelProps,
 } from "@getpaseo/plugin/client";
 import { OmpAstEditCard } from "./client/ast-edit";
 import { ConfigSidebarItem } from "./client/config-sidebar";
@@ -192,12 +193,17 @@ export default function contribute(client: PluginClientContext) {
       openPanel("memory", { location: "explorer" });
     },
   });
+  function WorkspacePanel(props: PluginWorkspacePanelProps) {
+    return (
+      <OmpWorkspacePanel {...props} onComposerPillSettingsChange={applyComposerPillSettings} />
+    );
+  }
   const removeWorkspacePanel = client.addWorkspacePanel({
     id: "workspace",
     title: "OMP",
     icon: "Settings",
     locations: ["workspace", "explorer"],
-    Component: OmpWorkspacePanel,
+    Component: WorkspacePanel,
   });
   const removeOpenWorkspace = client.addCommandCenterItem({
     id: "open-workspace",

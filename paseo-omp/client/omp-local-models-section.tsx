@@ -62,6 +62,7 @@ function status(model: OmpLocalModel): string {
 export function OmpLocalModelsSection({
   styles,
   store,
+  cwd,
   modelRoles,
   settingsRevision,
   rolesPending,
@@ -69,6 +70,8 @@ export function OmpLocalModelsSection({
 }: {
   styles: OmpConfigStyles;
   store: OmpStore | undefined;
+  /** In the workspace panel, a role assignment is a project override of that workspace. */
+  cwd?: string;
   modelRoles: Readonly<Record<string, unknown>>;
   settingsRevision: string | undefined;
   /** Unapplied edits to modelRoles would be overwritten by a role assignment made here. */
@@ -93,11 +96,12 @@ export function OmpLocalModelsSection({
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   });
   const assign = useMutation({
-    mutationKey: ["paseo-omp", "settings", ompStoreKey(store)],
+    mutationKey: ["paseo-omp", "settings", ompStoreKey(store), cwd ?? "global"],
     mutationFn: async (next: Record<string, unknown>) => {
       if (!settingsRevision) throw new Error("OMP settings cannot be edited without a revision.");
       const input = updateOmpSettings.input.parse({
         ...(store ? { store } : {}),
+        ...(cwd ? { cwd } : {}),
         revision: settingsRevision,
         changes: [{ operation: "set", path: "modelRoles", value: next }],
       });

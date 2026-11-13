@@ -248,13 +248,11 @@ function BinarySection({
   theme,
   styles,
   health,
-  workspaceScoped,
   onUpdateInstalled,
 }: {
   theme: PluginSurfaceProps["theme"];
   styles: OmpConfigStyles;
   health: OmpProviderHealth;
-  workspaceScoped: boolean;
   onUpdateInstalled(): void;
 }) {
   const summary = summarizeBinaryHealth(health.binary);
@@ -277,7 +275,7 @@ function BinarySection({
           valueColor={theme.colors.statusDanger}
         />
       ) : null}
-      {health.binary.installed && !workspaceScoped ? (
+      {health.binary.installed ? (
         <OmpUpdateRow styles={styles} theme={theme} onInstalled={onUpdateInstalled} />
       ) : null}
     </SectionCard>
@@ -534,7 +532,7 @@ function ProviderHealthSection({
           cacheHealth: (value) => queryClient.setQueryData(healthKey, value),
           cacheProviders: (value) => queryClient.setQueryData(PROVIDERS_QUERY_KEY, value),
         }),
-        cwd ? undefined : loadUpdateStatus({ force: true }).catch(() => undefined),
+        loadUpdateStatus({ force: true }).catch(() => undefined),
       ]);
       if (update) queryClient.setQueryData(UPDATE_QUERY_KEY, update);
       await queryClient.invalidateQueries({ queryKey: PROMPT_FILES_QUERY_KEY });
@@ -585,7 +583,6 @@ function ProviderHealthSection({
           theme={theme}
           styles={styles}
           health={health.data}
-          workspaceScoped={cwd !== undefined}
           onUpdateInstalled={() => reloadHealth.mutate()}
         />
       ) : null}
@@ -1420,19 +1417,17 @@ function OmpConfigContent({
         </>
       ) : null}
 
-      {view === "accounts" && !cwd ? (
+      {view === "accounts" ? (
         <OmpAccountsSection theme={theme} styles={styles} store={store} />
       ) : null}
 
-      {view === "mcps" && !cwd ? (
-        <OmpMcpsSection theme={theme} styles={styles} store={store} />
-      ) : null}
+      {view === "mcps" ? <OmpMcpsSection theme={theme} styles={styles} store={store} /> : null}
 
       {view === "plugin" ? (
         <>
           <PluginConfigurationSection styles={styles} />
           <ToolBoundaryCard styles={styles} />
-          {!cwd ? <ProviderLaunchSettingsSection theme={theme} /> : null}
+          <ProviderLaunchSettingsSection theme={theme} />
         </>
       ) : null}
 
@@ -1457,7 +1452,7 @@ function OmpConfigContent({
       {view === "security" && cwd ? (
         <OmpSecuritySection styles={styles} cwd={cwd} store={store} />
       ) : null}
-      {view === "composer" && !cwd && onComposerPillSettingsChange ? (
+      {view === "composer" && onComposerPillSettingsChange ? (
         <ComposerPillSettingsSection theme={theme} onChange={onComposerPillSettingsChange} />
       ) : null}
 
@@ -1671,20 +1666,19 @@ function OmpConfigContent({
             store={store}
             cwd={cwd}
           />
-          {cwd === undefined ? (
-            <OmpLocalModelsSection
-              styles={styles}
-              store={store}
-              modelRoles={savedModelRoles}
-              settingsRevision={settingsQuery.data?.revision}
-              rolesPending={drafts.modelRoles !== undefined}
-              onRolesChanged={(catalog) => {
-                if (catalog) queryClient.setQueryData(settingsQueryKey, catalog);
-                void queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
-                void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "config"] });
-              }}
-            />
-          ) : null}
+          <OmpLocalModelsSection
+            styles={styles}
+            store={store}
+            cwd={cwd}
+            modelRoles={savedModelRoles}
+            settingsRevision={settingsQuery.data?.revision}
+            rolesPending={drafts.modelRoles !== undefined}
+            onRolesChanged={(catalog) => {
+              if (catalog) queryClient.setQueryData(settingsQueryKey, catalog);
+              void queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
+              void queryClient.invalidateQueries({ queryKey: ["paseo-omp", "config"] });
+            }}
+          />
         </>
       ) : null}
     </ScrollView>
@@ -1728,7 +1722,11 @@ export function OmpConfigSurface(
   return <OmpStoreContent {...props} />;
 }
 
-export function OmpWorkspacePanel(props: PluginWorkspacePanelProps) {
+export function OmpWorkspacePanel(
+  props: PluginWorkspacePanelProps & {
+    onComposerPillSettingsChange?: (settings: ComposerPillSettings) => void;
+  },
+) {
   const cwd = useWorkspace(props.workspaceId, (workspace) => workspace.directory);
   if (!cwd) {
     return (
