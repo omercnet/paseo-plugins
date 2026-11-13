@@ -19,7 +19,7 @@ function resolveDependencyRoot(packageName) {
 }
 
 const execFileAsync = promisify(execFile);
-const expectedVersion = "0.41.2";
+const expectedVersion = "0.42.0";
 const hostPlatform = platform();
 const hostArch = arch();
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
