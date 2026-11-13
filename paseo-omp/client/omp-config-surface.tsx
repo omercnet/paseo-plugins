@@ -1290,7 +1290,7 @@ function OmpConfigContent({
   }, []);
 
   const save = useMutation({
-    mutationKey: ["paseo-omp", "settings", ompStoreKey(store)],
+    mutationKey: ["paseo-omp", "settings", ompStoreKey(store), cwd ?? "global"],
     mutationFn: async () => {
       const revision = settingsQuery.data?.revision;
       if (!revision) throw new Error("OMP settings cannot be edited without a current revision.");
