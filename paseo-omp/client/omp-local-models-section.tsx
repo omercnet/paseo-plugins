@@ -135,9 +135,10 @@ export function OmpLocalModelsSection({
         </Text>
         {cwd ? (
           <Text style={styles.settingDescription}>
-            Here a role can be set for this workspace but not cleared: OMP keeps the global role
-            unless the project assigns another model. Stop using a role in the global OMP screen, or
-            remove the project's modelRoles override under Configuration.
+            Here a role can be set for this workspace but not cleared. Setting one saves every
+            current role as this project's modelRoles override, so later global changes no longer
+            reach this workspace. To clear a role, remove the project's modelRoles override under
+            Configuration; the workspace then follows the global roles again.
           </Text>
         ) : null}
         {models.error || (models.data && !models.data.available) ? (
