@@ -10,7 +10,7 @@ import {
   tinyModelPath,
 } from "../server/omp-local-models";
 import type { BoundedRun } from "../server/provider-diagnostics";
-import { withLocalModelRole } from "../shared/omp-local-models";
+import { localModelRoleAction, withLocalModelRole } from "../shared/omp-local-models";
 
 function finished(stdout: string, exitCode = 0): BoundedRun {
   return {
@@ -185,5 +185,13 @@ describe("OMP local models", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+  test("a workspace can set a local role but never offers to stop an inherited one", () => {
+    // OMP merges project modelRoles per key, so removing a role from the override leaves the
+    // global role in effect: "Stop using" would succeed and change nothing.
+    expect(localModelRoleAction(false, true)).toBe("use");
+    expect(localModelRoleAction(true, true)).toBe("unavailable");
+    expect(localModelRoleAction(true, false)).toBe("stop");
+    expect(localModelRoleAction(false, false)).toBe("use");
   });
 });

@@ -5,6 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import {
   downloadOmpLocalModel,
   listOmpLocalModels,
+  localModelRoleAction,
   type OmpLocalModel,
   withLocalModelRole,
 } from "../shared/omp-local-models";
@@ -62,6 +63,7 @@ function status(model: OmpLocalModel): string {
 export function OmpLocalModelsSection({
   styles,
   store,
+  cwd,
   modelRoles,
   settingsRevision,
   rolesPending,
@@ -69,6 +71,8 @@ export function OmpLocalModelsSection({
 }: {
   styles: OmpConfigStyles;
   store: OmpStore | undefined;
+  /** In the workspace panel, a role assignment is a project override of that workspace. */
+  cwd?: string;
   modelRoles: Readonly<Record<string, unknown>>;
   settingsRevision: string | undefined;
   /** Unapplied edits to modelRoles would be overwritten by a role assignment made here. */
@@ -93,11 +97,12 @@ export function OmpLocalModelsSection({
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   });
   const assign = useMutation({
-    mutationKey: ["paseo-omp", "settings", ompStoreKey(store)],
+    mutationKey: ["paseo-omp", "settings", ompStoreKey(store), cwd ?? "global"],
     mutationFn: async (next: Record<string, unknown>) => {
       if (!settingsRevision) throw new Error("OMP settings cannot be edited without a revision.");
       const input = updateOmpSettings.input.parse({
         ...(store ? { store } : {}),
+        ...(cwd ? { cwd } : {}),
         revision: settingsRevision,
         changes: [{ operation: "set", path: "modelRoles", value: next }],
       });
@@ -128,6 +133,14 @@ export function OmpLocalModelsSection({
           if the local model fails, the session stays untitled. The first download can also install
           OMP's inference runtime, so it may take longer and use more disk than the model size.
         </Text>
+        {cwd ? (
+          <Text style={styles.settingDescription}>
+            Here a role can be set for this workspace but not cleared. Setting one saves every
+            current role as this project's modelRoles override, so later global changes no longer
+            reach this workspace. To clear a role, remove the project's modelRoles override under
+            Configuration; the workspace then follows the global roles again.
+          </Text>
+        ) : null}
         {models.error || (models.data && !models.data.available) ? (
           <Text style={styles.error}>OMP could not list its local models.</Text>
         ) : null}
@@ -194,15 +207,16 @@ export function OmpLocalModelsSection({
               {ROLES.map(({ role, label }) => {
                 const selector = `local/${model.key}`;
                 const assigned = modelRoles[role] === selector;
+                const action = localModelRoleAction(assigned, cwd !== undefined);
                 return (
                   <Choice
                     key={role}
                     styles={styles}
                     label={assigned ? `Using for ${label}` : `Use for ${label}`}
-                    accessibilityLabel={`${assigned ? "Stop using" : "Use"} ${model.label} for ${label}`}
+                    accessibilityLabel={`${action === "use" ? "Use" : action === "stop" ? "Stop using" : "Using"} ${model.label} for ${label}`}
                     selected={assigned}
-                    disabled={blocked}
-                    onPress={() => assignRole(role, assigned ? null : selector)}
+                    disabled={blocked || action === "unavailable"}
+                    onPress={() => assignRole(role, action === "stop" ? null : selector)}
                   />
                 );
               })}

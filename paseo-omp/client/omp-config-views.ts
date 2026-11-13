@@ -29,10 +29,7 @@ const SURFACE_VIEWS: readonly { id: OmpConfigSurfaceView; label: string }[] = [
   { id: "help", label: "Help" },
 ];
 
-/** Views that belong to the OMP store, not to a workspace's project settings. */
-const STORE_ONLY_VIEWS: readonly OmpConfigSurfaceView[] = ["composer", "accounts", "mcps"];
-
-/** Views about one project, which the global OMP screen has no project for. */
+/** Views about one project: the workspace panel adds them, and the global OMP screen has no project for them. Every other view is on both surfaces. */
 const WORKSPACE_ONLY_VIEWS: readonly OmpConfigSurfaceView[] = ["security"];
 
 interface SurfaceScope {
@@ -42,7 +39,7 @@ interface SurfaceScope {
 }
 
 export function surfaceViewsForScope({ workspaceScoped, pluginProviderEnabled }: SurfaceScope) {
-  const hidden = workspaceScoped ? STORE_ONLY_VIEWS : WORKSPACE_ONLY_VIEWS;
+  const hidden = workspaceScoped ? [] : WORKSPACE_ONLY_VIEWS;
   return SURFACE_VIEWS.filter(
     (candidate) =>
       !hidden.includes(candidate.id) && (pluginProviderEnabled || candidate.id !== "plugin"),
