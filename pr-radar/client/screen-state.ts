@@ -50,3 +50,18 @@ export function needsYouSummary(
   const items = rows.filter((row) => row.bucket === "needs-you");
   return { items, label: loading ? "…" : `${items.length}${warnings.length ? "+" : ""}` };
 }
+
+export const INBOX_CAP_NOTE = "Results reached the 100-item inbox cap.";
+
+/**
+ * The completeness note under the controls. It shows on both tabs, so a failed issue search or a
+ * capped result list is never read as "nothing here"; the update controls stay PR-only.
+ */
+export function viewerCoverage(
+  tab: "prs" | "issues",
+  viewerData: { coverageNote: string; truncated: boolean; updates: number } | null | undefined,
+) {
+  if (!viewerData) return null;
+  const text = `${viewerData.coverageNote}${viewerData.truncated ? ` ${INBOX_CAP_NOTE}` : ""}`;
+  return { text, showUpdates: tab === "prs" && viewerData.updates > 0 };
+}

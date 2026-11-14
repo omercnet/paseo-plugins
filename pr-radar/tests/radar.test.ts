@@ -20,7 +20,12 @@ import {
   type RadarRow,
   sortRows,
 } from "../client/radar";
-import { needsYouSummary, parseRadarParams, radarWarnings } from "../client/screen-state";
+import {
+  needsYouSummary,
+  parseRadarParams,
+  radarWarnings,
+  viewerCoverage,
+} from "../client/screen-state";
 import { type GitHubInboxItem, GitHubInboxItemSchema } from "../shared/viewer-scope";
 
 function agent(overrides: Partial<RadarAgent> = {}): RadarAgent {
@@ -1240,5 +1245,32 @@ describe("display helpers", () => {
     expect(formatAge(new Date(now - 30 * 60_000).toISOString(), now)).toBe("30m");
     expect(formatAge(new Date(now - 90 * 60_000).toISOString(), now)).toBe("1h");
     expect(formatAge(new Date(now - 48 * 60 * 60_000).toISOString(), now)).toBe("2d");
+  });
+});
+
+describe("viewerCoverage", () => {
+  const failed = {
+    coverageNote: "1 GitHub issue search request failed; issue list may be incomplete.",
+    truncated: true,
+    updates: 3,
+  };
+
+  test("shows the failure note and the cap warning on the Issues tab, without update controls", () => {
+    expect(viewerCoverage("issues", failed)).toEqual({
+      text: `${failed.coverageNote} Results reached the 100-item inbox cap.`,
+      showUpdates: false,
+    });
+  });
+
+  test("keeps the update controls on the PR tab only when there are updates", () => {
+    expect(viewerCoverage("prs", failed)?.showUpdates).toBe(true);
+    expect(viewerCoverage("prs", { ...failed, updates: 0 })?.showUpdates).toBe(false);
+  });
+
+  test("omits the cap warning when results are complete and shows nothing without viewer data", () => {
+    expect(viewerCoverage("issues", { ...failed, truncated: false })?.text).toBe(
+      failed.coverageNote,
+    );
+    expect(viewerCoverage("issues", undefined)).toBeNull();
   });
 });

@@ -50,6 +50,7 @@ import {
   parseRadarParams,
   type RadarFilter,
   VIEWER_URL_LIMIT,
+  viewerCoverage,
 } from "./screen-state";
 import { SortControls } from "./sort-controls";
 import { type StartAgentLaunchRequest, StartAgentModal } from "./start-agent-modal";
@@ -1002,6 +1003,7 @@ export function PrRadar({
     { label: "Agent PRs", value: activeCount },
   ];
 
+  const coverage = viewerCoverage(activeTab, viewerData);
   const header = (
     <View style={styles.header}>
       <View style={styles.signalLine}>
@@ -1176,19 +1178,16 @@ export function PrRadar({
         </>
       ) : null}
       <SortControls sortKey={sortKey} onSort={setSortKey} styles={styles} />
-      {activeTab === "prs" && viewerData ? (
+      {coverage ? (
         <View style={{ gap: 7 }}>
-          <Text style={styles.heroDetail}>
-            {viewerData.coverageNote}
-            {viewerData.truncated ? " Results reached the 100-item inbox cap." : ""}
-          </Text>
-          {viewerData.updates > 0 ? (
+          <Text style={styles.heroDetail}>{coverage.text}</Text>
+          {coverage.showUpdates && viewerData ? (
             <Text style={styles.heroDetail}>
               These are PR state changes detected in the {windowDays}-day view. Marking them seen
               only clears PR Radar badges; it does not change GitHub notifications or pull requests.
             </Text>
           ) : null}
-          {viewerData.updates > 0 ? (
+          {coverage.showUpdates && viewerData ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Mark ${viewerData.updates} detected pull request updates as seen`}
