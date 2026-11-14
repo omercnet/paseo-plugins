@@ -95,8 +95,8 @@ const KNOWN_ROUTING_SCRIPTS: readonly ComboOption[] = [
     value: "~/src/paseo-plugins-omercnet/pr-radar/examples/pr-radar-route.py",
   },
   {
-    label: "djbclark-ade: route_agent.py",
-    value: "~/src/djbclark-ade/bin/route_agent.py",
+    label: "djbclark-ade: pr-radar-route (if installed)",
+    value: "~/src/djbclark-ade/bin/pr-radar-route",
   },
 ];
 
