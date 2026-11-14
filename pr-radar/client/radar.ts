@@ -840,6 +840,28 @@ export function restrictRoutedLaunch(routed: {
   return result;
 }
 
+/**
+ * A profile a routing script names is routed input too: its modeId, options and featureValues
+ * reach the agent config. It is accepted only when the profile asks for nothing a script may not
+ * set itself; otherwise the caller keeps the profile the user chose and reports it as ignored.
+ */
+export function vetRoutedProfile(
+  profiles: readonly (AgentProfileLike & { name: string })[],
+  routedName: string | undefined,
+): { profileName?: string; ignored: string[] } {
+  const wanted = routedName?.trim();
+  if (!wanted) return { ignored: [] };
+  const profile = profiles.find(
+    (candidate) => candidate.name.toLowerCase() === wanted.toLowerCase(),
+  );
+  const modeOk = !profile?.modeId?.trim() || ROUTED_MODE_IDS.includes(profile.modeId.trim());
+  const keysOk = [profile?.options, profile?.featureValues].every((bag) =>
+    Object.keys(bag ?? {}).every((key) => ROUTED_OPTION_KEYS.includes(key)),
+  );
+  if (!profile || !modeOk || !keysOk) return { ignored: [`profile ${wanted}`] };
+  return { profileName: profile.name, ignored: [] };
+}
+
 export interface AgentLaunchOverrides {
   provider?: string;
   model?: string;

@@ -405,6 +405,7 @@ export function useAgentLaunchOptions(enabled = true) {
   }, [configQuery.data]);
 
   return {
+    profiles: configQuery.data?.agentProfiles ?? [],
     profileOptions,
     providerOptions,
     modelOptions,

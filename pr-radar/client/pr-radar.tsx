@@ -44,6 +44,7 @@ import {
   type SortKey,
   sortRows,
   splitDraftRows,
+  vetRoutedProfile,
 } from "./radar";
 import {
   DIRECTORY_PARTIAL,
@@ -368,12 +369,19 @@ export function PrRadar({
                 },
               },
             });
-            if (routed.profile) profileName = routed.profile;
+            const vetted = routed.profile
+              ? vetRoutedProfile(
+                  (await paseo.config.get()).config.agentProfiles ?? [],
+                  routed.profile,
+                )
+              : { ignored: [] as string[] };
+            if (vetted.profileName) profileName = vetted.profileName;
             overrides = { ...overrides, ...routedProviderModel(overrides, routed) };
             if (routed.thinkingOptionId) {
               overrides = { ...overrides, thinkingOptionId: routed.thinkingOptionId };
             }
             const restricted = restrictRoutedLaunch(routed);
+            restricted.ignored.push(...vetted.ignored);
             if (restricted.modeId) overrides = { ...overrides, modeId: restricted.modeId };
             if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
             if (restricted.options) overrides = { ...overrides, options: restricted.options };

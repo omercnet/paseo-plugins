@@ -6,6 +6,7 @@ import {
   ROUTED_MODE_IDS,
   restrictRoutedLaunch,
   routedProviderModel,
+  vetRoutedProfile,
 } from "../client/radar";
 
 describe("restrictRoutedLaunch", () => {
@@ -107,5 +108,37 @@ describe("routedProviderModel", () => {
     const picked = routedProviderModel({ provider: "claude" }, { provider: "codex" });
     const config = buildAgentConfig(undefined, { provider: "claude", model: "sonnet", ...picked });
     expect(config.provider).toBe("codex");
+  });
+});
+
+describe("vetRoutedProfile", () => {
+  const yolo = { name: "yolo", provider: "claude", modeId: "bypassPermissions" };
+  const safe = { name: "Safe", provider: "claude", modeId: "plan", options: { contextMode: "x" } };
+  const base = { name: "Base", provider: "claude" };
+
+  test("a script cannot reach bypassPermissions by naming a profile", () => {
+    const vetted = vetRoutedProfile([base, yolo], "YOLO");
+    expect(vetted).toEqual({ ignored: ["profile YOLO"] });
+    // The caller keeps the user's profile, so the created config never carries the bypass mode.
+    const config = buildAgentConfig(base, {});
+    expect(config).not.toHaveProperty("modeId", "bypassPermissions");
+  });
+
+  test("rejects a profile whose options or feature values hold other keys", () => {
+    for (const extra of [
+      { options: { dangerouslySkipPermissions: true } },
+      { featureValues: { fast: true } },
+    ]) {
+      expect(vetRoutedProfile([{ ...base, ...extra }], "Base")).toEqual({
+        ignored: ["profile Base"],
+      });
+    }
+  });
+
+  test("rejects an unknown profile and accepts a safe one", () => {
+    expect(vetRoutedProfile([base], "ghost")).toEqual({ ignored: ["profile ghost"] });
+    expect(vetRoutedProfile([safe, base], "safe")).toEqual({ profileName: "Safe", ignored: [] });
+    expect(vetRoutedProfile([base], "Base")).toEqual({ profileName: "Base", ignored: [] });
+    expect(vetRoutedProfile([base], undefined)).toEqual({ ignored: [] });
   });
 });

@@ -12,6 +12,7 @@ import {
   type RadarRow,
   restrictRoutedLaunch,
   routedProviderModel,
+  vetRoutedProfile,
 } from "./radar";
 
 export interface StartAgentLaunchRequest {
@@ -57,6 +58,7 @@ export function StartAgentModal({
   const fetchDirs = useRpc(listLocalDirs);
   const invokeRouter = useRpc(runRoutingScript);
   const {
+    profiles,
     profileOptions,
     providerOptions,
     modelOptions,
@@ -170,7 +172,10 @@ export function StartAgentModal({
       if (activeRowIdRef.current !== targetRow.id || routingSeqRef.current !== invocationSeq) {
         return;
       }
-      if (result.profile && !editedFieldsRef.current.has("profile")) setProfileName(result.profile);
+      const vetted = vetRoutedProfile(profiles, result.profile);
+      if (vetted.profileName && !editedFieldsRef.current.has("profile")) {
+        setProfileName(vetted.profileName);
+      }
       const routedPick = routedProviderModel({ provider: settings.defaultProvider }, result);
       if (routedPick.provider !== undefined && !editedFieldsRef.current.has("provider")) {
         setProvider(routedPick.provider);
@@ -182,6 +187,7 @@ export function StartAgentModal({
         setEffort(result.thinkingOptionId);
       }
       const restricted = restrictRoutedLaunch(result);
+      restricted.ignored.push(...vetted.ignored);
       if (restricted.modeId && !editedFieldsRef.current.has("modeId")) setModeId(restricted.modeId);
       if (result.contextMode && !editedFieldsRef.current.has("contextMode")) {
         setContextMode(result.contextMode);
