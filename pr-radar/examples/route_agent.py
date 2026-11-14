@@ -132,9 +132,19 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ade_config  # versioned config and isolated legacy routing override
-import ade_gates  # the frontier gate: config/gates.toml [frontier], docs/gates.md
-import model_tiers as _model_tiers  # config/model-tiers.toml roles → ids
+try:
+    import ade_config  # versioned config and isolated legacy routing override
+    import ade_gates  # the frontier gate: config/gates.toml [frontier], docs/gates.md
+    import model_tiers as _model_tiers  # config/model-tiers.toml roles → ids
+except ImportError as _ade_missing:
+    # Not optional: routing is these modules plus config/ (a copy of this file alone, such as pr-radar's
+    # examples/route_agent.py, has neither). Run as a script that is one stderr line and exit 2, not a traceback;
+    # imported by another module the ImportError stays (a caller can catch it).
+    if __name__ != "__main__":
+        raise
+    sys.stderr.write("route_agent.py: cannot route standalone, the djbclark-ade modules (ade_config, ade_gates, "
+                     f"model_tiers) and config/ are not beside this file ({_ade_missing})\n")
+    raise SystemExit(2) from None
 
 DEFAULT_SNAPSHOT = Path.home() / ".cache" / "aiuse" / "snapshots" / "latest.json"
 SNAPSHOT = Path(os.environ.get("AIUSE_SNAPSHOT") or DEFAULT_SNAPSHOT)
@@ -816,7 +826,8 @@ def _clean_age(value: Any) -> float | None:
 
 
 def _merge_caps(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str, Any]:
-    """Per-key tighter of two sublimit maps (a cap never loosens by merge order)."""
+    """Per-key tighter of two sublimit/window maps (a cap never loosens by merge order). A known reading beats an unknown
+    (None) one, as `remaining` does when accounts are folded: an unmeasured account adds no headroom to the pool figure."""
     out = dict(a or {})
     for k, v in (b or {}).items():
         out[k] = _tighter(out.get(k), v) if k in out else v
@@ -1065,14 +1076,18 @@ def _providers_from_accounts(accounts: list[Any], age: float | None) -> dict[str
                                                   "window_minutes")}
             providers[key] = {
                 "remaining": None if worst is None else round(float(worst), 1),
-                "windows": detail, "sublimits": sublimits, "age_s": acct_age,
+                # several accounts: every account's windows and model sublimits survive, the tighter reading per key
+                "windows": _merge_caps(prior.get("windows"), detail),
+                "sublimits": _merge_caps(prior.get("sublimits"), sublimits),
+                "age_s": acct_age,
                 "billing_kind": acct.get("billing_kind"),
                 "pace_ratio": bind.get("pace_ratio"),
                 "resets_at": bind.get("resets_at"),
                 "window_minutes": bind.get("window_minutes"),
             }
-            if sub_resets.get(key):
-                providers[key]["sublimit_resets"] = dict(sub_resets[key])
+            resets = _later_resets(prior.get("sublimit_resets"), sub_resets.get(key))
+            if resets:
+                providers[key]["sublimit_resets"] = resets
     return providers
 
 

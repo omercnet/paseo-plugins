@@ -14,9 +14,13 @@ never passed on):
    "settings": {...}}                           (Issues-tab items arrive the same way, reviewRequestedFromMe false)
 stdout, exit 0: one JSON object with any of {provider, model, thinkingOptionId, modeId, reason}. `modeId` stays
 exactly as routed: yolo/bypassPermissions for every PR, bot and non-djbclark authors included (operator ruling
-2026-11-14). `contextMode` and `profileName` are never set (route_agent picks none).
+2026-11-14). `contextMode` and `profile` (PR Radar's launch-profile field) are never set (route_agent picks none).
+A dispatch with no `--provider` and a `<`/`>` (`cursor-cloud launch --repo <url>`), or a provider, model, thinking or mode
+value with one (`--provider agent/<id from: ...>`), is a template and is refused, never passed on as an override.
 Failure: non-zero exit, a reason on stderr, nothing on stdout; PR Radar then falls back to its own defaults and
-shows the reason. A router that exits non-zero has its stderr passed through and its exit code returned.
+shows the reason. A router that exits non-zero has its exit code returned; the reason is its JSON `reason` on stdout
+(route_agent's "no eligible service with headroom") with the last stderr line after it in parentheses, else its
+stderr as is, else "route_agent.py exited with N".
 
 Router choice (first match): $PR_RADAR_ROUTE_AGENT (tests); `route_agent.py` beside this script when the script's
 parent directory has config/routing.toml (a djbclark-ade checkout or worktree); ~/src/djbclark-ade/bin/route_agent.py
@@ -36,6 +40,7 @@ from pathlib import Path
 
 ROUTER_TIMEOUT_SECONDS = 25
 MAX_STDIN_BYTES = 8 * 1024 * 1024
+PLACEHOLDER = re.compile(r"[<>]")                            # a template slot in a dispatch value: `<id from: ...>`
 SANE_REPO = re.compile(r"[a-z0-9._][a-z0-9._-]*", re.ASCII)  # no leading "-": route_agent's argparse would read it as an option
 
 
@@ -109,6 +114,23 @@ def parse_dispatch(dispatch: str) -> dict[str, str]:
     return out
 
 
+def failure_reason(proc: subprocess.CompletedProcess) -> str:
+    """Why a non-zero router run failed. route_agent prints its own reason (the no-headroom case) as JSON on stdout and
+    keeps stderr for notes (aiuse fell back to the snapshot file...): the JSON `reason` leads, the last stderr line
+    follows in parentheses; with no JSON reason the stderr is passed through whole; else the exit code."""
+    stderr = (proc.stderr or "").rstrip("\n")
+    try:
+        answer = json.loads(proc.stdout)
+    except ValueError:
+        answer = None
+    reason = answer.get("reason") if isinstance(answer, dict) else None
+    if isinstance(reason, str) and reason.strip():
+        text = " ".join(reason.split())[:300]
+        note = " ".join(stderr.strip().splitlines()[-1].split())[:200] if stderr.strip() else ""
+        return f"{text} (router: {note})" if note else text
+    return stderr or f"route_agent.py exited with {proc.returncode}"
+
+
 def choose_router() -> Path:
     """The route_agent.py to run (module docstring, "Router choice")."""
     override = os.environ.get("PR_RADAR_ROUTE_AGENT")
@@ -137,8 +159,7 @@ def route(kind: str, repo: str, router: Path | None = None, timeout: float = ROU
     except OSError as exc:
         raise RouteFailure(f"cannot run route_agent.py: {exc.strerror or exc}") from None
     if proc.returncode != 0:
-        raise RouteFailure((proc.stderr or "").rstrip("\n") or f"route_agent.py exited with {proc.returncode}",
-                           proc.returncode or 1)
+        raise RouteFailure(failure_reason(proc), proc.returncode or 1)
     try:
         answer = json.loads(proc.stdout)
     except ValueError:
@@ -146,8 +167,18 @@ def route(kind: str, repo: str, router: Path | None = None, timeout: float = ROU
     if not isinstance(answer, dict):
         raise RouteFailure("route_agent.py printed a non-object answer")
     result = parse_dispatch(answer.get("dispatch", ""))
+    dispatch = answer.get("dispatch")
+    if isinstance(dispatch, str) and PLACEHOLDER.search(dispatch) and "provider" not in result:
+        # a launch line with no `--provider` (cursor-cloud's `launch --repo <url> ...`) is a template as a whole; its `agent`
+        # is not a Paseo provider, so it must not become the provider override below
+        raise RouteFailure(f"route_agent.py gave a template dispatch ({dispatch[:60]!r}), not a launch value; "
+                           "refusing to override the launch with it")
     if "provider" not in result and answer.get("agent") and isinstance(answer["agent"], str):
         result["provider"] = answer["agent"]
+    for field, value in result.items():
+        if PLACEHOLDER.search(value):
+            raise RouteFailure(f"route_agent.py gave a template {field} ({value[:60]!r}), not a launch value; "
+                               "refusing to override the launch with it")
     if answer.get("why") and isinstance(answer["why"], str):
         result["reason"] = f"[{kind}] {answer['why']}"
     if not result:
