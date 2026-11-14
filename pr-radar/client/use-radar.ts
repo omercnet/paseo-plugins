@@ -85,7 +85,6 @@ export function useRadar(hostId: string, windowDays = 30, live = true) {
     data: directory.data,
     error: directory.error,
     isPending: directory.isPending,
-    isFetching: directory.isFetching || viewer.isFetching,
     refetch: directory.refetch,
     viewerData: viewer.data,
     viewerError: viewer.data?.error ?? viewer.error,

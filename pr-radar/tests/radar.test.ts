@@ -605,6 +605,72 @@ describe("directory invalidation observations", () => {
       }
     });
   });
+
+  describe("user agent churn", () => {
+    const shown = {
+      workspaceId: "workspace-1",
+      title: "Fix login",
+      status: "running",
+      requiresAttention: false,
+      attentionReason: null,
+      pendingPermissions: [],
+      updatedAt: "2026-11-14T10:00:00.000Z",
+    };
+    const upsert = (fields: Record<string, unknown> = {}) => ({
+      type: "agent_update",
+      payload: { kind: "upsert", agent: { id: "user", ...shown, ...fields } },
+    });
+
+    async function invalidationsAfter(messages: unknown[]) {
+      vi.useFakeTimers();
+      const agents = ownedDirectoryObservation();
+      const paseo = paseoWithOwnedDirectoryObservations(agents, ownedDirectoryObservation());
+      const invalidateDirectoryState = vi.fn();
+      const cleanup = observeDirectoryInvalidation(paseo, invalidateDirectoryState, 500);
+      try {
+        await Promise.resolve();
+        for (const message of messages) {
+          agents.update(message);
+          vi.advanceTimersByTime(500);
+        }
+        return invalidateDirectoryState.mock.calls.length;
+      } finally {
+        cleanup();
+        vi.useRealTimers();
+      }
+    }
+
+    // The daemon re-publishes a running agent with a fresh updatedAt on every usage report.
+    test("ignores repeat upserts that change nothing a row shows", async () => {
+      expect(
+        await invalidationsAfter([
+          upsert(),
+          upsert({ lastUsage: { inputTokens: 10 }, updatedAt: "2026-11-14T10:00:01.000Z" }),
+          upsert({ lastUsage: { inputTokens: 20 }, updatedAt: "2026-11-14T10:00:02.000Z" }),
+        ]),
+      ).toBe(1);
+    });
+
+    test.each([
+      ["status", { status: "idle" }],
+      ["title", { title: "Fix logout" }],
+      ["attention", { requiresAttention: true, attentionReason: "permission" }],
+      ["permissions", { pendingPermissions: [{ id: "permission-1" }] }],
+      ["workspace", { workspaceId: "workspace-2" }],
+    ])("invalidates when the %s changes", async (_name, fields) => {
+      expect(await invalidationsAfter([upsert(), upsert(fields)])).toBe(2);
+    });
+
+    test("invalidates again for an agent that was removed and came back", async () => {
+      expect(
+        await invalidationsAfter([
+          upsert(),
+          { type: "agent_update", payload: { kind: "remove", agentId: "user" } },
+          upsert(),
+        ]),
+      ).toBe(3);
+    });
+  });
 });
 
 describe("PR triage", () => {

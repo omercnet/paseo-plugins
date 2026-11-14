@@ -155,9 +155,13 @@ export function PrRadar({
     issues,
     viewerData,
     viewerError,
-    isFetching,
     refetchViewer,
   } = useRadar(host.id, windowDays);
+  // Only a press shows "Scanning": agent updates and the poll refetch in the background, and keying
+  // the label on those flashed it every second or two while agents ran.
+  const refreshMutation = useMutation({
+    mutationFn: () => Promise.all([refetch(), refetchViewer()]),
+  });
 
   useEffect(() => {
     const clock = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
@@ -1036,16 +1040,18 @@ export function PrRadar({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Refresh pull request status"
-            accessibilityState={{ busy: isFetching }}
-            disabled={isFetching}
-            onPress={() => void Promise.all([refetch(), refetchViewer()])}
+            accessibilityState={{ busy: refreshMutation.isPending }}
+            disabled={refreshMutation.isPending}
+            onPress={() => refreshMutation.mutate()}
             style={({ pressed }) => [
               styles.refresh,
               styles.refreshButton,
               pressed && styles.refreshPressed,
             ]}
           >
-            <Text style={styles.refreshText}>{isFetching ? "Scanning" : "Refresh"}</Text>
+            <Text style={styles.refreshText}>
+              {refreshMutation.isPending ? "Scanning" : "Refresh"}
+            </Text>
           </Pressable>
         </View>
       </View>
