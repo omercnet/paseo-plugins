@@ -535,6 +535,8 @@ export async function prepareWorkspaceCwdHandler(
 
   if (!baseRoot) {
     baseRoot = await resolveSuggestedClonePath(expandedSourceDir, input.repository);
+    // A symlink in the source directory can point at a checkout elsewhere.
+    await assertInsideSourceDir(realSourceDir, baseRoot, "Base checkout");
   }
 
   let matchingRemote = "origin";
@@ -615,6 +617,8 @@ export async function prepareWorkspaceCwdHandler(
     (wt) => wt.branch === localBranchName && resolve(wt.path) !== resolvedBaseRoot,
   );
   if (existing) {
+    // `git worktree list` can name a worktree anywhere on disk.
+    await assertInsideSourceDir(realSourceDir, existing.path, "Existing worktree");
     if (input.itemKind === "pr") {
       await refreshPrWorktree(
         baseRoot,

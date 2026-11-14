@@ -312,6 +312,33 @@ describe("gh environment", () => {
   });
 });
 
+describe("source directory confinement", () => {
+  test("refuses a derived base checkout that is a symlink to outside the source directory", async () => {
+    const root = makeRoot();
+    const outside = makeRoot();
+    initRepo(join(outside, "real"), "https://github.com/owner/repo.git");
+    symlinkSync(join(outside, "real"), join(root, "repo"));
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, cwdMode: "CWD-BASE" })),
+    ).rejects.toThrow(/Base checkout .* is outside the configured source directory/);
+    expect(gitIn(join(outside, "real"), ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("does not refresh or return an existing worktree outside the source directory", async () => {
+    const root = makeRoot();
+    const outside = makeRoot();
+    const { repoDir, prHead } = makePullableRepo(root);
+    const stray = join(outside, "stray-wt");
+    const before = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["worktree", "add", "-b", "pr-radar/pr-7", stray, before]);
+    await expect(prepare(request({ targetDir: repoDir }))).rejects.toThrow(
+      /Existing worktree .* is outside the configured source directory/,
+    );
+    expect(gitIn(stray, ["rev-parse", "HEAD"])).toBe(before);
+    expect(before).not.toBe(prHead);
+  });
+});
+
 describe("git hardening", () => {
   test("a PR's own hook does not run when the plugin checks it out", async () => {
     const root = makeRoot();
