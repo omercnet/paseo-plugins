@@ -11,6 +11,7 @@ import type {
   viewerScope,
 } from "../shared/viewer-scope";
 import { mergeChanges } from "./changes";
+import { ghEnv } from "./workspace-ops";
 
 const execFileAsync = promisify(execFile);
 const SEARCH_LIMIT = 100;
@@ -73,7 +74,7 @@ async function runGh(args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<stri
   const { stdout } = await execFileAsync("gh", args, {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: ghEnv(),
   });
   return stdout.trim();
 }

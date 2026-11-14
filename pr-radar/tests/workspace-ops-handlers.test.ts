@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   listLocalDirsHandler,
@@ -89,22 +89,33 @@ function initRepo(dir: string, remoteUrl: string | null): void {
 
 /**
  * A checkout whose `origin` is `git@github.com:owner/repo.git` (so the repository match works).
- * `git remote get-url` expands `insteadOf` rewrites, so fetches are served instead by a fake ssh
- * (GIT_SSH_COMMAND) that runs upload-pack on a local bare repository carrying `refs/pull/7/head`.
+ * `git remote get-url` expands `insteadOf` rewrites, so fetches are served instead by a fake `ssh`
+ * first on PATH (the plugin passes git no GIT_SSH_COMMAND) that runs upload-pack on a local bare
+ * repository carrying `refs/pull/7/head`. `prFiles` are extra files in the PR commit.
  */
-function makePullableRepo(root: string): { repoDir: string; bareDir: string; prHead: string } {
+function makePullableRepo(
+  root: string,
+  prFiles: Record<string, { content: string; mode?: number }> = {},
+): { repoDir: string; bareDir: string; prHead: string } {
   const repoDir = join(root, "repo");
   const bareDir = join(root, "bare.git");
   initRepo(repoDir, "git@github.com:owner/repo.git");
   mkdirSync(bareDir, { recursive: true });
   gitIn(bareDir, ["init", "--bare", "-b", "main"]);
-  const fakeSsh = join(root, "fake-ssh");
-  writeFileSync(fakeSsh, '#!/bin/sh\nexec git upload-pack "$FAKE_BARE_REPO"\n');
+  const sshDir = join(root, "fake-ssh-bin");
+  mkdirSync(sshDir);
+  const fakeSsh = join(sshDir, "ssh");
+  writeFileSync(fakeSsh, `#!/bin/sh\nexec git upload-pack '${bareDir}'\n`);
   chmodSync(fakeSsh, 0o755);
-  vi.stubEnv("GIT_SSH_COMMAND", fakeSsh);
-  vi.stubEnv("FAKE_BARE_REPO", bareDir);
+  vi.stubEnv("PATH", `${sshDir}:${process.env.PATH ?? ""}`);
   writeFileSync(join(repoDir, "pr.txt"), "pr one\n");
   gitIn(repoDir, ["add", "pr.txt"]);
+  for (const [name, file] of Object.entries(prFiles)) {
+    mkdirSync(dirname(join(repoDir, name)), { recursive: true });
+    writeFileSync(join(repoDir, name), file.content);
+    chmodSync(join(repoDir, name), file.mode ?? 0o644);
+    gitIn(repoDir, ["add", name]);
+  }
   gitIn(repoDir, ["commit", "-m", "pr head"]);
   const prHead = gitIn(repoDir, ["rev-parse", "HEAD"]);
   gitIn(repoDir, ["push", bareDir, "HEAD:refs/pull/7/head"]);
@@ -297,6 +308,46 @@ describe("gh environment", () => {
     const seen = readFileSync(envLog, "utf8");
     expect(seen).toContain("GH_TOKEN=gh-token-value");
     expect(seen).not.toContain("PR_RADAR_TEST_SECRET");
+  });
+});
+
+describe("git hardening", () => {
+  test("a PR's own hook does not run when the plugin checks it out", async () => {
+    const root = makeRoot();
+    const marker = join(root, "hook-ran");
+    const { repoDir } = makePullableRepo(root, {
+      ".husky/post-checkout": { content: `#!/bin/sh\ntouch '${marker}'\n`, mode: 0o755 },
+    });
+    gitIn(repoDir, ["config", "core.hooksPath", ".husky"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(join(repoDir, ".husky/post-checkout"))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("hands git no secret from the daemon environment", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    const realGit = execFileSync("which", ["git"]).toString().trim();
+    const binDir = join(root, "git-bin");
+    mkdirSync(binDir);
+    const envLog = join(root, "git-env.txt");
+    const wrapper = join(binDir, "git");
+    writeFileSync(wrapper, `#!/bin/sh\nenv >> '${envLog}'\nexec '${realGit}' "$@"\n`);
+    chmodSync(wrapper, 0o755);
+    vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
+    vi.stubEnv("PR_RADAR_TEST_SECRET", "leak-me");
+    vi.stubEnv("GIT_SSH_COMMAND", "evil-ssh");
+    vi.stubEnv("SSL_CERT_FILE", "/etc/ssl/test-ca.pem");
+    await prepare(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+    );
+    const seen = readFileSync(envLog, "utf8");
+    expect(seen).toContain("PATH=");
+    expect(seen).toContain("SSL_CERT_FILE=/etc/ssl/test-ca.pem");
+    expect(seen).not.toContain("PR_RADAR_TEST_SECRET");
+    expect(seen).not.toContain("GIT_SSH_COMMAND");
   });
 });
 

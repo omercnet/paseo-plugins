@@ -61,6 +61,11 @@ const GH_ENV_KEYS: ReadonlySet<string> = new Set([
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
   "SSH_AUTH_SOCK",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "XDG_RUNTIME_DIR",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "GIT_SSL_CAINFO",
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",
@@ -69,6 +74,16 @@ const GH_ENV_KEYS: ReadonlySet<string> = new Set([
   "https_proxy",
   "no_proxy",
   "all_proxy",
+]);
+
+// git gets the same set plus the variables that locate its configuration. GIT_SSH_COMMAND, GIT_DIR
+// and similar redirections are deliberately left out.
+const GIT_ENV_KEYS: ReadonlySet<string> = new Set([
+  ...GH_ENV_KEYS,
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_ALLOW_PROTOCOL",
 ]);
 
 function allowListedEnv(extraKeys: ReadonlySet<string>): NodeJS.ProcessEnv {
@@ -100,31 +115,29 @@ async function isGitRepo(dir: string): Promise<boolean> {
   return exists(join(dir, ".git"));
 }
 
-function cleanGitEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_COMMON_DIR;
-  delete env.GIT_INDEX_FILE;
-  delete env.GIT_OBJECT_DIRECTORY;
-  delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
-  return env;
-}
+// Hooks come from the repository, and a checked-out PR is untrusted: its own hooks (a husky
+// `core.hooksPath`, say) must not run, so every git call switches them off, along with fsmonitor.
+const GIT_SAFETY_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
 
 async function runGit(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
+  const { stdout } = await execFileAsync("git", [...GIT_SAFETY_ARGS, "-C", cwd, ...args], {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
-    env: cleanGitEnv(),
+    env: { ...allowListedEnv(GIT_ENV_KEYS), GIT_TERMINAL_PROMPT: "0" },
   });
   return stdout.trim();
+}
+
+/** The environment gh runs with; the viewer queries use it too. */
+export function ghEnv(): NodeJS.ProcessEnv {
+  return { ...allowListedEnv(GH_ENV_KEYS), GIT_TERMINAL_PROMPT: "0" };
 }
 
 async function runGh(args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<string> {
   const { stdout } = await execFileAsync("gh", args, {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
-    env: { ...allowListedEnv(GH_ENV_KEYS), GIT_TERMINAL_PROMPT: "0" },
+    env: ghEnv(),
   });
   return stdout.trim();
 }
