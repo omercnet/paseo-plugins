@@ -461,18 +461,31 @@ export function PrRadar({
         paddingBottom: 48,
       },
       header: {
+        width: "100%" as const,
         paddingHorizontal: gutter,
         paddingTop: layout.compact ? 18 : 28,
         paddingBottom: 18,
         gap: 14,
       },
       signalLine: {
+        width: "100%" as const,
         flexDirection: "row" as const,
         alignItems: "center" as const,
         justifyContent: "space-between" as const,
         gap: 12,
       },
-      signalLabel: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
+      signalLabel: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        flexShrink: 1,
+      },
+      headerActions: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        flexShrink: 0,
+      },
       signalDot: {
         width: 7,
         height: 7,
@@ -527,11 +540,15 @@ export function PrRadar({
       refresh: {
         minHeight: 36,
         justifyContent: "center" as const,
+        alignItems: "center" as const,
         paddingHorizontal: 12,
         borderWidth: 1,
         borderColor: theme.colors.accent,
         borderRadius: 8,
         backgroundColor: theme.colors.accent,
+      },
+      refreshButton: {
+        minWidth: 92,
       },
       refreshPressed: { opacity: 0.72 },
       refreshText: {
@@ -953,7 +970,7 @@ export function PrRadar({
           <View style={styles.signalDot} />
           <Text style={styles.eyebrow}>PR RADAR · {viewerData?.viewer ?? "GITHUB"}</Text>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View style={styles.headerActions}>
           {onOpenSettings ? (
             <Pressable
               accessibilityRole="button"
@@ -970,7 +987,11 @@ export function PrRadar({
             accessibilityState={{ busy: isFetching }}
             disabled={isFetching}
             onPress={() => void Promise.all([refetch(), refetchViewer()])}
-            style={({ pressed }) => [styles.refresh, pressed && styles.refreshPressed]}
+            style={({ pressed }) => [
+              styles.refresh,
+              styles.refreshButton,
+              pressed && styles.refreshPressed,
+            ]}
           >
             <Text style={styles.refreshText}>{isFetching ? "Scanning" : "Refresh"}</Text>
           </Pressable>
