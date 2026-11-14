@@ -912,6 +912,30 @@ export interface AgentLaunchOverrides {
   thinkingOptionId?: string;
   contextMode?: string;
   options?: Record<string, unknown>;
+  labels?: Record<string, string>;
+}
+
+const MAX_LABELS = 16;
+const MAX_LABEL_LEN = 128;
+
+// Labels for a launched agent: the routing script's extra labels plus PR Radar's own `pr-radar.cwd`.
+// The `pr-radar.` prefix is reserved (the script cannot set or shadow it), keys and values are trimmed
+// non-empty strings of bounded length, and at most MAX_LABELS survive, so a script cannot flood the agent.
+export function buildAgentLabels(
+  cwdTag: string,
+  overrides: AgentLaunchOverrides = {},
+): Record<string, string> {
+  const extra: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(overrides.labels ?? {})) {
+    if (Object.keys(extra).length >= MAX_LABELS) break;
+    if (typeof rawValue !== "string") continue;
+    const key = rawKey.trim();
+    const value = rawValue.trim();
+    if (!key || !value || key.length > MAX_LABEL_LEN || value.length > MAX_LABEL_LEN) continue;
+    if (key.startsWith("pr-radar.")) continue;
+    extra[key] = value;
+  }
+  return { ...extra, "pr-radar.cwd": cwdTag };
 }
 
 export function buildAgentConfig(

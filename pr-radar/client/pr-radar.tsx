@@ -30,6 +30,7 @@ import {
   BUCKET_TITLES,
   BUCKETS,
   buildAgentConfig,
+  buildAgentLabels,
   buildAgentPrompt,
   checkSummary,
   formatAge,
@@ -280,7 +281,7 @@ export function PrRadar({
         config: agentConfig,
         title: `PR Radar: ${row.repository}#${row.number}`,
         prompt,
-        labels: { "pr-radar.cwd": prepared.cwdTag },
+        labels: buildAgentLabels(prepared.cwdTag, request.overrides),
       });
 
       if (navigation) {

@@ -128,6 +128,8 @@ export const RoutingScriptResultSchema = z.object({
   modeId: z.string().optional(),
   contextMode: z.string().optional(),
   options: z.record(z.string(), z.unknown()).optional(),
+  // Extra Paseo agent labels for the launched agent (string values only), merged by buildAgentLabels.
+  labels: z.record(z.string(), z.string()).optional(),
   reason: z.string().optional(),
 });
 

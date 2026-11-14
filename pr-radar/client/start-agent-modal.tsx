@@ -83,6 +83,7 @@ export function StartAgentModal({
   const [routedOptions, setRoutedOptions] = useState<Record<string, unknown> | undefined>(
     undefined,
   );
+  const [routedLabels, setRoutedLabels] = useState<Record<string, string> | undefined>(undefined);
   const [routeReason, setRouteReason] = useState<string | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routingBusy, setRoutingBusy] = useState(false);
@@ -111,6 +112,7 @@ export function StartAgentModal({
     setModeId(settings.defaultModeId);
     setContextMode(settings.defaultContextMode);
     setRoutedOptions(undefined);
+    setRoutedLabels(undefined);
     setRouteReason(null);
     setRouteError(null);
     setRoutingBusy(false);
@@ -228,6 +230,7 @@ export function StartAgentModal({
         setContextMode(result.contextMode);
       }
       setRoutedOptions(restricted.options);
+      setRoutedLabels(result.labels);
       const ignoredNote =
         restricted.ignored.length > 0
           ? ` Ignored (not allowed): ${restricted.ignored.join(", ")}.`
@@ -676,6 +679,7 @@ export function StartAgentModal({
                     modeId,
                     contextMode,
                     ...(routedOptions ? { options: routedOptions } : {}),
+                    ...(routedLabels ? { labels: routedLabels } : {}),
                   },
                 })
               }

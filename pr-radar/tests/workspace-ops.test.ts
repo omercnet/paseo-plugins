@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   buildAgentConfig,
+  buildAgentLabels,
   buildAgentPrompt,
   buildIssueRows,
   splitDraftRows,
@@ -96,6 +97,24 @@ describe("agent config & draft splitting", () => {
       thinkingOptionId: "high",
       options: { contextMode: "full" },
     });
+  });
+
+  test("buildAgentLabels adds routed labels and keeps pr-radar.cwd authoritative", () => {
+    expect(buildAgentLabels("CWD-BASE")).toEqual({ "pr-radar.cwd": "CWD-BASE" });
+    expect(
+      buildAgentLabels("CWD-WORKTREE", {
+        labels: {
+          "ade.kind": " external-review ",
+          "pr-radar.cwd": "CWD-BASE",
+          "pr-radar.other": "x",
+          empty: "  ",
+          "": "v",
+          long: "x".repeat(129),
+        },
+      }),
+    ).toEqual({ "ade.kind": "external-review", "pr-radar.cwd": "CWD-WORKTREE" });
+    const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, "v"]));
+    expect(Object.keys(buildAgentLabels("CWD-TBD", { labels: many }))).toHaveLength(17);
   });
 
   test("splitDraftRows separates regular PRs and DPRs", () => {
