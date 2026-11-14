@@ -108,6 +108,7 @@ export const prepareWorkspaceCwd = defineRpc({
     baseRefName: z.string().default(""),
     sourceCodeDir: z.string().trim().min(1).default("~/src"),
     targetDir: z.string().trim().nullable().default(null),
+    allowClone: z.boolean().default(false),
     cwdMode: z.enum(["CWD-WORKTREE", "CWD-BASE"]).default("CWD-WORKTREE"),
     worktreeName: z.string().trim().nullable().default(null),
   }),

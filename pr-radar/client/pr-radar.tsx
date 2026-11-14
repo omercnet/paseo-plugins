@@ -23,6 +23,7 @@ import {
   runRoutingScript,
 } from "../shared/viewer-scope";
 import {
+  type AgentLaunchOverrides,
   agentActionFor,
   BUCKET_TITLES,
   BUCKETS,
@@ -245,6 +246,7 @@ export function PrRadar({
         baseRefName: row.baseRefName,
         sourceCodeDir: settings.sourceCodeDir,
         targetDir: request.targetDir,
+        allowClone: request.allowClone ?? false,
         cwdMode: request.cwdMode,
         worktreeName: request.worktreeName,
       });
@@ -310,7 +312,7 @@ export function PrRadar({
         return;
       }
 
-      let overrides = {
+      let overrides: AgentLaunchOverrides = {
         provider: settings.defaultProvider,
         model: settings.defaultModel,
         thinkingOptionId: settings.defaultEffort,
@@ -371,6 +373,7 @@ export function PrRadar({
           }
           if (routed.modeId) overrides = { ...overrides, modeId: routed.modeId };
           if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
+          if (routed.options) overrides = { ...overrides, options: routed.options };
         } catch (routerError) {
           const reason =
             routerError instanceof Error ? routerError.message : "Routing script failed.";
@@ -381,6 +384,7 @@ export function PrRadar({
       startNewAgentMutation.mutate({
         row,
         targetDir: row.localProjectRoot ?? null,
+        allowClone: settings.autoLaunchMode === "existing_or_clone",
         cwdMode: settings.defaultCwdMode,
         worktreeName: null,
         profileName,

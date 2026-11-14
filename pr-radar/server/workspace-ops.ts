@@ -120,14 +120,41 @@ export function parseGitHubRepoFromRemote(remoteUrl: string): string | null {
   return null;
 }
 
-async function gitRemoteMatches(dir: string, repository: string): Promise<boolean> {
-  if (!repository) return false;
+async function findMatchingRemote(dir: string, repository: string): Promise<string | null> {
+  if (!repository) return null;
+  const target = repository.trim().toLowerCase();
   try {
-    const remote = await runGit(dir, ["remote", "get-url", "origin"], 3_000);
-    const parsed = parseGitHubRepoFromRemote(remote);
-    return parsed === repository.trim().toLowerCase();
+    const remotesOut = await runGit(dir, ["remote"], 3_000);
+    const remotes = remotesOut
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const ordered = [
+      ...remotes.filter((name) => name === "upstream"),
+      ...remotes.filter((name) => name === "origin"),
+      ...remotes.filter((name) => name !== "upstream" && name !== "origin"),
+    ];
+    for (const remoteName of ordered) {
+      const remoteUrl = await runGit(dir, ["remote", "get-url", remoteName], 3_000).catch(() => "");
+      if (parseGitHubRepoFromRemote(remoteUrl) === target) {
+        return remoteName;
+      }
+    }
+    return null;
   } catch {
-    return false;
+    return null;
+  }
+}
+
+async function gitRemoteMatches(dir: string, repository: string): Promise<boolean> {
+  return Boolean(await findMatchingRemote(dir, repository));
+}
+
+async function resolveGitCommonDir(dir: string): Promise<string | null> {
+  try {
+    return await runGit(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"], 3_000);
+  } catch {
+    return null;
   }
 }
 
@@ -277,7 +304,13 @@ export async function prepareWorkspaceCwdHandler(
     baseRoot = await resolveSuggestedClonePath(expandedSourceDir, input.repository);
   }
 
+  let matchingRemote = "origin";
   if (!(await exists(baseRoot))) {
+    if (!input.allowClone) {
+      throw new Error(
+        `Directory does not exist: ${baseRoot}. Select "Clone ${input.repository}" to clone it.`,
+      );
+    }
     await mkdir(dirname(baseRoot), { recursive: true });
     await runGh(["repo", "clone", "--", input.repository, baseRoot], CLONE_TIMEOUT_MS);
     cloned = true;
@@ -293,11 +326,13 @@ export async function prepareWorkspaceCwdHandler(
         throw new Error(`Target directory is not a git repository: ${baseRoot}`);
       }
     }
-    if (!(await gitRemoteMatches(baseRoot, input.repository))) {
+    const matched = await findMatchingRemote(baseRoot, input.repository);
+    if (!matched) {
       throw new Error(
         `Target directory ${baseRoot} does not match repository ${input.repository}.`,
       );
     }
+    matchingRemote = matched;
   }
 
   const localBranchName =
@@ -307,7 +342,7 @@ export async function prepareWorkspaceCwdHandler(
 
   if (input.cwdMode === "CWD-BASE") {
     if (input.itemKind === "pr") {
-      const dirty = await runGit(baseRoot, ["status", "--porcelain"]);
+      const dirty = await runGit(baseRoot, ["status", "--porcelain", "--untracked-files=no"]);
       if (dirty) {
         throw new Error(
           `Base checkout ${baseRoot} has uncommitted changes; commit or stash them, or use CWD-WORKTREE.`,
@@ -316,7 +351,7 @@ export async function prepareWorkspaceCwdHandler(
       await runGit(baseRoot, [
         "fetch",
         "--end-of-options",
-        "origin",
+        matchingRemote,
         `pull/${input.prNumber}/head`,
       ]);
       const fetchHead = await runGit(baseRoot, ["rev-parse", "FETCH_HEAD"]);
@@ -357,6 +392,16 @@ export async function prepareWorkspaceCwdHandler(
   const worktreePath = join(dirname(baseRoot), worktreeFolder);
 
   if (await exists(worktreePath)) {
+    const [baseCommonDir, wtCommonDir, wtBranch] = await Promise.all([
+      resolveGitCommonDir(baseRoot),
+      resolveGitCommonDir(worktreePath),
+      runGit(worktreePath, ["rev-parse", "--abbrev-ref", "HEAD"], 3_000).catch(() => ""),
+    ]);
+    if (!baseCommonDir || wtCommonDir !== baseCommonDir || wtBranch !== localBranchName) {
+      throw new Error(
+        `Existing folder ${worktreePath} is not a worktree of ${input.repository} on branch ${localBranchName}. Choose a different worktree name.`,
+      );
+    }
     return {
       cwd: worktreePath,
       baseRoot,
@@ -369,7 +414,12 @@ export async function prepareWorkspaceCwdHandler(
   if (input.itemKind === "issue") {
     await runGit(baseRoot, ["worktree", "add", "-B", localBranchName, "--", worktreePath, "HEAD"]);
   } else {
-    await runGit(baseRoot, ["fetch", "--end-of-options", "origin", `pull/${input.prNumber}/head`]);
+    await runGit(baseRoot, [
+      "fetch",
+      "--end-of-options",
+      matchingRemote,
+      `pull/${input.prNumber}/head`,
+    ]);
     await runGit(baseRoot, [
       "worktree",
       "add",
@@ -393,7 +443,10 @@ export async function prepareWorkspaceCwdHandler(
 export async function runRoutingScriptHandler(
   input: z.output<typeof runRoutingScript.input>,
 ): Promise<z.output<typeof runRoutingScript.output>> {
-  const scriptPath = expandUserPath(input.scriptPath);
+  const rawScript = input.scriptPath.trim();
+  const scriptPath = isAbsoluteOrHomePath(rawScript)
+    ? expandUserPath(rawScript)
+    : resolve(__dirname, "..", rawScript);
   if (!(await exists(scriptPath))) {
     throw new Error(`Routing script not found: ${scriptPath}`);
   }

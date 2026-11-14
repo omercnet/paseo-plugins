@@ -1,4 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   buildAgentConfig,
   buildAgentPrompt,
@@ -12,6 +16,7 @@ import {
   isValidRepositorySlug,
   isValidWorktreeName,
   parseGitHubRepoFromRemote,
+  prepareWorkspaceCwdHandler,
   slugifyBranch,
 } from "../server/workspace-ops";
 import { DEFAULT_PR_RADAR_SETTINGS, PrRadarSettingsSchema } from "../shared/settings";
@@ -171,5 +176,112 @@ describe("issues support", () => {
     expect(buildAgentPrompt(rows[0])).toContain(
       "GitHub issue https://github.com/owner/my-repo/issues/12",
     );
+  });
+});
+
+describe("prepareWorkspaceCwdHandler git safety", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function makeGitRepo(root: string, remoteUrl: string): string {
+    const repoDir = join(root, "repo");
+    mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["-C", repoDir, "init", "-b", "main"], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoDir, "config", "user.email", "test@example.com"], {
+      stdio: "pipe",
+    });
+    execFileSync("git", ["-C", repoDir, "config", "user.name", "Test"], { stdio: "pipe" });
+    writeFileSync(join(repoDir, "README.md"), "hello\n");
+    execFileSync("git", ["-C", repoDir, "add", "README.md"], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoDir, "commit", "-m", "init"], { stdio: "pipe" });
+    execFileSync("git", ["-C", repoDir, "remote", "add", "origin", remoteUrl], { stdio: "pipe" });
+    return repoDir;
+  }
+
+  test("rejects missing targetDir when allowClone is false", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-radar-ops-"));
+    tempDirs.push(root);
+    await expect(
+      prepareWorkspaceCwdHandler({
+        itemKind: "pr",
+        repository: "owner/repo",
+        prNumber: 7,
+        headRefName: "main",
+        baseRefName: "main",
+        sourceCodeDir: root,
+        targetDir: join(root, "missing"),
+        allowClone: false,
+        cwdMode: "CWD-WORKTREE",
+        worktreeName: null,
+      }),
+    ).rejects.toThrow("Directory does not exist");
+  });
+
+  test("rejects targetDir matching a different repository", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-radar-ops-"));
+    tempDirs.push(root);
+    const repoDir = makeGitRepo(root, "https://github.com/omercnet/paseo-plugins.git");
+    await expect(
+      prepareWorkspaceCwdHandler({
+        itemKind: "pr",
+        repository: "omercnet/paseo",
+        prNumber: 7,
+        headRefName: "main",
+        baseRefName: "main",
+        sourceCodeDir: root,
+        targetDir: repoDir,
+        allowClone: false,
+        cwdMode: "CWD-WORKTREE",
+        worktreeName: null,
+      }),
+    ).rejects.toThrow("does not match repository omercnet/paseo");
+  });
+
+  test("rejects CWD-BASE when tracked working tree has uncommitted changes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-radar-ops-"));
+    tempDirs.push(root);
+    const repoDir = makeGitRepo(root, "https://github.com/owner/repo.git");
+    writeFileSync(join(repoDir, "README.md"), "dirty\n");
+    await expect(
+      prepareWorkspaceCwdHandler({
+        itemKind: "pr",
+        repository: "owner/repo",
+        prNumber: 7,
+        headRefName: "main",
+        baseRefName: "main",
+        sourceCodeDir: root,
+        targetDir: repoDir,
+        allowClone: false,
+        cwdMode: "CWD-BASE",
+        worktreeName: null,
+      }),
+    ).rejects.toThrow("uncommitted changes");
+  });
+
+  test("rejects reusing an unrelated folder with the same worktree name", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-radar-ops-"));
+    tempDirs.push(root);
+    const repoDir = makeGitRepo(root, "https://github.com/owner/repo.git");
+    const collidingFolder = join(root, "repo-pr-7-main");
+    mkdirSync(collidingFolder, { recursive: true });
+    await expect(
+      prepareWorkspaceCwdHandler({
+        itemKind: "pr",
+        repository: "owner/repo",
+        prNumber: 7,
+        headRefName: "main",
+        baseRefName: "main",
+        sourceCodeDir: root,
+        targetDir: repoDir,
+        allowClone: false,
+        cwdMode: "CWD-WORKTREE",
+        worktreeName: "repo-pr-7-main",
+      }),
+    ).rejects.toThrow("not a worktree of owner/repo on branch pr-radar/pr-7");
   });
 });

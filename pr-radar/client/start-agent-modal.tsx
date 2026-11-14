@@ -10,6 +10,7 @@ import type { AgentLaunchOverrides, RadarRow } from "./radar";
 export interface StartAgentLaunchRequest {
   row: RadarRow;
   targetDir: string | null;
+  allowClone?: boolean;
   cwdMode: CwdMode;
   worktreeName: string | null;
   overrides: AgentLaunchOverrides;
@@ -50,6 +51,7 @@ export function StartAgentModal({
 
   const [dirFilter, setDirFilter] = useState("");
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
+  const [allowClone, setAllowClone] = useState(false);
   const [cwdMode, setCwdMode] = useState<CwdMode>(settings.defaultCwdMode);
   const [worktreeName, setWorktreeName] = useState("");
   const [profileName, setProfileName] = useState(settings.defaultProfile);
@@ -73,6 +75,7 @@ export function StartAgentModal({
     editedFieldsRef.current.clear();
     setDirFilter("");
     setSelectedDir(row.localProjectRoot ?? null);
+    setAllowClone(!row.localProjectRoot);
     setCwdMode(settings.defaultCwdMode);
     setWorktreeName(defaultHumanWorktreeName(row));
     setProfileName(settings.defaultProfile);
@@ -322,9 +325,10 @@ export function StartAgentModal({
                 const trimmed = next.trim();
                 if (trimmed.startsWith("/") || trimmed.startsWith("~/")) {
                   setSelectedDir(trimmed);
+                  setAllowClone(false);
                 }
               }}
-              placeholder={`Filter directories in ${settings.sourceCodeDir} or enter ~/... path`}
+              placeholder={`Filter directories in ${settings.sourceCodeDir} or enter existing ~/... path`}
               placeholderTextColor={theme.colors.foregroundMuted}
               autoCapitalize="none"
               autoCorrect={false}
@@ -334,11 +338,12 @@ export function StartAgentModal({
               <Pressable
                 onPress={() => {
                   setSelectedDir(suggestedClonePath);
+                  setAllowClone(true);
                   setDirFilter("");
                 }}
                 style={[
                   styles.listRow,
-                  (selectedDir === null || selectedDir === suggestedClonePath) &&
+                  (allowClone || selectedDir === null || selectedDir === suggestedClonePath) &&
                     styles.listRowSelected,
                 ]}
               >
@@ -355,8 +360,14 @@ export function StartAgentModal({
               {entries.slice(0, 8).map((entry) => (
                 <Pressable
                   key={entry.path}
-                  onPress={() => setSelectedDir(entry.path)}
-                  style={[styles.listRow, selectedDir === entry.path && styles.listRowSelected]}
+                  onPress={() => {
+                    setSelectedDir(entry.path);
+                    setAllowClone(false);
+                  }}
+                  style={[
+                    styles.listRow,
+                    !allowClone && selectedDir === entry.path && styles.listRowSelected,
+                  ]}
                 >
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text style={styles.listRowTitle} numberOfLines={1}>
@@ -449,7 +460,10 @@ export function StartAgentModal({
                 <Text style={styles.hint}>Profile</Text>
                 <TextInput
                   value={profileName}
-                  onChangeText={setProfileName}
+                  onChangeText={(next) => {
+                    editedFieldsRef.current.add("profile");
+                    setProfileName(next);
+                  }}
                   placeholder="Model Router"
                   placeholderTextColor={theme.colors.foregroundMuted}
                   style={styles.input}
@@ -459,7 +473,10 @@ export function StartAgentModal({
                 <Text style={styles.hint}>Vendor / provider</Text>
                 <TextInput
                   value={provider}
-                  onChangeText={setProvider}
+                  onChangeText={(next) => {
+                    editedFieldsRef.current.add("provider");
+                    setProvider(next);
+                  }}
                   placeholder="Profile default"
                   placeholderTextColor={theme.colors.foregroundMuted}
                   autoCapitalize="none"
@@ -473,7 +490,10 @@ export function StartAgentModal({
                 <Text style={styles.hint}>Model</Text>
                 <TextInput
                   value={model}
-                  onChangeText={setModel}
+                  onChangeText={(next) => {
+                    editedFieldsRef.current.add("model");
+                    setModel(next);
+                  }}
                   placeholder="Provider default"
                   placeholderTextColor={theme.colors.foregroundMuted}
                   autoCapitalize="none"
@@ -484,7 +504,10 @@ export function StartAgentModal({
                 <Text style={styles.hint}>Effort (thinking)</Text>
                 <TextInput
                   value={effort}
-                  onChangeText={setEffort}
+                  onChangeText={(next) => {
+                    editedFieldsRef.current.add("effort");
+                    setEffort(next);
+                  }}
                   placeholder="low / medium / high"
                   placeholderTextColor={theme.colors.foregroundMuted}
                   autoCapitalize="none"
@@ -498,7 +521,10 @@ export function StartAgentModal({
                 <Text style={styles.hint}>Mode</Text>
                 <TextInput
                   value={modeId}
-                  onChangeText={setModeId}
+                  onChangeText={(next) => {
+                    editedFieldsRef.current.add("modeId");
+                    setModeId(next);
+                  }}
                   placeholder="default / bypassPermissions"
                   placeholderTextColor={theme.colors.foregroundMuted}
                   autoCapitalize="none"
@@ -509,7 +535,10 @@ export function StartAgentModal({
                 <Text style={styles.hint}>Context mode</Text>
                 <TextInput
                   value={contextMode}
-                  onChangeText={setContextMode}
+                  onChangeText={(next) => {
+                    editedFieldsRef.current.add("contextMode");
+                    setContextMode(next);
+                  }}
                   placeholder="Optional"
                   placeholderTextColor={theme.colors.foregroundMuted}
                   autoCapitalize="none"
@@ -533,6 +562,7 @@ export function StartAgentModal({
                 onStart({
                   row,
                   targetDir: selectedDir,
+                  allowClone,
                   cwdMode,
                   worktreeName: worktreeName.trim() || null,
                   profileName: profileName.trim(),
