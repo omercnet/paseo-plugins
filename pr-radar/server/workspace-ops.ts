@@ -1,8 +1,9 @@
-import { execFile, spawn } from "node:child_process";
+import { type ChildProcessByStdio, execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import type { Readable, Writable } from "node:stream";
 import { promisify } from "node:util";
 import type { z } from "zod";
 import type { PrRadarSettings } from "../shared/settings";
@@ -790,32 +791,65 @@ export async function resolveRoutingScript(
   return scriptPath;
 }
 
-function runScriptCapped(
+interface ScriptRun {
+  /** Settles with the script's stdout, or rejects on failure, timeout or the output cap. */
+  result: Promise<string>;
+  /** Resolves once the script's process group has exited or has been sent SIGKILL. */
+  finished: Promise<void>;
+}
+
+function startScriptCapped(
   scriptPath: string,
   payload: unknown,
   limits: RoutingScriptLimits,
-): Promise<string> {
-  return new Promise<string>((resolvePromise, rejectPromise) => {
-    const child = spawn(scriptPath, [], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: allowListedEnv(new Set()),
-    });
+): ScriptRun {
+  const finishedGate = Promise.withResolvers<void>();
+  const result = new Promise<string>((resolvePromise, rejectPromise) => {
+    // Its own process group, so a timeout reaches the script's descendants too.
+    let child: ChildProcessByStdio<Writable, Readable, Readable>;
+    try {
+      child = spawn(scriptPath, [], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: allowListedEnv(new Set()),
+        detached: true,
+      });
+    } catch (spawnError) {
+      finishedGate.resolve();
+      rejectPromise(spawnError);
+      return;
+    }
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outBytes = 0;
     let errBytes = 0;
     let settled = false;
+    let terminating = false;
     let killTimer: NodeJS.Timeout | undefined;
 
+    function signalGroup(signal: NodeJS.Signals): void {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, signal);
+      } catch {
+        // The group is already gone.
+      }
+    }
     function settle(finish: () => void): void {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // A surviving descendant could otherwise keep feeding buffers nobody reads any more.
+      child.stdout.destroy();
+      child.stderr.destroy();
       finish();
     }
     function terminate(): void {
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), limits.killGraceMs);
+      if (terminating) return;
+      terminating = true;
+      signalGroup("SIGTERM");
+      killTimer = setTimeout(() => {
+        signalGroup("SIGKILL");
+        finishedGate.resolve();
+      }, limits.killGraceMs);
     }
     function overCap(): void {
       terminate();
@@ -832,21 +866,26 @@ function runScriptCapped(
     }, limits.timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
       outBytes += chunk.length;
       if (outBytes > limits.outputBytes) return overCap();
       out.push(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
+      if (settled) return;
       errBytes += chunk.length;
       if (errBytes > limits.outputBytes) return overCap();
       err.push(chunk);
     });
     child.on("error", (spawnError) => {
       settle(() => rejectPromise(spawnError));
+      finishedGate.resolve();
     });
-    child.on("exit", () => clearTimeout(killTimer));
     child.on("close", (code) => {
+      // Having asked it to stop, make sure no descendant outlives the script.
+      if (terminating) signalGroup("SIGKILL");
       clearTimeout(killTimer);
+      finishedGate.resolve();
       settle(() => {
         if (code !== 0) {
           const message = Buffer.concat(err).toString("utf8").trim();
@@ -859,6 +898,7 @@ function runScriptCapped(
     child.stdin.on("error", () => {});
     child.stdin.end(`${JSON.stringify(payload)}\n`);
   });
+  return { result, finished: finishedGate.promise };
 }
 
 let routingScriptRunning = false;
@@ -877,12 +917,13 @@ export async function runRoutingScriptHandler(
     throw new Error("A routing script is already running; try again when it has finished.");
   }
   routingScriptRunning = true;
-  let stdout: string;
-  try {
-    stdout = await runScriptCapped(scriptPath, input.payload, limits);
-  } finally {
+  // The guard is held until the script's process group is gone or has been sent SIGKILL, which can
+  // be after the call itself has failed on a timeout.
+  const run = startScriptCapped(scriptPath, input.payload, limits);
+  void run.finished.then(() => {
     routingScriptRunning = false;
-  }
+  });
+  const stdout = await run.result;
 
   if (!stdout) return {};
   const parsed = JSON.parse(stdout) as unknown;

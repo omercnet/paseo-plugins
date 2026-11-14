@@ -948,6 +948,60 @@ describe("runRoutingScriptHandler", () => {
     );
   });
 
+  test("kills a descendant that would outlive the script when it times out", async () => {
+    const root = makeRoot();
+    const pidFile = join(root, "child-pid.txt");
+    const script = writeScript(root, "spawner.sh", `sleep 60 &\necho $! > "${pidFile}"\nwait`);
+    await expect(
+      route(script, {}, { timeoutMs: 400, outputBytes: 1024, killGraceMs: 200 }),
+    ).rejects.toThrow("Routing script timed out after 400ms.");
+    const descendant = Number(readFileSync(pidFile, "utf8").trim());
+    await vi.waitFor(
+      () => {
+        expect(() => process.kill(descendant, 0)).toThrow();
+      },
+      { timeout: 3_000, interval: 50 },
+    );
+  });
+
+  test("arms one kill timer however many chunks pass the byte cap", async () => {
+    const root = makeRoot();
+    const script = writeScript(
+      root,
+      "flood2.sh",
+      'while :; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; done',
+    );
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      await expect(
+        route(script, {}, { timeoutMs: 5_000, outputBytes: 1024, killGraceMs: 777 }),
+      ).rejects.toThrow(/exceeded 1024 bytes/);
+      await vi.waitFor(() => expect(spy.mock.calls.filter(([, ms]) => ms === 777).length).toBe(1));
+      await new Promise((done) => setTimeout(done, 100));
+      expect(spy.mock.calls.filter(([, ms]) => ms === 777)).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("keeps the one-at-a-time guard until the stubborn script has been killed", async () => {
+    const root = makeRoot();
+    const stubborn = writeScript(
+      root,
+      "stubborn2.sh",
+      `trap '' TERM\nwhile :; do sleep 0.05; done`,
+    );
+    const limits = { timeoutMs: 300, outputBytes: 1024, killGraceMs: 400 };
+    await expect(route(stubborn, {}, limits)).rejects.toThrow(/timed out/);
+    // The call failed, but the script ignoring SIGTERM is still alive until SIGKILL goes out.
+    await expect(route(stubborn, {}, limits)).rejects.toThrow(/already running/);
+    const quick = writeScript(root, "quick.sh", "echo '{}'");
+    await vi.waitFor(async () => expect(await route(quick, {}, limits)).toEqual({}), {
+      timeout: 3_000,
+      interval: 100,
+    });
+  });
+
   test("runs one script at a time", async () => {
     const root = makeRoot();
     const started = join(root, "started");
