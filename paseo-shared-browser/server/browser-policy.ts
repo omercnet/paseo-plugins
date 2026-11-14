@@ -235,6 +235,8 @@ export class SessionManager {
   private readonly closedViewerTabs = new Map<string, number>();
   private readonly sessionCreations = new Map<string, Promise<BrowserSession>>();
   private readonly sessionClosures = new Map<string, Promise<void>>();
+  /** Advances on every workspace teardown; a creation that overlaps one is never published. */
+  private readonly closureGenerations = new Map<string, number>();
   private readonly archived = new Set<string>();
   private readonly deliberatelyClosed = new Set<string>();
   private bridgeEpoch = 0;
@@ -509,6 +511,7 @@ export class SessionManager {
 
   /** Attach and reopen wait for a pending closure before creating the next runtime. */
   private async awaitWorkspaceClosure(workspaceId: string, closing: Promise<void>) {
+    this.closureGenerations.set(workspaceId, (this.closureGenerations.get(workspaceId) ?? 0) + 1);
     this.sessionClosures.set(workspaceId, closing);
     try {
       await closing;
@@ -555,7 +558,11 @@ export class SessionManager {
         continue;
       }
       // Keep an open browser open for agents and other devices, as before the change.
-      if (session) await this.getOrCreateSession(workspaceId).catch(() => undefined);
+      // A failed replacement is reported; the next attachment can still create it.
+      if (session)
+        await this.getOrCreateSession(workspaceId).catch(() => {
+          failed = true;
+        });
     }
     if (failed) throw new Error("Some browsers could not be restarted; try again");
   }
@@ -1421,6 +1428,7 @@ export class SessionManager {
     if (this.sessions.size + this.sessionCreations.size >= this.maxSessions)
       throw new Error(`Shared browser session limit (${this.maxSessions}) reached`);
     const lifecycleGeneration = this.lifecycleGeneration;
+    const closureGeneration = this.closureGenerations.get(workspaceId) ?? 0;
     const creation = this.createSession(workspaceId, key, tabId, replaceLost);
     this.sessionCreations.set(key, creation);
     try {
@@ -1431,14 +1439,20 @@ export class SessionManager {
       if (lifecycleGeneration !== this.lifecycleGeneration) {
         throw new Error("Shared browser manager was reset");
       }
-      this.sessions.set(key, session);
-      return session;
+      // A teardown that began while this page was being created missed it in its
+      // snapshot, so its runtime may already be stopped. Drop it (it holds no viewer
+      // yet) and create again once that teardown has finished.
+      if ((this.closureGenerations.get(workspaceId) ?? 0) === closureGeneration) {
+        this.sessions.set(key, session);
+        return session;
+      }
     } catch (error) {
       if (this.archived.has(workspaceId)) throw new Error("Workspace was archived");
       throw error;
     } finally {
       if (this.sessionCreations.get(key) === creation) this.sessionCreations.delete(key);
     }
+    return this.getOrCreateSession(workspaceId, tabId, replaceLost);
   }
 
   private async createSession(

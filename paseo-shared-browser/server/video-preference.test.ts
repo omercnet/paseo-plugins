@@ -184,3 +184,97 @@ describe("launch-option relaunch", () => {
     manager.disconnect();
   });
 });
+
+describe("launch-option relaunch against a live runtime registry", () => {
+  /** One current runtime per workspace, like the supervisor; identity can be gated. */
+  async function registry() {
+    let next = 0;
+    const current = new Map<string, string>();
+    const stopped: string[] = [];
+    const gate = { identity: null as Promise<void> | null, failEnsure: false };
+    let counter = 0;
+    const manager = new SessionManager({
+      validateWorkspace: async () => true,
+      issueToken: () => (++counter).toString().padStart(32, "0"),
+      client: {
+        connect: async () => ({ epoch: 1 }),
+        ensureWorkspace: async (workspaceId) => {
+          if (gate.failEnsure) throw new Error("launch failed");
+          let runtimeId = current.get(workspaceId);
+          if (!runtimeId) {
+            runtimeId = String(++next).padStart(32, "r");
+            current.set(workspaceId, runtimeId);
+          }
+          return { workspaceId, runtimeId, createdAt: 1 };
+        },
+        requestWorkspace: async (_workspace, operation, input) => {
+          if (operation === "identity") {
+            if (gate.identity) await gate.identity;
+            const data = (input ?? {}) as { targetId?: string };
+            return { userAgent: "Fixture", targetId: data.targetId ?? "root" };
+          }
+          if (operation === "state")
+            return {
+              url: "https://fixture.invalid/",
+              title: "",
+              canGoBack: false,
+              canGoForward: false,
+            };
+          return null;
+        },
+        archiveWorkspace: async () => {},
+        closeWorkspace: async (workspaceId, runtimeId) => {
+          if (current.get(workspaceId) === runtimeId) current.delete(workspaceId);
+          stopped.push(runtimeId);
+        },
+        disconnect: () => {},
+      },
+    });
+    await manager.connect();
+    return { manager, current, stopped, gate };
+  }
+
+  it("never publishes a page whose creation overlapped the restart of its runtime", async () => {
+    const { manager, current, stopped, gate } = await registry();
+    const viewer = await manager.attach("workspace", "Viewer");
+    const oldRuntime = viewer.state.runtimeId!;
+    let release!: () => void;
+    let late!: ReturnType<typeof manager.attach>;
+    await manager.relaunchOpenBrowsers(
+      viewer.viewerToken,
+      async () => {},
+      async () => {
+        // A second-tab attachment starts after the relaunch drained pending creations.
+        gate.identity = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        late = manager.attach("workspace", "Late", "second");
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        gate.identity = null;
+        setTimeout(release, 5);
+        return [{ workspaceId: "workspace", runtimeId: oldRuntime }];
+      },
+    );
+    const attached = await late;
+    expect(stopped).toEqual([oldRuntime]);
+    expect(attached.state.runtimeId).toBe(current.get("workspace"));
+    expect(attached.state.runtimeId).not.toBe(oldRuntime);
+    manager.disconnect();
+  });
+
+  it("reports a restart whose replacement browser fails to launch", async () => {
+    const { manager, gate } = await registry();
+    const viewer = await manager.attach("workspace", "Viewer");
+    const other = await manager.attach("other", "Viewer");
+    await expect(
+      manager.relaunchOpenBrowsers(
+        other.viewerToken,
+        async () => {
+          gate.failEnsure = true;
+        },
+        async () => [{ workspaceId: "workspace", runtimeId: viewer.state.runtimeId! }],
+      ),
+    ).rejects.toThrow("Some browsers could not be restarted");
+    manager.disconnect();
+  });
+});
