@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
+import { ComboSelect, useAgentLaunchOptions } from "./agent-launch-options";
 import type { AgentLaunchOverrides, RadarRow } from "./radar";
 
 export interface StartAgentLaunchRequest {
@@ -49,6 +50,14 @@ export function StartAgentModal({
 }) {
   const fetchDirs = useRpc(listLocalDirs);
   const invokeRouter = useRpc(runRoutingScript);
+  const {
+    profileOptions,
+    providerOptions,
+    modelOptions,
+    modeOptions,
+    contextModeOptions,
+    effortOptions,
+  } = useAgentLaunchOptions(Boolean(row));
 
   const [dirFilter, setDirFilter] = useState("");
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
@@ -465,92 +474,93 @@ export function StartAgentModal({
 
             <View style={styles.gridRow}>
               <View style={styles.gridCell}>
-                <Text style={styles.hint}>Profile</Text>
-                <TextInput
+                <ComboSelect
+                  compact
+                  label="Profile"
                   value={profileName}
-                  onChangeText={(next) => {
+                  placeholder="Model Router"
+                  options={profileOptions}
+                  theme={theme}
+                  onSelect={(next) => {
                     editedFieldsRef.current.add("profile");
                     setProfileName(next);
                   }}
-                  placeholder="Model Router"
-                  placeholderTextColor={theme.colors.foregroundMuted}
-                  style={styles.input}
                 />
               </View>
               <View style={styles.gridCell}>
-                <Text style={styles.hint}>Vendor / provider</Text>
-                <TextInput
+                <ComboSelect
+                  compact
+                  label="Vendor / provider"
                   value={provider}
-                  onChangeText={(next) => {
+                  placeholder="Profile default"
+                  options={providerOptions}
+                  theme={theme}
+                  onSelect={(next) => {
                     editedFieldsRef.current.add("provider");
                     setProvider(next);
                   }}
-                  placeholder="Profile default"
-                  placeholderTextColor={theme.colors.foregroundMuted}
-                  autoCapitalize="none"
-                  style={styles.input}
                 />
               </View>
             </View>
 
             <View style={styles.gridRow}>
               <View style={styles.gridCell}>
-                <Text style={styles.hint}>Model</Text>
-                <TextInput
+                <ComboSelect
+                  compact
+                  label="Model"
                   value={model}
-                  onChangeText={(next) => {
+                  placeholder="Provider default"
+                  options={modelOptions}
+                  theme={theme}
+                  onSelect={(next) => {
                     editedFieldsRef.current.add("model");
                     setModel(next);
                   }}
-                  placeholder="Provider default"
-                  placeholderTextColor={theme.colors.foregroundMuted}
-                  autoCapitalize="none"
-                  style={styles.input}
                 />
               </View>
               <View style={styles.gridCell}>
-                <Text style={styles.hint}>Effort (thinking)</Text>
-                <TextInput
+                <ComboSelect
+                  compact
+                  label="Effort (thinking)"
                   value={effort}
-                  onChangeText={(next) => {
+                  placeholder="low / medium / high"
+                  options={effortOptions}
+                  theme={theme}
+                  onSelect={(next) => {
                     editedFieldsRef.current.add("effort");
                     setEffort(next);
                   }}
-                  placeholder="low / medium / high"
-                  placeholderTextColor={theme.colors.foregroundMuted}
-                  autoCapitalize="none"
-                  style={styles.input}
                 />
               </View>
             </View>
 
             <View style={styles.gridRow}>
               <View style={styles.gridCell}>
-                <Text style={styles.hint}>Mode</Text>
-                <TextInput
+                <ComboSelect
+                  compact
+                  label="Mode"
                   value={modeId}
-                  onChangeText={(next) => {
+                  placeholder="default / bypassPermissions"
+                  options={modeOptions}
+                  theme={theme}
+                  onSelect={(next) => {
                     editedFieldsRef.current.add("modeId");
                     setModeId(next);
                   }}
-                  placeholder="default / bypassPermissions"
-                  placeholderTextColor={theme.colors.foregroundMuted}
-                  autoCapitalize="none"
-                  style={styles.input}
                 />
               </View>
               <View style={styles.gridCell}>
-                <Text style={styles.hint}>Context mode</Text>
-                <TextInput
+                <ComboSelect
+                  compact
+                  label="Context mode"
                   value={contextMode}
-                  onChangeText={(next) => {
+                  placeholder="Optional"
+                  options={contextModeOptions}
+                  theme={theme}
+                  onSelect={(next) => {
                     editedFieldsRef.current.add("contextMode");
                     setContextMode(next);
                   }}
-                  placeholder="Optional"
-                  placeholderTextColor={theme.colors.foregroundMuted}
-                  autoCapitalize="none"
-                  style={styles.input}
                 />
               </View>
             </View>
