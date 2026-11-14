@@ -1,12 +1,12 @@
 {
   "name": "@omercnet/paseo-shared-browser",
-  "version": "4.1.10",
+  "version": "4.1.11",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@omercnet/paseo-shared-browser",
-      "version": "4.1.10",
+      "version": "4.1.11",
       "dependencies": {
         "@getpaseo/plugin": "0.16.0-beta.2",
         "@modelcontextprotocol/sdk": "1.32.2",
