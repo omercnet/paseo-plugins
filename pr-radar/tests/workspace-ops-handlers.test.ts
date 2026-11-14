@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   listLocalDirsHandler,
   prepareWorkspaceCwdHandler,
@@ -18,6 +18,16 @@ import {
 } from "../server/workspace-ops";
 
 const tempDirs: string[] = [];
+
+// Hermetic git: no global or system config (url rewrites, commit signing, credential helpers), only
+// the file and ssh transports (so nothing can reach the network over https), and no repository
+// discovery above the temp root.
+beforeEach(() => {
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
+  vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+  vi.stubEnv("GIT_ALLOW_PROTOCOL", "file:ssh");
+  vi.stubEnv("GIT_CEILING_DIRECTORIES", realpathSync(tmpdir()));
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -79,18 +89,20 @@ function makePullableRepo(root: string): { repoDir: string; bareDir: string; prH
   return { repoDir, bareDir, prHead };
 }
 
-function request(overrides: Record<string, unknown>) {
+type PrepareInput = Parameters<typeof prepareWorkspaceCwdHandler>[0];
+
+function request(overrides: Partial<PrepareInput>): PrepareInput {
   return {
-    itemKind: "pr" as const,
+    itemKind: "pr",
     repository: "owner/repo",
     prNumber: 7,
     headRefName: "feat/x",
     baseRefName: "main",
     sourceCodeDir: "/nonexistent-source-dir",
-    targetDir: null as string | null,
+    targetDir: null,
     allowClone: false,
-    cwdMode: "CWD-WORKTREE" as const,
-    worktreeName: null as string | null,
+    cwdMode: "CWD-WORKTREE",
+    worktreeName: null,
     ...overrides,
   };
 }
@@ -200,6 +212,7 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
       [
         "#!/bin/sh",
         '[ "$1 $2 $3" = "repo clone --" ] || exit 9',
+        'echo "$*" > "$FAKE_GH_LOG"',
         'git clone -q "$FAKE_GH_SOURCE" "$5" || exit 8',
         'git -C "$5" remote set-url origin "https://github.com/$4.git"',
         "",
@@ -208,6 +221,8 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
     chmodSync(ghScript, 0o755);
     vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
     vi.stubEnv("FAKE_GH_SOURCE", source);
+    const ghLog = join(root, "gh-args.txt");
+    vi.stubEnv("FAKE_GH_LOG", ghLog);
 
     const target = join(root, "nested", "clone");
     const result = await prepareWorkspaceCwdHandler(
@@ -219,8 +234,11 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
         cwdMode: "CWD-BASE",
       }),
     );
+    // The fake gh ran with exactly these arguments (a real gh would not write the log).
+    expect(readFileSync(ghLog, "utf8").trim()).toBe(`repo clone -- owner/repo ${target}`);
     expect(result.cloned).toBe(true);
     expect(result.cwd).toBe(target);
+    expect(gitIn(target, ["rev-parse", "HEAD"])).toBe(gitIn(source, ["rev-parse", "HEAD"]));
     expect(gitIn(target, ["branch", "--show-current"])).toBe("pr-radar/issue-3");
   });
 });
@@ -271,6 +289,32 @@ describe("prepareWorkspaceCwdHandler CWD-WORKTREE", () => {
     writeFileSync(join(worktreePath, "pr.txt"), "dirty\n");
     await expect(prepareWorkspaceCwdHandler(request({ targetDir: repoDir }))).rejects.toThrow(
       `Existing worktree ${worktreePath} has uncommitted changes; commit or stash them before updating PR #7.`,
+    );
+  });
+
+  test("refuses a same-repository worktree on another branch at the default folder", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const folder = join(root, "repo-pr-7-feat-x");
+    gitIn(repoDir, ["worktree", "add", "-b", "other-task", folder]);
+    await expect(prepareWorkspaceCwdHandler(request({ targetDir: repoDir }))).rejects.toThrow(
+      `Existing folder ${folder} is not a worktree of owner/repo on branch pr-radar/pr-7.`,
+    );
+    // The other task's worktree was neither switched nor fetched into.
+    expect(gitIn(folder, ["branch", "--show-current"])).toBe("other-task");
+  });
+
+  test("refuses another repository's checkout that sits on the expected branch", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    const stranger = join(root, "repo-issue-12-feat-x");
+    initRepo(stranger, "https://github.com/someone/else.git");
+    gitIn(stranger, ["checkout", "-b", "pr-radar/issue-12"]);
+    await expect(
+      prepareWorkspaceCwdHandler(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(
+      `Existing folder ${stranger} is not a worktree of owner/repo on branch pr-radar/issue-12.`,
     );
   });
 
@@ -349,23 +393,23 @@ describe("listLocalDirsHandler", () => {
     const repoDir = join(root, "alpha");
     initRepo(repoDir, "https://github.com/owner/alpha.git");
     const elsewhere = makeRoot();
-    gitIn(repoDir, ["worktree", "add", "-b", "feature-zeta", join(elsewhere, "tree-one")]);
-    initRepo(join(root, "beta"), "https://github.com/owner/beta.git");
+    gitIn(repoDir, ["worktree", "add", "-b", "feature-zq7k", join(elsewhere, "tree-one")]);
+    initRepo(join(root, "bq9x-repo"), "https://github.com/owner/bq9x-repo.git");
 
     // The repository matches, so its worktrees are listed; only the branch contains the query.
     const byBranch = await listLocalDirsHandler({
       sourceCodeDir: root,
-      query: "ZETA",
+      query: "ZQ7K",
       repository: "owner/alpha",
     });
     expect(byBranch.entries.map((entry) => entry.label)).toEqual(["alpha · tree-one"]);
 
     const byLabel = await listLocalDirsHandler({
       sourceCodeDir: root,
-      query: "beta",
+      query: "bq9x",
       repository: "",
     });
-    expect(byLabel.entries.map((entry) => entry.label)).toEqual(["beta"]);
+    expect(byLabel.entries.map((entry) => entry.label)).toEqual(["bq9x-repo"]);
 
     const byPath = await listLocalDirsHandler({
       sourceCodeDir: root,
