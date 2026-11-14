@@ -1,6 +1,6 @@
 import type { usePaseo } from "@getpaseo/plugin/client";
 import { z } from "zod";
-import { type GitHubInboxItem, HttpsUrlSchema } from "../shared/viewer-scope";
+import { type GitHubInboxItem, type GitHubIssueItem, HttpsUrlSchema } from "../shared/viewer-scope";
 
 export type PaseoApi = ReturnType<typeof usePaseo>;
 export type PaseoWorkspace = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>["entries"][number];
@@ -52,6 +52,8 @@ export type ViewerOwnership = "mine" | "external" | "unknown";
 export type CwdTag = "CWD-BASE" | "CWD-WORKTREE" | "CWD-TBD";
 
 export interface RadarRow {
+  itemKind?: "pr" | "issue";
+  issueRole?: GitHubIssueItem["role"];
   id: string;
   number: number | null;
   url: string;
@@ -325,6 +327,9 @@ export function agentActionFor(row: RadarRow): RadarAgentAction {
 }
 
 export function buildAgentPrompt(row: RadarRow): string {
+  if (row.itemKind === "issue") {
+    return `Investigate and address GitHub issue ${row.url} (${row.title}). Inspect the repository, implement a fix or plan, run relevant validation, and report the result.`;
+  }
   if (row.reviewRequestedFromMe) {
     return `Review ${row.url}. CI is complete and GitHub is requesting your review. Inspect the changes, follow the repository review workflow, submit the review when justified, and report the result.`;
   }
@@ -773,4 +778,56 @@ export function splitDraftRows(rows: readonly RadarRow[]): {
     }
   }
   return { pullRequests, draftPullRequests };
+}
+
+export function buildIssueRows(
+  snapshot: RadarSnapshot | undefined,
+  issueItems: readonly GitHubIssueItem[],
+): RadarRow[] {
+  const roots = snapshot?.repositoryRoots ?? {};
+  return issueItems.map((item) => {
+    const localProjectRoot = roots[item.repository.toLowerCase()] ?? null;
+    const roleLabel =
+      item.role === "author"
+        ? "Authored issue"
+        : item.role === "assignee"
+          ? "Assigned to you"
+          : "Open in your repository";
+    return {
+      itemKind: "issue",
+      issueRole: item.role,
+      id: `${item.repository.toLowerCase()}#issue-${item.number}`,
+      number: item.number,
+      url: item.url,
+      title: item.title,
+      repository: item.repository,
+      baseRefName: "",
+      headRefName: item.title,
+      isDraft: false,
+      author: item.author,
+      authorKind: item.authorKind,
+      isSecurity: item.isSecurity,
+      comments: item.comments,
+      labels: [...item.labels],
+      changes: [],
+      linkedIssues: [],
+      cwdTag: "CWD-TBD",
+      hasLocalPlace: Boolean(localProjectRoot),
+      mergeable: "UNKNOWN",
+      mergeStateStatus: null,
+      checksStatus: "none",
+      reviewDecision: null,
+      checks: [],
+      workspaceIds: [],
+      workspaceNames: [],
+      localProjectRoot,
+      agents: [],
+      ownership: item.role === "author" ? "mine" : "external",
+      reviewRequestedFromMe: false,
+      bucket: item.role === "assignee" ? "needs-you" : "waiting",
+      reason: roleLabel,
+      activityAt: item.updatedAt,
+      refreshedAt: item.updatedAt,
+    };
+  });
 }

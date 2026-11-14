@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { buildAgentConfig, splitDraftRows } from "../client/radar";
+import {
+  buildAgentConfig,
+  buildAgentPrompt,
+  buildIssueRows,
+  splitDraftRows,
+} from "../client/radar";
 import { defaultWorktreeName, expandUserPath, slugifyBranch } from "../server/workspace-ops";
 import { DEFAULT_PR_RADAR_SETTINGS, PrRadarSettingsSchema } from "../shared/settings";
 
@@ -32,6 +37,7 @@ describe("workspace ops helpers", () => {
     expect(defaultWorktreeName("firecrawl/firecrawl", 5135, "feat/ssrf-proxy-port")).toBe(
       "firecrawl-pr-5135-feat-ssrf-proxy-port",
     );
+    expect(defaultWorktreeName("owner/repo", 42, "", "issue")).toBe("repo-issue-42");
     expect(slugifyBranch("Fix/Weird__Branch!!Name")).toBe("fix-weird-branch-name");
   });
 
@@ -93,5 +99,45 @@ describe("agent config & draft splitting", () => {
     ]);
     expect(pullRequests.map((r) => r.id)).toEqual(["2"]);
     expect(draftPullRequests.map((r) => r.id)).toEqual(["1"]);
+  });
+});
+
+describe("issues support", () => {
+  test("buildIssueRows maps GitHubIssueItem and detects local checkout", () => {
+    const rows = buildIssueRows(
+      {
+        rows: [],
+        warnings: [],
+        workspaceCount: 1,
+        refreshedAt: "2026-11-10T00:00:00Z",
+        repositoryRoots: { "owner/my-repo": "/tmp/my-repo" },
+      },
+      [
+        {
+          id: "owner/my-repo#12",
+          repository: "owner/my-repo",
+          number: 12,
+          url: "https://github.com/owner/my-repo/issues/12",
+          title: "Fix crash",
+          author: "alice",
+          authorKind: "human",
+          comments: 3,
+          labels: ["bug"],
+          isSecurity: false,
+          createdAt: "2026-11-10T00:00:00Z",
+          updatedAt: "2026-11-10T00:00:00Z",
+          role: "assignee",
+        },
+      ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].itemKind).toBe("issue");
+    expect(rows[0].issueRole).toBe("assignee");
+    expect(rows[0].hasLocalPlace).toBe(true);
+    expect(rows[0].localProjectRoot).toBe("/tmp/my-repo");
+    expect(rows[0].cwdTag).toBe("CWD-TBD");
+    expect(buildAgentPrompt(rows[0])).toContain(
+      "GitHub issue https://github.com/owner/my-repo/issues/12",
+    );
   });
 });

@@ -30,6 +30,7 @@ DevTools before capture. Both PNGs come from an isolated Paseo test daemon at 2Ã
 - Viewer labels: `YOURS`, `REVIEW`, and `EXTERNAL`.
 - Working-directory tags: `CWD-WORKTREE`, `CWD-BASE`, and `CWD-TBD` (shown on rows and maintained as Paseo workspace/agent labels).
 - Draft PRs (DPRs): displayed in a separate collapsible section below regular pull requests.
+- Issues tab: switch between `Pull Requests` and `Issues` (authored by you, assigned to you, or in your owned repos) with the same `Start New Agent`, `Open Existing Agent`, `CWD-*` tags, `Copy link`, and `Open Issue` workflow.
 - Action cluster on every PR:
   - `Open issues (N)`: opens all linked/closing GitHub issues in your browser when present.
   - `Start New Agent`: available on every PR (orange when a local checkout/worktree exists, brown when `CWD-TBD` and a clone or directory pick is needed). Opens an interactive directory/worktree chooser (supporting incremental typing, GUI selection, `CWD-WORKTREE` vs `CWD-BASE`, and one-click clone + worktree creation), or launches immediately when configured in Settings.

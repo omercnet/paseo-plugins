@@ -72,11 +72,13 @@ export function defaultWorktreeName(
   repository: string,
   prNumber: number,
   headRefName: string,
+  itemKind: "pr" | "issue" = "pr",
 ): string {
   const { name } = repoParts(repository);
   const slug = slugifyBranch(headRefName);
   const base = name || "repo";
-  return slug ? `${base}-pr-${prNumber}-${slug}` : `${base}-pr-${prNumber}`;
+  const kindPrefix = itemKind === "issue" ? "issue" : "pr";
+  return slug ? `${base}-${kindPrefix}-${prNumber}-${slug}` : `${base}-${kindPrefix}-${prNumber}`;
 }
 
 async function gitRemoteMatches(dir: string, repository: string): Promise<boolean> {
@@ -247,15 +249,19 @@ export async function prepareWorkspaceCwdHandler(
   }
 
   if (input.cwdMode === "CWD-BASE") {
-    const branchName = input.headRefName || `pr-${input.prNumber}`;
-    await runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head:${branchName}`]).catch(
-      () => runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head`]),
-    );
-    const currentBranch = await runGit(baseRoot, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(
-      () => "",
-    );
-    if (currentBranch !== branchName) {
-      await runGit(baseRoot, ["checkout", branchName]).catch(() => undefined);
+    if (input.itemKind === "pr") {
+      const branchName = input.headRefName || `pr-${input.prNumber}`;
+      await runGit(baseRoot, [
+        "fetch",
+        "origin",
+        `pull/${input.prNumber}/head:${branchName}`,
+      ]).catch(() => runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head`]));
+      const currentBranch = await runGit(baseRoot, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(
+        () => "",
+      );
+      if (currentBranch !== branchName) {
+        await runGit(baseRoot, ["checkout", branchName]).catch(() => undefined);
+      }
     }
     return {
       cwd: baseRoot,
@@ -266,10 +272,15 @@ export async function prepareWorkspaceCwdHandler(
     };
   }
 
-  // CWD-WORKTREE: reuse existing worktree for this PR branch if present.
+  // CWD-WORKTREE: reuse existing worktree for this PR/issue branch if present.
   const existingWorktrees = await listWorktrees(baseRoot);
-  if (input.headRefName) {
-    const existing = existingWorktrees.find((wt) => wt.branch === input.headRefName);
+  const branchName =
+    input.itemKind === "issue"
+      ? `issue-${input.prNumber}${slugifyBranch(input.headRefName) ? `-${slugifyBranch(input.headRefName)}` : ""}`
+      : input.headRefName || `pr-${input.prNumber}`;
+
+  if (branchName) {
+    const existing = existingWorktrees.find((wt) => wt.branch === branchName);
     if (existing) {
       return {
         cwd: existing.path,
@@ -283,7 +294,7 @@ export async function prepareWorkspaceCwdHandler(
 
   const worktreeFolder =
     input.worktreeName?.trim() ||
-    defaultWorktreeName(input.repository, input.prNumber, input.headRefName);
+    defaultWorktreeName(input.repository, input.prNumber, input.headRefName, input.itemKind);
   const worktreePath = join(dirname(baseRoot), worktreeFolder);
 
   if (await exists(worktreePath)) {
@@ -296,17 +307,24 @@ export async function prepareWorkspaceCwdHandler(
     };
   }
 
-  const branchName = input.headRefName || `pr-${input.prNumber}`;
-  await runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head:${branchName}`]).catch(
-    async () => {
-      await runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head`]);
-    },
-  );
+  if (input.itemKind === "issue") {
+    try {
+      await runGit(baseRoot, ["worktree", "add", "-b", branchName, worktreePath, "HEAD"]);
+    } catch {
+      await runGit(baseRoot, ["worktree", "add", worktreePath, branchName]);
+    }
+  } else {
+    await runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head:${branchName}`]).catch(
+      async () => {
+        await runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head`]);
+      },
+    );
 
-  try {
-    await runGit(baseRoot, ["worktree", "add", worktreePath, branchName]);
-  } catch {
-    await runGit(baseRoot, ["worktree", "add", "--detach", worktreePath, "FETCH_HEAD"]);
+    try {
+      await runGit(baseRoot, ["worktree", "add", worktreePath, branchName]);
+    } catch {
+      await runGit(baseRoot, ["worktree", "add", "--detach", worktreePath, "FETCH_HEAD"]);
+    }
   }
 
   return {

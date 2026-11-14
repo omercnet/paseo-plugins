@@ -107,6 +107,7 @@ export function PrRadar({
   const [narrow, setNarrow] = useState(false);
   const layout = { ...hostLayout, compact: hostLayout.compact || narrow };
   const [filter, setFilterState] = useState<RadarFilter | null>(parsed.filter);
+  const [activeTab, setActiveTab] = useState<"prs" | "issues">("prs");
   const [focusedPr, setFocusedPr] = useState<string | null>(parsed.pr);
   const [modalRow, setModalRow] = useState<RadarRow | null>(null);
   const [dprCollapsed, setDprCollapsed] = useState(false);
@@ -144,6 +145,7 @@ export function PrRadar({
     refetch,
     rawRows,
     rows,
+    issues,
     viewerData,
     viewerError,
     isFetching,
@@ -238,6 +240,7 @@ export function PrRadar({
       const prepared = await prepareCwd({
         repository: row.repository,
         prNumber: row.number,
+        itemKind: row.itemKind ?? "pr",
         headRefName: row.headRefName,
         baseRefName: row.baseRefName,
         sourceCodeDir: settings.sourceCodeDir,
@@ -436,6 +439,14 @@ export function PrRadar({
   const { pullRequests, draftPullRequests } = useMemo(
     () => splitDraftRows(sortedRows),
     [sortedRows],
+  );
+  const sortedIssues = useMemo(
+    () =>
+      sortRows(
+        issues.filter((row) => matchesRow(row, search)),
+        sortKey,
+      ),
+    [issues, search, sortKey],
   );
 
   const styles = useMemo(() => {
@@ -746,13 +757,20 @@ export function PrRadar({
     const actionPending = agentMutation.isPending && agentMutation.variables?.id === item.id;
     const startPending =
       startNewAgentMutation.isPending && startNewAgentMutation.variables?.row.id === item.id;
-    const ownershipLabel = item.reviewRequestedFromMe
-      ? "REVIEW"
-      : item.ownership === "mine"
-        ? "YOURS"
-        : item.ownership === "external"
-          ? "EXTERNAL"
-          : "SCOPE UNKNOWN";
+    const ownershipLabel =
+      item.itemKind === "issue"
+        ? item.issueRole === "assignee"
+          ? "ASSIGNED"
+          : item.issueRole === "owner"
+            ? "OWNER"
+            : "AUTHOR"
+        : item.reviewRequestedFromMe
+          ? "REVIEW"
+          : item.ownership === "mine"
+            ? "YOURS"
+            : item.ownership === "external"
+              ? "EXTERNAL"
+              : "SCOPE UNKNOWN";
     const actions = (
       <View style={styles.actions}>
         {item.linkedIssues.length > 0 ? (
@@ -839,7 +857,7 @@ export function PrRadar({
         </Pressable>
         <Pressable
           accessibilityRole="link"
-          accessibilityLabel={`Open pull request ${item.repository} ${item.number ?? ""}`}
+          accessibilityLabel={`Open ${item.itemKind === "issue" ? "issue" : "pull request"} ${item.repository} ${item.number ?? ""}`}
           onPress={() => void openPr(item)}
           style={({ pressed }) => [
             styles.action,
@@ -847,7 +865,9 @@ export function PrRadar({
             pressed && styles.refreshPressed,
           ]}
         >
-          <Text style={[styles.actionText, styles.actionPrimaryText]}>Open PR</Text>
+          <Text style={[styles.actionText, styles.actionPrimaryText]}>
+            {item.itemKind === "issue" ? "Open Issue" : "Open PR"}
+          </Text>
         </Pressable>
       </View>
     );
@@ -876,7 +896,7 @@ export function PrRadar({
             <Text style={styles.reason}>{item.reason}</Text>
           </View>
           <Text style={styles.metadata} numberOfLines={1} ellipsizeMode="middle">
-            {checkSummary(item)}
+            {item.itemKind === "issue" ? "Open issue" : checkSummary(item)}
             {branchSummary}
           </Text>
           <Text style={styles.metadata} numberOfLines={1} ellipsizeMode="tail">
@@ -897,18 +917,26 @@ export function PrRadar({
     );
   };
 
-  const totalCopy = `${rows.length} open ${rows.length === 1 ? "pull request" : "pull requests"}; ${rawRows.length} linked to ${data?.workspaceCount ?? 0} workspaces`;
-  const emptyCopy = focusedPr
-    ? "This pull request is not in the current queue."
-    : search
-      ? "No pull requests match this search."
-      : activeOnly
-        ? "No pull requests have a running or initializing agent."
-        : savedView
-          ? `No pull requests match the ${SAVED_VIEW_TITLES[savedView].toLowerCase()} view.`
-          : selected
-            ? "No pull requests are in this queue."
-            : "No open pull requests are visible to GitHub or linked to a Paseo workspace.";
+  const totalCopy =
+    activeTab === "issues"
+      ? `${issues.length} open ${issues.length === 1 ? "issue" : "issues"}`
+      : `${rows.length} open ${rows.length === 1 ? "pull request" : "pull requests"}; ${rawRows.length} linked to ${data?.workspaceCount ?? 0} workspaces`;
+  const emptyCopy =
+    activeTab === "issues"
+      ? search
+        ? "No issues match this search."
+        : "No open issues authored by or assigned to you were found."
+      : focusedPr
+        ? "This pull request is not in the current queue."
+        : search
+          ? "No pull requests match this search."
+          : activeOnly
+            ? "No pull requests have a running or initializing agent."
+            : savedView
+              ? `No pull requests match the ${SAVED_VIEW_TITLES[savedView].toLowerCase()} view.`
+              : selected
+                ? "No pull requests are in this queue."
+                : "No open pull requests are visible to GitHub or linked to a Paseo workspace.";
   const summaryMetrics = [
     { label: "Action now", value: counts["needs-you"] },
     { label: "Ready", value: counts.ready },
@@ -950,109 +978,147 @@ export function PrRadar({
       </View>
       <Text style={styles.heroTitle}>Know what moves next.</Text>
       <Text style={styles.heroDetail}>{totalCopy}</Text>
-      {focusedPr ? <Text style={styles.heroDetail}>Focused PR: {focusedPr}</Text> : null}
-      {data?.truncated ? <Text style={styles.warningText}>{DIRECTORY_PARTIAL}</Text> : null}
-      {rawRows.length > VIEWER_URL_LIMIT ? (
+      <View accessibilityRole="tablist" style={styles.chipRow}>
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === "prs" }}
+          onPress={() => setActiveTab("prs")}
+          style={[styles.chip, activeTab === "prs" && styles.chipActive]}
+        >
+          <Text style={[styles.chipText, activeTab === "prs" && styles.chipTextActive]}>
+            Pull Requests {rows.length}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === "issues" }}
+          onPress={() => setActiveTab("issues")}
+          style={[styles.chip, activeTab === "issues" && styles.chipActive]}
+        >
+          <Text style={[styles.chipText, activeTab === "issues" && styles.chipTextActive]}>
+            Issues {issues.length}
+          </Text>
+        </Pressable>
+      </View>
+      {activeTab === "prs" && focusedPr ? (
+        <Text style={styles.heroDetail}>Focused PR: {focusedPr}</Text>
+      ) : null}
+      {activeTab === "prs" && data?.truncated ? (
+        <Text style={styles.warningText}>{DIRECTORY_PARTIAL}</Text>
+      ) : null}
+      {activeTab === "prs" && rawRows.length > VIEWER_URL_LIMIT ? (
         <Text style={styles.warningText}>{LOOKUP_CAPPED}</Text>
       ) : null}
-      <View accessibilityRole="summary" style={styles.summary}>
-        {summaryMetrics.map(({ label, value }) => (
-          <View key={label} style={styles.metric}>
-            <Text style={styles.metricValue}>{value}</Text>
-            <Text style={styles.metricLabel}>{label}</Text>
+      {activeTab === "prs" ? (
+        <>
+          <View accessibilityRole="summary" style={styles.summary}>
+            {summaryMetrics.map(({ label, value }) => (
+              <View key={label} style={styles.metric}>
+                <Text style={styles.metricValue}>{value}</Text>
+                <Text style={styles.metricLabel}>{label}</Text>
+              </View>
+            ))}
           </View>
-        ))}
-      </View>
-      <ScrollView
-        accessibilityRole="tablist"
-        horizontal
-        onFocus={revealFocusedChip}
-        showsHorizontalScrollIndicator={false}
-        style={styles.chipScroller}
-        contentContainerStyle={styles.chipRow}
-      >
-        <Pressable
-          accessibilityRole="tab"
-          accessibilityState={{
-            selected: selected === null && !activeOnly && !savedView && !focusedPr,
-          }}
-          onPress={() => setFilter(null)}
-          style={[
-            styles.chip,
-            selected === null && !activeOnly && !savedView && !focusedPr && styles.chipActive,
-          ]}
-        >
-          <Text
-            style={[
-              styles.chipText,
-              selected === null && !activeOnly && !savedView && !focusedPr && styles.chipTextActive,
-            ]}
+          <ScrollView
+            accessibilityRole="tablist"
+            horizontal
+            onFocus={revealFocusedChip}
+            showsHorizontalScrollIndicator={false}
+            style={styles.chipScroller}
+            contentContainerStyle={styles.chipRow}
           >
-            All {rows.length}
-          </Text>
-        </Pressable>
-        {BUCKETS.map((bucket) => (
-          <Pressable
-            accessibilityRole="tab"
-            accessibilityState={{ selected: selected === bucket }}
-            key={bucket}
-            onPress={() => setFilter(bucket)}
-            style={[styles.chip, selected === bucket && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, selected === bucket && styles.chipTextActive]}>
-              {BUCKET_TITLES[bucket]} {counts[bucket]}
-            </Text>
-          </Pressable>
-        ))}
-        <Pressable
-          accessibilityRole="tab"
-          accessibilityState={{ selected: activeOnly }}
-          onPress={() => setFilter("active")}
-          style={[styles.chip, activeOnly && styles.chipActive]}
-        >
-          <Text style={[styles.chipText, activeOnly && styles.chipTextActive]}>
-            Active agents {activeCount}
-          </Text>
-        </Pressable>
-        {(Object.keys(SAVED_VIEW_TITLES) as SavedView[]).map((view) => (
-          <Pressable
-            accessibilityRole="tab"
-            accessibilityState={{ selected: savedView === view }}
-            key={view}
-            onPress={() => setFilter(view)}
-            style={[styles.chip, savedView === view && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, savedView === view && styles.chipTextActive]}>
-              {SAVED_VIEW_TITLES[view]} {savedViewCounts[view]}
-            </Text>
-          </Pressable>
-        ))}
-        {([7, 30, 90] as const).map((days) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: windowDays === days }}
-            key={days}
-            onPress={() => setWindowDays(days)}
-            style={[styles.chip, windowDays === days && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, windowDays === days && styles.chipTextActive]}>
-              {days}d
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{
+                selected: selected === null && !activeOnly && !savedView && !focusedPr,
+              }}
+              onPress={() => setFilter(null)}
+              style={[
+                styles.chip,
+                selected === null && !activeOnly && !savedView && !focusedPr && styles.chipActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.chipText,
+                  selected === null &&
+                    !activeOnly &&
+                    !savedView &&
+                    !focusedPr &&
+                    styles.chipTextActive,
+                ]}
+              >
+                All {rows.length}
+              </Text>
+            </Pressable>
+            {BUCKETS.map((bucket) => (
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{ selected: selected === bucket }}
+                key={bucket}
+                onPress={() => setFilter(bucket)}
+                style={[styles.chip, selected === bucket && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, selected === bucket && styles.chipTextActive]}>
+                  {BUCKET_TITLES[bucket]} {counts[bucket]}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: activeOnly }}
+              onPress={() => setFilter("active")}
+              style={[styles.chip, activeOnly && styles.chipActive]}
+            >
+              <Text style={[styles.chipText, activeOnly && styles.chipTextActive]}>
+                Active agents {activeCount}
+              </Text>
+            </Pressable>
+            {(Object.keys(SAVED_VIEW_TITLES) as SavedView[]).map((view) => (
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{ selected: savedView === view }}
+                key={view}
+                onPress={() => setFilter(view)}
+                style={[styles.chip, savedView === view && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, savedView === view && styles.chipTextActive]}>
+                  {SAVED_VIEW_TITLES[view]} {savedViewCounts[view]}
+                </Text>
+              </Pressable>
+            ))}
+            {([7, 30, 90] as const).map((days) => (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: windowDays === days }}
+                key={days}
+                onPress={() => setWindowDays(days)}
+                style={[styles.chip, windowDays === days && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, windowDays === days && styles.chipTextActive]}>
+                  {days}d
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </>
+      ) : null}
       <TextInput
-        accessibilityLabel="Filter pull requests"
+        accessibilityLabel={activeTab === "issues" ? "Filter issues" : "Filter pull requests"}
         autoCapitalize="none"
         autoCorrect={false}
         onChangeText={setSearch}
-        placeholder="Filter by PR, branch, workspace, or agent"
+        placeholder={
+          activeTab === "issues"
+            ? "Filter by issue, repo, workspace, or agent"
+            : "Filter by PR, branch, workspace, or agent"
+        }
         placeholderTextColor={theme.colors.foregroundMuted}
         style={styles.search}
         value={search}
       />
       <SortControls sortKey={sortKey} onSort={setSortKey} styles={styles} />
-      {viewerData ? (
+      {activeTab === "prs" && viewerData ? (
         <View style={{ gap: 7 }}>
           <Text style={styles.heroDetail}>
             {viewerData.coverageNote}
@@ -1104,23 +1170,25 @@ export function PrRadar({
     >
       <FlatList
         contentContainerStyle={styles.content}
-        data={pullRequests}
+        data={activeTab === "issues" ? sortedIssues : pullRequests}
         keyExtractor={(item) => item.id}
         ListHeaderComponent={header}
         ListEmptyComponent={
           isPending ? (
             <ActivityIndicator color={theme.colors.accent} style={styles.spinner} />
-          ) : draftPullRequests.length > 0 ? null : (
+          ) : activeTab === "prs" && draftPullRequests.length > 0 ? null : (
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>
-                {rows.length === 0 ? "Clear runway" : "Nothing here"}
+                {(activeTab === "issues" ? issues.length : rows.length) === 0
+                  ? "Clear runway"
+                  : "Nothing here"}
               </Text>
               <Text style={styles.emptyDetail}>{emptyCopy}</Text>
             </View>
           )
         }
         ListFooterComponent={
-          draftPullRequests.length > 0 ? (
+          activeTab === "prs" && draftPullRequests.length > 0 ? (
             <View>
               <Pressable
                 accessibilityRole="button"

@@ -30,6 +30,24 @@ export const GitHubInboxItemSchema = z.object({
 
 export type GitHubInboxItem = z.infer<typeof GitHubInboxItemSchema>;
 
+export const GitHubIssueItemSchema = z.object({
+  id: z.string(),
+  number: z.number().int().positive(),
+  url: HttpsUrlSchema,
+  title: z.string(),
+  repository: z.string(),
+  author: z.string().nullable(),
+  authorKind: z.enum(["human", "bot"]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  isSecurity: z.boolean(),
+  comments: z.number().int().nonnegative(),
+  labels: z.array(z.string()),
+  role: z.enum(["author", "assignee", "owner"]),
+});
+
+export type GitHubIssueItem = z.infer<typeof GitHubIssueItemSchema>;
+
 export const viewerScope = defineRpc({
   name: "pr-radar.viewer-scope",
   input: z.object({
@@ -41,6 +59,7 @@ export const viewerScope = defineRpc({
     authoredUrls: z.array(HttpsUrlSchema),
     reviewRequestedUrls: z.array(HttpsUrlSchema),
     inboxItems: z.array(GitHubInboxItemSchema),
+    issueItems: z.array(GitHubIssueItemSchema).default([]),
     truncated: z.boolean(),
     coverageNote: z.string(),
     updates: z.number().int().nonnegative(),
@@ -82,6 +101,7 @@ export const listLocalDirs = defineRpc({
 export const prepareWorkspaceCwd = defineRpc({
   name: "pr-radar.prepare-workspace-cwd",
   input: z.object({
+    itemKind: z.enum(["pr", "issue"]).default("pr"),
     repository: z.string().trim().min(1),
     prNumber: z.number().int().positive(),
     headRefName: z.string().default(""),

@@ -23,8 +23,9 @@ function defaultHumanWorktreeName(row: RadarRow): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 32);
-  const num = row.number ?? "pr";
-  return slug ? `${repoName}-pr-${num}-${slug}` : `${repoName}-pr-${num}`;
+  const kindPrefix = row.itemKind === "issue" ? "issue" : "pr";
+  const num = row.number ?? kindPrefix;
+  return slug ? `${repoName}-${kindPrefix}-${num}-${slug}` : `${repoName}-${kindPrefix}-${num}`;
 }
 
 export function StartAgentModal({

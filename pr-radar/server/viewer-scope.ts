@@ -4,7 +4,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { z } from "zod";
-import type { acknowledgeViewerScope, GitHubInboxItem, viewerScope } from "../shared/viewer-scope";
+import type {
+  acknowledgeViewerScope,
+  GitHubInboxItem,
+  GitHubIssueItem,
+  viewerScope,
+} from "../shared/viewer-scope";
 import { mergeChanges } from "./changes";
 
 const execFileAsync = promisify(execFile);
@@ -149,6 +154,81 @@ async function searchPullRequests(
     `--json=${fields}`,
   ]);
   return JSON.parse(output) as SearchRecord[];
+}
+
+interface IssueSearchRecord {
+  id: string;
+  number: number;
+  title: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  author: { login: string; is_bot?: boolean; type?: string } | null;
+  repository: { nameWithOwner: string };
+  commentsCount: number;
+  labels: Array<{ name: string }>;
+}
+
+async function searchIssues(
+  filter: "author" | "assignee" | "owner",
+  viewer: string,
+  since: string,
+): Promise<IssueSearchRecord[]> {
+  const fields = [
+    "id",
+    "number",
+    "title",
+    "url",
+    "createdAt",
+    "updatedAt",
+    "author",
+    "repository",
+    "commentsCount",
+    "labels",
+  ].join(",");
+  try {
+    const output = await runSearch([
+      "search",
+      "issues",
+      `--${filter}=${viewer}`,
+      "--state=open",
+      "--archived=false",
+      `--updated=>=${since}`,
+      `--limit=${SEARCH_LIMIT}`,
+      "--sort=updated",
+      "--order=desc",
+      `--json=${fields}`,
+    ]);
+    const parsed = JSON.parse(output);
+    return Array.isArray(parsed) ? (parsed as IssueSearchRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function toIssueItem(record: IssueSearchRecord, role: GitHubIssueItem["role"]): GitHubIssueItem {
+  const labels = record.labels.map(({ name }) => name);
+  const authorKind =
+    record.author?.is_bot || record.author?.type === "Bot" || record.author?.login.endsWith("[bot]")
+      ? "bot"
+      : "human";
+  return {
+    id: record.id,
+    number: record.number,
+    url: record.url,
+    title: record.title,
+    repository: record.repository.nameWithOwner,
+    author: record.author?.login ?? null,
+    authorKind,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    isSecurity:
+      labels.some((label) => /security|vulnerability|cve/i.test(label)) ||
+      /security|vulnerabilit|\bcve\b/i.test(record.title),
+    comments: record.commentsCount,
+    labels,
+    role,
+  };
 }
 
 async function searchScopeUrls(filter: "author" | "review-requested"): Promise<string[]> {
@@ -389,6 +469,7 @@ interface Snapshot {
   authoredScope: string[];
   reviewRequestedScope: string[];
   inboxItems: GitHubInboxItem[];
+  issueItems: GitHubIssueItem[];
   enrichmentFailures: number;
   acknowledgedAt: string | null;
 }
@@ -397,12 +478,30 @@ interface Snapshot {
 async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
   const viewer = await viewerLogin();
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
-  const [authored, reviewRequested, authoredScope, reviewRequestedScope] = await Promise.all([
+  const [
+    authored,
+    reviewRequested,
+    authoredScope,
+    reviewRequestedScope,
+    authoredIssues,
+    assignedIssues,
+    ownedIssues,
+  ] = await Promise.all([
     searchPullRequests("author", viewer, since),
     searchPullRequests("review-requested", viewer, since),
     searchScopeUrls("author"),
     searchScopeUrls("review-requested"),
+    searchIssues("author", viewer, since),
+    searchIssues("assignee", viewer, since),
+    searchIssues("owner", viewer, since),
   ]);
+  const issueMap = new Map<string, GitHubIssueItem>();
+  for (const record of ownedIssues) issueMap.set(record.id, toIssueItem(record, "owner"));
+  for (const record of assignedIssues) issueMap.set(record.id, toIssueItem(record, "assignee"));
+  for (const record of authoredIssues) issueMap.set(record.id, toIssueItem(record, "author"));
+  const issueItems = [...issueMap.values()].sort(
+    (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
+  );
   const records = new Map<string, { record: SearchRecord; role: GitHubInboxItem["role"] }>();
   for (const record of reviewRequested) records.set(record.id, { record, role: "reviewer" });
   for (const record of authored) records.set(record.id, { record, role: "author" });
@@ -459,6 +558,7 @@ async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
     authoredScope,
     reviewRequestedScope,
     inboxItems,
+    issueItems,
     enrichmentFailures: enrichment.failures,
     acknowledgedAt,
   };
@@ -482,6 +582,7 @@ export function projectSnapshot(snapshot: Snapshot, urls: string[]): ViewerScope
     authoredUrls: withScope(snapshot.authored, snapshot.authoredScope),
     reviewRequestedUrls: withScope(snapshot.reviewRequested, snapshot.reviewRequestedScope),
     inboxItems: snapshot.inboxItems,
+    issueItems: snapshot.issueItems,
     truncated:
       snapshot.authored.length === SEARCH_LIMIT || snapshot.reviewRequested.length === SEARCH_LIMIT,
     coverageNote,
