@@ -85,7 +85,18 @@ function initRepo(dir: string, remoteUrl: string | null): void {
   writeFileSync(join(dir, "README.md"), "hello\n");
   gitIn(dir, ["add", "README.md"]);
   gitIn(dir, ["commit", "-m", "init"]);
-  if (remoteUrl) gitIn(dir, ["remote", "add", "origin", remoteUrl]);
+  if (remoteUrl) {
+    gitIn(dir, ["remote", "add", "origin", remoteUrl]);
+    // The initial commit counts as published: a remote-tracking branch contains it.
+    gitIn(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  }
+}
+
+function commitFile(dir: string, name: string): string {
+  writeFileSync(join(dir, name), `${name}\n`);
+  gitIn(dir, ["add", name]);
+  gitIn(dir, ["commit", "-m", `add ${name}`]);
+  return gitIn(dir, ["rev-parse", "HEAD"]);
 }
 
 /**
@@ -485,13 +496,6 @@ describe("prepareWorkspaceCwdHandler CWD-WORKTREE", () => {
 });
 
 describe("prepareWorkspaceCwdHandler branch safety", () => {
-  function commitFile(dir: string, name: string): string {
-    writeFileSync(join(dir, name), `${name}\n`);
-    gitIn(dir, ["add", name]);
-    gitIn(dir, ["commit", "-m", `add ${name}`]);
-    return gitIn(dir, ["rev-parse", "HEAD"]);
-  }
-
   test("fetches the PR head into a dedicated ref instead of relying on FETCH_HEAD", async () => {
     const root = makeRoot();
     const { repoDir, prHead } = makePullableRepo(root);
@@ -598,6 +602,45 @@ describe("prepareWorkspaceCwdHandler branch safety", () => {
     await expect(
       prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
     ).rejects.toThrow(/is on pr-radar\/pr-7/);
+  });
+});
+
+describe("issue start point without a remote default", () => {
+  test("refuses a detached HEAD on unpublished PR code", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    commitFile(repoDir, "unmerged-pr.txt");
+    gitIn(repoDir, ["checkout", "--detach"]);
+    await expect(
+      prepare(
+        request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+      ),
+    ).rejects.toThrow(/HEAD is not on any origin branch/);
+    expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
+  });
+
+  test("refuses a branch named like the PR that no remote branch contains", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "fix-the-thing"]);
+    commitFile(repoDir, "unmerged-pr.txt");
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/HEAD is not on any origin branch/);
+  });
+
+  test("accepts a detached HEAD that a remote branch contains", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    const published = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["checkout", "--detach"]);
+    await prepare(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+    );
+    expect(gitIn(repoDir, ["rev-parse", "HEAD"])).toBe(published);
   });
 });
 

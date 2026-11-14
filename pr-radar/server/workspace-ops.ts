@@ -466,7 +466,8 @@ async function currentBranch(repoDir: string): Promise<string | null> {
 
 /**
  * New issue branches start from the remote default branch. Without a recorded remote default the
- * current HEAD is used, but never while it sits on a PR branch, which would carry unmerged PR code.
+ * current HEAD is used, but only when a remote-tracking branch already contains it: a PR branch, a
+ * detached PR checkout or a local-only commit would carry unmerged, possibly untrusted code.
  */
 async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise<string> {
   const remoteHead = await runGit(
@@ -486,6 +487,23 @@ async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise
   if (branch?.startsWith("pr-radar/")) {
     throw new Error(
       `Base checkout ${baseRoot} is on ${branch} and has no recorded default branch for ${remote}; check out the default branch there, or use another directory.`,
+    );
+  }
+  const published = await runGit(
+    baseRoot,
+    [
+      "for-each-ref",
+      "--count=1",
+      "--contains",
+      "HEAD",
+      "--format=%(refname)",
+      `refs/remotes/${remote}`,
+    ],
+    3_000,
+  ).catch(() => "");
+  if (!published) {
+    throw new Error(
+      `Base checkout ${baseRoot} has no recorded default branch for ${remote} and its HEAD is not on any ${remote} branch, so it may carry unmerged code; run git remote set-head ${remote} --auto there, or check out the default branch.`,
     );
   }
   return runGit(baseRoot, ["rev-parse", "HEAD"], 3_000);
