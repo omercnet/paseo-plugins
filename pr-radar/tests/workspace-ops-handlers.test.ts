@@ -17,6 +17,7 @@ import {
   listLocalDirsHandler,
   prepareWorkspaceCwdHandler,
   type RoutingScriptLimits,
+  resolveRoutingScript,
   runRoutingScriptHandler,
 } from "../server/workspace-ops";
 import { listLocalDirs, prepareWorkspaceCwd, runRoutingScript } from "../shared/viewer-scope";
@@ -766,6 +767,42 @@ describe("runRoutingScriptHandler", () => {
     await expect(route(grouped)).rejects.toThrow(/must not be writable by group or others/);
     const open = writeScript(root, "open.sh", "echo {}", 0o757);
     await expect(route(open)).rejects.toThrow(/must not be writable by group or others/);
+  });
+
+  test("refuses a script owned by another user", async () => {
+    // Stands in for a script a different user created: the checking user is not the owner.
+    if (process.getuid?.() === 0) return;
+    const script = writeScript(makeRoot(), "owned.sh", "echo {}");
+    const otherUid = (process.getuid?.() ?? 0) + 1000;
+    await expect(resolveRoutingScript(script, otherUid)).rejects.toThrow(
+      /is owned by another user; run chown/,
+    );
+    await expect(resolveRoutingScript(script)).resolves.toBe(script);
+  });
+
+  test("refuses a script under a directory that group or others can write", async () => {
+    const root = makeRoot();
+    const shared = join(root, "shared");
+    mkdirSync(shared);
+    const script = writeScript(shared, "route.sh", "echo {}");
+    chmodSync(shared, 0o775);
+    await expect(route(script)).rejects.toThrow(
+      `Routing script directory ${shared} must not be writable by group or others; run chmod go-w`,
+    );
+    // A writable ancestor further up counts too.
+    const nested = join(shared, "nested");
+    mkdirSync(nested);
+    const deep = writeScript(nested, "deep.sh", "echo {}");
+    await expect(route(deep)).rejects.toThrow(/must not be writable by group or others/);
+  });
+
+  test("allows a directory that is writable but sticky, like /tmp", async () => {
+    const root = makeRoot();
+    const shared = join(root, "sticky");
+    mkdirSync(shared);
+    const script = writeScript(shared, "route.sh", "echo '{}'");
+    chmodSync(shared, 0o1777);
+    await expect(route(script)).resolves.toEqual({});
   });
 
   test("refuses a path that is not a regular file", async () => {

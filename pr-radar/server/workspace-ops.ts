@@ -706,11 +706,19 @@ export async function prepareWorkspaceCwdHandler(
   };
 }
 
+const STICKY_BIT = 0o1000;
+
 /**
  * Resolves the configured script to a real path and refuses anything but a regular, executable
- * file that only its owner can modify, so a script another local user can edit never runs.
+ * file that only this user (or root) can modify: the file must be owned by the user or root, and so
+ * must every directory above it, none of them writable by group or others unless sticky (like
+ * /tmp). Otherwise another local user could create the script or swap a path component for their
+ * own, and it would run as this user. `uid` is a parameter so tests can stand in for another user.
  */
-async function resolveRoutingScript(rawPath: string): Promise<string> {
+export async function resolveRoutingScript(
+  rawPath: string,
+  uid: number | undefined = process.getuid?.(),
+): Promise<string> {
   const trimmed = rawPath.trim();
   if (!trimmed) {
     throw new Error("No routing script is configured in the PR Radar settings.");
@@ -727,10 +735,30 @@ async function resolveRoutingScript(rawPath: string): Promise<string> {
   if (!info.isFile()) {
     throw new Error(`Routing script is not a regular file: ${scriptPath}`);
   }
+  const trustedOwner = (owner: number) => uid === undefined || owner === uid || owner === 0;
+  if (!trustedOwner(info.uid)) {
+    throw new Error(
+      `Routing script ${scriptPath} is owned by another user; run chown on it, or use a script you own.`,
+    );
+  }
   if ((info.mode & 0o022) !== 0) {
     throw new Error(
       `Routing script ${scriptPath} must not be writable by group or others; run chmod go-w on it.`,
     );
+  }
+  for (let dir = dirname(scriptPath); ; dir = dirname(dir)) {
+    const dirInfo = await stat(dir);
+    if (!trustedOwner(dirInfo.uid)) {
+      throw new Error(
+        `Routing script directory ${dir} is owned by another user; move the script somewhere you own, or run chown on it.`,
+      );
+    }
+    if ((dirInfo.mode & 0o022) !== 0 && (dirInfo.mode & STICKY_BIT) === 0) {
+      throw new Error(
+        `Routing script directory ${dir} must not be writable by group or others; run chmod go-w on it.`,
+      );
+    }
+    if (dirname(dir) === dir) break;
   }
   try {
     await access(scriptPath, constants.X_OK);
