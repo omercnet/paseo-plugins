@@ -95,8 +95,8 @@ const KNOWN_ROUTING_SCRIPTS: readonly ComboOption[] = [
     value: "~/src/djbclark-ade/bin/pr-radar-route",
   },
   {
-    label: "Bundled example: examples/pr-radar-route.py",
-    value: "examples/pr-radar-route.py",
+    label: "User config example: ~/.config/pr-radar/route.py",
+    value: "~/.config/pr-radar/route.py",
   },
 ];
 

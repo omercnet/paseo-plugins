@@ -444,9 +444,10 @@ export async function runRoutingScriptHandler(
   input: z.output<typeof runRoutingScript.input>,
 ): Promise<z.output<typeof runRoutingScript.output>> {
   const rawScript = input.scriptPath.trim();
-  const scriptPath = isAbsoluteOrHomePath(rawScript)
-    ? expandUserPath(rawScript)
-    : resolve(__dirname, "..", rawScript);
+  if (!isAbsoluteOrHomePath(rawScript)) {
+    throw new Error(`Routing script path must be an absolute or ~/ path: ${rawScript}`);
+  }
+  const scriptPath = expandUserPath(rawScript);
   if (!(await exists(scriptPath))) {
     throw new Error(`Routing script not found: ${scriptPath}`);
   }
