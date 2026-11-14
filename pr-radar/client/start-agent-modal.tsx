@@ -6,7 +6,12 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 import { ComboSelect, useAgentLaunchOptions } from "./agent-launch-options";
-import { type AgentLaunchOverrides, type RadarRow, restrictRoutedLaunch } from "./radar";
+import {
+  type AgentLaunchOverrides,
+  initialLaunchTarget,
+  type RadarRow,
+  restrictRoutedLaunch,
+} from "./radar";
 
 export interface StartAgentLaunchRequest {
   row: RadarRow;
@@ -84,8 +89,9 @@ export function StartAgentModal({
     if (!row) return;
     editedFieldsRef.current.clear();
     setDirFilter("");
-    setSelectedDir(row.localProjectRoot ?? null);
-    setAllowClone(!row.localProjectRoot);
+    const target = initialLaunchTarget(row);
+    setSelectedDir(target.selectedDir);
+    setAllowClone(target.allowClone);
     setCwdMode(settings.defaultCwdMode);
     setWorktreeName(defaultHumanWorktreeName(row));
     setProfileName(settings.defaultProfile);
@@ -336,7 +342,7 @@ export function StartAgentModal({
           <View style={{ gap: 6 }}>
             <Text style={styles.sectionLabel}>
               Local directory or clone target (selected:{" "}
-              {selectedDir ?? `Clone to ${suggestedClonePath}`})
+              {allowClone ? `Clone to ${suggestedClonePath}` : (selectedDir ?? "none yet")})
             </Text>
             <TextInput
               value={dirFilter}
@@ -361,11 +367,7 @@ export function StartAgentModal({
                   setAllowClone(true);
                   setDirFilter("");
                 }}
-                style={[
-                  styles.listRow,
-                  (allowClone || selectedDir === null || selectedDir === suggestedClonePath) &&
-                    styles.listRowSelected,
-                ]}
+                style={[styles.listRow, allowClone && styles.listRowSelected]}
               >
                 <View style={{ flex: 1, gap: 2 }}>
                   <Text style={styles.listRowTitle} numberOfLines={1}>

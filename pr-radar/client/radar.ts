@@ -771,6 +771,11 @@ export function profileAgentConfig(profile: AgentProfileLike) {
   };
 }
 
+/** Cloning is never preselected: the user has to pick the clone row to allow it. */
+export function initialLaunchTarget(row: Pick<RadarRow, "localProjectRoot">) {
+  return { selectedDir: row.localProjectRoot ?? null, allowClone: false };
+}
+
 const CWD_TAGS: readonly CwdTag[] = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"];
 
 interface LabelableWorkspace {

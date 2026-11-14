@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { labelWorkspaceCwd, ROUTED_MODE_IDS, restrictRoutedLaunch } from "../client/radar";
+import {
+  initialLaunchTarget,
+  labelWorkspaceCwd,
+  ROUTED_MODE_IDS,
+  restrictRoutedLaunch,
+} from "../client/radar";
 
 describe("restrictRoutedLaunch", () => {
   test("keeps an allow-listed mode and option", () => {
@@ -53,5 +58,18 @@ describe("labelWorkspaceCwd", () => {
 
   test("skips labelling on a host whose workspaces have no setLabel", async () => {
     await expect(labelWorkspaceCwd({}, "CWD-BASE")).resolves.toBeUndefined();
+  });
+});
+
+describe("initialLaunchTarget", () => {
+  test("never preselects cloning, with or without a local checkout", () => {
+    expect(initialLaunchTarget({ localProjectRoot: null })).toEqual({
+      selectedDir: null,
+      allowClone: false,
+    });
+    expect(initialLaunchTarget({ localProjectRoot: "/work/repo" })).toEqual({
+      selectedDir: "/work/repo",
+      allowClone: false,
+    });
   });
 });
