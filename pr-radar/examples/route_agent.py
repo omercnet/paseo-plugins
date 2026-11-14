@@ -139,8 +139,13 @@ try:
 except ImportError as _ade_missing:
     # Not optional: routing is these modules plus config/ (a copy of this file alone, such as pr-radar's
     # examples/route_agent.py, has neither). Run as a script that is one stderr line and exit 2, not a traceback;
-    # imported by another module the ImportError stays (a caller can catch it).
-    if __name__ != "__main__":
+    # imported by another module the ImportError stays (a caller can catch it). ONLY "a sibling module is absent"
+    # gets the line: an ImportError raised inside our own modules (a renamed name, a broken import in the repo copy)
+    # is a bug and surfaces with its traceback.
+    _here = Path(__file__).resolve().parent
+    if (__name__ != "__main__" or not isinstance(_ade_missing, ModuleNotFoundError)
+            or _ade_missing.name not in ("ade_config", "ade_gates", "model_tiers")
+            or (_here / f"{_ade_missing.name}.py").is_file()):
         raise
     sys.stderr.write("route_agent.py: cannot route standalone, the djbclark-ade modules (ade_config, ade_gates, "
                      f"model_tiers) and config/ are not beside this file ({_ade_missing})\n")
@@ -834,6 +839,17 @@ def _merge_caps(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str,
     return out
 
 
+def _merge_windows(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str, Any]:
+    """Per-window fold of two ACCOUNTS of one pool: the tighter known reading, but a window either account could not
+    measure stays None (unlike `_merge_caps`, which `_merge_pool` still uses to fold two sources of one pool). `plenty_remaining` reads one None window as "the gate cannot say every
+    window has PLENTY_MIN left", so an unmeasured second account keeps the pool closed instead of the measured one
+    opening it while Paseo may launch on the unmeasured one (fail closed on unknown quota, 2026-11-14)."""
+    out = dict(a or {})
+    for k, v in (b or {}).items():
+        out[k] = None if k in out and (out[k] is None or v is None) else (_tighter(out[k], v) if k in out else v)
+    return out
+
+
 def _reset_epoch(text: Any) -> float | None:
     try:
         stamp = datetime.fromisoformat(str(text))
@@ -965,10 +981,14 @@ def _providers_from_available(rows: list[Any], age: float | None) -> dict[str, A
 def _providers_from_accounts(accounts: list[Any], age: float | None) -> dict[str, Any]:
     """Fold aiuse account rows (snapshot accounts or `--available` rows) into per-service pools."""
     providers: dict[str, Any] = {}
+    unmeasured: set[str] = set()                    # providers with an account that lists no applicable window
+    n_accounts: dict[str, int] = {}
+    key_provider: dict[str, str] = {}               # pool key -> the provider whose accounts built it
     for acct in accounts:
         name = acct.get("provider")
         if not name or acct.get("error"):
             continue
+        n_accounts[name] = n_accounts.get(name, 0) + 1
 
         # Account freshness: use account's age_seconds or collected_at
         acct_age = None
@@ -1037,6 +1057,9 @@ def _providers_from_accounts(accounts: list[Any], age: float | None) -> dict[str
             per_key[key] = (worst, detail, sublimits, bind)
 
         if not per_key:
+            # an account that lists no window for any pool of its provider is unmeasured; once a second account of the
+            # provider exists the pools get one None window below, so the measured one cannot open them alone
+            unmeasured.add(name)
             per_key[name] = (None, {}, {}, {})
         # Shared parent windows can tighten a matched child, never create one.
         for w in acct.get("windows") or []:
@@ -1074,10 +1097,13 @@ def _providers_from_accounts(accounts: list[Any], age: float | None) -> dict[str
                 worst = prior_rem
                 bind = {k: prior.get(k) for k in ("pace_ratio", "resets_at",
                                                   "window_minutes")}
+            key_provider[key] = name
             providers[key] = {
                 "remaining": None if worst is None else round(float(worst), 1),
-                # several accounts: every account's windows and model sublimits survive, the tighter reading per key
-                "windows": _merge_caps(prior.get("windows"), detail),
+                # several accounts: every account's windows and model sublimits survive; per window the tighter known
+                # reading, a window either account could not measure stays None (`_merge_windows`); sublimits keep
+                # known-beats-unknown
+                "windows": _merge_windows(prior.get("windows"), detail),
                 "sublimits": _merge_caps(prior.get("sublimits"), sublimits),
                 "age_s": acct_age,
                 "billing_kind": acct.get("billing_kind"),
@@ -1088,6 +1114,13 @@ def _providers_from_accounts(accounts: list[Any], age: float | None) -> dict[str
             resets = _later_resets(prior.get("sublimit_resets"), sub_resets.get(key))
             if resets:
                 providers[key]["sublimit_resets"] = resets
+    for key, entry in providers.items():
+        # Two or more accounts of a provider and one of them lists no window: that account is unmeasured, so its
+        # provider's pools stay unknown for the plenty gate (`plenty_remaining`) instead of opening on the other account
+        # alone. A single such account needs nothing (its `remaining` is None); the pool keys of a family the other
+        # account lacks are not marked.
+        if key_provider.get(key) in unmeasured and n_accounts[key_provider[key]] >= 2:
+            entry["windows"] = {**entry["windows"], "(no window)": None}
     return providers
 
 
