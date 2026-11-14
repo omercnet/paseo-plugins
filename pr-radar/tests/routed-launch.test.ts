@@ -1,9 +1,11 @@
 import { describe, expect, test } from "vitest";
 import {
+  buildAgentConfig,
   initialLaunchTarget,
   labelWorkspaceCwd,
   ROUTED_MODE_IDS,
   restrictRoutedLaunch,
+  routedProviderModel,
 } from "../client/radar";
 
 describe("restrictRoutedLaunch", () => {
@@ -71,5 +73,39 @@ describe("initialLaunchTarget", () => {
       selectedDir: "/work/repo",
       allowClone: false,
     });
+  });
+});
+
+describe("routedProviderModel", () => {
+  test("clears the model when the routed provider differs and no model is routed", () => {
+    expect(routedProviderModel({ provider: "claude" }, { provider: "codex" })).toEqual({
+      provider: "codex",
+      model: "",
+    });
+  });
+
+  test("keeps a routed model with a routed provider", () => {
+    expect(
+      routedProviderModel({ provider: "claude" }, { provider: "codex", model: "gpt-x" }),
+    ).toEqual({
+      provider: "codex",
+      model: "gpt-x",
+    });
+  });
+
+  test("leaves the model alone when the provider is unchanged or not routed", () => {
+    expect(routedProviderModel({ provider: "codex" }, { provider: "codex" })).toEqual({
+      provider: "codex",
+    });
+    expect(routedProviderModel({ provider: "codex" }, {})).toEqual({});
+    expect(routedProviderModel({ provider: "codex" }, { model: "gpt-x" })).toEqual({
+      model: "gpt-x",
+    });
+  });
+
+  test("builds a provider-only agent config without the old provider's model", () => {
+    const picked = routedProviderModel({ provider: "claude" }, { provider: "codex" });
+    const config = buildAgentConfig(undefined, { provider: "claude", model: "sonnet", ...picked });
+    expect(config.provider).toBe("codex");
   });
 });

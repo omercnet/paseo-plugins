@@ -11,6 +11,7 @@ import {
   initialLaunchTarget,
   type RadarRow,
   restrictRoutedLaunch,
+  routedProviderModel,
 } from "./radar";
 
 export interface StartAgentLaunchRequest {
@@ -103,6 +104,7 @@ export function StartAgentModal({
     setRoutedOptions(undefined);
     setRouteReason(null);
     setRouteError(null);
+    setRoutingBusy(false);
   }, [row?.id]);
 
   const dirQuery = useQuery({
@@ -169,8 +171,13 @@ export function StartAgentModal({
         return;
       }
       if (result.profile && !editedFieldsRef.current.has("profile")) setProfileName(result.profile);
-      if (result.provider && !editedFieldsRef.current.has("provider")) setProvider(result.provider);
-      if (result.model && !editedFieldsRef.current.has("model")) setModel(result.model);
+      const routedPick = routedProviderModel({ provider: settings.defaultProvider }, result);
+      if (routedPick.provider !== undefined && !editedFieldsRef.current.has("provider")) {
+        setProvider(routedPick.provider);
+      }
+      if (routedPick.model !== undefined && !editedFieldsRef.current.has("model")) {
+        setModel(routedPick.model);
+      }
       if (result.thinkingOptionId && !editedFieldsRef.current.has("effort")) {
         setEffort(result.thinkingOptionId);
       }
@@ -198,7 +205,12 @@ export function StartAgentModal({
   }
 
   useEffect(() => {
-    if (!row || !settings.routingScriptPath.trim()) return;
+    if (!row || !settings.routingScriptPath.trim()) {
+      // Drop any in-flight result: with no script configured it must not be applied.
+      routingSeqRef.current += 1;
+      setRoutingBusy(false);
+      return;
+    }
     void handleRunRouter(row);
   }, [row?.id, settings.routingScriptPath]);
 

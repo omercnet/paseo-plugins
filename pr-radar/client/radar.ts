@@ -771,6 +771,22 @@ export function profileAgentConfig(profile: AgentProfileLike) {
   };
 }
 
+/**
+ * The provider and model a routing result sets. A routed provider that differs from the current
+ * one without a routed model drops the model, which belonged to the old provider (it would
+ * otherwise build an id such as `codex/<claude model>`).
+ */
+export function routedProviderModel(
+  current: { provider?: string },
+  routed: { provider?: string; model?: string },
+): { provider?: string; model?: string } {
+  const result: { provider?: string; model?: string } = {};
+  if (routed.provider) result.provider = routed.provider;
+  if (routed.model) result.model = routed.model;
+  else if (routed.provider && routed.provider !== current.provider) result.model = "";
+  return result;
+}
+
 /** Cloning is never preselected: the user has to pick the clone row to allow it. */
 export function initialLaunchTarget(row: Pick<RadarRow, "localProjectRoot">) {
   return { selectedDir: row.localProjectRoot ?? null, allowClone: false };

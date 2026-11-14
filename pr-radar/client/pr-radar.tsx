@@ -40,6 +40,7 @@ import {
   type RadarBucket,
   type RadarRow,
   restrictRoutedLaunch,
+  routedProviderModel,
   type SortKey,
   sortRows,
   splitDraftRows,
@@ -368,8 +369,7 @@ export function PrRadar({
               },
             });
             if (routed.profile) profileName = routed.profile;
-            if (routed.provider) overrides = { ...overrides, provider: routed.provider };
-            if (routed.model) overrides = { ...overrides, model: routed.model };
+            overrides = { ...overrides, ...routedProviderModel(overrides, routed) };
             if (routed.thinkingOptionId) {
               overrides = { ...overrides, thinkingOptionId: routed.thinkingOptionId };
             }
@@ -389,16 +389,19 @@ export function PrRadar({
           }
         }
 
-        startNewAgentMutation.mutate({
-          row,
-          targetDir: row.localProjectRoot ?? null,
-          allowClone: settings.autoLaunchMode === "existing_or_clone",
-          cwdMode: settings.defaultCwdMode,
-          worktreeName: null,
-          profileName,
-          overrides,
-          routingWarning,
-        });
+        // onError reports the failure; the guard stays held until the mutation has settled.
+        await startNewAgentMutation
+          .mutateAsync({
+            row,
+            targetDir: row.localProjectRoot ?? null,
+            allowClone: settings.autoLaunchMode === "existing_or_clone",
+            cwdMode: settings.defaultCwdMode,
+            worktreeName: null,
+            profileName,
+            overrides,
+            routingWarning,
+          })
+          .catch(() => undefined);
       } finally {
         autoLaunchingRef.current = false;
       }
