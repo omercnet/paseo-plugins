@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -791,12 +792,13 @@ describe("runRoutingScriptHandler", () => {
 
   test("runs one script at a time", async () => {
     const root = makeRoot();
-    const slow = writeScript(root, "slow.sh", "sleep 0.5\necho '{}'");
+    const started = join(root, "started");
+    const slow = writeScript(root, "slow.sh", `touch "${started}"\nsleep 0.5\necho '{}'`);
     const first = route(slow, {}, FAST_LIMITS);
-    await vi.waitFor(async () => {
-      await expect(route(slow, {}, FAST_LIMITS)).rejects.toThrow(/already running/);
-    });
+    await vi.waitFor(() => expect(existsSync(started)).toBe(true));
+    await expect(route(slow, {}, FAST_LIMITS)).rejects.toThrow(/already running/);
     await expect(first).resolves.toEqual({});
+    rmSync(started);
     await expect(route(slow, {}, FAST_LIMITS)).resolves.toEqual({});
   });
 
