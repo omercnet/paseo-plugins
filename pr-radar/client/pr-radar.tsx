@@ -22,6 +22,7 @@ import {
   prepareWorkspaceCwd,
   runRoutingScript,
 } from "../shared/viewer-scope";
+import { HighlightedText } from "./highlighted-text";
 import {
   type AgentLaunchOverrides,
   agentActionFor,
@@ -586,16 +587,28 @@ export function PrRadar({
       },
       chipText: { color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" as const },
       chipTextActive: { color: theme.colors.surface0 },
+      tabBar: {
+        flexDirection: "row" as const,
+        flexWrap: "wrap" as const,
+        alignItems: "center" as const,
+        gap: 7,
+      },
+      highlight: {
+        backgroundColor: theme.colors.accent,
+        color: theme.colors.accentForeground,
+      },
       search: {
-        minHeight: 40,
+        flexGrow: 1,
+        flexBasis: 140,
+        minHeight: 32,
         color: theme.colors.foreground,
         backgroundColor: theme.colors.surface1,
         borderWidth: 1,
         borderColor: theme.colors.border,
         borderRadius: 8,
         paddingHorizontal: 12,
-        paddingVertical: 8,
-        fontSize: 14,
+        paddingVertical: 4,
+        fontSize: 13,
       },
       warning: {
         marginHorizontal: gutter,
@@ -908,8 +921,11 @@ export function PrRadar({
         <View style={styles.rowBody}>
           <View style={styles.rowTop}>
             <Text style={styles.identifier} numberOfLines={1}>
-              {item.repository}
-              {item.number ? ` #${item.number}` : ""}
+              <HighlightedText
+                text={`${item.repository}${item.number ? ` #${item.number}` : ""}`}
+                query={search}
+                highlightStyle={styles.highlight}
+              />
             </Text>
             <Text style={styles.badge}>{ownershipLabel}</Text>
             <Text style={styles.badge}>{item.cwdTag}</Text>
@@ -919,15 +935,25 @@ export function PrRadar({
             {isStale ? <Text style={styles.badge}>STALE</Text> : null}
           </View>
           <Text style={styles.title} numberOfLines={2} ellipsizeMode="tail">
-            {item.title}
+            <HighlightedText text={item.title} query={search} highlightStyle={styles.highlight} />
           </Text>
           <View style={styles.reasonLine}>
             <View style={[styles.reasonDot, { backgroundColor: color }]} />
-            <Text style={styles.reason}>{item.reason}</Text>
+            <Text style={styles.reason}>
+              <HighlightedText
+                text={item.reason}
+                query={search}
+                highlightStyle={styles.highlight}
+              />
+            </Text>
           </View>
           <Text style={styles.metadata} numberOfLines={1} ellipsizeMode="middle">
             {item.itemKind === "issue" ? "Open issue" : checkSummary(item)}
-            {branchSummary}
+            <HighlightedText
+              text={branchSummary}
+              query={search}
+              highlightStyle={styles.highlight}
+            />
           </Text>
           <Text style={styles.metadata} numberOfLines={1} ellipsizeMode="tail">
             {item.author ? `${item.author} · ` : ""}
@@ -1012,27 +1038,39 @@ export function PrRadar({
       </View>
       <Text style={styles.heroTitle}>Know what moves next.</Text>
       <Text style={styles.heroDetail}>{totalCopy}</Text>
-      <View accessibilityRole="tablist" style={styles.chipRow}>
-        <Pressable
-          accessibilityRole="tab"
-          accessibilityState={{ selected: activeTab === "prs" }}
-          onPress={() => setActiveTab("prs")}
-          style={[styles.chip, activeTab === "prs" && styles.chipActive]}
-        >
-          <Text style={[styles.chipText, activeTab === "prs" && styles.chipTextActive]}>
-            Pull Requests {rows.length}
-          </Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="tab"
-          accessibilityState={{ selected: activeTab === "issues" }}
-          onPress={() => setActiveTab("issues")}
-          style={[styles.chip, activeTab === "issues" && styles.chipActive]}
-        >
-          <Text style={[styles.chipText, activeTab === "issues" && styles.chipTextActive]}>
-            Issues {issues.length}
-          </Text>
-        </Pressable>
+      <View style={styles.tabBar}>
+        <View accessibilityRole="tablist" style={styles.chipRow}>
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === "prs" }}
+            onPress={() => setActiveTab("prs")}
+            style={[styles.chip, activeTab === "prs" && styles.chipActive]}
+          >
+            <Text style={[styles.chipText, activeTab === "prs" && styles.chipTextActive]}>
+              Pull Requests {rows.length}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === "issues" }}
+            onPress={() => setActiveTab("issues")}
+            style={[styles.chip, activeTab === "issues" && styles.chipActive]}
+          >
+            <Text style={[styles.chipText, activeTab === "issues" && styles.chipTextActive]}>
+              Issues {issues.length}
+            </Text>
+          </Pressable>
+        </View>
+        <TextInput
+          accessibilityLabel={activeTab === "issues" ? "Filter issues" : "Filter pull requests"}
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={setSearch}
+          placeholder="Filter"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          style={styles.search}
+          value={search}
+        />
       </View>
       {activeTab === "prs" && focusedPr ? (
         <Text style={styles.heroDetail}>Focused PR: {focusedPr}</Text>
@@ -1137,20 +1175,6 @@ export function PrRadar({
           </ScrollView>
         </>
       ) : null}
-      <TextInput
-        accessibilityLabel={activeTab === "issues" ? "Filter issues" : "Filter pull requests"}
-        autoCapitalize="none"
-        autoCorrect={false}
-        onChangeText={setSearch}
-        placeholder={
-          activeTab === "issues"
-            ? "Filter by issue, repo, workspace, or agent"
-            : "Filter by PR, branch, workspace, or agent"
-        }
-        placeholderTextColor={theme.colors.foregroundMuted}
-        style={styles.search}
-        value={search}
-      />
       <SortControls sortKey={sortKey} onSort={setSortKey} styles={styles} />
       {activeTab === "prs" && viewerData ? (
         <View style={{ gap: 7 }}>
