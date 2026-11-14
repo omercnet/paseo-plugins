@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.6.4](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.6.3...paseo-omp-v5.6.4) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.16.0-beta.2 ([#596](https://github.com/omercnet/paseo-plugins/issues/596)) ([052192f](https://github.com/omercnet/paseo-plugins/commit/052192f57495f3da8f94887495ff1fda0c0f04ff))
+* **paseo-omp:** give the workspace OMP panel every sidebar feature ([#611](https://github.com/omercnet/paseo-plugins/issues/611)) ([df682d7](https://github.com/omercnet/paseo-plugins/commit/df682d7e6f01ea2344362412e1e4961c12ef564c))
+* **paseo-omp:** make the canary image build tolerate missing workspaces ([#608](https://github.com/omercnet/paseo-plugins/issues/608)) ([276578d](https://github.com/omercnet/paseo-plugins/commit/276578d9cd420c8f16b21d3ae9e2ecb7a0500c53))
+* **paseo-omp:** reject live providerOptions patches in session.configure ([#601](https://github.com/omercnet/paseo-plugins/issues/601)) ([af89f94](https://github.com/omercnet/paseo-plugins/commit/af89f94ac06bc0b6921acfe3374cda146e7fdbd6))
+* **paseo-omp:** stop an agent's Hub services when it closes on OMP 18.18.9+ ([#606](https://github.com/omercnet/paseo-plugins/issues/606)) ([c97a856](https://github.com/omercnet/paseo-plugins/commit/c97a8561fa17eef3b65de584c03afc2845b4fe58))
+
 ## [5.6.3](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.6.2...paseo-omp-v5.6.3) (2026-11-10)
 
 

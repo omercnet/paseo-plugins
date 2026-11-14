@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.4](https://github.com/omercnet/paseo-plugins/compare/queens-v4.1.3...queens-v4.1.4) (2026-11-14)
+
+
+### Bug Fixes
+
+* **queens:** leave helper agents out of the running-agent count ([#599](https://github.com/omercnet/paseo-plugins/issues/599)) ([97c7479](https://github.com/omercnet/paseo-plugins/commit/97c7479bcf01df66e74c470edf8426d757d9604b))
+
 ## [4.1.3](https://github.com/omercnet/paseo-plugins/compare/queens-v4.1.2...queens-v4.1.3) (2026-11-10)
 
 
