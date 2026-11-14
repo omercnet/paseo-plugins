@@ -5,7 +5,15 @@ import {
   buildIssueRows,
   splitDraftRows,
 } from "../client/radar";
-import { defaultWorktreeName, expandUserPath, slugifyBranch } from "../server/workspace-ops";
+import {
+  defaultWorktreeName,
+  expandUserPath,
+  isAbsoluteOrHomePath,
+  isValidRepositorySlug,
+  isValidWorktreeName,
+  parseGitHubRepoFromRemote,
+  slugifyBranch,
+} from "../server/workspace-ops";
 import { DEFAULT_PR_RADAR_SETTINGS, PrRadarSettingsSchema } from "../shared/settings";
 
 describe("settings schema", () => {
@@ -43,6 +51,30 @@ describe("workspace ops helpers", () => {
 
   test("expands tilde paths", () => {
     expect(expandUserPath("~/src").endsWith("/src")).toBe(true);
+  });
+
+  test("parses owner/repo from git remotes exactly (prevents substring collisions)", () => {
+    expect(parseGitHubRepoFromRemote("https://github.com/omercnet/paseo.git")).toBe(
+      "omercnet/paseo",
+    );
+    expect(parseGitHubRepoFromRemote("git@github.com:omercnet/paseo-plugins.git")).toBe(
+      "omercnet/paseo-plugins",
+    );
+    expect(parseGitHubRepoFromRemote("https://github.com/omercnet/paseo-plugins.git")).not.toBe(
+      "omercnet/paseo",
+    );
+  });
+
+  test("validates repository slugs, worktree names, and target paths", () => {
+    expect(isValidRepositorySlug("omercnet/paseo-plugins")).toBe(true);
+    expect(isValidRepositorySlug("bad/../repo")).toBe(false);
+    expect(isValidRepositorySlug("-flag/repo")).toBe(true);
+    expect(isValidWorktreeName("paseo-pr-123-fix")).toBe(true);
+    expect(isValidWorktreeName("../../escape")).toBe(false);
+    expect(isValidWorktreeName("-branch")).toBe(false);
+    expect(isAbsoluteOrHomePath("~/src/repo")).toBe(true);
+    expect(isAbsoluteOrHomePath("/tmp/repo")).toBe(true);
+    expect(isAbsoluteOrHomePath("pas")).toBe(false);
   });
 });
 

@@ -33,6 +33,7 @@
     "client",
     "server",
     "shared",
+    "examples",
     "paseo-plugin.json",
     "icon.png",
     "README.md",

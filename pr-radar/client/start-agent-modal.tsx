@@ -1,7 +1,7 @@
 import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
@@ -48,7 +48,8 @@ export function StartAgentModal({
   const fetchDirs = useRpc(listLocalDirs);
   const invokeRouter = useRpc(runRoutingScript);
 
-  const [dirInput, setDirInput] = useState("");
+  const [dirFilter, setDirFilter] = useState("");
+  const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [cwdMode, setCwdMode] = useState<CwdMode>(settings.defaultCwdMode);
   const [worktreeName, setWorktreeName] = useState("");
   const [profileName, setProfileName] = useState(settings.defaultProfile);
@@ -57,13 +58,21 @@ export function StartAgentModal({
   const [effort, setEffort] = useState(settings.defaultEffort);
   const [modeId, setModeId] = useState(settings.defaultModeId);
   const [contextMode, setContextMode] = useState(settings.defaultContextMode);
+  const [routedOptions, setRoutedOptions] = useState<Record<string, unknown> | undefined>(
+    undefined,
+  );
   const [routeReason, setRouteReason] = useState<string | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routingBusy, setRoutingBusy] = useState(false);
+  const activeRowIdRef = useRef<string | null>(null);
+  const editedFieldsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    activeRowIdRef.current = row?.id ?? null;
     if (!row) return;
-    setDirInput(row.localProjectRoot ?? "");
+    editedFieldsRef.current.clear();
+    setDirFilter("");
+    setSelectedDir(row.localProjectRoot ?? null);
     setCwdMode(settings.defaultCwdMode);
     setWorktreeName(defaultHumanWorktreeName(row));
     setProfileName(settings.defaultProfile);
@@ -72,16 +81,17 @@ export function StartAgentModal({
     setEffort(settings.defaultEffort);
     setModeId(settings.defaultModeId);
     setContextMode(settings.defaultContextMode);
+    setRoutedOptions(undefined);
     setRouteReason(null);
     setRouteError(null);
-  }, [row, settings]);
+  }, [row?.id]);
 
   const dirQuery = useQuery({
-    queryKey: ["pr-radar-dirs", settings.sourceCodeDir, dirInput, row?.repository ?? ""],
+    queryKey: ["pr-radar-dirs", settings.sourceCodeDir, dirFilter, row?.repository ?? ""],
     queryFn: () =>
       fetchDirs({
         sourceCodeDir: settings.sourceCodeDir,
-        query: dirInput,
+        query: dirFilter,
         repository: row?.repository ?? "",
       }),
     enabled: Boolean(row),
@@ -120,7 +130,7 @@ export function StartAgentModal({
             linkedIssues: targetRow.linkedIssues,
           },
           workspace: {
-            targetDir: dirInput.trim() || null,
+            targetDir: selectedDir,
             cwdMode,
             localProjectRoot: targetRow.localProjectRoot,
             workspaceIds: targetRow.workspaceIds,
@@ -135,17 +145,26 @@ export function StartAgentModal({
           },
         },
       });
-      if (result.profile) setProfileName(result.profile);
-      if (result.provider) setProvider(result.provider);
-      if (result.model) setModel(result.model);
-      if (result.thinkingOptionId) setEffort(result.thinkingOptionId);
-      if (result.modeId) setModeId(result.modeId);
-      if (result.contextMode) setContextMode(result.contextMode);
+      if (activeRowIdRef.current !== targetRow.id) return;
+      if (result.profile && !editedFieldsRef.current.has("profile")) setProfileName(result.profile);
+      if (result.provider && !editedFieldsRef.current.has("provider")) setProvider(result.provider);
+      if (result.model && !editedFieldsRef.current.has("model")) setModel(result.model);
+      if (result.thinkingOptionId && !editedFieldsRef.current.has("effort")) {
+        setEffort(result.thinkingOptionId);
+      }
+      if (result.modeId && !editedFieldsRef.current.has("modeId")) setModeId(result.modeId);
+      if (result.contextMode && !editedFieldsRef.current.has("contextMode")) {
+        setContextMode(result.contextMode);
+      }
+      if (result.options) setRoutedOptions(result.options);
       setRouteReason(result.reason ?? "Routing script applied.");
     } catch (err) {
+      if (activeRowIdRef.current !== targetRow.id) return;
       setRouteError(err instanceof Error ? err.message : "Routing script failed.");
     } finally {
-      setRoutingBusy(false);
+      if (activeRowIdRef.current === targetRow.id) {
+        setRoutingBusy(false);
+      }
     }
   }
 
@@ -293,12 +312,19 @@ export function StartAgentModal({
         <View style={{ gap: 14 }}>
           <View style={{ gap: 6 }}>
             <Text style={styles.sectionLabel}>
-              Local directory or clone target (type to filter or pick below)
+              Local directory or clone target (selected:{" "}
+              {selectedDir ?? `Clone to ${suggestedClonePath}`})
             </Text>
             <TextInput
-              value={dirInput}
-              onChangeText={setDirInput}
-              placeholder={`Type path or filter ${settings.sourceCodeDir} (blank = clone)`}
+              value={dirFilter}
+              onChangeText={(next) => {
+                setDirFilter(next);
+                const trimmed = next.trim();
+                if (trimmed.startsWith("/") || trimmed.startsWith("~/")) {
+                  setSelectedDir(trimmed);
+                }
+              }}
+              placeholder={`Filter directories in ${settings.sourceCodeDir} or enter ~/... path`}
               placeholderTextColor={theme.colors.foregroundMuted}
               autoCapitalize="none"
               autoCorrect={false}
@@ -306,10 +332,14 @@ export function StartAgentModal({
             />
             <View style={styles.listBox}>
               <Pressable
-                onPress={() => setDirInput(suggestedClonePath)}
+                onPress={() => {
+                  setSelectedDir(suggestedClonePath);
+                  setDirFilter("");
+                }}
                 style={[
                   styles.listRow,
-                  dirInput.trim() === suggestedClonePath && styles.listRowSelected,
+                  (selectedDir === null || selectedDir === suggestedClonePath) &&
+                    styles.listRowSelected,
                 ]}
               >
                 <View style={{ flex: 1, gap: 2 }}>
@@ -325,8 +355,8 @@ export function StartAgentModal({
               {entries.slice(0, 8).map((entry) => (
                 <Pressable
                   key={entry.path}
-                  onPress={() => setDirInput(entry.path)}
-                  style={[styles.listRow, dirInput.trim() === entry.path && styles.listRowSelected]}
+                  onPress={() => setSelectedDir(entry.path)}
+                  style={[styles.listRow, selectedDir === entry.path && styles.listRowSelected]}
                 >
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text style={styles.listRowTitle} numberOfLines={1}>
@@ -502,7 +532,7 @@ export function StartAgentModal({
               onPress={() =>
                 onStart({
                   row,
-                  targetDir: dirInput.trim() || null,
+                  targetDir: selectedDir,
                   cwdMode,
                   worktreeName: worktreeName.trim() || null,
                   profileName: profileName.trim(),
@@ -512,6 +542,7 @@ export function StartAgentModal({
                     thinkingOptionId: effort,
                     modeId,
                     contextMode,
+                    ...(routedOptions ? { options: routedOptions } : {}),
                   },
                 })
               }

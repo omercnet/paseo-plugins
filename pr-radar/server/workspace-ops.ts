@@ -81,11 +81,51 @@ export function defaultWorktreeName(
   return slug ? `${base}-${kindPrefix}-${prNumber}-${slug}` : `${base}-${kindPrefix}-${prNumber}`;
 }
 
+export function isAbsoluteOrHomePath(rawPath: string): boolean {
+  const trimmed = rawPath.trim();
+  return trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("/");
+}
+
+export function isValidRepositorySlug(repository: string): boolean {
+  const trimmed = repository.trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(trimmed)) return false;
+  const [owner, name] = trimmed.split("/");
+  return owner !== "." && owner !== ".." && name !== "." && name !== "..";
+}
+
+export function isValidWorktreeName(name: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === "." || trimmed === "..") return false;
+  if (trimmed.startsWith(".") || trimmed.startsWith("-")) return false;
+  return !/[\\/\0]/.test(trimmed);
+}
+
+export function parseGitHubRepoFromRemote(remoteUrl: string): string | null {
+  const trimmed = remoteUrl
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "");
+  if (!trimmed) return null;
+  const scpMatch = trimmed.match(/^[^@/\s]+@[^:/\s]+:([^/\s]+\/[^/\s]+)$/);
+  if (scpMatch) return scpMatch[1].toLowerCase();
+  try {
+    const parsed = new URL(trimmed);
+    const parts = parsed.pathname.replace(/^\/+/, "").split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`.toLowerCase();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 async function gitRemoteMatches(dir: string, repository: string): Promise<boolean> {
   if (!repository) return false;
   try {
     const remote = await runGit(dir, ["remote", "get-url", "origin"], 3_000);
-    return remote.toLowerCase().includes(repository.toLowerCase());
+    const parsed = parseGitHubRepoFromRemote(remote);
+    return parsed === repository.trim().toLowerCase();
   } catch {
     return false;
   }
@@ -222,6 +262,13 @@ export async function listLocalDirsHandler(
 export async function prepareWorkspaceCwdHandler(
   input: z.output<typeof prepareWorkspaceCwd.input>,
 ): Promise<z.output<typeof prepareWorkspaceCwd.output>> {
+  if (!isValidRepositorySlug(input.repository)) {
+    throw new Error(`Invalid repository name: ${input.repository}`);
+  }
+  if (input.targetDir && !isAbsoluteOrHomePath(input.targetDir)) {
+    throw new Error(`Target directory must be an absolute or ~/ path: ${input.targetDir}`);
+  }
+
   const expandedSourceDir = expandUserPath(input.sourceCodeDir);
   let baseRoot = input.targetDir ? expandUserPath(input.targetDir) : "";
   let cloned = false;
@@ -232,7 +279,7 @@ export async function prepareWorkspaceCwdHandler(
 
   if (!(await exists(baseRoot))) {
     await mkdir(dirname(baseRoot), { recursive: true });
-    await runGh(["repo", "clone", input.repository, baseRoot], CLONE_TIMEOUT_MS);
+    await runGh(["repo", "clone", "--", input.repository, baseRoot], CLONE_TIMEOUT_MS);
     cloned = true;
   } else {
     const info = await stat(baseRoot);
@@ -246,21 +293,37 @@ export async function prepareWorkspaceCwdHandler(
         throw new Error(`Target directory is not a git repository: ${baseRoot}`);
       }
     }
+    if (!(await gitRemoteMatches(baseRoot, input.repository))) {
+      throw new Error(
+        `Target directory ${baseRoot} does not match repository ${input.repository}.`,
+      );
+    }
   }
+
+  const localBranchName =
+    input.itemKind === "issue"
+      ? `pr-radar/issue-${input.prNumber}`
+      : `pr-radar/pr-${input.prNumber}`;
 
   if (input.cwdMode === "CWD-BASE") {
     if (input.itemKind === "pr") {
-      const branchName = input.headRefName || `pr-${input.prNumber}`;
+      const dirty = await runGit(baseRoot, ["status", "--porcelain"]);
+      if (dirty) {
+        throw new Error(
+          `Base checkout ${baseRoot} has uncommitted changes; commit or stash them, or use CWD-WORKTREE.`,
+        );
+      }
       await runGit(baseRoot, [
         "fetch",
+        "--end-of-options",
         "origin",
-        `pull/${input.prNumber}/head:${branchName}`,
-      ]).catch(() => runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head`]));
-      const currentBranch = await runGit(baseRoot, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(
-        () => "",
-      );
-      if (currentBranch !== branchName) {
-        await runGit(baseRoot, ["checkout", branchName]).catch(() => undefined);
+        `pull/${input.prNumber}/head`,
+      ]);
+      const fetchHead = await runGit(baseRoot, ["rev-parse", "FETCH_HEAD"]);
+      await runGit(baseRoot, ["checkout", "-B", localBranchName, "FETCH_HEAD"]);
+      const headSha = await runGit(baseRoot, ["rev-parse", "HEAD"]);
+      if (headSha !== fetchHead) {
+        throw new Error(`Checkout verification failed for PR #${input.prNumber}.`);
       }
     }
     return {
@@ -274,27 +337,23 @@ export async function prepareWorkspaceCwdHandler(
 
   // CWD-WORKTREE: reuse existing worktree for this PR/issue branch if present.
   const existingWorktrees = await listWorktrees(baseRoot);
-  const branchName =
-    input.itemKind === "issue"
-      ? `issue-${input.prNumber}${slugifyBranch(input.headRefName) ? `-${slugifyBranch(input.headRefName)}` : ""}`
-      : input.headRefName || `pr-${input.prNumber}`;
-
-  if (branchName) {
-    const existing = existingWorktrees.find((wt) => wt.branch === branchName);
-    if (existing) {
-      return {
-        cwd: existing.path,
-        baseRoot,
-        cwdTag: "CWD-WORKTREE",
-        cloned,
-        worktreeCreated: false,
-      };
-    }
+  const existing = existingWorktrees.find((wt) => wt.branch === localBranchName);
+  if (existing) {
+    return {
+      cwd: existing.path,
+      baseRoot,
+      cwdTag: "CWD-WORKTREE",
+      cloned,
+      worktreeCreated: false,
+    };
   }
 
   const worktreeFolder =
     input.worktreeName?.trim() ||
     defaultWorktreeName(input.repository, input.prNumber, input.headRefName, input.itemKind);
+  if (!isValidWorktreeName(worktreeFolder)) {
+    throw new Error(`Invalid worktree folder name: ${worktreeFolder}`);
+  }
   const worktreePath = join(dirname(baseRoot), worktreeFolder);
 
   if (await exists(worktreePath)) {
@@ -308,23 +367,18 @@ export async function prepareWorkspaceCwdHandler(
   }
 
   if (input.itemKind === "issue") {
-    try {
-      await runGit(baseRoot, ["worktree", "add", "-b", branchName, worktreePath, "HEAD"]);
-    } catch {
-      await runGit(baseRoot, ["worktree", "add", worktreePath, branchName]);
-    }
+    await runGit(baseRoot, ["worktree", "add", "-B", localBranchName, "--", worktreePath, "HEAD"]);
   } else {
-    await runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head:${branchName}`]).catch(
-      async () => {
-        await runGit(baseRoot, ["fetch", "origin", `pull/${input.prNumber}/head`]);
-      },
-    );
-
-    try {
-      await runGit(baseRoot, ["worktree", "add", worktreePath, branchName]);
-    } catch {
-      await runGit(baseRoot, ["worktree", "add", "--detach", worktreePath, "FETCH_HEAD"]);
-    }
+    await runGit(baseRoot, ["fetch", "--end-of-options", "origin", `pull/${input.prNumber}/head`]);
+    await runGit(baseRoot, [
+      "worktree",
+      "add",
+      "-B",
+      localBranchName,
+      "--",
+      worktreePath,
+      "FETCH_HEAD",
+    ]);
   }
 
   return {
@@ -357,10 +411,14 @@ export async function runRoutingScriptHandler(
     }, COMMAND_TIMEOUT_MS);
 
     child.stdout.on("data", (chunk: Buffer) => {
-      out += chunk.toString("utf8");
+      if (out.length < MAX_BUFFER_BYTES) {
+        out += chunk.toString("utf8");
+      }
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      err += chunk.toString("utf8");
+      if (err.length < MAX_BUFFER_BYTES) {
+        err += chunk.toString("utf8");
+      }
     });
     child.on("error", (spawnError) => {
       clearTimeout(timer);

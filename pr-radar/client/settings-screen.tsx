@@ -95,8 +95,8 @@ const KNOWN_ROUTING_SCRIPTS: readonly ComboOption[] = [
     value: "~/src/djbclark-ade/bin/pr-radar-route",
   },
   {
-    label: "Bundled copy: pr-radar-route.py",
-    value: "~/src/paseo-plugins-omercnet/pr-radar/examples/pr-radar-route.py",
+    label: "Bundled example: examples/pr-radar-route.py",
+    value: "examples/pr-radar-route.py",
   },
 ];
 
@@ -504,25 +504,29 @@ function ReadyPrRadarSettings({
     ]);
   }, [scriptDirsQuery.data]);
 
-  async function savePatch(patch: Partial<typeof settings.values>) {
+  async function savePatch(patch: Partial<typeof settings.values>): Promise<boolean> {
     setError(null);
     const parsed = PrRadarSettingsSchema.safeParse({ ...settings.values, ...patch });
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? "Invalid setting value.");
-      return;
+      return false;
     }
     try {
       await settings.save(parsed.data, settings.revision);
+      return true;
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Could not save settings.");
+      return false;
     }
   }
 
   async function handleReset() {
     setDirQueryText(DEFAULT_PR_RADAR_SETTINGS.sourceCodeDir);
     setScriptQueryText(DEFAULT_PR_RADAR_SETTINGS.routingScriptPath);
-    await savePatch({ ...DEFAULT_PR_RADAR_SETTINGS });
-    toast.show("PR Radar settings reset to defaults.", { variant: "success" });
+    const saved = await savePatch({ ...DEFAULT_PR_RADAR_SETTINGS });
+    if (saved) {
+      toast.show("PR Radar settings reset to defaults.", { variant: "success" });
+    }
   }
 
   return (
@@ -633,9 +637,9 @@ function ReadyPrRadarSettings({
         <SettingsCard>
           <ComboSelect
             label="Routing script path"
-            hint="Leave empty to use static defaults above (example: examples/pr-radar-route.py)"
+            hint="Leave empty to use static defaults above (example: ~/.config/pr-radar/route.py)"
             value={settings.values.routingScriptPath}
-            placeholder="~/src/paseo-plugins-omercnet/pr-radar/examples/pr-radar-route.py"
+            placeholder="~/.config/pr-radar/route.py"
             options={routingScriptOptions}
             theme={theme}
             onQueryChange={setScriptQueryText}

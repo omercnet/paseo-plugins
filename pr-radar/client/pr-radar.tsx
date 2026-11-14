@@ -235,7 +235,7 @@ export function PrRadar({
     mutationFn: async (request: StartAgentLaunchRequest) => {
       const { row } = request;
       if (!row.number) {
-        throw new Error("A pull request number is required to start a new agent.");
+        throw new Error("An issue or pull request number is required to start a new agent.");
       }
       const prepared = await prepareCwd({
         repository: row.repository,
