@@ -33,6 +33,7 @@ import {
   checkSummary,
   formatAge,
   hasActiveAgent,
+  labelWorkspaceCwd,
   matchesRow,
   openPullRequestUrl,
   profileAgentConfig,
@@ -253,12 +254,7 @@ export function PrRadar({
       });
 
       const targetWorkspace = await paseo.workspaces.open(prepared.cwd);
-      const allCwdTags = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"] as const;
-      await Promise.all(
-        allCwdTags.map((tag) =>
-          targetWorkspace.setLabel(tag, { assigned: tag === prepared.cwdTag }),
-        ),
-      );
+      await labelWorkspaceCwd(targetWorkspace, prepared.cwdTag);
 
       const { config } = await paseo.config.get();
       const profiles = config.agentProfiles ?? [];

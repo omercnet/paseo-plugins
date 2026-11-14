@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ROUTED_MODE_IDS, restrictRoutedLaunch } from "../client/radar";
+import { labelWorkspaceCwd, ROUTED_MODE_IDS, restrictRoutedLaunch } from "../client/radar";
 
 describe("restrictRoutedLaunch", () => {
   test("keeps an allow-listed mode and option", () => {
@@ -28,5 +28,30 @@ describe("restrictRoutedLaunch", () => {
 
   test("returns nothing for an empty result", () => {
     expect(restrictRoutedLaunch({})).toEqual({ ignored: [] });
+  });
+});
+
+describe("labelWorkspaceCwd", () => {
+  test("assigns only the matching CWD tag", async () => {
+    const calls: Array<[string, boolean]> = [];
+    await labelWorkspaceCwd(
+      { setLabel: (label, { assigned }) => calls.push([label, assigned]) },
+      "CWD-WORKTREE",
+    );
+    expect(calls).toEqual([
+      ["CWD-BASE", false],
+      ["CWD-WORKTREE", true],
+      ["CWD-TBD", false],
+    ]);
+  });
+
+  test("propagates a setLabel failure", async () => {
+    await expect(
+      labelWorkspaceCwd({ setLabel: () => Promise.reject(new Error("denied")) }, "CWD-BASE"),
+    ).rejects.toThrow("denied");
+  });
+
+  test("skips labelling on a host whose workspaces have no setLabel", async () => {
+    await expect(labelWorkspaceCwd({}, "CWD-BASE")).resolves.toBeUndefined();
   });
 });

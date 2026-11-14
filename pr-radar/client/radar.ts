@@ -771,6 +771,22 @@ export function profileAgentConfig(profile: AgentProfileLike) {
   };
 }
 
+const CWD_TAGS: readonly CwdTag[] = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"];
+
+interface LabelableWorkspace {
+  // Workspaces before Paseo 0.16.0-beta.1 have no setLabel.
+  setLabel?(label: string, options: { assigned: boolean }): unknown;
+}
+
+/** Marks exactly one CWD tag on the workspace; a host without label support is left unlabelled. */
+export async function labelWorkspaceCwd(
+  workspace: LabelableWorkspace,
+  cwdTag: CwdTag,
+): Promise<void> {
+  if (typeof workspace.setLabel !== "function") return;
+  await Promise.all(CWD_TAGS.map((tag) => workspace.setLabel?.(tag, { assigned: tag === cwdTag })));
+}
+
 // A routing script is user-supplied code, so what it may set on a launch is limited to these lists.
 // Permission modes that skip approvals (bypassPermissions, dontAsk, full access) stay out, so only
 // a person can pick them. Provider `options` keys outside the list are dropped the same way.
