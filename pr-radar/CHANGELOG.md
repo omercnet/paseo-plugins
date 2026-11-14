@@ -6,6 +6,13 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.2.3](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.2.2...pr-radar-v3.2.3) (2026-11-14)
+
+
+### Bug Fixes
+
+* **pr-radar:** keep helper agents off PR rows ([#603](https://github.com/omercnet/paseo-plugins/issues/603)) ([cbbf7f6](https://github.com/omercnet/paseo-plugins/commit/cbbf7f6eee6398ea98d415694f50eaa1792fbc3e))
+
 ## [3.2.2](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.2.1...pr-radar-v3.2.2) (2026-11-10)
 
 

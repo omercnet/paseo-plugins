@@ -10,6 +10,13 @@
 
 * **settings:** stop exposing the non-persistent Remember last bucket option
 
+## [4.4.5](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.4.4...agent-monitor-v4.4.5) (2026-11-14)
+
+
+### Bug Fixes
+
+* **agent-monitor:** hide background helpers and count background work as running ([#604](https://github.com/omercnet/paseo-plugins/issues/604)) ([7b52016](https://github.com/omercnet/paseo-plugins/commit/7b520166eccfcbbbdc0020b9785e1d7c48433221))
+
 ## [4.4.4](https://github.com/omercnet/paseo-plugins/compare/agent-monitor-v4.4.3...agent-monitor-v4.4.4) (2026-11-11)
 
 
