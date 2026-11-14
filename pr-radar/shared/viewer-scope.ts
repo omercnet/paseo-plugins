@@ -129,7 +129,8 @@ export const RoutingScriptResultSchema = z.object({
   contextMode: z.string().optional(),
   options: z.record(z.string(), z.unknown()).optional(),
   // Extra Paseo agent labels for the launched agent (string values only), merged by buildAgentLabels.
-  labels: z.record(z.string(), z.string()).optional(),
+  // Lenient: a malformed value (not a string map) is dropped instead of failing the whole routing result.
+  labels: z.record(z.string(), z.string()).optional().catch(undefined),
   reason: z.string().optional(),
 });
 

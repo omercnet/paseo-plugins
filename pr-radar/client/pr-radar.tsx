@@ -392,6 +392,7 @@ export function PrRadar({
             if (restricted.modeId) overrides = { ...overrides, modeId: restricted.modeId };
             if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
             if (restricted.options) overrides = { ...overrides, options: restricted.options };
+            if (routed.labels) overrides = { ...overrides, labels: routed.labels };
             if (restricted.ignored.length > 0) {
               routingWarning = `Routing script values ignored (${restricted.ignored.join(", ")}).`;
               setActionNotice(routingWarning);

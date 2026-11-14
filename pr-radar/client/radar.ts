@@ -917,10 +917,23 @@ export interface AgentLaunchOverrides {
 
 const MAX_LABELS = 16;
 const MAX_LABEL_LEN = 128;
+const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+// Labels that tools around Paseo read as control-plane markers (lead ownership for permission
+// approval, handoff and window placement). PR text reaches the routing script's stdin, so a script
+// that copies it into a label must not be able to set these.
+const RESERVED_LABEL_KEYS = new Set([
+  "ade.lead",
+  "ade.handoff",
+  "ade.placement",
+  "ade.via",
+  "slice",
+]);
 
 // Labels for a launched agent: the routing script's extra labels plus PR Radar's own `pr-radar.cwd`.
-// The `pr-radar.` prefix is reserved (the script cannot set or shadow it), keys and values are trimmed
-// non-empty strings of bounded length, and at most MAX_LABELS survive, so a script cannot flood the agent.
+// The `pr-radar.` prefix and a few control-plane keys are reserved (the script cannot set them), keys match
+// LABEL_KEY, values are trimmed non-empty strings without control characters, all of bounded length, and at most MAX_LABELS survive, so a script cannot flood the agent.
 export function buildAgentLabels(
   cwdTag: string,
   overrides: AgentLaunchOverrides = {},
@@ -931,8 +944,9 @@ export function buildAgentLabels(
     if (typeof rawValue !== "string") continue;
     const key = rawKey.trim();
     const value = rawValue.trim();
-    if (!key || !value || key.length > MAX_LABEL_LEN || value.length > MAX_LABEL_LEN) continue;
-    if (key.startsWith("pr-radar.")) continue;
+    if (!value || value.length > MAX_LABEL_LEN || CONTROL_CHARS.test(value)) continue;
+    if (!LABEL_KEY.test(key) || key.toLowerCase().startsWith("pr-radar.")) continue;
+    if (RESERVED_LABEL_KEYS.has(key.toLowerCase())) continue;
     extra[key] = value;
   }
   return { ...extra, "pr-radar.cwd": cwdTag };
