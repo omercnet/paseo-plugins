@@ -28,7 +28,14 @@ DevTools before capture. Both PNGs come from an isolated Paseo test daemon at 2Ã
 - Waiting externally: running checks, pending reviews, repository requirements, and external-author work.
 - Ready: authored pull requests that are mergeable with settled checks and reviews.
 - Viewer labels: `YOURS`, `REVIEW`, and `EXTERNAL`.
-- Contextual actions: ask an existing agent or start one in the linked workspace.
+- Working-directory tags: `CWD-WORKTREE`, `CWD-BASE`, and `CWD-TBD` (shown on rows and maintained as Paseo workspace/agent labels).
+- Draft PRs (DPRs): displayed in a separate collapsible section below regular pull requests.
+- Action cluster on every PR:
+  - `Open issues (N)`: opens all linked/closing GitHub issues in your browser when present.
+  - `Start New Agent`: available on every PR (orange when a local checkout/worktree exists, brown when `CWD-TBD` and a clone or directory pick is needed). Opens an interactive directory/worktree chooser (supporting incremental typing, GUI selection, `CWD-WORKTREE` vs `CWD-BASE`, and one-click clone + worktree creation), or launches immediately when configured in Settings.
+  - `Open Existing Agent`: jumps directly to an existing linked Paseo agent.
+  - `Ask agent` / `Open workspace` / `Copy link` / `Open PR`.
+- Settings (`PR Radar settings`): configure `sourceCodeDir` (default `~/src`), `defaultCwdMode` (`CWD-WORKTREE` or `CWD-BASE`), `autoLaunchMode` (`prompt`, `existing_only`, or `existing_or_clone`), default agent launch options (profile, provider, model, effort, mode, context mode), and an optional routing script path (see `examples/pr-radar-route.py` and `examples/route_agent.py`).
 - Linked workspaces and agents include those in background workspaces. Helpers, meaning background
   agents that Paseo hides from tabs, lists and attention, never appear on a row. They also do not
   count toward its active agents, attention, permission state or the sidebar count.

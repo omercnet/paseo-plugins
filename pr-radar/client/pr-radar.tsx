@@ -1,4 +1,9 @@
-import { openExternalUrl, type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
+import {
+  openExternalUrl,
+  type PluginSurfaceProps,
+  useRpc,
+  useSettings,
+} from "@getpaseo/plugin/client";
 import { copyText } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -11,11 +16,17 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { acknowledgeViewerScope } from "../shared/viewer-scope";
+import { DEFAULT_PR_RADAR_SETTINGS, prRadarSettings } from "../shared/settings";
+import {
+  acknowledgeViewerScope,
+  prepareWorkspaceCwd,
+  runRoutingScript,
+} from "../shared/viewer-scope";
 import {
   agentActionFor,
   BUCKET_TITLES,
   BUCKETS,
+  buildAgentConfig,
   buildAgentPrompt,
   checkSummary,
   formatAge,
@@ -27,6 +38,7 @@ import {
   type RadarRow,
   type SortKey,
   sortRows,
+  splitDraftRows,
 } from "./radar";
 import {
   DIRECTORY_PARTIAL,
@@ -36,6 +48,7 @@ import {
   VIEWER_URL_LIMIT,
 } from "./screen-state";
 import { SortControls } from "./sort-controls";
+import { type StartAgentLaunchRequest, StartAgentModal } from "./start-agent-modal";
 import { useRadar } from "./use-radar";
 import { revealFocusedChip } from "./web";
 
@@ -79,9 +92,15 @@ export function PrRadar({
   host,
   navigation,
   params = {},
-}: PluginSurfaceProps & { params?: Record<string, string> }) {
+  onOpenSettings,
+}: PluginSurfaceProps & { params?: Record<string, string>; onOpenSettings?: () => void }) {
   const queryClient = useQueryClient();
   const acknowledgeUpdates = useRpc(acknowledgeViewerScope);
+  const prepareCwd = useRpc(prepareWorkspaceCwd);
+  const invokeRouter = useRpc(runRoutingScript);
+  const settingsState = useSettings(prRadarSettings);
+  const settings =
+    settingsState.status === "ready" ? settingsState.values : DEFAULT_PR_RADAR_SETTINGS;
   const parsed = parseRadarParams(params);
   // The host's compact flag follows the window, so a pane narrower than the window (the screen
   // sits beside a sidebar) kept the wide card. Measure the radar's own width as well.
@@ -89,6 +108,8 @@ export function PrRadar({
   const layout = { ...hostLayout, compact: hostLayout.compact || narrow };
   const [filter, setFilterState] = useState<RadarFilter | null>(parsed.filter);
   const [focusedPr, setFocusedPr] = useState<string | null>(parsed.pr);
+  const [modalRow, setModalRow] = useState<RadarRow | null>(null);
+  const [dprCollapsed, setDprCollapsed] = useState(false);
   // Chips are local state: openScreen would push a new screen per tap. A chip press also ends PR focus.
   const setFilter = (value: RadarFilter | null) => {
     setFilterState(value);
@@ -207,6 +228,165 @@ export function PrRadar({
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   });
+
+  const startNewAgentMutation = useMutation({
+    mutationFn: async (request: StartAgentLaunchRequest) => {
+      const { row } = request;
+      if (!row.number) {
+        throw new Error("A pull request number is required to start a new agent.");
+      }
+      const prepared = await prepareCwd({
+        repository: row.repository,
+        prNumber: row.number,
+        headRefName: row.headRefName,
+        baseRefName: row.baseRefName,
+        sourceCodeDir: settings.sourceCodeDir,
+        targetDir: request.targetDir,
+        cwdMode: request.cwdMode,
+        worktreeName: request.worktreeName,
+      });
+
+      const targetWorkspace = await paseo.workspaces.open(prepared.cwd);
+      const allCwdTags = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"] as const;
+      await Promise.all(
+        allCwdTags.map((tag) =>
+          targetWorkspace
+            .setLabel(tag, { assigned: tag === prepared.cwdTag })
+            .catch(() => undefined),
+        ),
+      );
+
+      const { config } = await paseo.config.get();
+      const profiles = config.agentProfiles ?? [];
+      const wantedProfile = request.profileName.trim().toLowerCase();
+      const profile =
+        (wantedProfile
+          ? profiles.find((candidate) => candidate.name.toLowerCase() === wantedProfile)
+          : undefined) ??
+        profiles.find((candidate) => candidate.name.toLowerCase() === "model router") ??
+        profiles[0];
+
+      const agentConfig = buildAgentConfig(profile, request.overrides);
+      const prompt = buildAgentPrompt(row);
+      const created = await targetWorkspace.agents.create({
+        config: agentConfig,
+        title: `PR Radar: ${row.repository}#${row.number}`,
+        prompt,
+        labels: { "pr-radar.cwd": prepared.cwdTag },
+      });
+
+      if (navigation) {
+        navigation.openAgent({ agentId: created.id, serverId: host.id });
+      }
+      return `Started new agent in ${prepared.cwdTag} (${prepared.cwd}) for ${row.repository}#${row.number}.`;
+    },
+    onMutate: () => {
+      setOpenError(null);
+      setActionNotice(null);
+    },
+    onSuccess: (message) => {
+      setModalRow(null);
+      setActionNotice(message);
+    },
+    onError: (mutationError) => {
+      setOpenError(
+        mutationError instanceof Error ? mutationError.message : "Could not start new agent.",
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+  });
+
+  const handleStartNewAgentPress = useCallback(
+    async (row: RadarRow) => {
+      setOpenError(null);
+      const shouldAutoLaunch =
+        settings.autoLaunchMode === "existing_or_clone" ||
+        (settings.autoLaunchMode === "existing_only" && row.hasLocalPlace);
+      if (!shouldAutoLaunch) {
+        setModalRow(row);
+        return;
+      }
+
+      let overrides = {
+        provider: settings.defaultProvider,
+        model: settings.defaultModel,
+        thinkingOptionId: settings.defaultEffort,
+        modeId: settings.defaultModeId,
+        contextMode: settings.defaultContextMode,
+      };
+      let profileName = settings.defaultProfile;
+
+      if (settings.routingScriptPath.trim()) {
+        try {
+          const routed = await invokeRouter({
+            scriptPath: settings.routingScriptPath,
+            payload: {
+              pr: {
+                id: row.id,
+                number: row.number,
+                url: row.url,
+                title: row.title,
+                repository: row.repository,
+                baseRefName: row.baseRefName,
+                headRefName: row.headRefName,
+                isDraft: row.isDraft,
+                author: row.author,
+                authorKind: row.authorKind,
+                isSecurity: row.isSecurity,
+                comments: row.comments,
+                labels: row.labels,
+                bucket: row.bucket,
+                reason: row.reason,
+                reviewRequestedFromMe: row.reviewRequestedFromMe,
+                ownership: row.ownership,
+                checksStatus: row.checksStatus,
+                reviewDecision: row.reviewDecision,
+                mergeable: row.mergeable,
+                linkedIssues: row.linkedIssues,
+              },
+              workspace: {
+                targetDir: row.localProjectRoot ?? null,
+                cwdMode: settings.defaultCwdMode,
+                localProjectRoot: row.localProjectRoot,
+                workspaceIds: row.workspaceIds,
+              },
+              defaults: {
+                profile: settings.defaultProfile,
+                provider: settings.defaultProvider,
+                model: settings.defaultModel,
+                effort: settings.defaultEffort,
+                modeId: settings.defaultModeId,
+                contextMode: settings.defaultContextMode,
+              },
+            },
+          });
+          if (routed.profile) profileName = routed.profile;
+          if (routed.provider) overrides = { ...overrides, provider: routed.provider };
+          if (routed.model) overrides = { ...overrides, model: routed.model };
+          if (routed.thinkingOptionId) {
+            overrides = { ...overrides, thinkingOptionId: routed.thinkingOptionId };
+          }
+          if (routed.modeId) overrides = { ...overrides, modeId: routed.modeId };
+          if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
+        } catch (routerError) {
+          setOpenError(
+            routerError instanceof Error ? routerError.message : "Routing script failed.",
+          );
+          return;
+        }
+      }
+
+      startNewAgentMutation.mutate({
+        row,
+        targetDir: row.localProjectRoot ?? null,
+        cwdMode: settings.defaultCwdMode,
+        worktreeName: null,
+        profileName,
+        overrides,
+      });
+    },
+    [invokeRouter, settings, startNewAgentMutation],
+  );
   const counts = useMemo(() => {
     const result: Record<RadarBucket, number> = {
       "needs-you": 0,
@@ -253,6 +433,10 @@ export function PrRadar({
     [activeOnly, now, rows, savedView, search, selected, focusedPr],
   );
   const sortedRows = useMemo(() => sortRows(visibleRows, sortKey), [visibleRows, sortKey]);
+  const { pullRequests, draftPullRequests } = useMemo(
+    () => splitDraftRows(sortedRows),
+    [sortedRows],
+  );
 
   const styles = useMemo(() => {
     const gutter = layout.compact ? 14 : 24;
@@ -442,7 +626,9 @@ export function PrRadar({
       metadata: { color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 17 },
       actions: {
         flexDirection: "row" as const,
+        flexWrap: "wrap" as const,
         alignItems: "center" as const,
+        justifyContent: layout.compact ? ("flex-start" as const) : ("flex-end" as const),
         gap: 8,
         paddingLeft: layout.compact ? 0 : 12,
         paddingTop: layout.compact ? 4 : 0,
@@ -461,10 +647,42 @@ export function PrRadar({
         borderColor: theme.colors.accent,
         backgroundColor: theme.colors.accent,
       },
+      actionStartOrange: {
+        borderColor: "#ea7a33",
+        backgroundColor: "#c2591a",
+      },
+      actionStartBrown: {
+        borderColor: "#9a5f3b",
+        backgroundColor: "#7c4a2d",
+      },
+      actionStartText: { color: "#ffffff" },
       actionAgentText: { color: theme.colors.accentForeground },
       actionDisabled: { opacity: 0.55 },
       actionText: { color: theme.colors.foreground, fontSize: 12, fontWeight: "600" as const },
       actionPrimaryText: { color: theme.colors.accent },
+      dprHeader: {
+        marginTop: 24,
+        marginHorizontal: gutter,
+        paddingVertical: 12,
+        paddingHorizontal: 14,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface1,
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        justifyContent: "space-between" as const,
+      },
+      dprHeaderTitle: {
+        color: theme.colors.foreground,
+        fontSize: 14,
+        fontWeight: "700" as const,
+      },
+      dprHeaderToggle: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 12,
+        fontWeight: "600" as const,
+      },
       empty: {
         paddingHorizontal: gutter,
         paddingVertical: 52,
@@ -494,6 +712,17 @@ export function PrRadar({
     }
   }, []);
 
+  const openIssues = useCallback(async (row: RadarRow) => {
+    setOpenError(null);
+    try {
+      for (const issueUrl of row.linkedIssues) {
+        await openPullRequestUrl(issueUrl, openExternalUrl);
+      }
+    } catch {
+      setOpenError(`Could not open linked issues for ${row.repository}#${row.number ?? "PR"}.`);
+    }
+  }, []);
+
   const copyPrLink = useCallback(async (row: RadarRow) => {
     setOpenError(null);
     setCopied(null);
@@ -515,6 +744,8 @@ export function PrRadar({
     const primaryAgent = item.agents[0];
     const agentAction = agentActionFor(item);
     const actionPending = agentMutation.isPending && agentMutation.variables?.id === item.id;
+    const startPending =
+      startNewAgentMutation.isPending && startNewAgentMutation.variables?.row.id === item.id;
     const ownershipLabel = item.reviewRequestedFromMe
       ? "REVIEW"
       : item.ownership === "mine"
@@ -524,10 +755,37 @@ export function PrRadar({
           : "SCOPE UNKNOWN";
     const actions = (
       <View style={styles.actions}>
-        {agentAction ? (
+        {item.linkedIssues.length > 0 ? (
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel={`Open ${item.linkedIssues.length} linked issues for ${item.repository} ${item.number ?? ""}`}
+            onPress={() => void openIssues(item)}
+            style={({ pressed }) => [styles.action, pressed && styles.refreshPressed]}
+          >
+            <Text style={styles.actionText}>Open issues ({item.linkedIssues.length})</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Start New Agent for ${item.repository} ${item.number ?? ""}`}
+          accessibilityState={{ busy: startPending, disabled: startNewAgentMutation.isPending }}
+          disabled={startNewAgentMutation.isPending}
+          onPress={() => void handleStartNewAgentPress(item)}
+          style={({ pressed }) => [
+            styles.action,
+            item.hasLocalPlace ? styles.actionStartOrange : styles.actionStartBrown,
+            (pressed || startPending) && styles.refreshPressed,
+            startNewAgentMutation.isPending && styles.actionDisabled,
+          ]}
+        >
+          <Text style={[styles.actionText, styles.actionStartText]}>
+            {startPending ? "Starting…" : "Start New Agent"}
+          </Text>
+        </Pressable>
+        {agentAction?.kind === "ask" ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`${agentAction.kind === "ask" ? "Ask an agent to handle" : "Start an agent for"} ${item.repository} ${item.number ?? ""}`}
+            accessibilityLabel={`Ask an agent to handle ${item.repository} ${item.number ?? ""}`}
             accessibilityState={{ busy: actionPending, disabled: agentMutation.isPending }}
             disabled={agentMutation.isPending}
             onPress={() => agentMutation.mutate(item)}
@@ -539,27 +797,21 @@ export function PrRadar({
             ]}
           >
             <Text style={[styles.actionText, styles.actionAgentText]}>
-              {actionPending
-                ? agentAction.kind === "ask"
-                  ? "Sending…"
-                  : "Starting…"
-                : agentAction.kind === "ask"
-                  ? "Ask agent"
-                  : "Start agent"}
+              {actionPending ? "Sending…" : "Ask agent"}
             </Text>
           </Pressable>
         ) : null}
         {navigation && primaryAgent ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Open agent ${primaryAgent.title}`}
+            accessibilityLabel={`Open Existing Agent ${primaryAgent.title}`}
             onPress={() => {
               const target = { agentId: primaryAgent.id, serverId: host.id };
               navigation.openAgent(target);
             }}
             style={({ pressed }) => [styles.action, pressed && styles.refreshPressed]}
           >
-            <Text style={styles.actionText}>Open agent</Text>
+            <Text style={styles.actionText}>Open Existing Agent</Text>
           </Pressable>
         ) : null}
         {navigation && !primaryAgent && item.workspaceIds[0] ? (
@@ -575,6 +827,16 @@ export function PrRadar({
             <Text style={styles.actionText}>Open workspace</Text>
           </Pressable>
         ) : null}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Copy link to pull request ${item.repository} ${item.number ?? ""}`}
+          onPress={() => void copyPrLink(item)}
+          style={({ pressed }) => [styles.action, pressed && styles.refreshPressed]}
+        >
+          <Text style={styles.actionText} accessibilityLiveRegion="polite">
+            {copied?.id === item.id ? "Copied" : "Copy link"}
+          </Text>
+        </Pressable>
         <Pressable
           accessibilityRole="link"
           accessibilityLabel={`Open pull request ${item.repository} ${item.number ?? ""}`}
@@ -600,6 +862,7 @@ export function PrRadar({
               {item.number ? ` #${item.number}` : ""}
             </Text>
             <Text style={styles.badge}>{ownershipLabel}</Text>
+            <Text style={styles.badge}>{item.cwdTag}</Text>
             {item.isDraft ? <Text style={styles.badge}>DRAFT</Text> : null}
             {item.authorKind === "bot" ? <Text style={styles.badge}>BOT</Text> : null}
             {item.isSecurity ? <Text style={styles.badge}>SECURITY</Text> : null}
@@ -630,16 +893,6 @@ export function PrRadar({
           {layout.compact ? actions : null}
         </View>
         {layout.compact ? null : actions}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Copy link to pull request ${item.repository} ${item.number ?? ""}`}
-          onPress={() => void copyPrLink(item)}
-          style={({ pressed }) => [styles.copyButton, pressed && styles.refreshPressed]}
-        >
-          <Text style={styles.copyText} accessibilityLiveRegion="polite">
-            {copied?.id === item.id ? "Copied" : "Copy link"}
-          </Text>
-        </Pressable>
       </View>
     );
   };
@@ -672,16 +925,28 @@ export function PrRadar({
           <View style={styles.signalDot} />
           <Text style={styles.eyebrow}>PR RADAR · {viewerData?.viewer ?? "GITHUB"}</Text>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Refresh pull request status"
-          accessibilityState={{ busy: isFetching }}
-          disabled={isFetching}
-          onPress={() => void Promise.all([refetch(), refetchViewer()])}
-          style={({ pressed }) => [styles.refresh, pressed && styles.refreshPressed]}
-        >
-          <Text style={styles.refreshText}>{isFetching ? "Scanning" : "Refresh"}</Text>
-        </Pressable>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          {onOpenSettings ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open PR Radar settings"
+              onPress={onOpenSettings}
+              style={({ pressed }) => [styles.refresh, pressed && styles.refreshPressed]}
+            >
+              <Text style={styles.refreshText}>Settings</Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Refresh pull request status"
+            accessibilityState={{ busy: isFetching }}
+            disabled={isFetching}
+            onPress={() => void Promise.all([refetch(), refetchViewer()])}
+            style={({ pressed }) => [styles.refresh, pressed && styles.refreshPressed]}
+          >
+            <Text style={styles.refreshText}>{isFetching ? "Scanning" : "Refresh"}</Text>
+          </Pressable>
+        </View>
       </View>
       <Text style={styles.heroTitle}>Know what moves next.</Text>
       <Text style={styles.heroDetail}>{totalCopy}</Text>
@@ -839,13 +1104,13 @@ export function PrRadar({
     >
       <FlatList
         contentContainerStyle={styles.content}
-        data={sortedRows}
+        data={pullRequests}
         keyExtractor={(item) => item.id}
         ListHeaderComponent={header}
         ListEmptyComponent={
           isPending ? (
             <ActivityIndicator color={theme.colors.accent} style={styles.spinner} />
-          ) : (
+          ) : draftPullRequests.length > 0 ? null : (
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>
                 {rows.length === 0 ? "Clear runway" : "Nothing here"}
@@ -854,7 +1119,40 @@ export function PrRadar({
             </View>
           )
         }
+        ListFooterComponent={
+          draftPullRequests.length > 0 ? (
+            <View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: !dprCollapsed }}
+                onPress={() => setDprCollapsed((prev) => !prev)}
+                style={styles.dprHeader}
+              >
+                <Text style={styles.dprHeaderTitle}>
+                  Draft PRs (DPRs) · {draftPullRequests.length}
+                </Text>
+                <Text style={styles.dprHeaderToggle}>{dprCollapsed ? "Show" : "Hide"}</Text>
+              </Pressable>
+              {!dprCollapsed ? (
+                <View>
+                  {draftPullRequests.map((item) => (
+                    <View key={item.id}>{renderRow({ item })}</View>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null
+        }
         renderItem={renderRow}
+      />
+      <StartAgentModal
+        row={modalRow}
+        settings={settings}
+        theme={theme}
+        pending={startNewAgentMutation.isPending}
+        error={openError}
+        onClose={() => setModalRow(null)}
+        onStart={(request) => startNewAgentMutation.mutate(request)}
       />
       {data?.warnings.length ? (
         <View style={styles.warning}>

@@ -25,6 +25,7 @@ export const GitHubInboxItemSchema = z.object({
   reviewDecision: z.enum(["pending", "approved", "changes_requested"]).nullable(),
   role: z.enum(["author", "reviewer"]),
   changes: z.array(z.string()),
+  linkedIssues: z.array(HttpsUrlSchema).default([]),
 });
 
 export type GitHubInboxItem = z.infer<typeof GitHubInboxItemSchema>;
@@ -52,4 +53,71 @@ export const acknowledgeViewerScope = defineRpc({
   name: "pr-radar.acknowledge-updates",
   input: z.object({ windowDays: z.number().int().min(1).max(365) }),
   output: z.object({ acknowledgedAt: z.string() }),
+});
+
+export const LocalDirEntrySchema = z.object({
+  path: z.string(),
+  label: z.string(),
+  kind: z.enum(["repo", "worktree", "dir"]),
+  branch: z.string().nullable().default(null),
+  isMatch: z.boolean().default(false),
+});
+
+export type LocalDirEntry = z.infer<typeof LocalDirEntrySchema>;
+
+export const listLocalDirs = defineRpc({
+  name: "pr-radar.list-local-dirs",
+  input: z.object({
+    sourceCodeDir: z.string().trim().min(1).default("~/src"),
+    query: z.string().default(""),
+    repository: z.string().default(""),
+  }),
+  output: z.object({
+    expandedSourceDir: z.string(),
+    entries: z.array(LocalDirEntrySchema),
+    suggestedClonePath: z.string(),
+  }),
+});
+
+export const prepareWorkspaceCwd = defineRpc({
+  name: "pr-radar.prepare-workspace-cwd",
+  input: z.object({
+    repository: z.string().trim().min(1),
+    prNumber: z.number().int().positive(),
+    headRefName: z.string().default(""),
+    baseRefName: z.string().default(""),
+    sourceCodeDir: z.string().trim().min(1).default("~/src"),
+    targetDir: z.string().trim().nullable().default(null),
+    cwdMode: z.enum(["CWD-WORKTREE", "CWD-BASE"]).default("CWD-WORKTREE"),
+    worktreeName: z.string().trim().nullable().default(null),
+  }),
+  output: z.object({
+    cwd: z.string(),
+    baseRoot: z.string(),
+    cwdTag: z.enum(["CWD-WORKTREE", "CWD-BASE"]),
+    cloned: z.boolean(),
+    worktreeCreated: z.boolean(),
+  }),
+});
+
+export const RoutingScriptResultSchema = z.object({
+  profile: z.string().optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  thinkingOptionId: z.string().optional(),
+  modeId: z.string().optional(),
+  contextMode: z.string().optional(),
+  options: z.record(z.string(), z.unknown()).optional(),
+  reason: z.string().optional(),
+});
+
+export type RoutingScriptResult = z.infer<typeof RoutingScriptResultSchema>;
+
+export const runRoutingScript = defineRpc({
+  name: "pr-radar.run-routing-script",
+  input: z.object({
+    scriptPath: z.string().trim().min(1),
+    payload: z.record(z.string(), z.unknown()),
+  }),
+  output: RoutingScriptResultSchema,
 });

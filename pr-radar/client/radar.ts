@@ -49,6 +49,7 @@ export interface RadarCheck {
 }
 
 export type ViewerOwnership = "mine" | "external" | "unknown";
+export type CwdTag = "CWD-BASE" | "CWD-WORKTREE" | "CWD-TBD";
 
 export interface RadarRow {
   id: string;
@@ -65,6 +66,9 @@ export interface RadarRow {
   comments: number;
   labels: string[];
   changes: string[];
+  linkedIssues: string[];
+  cwdTag: CwdTag;
+  hasLocalPlace: boolean;
   mergeable: "UNKNOWN" | "MERGEABLE" | "CONFLICTING";
   mergeStateStatus: string | null;
   checksStatus: "success" | "pending" | "none" | "failure";
@@ -409,6 +413,14 @@ export function buildRadarSnapshot(
       continue;
     }
 
+    const workspaceCwdTag: CwdTag = workspace.labels?.includes("CWD-BASE")
+      ? "CWD-BASE"
+      : workspace.labels?.includes("CWD-WORKTREE")
+        ? "CWD-WORKTREE"
+        : workspace.workspaceKind === "worktree"
+          ? "CWD-WORKTREE"
+          : "CWD-BASE";
+
     const row: RadarRow = {
       id,
       number: pullRequest.number ?? null,
@@ -424,6 +436,9 @@ export function buildRadarSnapshot(
       comments: 0,
       labels: [],
       changes: [],
+      linkedIssues: [],
+      cwdTag: workspaceCwdTag,
+      hasLocalPlace: true,
       mergeable: pullRequest.mergeable ?? "UNKNOWN",
       mergeStateStatus: facts?.mergeStateStatus ?? null,
       checksStatus: pullRequest.checksStatus ?? "none",
@@ -480,6 +495,7 @@ export function mergeInboxRows(
       existing.comments = item.comments;
       existing.labels = [...item.labels];
       existing.changes = [...item.changes];
+      existing.linkedIssues = [...item.linkedIssues];
       existing.isDraft = item.isDraft;
       existing.baseRefName = item.baseRefName || existing.baseRefName;
       existing.headRefName = item.headRefName || existing.headRefName;
@@ -490,6 +506,8 @@ export function mergeInboxRows(
       existing.ownership = item.role === "author" ? "mine" : "external";
       existing.reviewRequestedFromMe = item.role === "reviewer";
       existing.localProjectRoot ??= snapshot.repositoryRoots[item.repository.toLowerCase()] ?? null;
+      existing.hasLocalPlace =
+        existing.workspaceIds.length > 0 || Boolean(existing.localProjectRoot);
       if (Date.parse(item.updatedAt) > Date.parse(existing.activityAt ?? "")) {
         existing.activityAt = item.updatedAt;
       }
@@ -514,6 +532,9 @@ export function mergeInboxRows(
       comments: item.comments,
       labels: [...item.labels],
       changes: [...item.changes],
+      linkedIssues: [...item.linkedIssues],
+      cwdTag: "CWD-TBD",
+      hasLocalPlace: Boolean(snapshot.repositoryRoots[item.repository.toLowerCase()]),
       mergeable: item.mergeable,
       mergeStateStatus: item.mergeStateStatus,
       checksStatus: item.checksStatus,
@@ -702,4 +723,54 @@ export function profileAgentConfig(profile: AgentProfileLike) {
       ? { featureValues: profile.featureValues }
       : {}),
   };
+}
+
+export interface AgentLaunchOverrides {
+  provider?: string;
+  model?: string;
+  modeId?: string;
+  thinkingOptionId?: string;
+  contextMode?: string;
+  options?: Record<string, unknown>;
+}
+
+export function buildAgentConfig(
+  profile: AgentProfileLike | undefined,
+  overrides: AgentLaunchOverrides = {},
+) {
+  const baseProvider = overrides.provider?.trim() || profile?.provider || "claude";
+  const baseModel = overrides.model?.trim() || (overrides.provider?.trim() ? "" : profile?.model);
+  const provider = baseModel ? `${baseProvider}/${baseModel}` : baseProvider;
+  const modeId = overrides.modeId?.trim() || profile?.modeId;
+  const thinkingOptionId = overrides.thinkingOptionId?.trim() || profile?.thinkingOptionId;
+  const mergedOptions: Record<string, unknown> = {
+    ...(profile?.options ?? {}),
+    ...(overrides.options ?? {}),
+    ...(overrides.contextMode?.trim() ? { contextMode: overrides.contextMode.trim() } : {}),
+  };
+  return {
+    provider,
+    ...(modeId ? { modeId } : {}),
+    ...(thinkingOptionId ? { thinkingOptionId } : {}),
+    ...(Object.keys(mergedOptions).length > 0 ? { options: mergedOptions } : {}),
+    ...(profile?.featureValues && Object.keys(profile.featureValues).length > 0
+      ? { featureValues: profile.featureValues }
+      : {}),
+  };
+}
+
+export function splitDraftRows(rows: readonly RadarRow[]): {
+  pullRequests: RadarRow[];
+  draftPullRequests: RadarRow[];
+} {
+  const pullRequests: RadarRow[] = [];
+  const draftPullRequests: RadarRow[] = [];
+  for (const row of rows) {
+    if (row.isDraft) {
+      draftPullRequests.push(row);
+    } else {
+      pullRequests.push(row);
+    }
+  }
+  return { pullRequests, draftPullRequests };
 }

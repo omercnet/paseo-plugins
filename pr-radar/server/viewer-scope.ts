@@ -41,6 +41,8 @@ interface Enrichment {
   mergeable: "UNKNOWN" | "MERGEABLE" | "CONFLICTING";
   mergeStateStatus: string;
   statusCheckRollup: { state: "SUCCESS" | "FAILURE" | "ERROR" | "PENDING" | "EXPECTED" } | null;
+  body?: string | null;
+  closingIssuesReferences?: { nodes?: Array<{ url?: string | null } | null> } | null;
 }
 
 interface StoredItem {
@@ -173,6 +175,10 @@ const enrichmentQuery = `
         mergeable
         mergeStateStatus
         statusCheckRollup { state }
+        body
+        closingIssuesReferences(first: 20) {
+          nodes { url }
+        }
       }
     }
   }
@@ -243,6 +249,26 @@ function reviewDecision(state: Enrichment | undefined): GitHubInboxItem["reviewD
   }
 }
 
+function extractLinkedIssues(state: Enrichment | undefined): string[] {
+  const urls = new Set<string>();
+  for (const node of state?.closingIssuesReferences?.nodes ?? []) {
+    const url = node?.url?.trim();
+    if (url && /^https:\/\/[^/]+\/[^/]+\/[^/]+\/issues\/\d+$/i.test(url)) {
+      urls.add(url);
+    }
+  }
+  const body = state?.body ?? "";
+  if (body) {
+    const matches = body.match(
+      /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+/g,
+    );
+    for (const match of matches ?? []) {
+      urls.add(match);
+    }
+  }
+  return [...urls];
+}
+
 function toInboxItem(
   record: SearchRecord,
   role: GitHubInboxItem["role"],
@@ -277,6 +303,7 @@ function toInboxItem(
     reviewDecision: reviewDecision(state),
     role,
     changes: [],
+    linkedIssues: extractLinkedIssues(state),
   };
 }
 

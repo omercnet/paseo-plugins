@@ -52,6 +52,9 @@ function row(overrides: Partial<RadarRow> = {}): RadarRow {
     comments: 0,
     labels: [],
     changes: [],
+    linkedIssues: [],
+    cwdTag: "CWD-WORKTREE",
+    hasLocalPlace: true,
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
     checksStatus: "success",
@@ -942,6 +945,7 @@ describe("GitHub inbox", () => {
     reviewDecision: "changes_requested",
     role: "author",
     changes: ["Checks: success → failure"],
+    linkedIssues: [],
   };
 
   test("adds an authored inbox PR without a linked workspace", () => {
@@ -997,6 +1001,7 @@ describe("GitHub inbox", () => {
       reviewDecision: "approved",
       role: "author",
       changes: [],
+      linkedIssues: [],
     };
 
     const [merged] = mergeInboxRows(snapshot, [inbox]);
