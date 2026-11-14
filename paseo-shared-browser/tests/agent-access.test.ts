@@ -907,8 +907,25 @@ describe("agent shared-browser authorization", () => {
       workspaceId: "workspace-one",
       viewerLabel: "Human",
     });
+    await expect(
+      browserRequest(supervisor, bridge, "video.set", {
+        viewerToken: human.viewerToken,
+        enabled: true,
+      }),
+    ).resolves.toEqual({ enabled: true, forcedByHost: false });
+    expect(owner.stopped).toHaveLength(1);
+    await expect(browserRequest(supervisor, bridge, "video.settings", {})).resolves.toEqual({
+      enabled: true,
+      forcedByHost: false,
+    });
+    // Same value again: nothing is stale, so nothing restarts.
     await browserRequest(supervisor, bridge, "video.set", {
-      viewerToken: human.viewerToken,
+      viewerToken: (
+        await browserRequest<{ viewerToken: string }>(supervisor, bridge, "attach", {
+          workspaceId: "workspace-one",
+          viewerLabel: "Human",
+        })
+      ).viewerToken,
       enabled: true,
     });
     expect(owner.stopped).toHaveLength(1);
@@ -916,6 +933,38 @@ describe("agent shared-browser authorization", () => {
     await expect(agentRequest(supervisor, agentTicket, "status")).resolves.toMatchObject({
       state: { workspaceId: "workspace-one", tabId: "page-2" },
     });
+  });
+
+  it("routes the gesture keep-alive operation through the supervisor to gesture authority", async () => {
+    const { supervisor, bridge } = createHarness();
+    const human = await browserRequest<{ viewerToken: string; state: BrowserState }>(
+      supervisor,
+      bridge,
+      "attach",
+      { workspaceId: "workspace-one", viewerLabel: "Human" },
+    );
+    const control = await browserRequest<{ controlToken: string }>(
+      supervisor,
+      bridge,
+      "acquire-control",
+      { viewerToken: human.viewerToken, takeover: false },
+    );
+    // A registered route reaches gesture validation; a missing one is an unknown operation.
+    await expect(
+      browserRequest(supervisor, bridge, "gesture.keepalive", {
+        viewerToken: human.viewerToken,
+        controlToken: control.controlToken,
+        gestureId: "g".repeat(32),
+        sequence: 1,
+        expected: {
+          sessionId: human.state.sessionId,
+          runtimeId: human.state.runtimeId ?? null,
+          bridgeEpoch: human.state.bridgeEpoch ?? null,
+          navigationGeneration: human.state.navigationGeneration,
+          viewportGeneration: human.state.viewportGeneration,
+        },
+      }),
+    ).rejects.toThrow("Browser gesture is unavailable");
   });
 
   it("fails closed for null, unknown, history-only, unbound, and revoked credentials", async () => {
