@@ -23,7 +23,7 @@ vi.mock("node:child_process", () => ({
     callback: (error: null, result: { stdout: string }) => void,
   ) => {
     exec.calls.push({ file, args, env: options.env });
-    callback(null, { stdout: args.includes("--version") ? "0.41.2\n" : "{}\n" });
+    callback(null, { stdout: args.includes("--version") ? "0.42.0\n" : "{}\n" });
   },
 }));
 
