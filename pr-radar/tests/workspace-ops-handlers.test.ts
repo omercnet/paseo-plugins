@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -347,6 +348,43 @@ describe("source directory confinement", () => {
     );
     expect(gitIn(stray, ["rev-parse", "HEAD"])).toBe(before);
     expect(before).not.toBe(prHead);
+  });
+});
+
+describe("ignored local files", () => {
+  test("refuses a checkout that would overwrite an ignored file the PR tracks", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root, {
+      ".env": { content: "from-pr\n" },
+      "build/out.js": { content: "from-pr\n" },
+    });
+    appendFileSync(join(repoDir, ".git/info/exclude"), ".env\nbuild/\n");
+    writeFileSync(join(repoDir, ".env"), "mine\n");
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /would overwrite an ignored local file/,
+    );
+    expect(readFileSync(join(repoDir, ".env"), "utf8")).toBe("mine\n");
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+
+    // An ignored directory counts as well.
+    rmSync(join(repoDir, ".env"));
+    mkdirSync(join(repoDir, "build"));
+    writeFileSync(join(repoDir, "build/out.js"), "mine\n");
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /PR #7 tracks (\.env|build\/out\.js), which would overwrite/,
+    );
+    expect(readFileSync(join(repoDir, "build/out.js"), "utf8")).toBe("mine\n");
+  });
+
+  test("leaves unrelated ignored files alone", async () => {
+    const root = makeRoot();
+    const { repoDir, prHead } = makePullableRepo(root);
+    appendFileSync(join(repoDir, ".git/info/exclude"), "node_modules/\n");
+    mkdirSync(join(repoDir, "node_modules"));
+    writeFileSync(join(repoDir, "node_modules/dep.js"), "x\n");
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["rev-parse", "HEAD"])).toBe(prHead);
+    expect(existsSync(join(repoDir, "node_modules/dep.js"))).toBe(true);
   });
 });
 

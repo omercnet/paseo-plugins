@@ -460,6 +460,48 @@ async function assertBranchFastForwards(
   }
 }
 
+/**
+ * `checkout -B` replaces a git-ignored local file (a `.env`, say) without a word when the PR tracks
+ * the same path, and the dirty check does not see ignored files. Refuse before that happens.
+ */
+async function assertNoIgnoredFileOverwrite(
+  dir: string,
+  target: string,
+  prNumber: number,
+): Promise<void> {
+  const ignored = (
+    await runGit(dir, [
+      "ls-files",
+      "-z",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--directory",
+    ])
+  )
+    .split("\0")
+    .filter(Boolean);
+  if (ignored.length === 0) return;
+  const incoming = (
+    await runGit(dir, [
+      "ls-tree",
+      "-r",
+      "-z",
+      "--name-only",
+      target,
+      "--",
+      ...ignored.map((path) => `:(literal)${path}`),
+    ])
+  )
+    .split("\0")
+    .filter(Boolean);
+  if (incoming.length > 0) {
+    throw new Error(
+      `PR #${prNumber} tracks ${incoming[0]}, which would overwrite an ignored local file in ${dir}; move that file aside, or use CWD-WORKTREE.`,
+    );
+  }
+}
+
 async function currentBranch(repoDir: string): Promise<string | null> {
   const name = await runGit(repoDir, ["branch", "--show-current"], 3_000).catch(() => "");
   return name || null;
@@ -525,6 +567,7 @@ async function refreshPrWorktree(
   }
   const prHead = await fetchPrHead(baseRoot, matchingRemote, prNumber);
   await assertBranchFastForwards(baseRoot, localBranchName, prHead, `the head of PR #${prNumber}`);
+  await assertNoIgnoredFileOverwrite(worktreePath, prHead, prNumber);
   await runGit(worktreePath, ["checkout", "-B", localBranchName, prHead]);
   const wtHead = await runGit(worktreePath, ["rev-parse", "HEAD"]);
   if (wtHead !== prHead) {
@@ -609,6 +652,7 @@ export async function prepareWorkspaceCwdHandler(
         prHead,
         `the head of PR #${input.prNumber}`,
       );
+      await assertNoIgnoredFileOverwrite(baseRoot, prHead, input.prNumber);
       await runGit(baseRoot, ["checkout", "-B", localBranchName, prHead]);
       const headSha = await runGit(baseRoot, ["rev-parse", "HEAD"]);
       if (headSha !== prHead) {
