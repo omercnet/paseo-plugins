@@ -87,7 +87,6 @@ export type LocalDirEntry = z.infer<typeof LocalDirEntrySchema>;
 export const listLocalDirs = defineRpc({
   name: "pr-radar.list-local-dirs",
   input: z.object({
-    sourceCodeDir: z.string().trim().min(1).default("~/src"),
     query: z.string().default(""),
     repository: z.string().default(""),
   }),
@@ -106,7 +105,6 @@ export const prepareWorkspaceCwd = defineRpc({
     prNumber: z.number().int().positive(),
     headRefName: z.string().default(""),
     baseRefName: z.string().default(""),
-    sourceCodeDir: z.string().trim().min(1).default("~/src"),
     targetDir: z.string().trim().nullable().default(null),
     allowClone: z.boolean().default(false),
     cwdMode: z.enum(["CWD-WORKTREE", "CWD-BASE"]).default("CWD-WORKTREE"),
@@ -137,7 +135,6 @@ export type RoutingScriptResult = z.infer<typeof RoutingScriptResultSchema>;
 export const runRoutingScript = defineRpc({
   name: "pr-radar.run-routing-script",
   input: z.object({
-    scriptPath: z.string().trim().min(1),
     payload: z.record(z.string(), z.unknown()),
   }),
   output: RoutingScriptResultSchema,

@@ -74,7 +74,6 @@ function ReadyPrRadarSettings({
     queryKey: ["pr-radar-settings-dirs", settings.values.sourceCodeDir, dirQueryText],
     queryFn: () =>
       fetchDirs({
-        sourceCodeDir: settings.values.sourceCodeDir || "~/src",
         query: dirQueryText,
         repository: "",
       }),

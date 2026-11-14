@@ -38,6 +38,7 @@ import {
   profileAgentConfig,
   type RadarBucket,
   type RadarRow,
+  restrictRoutedLaunch,
   type SortKey,
   sortRows,
   splitDraftRows,
@@ -245,7 +246,6 @@ export function PrRadar({
         itemKind: row.itemKind ?? "pr",
         headRefName: row.headRefName,
         baseRefName: row.baseRefName,
-        sourceCodeDir: settings.sourceCodeDir,
         targetDir: request.targetDir,
         allowClone: request.allowClone ?? false,
         cwdMode: request.cwdMode,
@@ -330,7 +330,6 @@ export function PrRadar({
         if (settings.routingScriptPath.trim()) {
           try {
             const routed = await invokeRouter({
-              scriptPath: settings.routingScriptPath,
               payload: {
                 pr: {
                   id: row.id,
@@ -377,9 +376,14 @@ export function PrRadar({
             if (routed.thinkingOptionId) {
               overrides = { ...overrides, thinkingOptionId: routed.thinkingOptionId };
             }
-            if (routed.modeId) overrides = { ...overrides, modeId: routed.modeId };
+            const restricted = restrictRoutedLaunch(routed);
+            if (restricted.modeId) overrides = { ...overrides, modeId: restricted.modeId };
             if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
-            if (routed.options) overrides = { ...overrides, options: routed.options };
+            if (restricted.options) overrides = { ...overrides, options: restricted.options };
+            if (restricted.ignored.length > 0) {
+              routingWarning = `Routing script values ignored (${restricted.ignored.join(", ")}).`;
+              setActionNotice(routingWarning);
+            }
           } catch (routerError) {
             const reason =
               routerError instanceof Error ? routerError.message : "Routing script failed.";

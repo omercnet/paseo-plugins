@@ -179,6 +179,10 @@ describe("issues support", () => {
   });
 });
 
+function settingsFor(sourceCodeDir: string) {
+  return async () => ({ sourceCodeDir, routingScriptPath: "" });
+}
+
 describe("prepareWorkspaceCwdHandler git safety", () => {
   const tempDirs: string[] = [];
 
@@ -212,18 +216,20 @@ describe("prepareWorkspaceCwdHandler git safety", () => {
     const root = mkdtempSync(join(tmpdir(), "pr-radar-ops-"));
     tempDirs.push(root);
     await expect(
-      prepareWorkspaceCwdHandler({
-        itemKind: "pr",
-        repository: "owner/repo",
-        prNumber: 7,
-        headRefName: "main",
-        baseRefName: "main",
-        sourceCodeDir: root,
-        targetDir: join(root, "missing"),
-        allowClone: false,
-        cwdMode: "CWD-WORKTREE",
-        worktreeName: null,
-      }),
+      prepareWorkspaceCwdHandler(
+        {
+          itemKind: "pr",
+          repository: "owner/repo",
+          prNumber: 7,
+          headRefName: "main",
+          baseRefName: "main",
+          targetDir: join(root, "missing"),
+          allowClone: false,
+          cwdMode: "CWD-WORKTREE",
+          worktreeName: null,
+        },
+        settingsFor(root),
+      ),
     ).rejects.toThrow("Directory does not exist");
   });
 
@@ -232,18 +238,20 @@ describe("prepareWorkspaceCwdHandler git safety", () => {
     tempDirs.push(root);
     const repoDir = makeGitRepo(root, "https://github.com/omercnet/paseo-plugins.git");
     await expect(
-      prepareWorkspaceCwdHandler({
-        itemKind: "pr",
-        repository: "omercnet/paseo",
-        prNumber: 7,
-        headRefName: "main",
-        baseRefName: "main",
-        sourceCodeDir: root,
-        targetDir: repoDir,
-        allowClone: false,
-        cwdMode: "CWD-WORKTREE",
-        worktreeName: null,
-      }),
+      prepareWorkspaceCwdHandler(
+        {
+          itemKind: "pr",
+          repository: "omercnet/paseo",
+          prNumber: 7,
+          headRefName: "main",
+          baseRefName: "main",
+          targetDir: repoDir,
+          allowClone: false,
+          cwdMode: "CWD-WORKTREE",
+          worktreeName: null,
+        },
+        settingsFor(root),
+      ),
     ).rejects.toThrow("does not match repository omercnet/paseo");
   });
 
@@ -253,18 +261,20 @@ describe("prepareWorkspaceCwdHandler git safety", () => {
     const repoDir = makeGitRepo(root, "https://github.com/owner/repo.git");
     writeFileSync(join(repoDir, "README.md"), "dirty\n");
     await expect(
-      prepareWorkspaceCwdHandler({
-        itemKind: "pr",
-        repository: "owner/repo",
-        prNumber: 7,
-        headRefName: "main",
-        baseRefName: "main",
-        sourceCodeDir: root,
-        targetDir: repoDir,
-        allowClone: false,
-        cwdMode: "CWD-BASE",
-        worktreeName: null,
-      }),
+      prepareWorkspaceCwdHandler(
+        {
+          itemKind: "pr",
+          repository: "owner/repo",
+          prNumber: 7,
+          headRefName: "main",
+          baseRefName: "main",
+          targetDir: repoDir,
+          allowClone: false,
+          cwdMode: "CWD-BASE",
+          worktreeName: null,
+        },
+        settingsFor(root),
+      ),
     ).rejects.toThrow("uncommitted changes");
   });
 
@@ -275,18 +285,20 @@ describe("prepareWorkspaceCwdHandler git safety", () => {
     const collidingFolder = join(root, "repo-pr-7-main");
     mkdirSync(collidingFolder, { recursive: true });
     await expect(
-      prepareWorkspaceCwdHandler({
-        itemKind: "pr",
-        repository: "owner/repo",
-        prNumber: 7,
-        headRefName: "main",
-        baseRefName: "main",
-        sourceCodeDir: root,
-        targetDir: repoDir,
-        allowClone: false,
-        cwdMode: "CWD-WORKTREE",
-        worktreeName: "repo-pr-7-main",
-      }),
+      prepareWorkspaceCwdHandler(
+        {
+          itemKind: "pr",
+          repository: "owner/repo",
+          prNumber: 7,
+          headRefName: "main",
+          baseRefName: "main",
+          targetDir: repoDir,
+          allowClone: false,
+          cwdMode: "CWD-WORKTREE",
+          worktreeName: "repo-pr-7-main",
+        },
+        settingsFor(root),
+      ),
     ).rejects.toThrow("not a worktree of owner/repo on branch pr-radar/pr-7");
   });
 });

@@ -1,9 +1,11 @@
 import { execFile, spawn } from "node:child_process";
-import { access, mkdir, readdir, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { z } from "zod";
+import type { PrRadarSettings } from "../shared/settings";
 import {
   type LocalDirEntry,
   type listLocalDirs,
@@ -16,6 +18,67 @@ const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 30_000;
 const CLONE_TIMEOUT_MS = 120_000;
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+
+/** The server-side settings the handlers trust; RPC input never supplies these paths. */
+export type WorkspaceOpsSettings = Pick<PrRadarSettings, "sourceCodeDir" | "routingScriptPath">;
+export type ReadWorkspaceSettings = () => Promise<WorkspaceOpsSettings>;
+
+export interface RoutingScriptLimits {
+  timeoutMs: number;
+  outputBytes: number;
+  killGraceMs: number;
+}
+
+const DEFAULT_ROUTING_LIMITS: RoutingScriptLimits = {
+  timeoutMs: COMMAND_TIMEOUT_MS,
+  outputBytes: 1024 * 1024,
+  killGraceMs: 2_000,
+};
+
+// Environment handed to child processes. Everything else in the daemon's environment (API keys,
+// cloud credentials, tokens for other tools) stays behind. A routing script gets only what a
+// script needs to find its interpreter and locale. gh additionally needs its own credentials and
+// config location (GH_TOKEN, GITHUB_TOKEN, GH_HOST, GH_CONFIG_DIR, XDG_CONFIG_HOME), the agent
+// socket for ssh remotes, and proxy settings.
+const BASE_ENV_KEYS: ReadonlySet<string> = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "TZ",
+  "LANG",
+  "LANGUAGE",
+]);
+const GH_ENV_KEYS: ReadonlySet<string> = new Set([
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GH_HOST",
+  "GH_CONFIG_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "SSH_AUTH_SOCK",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
+]);
+
+function allowListedEnv(extraKeys: ReadonlySet<string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (BASE_ENV_KEYS.has(key) || key.startsWith("LC_") || extraKeys.has(key)) env[key] = value;
+  }
+  return env;
+}
 
 export function expandUserPath(rawPath: string): string {
   const trimmed = rawPath.trim();
@@ -61,9 +124,40 @@ async function runGh(args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<stri
   const { stdout } = await execFileAsync("gh", args, {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: { ...allowListedEnv(GH_ENV_KEYS), GIT_TERMINAL_PROMPT: "0" },
   });
   return stdout.trim();
+}
+
+function isInside(base: string, target: string): boolean {
+  const rel = relative(base, target);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/** realpath of the nearest existing ancestor plus the not-yet-existing remainder. */
+async function realpathLoose(target: string): Promise<string> {
+  const missing: string[] = [];
+  let current = resolve(target);
+  for (;;) {
+    try {
+      return join(await realpath(current), ...missing.reverse());
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return resolve(target);
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+async function assertInsideSourceDir(
+  realSourceDir: string,
+  target: string,
+  label: string,
+): Promise<void> {
+  if (!isInside(realSourceDir, await realpathLoose(target))) {
+    throw new Error(`${label} ${target} is outside the configured source directory.`);
+  }
 }
 
 function repoParts(repository: string): { owner: string; name: string } {
@@ -212,8 +306,11 @@ async function resolveSuggestedClonePath(sourceDir: string, repository: string):
 
 export async function listLocalDirsHandler(
   input: z.output<typeof listLocalDirs.input>,
+  readSettings: ReadWorkspaceSettings,
 ): Promise<z.output<typeof listLocalDirs.output>> {
-  const expandedSourceDir = expandUserPath(input.sourceCodeDir);
+  const settings = await readSettings();
+  const expandedSourceDir = expandUserPath(settings.sourceCodeDir);
+  const realSourceDir = await realpathLoose(expandedSourceDir);
   const query = input.query.trim().toLowerCase();
   const { name: repoName } = repoParts(input.repository);
   const entries: LocalDirEntry[] = [];
@@ -245,6 +342,7 @@ export async function listLocalDirsHandler(
         const worktrees = await listWorktrees(fullPath);
         for (const wt of worktrees) {
           if (seen.has(wt.path)) continue;
+          if (!isInside(realSourceDir, await realpathLoose(wt.path))) continue;
           seen.add(wt.path);
           entries.push({
             path: wt.path,
@@ -404,6 +502,7 @@ async function refreshPrWorktree(
 
 export async function prepareWorkspaceCwdHandler(
   input: z.output<typeof prepareWorkspaceCwd.input>,
+  readSettings: ReadWorkspaceSettings,
 ): Promise<z.output<typeof prepareWorkspaceCwd.output>> {
   if (!isValidRepositorySlug(input.repository)) {
     throw new Error(`Invalid repository name: ${input.repository}`);
@@ -412,8 +511,13 @@ export async function prepareWorkspaceCwdHandler(
     throw new Error(`Target directory must be an absolute or ~/ path: ${input.targetDir}`);
   }
 
-  const expandedSourceDir = expandUserPath(input.sourceCodeDir);
+  const settings = await readSettings();
+  const expandedSourceDir = expandUserPath(settings.sourceCodeDir);
+  const realSourceDir = await realpathLoose(expandedSourceDir);
   let baseRoot = input.targetDir ? expandUserPath(input.targetDir) : "";
+  if (input.targetDir) {
+    await assertInsideSourceDir(realSourceDir, baseRoot, "Target directory");
+  }
   let cloned = false;
 
   if (!baseRoot) {
@@ -523,6 +627,7 @@ export async function prepareWorkspaceCwdHandler(
     throw new Error(`Invalid worktree folder name: ${worktreeFolder}`);
   }
   const worktreePath = join(dirname(baseRoot), worktreeFolder);
+  await assertInsideSourceDir(realSourceDir, worktreePath, "Worktree folder");
 
   if (await exists(worktreePath)) {
     const [baseCommonDir, wtCommonDir, wtBranch] = await Promise.all([
@@ -588,55 +693,133 @@ export async function prepareWorkspaceCwdHandler(
   };
 }
 
-export async function runRoutingScriptHandler(
-  input: z.output<typeof runRoutingScript.input>,
-): Promise<z.output<typeof runRoutingScript.output>> {
-  const rawScript = input.scriptPath.trim();
-  if (!isAbsoluteOrHomePath(rawScript)) {
-    throw new Error(`Routing script path must be an absolute or ~/ path: ${rawScript}`);
+/**
+ * Resolves the configured script to a real path and refuses anything but a regular, executable
+ * file that only its owner can modify, so a script another local user can edit never runs.
+ */
+async function resolveRoutingScript(rawPath: string): Promise<string> {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    throw new Error("No routing script is configured in the PR Radar settings.");
   }
-  const scriptPath = expandUserPath(rawScript);
-  if (!(await exists(scriptPath))) {
-    throw new Error(`Routing script not found: ${scriptPath}`);
+  if (!isAbsoluteOrHomePath(trimmed)) {
+    throw new Error(`Routing script path must be an absolute or ~/ path: ${trimmed}`);
   }
+  const expanded = expandUserPath(trimmed);
+  if (!(await exists(expanded))) {
+    throw new Error(`Routing script not found: ${expanded}`);
+  }
+  const scriptPath = await realpath(expanded);
+  const info = await stat(scriptPath);
+  if (!info.isFile()) {
+    throw new Error(`Routing script is not a regular file: ${scriptPath}`);
+  }
+  if ((info.mode & 0o022) !== 0) {
+    throw new Error(
+      `Routing script ${scriptPath} must not be writable by group or others; run chmod go-w on it.`,
+    );
+  }
+  try {
+    await access(scriptPath, constants.X_OK);
+  } catch {
+    throw new Error(`Routing script is not executable: ${scriptPath}`);
+  }
+  return scriptPath;
+}
 
-  const stdout = await new Promise<string>((resolvePromise, rejectPromise) => {
+function runScriptCapped(
+  scriptPath: string,
+  payload: unknown,
+  limits: RoutingScriptLimits,
+): Promise<string> {
+  return new Promise<string>((resolvePromise, rejectPromise) => {
     const child = spawn(scriptPath, [], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
+      env: allowListedEnv(new Set()),
     });
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let outBytes = 0;
+    let errBytes = 0;
+    let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    function settle(finish: () => void): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      finish();
+    }
+    function terminate(): void {
       child.kill("SIGTERM");
-      rejectPromise(new Error(`Routing script timed out after ${COMMAND_TIMEOUT_MS}ms.`));
-    }, COMMAND_TIMEOUT_MS);
+      killTimer = setTimeout(() => child.kill("SIGKILL"), limits.killGraceMs);
+    }
+    function overCap(): void {
+      terminate();
+      settle(() =>
+        rejectPromise(new Error(`Routing script output exceeded ${limits.outputBytes} bytes.`)),
+      );
+    }
+
+    const timer = setTimeout(() => {
+      terminate();
+      settle(() =>
+        rejectPromise(new Error(`Routing script timed out after ${limits.timeoutMs}ms.`)),
+      );
+    }, limits.timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
-      if (out.length < MAX_BUFFER_BYTES) {
-        out += chunk.toString("utf8");
-      }
+      outBytes += chunk.length;
+      if (outBytes > limits.outputBytes) return overCap();
+      out.push(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      if (err.length < MAX_BUFFER_BYTES) {
-        err += chunk.toString("utf8");
-      }
+      errBytes += chunk.length;
+      if (errBytes > limits.outputBytes) return overCap();
+      err.push(chunk);
     });
     child.on("error", (spawnError) => {
-      clearTimeout(timer);
-      rejectPromise(spawnError);
+      settle(() => rejectPromise(spawnError));
     });
+    child.on("exit", () => clearTimeout(killTimer));
     child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        rejectPromise(new Error(err.trim() || `Routing script exited with code ${code}.`));
-        return;
-      }
-      resolvePromise(out.trim());
+      clearTimeout(killTimer);
+      settle(() => {
+        if (code !== 0) {
+          const message = Buffer.concat(err).toString("utf8").trim();
+          rejectPromise(new Error(message || `Routing script exited with code ${code}.`));
+          return;
+        }
+        resolvePromise(Buffer.concat(out).toString("utf8").trim());
+      });
     });
     child.stdin.on("error", () => {});
-    child.stdin.end(`${JSON.stringify(input.payload)}\n`);
+    child.stdin.end(`${JSON.stringify(payload)}\n`);
   });
+}
+
+let routingScriptRunning = false;
+
+export async function runRoutingScriptHandler(
+  input: z.output<typeof runRoutingScript.input>,
+  readSettings: ReadWorkspaceSettings,
+  limits: RoutingScriptLimits = DEFAULT_ROUTING_LIMITS,
+): Promise<z.output<typeof runRoutingScript.output>> {
+  if (process.platform === "win32") {
+    throw new Error("Routing scripts are not supported on Windows.");
+  }
+  const settings = await readSettings();
+  const scriptPath = await resolveRoutingScript(settings.routingScriptPath);
+  if (routingScriptRunning) {
+    throw new Error("A routing script is already running; try again when it has finished.");
+  }
+  routingScriptRunning = true;
+  let stdout: string;
+  try {
+    stdout = await runScriptCapped(scriptPath, input.payload, limits);
+  } finally {
+    routingScriptRunning = false;
+  }
 
   if (!stdout) return {};
   const parsed = JSON.parse(stdout) as unknown;

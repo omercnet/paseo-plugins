@@ -771,6 +771,38 @@ export function profileAgentConfig(profile: AgentProfileLike) {
   };
 }
 
+// A routing script is user-supplied code, so what it may set on a launch is limited to these lists.
+// Permission modes that skip approvals (bypassPermissions, dontAsk, full access) stay out, so only
+// a person can pick them. Provider `options` keys outside the list are dropped the same way.
+export const ROUTED_MODE_IDS: readonly string[] = ["default", "plan", "acceptEdits", "read-only"];
+export const ROUTED_OPTION_KEYS: readonly string[] = ["contextMode"];
+
+export interface RestrictedRouting {
+  modeId?: string;
+  options?: Record<string, unknown>;
+  ignored: string[];
+}
+
+export function restrictRoutedLaunch(routed: {
+  modeId?: string;
+  options?: Record<string, unknown>;
+}): RestrictedRouting {
+  const ignored: string[] = [];
+  const result: RestrictedRouting = { ignored };
+  const modeId = routed.modeId?.trim();
+  if (modeId) {
+    if (ROUTED_MODE_IDS.includes(modeId)) result.modeId = modeId;
+    else ignored.push(`modeId ${modeId}`);
+  }
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(routed.options ?? {})) {
+    if (ROUTED_OPTION_KEYS.includes(key)) kept[key] = value;
+    else ignored.push(`options.${key}`);
+  }
+  if (Object.keys(kept).length > 0) result.options = kept;
+  return result;
+}
+
 export interface AgentLaunchOverrides {
   provider?: string;
   model?: string;

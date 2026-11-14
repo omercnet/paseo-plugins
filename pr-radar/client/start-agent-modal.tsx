@@ -6,7 +6,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 import { ComboSelect, useAgentLaunchOptions } from "./agent-launch-options";
-import type { AgentLaunchOverrides, RadarRow } from "./radar";
+import { type AgentLaunchOverrides, type RadarRow, restrictRoutedLaunch } from "./radar";
 
 export interface StartAgentLaunchRequest {
   row: RadarRow;
@@ -103,7 +103,6 @@ export function StartAgentModal({
     queryKey: ["pr-radar-dirs", settings.sourceCodeDir, dirFilter, row?.repository ?? ""],
     queryFn: () =>
       fetchDirs({
-        sourceCodeDir: settings.sourceCodeDir,
         query: dirFilter,
         repository: row?.repository ?? "",
       }),
@@ -120,7 +119,6 @@ export function StartAgentModal({
     setRouteError(null);
     try {
       const result: RoutingScriptResult = await invokeRouter({
-        scriptPath: settings.routingScriptPath,
         payload: {
           pr: {
             id: targetRow.id,
@@ -170,12 +168,17 @@ export function StartAgentModal({
       if (result.thinkingOptionId && !editedFieldsRef.current.has("effort")) {
         setEffort(result.thinkingOptionId);
       }
-      if (result.modeId && !editedFieldsRef.current.has("modeId")) setModeId(result.modeId);
+      const restricted = restrictRoutedLaunch(result);
+      if (restricted.modeId && !editedFieldsRef.current.has("modeId")) setModeId(restricted.modeId);
       if (result.contextMode && !editedFieldsRef.current.has("contextMode")) {
         setContextMode(result.contextMode);
       }
-      if (result.options) setRoutedOptions(result.options);
-      setRouteReason(result.reason ?? "Routing script applied.");
+      setRoutedOptions(restricted.options);
+      const ignoredNote =
+        restricted.ignored.length > 0
+          ? ` Ignored (not allowed): ${restricted.ignored.join(", ")}.`
+          : "";
+      setRouteReason(`${result.reason ?? "Routing script applied."}${ignoredNote}`);
     } catch (err) {
       if (activeRowIdRef.current !== targetRow.id || routingSeqRef.current !== invocationSeq) {
         return;
