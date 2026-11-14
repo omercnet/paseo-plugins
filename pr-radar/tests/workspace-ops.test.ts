@@ -10,7 +10,6 @@ import {
   buildIssueRows,
   splitDraftRows,
 } from "../client/radar";
-import { RoutingScriptResultSchema } from "../shared/viewer-scope";
 import {
   defaultWorktreeName,
   expandUserPath,
@@ -22,6 +21,7 @@ import {
   slugifyBranch,
 } from "../server/workspace-ops";
 import { DEFAULT_PR_RADAR_SETTINGS, PrRadarSettingsSchema } from "../shared/settings";
+import { RoutingScriptResultSchema } from "../shared/viewer-scope";
 
 describe("settings schema", () => {
   test("provides defaults when empty object is parsed", () => {

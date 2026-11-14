@@ -918,8 +918,13 @@ export interface AgentLaunchOverrides {
 const MAX_LABELS = 16;
 const MAX_LABEL_LEN = 128;
 const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+function hasControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
 // Labels that tools around Paseo read as control-plane markers (lead ownership for permission
 // approval, handoff and window placement). PR text reaches the routing script's stdin, so a script
 // that copies it into a label must not be able to set these.
@@ -944,7 +949,7 @@ export function buildAgentLabels(
     if (typeof rawValue !== "string") continue;
     const key = rawKey.trim();
     const value = rawValue.trim();
-    if (!value || value.length > MAX_LABEL_LEN || CONTROL_CHARS.test(value)) continue;
+    if (!value || value.length > MAX_LABEL_LEN || hasControlChars(value)) continue;
     if (!LABEL_KEY.test(key) || key.toLowerCase().startsWith("pr-radar.")) continue;
     if (RESERVED_LABEL_KEYS.has(key.toLowerCase())) continue;
     extra[key] = value;
