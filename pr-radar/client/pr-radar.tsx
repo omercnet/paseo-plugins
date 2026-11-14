@@ -372,10 +372,9 @@ export function PrRadar({
           if (routed.modeId) overrides = { ...overrides, modeId: routed.modeId };
           if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
         } catch (routerError) {
-          setOpenError(
-            routerError instanceof Error ? routerError.message : "Routing script failed.",
-          );
-          return;
+          const reason =
+            routerError instanceof Error ? routerError.message : "Routing script failed.";
+          setActionNotice(`Routing script failed (${reason}); using PR Radar defaults.`);
         }
       }
 
