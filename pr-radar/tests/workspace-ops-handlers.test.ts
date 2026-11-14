@@ -348,6 +348,125 @@ describe("prepareWorkspaceCwdHandler CWD-WORKTREE", () => {
   });
 });
 
+describe("prepareWorkspaceCwdHandler branch safety", () => {
+  function commitFile(dir: string, name: string): string {
+    writeFileSync(join(dir, name), `${name}\n`);
+    gitIn(dir, ["add", name]);
+    gitIn(dir, ["commit", "-m", `add ${name}`]);
+    return gitIn(dir, ["rev-parse", "HEAD"]);
+  }
+
+  test("fetches the PR head into a dedicated ref instead of relying on FETCH_HEAD", async () => {
+    const root = makeRoot();
+    const { repoDir, prHead } = makePullableRepo(root);
+    await prepareWorkspaceCwdHandler(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["rev-parse", "refs/pr-radar/pull/7"])).toBe(prHead);
+  });
+
+  test("refuses to reset a reused PR worktree that holds local commits", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const worktreePath = join(root, "repo-pr-7-feat-x");
+    await prepareWorkspaceCwdHandler(request({ targetDir: repoDir }));
+    const local = commitFile(worktreePath, "agent-work.txt");
+    await expect(prepareWorkspaceCwdHandler(request({ targetDir: repoDir }))).rejects.toThrow(
+      /Branch pr-radar\/pr-7 has local commits/,
+    );
+    expect(gitIn(worktreePath, ["rev-parse", "HEAD"])).toBe(local);
+  });
+
+  test("refuses to reset an existing PR branch with local commits in the base checkout", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/pr-7"]);
+    const local = commitFile(repoDir, "mine.txt");
+    gitIn(repoDir, ["checkout", "main"]);
+    await expect(
+      prepareWorkspaceCwdHandler(request({ targetDir: repoDir, cwdMode: "CWD-BASE" })),
+    ).rejects.toThrow(/Branch pr-radar\/pr-7 has local commits/);
+    expect(gitIn(repoDir, ["rev-parse", "pr-radar/pr-7"])).toBe(local);
+  });
+
+  test("refuses to reset a leftover PR branch with local commits when creating a worktree", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/pr-7"]);
+    const local = commitFile(repoDir, "mine.txt");
+    gitIn(repoDir, ["checkout", "main"]);
+    await expect(prepareWorkspaceCwdHandler(request({ targetDir: repoDir }))).rejects.toThrow(
+      /Branch pr-radar\/pr-7 has local commits/,
+    );
+    expect(gitIn(repoDir, ["rev-parse", "pr-radar/pr-7"])).toBe(local);
+  });
+
+  test("fast-forwards a leftover PR branch that is behind the PR head", async () => {
+    const root = makeRoot();
+    const { repoDir, prHead } = makePullableRepo(root);
+    gitIn(repoDir, ["branch", "pr-radar/pr-7", "main"]);
+    await prepareWorkspaceCwdHandler(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["rev-parse", "pr-radar/pr-7"])).toBe(prHead);
+  });
+
+  test("checks out an existing issue branch unchanged in the base checkout", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-9"]);
+    const local = commitFile(repoDir, "issue-work.txt");
+    gitIn(repoDir, ["checkout", "main"]);
+    await prepareWorkspaceCwdHandler(
+      request({ itemKind: "issue", prNumber: 9, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/issue-9");
+    expect(gitIn(repoDir, ["rev-parse", "HEAD"])).toBe(local);
+  });
+
+  test("creates an issue worktree on an existing branch without resetting it", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-9"]);
+    const local = commitFile(repoDir, "issue-work.txt");
+    gitIn(repoDir, ["checkout", "main"]);
+    const result = await prepareWorkspaceCwdHandler(
+      request({ itemKind: "issue", prNumber: 9, targetDir: repoDir }),
+    );
+    expect(result.worktreeCreated).toBe(true);
+    expect(gitIn(result.cwd, ["rev-parse", "HEAD"])).toBe(local);
+  });
+
+  test("starts a new issue branch from the remote default branch, not the current HEAD", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    const defaultTip = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-ref", "refs/remotes/origin/main", defaultTip]);
+    gitIn(repoDir, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/pr-7"]);
+    commitFile(repoDir, "unmerged-pr.txt");
+    await prepareWorkspaceCwdHandler(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/issue-12");
+    expect(gitIn(repoDir, ["rev-parse", "HEAD"])).toBe(defaultTip);
+  });
+
+  test("refuses a new issue branch while the base checkout sits on a PR branch with no remote default", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/pr-7"]);
+    await expect(
+      prepareWorkspaceCwdHandler(
+        request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+      ),
+    ).rejects.toThrow(/is on pr-radar\/pr-7/);
+    await expect(
+      prepareWorkspaceCwdHandler(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/is on pr-radar\/pr-7/);
+  });
+});
+
 describe("listLocalDirsHandler", () => {
   test("lists repos, worktrees and nested owner/repo directories with matches first", async () => {
     const root = makeRoot();

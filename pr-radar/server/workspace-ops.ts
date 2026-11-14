@@ -301,6 +301,85 @@ export async function listLocalDirsHandler(
   return { expandedSourceDir, entries: filtered, suggestedClonePath };
 }
 
+function prRef(prNumber: number): string {
+  return `refs/pr-radar/pull/${prNumber}`;
+}
+
+/**
+ * Fetches the PR head into a dedicated ref and resolves that ref, never FETCH_HEAD, which a
+ * concurrent fetch in the same checkout can overwrite between the fetch and the lookup.
+ */
+async function fetchPrHead(baseRoot: string, remote: string, prNumber: number): Promise<string> {
+  const ref = prRef(prNumber);
+  await runGit(baseRoot, ["fetch", "--end-of-options", remote, `+pull/${prNumber}/head:${ref}`]);
+  return runGit(baseRoot, ["rev-parse", "--verify", `${ref}^{commit}`]);
+}
+
+async function branchExists(repoDir: string, branch: string): Promise<boolean> {
+  try {
+    await runGit(
+      repoDir,
+      ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
+      3_000,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resetting an existing branch to `target` is only safe when it moves forward: commits that are
+ * not contained in the target would otherwise fall off the branch.
+ */
+async function assertBranchFastForwards(
+  repoDir: string,
+  branch: string,
+  target: string,
+  targetLabel: string,
+): Promise<void> {
+  if (!(await branchExists(repoDir, branch))) return;
+  try {
+    await runGit(repoDir, ["merge-base", "--is-ancestor", `refs/heads/${branch}`, target], 3_000);
+  } catch {
+    throw new Error(
+      `Branch ${branch} has local commits that are not in ${targetLabel}, so it was left unchanged. Push or rename the branch, or delete it, then try again.`,
+    );
+  }
+}
+
+async function currentBranch(repoDir: string): Promise<string | null> {
+  const name = await runGit(repoDir, ["branch", "--show-current"], 3_000).catch(() => "");
+  return name || null;
+}
+
+/**
+ * New issue branches start from the remote default branch. Without a recorded remote default the
+ * current HEAD is used, but never while it sits on a PR branch, which would carry unmerged PR code.
+ */
+async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise<string> {
+  const remoteHead = await runGit(
+    baseRoot,
+    ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remote}/HEAD`],
+    3_000,
+  ).catch(() => "");
+  if (remoteHead) {
+    const resolved = await runGit(
+      baseRoot,
+      ["rev-parse", "--verify", "--quiet", `${remoteHead}^{commit}`],
+      3_000,
+    ).catch(() => "");
+    if (resolved) return resolved;
+  }
+  const branch = await currentBranch(baseRoot);
+  if (branch?.startsWith("pr-radar/")) {
+    throw new Error(
+      `Base checkout ${baseRoot} is on ${branch} and has no recorded default branch for ${remote}; check out the default branch there, or use another directory.`,
+    );
+  }
+  return runGit(baseRoot, ["rev-parse", "HEAD"], 3_000);
+}
+
 async function refreshPrWorktree(
   baseRoot: string,
   worktreePath: string,
@@ -314,11 +393,11 @@ async function refreshPrWorktree(
       `Existing worktree ${worktreePath} has uncommitted changes; commit or stash them before updating PR #${prNumber}.`,
     );
   }
-  await runGit(baseRoot, ["fetch", "--end-of-options", matchingRemote, `pull/${prNumber}/head`]);
-  const fetchHead = await runGit(baseRoot, ["rev-parse", "FETCH_HEAD"]);
-  await runGit(worktreePath, ["checkout", "-B", localBranchName, fetchHead]);
+  const prHead = await fetchPrHead(baseRoot, matchingRemote, prNumber);
+  await assertBranchFastForwards(baseRoot, localBranchName, prHead, `the head of PR #${prNumber}`);
+  await runGit(worktreePath, ["checkout", "-B", localBranchName, prHead]);
   const wtHead = await runGit(worktreePath, ["rev-parse", "HEAD"]);
-  if (wtHead !== fetchHead) {
+  if (wtHead !== prHead) {
     throw new Error(`Worktree verification failed for PR #${prNumber}.`);
   }
 }
@@ -385,20 +464,23 @@ export async function prepareWorkspaceCwdHandler(
       );
     }
     if (input.itemKind === "pr") {
-      await runGit(baseRoot, [
-        "fetch",
-        "--end-of-options",
-        matchingRemote,
-        `pull/${input.prNumber}/head`,
-      ]);
-      const fetchHead = await runGit(baseRoot, ["rev-parse", "FETCH_HEAD"]);
-      await runGit(baseRoot, ["checkout", "-B", localBranchName, fetchHead]);
+      const prHead = await fetchPrHead(baseRoot, matchingRemote, input.prNumber);
+      await assertBranchFastForwards(
+        baseRoot,
+        localBranchName,
+        prHead,
+        `the head of PR #${input.prNumber}`,
+      );
+      await runGit(baseRoot, ["checkout", "-B", localBranchName, prHead]);
       const headSha = await runGit(baseRoot, ["rev-parse", "HEAD"]);
-      if (headSha !== fetchHead) {
+      if (headSha !== prHead) {
         throw new Error(`Checkout verification failed for PR #${input.prNumber}.`);
       }
+    } else if (await branchExists(baseRoot, localBranchName)) {
+      await runGit(baseRoot, ["checkout", localBranchName]);
     } else {
-      await runGit(baseRoot, ["checkout", "-B", localBranchName]);
+      const startPoint = await resolveIssueStartPoint(baseRoot, matchingRemote);
+      await runGit(baseRoot, ["checkout", "-b", localBranchName, startPoint]);
     }
     return {
       cwd: baseRoot,
@@ -472,24 +554,29 @@ export async function prepareWorkspaceCwdHandler(
   }
 
   if (input.itemKind === "issue") {
-    await runGit(baseRoot, ["worktree", "add", "-B", localBranchName, "--", worktreePath, "HEAD"]);
+    if (await branchExists(baseRoot, localBranchName)) {
+      await runGit(baseRoot, ["worktree", "add", "--", worktreePath, localBranchName]);
+    } else {
+      const startPoint = await resolveIssueStartPoint(baseRoot, matchingRemote);
+      await runGit(baseRoot, [
+        "worktree",
+        "add",
+        "-b",
+        localBranchName,
+        "--",
+        worktreePath,
+        startPoint,
+      ]);
+    }
   } else {
-    await runGit(baseRoot, [
-      "fetch",
-      "--end-of-options",
-      matchingRemote,
-      `pull/${input.prNumber}/head`,
-    ]);
-    const fetchHead = await runGit(baseRoot, ["rev-parse", "FETCH_HEAD"]);
-    await runGit(baseRoot, [
-      "worktree",
-      "add",
-      "-B",
+    const prHead = await fetchPrHead(baseRoot, matchingRemote, input.prNumber);
+    await assertBranchFastForwards(
+      baseRoot,
       localBranchName,
-      "--",
-      worktreePath,
-      fetchHead,
-    ]);
+      prHead,
+      `the head of PR #${input.prNumber}`,
+    );
+    await runGit(baseRoot, ["worktree", "add", "-B", localBranchName, "--", worktreePath, prHead]);
   }
 
   return {
