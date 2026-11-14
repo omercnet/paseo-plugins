@@ -65,3 +65,8 @@ export function viewerCoverage(
   const text = `${viewerData.coverageNote}${viewerData.truncated ? ` ${INBOX_CAP_NOTE}` : ""}`;
   return { text, showUpdates: tab === "prs" && viewerData.updates > 0 };
 }
+
+/** Screen readers get the picked option from its state, not only from the accent colour. */
+export function pickerOptionAccessibility(selected: boolean) {
+  return { accessibilityRole: "button" as const, accessibilityState: { selected } };
+}

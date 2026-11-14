@@ -23,6 +23,7 @@ import {
 import {
   needsYouSummary,
   parseRadarParams,
+  pickerOptionAccessibility,
   radarWarnings,
   viewerCoverage,
 } from "../client/screen-state";
@@ -1272,5 +1273,15 @@ describe("viewerCoverage", () => {
       failed.coverageNote,
     );
     expect(viewerCoverage("issues", undefined)).toBeNull();
+  });
+});
+
+describe("pickerOptionAccessibility", () => {
+  test("exposes the selected state on a picker option", () => {
+    expect(pickerOptionAccessibility(true)).toEqual({
+      accessibilityRole: "button",
+      accessibilityState: { selected: true },
+    });
+    expect(pickerOptionAccessibility(false).accessibilityState).toEqual({ selected: false });
   });
 });

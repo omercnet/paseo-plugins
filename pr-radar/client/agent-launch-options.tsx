@@ -3,6 +3,7 @@ import { TextInput } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { pickerOptionAccessibility } from "./screen-state";
 
 export interface ComboOption {
   label: string;
@@ -233,7 +234,7 @@ export function ComboSelect({
               return (
                 <Pressable
                   key={`${option.label}:${option.value}`}
-                  accessibilityRole="button"
+                  {...pickerOptionAccessibility(selected)}
                   onPress={() => {
                     setText(option.value);
                     onQueryChange?.(option.value);
