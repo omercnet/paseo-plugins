@@ -91,12 +91,12 @@ const KNOWN_ROUTING_SCRIPTS: readonly ComboOption[] = [
     value: "",
   },
   {
-    label: "Bundled example: pr-radar-route.py",
-    value: "~/src/paseo-plugins-omercnet/pr-radar/examples/pr-radar-route.py",
+    label: "djbclark-ade: pr-radar-route",
+    value: "~/src/djbclark-ade/bin/pr-radar-route",
   },
   {
-    label: "djbclark-ade: pr-radar-route (if installed)",
-    value: "~/src/djbclark-ade/bin/pr-radar-route",
+    label: "Bundled copy: pr-radar-route.py",
+    value: "~/src/paseo-plugins-omercnet/pr-radar/examples/pr-radar-route.py",
   },
 ];
 
