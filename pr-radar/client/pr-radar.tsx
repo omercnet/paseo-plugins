@@ -6,7 +6,7 @@ import {
 } from "@getpaseo/plugin/client";
 import { copyText } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -255,9 +255,7 @@ export function PrRadar({
       const allCwdTags = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"] as const;
       await Promise.all(
         allCwdTags.map((tag) =>
-          targetWorkspace
-            .setLabel(tag, { assigned: tag === prepared.cwdTag })
-            .catch(() => undefined),
+          targetWorkspace.setLabel(tag, { assigned: tag === prepared.cwdTag }),
         ),
       );
 
@@ -283,11 +281,12 @@ export function PrRadar({
       if (navigation) {
         navigation.openAgent({ agentId: created.id, serverId: host.id });
       }
-      return `Started new agent in ${prepared.cwdTag} (${prepared.cwd}) for ${row.repository}#${row.number}.`;
+      const baseMsg = `Started new agent in ${prepared.cwdTag} (${prepared.cwd}) for ${row.repository}#${row.number}.`;
+      return request.routingWarning ? `${request.routingWarning} ${baseMsg}` : baseMsg;
     },
-    onMutate: () => {
+    onMutate: (request) => {
       setOpenError(null);
-      setActionNotice(null);
+      setActionNotice(request.routingWarning ?? null);
     },
     onSuccess: (message) => {
       setModalRow(null);
@@ -301,8 +300,11 @@ export function PrRadar({
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   });
 
+  const autoLaunchingRef = useRef(false);
+
   const handleStartNewAgentPress = useCallback(
     async (row: RadarRow) => {
+      if (autoLaunchingRef.current || startNewAgentMutation.isPending) return;
       setOpenError(null);
       const shouldAutoLaunch =
         settings.autoLaunchMode === "existing_or_clone" ||
@@ -312,84 +314,92 @@ export function PrRadar({
         return;
       }
 
-      let overrides: AgentLaunchOverrides = {
-        provider: settings.defaultProvider,
-        model: settings.defaultModel,
-        thinkingOptionId: settings.defaultEffort,
-        modeId: settings.defaultModeId,
-        contextMode: settings.defaultContextMode,
-      };
-      let profileName = settings.defaultProfile;
+      autoLaunchingRef.current = true;
+      try {
+        let overrides: AgentLaunchOverrides = {
+          provider: settings.defaultProvider,
+          model: settings.defaultModel,
+          thinkingOptionId: settings.defaultEffort,
+          modeId: settings.defaultModeId,
+          contextMode: settings.defaultContextMode,
+        };
+        let profileName = settings.defaultProfile;
+        let routingWarning: string | undefined;
 
-      if (settings.routingScriptPath.trim()) {
-        try {
-          const routed = await invokeRouter({
-            scriptPath: settings.routingScriptPath,
-            payload: {
-              pr: {
-                id: row.id,
-                number: row.number,
-                url: row.url,
-                title: row.title,
-                repository: row.repository,
-                baseRefName: row.baseRefName,
-                headRefName: row.headRefName,
-                isDraft: row.isDraft,
-                author: row.author,
-                authorKind: row.authorKind,
-                isSecurity: row.isSecurity,
-                comments: row.comments,
-                labels: row.labels,
-                bucket: row.bucket,
-                reason: row.reason,
-                reviewRequestedFromMe: row.reviewRequestedFromMe,
-                ownership: row.ownership,
-                checksStatus: row.checksStatus,
-                reviewDecision: row.reviewDecision,
-                mergeable: row.mergeable,
-                linkedIssues: row.linkedIssues,
+        if (settings.routingScriptPath.trim()) {
+          try {
+            const routed = await invokeRouter({
+              scriptPath: settings.routingScriptPath,
+              payload: {
+                pr: {
+                  id: row.id,
+                  number: row.number,
+                  url: row.url,
+                  title: row.title,
+                  repository: row.repository,
+                  baseRefName: row.baseRefName,
+                  headRefName: row.headRefName,
+                  isDraft: row.isDraft,
+                  author: row.author,
+                  authorKind: row.authorKind,
+                  isSecurity: row.isSecurity,
+                  comments: row.comments,
+                  labels: row.labels,
+                  bucket: row.bucket,
+                  reason: row.reason,
+                  reviewRequestedFromMe: row.reviewRequestedFromMe,
+                  ownership: row.ownership,
+                  checksStatus: row.checksStatus,
+                  reviewDecision: row.reviewDecision,
+                  mergeable: row.mergeable,
+                  linkedIssues: row.linkedIssues,
+                },
+                workspace: {
+                  targetDir: row.localProjectRoot ?? null,
+                  cwdMode: settings.defaultCwdMode,
+                  localProjectRoot: row.localProjectRoot,
+                  workspaceIds: row.workspaceIds,
+                },
+                defaults: {
+                  profile: settings.defaultProfile,
+                  provider: settings.defaultProvider,
+                  model: settings.defaultModel,
+                  effort: settings.defaultEffort,
+                  modeId: settings.defaultModeId,
+                  contextMode: settings.defaultContextMode,
+                },
               },
-              workspace: {
-                targetDir: row.localProjectRoot ?? null,
-                cwdMode: settings.defaultCwdMode,
-                localProjectRoot: row.localProjectRoot,
-                workspaceIds: row.workspaceIds,
-              },
-              defaults: {
-                profile: settings.defaultProfile,
-                provider: settings.defaultProvider,
-                model: settings.defaultModel,
-                effort: settings.defaultEffort,
-                modeId: settings.defaultModeId,
-                contextMode: settings.defaultContextMode,
-              },
-            },
-          });
-          if (routed.profile) profileName = routed.profile;
-          if (routed.provider) overrides = { ...overrides, provider: routed.provider };
-          if (routed.model) overrides = { ...overrides, model: routed.model };
-          if (routed.thinkingOptionId) {
-            overrides = { ...overrides, thinkingOptionId: routed.thinkingOptionId };
+            });
+            if (routed.profile) profileName = routed.profile;
+            if (routed.provider) overrides = { ...overrides, provider: routed.provider };
+            if (routed.model) overrides = { ...overrides, model: routed.model };
+            if (routed.thinkingOptionId) {
+              overrides = { ...overrides, thinkingOptionId: routed.thinkingOptionId };
+            }
+            if (routed.modeId) overrides = { ...overrides, modeId: routed.modeId };
+            if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
+            if (routed.options) overrides = { ...overrides, options: routed.options };
+          } catch (routerError) {
+            const reason =
+              routerError instanceof Error ? routerError.message : "Routing script failed.";
+            routingWarning = `Routing script failed (${reason}); using PR Radar defaults.`;
+            setActionNotice(routingWarning);
           }
-          if (routed.modeId) overrides = { ...overrides, modeId: routed.modeId };
-          if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
-          if (routed.options) overrides = { ...overrides, options: routed.options };
-        } catch (routerError) {
-          const reason =
-            routerError instanceof Error ? routerError.message : "Routing script failed.";
-          setActionNotice(`Routing script failed (${reason}); using PR Radar defaults.`);
         }
-      }
 
-      startNewAgentMutation.mutate({
-        row,
-        targetDir: row.localProjectRoot ?? null,
-        allowClone: settings.autoLaunchMode === "existing_or_clone",
-        cwdMode: settings.defaultCwdMode,
-        worktreeName: null,
-        profileName,
-        overrides,
-      });
+        startNewAgentMutation.mutate({
+          row,
+          targetDir: row.localProjectRoot ?? null,
+          allowClone: settings.autoLaunchMode === "existing_or_clone",
+          cwdMode: settings.defaultCwdMode,
+          worktreeName: null,
+          profileName,
+          overrides,
+          routingWarning,
+        });
+      } finally {
+        autoLaunchingRef.current = false;
+      }
     },
     [invokeRouter, settings, startNewAgentMutation],
   );

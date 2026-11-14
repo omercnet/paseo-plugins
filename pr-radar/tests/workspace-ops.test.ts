@@ -191,15 +191,20 @@ describe("prepareWorkspaceCwdHandler git safety", () => {
   function makeGitRepo(root: string, remoteUrl: string): string {
     const repoDir = join(root, "repo");
     mkdirSync(repoDir, { recursive: true });
-    execFileSync("git", ["-C", repoDir, "init", "-b", "main"], { stdio: "pipe" });
-    execFileSync("git", ["-C", repoDir, "config", "user.email", "test@example.com"], {
-      stdio: "pipe",
-    });
-    execFileSync("git", ["-C", repoDir, "config", "user.name", "Test"], { stdio: "pipe" });
+    const env = { ...process.env };
+    delete env.GIT_DIR;
+    delete env.GIT_WORK_TREE;
+    delete env.GIT_COMMON_DIR;
+    delete env.GIT_INDEX_FILE;
+    const git = (args: string[]) =>
+      execFileSync("git", ["-C", repoDir, ...args], { stdio: "pipe", env });
+    git(["init", "-b", "main"]);
+    git(["config", "user.email", "test@example.com"]);
+    git(["config", "user.name", "Test"]);
     writeFileSync(join(repoDir, "README.md"), "hello\n");
-    execFileSync("git", ["-C", repoDir, "add", "README.md"], { stdio: "pipe" });
-    execFileSync("git", ["-C", repoDir, "commit", "-m", "init"], { stdio: "pipe" });
-    execFileSync("git", ["-C", repoDir, "remote", "add", "origin", remoteUrl], { stdio: "pipe" });
+    git(["add", "README.md"]);
+    git(["commit", "-m", "init"]);
+    git(["remote", "add", "origin", remoteUrl]);
     return repoDir;
   }
 

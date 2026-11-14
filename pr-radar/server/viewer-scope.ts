@@ -173,7 +173,7 @@ async function searchIssues(
   filter: "author" | "assignee" | "owner",
   viewer: string,
   since: string,
-): Promise<IssueSearchRecord[]> {
+): Promise<{ records: IssueSearchRecord[]; failed: boolean }> {
   const fields = [
     "id",
     "number",
@@ -200,9 +200,12 @@ async function searchIssues(
       `--json=${fields}`,
     ]);
     const parsed = JSON.parse(output);
-    return Array.isArray(parsed) ? (parsed as IssueSearchRecord[]) : [];
+    return {
+      records: Array.isArray(parsed) ? (parsed as IssueSearchRecord[]) : [],
+      failed: false,
+    };
   } catch {
-    return [];
+    return { records: [], failed: true };
   }
 }
 
@@ -470,6 +473,8 @@ interface Snapshot {
   reviewRequestedScope: string[];
   inboxItems: GitHubInboxItem[];
   issueItems: GitHubIssueItem[];
+  issueTruncated: boolean;
+  issueSearchFailures: number;
   enrichmentFailures: number;
   acknowledgedAt: string | null;
 }
@@ -496,9 +501,18 @@ async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
     searchIssues("owner", viewer, since),
   ]);
   const issueMap = new Map<string, GitHubIssueItem>();
-  for (const record of ownedIssues) issueMap.set(record.id, toIssueItem(record, "owner"));
-  for (const record of assignedIssues) issueMap.set(record.id, toIssueItem(record, "assignee"));
-  for (const record of authoredIssues) issueMap.set(record.id, toIssueItem(record, "author"));
+  for (const record of ownedIssues.records) issueMap.set(record.id, toIssueItem(record, "owner"));
+  for (const record of assignedIssues.records)
+    issueMap.set(record.id, toIssueItem(record, "assignee"));
+  for (const record of authoredIssues.records)
+    issueMap.set(record.id, toIssueItem(record, "author"));
+  const issueTruncated =
+    authoredIssues.records.length === SEARCH_LIMIT ||
+    assignedIssues.records.length === SEARCH_LIMIT ||
+    ownedIssues.records.length === SEARCH_LIMIT;
+  const issueSearchFailures = [authoredIssues, assignedIssues, ownedIssues].filter(
+    (res) => res.failed,
+  ).length;
   const issueItems = [...issueMap.values()].sort(
     (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
   );
@@ -559,6 +573,8 @@ async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
     reviewRequestedScope,
     inboxItems,
     issueItems,
+    issueTruncated,
+    issueSearchFailures,
     enrichmentFailures: enrichment.failures,
     acknowledgedAt,
   };
@@ -573,9 +589,20 @@ export function projectSnapshot(snapshot: Snapshot, urls: string[]): ViewerScope
       ...scope.filter((url) => requestedUrls.has(url.toLowerCase())),
     ]),
   ];
+  const notes: string[] = [];
+  if (snapshot.enrichmentFailures > 0) {
+    notes.push(
+      `${snapshot.enrichmentFailures} GitHub detail request${snapshot.enrichmentFailures === 1 ? "" : "s"} failed; affected PRs use conservative states.`,
+    );
+  }
+  if (snapshot.issueSearchFailures > 0) {
+    notes.push(
+      `${snapshot.issueSearchFailures} GitHub issue search request${snapshot.issueSearchFailures === 1 ? "" : "s"} failed; issue list may be incomplete.`,
+    );
+  }
   const coverageNote =
-    snapshot.enrichmentFailures > 0
-      ? `${snapshot.enrichmentFailures} GitHub detail request${snapshot.enrichmentFailures === 1 ? "" : "s"} failed; affected PRs use conservative states.`
+    notes.length > 0
+      ? notes.join(" ")
       : `Open PRs visible to the GitHub CLI. Organization SSO restrictions may omit results.`;
   return {
     viewer: snapshot.viewer,
@@ -584,7 +611,9 @@ export function projectSnapshot(snapshot: Snapshot, urls: string[]): ViewerScope
     inboxItems: snapshot.inboxItems,
     issueItems: snapshot.issueItems,
     truncated:
-      snapshot.authored.length === SEARCH_LIMIT || snapshot.reviewRequested.length === SEARCH_LIMIT,
+      snapshot.authored.length === SEARCH_LIMIT ||
+      snapshot.reviewRequested.length === SEARCH_LIMIT ||
+      snapshot.issueTruncated,
     coverageNote,
     updates: snapshot.inboxItems.filter(({ changes }) => changes.length > 0).length,
     acknowledgedAt: snapshot.acknowledgedAt,

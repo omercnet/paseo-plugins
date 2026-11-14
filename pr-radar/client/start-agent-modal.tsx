@@ -2,7 +2,7 @@ import { type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 import type { AgentLaunchOverrides, RadarRow } from "./radar";
@@ -15,6 +15,7 @@ export interface StartAgentLaunchRequest {
   worktreeName: string | null;
   overrides: AgentLaunchOverrides;
   profileName: string;
+  routingWarning?: string;
 }
 
 function defaultHumanWorktreeName(row: RadarRow): string {
@@ -101,8 +102,11 @@ export function StartAgentModal({
     staleTime: 10_000,
   });
 
+  const routingSeqRef = useRef(0);
+
   async function handleRunRouter(targetRow: RadarRow) {
     if (!settings.routingScriptPath.trim()) return;
+    const invocationSeq = ++routingSeqRef.current;
     setRoutingBusy(true);
     setRouteError(null);
     try {
@@ -148,7 +152,9 @@ export function StartAgentModal({
           },
         },
       });
-      if (activeRowIdRef.current !== targetRow.id) return;
+      if (activeRowIdRef.current !== targetRow.id || routingSeqRef.current !== invocationSeq) {
+        return;
+      }
       if (result.profile && !editedFieldsRef.current.has("profile")) setProfileName(result.profile);
       if (result.provider && !editedFieldsRef.current.has("provider")) setProvider(result.provider);
       if (result.model && !editedFieldsRef.current.has("model")) setModel(result.model);
@@ -162,10 +168,12 @@ export function StartAgentModal({
       if (result.options) setRoutedOptions(result.options);
       setRouteReason(result.reason ?? "Routing script applied.");
     } catch (err) {
-      if (activeRowIdRef.current !== targetRow.id) return;
+      if (activeRowIdRef.current !== targetRow.id || routingSeqRef.current !== invocationSeq) {
+        return;
+      }
       setRouteError(err instanceof Error ? err.message : "Routing script failed.");
     } finally {
-      if (activeRowIdRef.current === targetRow.id) {
+      if (activeRowIdRef.current === targetRow.id && routingSeqRef.current === invocationSeq) {
         setRoutingBusy(false);
       }
     }
@@ -334,7 +342,7 @@ export function StartAgentModal({
               autoCorrect={false}
               style={styles.input}
             />
-            <View style={styles.listBox}>
+            <ScrollView style={styles.listBox} nestedScrollEnabled>
               <Pressable
                 onPress={() => {
                   setSelectedDir(suggestedClonePath);
@@ -392,7 +400,7 @@ export function StartAgentModal({
                   />
                 </Pressable>
               ))}
-            </View>
+            </ScrollView>
           </View>
 
           <View style={{ gap: 6 }}>
@@ -557,7 +565,7 @@ export function StartAgentModal({
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
             <Pressable
-              disabled={pending}
+              disabled={pending || routingBusy}
               onPress={() =>
                 onStart({
                   row,

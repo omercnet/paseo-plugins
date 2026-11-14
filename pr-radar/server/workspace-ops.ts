@@ -37,11 +37,22 @@ async function isGitRepo(dir: string): Promise<boolean> {
   return exists(join(dir, ".git"));
 }
 
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_COMMON_DIR;
+  delete env.GIT_INDEX_FILE;
+  delete env.GIT_OBJECT_DIRECTORY;
+  delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+  return env;
+}
+
 async function runGit(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<string> {
   const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: cleanGitEnv(),
   });
   return stdout.trim();
 }
@@ -106,13 +117,17 @@ export function parseGitHubRepoFromRemote(remoteUrl: string): string | null {
     .replace(/\/+$/, "")
     .replace(/\.git$/i, "");
   if (!trimmed) return null;
-  const scpMatch = trimmed.match(/^[^@/\s]+@[^:/\s]+:([^/\s]+\/[^/\s]+)$/);
-  if (scpMatch) return scpMatch[1].toLowerCase();
+  const scpMatch = trimmed.match(/^[^@/\s]+@([^:/\s]+):([^/\s]+\/[^/\s]+)$/);
+  if (scpMatch) {
+    if (scpMatch[1].toLowerCase() !== "github.com") return null;
+    return scpMatch[2].toLowerCase();
+  }
   try {
     const parsed = new URL(trimmed);
+    if (parsed.hostname.toLowerCase() !== "github.com") return null;
     const parts = parsed.pathname.replace(/^\/+/, "").split("/").filter(Boolean);
-    if (parts.length >= 2) {
-      return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`.toLowerCase();
+    if (parts.length === 2) {
+      return `${parts[0]}/${parts[1]}`.toLowerCase();
     }
   } catch {
     return null;
@@ -286,6 +301,28 @@ export async function listLocalDirsHandler(
   return { expandedSourceDir, entries: filtered, suggestedClonePath };
 }
 
+async function refreshPrWorktree(
+  baseRoot: string,
+  worktreePath: string,
+  matchingRemote: string,
+  prNumber: number,
+  localBranchName: string,
+): Promise<void> {
+  const dirty = await runGit(worktreePath, ["status", "--porcelain", "--untracked-files=no"]);
+  if (dirty) {
+    throw new Error(
+      `Existing worktree ${worktreePath} has uncommitted changes; commit or stash them before updating PR #${prNumber}.`,
+    );
+  }
+  await runGit(baseRoot, ["fetch", "--end-of-options", matchingRemote, `pull/${prNumber}/head`]);
+  const fetchHead = await runGit(baseRoot, ["rev-parse", "FETCH_HEAD"]);
+  await runGit(worktreePath, ["checkout", "-B", localBranchName, fetchHead]);
+  const wtHead = await runGit(worktreePath, ["rev-parse", "HEAD"]);
+  if (wtHead !== fetchHead) {
+    throw new Error(`Worktree verification failed for PR #${prNumber}.`);
+  }
+}
+
 export async function prepareWorkspaceCwdHandler(
   input: z.output<typeof prepareWorkspaceCwd.input>,
 ): Promise<z.output<typeof prepareWorkspaceCwd.output>> {
@@ -341,13 +378,13 @@ export async function prepareWorkspaceCwdHandler(
       : `pr-radar/pr-${input.prNumber}`;
 
   if (input.cwdMode === "CWD-BASE") {
+    const dirty = await runGit(baseRoot, ["status", "--porcelain", "--untracked-files=no"]);
+    if (dirty) {
+      throw new Error(
+        `Base checkout ${baseRoot} has uncommitted changes; commit or stash them, or use CWD-WORKTREE.`,
+      );
+    }
     if (input.itemKind === "pr") {
-      const dirty = await runGit(baseRoot, ["status", "--porcelain", "--untracked-files=no"]);
-      if (dirty) {
-        throw new Error(
-          `Base checkout ${baseRoot} has uncommitted changes; commit or stash them, or use CWD-WORKTREE.`,
-        );
-      }
       await runGit(baseRoot, [
         "fetch",
         "--end-of-options",
@@ -355,11 +392,13 @@ export async function prepareWorkspaceCwdHandler(
         `pull/${input.prNumber}/head`,
       ]);
       const fetchHead = await runGit(baseRoot, ["rev-parse", "FETCH_HEAD"]);
-      await runGit(baseRoot, ["checkout", "-B", localBranchName, "FETCH_HEAD"]);
+      await runGit(baseRoot, ["checkout", "-B", localBranchName, fetchHead]);
       const headSha = await runGit(baseRoot, ["rev-parse", "HEAD"]);
       if (headSha !== fetchHead) {
         throw new Error(`Checkout verification failed for PR #${input.prNumber}.`);
       }
+    } else {
+      await runGit(baseRoot, ["checkout", "-B", localBranchName]);
     }
     return {
       cwd: baseRoot,
@@ -370,10 +409,22 @@ export async function prepareWorkspaceCwdHandler(
     };
   }
 
-  // CWD-WORKTREE: reuse existing worktree for this PR/issue branch if present.
+  // CWD-WORKTREE: reuse existing worktree for this PR/issue branch if present (never reuse baseRoot).
+  const resolvedBaseRoot = resolve(baseRoot);
   const existingWorktrees = await listWorktrees(baseRoot);
-  const existing = existingWorktrees.find((wt) => wt.branch === localBranchName);
+  const existing = existingWorktrees.find(
+    (wt) => wt.branch === localBranchName && resolve(wt.path) !== resolvedBaseRoot,
+  );
   if (existing) {
+    if (input.itemKind === "pr") {
+      await refreshPrWorktree(
+        baseRoot,
+        existing.path,
+        matchingRemote,
+        input.prNumber,
+        localBranchName,
+      );
+    }
     return {
       cwd: existing.path,
       baseRoot,
@@ -402,6 +453,15 @@ export async function prepareWorkspaceCwdHandler(
         `Existing folder ${worktreePath} is not a worktree of ${input.repository} on branch ${localBranchName}. Choose a different worktree name.`,
       );
     }
+    if (input.itemKind === "pr") {
+      await refreshPrWorktree(
+        baseRoot,
+        worktreePath,
+        matchingRemote,
+        input.prNumber,
+        localBranchName,
+      );
+    }
     return {
       cwd: worktreePath,
       baseRoot,
@@ -420,6 +480,7 @@ export async function prepareWorkspaceCwdHandler(
       matchingRemote,
       `pull/${input.prNumber}/head`,
     ]);
+    const fetchHead = await runGit(baseRoot, ["rev-parse", "FETCH_HEAD"]);
     await runGit(baseRoot, [
       "worktree",
       "add",
@@ -427,7 +488,7 @@ export async function prepareWorkspaceCwdHandler(
       localBranchName,
       "--",
       worktreePath,
-      "FETCH_HEAD",
+      fetchHead,
     ]);
   }
 
@@ -486,6 +547,7 @@ export async function runRoutingScriptHandler(
       }
       resolvePromise(out.trim());
     });
+    child.stdin.on("error", () => {});
     child.stdin.end(`${JSON.stringify(input.payload)}\n`);
   });
 

@@ -94,12 +94,20 @@ export interface RadarWarning {
   message: string;
 }
 
+export interface RadarIssueMatch {
+  workspaceIds: string[];
+  workspaceNames: string[];
+  agents: RadarAgent[];
+  cwdTag: CwdTag;
+}
+
 export interface RadarSnapshot {
   rows: RadarRow[];
   warnings: RadarWarning[];
   workspaceCount: number;
   refreshedAt: string;
   repositoryRoots: Record<string, string>;
+  issueMatches?: Record<string, RadarIssueMatch>;
 }
 
 export interface ViewerScopeData {
@@ -364,6 +372,7 @@ export function buildRadarSnapshot(
   const rows = new Map<string, RadarRow>();
   const warnings: RadarWarning[] = [];
   const repositoryRoots: Record<string, string> = {};
+  const issueMatches: Record<string, RadarIssueMatch> = {};
 
   for (const workspace of workspaces) {
     const remoteRepository = workspace.gitRuntime?.remoteUrl
@@ -371,6 +380,37 @@ export function buildRadarSnapshot(
       : null;
     if (remoteRepository) {
       repositoryRoots[remoteRepository.toLowerCase()] ??= workspace.projectRootPath;
+      const issueBranchMatch =
+        workspace.gitRuntime?.currentBranch?.match(/^pr-radar\/issue-(\d+)$/);
+      if (issueBranchMatch) {
+        const issueKey = `${remoteRepository.toLowerCase()}#issue-${issueBranchMatch[1]}`;
+        const wsAgents = agentsByWorkspace.get(workspace.id) ?? [];
+        const wsLabels = (workspace as { labels?: readonly string[] }).labels;
+        const wsCwdTag: CwdTag = wsLabels?.includes("CWD-BASE")
+          ? "CWD-BASE"
+          : wsLabels?.includes("CWD-WORKTREE")
+            ? "CWD-WORKTREE"
+            : "CWD-TBD";
+        const current = issueMatches[issueKey] ?? {
+          workspaceIds: [],
+          workspaceNames: [],
+          agents: [],
+          cwdTag: "CWD-TBD" as CwdTag,
+        };
+        if (!current.workspaceIds.includes(workspace.id)) {
+          current.workspaceIds.push(workspace.id);
+          current.workspaceNames.push(workspace.name);
+        }
+        const knownIds = new Set(current.agents.map((a) => a.id));
+        for (const a of wsAgents) {
+          if (!knownIds.has(a.id)) current.agents.push(a);
+        }
+        sortAgents(current.agents);
+        if (current.cwdTag === "CWD-TBD" && wsCwdTag !== "CWD-TBD") {
+          current.cwdTag = wsCwdTag;
+        }
+        issueMatches[issueKey] = current;
+      }
     }
     const runtime = workspace.githubRuntime;
     if (runtime?.error?.message) {
@@ -480,6 +520,7 @@ export function buildRadarSnapshot(
     workspaceCount: workspaces.length,
     refreshedAt: now.toISOString(),
     repositoryRoots,
+    issueMatches,
   };
 }
 
@@ -785,18 +826,32 @@ export function buildIssueRows(
   issueItems: readonly GitHubIssueItem[],
 ): RadarRow[] {
   const roots = snapshot?.repositoryRoots ?? {};
+  const matches = snapshot?.issueMatches ?? {};
   return issueItems.map((item) => {
+    const issueKey = `${item.repository.toLowerCase()}#issue-${item.number}`;
+    const matched = matches[issueKey];
     const localProjectRoot = roots[item.repository.toLowerCase()] ?? null;
+    const agents = matched ? [...matched.agents] : [];
+    const workspaceIds = matched ? [...matched.workspaceIds] : [];
+    const workspaceNames = matched ? [...matched.workspaceNames] : [];
+    const cwdTag = matched?.cwdTag ?? "CWD-TBD";
     const roleLabel =
       item.role === "author"
         ? "Authored issue"
         : item.role === "assignee"
           ? "Assigned to you"
           : "Open in your repository";
+    const bucket: RadarBucket = attentionReason(agents)
+      ? "needs-you"
+      : hasActiveAgent(agents)
+        ? "being-handled"
+        : item.role === "assignee"
+          ? "needs-you"
+          : "waiting";
     return {
       itemKind: "issue",
       issueRole: item.role,
-      id: `${item.repository.toLowerCase()}#issue-${item.number}`,
+      id: issueKey,
       number: item.number,
       url: item.url,
       title: item.title,
@@ -811,20 +866,20 @@ export function buildIssueRows(
       labels: [...item.labels],
       changes: [],
       linkedIssues: [],
-      cwdTag: "CWD-TBD",
-      hasLocalPlace: Boolean(localProjectRoot),
+      cwdTag,
+      hasLocalPlace: Boolean(localProjectRoot) || workspaceIds.length > 0,
       mergeable: "UNKNOWN",
       mergeStateStatus: null,
       checksStatus: "none",
       reviewDecision: null,
       checks: [],
-      workspaceIds: [],
-      workspaceNames: [],
+      workspaceIds,
+      workspaceNames,
       localProjectRoot,
-      agents: [],
+      agents,
       ownership: item.role === "author" ? "mine" : "external",
       reviewRequestedFromMe: false,
-      bucket: item.role === "assignee" ? "needs-you" : "waiting",
+      bucket,
       reason: roleLabel,
       activityAt: item.updatedAt,
       refreshedAt: item.updatedAt,

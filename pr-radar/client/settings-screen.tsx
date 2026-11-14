@@ -15,7 +15,7 @@ import {
   useToast,
 } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   type AutoLaunchMode,
@@ -374,7 +374,6 @@ function ReadyPrRadarSettings({
   const fetchDirs = useRpc(listLocalDirs);
   const toast = useToast();
   const [dirQueryText, setDirQueryText] = useState(settings.values.sourceCodeDir);
-  const [scriptQueryText, setScriptQueryText] = useState(settings.values.routingScriptPath);
   const [error, setError] = useState<string | null>(null);
 
   const configQuery = useQuery({
@@ -392,17 +391,6 @@ function ReadyPrRadarSettings({
       fetchDirs({
         sourceCodeDir: settings.values.sourceCodeDir || "~/src",
         query: dirQueryText,
-        repository: "",
-      }),
-    staleTime: 10_000,
-  });
-
-  const scriptDirsQuery = useQuery({
-    queryKey: ["pr-radar-settings-script-dirs", settings.values.sourceCodeDir, scriptQueryText],
-    queryFn: () =>
-      fetchDirs({
-        sourceCodeDir: settings.values.sourceCodeDir || "~/src",
-        query: scriptQueryText,
         repository: "",
       }),
     staleTime: 10_000,
@@ -493,36 +481,59 @@ function ReadyPrRadarSettings({
     ]);
   }, [dirsQuery.data]);
 
-  const routingScriptOptions = useMemo<ComboOption[]>(() => {
-    const suggestions = scriptDirsQuery.data?.entries ?? [];
-    return dedupeOptions([
-      ...KNOWN_ROUTING_SCRIPTS,
-      ...suggestions.map((dir) => ({
-        label: dir.label,
-        value: dir.path,
-      })),
-    ]);
-  }, [scriptDirsQuery.data]);
+  const routingScriptOptions = useMemo<ComboOption[]>(
+    () => dedupeOptions([...KNOWN_ROUTING_SCRIPTS]),
+    [],
+  );
+
+  const latestSettingsRef = useRef({
+    values: settings.values,
+    revision: settings.revision,
+  });
+  latestSettingsRef.current = {
+    values: settings.values,
+    revision: settings.revision,
+  };
+  const queuedPatchRef = useRef<Partial<typeof settings.values> | null>(null);
+  const saveChainRef = useRef<Promise<boolean>>(Promise.resolve(true));
 
   async function savePatch(patch: Partial<typeof settings.values>): Promise<boolean> {
-    setError(null);
-    const parsed = PrRadarSettingsSchema.safeParse({ ...settings.values, ...patch });
-    if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? "Invalid setting value.");
-      return false;
-    }
-    try {
-      await settings.save(parsed.data, settings.revision);
-      return true;
-    } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "Could not save settings.");
-      return false;
-    }
+    queuedPatchRef.current = { ...(queuedPatchRef.current ?? {}), ...patch };
+    const run = saveChainRef.current.then(async () => {
+      const nextPatch = queuedPatchRef.current;
+      if (!nextPatch) return true;
+      queuedPatchRef.current = null;
+      setError(null);
+      const parsed = PrRadarSettingsSchema.safeParse({
+        ...latestSettingsRef.current.values,
+        ...nextPatch,
+      });
+      if (!parsed.success) {
+        setError(parsed.error.issues[0]?.message ?? "Invalid setting value.");
+        return false;
+      }
+      try {
+        const saved = await settings.save(parsed.data, latestSettingsRef.current.revision);
+        if (saved === false) {
+          setError("Settings changed concurrently; please retry.");
+          return false;
+        }
+        latestSettingsRef.current = {
+          values: parsed.data,
+          revision: latestSettingsRef.current.revision,
+        };
+        return true;
+      } catch (updateError) {
+        setError(updateError instanceof Error ? updateError.message : "Could not save settings.");
+        return false;
+      }
+    });
+    saveChainRef.current = run.catch(() => false);
+    return run;
   }
 
   async function handleReset() {
     setDirQueryText(DEFAULT_PR_RADAR_SETTINGS.sourceCodeDir);
-    setScriptQueryText(DEFAULT_PR_RADAR_SETTINGS.routingScriptPath);
     const saved = await savePatch({ ...DEFAULT_PR_RADAR_SETTINGS });
     if (saved) {
       toast.show("PR Radar settings reset to defaults.", { variant: "success" });
@@ -642,7 +653,6 @@ function ReadyPrRadarSettings({
             placeholder="~/.config/pr-radar/route.py"
             options={routingScriptOptions}
             theme={theme}
-            onQueryChange={setScriptQueryText}
             onSelect={(next) => void savePatch({ routingScriptPath: next })}
           />
           <SettingsAction
