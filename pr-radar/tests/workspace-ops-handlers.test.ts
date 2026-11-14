@@ -55,16 +55,21 @@ function initRepo(dir: string, remoteUrl: string | null): void {
 }
 
 /**
- * A checkout whose `origin` URL is a github.com URL (so the repository match works) but whose
- * fetches are redirected to a local bare repository carrying `refs/pull/7/head`.
+ * A checkout whose `origin` is `git@github.com:owner/repo.git` (so the repository match works).
+ * `git remote get-url` expands `insteadOf` rewrites, so fetches are served instead by a fake ssh
+ * (GIT_SSH_COMMAND) that runs upload-pack on a local bare repository carrying `refs/pull/7/head`.
  */
 function makePullableRepo(root: string): { repoDir: string; bareDir: string; prHead: string } {
   const repoDir = join(root, "repo");
   const bareDir = join(root, "bare.git");
-  initRepo(repoDir, "https://github.com/owner/repo.git");
+  initRepo(repoDir, "git@github.com:owner/repo.git");
   mkdirSync(bareDir, { recursive: true });
   gitIn(bareDir, ["init", "--bare", "-b", "main"]);
-  gitIn(repoDir, ["config", `url.${bareDir}.insteadOf`, "https://github.com/owner/repo.git"]);
+  const fakeSsh = join(root, "fake-ssh");
+  writeFileSync(fakeSsh, '#!/bin/sh\nexec git upload-pack "$FAKE_BARE_REPO"\n');
+  chmodSync(fakeSsh, 0o755);
+  vi.stubEnv("GIT_SSH_COMMAND", fakeSsh);
+  vi.stubEnv("FAKE_BARE_REPO", bareDir);
   writeFileSync(join(repoDir, "pr.txt"), "pr one\n");
   gitIn(repoDir, ["add", "pr.txt"]);
   gitIn(repoDir, ["commit", "-m", "pr head"]);
@@ -367,7 +372,9 @@ describe("listLocalDirsHandler", () => {
       query: join(root, "alpha").toLowerCase(),
       repository: "",
     });
-    expect(byPath.entries.map((entry) => entry.label)).toEqual(["alpha", "alpha · tree-one"]);
+    // A path query matches the repository entry; its worktree sits elsewhere and is not listed
+    // because the repository neither matches nor has a name containing the query.
+    expect(byPath.entries.map((entry) => entry.label)).toEqual(["alpha"]);
   });
 
   test("returns no entries for a missing source directory and suggests a flat clone path", async () => {
