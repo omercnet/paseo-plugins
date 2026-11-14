@@ -1,26 +1,64 @@
 #!/usr/bin/env python3
-"""Example PR Radar routing script backed by djbclark-ade's route_agent.py.
+"""PR Radar routing adapter: a PR (or issue) signal in, this repo's router's launch overrides out.
 
-Reads PR Radar context JSON from stdin and prints agent launch overrides as JSON:
-  {
-    "provider": "claude",
-    "model": "sonnet",
-    "thinkingOptionId": "high",
-    "modeId": "bypassPermissions"
-  }
+  pr-radar-route < context.json
+
+PR Radar (a Paseo plugin, not ours) runs this script with its context JSON on stdin and reads launch overrides as
+JSON on stdout. The signal -> route kind mapping lives here, with the routing policy (operator ruling 2026-11-14),
+and the answer comes from `route_agent.py route`. This file is the single implementation: pr-radar's
+`examples/pr-radar-route.py` is a synced, byte-identical copy of it, so it is stdlib-only and works from either place.
+
+stdin (only the named fields are read; everything else, titles and comments included, is external text and is
+never passed on):
+  {"pr": {"reviewRequestedFromMe": bool, "isSecurity": bool, "authorKind": str, "repository": "owner/name", ...},
+   "settings": {...}}                           (Issues-tab items arrive the same way, reviewRequestedFromMe false)
+stdout, exit 0: one JSON object with any of {provider, model, thinkingOptionId, modeId, reason}. `modeId` stays
+exactly as routed: yolo/bypassPermissions for every PR, bot and non-djbclark authors included (operator ruling
+2026-11-14). `contextMode` and `profileName` are never set (route_agent picks none).
+Failure: non-zero exit, a reason on stderr, nothing on stdout; PR Radar then falls back to its own defaults and
+shows the reason. A router that exits non-zero has its stderr passed through and its exit code returned.
+
+Router choice (first match): $PR_RADAR_ROUTE_AGENT (tests); `route_agent.py` beside this script when the script's
+parent directory has config/routing.toml (a djbclark-ade checkout or worktree); ~/src/djbclark-ade/bin/route_agent.py
+(the live ADE router); else `route_agent.py` beside this script (a vendored copy).
+
+Exit 0: routed; non-zero: failed (bad stdin, router timeout, router error or unusable router answer).
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
+ROUTER_TIMEOUT_SECONDS = 25
+MAX_STDIN_BYTES = 8 * 1024 * 1024
+SANE_REPO = re.compile(r"[a-z0-9._][a-z0-9._-]*", re.ASCII)  # no leading "-": route_agent's argparse would read it as an option
+
+
+class RouteFailure(Exception):
+    """The adapter could not produce an answer; the message becomes the stderr reason, `code` the exit status."""
+
+    def __init__(self, message: str, code: int = 1):
+        super().__init__(message)
+        self.code = code
+
+
+def _pr(payload: object) -> dict:
+    pr = payload.get("pr") if isinstance(payload, dict) else None
+    return pr if isinstance(pr, dict) else {}
+
 
 def pick_kind(payload: dict) -> str:
-    pr = payload.get("pr") or {}
+    """Map a PR signal to a route kind (operator ruling 2026-11-14).
+
+    A review requested from the operator, or a security PR, is judgment work; a bot-authored PR is bulk; anything
+    else, an Issues-tab item included, is code.
+    """
+    pr = _pr(payload)
     if pr.get("reviewRequestedFromMe") or pr.get("isSecurity"):
         return "judgment"
     if pr.get("authorKind") == "bot":
@@ -29,15 +67,22 @@ def pick_kind(payload: dict) -> str:
 
 
 def pick_repo(payload: dict) -> str:
-    pr = payload.get("pr") or {}
-    repo = str(pr.get("repository") or "").strip()
+    """The bare lowercase repo name of `owner/name`; "" (so no --repo) when absent, outside [a-z0-9._-] or starting with "-"."""
+    repo = str(_pr(payload).get("repository") or "").strip()
     if "/" in repo:
         repo = repo.rsplit("/", 1)[-1]
-    return repo.lower()
+    repo = repo.lower()
+    return repo if SANE_REPO.fullmatch(repo) else ""
 
 
 def parse_dispatch(dispatch: str) -> dict[str, str]:
-    tokens = shlex.split(dispatch)
+    """Read --provider (a/b: provider a, model b), --thinking and --mode out of route's `paseo run` line."""
+    if not isinstance(dispatch, str):
+        return {}
+    try:
+        tokens = shlex.split(dispatch)
+    except ValueError:
+        return {}
     out: dict[str, str] = {}
     i = 0
     while i < len(tokens):
@@ -64,39 +109,77 @@ def parse_dispatch(dispatch: str) -> dict[str, str]:
     return out
 
 
-def main() -> int:
-    raw = sys.stdin.read().strip()
-    payload = json.loads(raw) if raw else {}
-    kind = pick_kind(payload)
-    repo = pick_repo(payload)
-
-    local_router = Path(__file__).resolve().with_name("route_agent.py")
+def choose_router() -> Path:
+    """The route_agent.py to run (module docstring, "Router choice")."""
+    override = os.environ.get("PR_RADAR_ROUTE_AGENT")
+    if override:
+        return Path(override)
+    here = Path(__file__).resolve().parent
+    sibling = here / "route_agent.py"
+    if (here.parent / "config" / "routing.toml").is_file():
+        return sibling
     ade_router = Path.home() / "src" / "djbclark-ade" / "bin" / "route_agent.py"
-    router_path = ade_router if ade_router.exists() else local_router
+    return ade_router if ade_router.exists() else sibling
 
-    cmd = [sys.executable, str(router_path), "route", "--kind", kind]
+
+def route(kind: str, repo: str, router: Path | None = None, timeout: float = ROUTER_TIMEOUT_SECONDS) -> dict[str, str]:
+    """Run `route_agent.py route` and turn its answer into launch overrides; raises RouteFailure."""
+    router = router or choose_router()
+    argv = [sys.executable, str(router), "route", "--kind", kind]
     if repo:
-        cmd.extend(["--repo", repo])
-    cmd.append("--json")
-
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        env=os.environ.copy(),
-        timeout=25,
-    )
+        argv.extend(["--repo", repo])
+    argv.append("--json")
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, env=os.environ.copy(), timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise RouteFailure(f"route_agent.py timed out after {timeout:g}s") from None
+    except OSError as exc:
+        raise RouteFailure(f"cannot run route_agent.py: {exc.strerror or exc}") from None
     if proc.returncode != 0:
-        sys.stderr.write(proc.stderr or f"route_agent.py exited with {proc.returncode}\n")
-        return proc.returncode or 1
+        raise RouteFailure((proc.stderr or "").rstrip("\n") or f"route_agent.py exited with {proc.returncode}",
+                           proc.returncode or 1)
+    try:
+        answer = json.loads(proc.stdout)
+    except ValueError:
+        raise RouteFailure("route_agent.py printed unparsable output") from None
+    if not isinstance(answer, dict):
+        raise RouteFailure("route_agent.py printed a non-object answer")
+    result = parse_dispatch(answer.get("dispatch", ""))
+    if "provider" not in result and answer.get("agent") and isinstance(answer["agent"], str):
+        result["provider"] = answer["agent"]
+    if answer.get("why") and isinstance(answer["why"], str):
+        result["reason"] = f"[{kind}] {answer['why']}"
+    if not result:
+        raise RouteFailure("route_agent.py answer has no dispatch, agent or why")
+    return result
 
-    route = json.loads(proc.stdout)
-    result = parse_dispatch(route.get("dispatch", ""))
-    if "provider" not in result and route.get("agent"):
-        result["provider"] = route["agent"]
-    if route.get("why"):
-        result["reason"] = f"[{kind}] {route['why']}"
-    print(json.dumps(result))
+
+def read_payload(stream) -> dict:
+    """The stdin object; empty input is an empty one. Raises RouteFailure on unparsable input."""
+    try:
+        raw = stream.read(MAX_STDIN_BYTES + 1)
+    except (OSError, ValueError):
+        raise RouteFailure("stdin is unreadable") from None
+    if len(raw) > MAX_STDIN_BYTES:
+        raise RouteFailure("stdin is larger than 8 MiB")
+    if not raw.strip():
+        return {}
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        raise RouteFailure("stdin is not JSON") from None
+    return payload if isinstance(payload, dict) else {}
+
+
+def main() -> int:
+    try:
+        payload = read_payload(sys.stdin)
+        result = route(pick_kind(payload), pick_repo(payload))
+    except RouteFailure as exc:
+        sys.stderr.write(f"{exc}\n")
+        return exc.code
+    sys.stdout.write(json.dumps(result) + "\n")
     return 0
 
 
