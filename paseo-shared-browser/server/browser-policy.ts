@@ -519,30 +519,45 @@ export class SessionManager {
   }
 
   /**
-   * Apply a host-wide launch option for a current viewer and, when `apply` reports a
-   * change, relaunch every open workspace browser so it takes effect. Profiles persist
-   * and nothing is replayed; open pages restart at the launch page. A failed relaunch
-   * surfaces on the next attach.
+   * Apply a host-wide launch option for a current viewer, then relaunch every running
+   * workspace runtime that was launched with a different value. `staleRuntimes` is read
+   * from the runtime registry, not from policy sessions, so a runtime whose earlier stop
+   * failed is still found and retried by the next call even when the setting is unchanged.
+   * Profiles persist and nothing is replayed; open pages restart at the launch page.
+   * A runtime that cannot be stopped is reported to the caller.
    */
-  async relaunchOpenBrowsers(viewerToken: string, apply: () => Promise<boolean>): Promise<void> {
+  async relaunchOpenBrowsers(
+    viewerToken: string,
+    apply: () => Promise<void>,
+    staleRuntimes: () => Promise<{ workspaceId: string; runtimeId: string }[]>,
+  ): Promise<void> {
     this.assertOpen();
     this.requireViewer(viewerToken);
-    if (!(await apply())) return;
-    const workspaceIds = new Set(
-      [...this.sessions.values()]
-        .filter((candidate) => !candidate.archived)
-        .map((candidate) => candidate.workspaceId),
-    );
-    for (const workspaceId of workspaceIds) {
+    await apply();
+    // A first attachment that started before the write may still launch with the old
+    // value. Let it register its runtime so the staleness check below can see it.
+    await Promise.allSettled([...this.sessionCreations.values()]);
+    let failed = false;
+    for (const { workspaceId, runtimeId } of await staleRuntimes()) {
       const session = [...this.sessions.values()].find(
-        (candidate) => candidate.workspaceId === workspaceId && !candidate.archived,
+        (candidate) =>
+          candidate.workspaceId === workspaceId &&
+          candidate.runtimeId === runtimeId &&
+          !candidate.archived,
       );
-      if (!session) continue;
-      const closing = this.serialize(session, () => this.stopWorkspaceSessions(session, false));
-      await this.awaitWorkspaceClosure(workspaceId, closing).catch(() => undefined);
-      // Keep the browser open for agents and other devices, as before the change.
-      await this.getOrCreateSession(workspaceId).catch(() => undefined);
+      const closing = session
+        ? this.serialize(session, () => this.stopWorkspaceSessions(session, false))
+        : this.client.closeWorkspace(workspaceId, runtimeId);
+      try {
+        await this.awaitWorkspaceClosure(workspaceId, closing);
+      } catch {
+        failed = true;
+        continue;
+      }
+      // Keep an open browser open for agents and other devices, as before the change.
+      if (session) await this.getOrCreateSession(workspaceId).catch(() => undefined);
     }
+    if (failed) throw new Error("Some browsers could not be restarted; try again");
   }
 
   /** Only an explicit human reopen removes the close fence used by viewer and agent attach. */
@@ -1237,8 +1252,12 @@ export class SessionManager {
         this.assertGesturePacketContext(gesture, input.expected);
         gesture.assertSequence(input.sequence, this.now());
         await this.assertGestureCurrent(session, gesture);
+        // The awaited check can outlast either deadline; never revive an expired channel.
+        const now = this.now();
+        if (now >= gesture.idleUntil || now >= gesture.expiresAt)
+          throw new Error("Browser gesture expired");
         if (!gesture.isHeld()) throw new Error("Browser gesture has no held input");
-        gesture.renew(this.now());
+        gesture.renew(now);
         this.renewController(session, input.viewerToken);
         this.scheduleGestureTimeout(session, gesture);
         return { gestureId: gesture.id, nextSequence: gesture.nextSequence };

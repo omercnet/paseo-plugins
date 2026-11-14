@@ -71,6 +71,8 @@ export interface RuntimeOwner<Runtime extends RuntimeInstance = RuntimeInstance>
   videoSettings?(): Promise<BrowserVideoSettings>;
   /** Persist the choice; it applies to runtimes created afterwards. */
   setVideoEnabled?(enabled: boolean): Promise<void>;
+  /** Encoded-video option this runtime was launched with. */
+  videoLaunched?(runtime: Runtime): boolean;
 }
 
 export interface RuntimeSupervisorOptions<Runtime extends RuntimeInstance> {
@@ -412,6 +414,14 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         throw new RuntimeProtocolError("RUNTIME_FAILURE", "Browser runtime was replaced");
       this.invalidateAgentObservations(workspaceId);
       this.revokeAgentControl(workspaceId);
+      // The runtime's viewers and targets die with it. Agents reattach to the next runtime's
+      // default page; advancing the revision rejects completions begun on the old tab.
+      for (const binding of this.agentBindings.values()) {
+        if (binding.workspaceId !== workspaceId) continue;
+        binding.viewerToken = null;
+        binding.tabId = null;
+        binding.selectionRevision++;
+      }
       await this.owner.stop(entry.runtime);
       if (this.workspaces.get(workspaceId) === entry) this.workspaces.delete(workspaceId);
     });
@@ -546,12 +556,11 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
             "INVALID_REQUEST",
             "Encoded video settings are unavailable",
           );
-        await this.browserPolicy.relaunchOpenBrowsers(input.viewerToken, async () => {
-          const before = await this.videoSettings();
-          await setVideoEnabled(input.enabled);
-          // Only a change in the effective launch option justifies restarting browsers.
-          return (await this.videoSettings()).enabled !== before.enabled;
-        });
+        await this.browserPolicy.relaunchOpenBrowsers(
+          input.viewerToken,
+          () => setVideoEnabled(input.enabled),
+          () => this.staleVideoRuntimes(),
+        );
         result = await this.videoSettings();
         break;
       }
@@ -567,6 +576,16 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
 
   private async videoSettings(): Promise<BrowserVideoSettings> {
     return (await this.owner.videoSettings?.()) ?? { enabled: false, forcedByHost: false };
+  }
+
+  /** Live runtimes launched with an encoded-video option that differs from the effective one. */
+  private async staleVideoRuntimes(): Promise<{ workspaceId: string; runtimeId: string }[]> {
+    const launched = this.owner.videoLaunched?.bind(this.owner);
+    if (!launched) return [];
+    const { enabled } = await this.videoSettings();
+    return [...this.workspaces]
+      .filter(([, entry]) => !entry.lost && launched(entry.runtime) !== enabled)
+      .map(([workspaceId, entry]) => ({ workspaceId, runtimeId: entry.runtime.runtimeId }));
   }
 
   private issueAgentTicket(bridgeId: string, epoch: number, ticket: string): JsonValue {

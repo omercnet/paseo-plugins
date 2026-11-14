@@ -205,7 +205,7 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
   with WebCodecs play genuine encoded tab video (H264 when supported, otherwise VP8). The
   bundled capture helper, which holds `tabCapture` and `debugger` permissions, is then
   loaded into every workspace Chromium profile and captures the exact workspace tab, not a
-  screenshot loop or title-selected window. Without the variable the helper is never
+  screenshot loop or title-selected window. When encoded video is off the helper is never
   materialized or loaded, and clients show a one-time disabled reply then use JPEG.
   Android and other native apps use JPEG: the plugin SDK this package targets publishes no
   encoded-video surface, so native video is deferred until the host ships one.

@@ -132,6 +132,7 @@ export async function createRuntimeOwner(
   return {
     videoSettings: () => readVideoSettings(root),
     setVideoEnabled: (enabled) => writeVideoEnabled(root, enabled),
+    videoLaunched: (owned) => owned.runtimeOptions.nativeVideo === true,
     async create(workspaceId) {
       const hash = createHash("sha256").update(workspaceId).digest("hex");
       // Explicit headed mode uses the caller's real display. An opted-in hidden Linux mode

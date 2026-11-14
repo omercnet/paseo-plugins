@@ -871,6 +871,21 @@ describe("owned ordered live input", () => {
     state.manager.disconnect();
   });
 
+  it("keep-alive rechecks the idle deadline after its awaited attachment check", async () => {
+    let now = 1_000;
+    const state = await fixture({ now: () => now });
+    await state.begin();
+    await state.update({ kind: "down", button: "left", clickCount: 1, point: point() }, true);
+    now += 4_900;
+    // The idle bound passes while input.check is in flight.
+    state.intercept(async (operation) => {
+      if (operation === "input.check") now += 200;
+    });
+    await expect(state.keepAlive()).rejects.toThrow("Browser gesture expired");
+    expect(state.calls.filter((call) => call.operation === "input.end")).toHaveLength(1);
+    state.manager.disconnect();
+  });
+
   it("keep-alive cannot extend a held gesture past its absolute lifetime", async () => {
     vi.useFakeTimers();
     const state = await fixture();
