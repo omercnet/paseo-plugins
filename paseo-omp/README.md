@@ -35,6 +35,8 @@ Open the **OMP** sidebar to review the provider-profile contract, choose which c
 
 Open the **Accounts** tab of the **OMP** sidebar to see the logins in OMP's own credential store with their usage and banked resets, add a login through OMP's own sign-in, sign one out, spend a banked reset, and steer OMP's balancing: prefer a login, keep part of its quota in reserve, and set what OMP does at a limit. Steering is written to OMP's own config. See [OMP accounts](docs/configuration.md#omp-accounts).
 
+The quota popover groups recorded limits by provider and OMP account, showing an available recorded email across that account's windows. Duplicate and unnamed accounts receive numbers in opaque account-key order, so changing usage does not swap their numbers; accounts are still displayed by highest usage. Duplicate-name suffixes stay visible when long emails truncate, and a lone unnamed account needs no heading. Only a server-side SHA-256 hash of the account key reaches the client; account IDs and enterprise hosts are not returned. **CURRENT PROVIDER** identifies the session's provider, not its active account. Provider summary percentages show the highest recorded usage across that provider's accounts.
+
 Open the **MCPs** tab of the **OMP** sidebar to list the MCP servers OMP connects to, add one by URL or command, test, enable, disable or remove it, and sign a remote server in through your browser, like **Accounts** does for logins. See [OMP MCP servers](docs/configuration.md#omp-mcp-servers).
 
 - [Install, update, rollback, and local development](docs/installation.md)

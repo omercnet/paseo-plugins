@@ -26,6 +26,9 @@ afterEach(async () => {
 const quotas: OmpQuota[] = [
   {
     provider: "anthropic",
+    accountKey: "anthropic-account",
+    limitId: "five-hour",
+    email: null,
     label: "Claude 5 Hour",
     windowLabel: "5 Hour",
     usedFraction: 0.25,
@@ -35,6 +38,9 @@ const quotas: OmpQuota[] = [
   },
   {
     provider: "cursor",
+    accountKey: "cursor-account",
+    limitId: "pro",
+    email: null,
     label: "Cursor Pro",
     windowLabel: null,
     usedFraction: 0.9,
@@ -80,6 +86,107 @@ describe("session-specific quota selection", () => {
     const currentFirst = quotaProviderGroups(quotas, "anthropic");
     expect(currentFirst.map((group) => group.provider)).toEqual(["anthropic", "cursor"]);
   });
+  test("groups quota rows by account identity and keeps limits together", () => {
+    const accountRows: OmpQuota[] = [
+      {
+        ...quotas[0],
+        accountKey: "team-a",
+        limitId: "five-hour",
+        email: "team@example.com",
+        label: "Usage",
+        usedFraction: 0.25,
+      },
+      {
+        ...quotas[0],
+        accountKey: "team-a",
+        limitId: "weekly",
+        email: "team@example.com",
+        label: "Usage",
+        usedFraction: 0.5,
+      },
+      {
+        ...quotas[0],
+        accountKey: "team-b",
+        limitId: "five-hour",
+        email: "team@example.com",
+        label: "Usage",
+        usedFraction: 0.9,
+      },
+      { ...quotas[0], accountKey: "unknown-a", limitId: "daily", email: null, usedFraction: 0.7 },
+      { ...quotas[0], accountKey: "unknown-b", limitId: "session", email: null, usedFraction: 0.1 },
+    ];
+    const groups = quotaProviderGroups(accountRows, null);
+    const accounts = groups[0].accounts;
+
+    expect(accounts).toHaveLength(4);
+    expect(accounts.filter((account) => account.email === "team@example.com")).toHaveLength(2);
+    expect(accounts.filter((account) => account.email === null)).toHaveLength(2);
+    expect(
+      accounts
+        .find((account) => account.accountKey === "team-a")
+        ?.quotas.map((quota) => quota.limitId),
+    ).toEqual(["weekly", "five-hour"]);
+    expect(
+      accounts.map(({ accountKey, label, suffix, peakFraction }) => ({
+        accountKey,
+        label,
+        suffix,
+        peakFraction,
+      })),
+    ).toEqual([
+      { accountKey: "team-b", label: "team@example.com", suffix: "Account 2", peakFraction: 0.9 },
+      { accountKey: "unknown-a", label: "Account 1", suffix: null, peakFraction: 0.7 },
+      { accountKey: "team-a", label: "team@example.com", suffix: "Account 1", peakFraction: 0.5 },
+      { accountKey: "unknown-b", label: "Account 2", suffix: null, peakFraction: 0.1 },
+    ]);
+  });
+
+  test("uses a non-empty email from any account window", () => {
+    const rows: OmpQuota[] = [
+      { ...quotas[0], accountKey: "email-account", usedFraction: 0.9 },
+      {
+        ...quotas[0],
+        accountKey: "email-account",
+        limitId: "weekly",
+        email: " ",
+        usedFraction: 0.3,
+      },
+      {
+        ...quotas[0],
+        accountKey: "email-account",
+        limitId: "monthly",
+        email: "team@example.com",
+        usedFraction: 0.2,
+      },
+    ];
+    expect(
+      quotaProviderGroups(rows, null)[0].accounts.map(({ email, label }) => ({ email, label })),
+    ).toEqual([{ email: "team@example.com", label: "team@example.com" }]);
+  });
+
+  test("keeps unnamed account numbers stable when peak usage changes", () => {
+    const rows = [
+      { ...quotas[0], accountKey: "a", usedFraction: 0.9 },
+      { ...quotas[0], accountKey: "b", usedFraction: 0.1 },
+    ];
+    const before = quotaProviderGroups(rows, null)[0].accounts;
+    const after = quotaProviderGroups(
+      rows.map((row) => ({ ...row, usedFraction: row.accountKey === "a" ? 0.1 : 0.9 })),
+      null,
+    )[0].accounts;
+    expect(before.map(({ accountKey, label }) => [accountKey, label])).toEqual([
+      ["a", "Account 1"],
+      ["b", "Account 2"],
+    ]);
+    expect(after.map(({ accountKey, label }) => [accountKey, label])).toEqual([
+      ["b", "Account 2"],
+      ["a", "Account 1"],
+    ]);
+  });
+
+  test("omits a redundant heading for a single unnamed account", () => {
+    expect(quotaProviderGroups([quotas[0]], null)[0].accounts[0].label).toBeNull();
+  });
 });
 
 describe("quota timestamps", () => {
@@ -91,9 +198,12 @@ describe("quota timestamps", () => {
       quotaDetailLabel(
         {
           provider: "anthropic",
+          accountKey: "anthropic-account",
+          limitId: "five-hour",
           label: "Claude 5 Hour",
-          windowLabel: "5 Hour",
+          email: null,
           usedFraction: 0.25,
+          windowLabel: "5 Hour",
           status: "ok",
           recordedAt: now - 2 * 3_600_000,
           resetsAt: now + 30 * 60_000,
@@ -115,8 +225,8 @@ describe("quota reset countdown", () => {
 });
 
 describe("OMP quota reader", () => {
-  test("keeps the newest valid quota row per provider account and limit", async () => {
-    const root = await mkdtemp(join(tmpdir(), "paseo-omp-quotas-"));
+  test("keeps opaque account identities stable without exposing OMP key components", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-key-"));
     quotaRoots.push(root);
     const path = join(root, "agent.db");
     const database = new DatabaseSync(path);
@@ -125,14 +235,92 @@ describe("OMP quota reader", () => {
       window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
     )`);
     const now = Date.now();
+    const key =
+      "oauth|org:example-org|project:example-project|enterprise:enterprise.example.invalid|secret:synthetic-fingerprint";
     const insert = database.prepare(
-      "INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO usage_history VALUES (?, 'github-copilot', ?, ?, 'Usage', NULL, 0.1, 'ok', NULL, ?)",
     );
-    insert.run(1, "anthropic", "account", "five-hour", "Five hour", "5h", 0.1, "ok", null, now - 3);
+    insert.run(1, key, "first", now);
+    insert.run(2, key, "second", now);
+    insert.run(3, `${key}-other`, "third", now);
+    database.close();
+
+    const recorded = listOmpQuotasFrom(path, now);
+    expect(recorded.map(({ limitId }) => limitId)).toEqual(["first", "second", "third"]);
+    const [first, second, third] = recorded;
+    expect(first.accountKey).toMatch(/^[a-f0-9]{64}$/u);
+    expect(first.accountKey).toBe(second.accountKey);
+    expect(first.accountKey).not.toBe(third.accountKey);
+    expect(first.accountKey).not.toContain("example-org");
+    expect(first.accountKey).not.toContain("example-project");
+    expect(first.accountKey).not.toContain("synthetic-fingerprint");
+    expect(first.accountKey).not.toContain("enterprise.example.invalid");
+    expect(first).not.toHaveProperty("accountHost");
+    expect(first).not.toHaveProperty("accountId");
+    expect(listOmpQuotasFrom(path, now).map(({ accountKey }) => accountKey)).toEqual(
+      recorded.map(({ accountKey }) => accountKey),
+    );
+  });
+
+  test.each([
+    { name: "an email column", columns: "email TEXT,", email: "saved@example.com" },
+    { name: "no email column", columns: "", email: null },
+  ])("reads quota tables with $name", async ({ columns, email }) => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-legacy-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, ${columns}
+      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
+      resets_at INTEGER, recorded_at INTEGER
+    )`);
+    const now = Date.now();
+    database
+      .prepare(
+        "INSERT INTO usage_history (id, provider, account_key, limit_id, label, used_fraction, recorded_at) VALUES (1, 'github-copilot', 'legacy-account', 'premium', 'Premium Requests', 0.1, ?)",
+      )
+      .run(now);
+    if (email) database.prepare("UPDATE usage_history SET email = ?").run(email);
+    database.close();
+
+    const recorded = listOmpQuotasFrom(path, now);
+    expect(recorded).toEqual([expect.objectContaining({ email, label: "Premium Requests" })]);
+    expect(quotaProviderGroups(recorded, null)[0].accounts[0].label).toBe(email);
+  });
+
+  test("keeps the newest valid quota row per provider account and limit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-quotas-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, email TEXT DEFAULT NULL,
+      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
+      resets_at INTEGER, recorded_at INTEGER
+    )`);
+    const now = Date.now();
+    const insert = database.prepare(
+      "INSERT INTO usage_history (id, provider, account_key, email, limit_id, label, window_label, used_fraction, status, resets_at, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    insert.run(
+      1,
+      "anthropic",
+      "account",
+      "team@example.com",
+      "five-hour",
+      "Five hour",
+      "5h",
+      0.1,
+      "ok",
+      null,
+      now - 3,
+    );
     insert.run(
       2,
       "anthropic",
       "account",
+      "team@example.com",
       "five-hour",
       "Five hour",
       "5h",
@@ -141,12 +329,84 @@ describe("OMP quota reader", () => {
       now + 60_000,
       now - 2,
     );
-    insert.run(3, "openai", "account", "daily", "Daily", null, 0.2, "ok", null, now - 1);
+    insert.run(3, "openai", "account", null, "daily", "Daily", null, 0.2, "ok", null, now - 1);
+    insert.run(
+      4,
+      "anthropic",
+      "other-account",
+      "personal@example.com",
+      "five-hour",
+      "Five hour",
+      "5h",
+      0.4,
+      "ok",
+      now + 60_000,
+      now - 1,
+    );
+    insert.run(
+      5,
+      "anthropic",
+      "other-team-account",
+      "team@example.com",
+      "weekly",
+      "Weekly",
+      "7d",
+      0.15,
+      "ok",
+      now + 60_000,
+      now,
+    );
+    insert.run(
+      6,
+      "openai",
+      "other-unknown-account",
+      null,
+      "session",
+      "Session",
+      null,
+      0.1,
+      "ok",
+      null,
+      now,
+    );
     database.close();
 
     expect(listOmpQuotasFrom(path, now)).toEqual([
-      expect.objectContaining({ provider: "anthropic", usedFraction: 0.9, recordedAt: now - 2 }),
-      expect.objectContaining({ provider: "openai", usedFraction: 0.2, recordedAt: now - 1 }),
+      expect.objectContaining({
+        provider: "anthropic",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        email: "team@example.com",
+        usedFraction: 0.9,
+        recordedAt: now - 2,
+      }),
+      expect.objectContaining({
+        provider: "anthropic",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        email: "personal@example.com",
+        usedFraction: 0.4,
+        recordedAt: now - 1,
+      }),
+      expect.objectContaining({
+        provider: "openai",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        email: null,
+        usedFraction: 0.2,
+        recordedAt: now - 1,
+      }),
+      expect.objectContaining({
+        provider: "anthropic",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        email: "team@example.com",
+        usedFraction: 0.15,
+        recordedAt: now,
+      }),
+      expect.objectContaining({
+        provider: "openai",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        email: null,
+        usedFraction: 0.1,
+        recordedAt: now,
+      }),
     ]);
     expect(listOmpQuotasFrom(join(root, "missing.db"))).toEqual([]);
   });
@@ -157,13 +417,14 @@ describe("OMP quota reader", () => {
     const path = join(root, "agent.db");
     const database = new DatabaseSync(path);
     database.exec(`CREATE TABLE usage_history (
-      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
-      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, email TEXT DEFAULT NULL,
+      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
+      resets_at INTEGER, recorded_at INTEGER
     )`);
     const now = Date.now();
     const day = 86_400_000;
     const insert = database.prepare(
-      "INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO usage_history (id, provider, account_key, limit_id, label, window_label, used_fraction, status, resets_at, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     insert.run(
       1,
@@ -202,13 +463,14 @@ describe("OMP quota reader", () => {
     const path = join(root, "agent.db");
     const database = new DatabaseSync(path);
     database.exec(`CREATE TABLE usage_history (
-      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
-      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, email TEXT DEFAULT NULL,
+      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
+      resets_at INTEGER, recorded_at INTEGER
     )`);
     const now = 1_800_000_000_000;
     const window = 30 * 86_400_000;
     const insert = database.prepare(
-      "INSERT INTO usage_history VALUES (?, 'p', 'a', ?, ?, NULL, ?, NULL, ?, ?)",
+      "INSERT INTO usage_history (id, provider, account_key, limit_id, label, window_label, used_fraction, status, resets_at, recorded_at) VALUES (?, 'p', 'a', ?, ?, NULL, ?, NULL, ?, ?)",
     );
     // Older live row must not resurrect a series whose newest row already reset.
     insert.run(1, "dead", "Dead", 0.1, now + 1_000, now - 2_000);
@@ -234,11 +496,14 @@ describe("OMP quota reader", () => {
     quotaRoots.push(root);
     const database = new DatabaseSync(join(root, "agent.db"));
     database.exec(`CREATE TABLE usage_history (
-      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
-      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, email TEXT DEFAULT NULL,
+      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
+      resets_at INTEGER, recorded_at INTEGER
     )`);
     database
-      .prepare("INSERT INTO usage_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .prepare(
+        "INSERT INTO usage_history (id, provider, account_key, limit_id, label, window_label, used_fraction, status, resets_at, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
       .run(1, "anthropic", "account", "daily", "Daily", null, 0.5, "ok", null, Date.now() - 10);
     database.close();
     const previous = process.env.PASEO_OMP_AGENT_DIR;

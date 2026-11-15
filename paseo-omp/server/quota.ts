@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { RpcInput } from "@getpaseo/plugin";
@@ -7,6 +8,9 @@ import { ompDataDir } from "./paths";
 
 const QuotaRowSchema = z.object({
   provider: z.string(),
+  accountKey: z.string(),
+  limitId: z.string(),
+  email: z.string().nullable(),
   label: z.string(),
   windowLabel: z.string().nullable(),
   usedFraction: z.number().min(0).nullable(),
@@ -24,13 +28,18 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
   try {
     const database = new DatabaseSync(path, { readOnly: true, timeout: 500 });
     try {
+      const columns = database.prepare("PRAGMA table_info(usage_history)").all();
+      const emailColumn = columns.some((column) => column.name === "email")
+        ? "email"
+        : "NULL AS email";
       const rows = database
         .prepare(
-          `SELECT provider, label, window_label AS windowLabel, used_fraction AS usedFraction,
+          `SELECT provider, account_key AS accountKey, limit_id AS limitId, email, label,
+                  window_label AS windowLabel, used_fraction AS usedFraction,
                   status, resets_at AS resetsAt, recorded_at AS recordedAt
            FROM (
-             SELECT provider, account_key, limit_id, label, window_label, used_fraction, status,
-                    resets_at, recorded_at, id,
+             SELECT provider, account_key, ${emailColumn},
+                    limit_id, label, window_label, used_fraction, status, resets_at, recorded_at, id,
                     ROW_NUMBER() OVER (
                       PARTITION BY provider, account_key, limit_id
                       ORDER BY recorded_at DESC, id DESC
@@ -39,12 +48,19 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
            )
            WHERE position = 1
              AND (resets_at > ? OR (resets_at IS NULL AND recorded_at > ?))
-           ORDER BY COALESCE(usedFraction, -1) DESC, provider, label`,
+           ORDER BY COALESCE(usedFraction, -1) DESC, provider, label, accountKey, limitId`,
         )
         .all(now, now - ABANDONED_AFTER_MS);
       return rows.flatMap((row) => {
         const parsed = QuotaRowSchema.safeParse(row);
-        return parsed.success ? [parsed.data] : [];
+        if (!parsed.success) return [];
+        const quota = parsed.data;
+        return [
+          {
+            ...quota,
+            accountKey: createHash("sha256").update(quota.accountKey).digest("hex"),
+          },
+        ];
       });
     } finally {
       database.close();

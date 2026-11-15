@@ -62,6 +62,9 @@ describe("omp quota reader", () => {
     expect(listOmpQuotasFrom(join(root, "agent.db"), now)).toEqual([
       {
         provider: "anthropic",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        limitId: "five-hour",
+        email: null,
         label: "Claude 5 Hour",
         windowLabel: "5 Hour",
         usedFraction: 0.8,
@@ -71,6 +74,9 @@ describe("omp quota reader", () => {
       },
       {
         provider: "openai",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        limitId: "weekly",
+        email: null,
         label: "Codex Weekly",
         windowLabel: "Weekly",
         usedFraction: 0.3,

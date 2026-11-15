@@ -84,6 +84,15 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         overflow: "hidden" as const,
       },
       detail: { color: theme.colors.foregroundMuted, fontSize: 11 },
+      account: { gap: 6, paddingTop: 4 },
+      accountHeading: { flexDirection: "row" as const, alignItems: "baseline" as const },
+      accountLabel: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 11,
+        flexShrink: 1,
+        minWidth: 0,
+      },
+      accountSuffix: { color: theme.colors.foregroundMuted, fontSize: 11, flexShrink: 0 },
     }),
     [layout.compact, theme],
   );
@@ -104,6 +113,11 @@ export function QuotaPopover(props: PluginButtonContentProps) {
       <Text style={styles.muted}>
         Last recorded usage from the local agent database, not read live from the provider.
       </Text>
+      {currentProvider ? (
+        <Text style={styles.muted}>
+          CURRENT PROVIDER identifies the provider, not the account used by this session.
+        </Text>
+      ) : null}
       {currentProvider && !hasCurrent ? (
         <Text style={styles.muted}>
           {`No recorded quota yet for ${quotaProviderLabel(currentProvider)} (this session's provider).`}
@@ -120,32 +134,54 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                 color={severityColor(group.severity)}
               />
               <Text style={styles.groupLabel}>{quotaProviderLabel(group.provider)}</Text>
-              <Text style={styles.badge}>{current ? "CURRENT" : "RECORDED"}</Text>
+              <Text style={styles.badge}>{current ? "CURRENT PROVIDER" : "RECORDED"}</Text>
             </View>
-            {group.quotas.map((quota) => {
-              const severity = quotaSeverityFromFraction(quota.usedFraction);
-              const color = severityColor(severity);
-              const pct =
-                quota.usedFraction === null
-                  ? 0
-                  : Math.min(100, Math.round(quota.usedFraction * 100));
-              return (
-                <View key={`${quota.label}:${quota.windowLabel}`} style={styles.row}>
-                  <View style={styles.rowHeader}>
-                    <Text numberOfLines={1} style={styles.rowLabel}>
-                      {quota.label}
+            {group.accounts.map((account) => (
+              <View key={account.accountKey} style={styles.account}>
+                {account.label ? (
+                  <View
+                    accessibilityRole="header"
+                    accessibilityLabel={
+                      account.suffix ? `${account.label} · ${account.suffix}` : account.label
+                    }
+                    style={styles.accountHeading}
+                  >
+                    <Text numberOfLines={1} ellipsizeMode="middle" style={styles.accountLabel}>
+                      {account.label}
                     </Text>
-                    <Text style={[styles.rowValue, { color }]}>
-                      {quota.usedFraction === null ? "Unknown" : `${pct}%`}
-                    </Text>
+                    {account.suffix ? (
+                      <Text style={styles.accountSuffix}>{` · ${account.suffix}`}</Text>
+                    ) : null}
                   </View>
-                  <View style={styles.track}>
-                    <View style={{ height: "100%", width: `${pct}%`, backgroundColor: color }} />
-                  </View>
-                  <Text style={styles.detail}>{quotaDetailLabel(quota)}</Text>
-                </View>
-              );
-            })}
+                ) : null}
+                {account.quotas.map((quota) => {
+                  const severity = quotaSeverityFromFraction(quota.usedFraction);
+                  const color = severityColor(severity);
+                  const pct =
+                    quota.usedFraction === null
+                      ? 0
+                      : Math.min(100, Math.round(quota.usedFraction * 100));
+                  return (
+                    <View key={quota.limitId} style={styles.row}>
+                      <View style={styles.rowHeader}>
+                        <Text numberOfLines={1} style={styles.rowLabel}>
+                          {quota.label}
+                        </Text>
+                        <Text style={[styles.rowValue, { color }]}>
+                          {quota.usedFraction === null ? "Unknown" : `${pct}%`}
+                        </Text>
+                      </View>
+                      <View style={styles.track}>
+                        <View
+                          style={{ height: "100%", width: `${pct}%`, backgroundColor: color }}
+                        />
+                      </View>
+                      <Text style={styles.detail}>{quotaDetailLabel(quota)}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ))}
           </View>
         );
       })}
