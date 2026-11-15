@@ -131,7 +131,11 @@ export function QuotaPopover(props: PluginButtonContentProps) {
             </View>
             {group.accounts.map((account) => (
               <View key={account.accountKey} style={styles.account}>
-                <Text style={styles.accountLabel}>{account.label}</Text>
+                {account.label ? (
+                  <Text accessibilityRole="header" numberOfLines={1} style={styles.accountLabel}>
+                    {account.label}
+                  </Text>
+                ) : null}
                 {account.accountHost ? (
                   <Text style={styles.detail}>
                     {account.accountHost === "github.com"

@@ -98,6 +98,7 @@ describe("session-specific quota selection", () => {
         limitId: "five-hour",
         email: "team@example.com",
         label: "Usage",
+        usedFraction: 0.25,
       },
       {
         ...quotas[0],
@@ -105,6 +106,7 @@ describe("session-specific quota selection", () => {
         limitId: "weekly",
         email: "team@example.com",
         label: "Usage",
+        usedFraction: 0.5,
       },
       {
         ...quotas[0],
@@ -112,9 +114,10 @@ describe("session-specific quota selection", () => {
         limitId: "five-hour",
         email: "team@example.com",
         label: "Usage",
+        usedFraction: 0.9,
       },
-      { ...quotas[0], accountKey: "unknown-a", limitId: "daily", email: null },
-      { ...quotas[0], accountKey: "unknown-b", limitId: "session", email: null },
+      { ...quotas[0], accountKey: "unknown-a", limitId: "daily", email: null, usedFraction: 0.7 },
+      { ...quotas[0], accountKey: "unknown-b", limitId: "session", email: null, usedFraction: 0.1 },
     ];
     const groups = quotaProviderGroups(accountRows, null);
     const accounts = groups[0].accounts;
@@ -126,9 +129,54 @@ describe("session-specific quota selection", () => {
       accounts
         .find((account) => account.accountKey === "team-a")
         ?.quotas.map((quota) => quota.limitId),
-    ).toEqual(["five-hour", "weekly"]);
-    expect(accounts.map((account) => account.label)).toContain("team@example.com · Account 1");
-    expect(accounts.map((account) => account.label)).toContain("team@example.com · Account 2");
+    ).toEqual(["weekly", "five-hour"]);
+    expect(
+      accounts.map(({ accountKey, label, peakFraction }) => ({ accountKey, label, peakFraction })),
+    ).toEqual([
+      { accountKey: "team-b", label: "team@example.com · Account 1", peakFraction: 0.9 },
+      { accountKey: "unknown-a", label: "Account 1", peakFraction: 0.7 },
+      { accountKey: "team-a", label: "team@example.com · Account 2", peakFraction: 0.5 },
+      { accountKey: "unknown-b", label: "Account 2", peakFraction: 0.1 },
+    ]);
+  });
+
+  test("uses identifiers from any account window and prefers email over account ID", () => {
+    const rows: OmpQuota[] = [
+      { ...quotas[0], accountKey: "email-account", usedFraction: 0.9 },
+      {
+        ...quotas[0],
+        accountKey: "email-account",
+        limitId: "weekly",
+        email: " ",
+        accountId: "fallback-user",
+        usedFraction: 0.3,
+      },
+      {
+        ...quotas[0],
+        accountKey: "email-account",
+        limitId: "monthly",
+        email: "team@example.com",
+        usedFraction: 0.2,
+      },
+      { ...quotas[0], accountKey: "id-account", usedFraction: 0.8 },
+      {
+        ...quotas[0],
+        accountKey: "id-account",
+        limitId: "weekly",
+        accountId: "recorded-user",
+        usedFraction: 0.1,
+      },
+    ];
+    expect(
+      quotaProviderGroups(rows, null)[0].accounts.map(({ email, label }) => ({ email, label })),
+    ).toEqual([
+      { email: "team@example.com", label: "team@example.com" },
+      { email: null, label: "recorded-user" },
+    ]);
+  });
+
+  test("omits a redundant heading for a single unnamed account", () => {
+    expect(quotaProviderGroups([quotas[0]], null)[0].accounts[0].label).toBeNull();
   });
 });
 
@@ -185,12 +233,18 @@ describe("OMP quota reader", () => {
       "INSERT INTO usage_history VALUES (?, 'github-copilot', ?, ?, ?, 'premium', 'Premium Requests', 'Monthly', 0.1, 'ok', NULL, ?)",
     );
     insert.run(1, "oauth|account:sample", null, "sample", now);
-    insert.run(2, "oauth|enterprise:company.ghe.com|secret:sample", null, "sample", now);
-    insert.run(3, "oauth|enterprise:https://other.ghe.com|secret:sample", " ", "other", now);
+    insert.run(
+      2,
+      "oauth|account:sample|enterprise:enterprise.example.invalid",
+      null,
+      "sample",
+      now,
+    );
+    insert.run(3, "oauth|enterprise:https://other.example.invalid", " ", "other", now);
     insert.run(4, "legacy-key", "owner@example.com", "ignored", now);
     insert.run(
       5,
-      "oauth|enterprise:https://user:pass@invalid.ghe.com|secret:sample",
+      "oauth|enterprise:https://placeholder@invalid.example.invalid",
       null,
       "unsafe",
       now,
@@ -202,13 +256,90 @@ describe("OMP quota reader", () => {
     expect(recorded.every((quota) => quota.accountId !== null)).toBe(true);
     expect(accounts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: "sample · Account 1", accountHost: "github.com" }),
-        expect.objectContaining({ label: "sample · Account 2", accountHost: "company.ghe.com" }),
-        expect.objectContaining({ label: "other", accountHost: "other.ghe.com" }),
+        expect.objectContaining({
+          label: expect.stringMatching(/^sample · Account [12]$/u),
+          accountHost: "github.com",
+        }),
+        expect.objectContaining({
+          label: expect.stringMatching(/^sample · Account [12]$/u),
+          accountHost: "enterprise.example.invalid",
+        }),
+        expect.objectContaining({ label: "other", accountHost: "other.example.invalid" }),
         expect.objectContaining({ label: "owner@example.com", accountHost: null }),
         expect.objectContaining({ label: "unsafe", accountHost: null }),
       ]),
     );
+    expect(
+      accounts
+        .filter((account) => account.label?.startsWith("sample · "))
+        .map(({ label }) => label),
+    ).toEqual(["sample · Account 1", "sample · Account 2"]);
+  });
+
+  test("keeps opaque account identities stable without exposing OMP key components", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-key-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
+      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+    )`);
+    const now = Date.now();
+    const key =
+      "oauth|org:example-org|project:example-project|enterprise:enterprise.example.invalid|secret:synthetic-fingerprint";
+    const insert = database.prepare(
+      "INSERT INTO usage_history VALUES (?, 'github-copilot', ?, ?, 'Usage', NULL, 0.1, 'ok', NULL, ?)",
+    );
+    insert.run(1, key, "first", now);
+    insert.run(2, key, "second", now);
+    insert.run(3, `${key}-other`, "third", now);
+    database.close();
+
+    const recorded = listOmpQuotasFrom(path, now);
+    expect(recorded.map(({ limitId }) => limitId)).toEqual(["first", "second", "third"]);
+    const [first, second, third] = recorded;
+    expect(first.accountKey).toMatch(/^[a-f0-9]{64}$/u);
+    expect(first.accountKey).toBe(second.accountKey);
+    expect(first.accountKey).not.toBe(third.accountKey);
+    expect(first.accountKey).not.toContain("example-org");
+    expect(first.accountKey).not.toContain("example-project");
+    expect(first.accountKey).not.toContain("synthetic-fingerprint");
+    expect(first.accountHost).toBe("enterprise.example.invalid");
+    expect(listOmpQuotasFrom(path, now).map(({ accountKey }) => accountKey)).toEqual(
+      recorded.map(({ accountKey }) => accountKey),
+    );
+  });
+
+  test.each([
+    { name: "email only", columns: "email TEXT,", email: "saved@example.com", accountId: null },
+    { name: "account ID only", columns: "account_id TEXT,", email: null, accountId: "saved-user" },
+    { name: "neither identifier", columns: "", email: null, accountId: null },
+  ])("reads legacy quota tables with $name", async ({ columns, email, accountId }) => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-legacy-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, ${columns}
+      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
+      resets_at INTEGER, recorded_at INTEGER
+    )`);
+    const now = Date.now();
+    database
+      .prepare(
+        "INSERT INTO usage_history (id, provider, account_key, limit_id, label, used_fraction, recorded_at) VALUES (1, 'github-copilot', 'legacy-account', 'premium', 'Premium Requests', 0.1, ?)",
+      )
+      .run(now);
+    if (email) database.prepare("UPDATE usage_history SET email = ?").run(email);
+    if (accountId) database.prepare("UPDATE usage_history SET account_id = ?").run(accountId);
+    database.close();
+
+    const recorded = listOmpQuotasFrom(path, now);
+    expect(recorded).toEqual([
+      expect.objectContaining({ email, accountId, accountHost: null, label: "Premium Requests" }),
+    ]);
+    expect(quotaProviderGroups(recorded, null)[0].accounts[0].label).toBe(email ?? accountId);
   });
 
   test("keeps the newest valid quota row per provider account and limit", async () => {
@@ -296,35 +427,35 @@ describe("OMP quota reader", () => {
     expect(listOmpQuotasFrom(path, now)).toEqual([
       expect.objectContaining({
         provider: "anthropic",
-        accountKey: "account",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         email: "team@example.com",
         usedFraction: 0.9,
         recordedAt: now - 2,
       }),
       expect.objectContaining({
         provider: "anthropic",
-        accountKey: "other-account",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         email: "personal@example.com",
         usedFraction: 0.4,
         recordedAt: now - 1,
       }),
       expect.objectContaining({
         provider: "openai",
-        accountKey: "account",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         email: null,
         usedFraction: 0.2,
         recordedAt: now - 1,
       }),
       expect.objectContaining({
         provider: "anthropic",
-        accountKey: "other-team-account",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         email: "team@example.com",
         usedFraction: 0.15,
         recordedAt: now,
       }),
       expect.objectContaining({
         provider: "openai",
-        accountKey: "other-unknown-account",
+        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         email: null,
         usedFraction: 0.1,
         recordedAt: now,

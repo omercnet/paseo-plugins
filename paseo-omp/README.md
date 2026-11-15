@@ -35,6 +35,8 @@ Open the **OMP** sidebar to review the provider-profile contract, choose which c
 
 Open the **Accounts** tab of the **OMP** sidebar to see the logins in OMP's own credential store with their usage and banked resets, add a login through OMP's own sign-in, sign one out, spend a banked reset, and steer OMP's balancing: prefer a login, keep part of its quota in reserve, and set what OMP does at a limit. Steering is written to OMP's own config. See [OMP accounts](docs/configuration.md#omp-accounts).
 
+The quota popover groups recorded limits by provider and OMP account, showing an available recorded email or, when absent, the account ID (GitHub username for Copilot) across that account's windows. Duplicate and unnamed accounts receive numbered labels in display order; a lone unnamed account needs no heading. Copilot accounts also show **GitHub · github.com** or **GHE · host**, using the enterprise URL in OMP's recorded account key; unrecognized keys do not infer a host. Only a server-side hash of the account key reaches the client. **CURRENT PROVIDER** identifies the session's provider, not its active account. Provider summary percentages show the highest recorded usage across that provider's accounts.
+
 Open the **MCPs** tab of the **OMP** sidebar to list the MCP servers OMP connects to, add one by URL or command, test, enable, disable or remove it, and sign a remote server in through your browser, like **Accounts** does for logins. See [OMP MCP servers](docs/configuration.md#omp-mcp-servers).
 
 - [Install, update, rollback, and local development](docs/installation.md)
@@ -66,8 +68,6 @@ At startup the plugin discovers directory names under `~/.omp/profiles/` (or `PI
 Separate provider identities let the model picker request the correct profile catalog before an agent exists. Existing `omp-plugin` and bundled `omp` agents retain their provider; they are not migrated automatically. Profile names use OMP's lowercase grammar, including dotted names such as `team.prod`.
 
 The OMP sidebar and memory panel expose an explicit store selector. Settings, plugins, quota, history, memory and diagnostics use that selection, and profile-agent popovers derive it from the provider ID. OMP-compatible XDG data and state roots are honored when a migrated profile uses them. Default-provider views are labelled **Daemon default store**; changing `providerOptions.command` on the default provider does not make those views profile-aware. Workspace configuration remains project-scoped, with the selected profile supplying inherited settings. Hub records are daemon-wide. The RPCs also accept an explicit absolute `store.agentDir` for custom stores; it is mutually exclusive with `store.profile`.
-
-The quota popover groups recorded limits by provider and OMP account, showing the recorded email or, when absent, the account ID (GitHub username for Copilot). Duplicate account labels remain separate and numbered. Copilot accounts also show **GitHub · github.com** or **GHE · host**, using the enterprise URL in OMP's recorded account key; unrecognized keys do not infer a host. Accounts without either identifier use numbered labels. **CURRENT PROVIDER** identifies the session's provider, not its active account. Provider summary percentages show the highest recorded usage across that provider's accounts.
 
 Profile selection is request-local: concurrent clients cannot change each other's process environment or cached results. Settings edits affect the selected store immediately.
 

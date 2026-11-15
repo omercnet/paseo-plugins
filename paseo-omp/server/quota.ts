@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { RpcInput } from "@getpaseo/plugin";
@@ -68,7 +69,7 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
            )
            WHERE position = 1
              AND (resets_at > ? OR (resets_at IS NULL AND recorded_at > ?))
-           ORDER BY COALESCE(usedFraction, -1) DESC, provider, label`,
+           ORDER BY COALESCE(usedFraction, -1) DESC, provider, label, accountKey, limitId`,
         )
         .all(now, now - ABANDONED_AFTER_MS);
       return rows.flatMap((row) => {
@@ -78,6 +79,7 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
         return [
           {
             ...quota,
+            accountKey: createHash("sha256").update(quota.accountKey).digest("hex"),
             accountHost:
               quota.provider === "github-copilot" ? copilotAccountHost(quota.accountKey) : null,
           },

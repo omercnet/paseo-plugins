@@ -7,6 +7,7 @@ import { OmpStoreSchema } from "./omp-store";
 // Date.now() directly, never Date.now() / 1000.
 export const OmpQuotaSchema = z.object({
   provider: z.string(),
+  /** Server-side SHA-256 identity; never the raw OMP credential/account key. */
   accountKey: z.string(),
   limitId: z.string(),
   email: z.string().nullable(),

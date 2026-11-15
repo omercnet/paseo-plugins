@@ -95,7 +95,7 @@ export type QuotaAccountGroup = {
   accountKey: string;
   email: string | null;
   accountHost: string | null;
-  label: string;
+  label: string | null;
   quotas: OmpQuota[];
   peakFraction: number | null;
   severity: QuotaSeverity;
@@ -103,7 +103,6 @@ export type QuotaAccountGroup = {
 
 export type QuotaProviderGroup = {
   provider: string;
-  quotas: OmpQuota[];
   accounts: QuotaAccountGroup[];
   peakFraction: number | null;
   severity: QuotaSeverity;
@@ -129,7 +128,6 @@ export function quotaProviderGroups(
     const peakFraction = used.length === 0 ? null : Math.max(...used);
     return {
       provider,
-      quotas: [...providerQuotas].sort((a, b) => (b.usedFraction ?? -1) - (a.usedFraction ?? -1)),
       accounts: quotaAccountGroups(providerQuotas),
       peakFraction,
       severity: quotaSeverityFromFraction(peakFraction),
@@ -155,17 +153,25 @@ function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
       quota.usedFraction === null ? [] : [quota.usedFraction],
     );
     const peakFraction = used.length === 0 ? null : Math.max(...used);
+    const email = accountQuotas.find((quota) => quota.email?.trim())?.email?.trim() ?? null;
+    const accountId =
+      accountQuotas.find((quota) => quota.accountId?.trim())?.accountId?.trim() ?? null;
+    const accountHost =
+      accountQuotas.find((quota) => quota.accountHost !== null)?.accountHost ?? null;
     return {
       accountKey,
-      email: accountQuotas[0].email,
-      accountHost: accountQuotas[0].accountHost,
-      label: accountQuotas[0].email?.trim() || accountQuotas[0].accountId?.trim() || "",
+      email,
+      accountHost,
+      label: email ?? accountId,
       quotas: [...accountQuotas].sort((a, b) => (b.usedFraction ?? -1) - (a.usedFraction ?? -1)),
       peakFraction,
       severity: quotaSeverityFromFraction(peakFraction),
     };
   });
-  accounts.sort((a, b) => a.accountKey.localeCompare(b.accountKey));
+  accounts.sort(
+    (a, b) =>
+      (b.peakFraction ?? -1) - (a.peakFraction ?? -1) || a.accountKey.localeCompare(b.accountKey),
+  );
   const labelCounts = new Map<string, number>();
   for (const account of accounts) {
     if (account.label) {
@@ -173,9 +179,13 @@ function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
     }
   }
   const labelIndexes = new Map<string, number>();
-  for (const [accountIndex, account] of accounts.entries()) {
+  let unnamedAccounts = 0;
+  for (const account of accounts) {
+    if (!account.label && accounts.length > 1) {
+      account.label = `Account ${++unnamedAccounts}`;
+      continue;
+    }
     if (!account.label) {
-      account.label = `Account ${accountIndex + 1}`;
       continue;
     }
     const label = account.label;
@@ -185,7 +195,6 @@ function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
       account.label = `${label} · Account ${index}`;
     }
   }
-  accounts.sort((a, b) => (b.peakFraction ?? -1) - (a.peakFraction ?? -1));
   return accounts;
 }
 
