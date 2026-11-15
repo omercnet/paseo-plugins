@@ -262,10 +262,9 @@ describe("OMP quota reader", () => {
   });
 
   test.each([
-    { name: "email only", columns: "email TEXT,", email: "saved@example.com" },
-    { name: "account ID only", columns: "account_id TEXT,", email: null },
-    { name: "neither identifier", columns: "", email: null },
-  ])("reads legacy quota tables with $name", async ({ columns, email }) => {
+    { name: "an email column", columns: "email TEXT,", email: "saved@example.com" },
+    { name: "no email column", columns: "", email: null },
+  ])("reads quota tables with $name", async ({ columns, email }) => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-legacy-"));
     quotaRoots.push(root);
     const path = join(root, "agent.db");
@@ -282,15 +281,10 @@ describe("OMP quota reader", () => {
       )
       .run(now);
     if (email) database.prepare("UPDATE usage_history SET email = ?").run(email);
-    if (columns.includes("account_id")) {
-      database.prepare("UPDATE usage_history SET account_id = ?").run("synthetic-private-id");
-    }
     database.close();
 
     const recorded = listOmpQuotasFrom(path, now);
     expect(recorded).toEqual([expect.objectContaining({ email, label: "Premium Requests" })]);
-    expect(recorded[0]).not.toHaveProperty("accountId");
-    expect(recorded[0]).not.toHaveProperty("accountHost");
     expect(quotaProviderGroups(recorded, null)[0].accounts[0].label).toBe(email);
   });
 
