@@ -10,6 +10,9 @@ import type { OmpQuota } from "../shared/quota";
 
 const quota = (provider: string): OmpQuota => ({
   provider,
+  accountKey: provider,
+  limitId: provider,
+  email: null,
   label: provider,
   windowLabel: null,
   usedFraction: 0.25,

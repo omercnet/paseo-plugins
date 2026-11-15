@@ -91,9 +91,19 @@ export function quotaSeverityForProvider(
   return used.length === 0 ? "unknown" : quotaSeverityFromFraction(Math.max(...used));
 }
 
+export type QuotaAccountGroup = {
+  accountKey: string;
+  email: string | null;
+  label: string;
+  quotas: OmpQuota[];
+  peakFraction: number | null;
+  severity: QuotaSeverity;
+};
+
 export type QuotaProviderGroup = {
   provider: string;
   quotas: OmpQuota[];
+  accounts: QuotaAccountGroup[];
   peakFraction: number | null;
   severity: QuotaSeverity;
 };
@@ -119,6 +129,7 @@ export function quotaProviderGroups(
     return {
       provider,
       quotas: [...providerQuotas].sort((a, b) => (b.usedFraction ?? -1) - (a.usedFraction ?? -1)),
+      accounts: quotaAccountGroups(providerQuotas),
       peakFraction,
       severity: quotaSeverityFromFraction(peakFraction),
     };
@@ -129,6 +140,50 @@ export function quotaProviderGroups(
     return (b.peakFraction ?? -1) - (a.peakFraction ?? -1);
   });
   return groups;
+}
+
+function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
+  const byAccount = new Map<string, OmpQuota[]>();
+  for (const quota of quotas) {
+    const group = byAccount.get(quota.accountKey);
+    if (group) group.push(quota);
+    else byAccount.set(quota.accountKey, [quota]);
+  }
+  const accounts = [...byAccount.entries()].map(([accountKey, accountQuotas]) => {
+    const used = accountQuotas.flatMap((quota) =>
+      quota.usedFraction === null ? [] : [quota.usedFraction],
+    );
+    const peakFraction = used.length === 0 ? null : Math.max(...used);
+    return {
+      accountKey,
+      email: accountQuotas[0].email,
+      label: accountQuotas[0].email ?? "Account",
+      quotas: [...accountQuotas].sort((a, b) => (b.usedFraction ?? -1) - (a.usedFraction ?? -1)),
+      peakFraction,
+      severity: quotaSeverityFromFraction(peakFraction),
+    };
+  });
+  accounts.sort((a, b) => a.accountKey.localeCompare(b.accountKey));
+  const emailCounts = new Map<string, number>();
+  for (const account of accounts) {
+    if (account.email !== null) {
+      emailCounts.set(account.email, (emailCounts.get(account.email) ?? 0) + 1);
+    }
+  }
+  const emailIndexes = new Map<string, number>();
+  for (const [accountIndex, account] of accounts.entries()) {
+    if (account.email === null) {
+      account.label = `Account ${accountIndex + 1}`;
+      continue;
+    }
+    const index = (emailIndexes.get(account.email) ?? 0) + 1;
+    emailIndexes.set(account.email, index);
+    if ((emailCounts.get(account.email) ?? 0) > 1) {
+      account.label = `${account.email} · Account ${index}`;
+    }
+  }
+  accounts.sort((a, b) => (b.peakFraction ?? -1) - (a.peakFraction ?? -1));
+  return accounts;
 }
 
 export function quotaResetLabel(resetsAtMs: number | null, nowMs: number = Date.now()): string {

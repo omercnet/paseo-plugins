@@ -7,6 +7,9 @@ import { OmpStoreSchema } from "./omp-store";
 // Date.now() directly, never Date.now() / 1000.
 export const OmpQuotaSchema = z.object({
   provider: z.string(),
+  accountKey: z.string(),
+  limitId: z.string(),
+  email: z.string().nullable(),
   label: z.string(),
   windowLabel: z.string().nullable(),
   usedFraction: z.number().min(0).nullable(),

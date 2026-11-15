@@ -84,6 +84,8 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         overflow: "hidden" as const,
       },
       detail: { color: theme.colors.foregroundMuted, fontSize: 11 },
+      account: { gap: 6, paddingTop: 4 },
+      accountLabel: { color: theme.colors.foregroundMuted, fontSize: 11 },
     }),
     [layout.compact, theme],
   );
@@ -104,6 +106,11 @@ export function QuotaPopover(props: PluginButtonContentProps) {
       <Text style={styles.muted}>
         Last recorded usage from the local agent database, not read live from the provider.
       </Text>
+      {currentProvider ? (
+        <Text style={styles.muted}>
+          CURRENT PROVIDER identifies the provider, not the account used by this session.
+        </Text>
+      ) : null}
       {currentProvider && !hasCurrent ? (
         <Text style={styles.muted}>
           {`No recorded quota yet for ${quotaProviderLabel(currentProvider)} (this session's provider).`}
@@ -120,32 +127,39 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                 color={severityColor(group.severity)}
               />
               <Text style={styles.groupLabel}>{quotaProviderLabel(group.provider)}</Text>
-              <Text style={styles.badge}>{current ? "CURRENT" : "RECORDED"}</Text>
+              <Text style={styles.badge}>{current ? "CURRENT PROVIDER" : "RECORDED"}</Text>
             </View>
-            {group.quotas.map((quota) => {
-              const severity = quotaSeverityFromFraction(quota.usedFraction);
-              const color = severityColor(severity);
-              const pct =
-                quota.usedFraction === null
-                  ? 0
-                  : Math.min(100, Math.round(quota.usedFraction * 100));
-              return (
-                <View key={`${quota.label}:${quota.windowLabel}`} style={styles.row}>
-                  <View style={styles.rowHeader}>
-                    <Text numberOfLines={1} style={styles.rowLabel}>
-                      {quota.label}
-                    </Text>
-                    <Text style={[styles.rowValue, { color }]}>
-                      {quota.usedFraction === null ? "Unknown" : `${pct}%`}
-                    </Text>
-                  </View>
-                  <View style={styles.track}>
-                    <View style={{ height: "100%", width: `${pct}%`, backgroundColor: color }} />
-                  </View>
-                  <Text style={styles.detail}>{quotaDetailLabel(quota)}</Text>
-                </View>
-              );
-            })}
+            {group.accounts.map((account) => (
+              <View key={account.accountKey} style={styles.account}>
+                <Text style={styles.accountLabel}>{account.label}</Text>
+                {account.quotas.map((quota) => {
+                  const severity = quotaSeverityFromFraction(quota.usedFraction);
+                  const color = severityColor(severity);
+                  const pct =
+                    quota.usedFraction === null
+                      ? 0
+                      : Math.min(100, Math.round(quota.usedFraction * 100));
+                  return (
+                    <View key={quota.limitId} style={styles.row}>
+                      <View style={styles.rowHeader}>
+                        <Text numberOfLines={1} style={styles.rowLabel}>
+                          {quota.label}
+                        </Text>
+                        <Text style={[styles.rowValue, { color }]}>
+                          {quota.usedFraction === null ? "Unknown" : `${pct}%`}
+                        </Text>
+                      </View>
+                      <View style={styles.track}>
+                        <View
+                          style={{ height: "100%", width: `${pct}%`, backgroundColor: color }}
+                        />
+                      </View>
+                      <Text style={styles.detail}>{quotaDetailLabel(quota)}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ))}
           </View>
         );
       })}
