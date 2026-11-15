@@ -58,6 +58,8 @@ function quota(accountKey: string, limitId: string, usedFraction: number): OmpQu
     accountKey,
     limitId,
     email: "same@example.invalid",
+    accountId: null,
+    accountHost: null,
     label: "Usage",
     windowLabel: "Weekly",
     usedFraction,

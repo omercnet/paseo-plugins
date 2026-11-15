@@ -154,6 +154,13 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                     ) : null}
                   </View>
                 ) : null}
+                {account.accountHost ? (
+                  <Text style={styles.detail}>
+                    {account.accountHost === "github.com"
+                      ? "GitHub · github.com"
+                      : `GHE · ${account.accountHost}`}
+                  </Text>
+                ) : null}
                 {account.quotas.map((quota) => {
                   const severity = quotaSeverityFromFraction(quota.usedFraction);
                   const color = severityColor(severity);
