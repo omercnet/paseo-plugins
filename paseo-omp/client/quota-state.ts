@@ -94,6 +94,7 @@ export function quotaSeverityForProvider(
 export type QuotaAccountGroup = {
   accountKey: string;
   email: string | null;
+  accountHost: string | null;
   label: string;
   quotas: OmpQuota[];
   peakFraction: number | null;
@@ -157,29 +158,31 @@ function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
     return {
       accountKey,
       email: accountQuotas[0].email,
-      label: accountQuotas[0].email ?? "Account",
+      accountHost: accountQuotas[0].accountHost,
+      label: accountQuotas[0].email?.trim() || accountQuotas[0].accountId?.trim() || "",
       quotas: [...accountQuotas].sort((a, b) => (b.usedFraction ?? -1) - (a.usedFraction ?? -1)),
       peakFraction,
       severity: quotaSeverityFromFraction(peakFraction),
     };
   });
   accounts.sort((a, b) => a.accountKey.localeCompare(b.accountKey));
-  const emailCounts = new Map<string, number>();
+  const labelCounts = new Map<string, number>();
   for (const account of accounts) {
-    if (account.email !== null) {
-      emailCounts.set(account.email, (emailCounts.get(account.email) ?? 0) + 1);
+    if (account.label) {
+      labelCounts.set(account.label, (labelCounts.get(account.label) ?? 0) + 1);
     }
   }
-  const emailIndexes = new Map<string, number>();
+  const labelIndexes = new Map<string, number>();
   for (const [accountIndex, account] of accounts.entries()) {
-    if (account.email === null) {
+    if (!account.label) {
       account.label = `Account ${accountIndex + 1}`;
       continue;
     }
-    const index = (emailIndexes.get(account.email) ?? 0) + 1;
-    emailIndexes.set(account.email, index);
-    if ((emailCounts.get(account.email) ?? 0) > 1) {
-      account.label = `${account.email} · Account ${index}`;
+    const label = account.label;
+    const index = (labelIndexes.get(label) ?? 0) + 1;
+    labelIndexes.set(label, index);
+    if ((labelCounts.get(label) ?? 0) > 1) {
+      account.label = `${label} · Account ${index}`;
     }
   }
   accounts.sort((a, b) => (b.peakFraction ?? -1) - (a.peakFraction ?? -1));

@@ -13,6 +13,8 @@ const quota = (provider: string): OmpQuota => ({
   accountKey: provider,
   limitId: provider,
   email: null,
+  accountId: null,
+  accountHost: null,
   label: provider,
   windowLabel: null,
   usedFraction: 0.25,

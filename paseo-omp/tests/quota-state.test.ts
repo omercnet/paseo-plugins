@@ -29,6 +29,8 @@ const quotas: OmpQuota[] = [
     accountKey: "anthropic-account",
     limitId: "five-hour",
     email: null,
+    accountId: null,
+    accountHost: null,
     label: "Claude 5 Hour",
     windowLabel: "5 Hour",
     usedFraction: 0.25,
@@ -41,6 +43,8 @@ const quotas: OmpQuota[] = [
     accountKey: "cursor-account",
     limitId: "pro",
     email: null,
+    accountId: null,
+    accountHost: null,
     label: "Cursor Pro",
     windowLabel: null,
     usedFraction: 0.9,
@@ -141,6 +145,8 @@ describe("quota timestamps", () => {
           limitId: "five-hour",
           label: "Claude 5 Hour",
           email: null,
+          accountId: null,
+          accountHost: null,
           windowLabel: "5 Hour",
           usedFraction: 0.25,
           status: "ok",
@@ -164,6 +170,47 @@ describe("quota reset countdown", () => {
 });
 
 describe("OMP quota reader", () => {
+  test("shows Copilot usernames and distinguishes GitHub from the recorded GHE host", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-copilot-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, email TEXT, account_id TEXT,
+      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
+      resets_at INTEGER, recorded_at INTEGER
+    )`);
+    const now = Date.now();
+    const insert = database.prepare(
+      "INSERT INTO usage_history VALUES (?, 'github-copilot', ?, ?, ?, 'premium', 'Premium Requests', 'Monthly', 0.1, 'ok', NULL, ?)",
+    );
+    insert.run(1, "oauth|account:sample", null, "sample", now);
+    insert.run(2, "oauth|enterprise:company.ghe.com|secret:sample", null, "sample", now);
+    insert.run(3, "oauth|enterprise:https://other.ghe.com|secret:sample", " ", "other", now);
+    insert.run(4, "legacy-key", "owner@example.com", "ignored", now);
+    insert.run(
+      5,
+      "oauth|enterprise:https://user:pass@invalid.ghe.com|secret:sample",
+      null,
+      "unsafe",
+      now,
+    );
+    database.close();
+
+    const recorded = listOmpQuotasFrom(path, now);
+    const accounts = quotaProviderGroups(recorded, "github-copilot")[0].accounts;
+    expect(recorded.every((quota) => quota.accountId !== null)).toBe(true);
+    expect(accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "sample · Account 1", accountHost: "github.com" }),
+        expect.objectContaining({ label: "sample · Account 2", accountHost: "company.ghe.com" }),
+        expect.objectContaining({ label: "other", accountHost: "other.ghe.com" }),
+        expect.objectContaining({ label: "owner@example.com", accountHost: null }),
+        expect.objectContaining({ label: "unsafe", accountHost: null }),
+      ]),
+    );
+  });
+
   test("keeps the newest valid quota row per provider account and limit", async () => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-quotas-"));
     quotaRoots.push(root);
