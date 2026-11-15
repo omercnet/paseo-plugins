@@ -11,6 +11,11 @@ export const OmpQuotaSchema = z.object({
   accountKey: z.string(),
   limitId: z.string(),
   email: z.string().nullable(),
+  accountId: z.string().nullable(),
+  /** Copilot login service: public GitHub or a GitHub Enterprise (GHE) host. */
+  accountService: z.enum(["github", "ghe"]).nullable(),
+  /** GHE hostname; null for public GitHub and every other provider. */
+  accountHost: z.string().nullable(),
   label: z.string(),
   windowLabel: z.string().nullable(),
   usedFraction: z.number().min(0).nullable(),
