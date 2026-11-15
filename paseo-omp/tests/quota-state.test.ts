@@ -29,8 +29,6 @@ const quotas: OmpQuota[] = [
     accountKey: "anthropic-account",
     limitId: "five-hour",
     email: null,
-    accountId: null,
-    accountHost: null,
     label: "Claude 5 Hour",
     windowLabel: "5 Hour",
     usedFraction: 0.25,
@@ -43,8 +41,6 @@ const quotas: OmpQuota[] = [
     accountKey: "cursor-account",
     limitId: "pro",
     email: null,
-    accountId: null,
-    accountHost: null,
     label: "Cursor Pro",
     windowLabel: null,
     usedFraction: 0.9,
@@ -131,16 +127,21 @@ describe("session-specific quota selection", () => {
         ?.quotas.map((quota) => quota.limitId),
     ).toEqual(["weekly", "five-hour"]);
     expect(
-      accounts.map(({ accountKey, label, peakFraction }) => ({ accountKey, label, peakFraction })),
+      accounts.map(({ accountKey, label, suffix, peakFraction }) => ({
+        accountKey,
+        label,
+        suffix,
+        peakFraction,
+      })),
     ).toEqual([
-      { accountKey: "team-b", label: "team@example.com · Account 1", peakFraction: 0.9 },
-      { accountKey: "unknown-a", label: "Account 1", peakFraction: 0.7 },
-      { accountKey: "team-a", label: "team@example.com · Account 2", peakFraction: 0.5 },
-      { accountKey: "unknown-b", label: "Account 2", peakFraction: 0.1 },
+      { accountKey: "team-b", label: "team@example.com", suffix: "Account 2", peakFraction: 0.9 },
+      { accountKey: "unknown-a", label: "Account 1", suffix: null, peakFraction: 0.7 },
+      { accountKey: "team-a", label: "team@example.com", suffix: "Account 1", peakFraction: 0.5 },
+      { accountKey: "unknown-b", label: "Account 2", suffix: null, peakFraction: 0.1 },
     ]);
   });
 
-  test("uses identifiers from any account window and prefers email over account ID", () => {
+  test("uses a non-empty email from any account window", () => {
     const rows: OmpQuota[] = [
       { ...quotas[0], accountKey: "email-account", usedFraction: 0.9 },
       {
@@ -148,7 +149,6 @@ describe("session-specific quota selection", () => {
         accountKey: "email-account",
         limitId: "weekly",
         email: " ",
-        accountId: "fallback-user",
         usedFraction: 0.3,
       },
       {
@@ -158,20 +158,29 @@ describe("session-specific quota selection", () => {
         email: "team@example.com",
         usedFraction: 0.2,
       },
-      { ...quotas[0], accountKey: "id-account", usedFraction: 0.8 },
-      {
-        ...quotas[0],
-        accountKey: "id-account",
-        limitId: "weekly",
-        accountId: "recorded-user",
-        usedFraction: 0.1,
-      },
     ];
     expect(
       quotaProviderGroups(rows, null)[0].accounts.map(({ email, label }) => ({ email, label })),
-    ).toEqual([
-      { email: "team@example.com", label: "team@example.com" },
-      { email: null, label: "recorded-user" },
+    ).toEqual([{ email: "team@example.com", label: "team@example.com" }]);
+  });
+
+  test("keeps unnamed account numbers stable when peak usage changes", () => {
+    const rows = [
+      { ...quotas[0], accountKey: "a", usedFraction: 0.9 },
+      { ...quotas[0], accountKey: "b", usedFraction: 0.1 },
+    ];
+    const before = quotaProviderGroups(rows, null)[0].accounts;
+    const after = quotaProviderGroups(
+      rows.map((row) => ({ ...row, usedFraction: row.accountKey === "a" ? 0.1 : 0.9 })),
+      null,
+    )[0].accounts;
+    expect(before.map(({ accountKey, label }) => [accountKey, label])).toEqual([
+      ["a", "Account 1"],
+      ["b", "Account 2"],
+    ]);
+    expect(after.map(({ accountKey, label }) => [accountKey, label])).toEqual([
+      ["b", "Account 2"],
+      ["a", "Account 1"],
     ]);
   });
 
@@ -193,10 +202,8 @@ describe("quota timestamps", () => {
           limitId: "five-hour",
           label: "Claude 5 Hour",
           email: null,
-          accountId: null,
-          accountHost: null,
-          windowLabel: "5 Hour",
           usedFraction: 0.25,
+          windowLabel: "5 Hour",
           status: "ok",
           recordedAt: now - 2 * 3_600_000,
           resetsAt: now + 30 * 60_000,
@@ -218,64 +225,6 @@ describe("quota reset countdown", () => {
 });
 
 describe("OMP quota reader", () => {
-  test("shows Copilot usernames and distinguishes GitHub from the recorded GHE host", async () => {
-    const root = await mkdtemp(join(tmpdir(), "paseo-omp-copilot-"));
-    quotaRoots.push(root);
-    const path = join(root, "agent.db");
-    const database = new DatabaseSync(path);
-    database.exec(`CREATE TABLE usage_history (
-      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, email TEXT, account_id TEXT,
-      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
-      resets_at INTEGER, recorded_at INTEGER
-    )`);
-    const now = Date.now();
-    const insert = database.prepare(
-      "INSERT INTO usage_history VALUES (?, 'github-copilot', ?, ?, ?, 'premium', 'Premium Requests', 'Monthly', 0.1, 'ok', NULL, ?)",
-    );
-    insert.run(1, "oauth|account:sample", null, "sample", now);
-    insert.run(
-      2,
-      "oauth|account:sample|enterprise:enterprise.example.invalid",
-      null,
-      "sample",
-      now,
-    );
-    insert.run(3, "oauth|enterprise:https://other.example.invalid", " ", "other", now);
-    insert.run(4, "legacy-key", "owner@example.com", "ignored", now);
-    insert.run(
-      5,
-      "oauth|enterprise:https://placeholder@invalid.example.invalid",
-      null,
-      "unsafe",
-      now,
-    );
-    database.close();
-
-    const recorded = listOmpQuotasFrom(path, now);
-    const accounts = quotaProviderGroups(recorded, "github-copilot")[0].accounts;
-    expect(recorded.every((quota) => quota.accountId !== null)).toBe(true);
-    expect(accounts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          label: expect.stringMatching(/^sample · Account [12]$/u),
-          accountHost: "github.com",
-        }),
-        expect.objectContaining({
-          label: expect.stringMatching(/^sample · Account [12]$/u),
-          accountHost: "enterprise.example.invalid",
-        }),
-        expect.objectContaining({ label: "other", accountHost: "other.example.invalid" }),
-        expect.objectContaining({ label: "owner@example.com", accountHost: null }),
-        expect.objectContaining({ label: "unsafe", accountHost: null }),
-      ]),
-    );
-    expect(
-      accounts
-        .filter((account) => account.label?.startsWith("sample · "))
-        .map(({ label }) => label),
-    ).toEqual(["sample · Account 1", "sample · Account 2"]);
-  });
-
   test("keeps opaque account identities stable without exposing OMP key components", async () => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-key-"));
     quotaRoots.push(root);
@@ -305,17 +254,18 @@ describe("OMP quota reader", () => {
     expect(first.accountKey).not.toContain("example-org");
     expect(first.accountKey).not.toContain("example-project");
     expect(first.accountKey).not.toContain("synthetic-fingerprint");
-    expect(first.accountHost).toBe("enterprise.example.invalid");
+    expect(first).not.toHaveProperty("accountHost");
+    expect(first).not.toHaveProperty("accountId");
     expect(listOmpQuotasFrom(path, now).map(({ accountKey }) => accountKey)).toEqual(
       recorded.map(({ accountKey }) => accountKey),
     );
   });
 
   test.each([
-    { name: "email only", columns: "email TEXT,", email: "saved@example.com", accountId: null },
-    { name: "account ID only", columns: "account_id TEXT,", email: null, accountId: "saved-user" },
-    { name: "neither identifier", columns: "", email: null, accountId: null },
-  ])("reads legacy quota tables with $name", async ({ columns, email, accountId }) => {
+    { name: "email only", columns: "email TEXT,", email: "saved@example.com" },
+    { name: "account ID only", columns: "account_id TEXT,", email: null },
+    { name: "neither identifier", columns: "", email: null },
+  ])("reads legacy quota tables with $name", async ({ columns, email }) => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-legacy-"));
     quotaRoots.push(root);
     const path = join(root, "agent.db");
@@ -332,14 +282,16 @@ describe("OMP quota reader", () => {
       )
       .run(now);
     if (email) database.prepare("UPDATE usage_history SET email = ?").run(email);
-    if (accountId) database.prepare("UPDATE usage_history SET account_id = ?").run(accountId);
+    if (columns.includes("account_id")) {
+      database.prepare("UPDATE usage_history SET account_id = ?").run("synthetic-private-id");
+    }
     database.close();
 
     const recorded = listOmpQuotasFrom(path, now);
-    expect(recorded).toEqual([
-      expect.objectContaining({ email, accountId, accountHost: null, label: "Premium Requests" }),
-    ]);
-    expect(quotaProviderGroups(recorded, null)[0].accounts[0].label).toBe(email ?? accountId);
+    expect(recorded).toEqual([expect.objectContaining({ email, label: "Premium Requests" })]);
+    expect(recorded[0]).not.toHaveProperty("accountId");
+    expect(recorded[0]).not.toHaveProperty("accountHost");
+    expect(quotaProviderGroups(recorded, null)[0].accounts[0].label).toBe(email);
   });
 
   test("keeps the newest valid quota row per provider account and limit", async () => {

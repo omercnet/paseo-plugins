@@ -85,7 +85,14 @@ export function QuotaPopover(props: PluginButtonContentProps) {
       },
       detail: { color: theme.colors.foregroundMuted, fontSize: 11 },
       account: { gap: 6, paddingTop: 4 },
-      accountLabel: { color: theme.colors.foregroundMuted, fontSize: 11 },
+      accountHeading: { flexDirection: "row" as const, alignItems: "baseline" as const },
+      accountLabel: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 11,
+        flexShrink: 1,
+        minWidth: 0,
+      },
+      accountSuffix: { color: theme.colors.foregroundMuted, fontSize: 11, flexShrink: 0 },
     }),
     [layout.compact, theme],
   );
@@ -132,16 +139,20 @@ export function QuotaPopover(props: PluginButtonContentProps) {
             {group.accounts.map((account) => (
               <View key={account.accountKey} style={styles.account}>
                 {account.label ? (
-                  <Text accessibilityRole="header" numberOfLines={1} style={styles.accountLabel}>
-                    {account.label}
-                  </Text>
-                ) : null}
-                {account.accountHost ? (
-                  <Text style={styles.detail}>
-                    {account.accountHost === "github.com"
-                      ? "GitHub · github.com"
-                      : `GHE · ${account.accountHost}`}
-                  </Text>
+                  <View
+                    accessibilityRole="header"
+                    accessibilityLabel={
+                      account.suffix ? `${account.label} · ${account.suffix}` : account.label
+                    }
+                    style={styles.accountHeading}
+                  >
+                    <Text numberOfLines={1} style={styles.accountLabel}>
+                      {account.label}
+                    </Text>
+                    {account.suffix ? (
+                      <Text style={styles.accountSuffix}>{` · ${account.suffix}`}</Text>
+                    ) : null}
+                  </View>
                 ) : null}
                 {account.quotas.map((quota) => {
                   const severity = quotaSeverityFromFraction(quota.usedFraction);

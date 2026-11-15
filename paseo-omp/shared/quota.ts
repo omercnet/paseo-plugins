@@ -11,8 +11,6 @@ export const OmpQuotaSchema = z.object({
   accountKey: z.string(),
   limitId: z.string(),
   email: z.string().nullable(),
-  accountId: z.string().nullable(),
-  accountHost: z.string().nullable(),
   label: z.string(),
   windowLabel: z.string().nullable(),
   usedFraction: z.number().min(0).nullable(),

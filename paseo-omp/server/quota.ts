@@ -11,7 +11,6 @@ const QuotaRowSchema = z.object({
   accountKey: z.string(),
   limitId: z.string(),
   email: z.string().nullable(),
-  accountId: z.string().nullable(),
   label: z.string(),
   windowLabel: z.string().nullable(),
   usedFraction: z.number().min(0).nullable(),
@@ -23,22 +22,6 @@ const QuotaRowSchema = z.object({
 // Reset-less rows (no resets_at) refresh on every OMP poll, so one this old is an inactive provider.
 const ABANDONED_AFTER_MS = 30 * 86_400_000;
 
-/** OMP usageCacheIdentity records enterpriseUrl separately from its opaque credential fingerprint. */
-function copilotAccountHost(accountKey: string): string | null {
-  if (!accountKey.startsWith("oauth|") && !accountKey.startsWith("api_key|")) return null;
-  const enterprise = accountKey.split("|").find((part) => part.startsWith("enterprise:"));
-  if (!enterprise) return "github.com";
-  const value = enterprise.slice("enterprise:".length);
-  if (!value) return null;
-  try {
-    const url = new URL(value.includes("://") ? value : `https://${value}`);
-    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return null;
-    return url.hostname || null;
-  } catch {
-    return null;
-  }
-}
-
 // Only live windows are returned: a series whose newest row already reset (or never resets and was
 // abandoned) would otherwise pin the pill at its last exhausted value and bloat the popover.
 export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
@@ -49,17 +32,13 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
       const emailColumn = columns.some((column) => column.name === "email")
         ? "email"
         : "NULL AS email";
-      const accountIdColumn = columns.some((column) => column.name === "account_id")
-        ? "account_id"
-        : "NULL AS account_id";
       const rows = database
         .prepare(
-          `SELECT provider, account_key AS accountKey, limit_id AS limitId, email,
-                  account_id AS accountId, label,
+          `SELECT provider, account_key AS accountKey, limit_id AS limitId, email, label,
                   window_label AS windowLabel, used_fraction AS usedFraction,
                   status, resets_at AS resetsAt, recorded_at AS recordedAt
            FROM (
-             SELECT provider, account_key, ${emailColumn}, ${accountIdColumn},
+             SELECT provider, account_key, ${emailColumn},
                     limit_id, label, window_label, used_fraction, status, resets_at, recorded_at, id,
                     ROW_NUMBER() OVER (
                       PARTITION BY provider, account_key, limit_id
@@ -80,8 +59,6 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
           {
             ...quota,
             accountKey: createHash("sha256").update(quota.accountKey).digest("hex"),
-            accountHost:
-              quota.provider === "github-copilot" ? copilotAccountHost(quota.accountKey) : null,
           },
         ];
       });

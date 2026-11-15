@@ -1,0 +1,141 @@
+// @vitest-environment happy-dom
+import type { PluginButtonContentProps } from "@getpaseo/plugin/client";
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { QuotaPopover } from "../client/quota-popover";
+import type { OmpQuota } from "../shared/quota";
+
+const recorded = vi.hoisted(() => ({ quotas: [] as OmpQuota[] }));
+
+vi.mock("@getpaseo/plugin/client", () => ({
+  useAgent: () => ({ provider: "omp", model: "anthropic/example" }),
+  useRpc: () => vi.fn(),
+}));
+vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: () => null }));
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({ data: recorded, isLoading: false, error: null }),
+}));
+vi.mock("react-native", () => ({
+  View: (props: {
+    children?: ReactNode;
+    accessibilityRole?: string;
+    accessibilityLabel?: string;
+    style?: Record<string, unknown>;
+  }) => (
+    <div role={props.accessibilityRole === "header" ? "heading" : undefined}>{props.children}</div>
+  ),
+  Text: (props: { children?: ReactNode }) => <span>{props.children}</span>,
+}));
+
+const props: PluginButtonContentProps = {
+  context: "agent",
+  workspaceId: "synthetic-workspace",
+  agentId: "synthetic-agent",
+  host: { id: "synthetic-host", label: "Test host" },
+  layout: { compact: false, platform: "web" },
+  close() {},
+  theme: {
+    colors: {
+      surface0: "#111111",
+      surface1: "#222222",
+      surface2: "#333333",
+      border: "#444444",
+      foreground: "#eeeeee",
+      foregroundMuted: "#aaaaaa",
+      accent: "#008800",
+      accentForeground: "#ffffff",
+      statusSuccess: "#008800",
+      statusWarning: "#aa8800",
+      statusDanger: "#aa0000",
+    },
+  },
+};
+
+function quota(accountKey: string, limitId: string, usedFraction: number): OmpQuota {
+  return {
+    provider: "anthropic",
+    accountKey,
+    limitId,
+    email: "same@example.invalid",
+    label: "Usage",
+    windowLabel: "Weekly",
+    usedFraction,
+    status: "ok",
+    resetsAt: null,
+    recordedAt: 1,
+  };
+}
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  recorded.quotas = [];
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+
+afterEach(async () => {
+  await act(() => root.unmount());
+  container.remove();
+  vi.unstubAllGlobals();
+});
+
+async function render(rows: OmpQuota[]) {
+  recorded.quotas = rows;
+  await act(() => root.render(<QuotaPopover {...props} />));
+}
+
+function heading(name: string): Element {
+  const node = [...container.querySelectorAll('[role="heading"]')].find((element) =>
+    element.textContent?.includes(name),
+  );
+  if (!node) throw new Error(`Missing account heading: ${name}`);
+  return node;
+}
+
+function text(value: string): Element {
+  const node = [...container.querySelectorAll("span")].find(
+    (element) => element.textContent === value,
+  );
+  if (!node) throw new Error(`Missing text: ${value}`);
+  return node;
+}
+
+describe("quota popover reconciliation", () => {
+  test("keeps same-email accounts distinct when usage reorders them and one disappears", async () => {
+    await render([quota("a", "weekly", 0.9), quota("b", "weekly", 0.2)]);
+    const firstAccount = heading("same@example.invalid · Account 1").parentElement;
+    const secondAccount = heading("same@example.invalid · Account 2").parentElement;
+    expect(firstAccount).not.toBe(secondAccount);
+
+    await render([quota("a", "weekly", 0.1), quota("b", "weekly", 0.8)]);
+    expect(heading("same@example.invalid · Account 1").parentElement).toBe(firstAccount);
+    expect(heading("same@example.invalid · Account 2").parentElement).toBe(secondAccount);
+    expect(firstAccount?.contains(text("10%"))).toBe(true);
+    expect(secondAccount?.contains(text("80%"))).toBe(true);
+
+    await render([quota("a", "weekly", 0.1)]);
+    expect(heading("same@example.invalid").parentElement).toBe(firstAccount);
+    expect(secondAccount?.isConnected).toBe(false);
+    expect(container.textContent).not.toContain("80%");
+  });
+
+  test("keeps identically named limits distinct through reordering and deletion", async () => {
+    await render([quota("a", "first", 0.9), quota("a", "second", 0.2)]);
+    const firstLimit = text("90%");
+    const secondLimit = text("20%");
+
+    await render([quota("a", "first", 0.1), quota("a", "second", 0.8)]);
+    expect(text("10%")).toBe(firstLimit);
+    expect(text("80%")).toBe(secondLimit);
+
+    await render([quota("a", "first", 0.1)]);
+    expect(text("10%")).toBe(firstLimit);
+    expect(secondLimit.isConnected).toBe(false);
+    expect(container.textContent).not.toContain("80%");
+  });
+});
