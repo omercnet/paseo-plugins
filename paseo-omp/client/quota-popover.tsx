@@ -146,7 +146,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                     }
                     style={styles.accountHeading}
                   >
-                    <Text numberOfLines={1} style={styles.accountLabel}>
+                    <Text numberOfLines={1} ellipsizeMode="middle" style={styles.accountLabel}>
                       {account.label}
                     </Text>
                     {account.suffix ? (

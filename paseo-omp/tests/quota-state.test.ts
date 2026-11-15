@@ -254,6 +254,7 @@ describe("OMP quota reader", () => {
     expect(first.accountKey).not.toContain("example-org");
     expect(first.accountKey).not.toContain("example-project");
     expect(first.accountKey).not.toContain("synthetic-fingerprint");
+    expect(first.accountKey).not.toContain("enterprise.example.invalid");
     expect(first).not.toHaveProperty("accountHost");
     expect(first).not.toHaveProperty("accountId");
     expect(listOmpQuotasFrom(path, now).map(({ accountKey }) => accountKey)).toEqual(
