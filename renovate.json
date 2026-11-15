@@ -45,9 +45,9 @@
       "groupName": "OMP SDK"
     },
     {
-      "description": "The Paseo app provides React and React Native; the catalog pins its versions",
+      "description": "The Paseo app provides React, React DOM (test-only here) and React Native; the catalog pins its versions",
       "matchManagers": ["custom.regex"],
-      "matchPackageNames": ["react", "react-native"],
+      "matchPackageNames": ["react", "react-dom", "react-native"],
       "enabled": false
     },
     {
