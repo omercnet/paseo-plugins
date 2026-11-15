@@ -30,6 +30,7 @@ const quotas: OmpQuota[] = [
     limitId: "five-hour",
     email: null,
     accountId: null,
+    accountService: null,
     accountHost: null,
     label: "Claude 5 Hour",
     windowLabel: "5 Hour",
@@ -44,6 +45,7 @@ const quotas: OmpQuota[] = [
     limitId: "pro",
     email: null,
     accountId: null,
+    accountService: null,
     accountHost: null,
     label: "Cursor Pro",
     windowLabel: null,
@@ -207,6 +209,7 @@ describe("quota timestamps", () => {
           label: "Claude 5 Hour",
           email: null,
           accountId: null,
+          accountService: null,
           accountHost: null,
           usedFraction: 0.25,
           windowLabel: "5 Hour",
@@ -274,19 +277,29 @@ describe("OMP quota reader", () => {
     const accounts = groups[0].accounts;
     expect(accounts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: "sample", accountHost: "github.com" }),
-        expect.objectContaining({ label: "sample", accountHost: "enterprise.example.invalid" }),
-        expect.objectContaining({ label: "other", accountHost: "other.example.invalid" }),
-        expect.objectContaining({ label: "owner@example.com", accountHost: null }),
-        expect.objectContaining({ label: "unsafe", accountHost: null }),
-        expect.objectContaining({ label: "malformed", accountHost: null }),
+        expect.objectContaining({ label: "sample", accountService: "github", accountHost: null }),
+        expect.objectContaining({
+          label: "sample",
+          accountService: "ghe",
+          accountHost: "enterprise.example.invalid",
+        }),
+        expect.objectContaining({
+          label: "other",
+          accountService: "ghe",
+          accountHost: "other.example.invalid",
+        }),
+        expect.objectContaining({ label: "owner@example.com", accountService: null }),
+        expect.objectContaining({ label: "unsafe", accountService: null }),
+        expect.objectContaining({ label: "malformed", accountService: null }),
       ]),
     );
     expect(
       accounts.filter((account) => account.label === "sample").map(({ suffix }) => suffix),
     ).toEqual(expect.arrayContaining(["Account 1", "Account 2"]));
     const other = recorded.find((quota) => quota.provider === "anthropic");
-    expect(other).toEqual(expect.objectContaining({ accountId: null, accountHost: null }));
+    expect(other).toEqual(
+      expect.objectContaining({ accountId: null, accountService: null, accountHost: null }),
+    );
     expect(groups.find((group) => group.provider === "anthropic")?.accounts[0].label).toBeNull();
   });
 
@@ -320,7 +333,9 @@ describe("OMP quota reader", () => {
     expect(first.accountKey).not.toContain("example-project");
     expect(first.accountKey).not.toContain("synthetic-fingerprint");
     expect(first.accountKey).not.toContain("enterprise.example.invalid");
-    expect(first.accountHost).toBe("enterprise.example.invalid");
+    expect(first).toEqual(
+      expect.objectContaining({ accountService: "ghe", accountHost: "enterprise.example.invalid" }),
+    );
     expect(first.accountId).toBeNull();
     expect(listOmpQuotasFrom(path, now).map(({ accountKey }) => accountKey)).toEqual(
       recorded.map(({ accountKey }) => accountKey),
@@ -328,8 +343,18 @@ describe("OMP quota reader", () => {
   });
 
   test.each([
-    { name: "an email column", columns: "email TEXT,", email: "saved@example.com", accountId: null },
-    { name: "an account_id column", columns: "account_id TEXT,", email: null, accountId: "sample-user" },
+    {
+      name: "an email column",
+      columns: "email TEXT,",
+      email: "saved@example.com",
+      accountId: null,
+    },
+    {
+      name: "an account_id column",
+      columns: "account_id TEXT,",
+      email: null,
+      accountId: "sample-user",
+    },
     { name: "neither column", columns: "", email: null, accountId: null },
   ])("reads quota tables with $name", async ({ columns, email, accountId }) => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-legacy-"));
@@ -357,7 +382,9 @@ describe("OMP quota reader", () => {
     expect(recorded).toEqual([
       expect.objectContaining({ email, accountId, label: "Premium Requests" }),
     ]);
-    expect(recorded[0].accountHost).toBeNull();
+    expect(recorded[0]).toEqual(
+      expect.objectContaining({ accountService: null, accountHost: null }),
+    );
     expect(quotaProviderGroups(recorded, null)[0].accounts[0].label).toBe(email ?? accountId);
   });
 

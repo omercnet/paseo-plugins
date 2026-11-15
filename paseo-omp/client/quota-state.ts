@@ -94,6 +94,7 @@ export function quotaSeverityForProvider(
 export type QuotaAccountGroup = {
   accountKey: string;
   email: string | null;
+  accountService: OmpQuota["accountService"];
   accountHost: string | null;
   label: string | null;
   suffix: string | null;
@@ -158,12 +159,12 @@ function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
       const email = accountQuotas.find((quota) => quota.email?.trim())?.email?.trim() ?? null;
       const accountId =
         accountQuotas.find((quota) => quota.accountId?.trim())?.accountId?.trim() ?? null;
-      const accountHost =
-        accountQuotas.find((quota) => quota.accountHost !== null)?.accountHost ?? null;
+      const service = accountQuotas.find((quota) => quota.accountService !== null);
       return {
         accountKey,
         email,
-        accountHost,
+        accountService: service?.accountService ?? null,
+        accountHost: service?.accountHost ?? null,
         label: email ?? accountId,
         suffix: null,
         quotas: [...accountQuotas].sort((a, b) => (b.usedFraction ?? -1) - (a.usedFraction ?? -1)),

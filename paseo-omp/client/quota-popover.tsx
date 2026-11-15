@@ -154,10 +154,10 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                     ) : null}
                   </View>
                 ) : null}
-                {account.accountHost ? (
+                {account.accountService ? (
                   <Text style={styles.detail}>
-                    {account.accountHost === "github.com"
-                      ? "GitHub · github.com"
+                    {account.accountService === "github"
+                      ? "GitHub"
                       : `GHE · ${account.accountHost}`}
                   </Text>
                 ) : null}

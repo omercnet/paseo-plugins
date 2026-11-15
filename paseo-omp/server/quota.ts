@@ -23,19 +23,26 @@ const QuotaRowSchema = z.object({
 // Reset-less rows (no resets_at) refresh on every OMP poll, so one this old is an inactive provider.
 const ABANDONED_AFTER_MS = 30 * 86_400_000;
 
+type CopilotAccount = Pick<OmpQuota, "accountService" | "accountHost">;
+const UNKNOWN_SERVICE: CopilotAccount = { accountService: null, accountHost: null };
+
 /** OMP usageCacheIdentity records enterpriseUrl separately from its opaque credential fingerprint. */
-function copilotAccountHost(accountKey: string): string | null {
-  if (!accountKey.startsWith("oauth|") && !accountKey.startsWith("api_key|")) return null;
+function copilotAccount(accountKey: string): CopilotAccount {
+  if (!accountKey.startsWith("oauth|") && !accountKey.startsWith("api_key|")) {
+    return UNKNOWN_SERVICE;
+  }
   const enterprise = accountKey.split("|").find((part) => part.startsWith("enterprise:"));
-  if (!enterprise) return "github.com";
+  if (!enterprise) return { accountService: "github", accountHost: null };
   const value = enterprise.slice("enterprise:".length);
-  if (!value) return null;
+  if (!value) return UNKNOWN_SERVICE;
   try {
     const url = new URL(value.includes("://") ? value : `https://${value}`);
-    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return null;
-    return url.hostname || null;
+    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
+      return UNKNOWN_SERVICE;
+    }
+    return url.hostname ? { accountService: "ghe", accountHost: url.hostname } : UNKNOWN_SERVICE;
   } catch {
-    return null;
+    return UNKNOWN_SERVICE;
   }
 }
 
@@ -83,7 +90,7 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
             accountKey: createHash("sha256").update(quota.accountKey).digest("hex"),
             // account_id is only known to be a username for Copilot; other providers keep it private.
             accountId: copilot ? quota.accountId : null,
-            accountHost: copilot ? copilotAccountHost(quota.accountKey) : null,
+            ...(copilot ? copilotAccount(quota.accountKey) : UNKNOWN_SERVICE),
           },
         ];
       });
