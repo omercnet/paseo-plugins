@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { RpcInput } from "@getpaseo/plugin";
+import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { z } from "zod";
-import type { listOmpQuotas, OmpQuota } from "../shared/quota";
+import type { listOmpQuotas, listOmpSessionAccounts, OmpQuota } from "../shared/quota";
 import { ompDataDir } from "./paths";
+import type { OmpLogoutAccount } from "./provider/omp-rpc-protocol";
+import { OmpRpcRequestRejectedError } from "./provider/omp-rpc-transport";
+import { isOmpPublicError, OmpPublicError } from "./provider/security";
+import type { OmpSubagentControlRegistry } from "./subagents";
 
 const QuotaRowSchema = z.object({
   provider: z.string(),
@@ -171,9 +175,126 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
     return [];
   }
 }
-
 export function resolveListOmpQuotas(_input: RpcInput<typeof listOmpQuotas>): {
   quotas: OmpQuota[];
 } {
-  return { quotas: listOmpQuotasFrom(join(ompDataDir(), "agent.db")) };
+  return { quotas: listOmpQuotasFrom(defaultDatabasePath()) };
+}
+
+function defaultDatabasePath(): string {
+  return join(ompDataDir(), "agent.db");
+}
+
+function hashAccountKey(accountKey: string): string {
+  return createHash("sha256").update(accountKey).digest("hex");
+}
+
+type LoginIdentity = { email: string | null; accountId: string | null; orgId: string | null };
+
+/** OMP's usage_history account_key is `oauth|account:<id>|email:<email>|org:<id>`. */
+function usageKeyIdentity(accountKey: string): LoginIdentity {
+  const parts = new Map<string, string>();
+  for (const part of accountKey.split("|")) {
+    const colon = part.indexOf(":");
+    if (colon > 0) parts.set(part.slice(0, colon), part.slice(colon + 1));
+  }
+  return {
+    email: parts.get("email") || null,
+    accountId: parts.get("account") || null,
+    orgId: parts.get("org") || null,
+  };
+}
+
+/** OMP's own rule: differing orgs never match, an email on both sides decides, else the account id. */
+function sameLogin(login: LoginIdentity, usage: LoginIdentity): boolean {
+  if (login.orgId && usage.orgId && login.orgId !== usage.orgId) return false;
+  if (login.email && usage.email) return login.email.toLowerCase() === usage.email.toLowerCase();
+  return login.accountId !== null && login.accountId === usage.accountId;
+}
+
+/**
+ * The usage accounts recorded for each login. Only identity fields leave the credential row; a
+ * provider with one login and one usage account needs none (Copilot keys hold only a fingerprint).
+ */
+export function quotaAccountKeysFor(
+  path: string,
+  provider: string,
+  credentialIds: readonly number[],
+): Map<number, string[]> {
+  const matched = new Map<number, string[]>(credentialIds.map((id) => [id, []]));
+  if (credentialIds.length === 0) return matched;
+  try {
+    const database = new DatabaseSync(path, { readOnly: true, timeout: 500 });
+    try {
+      const usageKeys = database
+        .prepare("SELECT DISTINCT account_key AS accountKey FROM usage_history WHERE provider = ?")
+        .all(provider)
+        .flatMap(({ accountKey }) => (typeof accountKey === "string" ? [accountKey] : []));
+      if (credentialIds.length === 1 && usageKeys.length === 1) {
+        matched.set(credentialIds[0], [hashAccountKey(usageKeys[0])]);
+        return matched;
+      }
+      const rows = database
+        .prepare(
+          `SELECT id, json_extract(data, '$.email') AS email,
+                  json_extract(data, '$.accountId') AS accountId,
+                  json_extract(data, '$.orgId') AS orgId
+           FROM auth_credentials WHERE id IN (${credentialIds.map(() => "?").join(", ")})`,
+        )
+        .all(...credentialIds);
+      for (const row of rows) {
+        if (typeof row.id !== "number") continue;
+        const text = (value: unknown) => (typeof value === "string" && value.trim()) || null;
+        const login = {
+          email: text(row.email),
+          accountId: text(row.accountId),
+          orgId: text(row.orgId),
+        };
+        if (!login.email && !login.accountId) continue;
+        matched.set(
+          row.id,
+          usageKeys.filter((key) => sameLogin(login, usageKeyIdentity(key))).map(hashAccountKey),
+        );
+      }
+    } finally {
+      database.close();
+    }
+  } catch {
+    // An unreadable database only loses the link between logins and their recorded usage.
+  }
+  return matched;
+}
+
+export async function resolveListOmpSessionAccounts(
+  input: RpcInput<typeof listOmpSessionAccounts>,
+  registry: OmpSubagentControlRegistry,
+  databasePath = defaultDatabasePath(),
+): Promise<RpcOutput<typeof listOmpSessionAccounts>> {
+  const controls = registry.get(input.agentId);
+  if (!controls) throw new OmpPublicError("This agent has no running OMP Plugin session");
+  let logins: OmpLogoutAccount[];
+  try {
+    logins = await controls.listProviderAccounts(input.provider);
+  } catch (error) {
+    if (isOmpPublicError(error)) throw error;
+    if (error instanceof OmpRpcRequestRejectedError && error.code === "unsupported_command") {
+      throw new OmpPublicError("Update OMP to show which login this session uses");
+    }
+    // Native OMP error text is never forwarded.
+    throw new OmpPublicError("OMP could not list this session's logins");
+  }
+  const oauth = logins.filter((login) => login.type === "oauth");
+  const keys = quotaAccountKeysFor(
+    databasePath,
+    input.provider,
+    oauth.map((login) => login.credentialId),
+  );
+  return {
+    accounts: oauth.map((login) => ({
+      credentialId: login.credentialId,
+      label: login.label,
+      active: login.active,
+      quotaAccountKeys: keys.get(login.credentialId) ?? [],
+    })),
+  };
 }

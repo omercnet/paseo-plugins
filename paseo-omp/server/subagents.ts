@@ -1,13 +1,16 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { cancelOmpSubagent, steerOmpSubagent } from "../shared/subagents";
+import type { OmpLogoutAccount } from "./provider/omp-rpc-protocol";
 import { OmpRpcRequestRejectedError } from "./provider/omp-rpc-transport";
 import { isOmpPublicError, OmpPublicError } from "./provider/security";
 
-/** Subagent controls of one live OMP session; history-only sessions never register. */
+/** Controls of one live OMP session; history-only sessions never register. */
 export interface OmpSubagentControls {
   /** Resolves `false` when the subagent is no longer running. */
   cancelSubagent(handle: string): Promise<boolean>;
   steerSubagent(handle: string, message: string): Promise<void>;
+  /** The provider's stored logins; `active` marks the ones this session may be using. */
+  listProviderAccounts(provider: string): Promise<OmpLogoutAccount[]>;
 }
 
 export class OmpSubagentNotRunningError extends OmpPublicError {

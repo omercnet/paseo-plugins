@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +11,19 @@ import {
   quotaProviderIconName,
   quotaRecordedLabel,
   quotaResetLabel,
+  quotaSessionAccounts,
   quotaSeverityForProvider,
   quotaSummaryForProvider,
   quotasForProvider,
+  sessionPinCommand,
 } from "../client/quota-state";
-import { listOmpQuotasFrom, resolveListOmpQuotas } from "../server/quota";
+import { OmpRpcRequestRejectedError } from "../server/provider/omp-rpc-transport";
+import {
+  listOmpQuotasFrom,
+  resolveListOmpQuotas,
+  resolveListOmpSessionAccounts,
+} from "../server/quota";
+import { OmpSubagentControlRegistry, type OmpSubagentControls } from "../server/subagents";
 import type { OmpQuota } from "../shared/quota";
 
 const quotaRoots: string[] = [];
@@ -740,6 +749,117 @@ describe("OMP quota reader", () => {
       if (previous === undefined) delete process.env.PASEO_OMP_AGENT_DIR;
       else process.env.PASEO_OMP_AGENT_DIR = previous;
     }
+  });
+});
+
+describe("session account", () => {
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const teamA = "oauth|account:team|email:a@example.invalid|org:team";
+  const teamB = "oauth|account:team|email:b@example.invalid|org:team";
+  const personal = "oauth|account:me|email:a@example.invalid|org:mine";
+
+  async function database(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-session-accounts-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE usage_history (provider TEXT, account_key TEXT);
+      CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, data TEXT)`);
+    const usage = db.prepare("INSERT INTO usage_history VALUES ('openai-codex', ?)");
+    for (const key of [teamA, teamB, personal]) usage.run(key);
+    const credential = db.prepare("INSERT INTO auth_credentials VALUES (?, 'openai-codex', ?)");
+    const data = (email: string, accountId: string, orgId: string) =>
+      JSON.stringify({ email, accountId, orgId, access: "secret-token" });
+    credential.run(1, data("a@example.invalid", "team", "team"));
+    credential.run(2, data("b@example.invalid", "team", "team"));
+    credential.run(3, data("a@example.invalid", "me", "mine"));
+    db.close();
+    return path;
+  }
+
+  function registryWith(controls: Partial<OmpSubagentControls>): OmpSubagentControlRegistry {
+    const registry = new OmpSubagentControlRegistry();
+    registry.register("agent-1", {
+      cancelSubagent: async () => false,
+      steerSubagent: async () => {},
+      listProviderAccounts: async () => [],
+      ...controls,
+    });
+    return registry;
+  }
+
+  test("links each login to its own usage when team seats share an account id and emails repeat across orgs", async () => {
+    const login = (credentialId: number, active = false) => ({
+      credentialId,
+      provider: "openai-codex",
+      label: `login ${credentialId}`,
+      type: "oauth" as const,
+      active,
+    });
+    const registry = registryWith({
+      listProviderAccounts: async () => [
+        login(2, true),
+        login(1),
+        login(3),
+        { ...login(9), type: "api_key" },
+      ],
+    });
+
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "openai-codex" },
+      registry,
+      await database(),
+    );
+
+    expect(result.accounts).toEqual([
+      { credentialId: 2, label: "login 2", active: true, quotaAccountKeys: [sha(teamB)] },
+      { credentialId: 1, label: "login 1", active: false, quotaAccountKeys: [sha(teamA)] },
+      { credentialId: 3, label: "login 3", active: false, quotaAccountKeys: [sha(personal)] },
+    ]);
+  });
+
+  test("explains an OMP too old to list logins and an agent without a live session", async () => {
+    const path = await database();
+    const outdated = registryWith({
+      listProviderAccounts: async () => {
+        throw new OmpRpcRequestRejectedError(undefined, "unsupported_command");
+      },
+    });
+
+    await expect(
+      resolveListOmpSessionAccounts(
+        { agentId: "agent-1", provider: "openai-codex" },
+        outdated,
+        path,
+      ),
+    ).rejects.toThrow("Update OMP to show which login this session uses");
+    await expect(
+      resolveListOmpSessionAccounts({ agentId: "other", provider: "openai-codex" }, outdated, path),
+    ).rejects.toThrow("This agent has no running OMP Plugin session");
+  });
+
+  test("puts the account in use first and builds the pin command OMP accepts", () => {
+    const groups = quotaProviderGroups(
+      [
+        { ...quotas[0], accountKey: "busy", usedFraction: 0.9 },
+        { ...quotas[0], accountKey: "idle", usedFraction: 0.1 },
+        { ...quotas[0], accountKey: "unlinked", usedFraction: 0.5 },
+      ],
+      "anthropic",
+    );
+    const linked = quotaSessionAccounts(groups[0].accounts, [
+      { credentialId: 4, label: "busy", active: false, quotaAccountKeys: ["busy"] },
+      { credentialId: 7, label: "idle", active: true, quotaAccountKeys: ["idle"] },
+    ]);
+
+    expect(
+      linked.map(({ accountKey, inUse, login }) => [accountKey, inUse, login?.credentialId]),
+    ).toEqual([
+      ["idle", true, 7],
+      ["busy", false, 4],
+      ["unlinked", false, undefined],
+    ]);
+    expect(sessionPinCommand(4)).toBe("/session pin OAuth credential #4");
   });
 });
 

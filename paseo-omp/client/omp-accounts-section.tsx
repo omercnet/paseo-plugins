@@ -191,9 +191,26 @@ function AccountCard({
   return (
     <View style={styles.card}>
       <View style={styles.cardHeader}>
-        <Text numberOfLines={1} style={[styles.cardTitle, { flexShrink: 1 }]}>
-          {account.label}
-        </Text>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 6,
+            flexShrink: 1,
+          }}
+        >
+          <Text numberOfLines={1} style={[styles.cardTitle, { flexShrink: 1 }]}>
+            {account.label}
+          </Text>
+          {account.tags.map((tag) => (
+            <View key={tag} style={styles.chip}>
+              <Text numberOfLines={1} style={styles.chipText}>
+                {tag}
+              </Text>
+            </View>
+          ))}
+        </View>
         {account.resets ? (
           <View style={styles.chip}>
             <Text style={styles.chipText}>{resetsLabel(account.resets)}</Text>

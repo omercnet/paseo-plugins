@@ -46,6 +46,8 @@ export const OmpAccountSchema = z.object({
   /** OAuth logins have usage and resets; API keys have neither. */
   oauth: z.boolean(),
   label: z.string(),
+  /** Plan and organization badges from OMP's usage report, e.g. "Business" or "Personal". */
+  tags: z.array(z.string()),
   limits: z.array(OmpAccountLimitSchema),
   /** When OMP read the limits shown (epoch ms); null when it has no reading for this login. */
   usageAt: z.number().int().nullable(),

@@ -15,6 +15,7 @@ function account(provider: string, credentialId: number): OmpAccount {
     credentialId,
     oauth: true,
     label: `${provider}-${credentialId}`,
+    tags: [],
     limits: [],
     usageAt: null,
     usageIsRecorded: false,
