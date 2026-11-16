@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { z } from "zod";
+import { accountTags } from "../shared/account-tags";
 import {
   OMP_ACCOUNTS_SETTING_PATHS,
   type OmpAccount,
@@ -118,7 +119,16 @@ const UsageReportSchema = z.object({
       amount: z.object({ usedFraction: UsedFraction.nullish() }).nullish(),
     }),
   ).nullish(),
-  metadata: z.object({ accountId: z.string().nullish(), orgId: z.string().nullish() }).nullish(),
+  metadata: z
+    .object({
+      accountId: z.string().nullish(),
+      orgId: z.string().nullish(),
+      email: z.string().nullish(),
+      plan: z.string().nullish(),
+      planType: z.string().nullish(),
+      orgName: z.string().nullish(),
+    })
+    .nullish(),
 });
 type UsageReport = z.infer<typeof UsageReportSchema>;
 const UsageSchema = z.object({ reports: entries(UsageReportSchema).nullish() });
@@ -578,6 +588,7 @@ export function joinAccounts(
         credentialId: login.credentialId,
         oauth: false,
         label: login.label,
+        tags: [],
         limits: [],
         usageAt: null,
         usageIsRecorded: false,
@@ -608,7 +619,7 @@ export function joinAccounts(
       provider: login.provider,
       credentialId: login.credentialId,
       oauth: true,
-      label: login.label,
+      ...labelWithTags(login.label, report),
       limits: recorded?.limits ?? live,
       usageAt: recorded?.at ?? report?.fetchedAt ?? null,
       usageIsRecorded: recorded !== null,
@@ -619,6 +630,29 @@ export function joinAccounts(
   return accounts.sort(
     (a, b) => a.provider.localeCompare(b.provider) || a.credentialId - b.credentialId,
   );
+}
+
+/**
+ * Plan and organization badges from the login's usage report. OMP appends the organization to the
+ * label in parentheses (`email (org)`); once a badge shows it, the suffix only repeats it.
+ */
+function labelWithTags(
+  label: string,
+  report: UsageReport | undefined,
+): Pick<OmpAccount, "label" | "tags"> {
+  const metadata = report?.metadata;
+  const orgName = metadata?.orgName?.trim() || null;
+  const tags = accountTags({
+    plan: (metadata?.planType ?? metadata?.plan)?.trim() || null,
+    organization: orgName,
+    email: metadata?.email?.trim() || null,
+  });
+  const suffix = orgName ? ` (${orgName})` : null;
+  return {
+    label:
+      tags.length > 0 && suffix && label.endsWith(suffix) ? label.slice(0, -suffix.length) : label,
+    tags,
+  };
 }
 
 /** Where new sessions would go right now, by OMP's own balancer. */
