@@ -221,8 +221,9 @@ function sameLogin(login: LoginIdentity, usage: LoginIdentity): boolean {
   return login.accountId !== null && login.accountId === usage.accountId;
 }
 
+/** Any field OMP's identity rule compares, the organization included. */
 function hasIdentity(identity: LoginIdentity): boolean {
-  return identity.email !== null || identity.accountId !== null;
+  return identity.email !== null || identity.accountId !== null || identity.orgId !== null;
 }
 
 /**
@@ -375,20 +376,26 @@ export async function resolveListOmpSessionAccounts(
   findAgent: OmpSessionAgentLookup,
 ): Promise<RpcOutput<typeof listOmpSessionAccounts>> {
   const agent = await findAgent(input.agentId);
-  return await withOmpStore(storeForProvider(agent?.provider), async () => {
+  // Without the agent its store is unknown; answering from the default store could name another
+  // store's login that happens to share a credential id.
+  if (!agent) return { accounts: [] };
+  return await withOmpStore(storeForProvider(agent.provider), async () => {
     const databasePath = defaultDatabasePath();
-    const logins = await sessionLogins(input, registry, agent?.sessionId ?? null, databasePath);
+    const logins = await sessionLogins(input, registry, agent.sessionId, databasePath);
     const oauth = logins.filter((login) => login.type === "oauth");
     const keys = quotaAccountKeysFor(
       databasePath,
       input.provider,
       oauth.map((login) => login.credentialId),
     );
+    // With one stored login and nothing else to authenticate with, OMP has no other account to
+    // route to, so that login is the one in use even before the session records a pin for it.
+    const sole = logins.length === 1 && oauth.length === 1;
     return {
       accounts: oauth.map((login) => ({
         credentialId: login.credentialId,
         label: login.label,
-        active: login.active,
+        active: login.active || sole,
         quotaAccountKeys: keys.get(login.credentialId) ?? [],
       })),
     };

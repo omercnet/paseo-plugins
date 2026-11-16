@@ -1054,14 +1054,14 @@ describe("session account", () => {
     ]);
   });
 
-  test("links a provider's only login and usage account when neither names an identity, as Copilot's do", async () => {
+  test("treats a provider's only login as in use before any pin, and links it to its sole identity-less usage", async () => {
     const root = await home();
     const copilot = "oauth|enterprise:ghe.example.invalid|secret:abc123";
+    // No pin: the session has not sent a Copilot request yet, as for a freshly opened agent.
     await store(join(root, ".omp", "agent"), {
       provider: "github-copilot",
       usage: [copilot],
       logins: [{ id: 8 }],
-      pins: [["session-1", 8, future()]],
     });
 
     const result = await resolveListOmpSessionAccounts(
@@ -1071,8 +1071,46 @@ describe("session account", () => {
     );
 
     expect(result.accounts).toEqual([
-      expect.objectContaining({ credentialId: 8, quotaAccountKeys: [sha(copilot)] }),
+      expect.objectContaining({ credentialId: 8, active: true, quotaAccountKeys: [sha(copilot)] }),
     ]);
+  });
+
+  test("compares organizations even for a provider's only login and usage account", async () => {
+    const root = await home();
+    const list = async (usage: string) => {
+      await rm(join(root, ".omp"), { recursive: true, force: true });
+      await store(join(root, ".omp", "agent"), {
+        provider: "anthropic",
+        usage: [usage],
+        logins: [{ id: 5, orgId: "a" }],
+      });
+      return resolveListOmpSessionAccounts(
+        { agentId: "agent-1", provider: "anthropic" },
+        new OmpSubagentControlRegistry(),
+        agentLookup("omp", "session-1"),
+      );
+    };
+
+    expect((await list("oauth|org:b")).accounts[0]?.quotaAccountKeys).toEqual([]);
+    expect((await list("oauth|org:a")).accounts[0]?.quotaAccountKeys).toEqual([sha("oauth|org:a")]);
+  });
+
+  test("answers nothing when Paseo cannot name the agent, even with its runtime still registered", async () => {
+    const root = await home();
+    // A login in the default store shares the credential id the profile runtime reports.
+    await store(join(root, ".omp", "agent"), {
+      provider: "openai-codex",
+      usage: [teamA],
+      logins: [{ id: 2, email: "a@example.invalid", accountId: "team", orgId: "team" }],
+    });
+
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "openai-codex" },
+      registryWith({ listProviderAccounts: async () => [runtimeLogin(2, true)] }),
+      async () => null,
+    );
+
+    expect(result).toEqual({ accounts: [] });
   });
 
   test("keeps an organization-scoped login apart from the same email's org-less usage, as OMP does", async () => {
