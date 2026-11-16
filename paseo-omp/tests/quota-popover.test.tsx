@@ -61,6 +61,8 @@ function quota(accountKey: string, limitId: string, usedFraction: number): OmpQu
     accountId: null,
     accountService: null,
     accountHost: null,
+    plan: null,
+    organization: null,
     label: "Usage",
     windowLabel: "Weekly",
     usedFraction,
@@ -140,5 +142,18 @@ describe("quota popover reconciliation", () => {
     expect(text("10%")).toBe(firstLimit);
     expect(secondLimit.isConnected).toBe(false);
     expect(container.textContent).not.toContain("80%");
+  });
+
+  test("shows plan and organization badges under the account heading", async () => {
+    await render([
+      {
+        ...quota("a", "weekly", 0.4),
+        plan: "self_serve_business_prolite",
+        organization: "Example Team",
+      },
+    ]);
+    const account = heading("same@example.invalid").parentElement;
+    expect(account?.contains(text("Business"))).toBe(true);
+    expect(account?.contains(text("Example Team"))).toBe(true);
   });
 });
