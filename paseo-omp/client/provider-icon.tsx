@@ -2,7 +2,8 @@ import type { PluginButtonIconProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import type { ComponentType } from "react";
 import { View } from "react-native";
-import { type QuotaSeverity, quotaProviderIconName } from "./quota-state";
+import { providerIcon } from "./provider-brand";
+import type { QuotaSeverity } from "./quota-state";
 
 export function quotaProviderIcon(
   provider: string | null,
@@ -19,7 +20,7 @@ export function quotaProviderIcon(
             : color;
     return (
       <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
-        <Icon name={quotaProviderIconName(provider)} size={size} color={severityColor} />
+        <Icon icon={providerIcon(provider)} size={size} color={severityColor} />
       </View>
     );
   }

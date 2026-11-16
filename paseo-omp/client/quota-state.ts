@@ -9,23 +9,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   "openai-codex": "OpenAI",
 };
 
-// Paseo's own provider brand icons (@getpaseo/protocol names such as "claude" or "omp") are
-// host-internal: passing one as a button `icon` string fails host validation, and rendering it
-// through `Icon` draws nothing. Plugin icons resolve Lucide names only, so each provider maps
-// to the Lucide vector closest to its mark.
-const PROVIDER_ICON_NAMES: Record<string, string> = {
-  anthropic: "Asterisk",
-  azure: "Cloud",
-  cursor: "MousePointer2",
-  "google-antigravity": "Gem",
-  openai: "Atom",
-  "openai-codex": "Atom",
-};
-
-export function quotaProviderIconName(provider: string | null): string {
-  return (provider ? PROVIDER_ICON_NAMES[provider] : undefined) ?? "Gauge";
-}
-
 export type QuotaSeverity = "ok" | "warning" | "danger" | "unknown";
 
 export function quotaSeverityFromFraction(fraction: number | null): QuotaSeverity {
