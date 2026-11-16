@@ -40,6 +40,7 @@ import type {
   OmpAvailableCommand,
   OmpBranchResult,
   OmpCompactionResult,
+  OmpLogoutAccount,
   OmpMessage,
   OmpModel,
   OmpRpcEvent,
@@ -489,6 +490,12 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
       ? this.nativeModelsByPublicId.get(this.configState.model)
       : undefined;
     return model?.provider ?? null;
+  }
+
+  /** The provider's stored logins as this session's runtime sees them; `active` marks its own. */
+  async listProviderAccounts(provider: string): Promise<OmpLogoutAccount[]> {
+    if (this.closed || this.runtimeDead) throw new OmpPublicError("The OMP session is closed");
+    return await this.runtime.getLogoutAccounts(provider);
   }
 
   /**

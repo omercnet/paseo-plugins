@@ -151,7 +151,7 @@ export const OMP_RPC_COMMAND_POLICIES = {
   cancel_subagent: "implemented",
   fork: "unsupported",
   get_btw_history: "unsupported",
-  get_logout_accounts: "unsupported",
+  get_logout_accounts: "implemented",
   goal: "unsupported",
   live_mute: "unsupported",
   live_connect: "unsupported",
@@ -2014,6 +2014,21 @@ export const OmpSubagentsResultSchema = z.object({
     .max(1_024),
 });
 export const OmpCancelSubagentResultSchema = z.object({ cancelled: z.boolean() });
+/** Stored logins of one provider; `active` marks the ones this session may be using. */
+export const OmpLogoutAccountsResultSchema = z.object({
+  accounts: z
+    .array(
+      z.object({
+        credentialId: z.number().int().nonnegative(),
+        provider: IDENTIFIER,
+        label: TEXT,
+        type: z.enum(["api_key", "oauth"]),
+        active: z.boolean(),
+      }),
+    )
+    .max(256),
+});
+export type OmpLogoutAccount = z.infer<typeof OmpLogoutAccountsResultSchema>["accounts"][number];
 export const OmpSteerSubagentResultSchema = z.object({}).strict().optional();
 export const OmpSubagentMessagesResultSchema = z.object({
   sessionFile: boundedString(MAX_PATH_LENGTH),

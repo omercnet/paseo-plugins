@@ -472,6 +472,7 @@ describe("OMP subagent controls", () => {
       cancelSubagent: async () => false,
       steerSubagent: async () => {},
       modelProvider: () => null,
+      listProviderAccounts: async () => [],
     });
     const older = controls();
     const newer = controls();

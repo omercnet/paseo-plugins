@@ -44,3 +44,32 @@ export const getOmpSessionModelProvider = defineRpc({
   input: z.object({ agentId: z.string().min(1).max(256) }),
   output: z.object({ provider: z.string().nullable() }),
 });
+
+export const OmpSessionAccountSchema = z.object({
+  /** OMP's credential id; `/session pin OAuth credential #<id>` selects this login. */
+  credentialId: z.number().int().nonnegative(),
+  label: z.string(),
+  /** OMP routes this session's requests to this login, as OMP itself reports or recorded it. */
+  active: z.boolean(),
+  /**
+   * The provider's only stored credential of any kind. Not proof of use: an environment or explicit
+   * key can still serve the session, so it is shown apart from `active` and never offered a switch.
+   */
+  onlyLogin: z.boolean(),
+  /** `OmpQuota.accountKey` values recorded for this login. */
+  quotaAccountKeys: z.array(z.string()),
+});
+export type OmpSessionAccount = z.infer<typeof OmpSessionAccountSchema>;
+
+/** OAuth logins of the agent's current provider, as its live OMP session sees them. */
+export const listOmpSessionAccounts = defineRpc({
+  name: "paseo-omp.list-session-accounts",
+  input: z.object({
+    agentId: z.string().min(1).max(256),
+    provider: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9.-]*$/u)
+      .max(128),
+  }),
+  output: z.object({ accounts: z.array(OmpSessionAccountSchema) }),
+});

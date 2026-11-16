@@ -143,7 +143,7 @@ test("owned agent directory updates reconcile new agent pills and cached quota r
       expect.objectContaining({ visible: true, label: "Quotas · 20%" }),
     );
     expect(quota("default").update).toHaveBeenLastCalledWith(
-      expect.objectContaining({ visible: true, label: "Anthropic · 50%" }),
+      expect.objectContaining({ visible: true, label: "50%" }),
     );
     expect(quota("codex").update).not.toHaveBeenCalled();
     expect(
@@ -254,7 +254,7 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
   try {
     await vi.advanceTimersByTimeAsync(300);
     expect(quota("live")).toHaveBeenLastCalledWith(
-      expect.objectContaining({ label: "OpenAI · 30%" }),
+      expect.objectContaining({ label: "30%", title: expect.stringMatching(/^OpenAI · /u) }),
     );
     // A closed agent has no session to ask and keeps the all-provider summary.
     expect(quota("ended")).toHaveBeenLastCalledWith(
