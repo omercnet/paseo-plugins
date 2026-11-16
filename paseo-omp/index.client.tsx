@@ -61,7 +61,7 @@ import {
 import { OMP_MCP_AUTH_TIMELINE_KIND, ompMcpAuthorizationTimelineSchema } from "./shared/mcp";
 import { type OmpStore, storeForProvider } from "./shared/omp-store";
 import { ompImageTimelineSchema, transformOmpImageToolItem } from "./shared/provider-image";
-import { listOmpQuotas } from "./shared/quota";
+import { listOmpQuotas, listOmpSessionAccounts, type OmpSessionAccount } from "./shared/quota";
 import { OMP_RULE_NOTICE_KIND, ompRuleNoticeSchema } from "./shared/rule-notices";
 import { OMP_SUBAGENT_STRIP_KIND, ompSubagentStripSchema } from "./shared/subagents";
 
@@ -496,18 +496,26 @@ export default function contribute(client: PluginClientContext) {
           try {
             const result = await loadStoreQuotas(targets[0].entry.store);
             if (disposed || !preferences?.quota) return;
-            for (const { agentId, entry, handle } of targets) {
-              const current = pills.get(agentId);
-              if (current !== entry || current.quota !== handle) continue;
-              const severity = quotaSeverityForProvider(result.quotas, entry.quotaProvider, true);
-              handle.update({
-                ...quotaSummaryForProvider(result.quotas, entry.quotaProvider, true),
-                ...(severity === entry.quotaSeverity
-                  ? {}
-                  : { icon: quotaProviderIcon(entry.quotaProvider, severity) }),
-              });
-              entry.quotaSeverity = severity;
-            }
+            await Promise.all(
+              targets.map(async ({ agentId, entry, handle }) => {
+                const inUse = await accountInUse(agentId, entry.quotaProvider);
+                const current = pills.get(agentId);
+                if (disposed || current !== entry || current.quota !== handle) return;
+                const severity = quotaSeverityForProvider(
+                  result.quotas,
+                  entry.quotaProvider,
+                  true,
+                  inUse,
+                );
+                handle.update({
+                  ...quotaSummaryForProvider(result.quotas, entry.quotaProvider, true, inUse),
+                  ...(severity === entry.quotaSeverity
+                    ? {}
+                    : { icon: quotaProviderIcon(entry.quotaProvider, severity) }),
+                });
+                entry.quotaSeverity = severity;
+              }),
+            );
           } catch {
             // Retain only this store's last result. Failure never falls back to another profile.
           }
@@ -515,6 +523,20 @@ export default function contribute(client: PluginClientContext) {
       );
     } finally {
       quotaRefreshRunning = false;
+    }
+  }
+
+  /** The login OMP routes this agent's provider requests to, or null when it cannot say. */
+  async function accountInUse(
+    agentId: string,
+    provider: string | null,
+  ): Promise<OmpSessionAccount | null> {
+    if (!provider) return null;
+    try {
+      const { accounts } = await client.rpc(listOmpSessionAccounts, { agentId, provider });
+      return accounts.find((account) => account.active) ?? null;
+    } catch {
+      return null;
     }
   }
 

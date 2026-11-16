@@ -143,7 +143,7 @@ test("owned agent directory updates reconcile new agent pills and cached quota r
       expect.objectContaining({ visible: true, label: "Quotas · 20%" }),
     );
     expect(quota("default").update).toHaveBeenLastCalledWith(
-      expect.objectContaining({ visible: true, label: "Anthropic · 50%" }),
+      expect.objectContaining({ visible: true, label: "50%" }),
     );
     expect(quota("codex").update).not.toHaveBeenCalled();
     expect(

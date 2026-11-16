@@ -79,12 +79,35 @@ describe("session-specific quota selection", () => {
     expect(quotasForProvider(quotas, "anthropic")).toEqual([quotas[0]]);
     expect(quotaSummaryForProvider(quotas, "anthropic")).toEqual({
       visible: true,
-      label: "Anthropic · 25%",
+      label: "25%",
+      title: "Anthropic · all accounts · 25% (last recorded usage, not live)",
     });
-    expect(quotaSummaryForProvider(quotas, "azure")).toEqual({
+    expect(quotaSummaryForProvider(quotas, "azure")).toMatchObject({ visible: true, label: "—" });
+  });
+
+  test("summarizes the account in use, not the provider's busiest account", () => {
+    const rows: OmpQuota[] = [
+      { ...quotas[0], accountKey: "spent", usedFraction: 1 },
+      { ...quotas[0], accountKey: "working", usedFraction: 0.19 },
+    ];
+    const working = {
+      credentialId: 5,
+      label: "me@example.invalid (Team)",
+      active: true,
+      quotaAccountKeys: ["working"],
+    };
+
+    expect(quotaSummaryForProvider(rows, "anthropic", false, working)).toEqual({
       visible: true,
-      label: "Azure · —",
+      label: "19%",
+      title: "Anthropic · me@example.invalid (Team) · 19% (last recorded usage, not live)",
     });
+    expect(quotaSeverityForProvider(rows, "anthropic", false, working)).toBe("ok");
+    // Without an account in use, or with no recorded usage for it, the provider's peak stands.
+    expect(quotaSummaryForProvider(rows, "anthropic").label).toBe("100%");
+    expect(
+      quotaSummaryForProvider(rows, "anthropic", false, { ...working, quotaAccountKeys: [] }).label,
+    ).toBe("100%");
   });
 
   test("maps each provider to a distinct icon and severity bucket", () => {
@@ -928,12 +951,15 @@ describe("profile alias and opaque-model quotas", () => {
     expect(quotaProviderFromSession("omp-plugin-team-beta", "omp:model:opaque-hash")).toBeNull();
   });
   test("opaque OMP models retain an explicitly aggregate quota pill", () => {
-    expect(quotaSummaryForProvider(quotas, null, true)).toEqual({
+    expect(quotaSummaryForProvider(quotas, null, true)).toMatchObject({
       visible: true,
       label: "Quotas · 90%",
     });
     expect(quotaSeverityForProvider(quotas, null, true)).toBe("danger");
-    expect(quotaSummaryForProvider([], null, true)).toEqual({ visible: true, label: "Quotas · —" });
+    expect(quotaSummaryForProvider([], null, true)).toMatchObject({
+      visible: true,
+      label: "Quotas · —",
+    });
     expect(quotaSummaryForProvider(quotas, null).visible).toBe(false);
   });
 });

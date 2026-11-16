@@ -62,31 +62,58 @@ export function quotasForProvider(
       : [];
 }
 
+/**
+ * The quotas the pill summarizes: the session's account in use when OMP named one and its usage is
+ * recorded, otherwise every account of the provider.
+ */
+export function quotasInUse(
+  quotas: readonly OmpQuota[],
+  provider: string | null,
+  includeAll: boolean,
+  inUse: OmpSessionAccount | null,
+): OmpQuota[] {
+  const matching = quotasForProvider(quotas, provider, includeAll);
+  if (!provider || !inUse) return matching;
+  const own = matching.filter((quota) => inUse.quotaAccountKeys.includes(quota.accountKey));
+  return own.length > 0 ? own : matching;
+}
+
+/**
+ * The pill shows only the percentage beside the provider icon, so a long provider name never
+ * truncates the number; the title names the provider and the account it describes.
+ */
 export function quotaSummaryForProvider(
   quotas: readonly OmpQuota[],
   provider: string | null,
   includeAll = false,
-): { visible: boolean; label: string } {
-  const matching = quotasForProvider(quotas, provider, includeAll);
-  const label = provider ? quotaProviderLabel(provider) : "Quotas";
+  inUse: OmpSessionAccount | null = null,
+): { visible: boolean; label: string; title: string } {
+  const matching = quotasInUse(quotas, provider, includeAll, inUse);
+  const own =
+    provider !== null &&
+    inUse !== null &&
+    matching.some((quota) => inUse.quotaAccountKeys.includes(quota.accountKey));
   const used = matching.flatMap((quota) =>
     quota.usedFraction === null ? [] : [quota.usedFraction],
   );
-  if (used.length === 0) {
-    return provider
-      ? { visible: true, label: `${quotaProviderLabel(provider)} · —` }
-      : { visible: includeAll, label: "Quotas · —" };
+  const peak = used.length === 0 ? null : `${Math.round(Math.max(...used) * 100)}%`;
+  const scope = provider
+    ? [quotaProviderLabel(provider), own && inUse ? inUse.label : "all accounts"].join(" · ")
+    : "All providers";
+  const title = `${scope} · ${peak ?? "no recorded usage"} (last recorded usage, not live)`;
+  if (!provider) {
+    return { visible: includeAll, label: `Quotas · ${peak ?? "—"}`, title };
   }
-  const peak = Math.round(Math.max(...used) * 100);
-  return { visible: true, label: `${label} · ${peak}%` };
+  return { visible: true, label: peak ?? "—", title };
 }
 
 export function quotaSeverityForProvider(
   quotas: readonly OmpQuota[],
   provider: string | null,
   includeAll = false,
+  inUse: OmpSessionAccount | null = null,
 ): QuotaSeverity {
-  const used = quotasForProvider(quotas, provider, includeAll).flatMap((quota) =>
+  const used = quotasInUse(quotas, provider, includeAll, inUse).flatMap((quota) =>
     quota.usedFraction === null ? [] : [quota.usedFraction],
   );
   return used.length === 0 ? "unknown" : quotaSeverityFromFraction(Math.max(...used));
