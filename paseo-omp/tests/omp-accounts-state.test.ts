@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
+  ACCOUNT_CARD_MIN_WIDTH,
+  ACCOUNT_GRID_GAP,
+  accountGridColumns,
   accountGroups,
   accountsPollInterval,
   balanceLine,
@@ -153,5 +156,16 @@ describe("labels", () => {
     expect(balanceLine({ provider: "anthropic", model: "anthropic/m", shares: [] })).toBe(
       "New agents on anthropic/m go to no login",
     );
+  });
+});
+
+describe("account grid", () => {
+  test("fits one, two or three cards per row and never squeezes a card under its minimum", () => {
+    expect(accountGridColumns(0)).toBe(1);
+    expect(accountGridColumns(ACCOUNT_CARD_MIN_WIDTH * 2 + ACCOUNT_GRID_GAP - 1)).toBe(1);
+    expect(accountGridColumns(ACCOUNT_CARD_MIN_WIDTH * 2 + ACCOUNT_GRID_GAP)).toBe(2);
+    expect(accountGridColumns(ACCOUNT_CARD_MIN_WIDTH * 3 + ACCOUNT_GRID_GAP * 2)).toBe(3);
+    // A very wide page still caps at three cards per row.
+    expect(accountGridColumns(5_000)).toBe(3);
   });
 });

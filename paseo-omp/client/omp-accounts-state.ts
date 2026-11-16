@@ -63,6 +63,16 @@ export function accountsPollInterval(view: OmpAccountsView | undefined): number 
   return view?.logins.some(loginIsOpen) ? OPEN_LOGIN_POLL_MS : IDLE_POLL_MS;
 }
 
+/** Narrowest an account card gets before the grid drops a column; its reserve picker needs it. */
+export const ACCOUNT_CARD_MIN_WIDTH = 340;
+export const ACCOUNT_GRID_GAP = 10;
+
+/** One, two or three account cards per row, as many as fit `width` at the minimum card width. */
+export function accountGridColumns(width: number): 1 | 2 | 3 {
+  const fits = Math.floor((width + ACCOUNT_GRID_GAP) / (ACCOUNT_CARD_MIN_WIDTH + ACCOUNT_GRID_GAP));
+  return fits >= 3 ? 3 : fits === 2 ? 2 : 1;
+}
+
 export function usedPercent(usedFraction: number): number {
   return Math.min(100, Math.round(usedFraction * 100));
 }

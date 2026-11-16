@@ -10,7 +10,7 @@ import {
   useToast,
 } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactElement, type ReactNode, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   cancelOmpAccountLogin,
@@ -31,6 +31,8 @@ import {
 import { type OmpStore, storeLabel } from "../shared/omp-store";
 import { openOmpExternalUrl } from "./external-url";
 import {
+  ACCOUNT_GRID_GAP,
+  accountGridColumns,
   accountGroups,
   accountsPollInterval,
   balanceLine,
@@ -41,6 +43,7 @@ import {
 } from "./omp-accounts-state";
 import type { OmpConfigStyles } from "./omp-config-styles";
 import { ompStoreKey } from "./omp-store-state";
+import { providerIcon } from "./provider-brand";
 import { quotaResetLabel, quotaSeverityFromFraction } from "./quota-state";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -189,7 +192,7 @@ function AccountCard({
   const reserveShown = reserveOptions(account, defaultReservePct);
   const age = usageAgeLabel(account);
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { flex: 1 }]}>
       <View style={styles.cardHeader}>
         <View
           style={{
@@ -273,6 +276,32 @@ function AccountCard({
           }
         />
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * Lays account cards out one, two or three to a row by the width it gets, so a wide window shows
+ * several logins side by side instead of stretching each one across the page.
+ */
+function AccountGrid({ children }: { children: ReactElement[] }) {
+  const [width, setWidth] = useState(0);
+  const columns = accountGridColumns(width);
+  const cardWidth = width > 0 ? (width - ACCOUNT_GRID_GAP * (columns - 1)) / columns : undefined;
+  return (
+    <View
+      onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
+      style={{ flexDirection: "row", flexWrap: "wrap", gap: ACCOUNT_GRID_GAP }}
+    >
+      {children.map((child) => (
+        // Each wrapper takes its card's key, so a removed login never shifts another card's state.
+        <View
+          key={child.key}
+          style={cardWidth === undefined ? { width: "100%" } : { width: cardWidth }}
+        >
+          {child}
+        </View>
+      ))}
     </View>
   );
 }
@@ -838,7 +867,10 @@ export function OmpAccountsSection({
       ) : null}
       {groups.map(({ provider, accounts: logins }) => (
         <View key={provider.id} style={{ gap: 8 }}>
-          <Text style={styles.cardTitle}>{provider.name}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Icon icon={providerIcon(provider.id)} size={18} color={theme.colors.foreground} />
+            <Text style={styles.cardTitle}>{provider.name}</Text>
+          </View>
           {view?.balance
             .filter((preview) => preview.provider === provider.id)
             .map((preview) => (
@@ -846,19 +878,21 @@ export function OmpAccountsSection({
                 {balanceLine(preview)}
               </Text>
             ))}
-          {logins.map((account) => (
-            <AccountCard
-              key={accountKey(account)}
-              account={account}
-              theme={theme}
-              styles={styles}
-              defaultReservePct={defaultReserve}
-              saving={steer.isPending}
-              onRemove={() => setPending({ kind: "remove", account })}
-              onRedeem={() => setPending({ kind: "reset", account })}
-              onSteer={(change) => steer.mutate({ kind: "account", account, ...change })}
-            />
-          ))}
+          <AccountGrid>
+            {logins.map((account) => (
+              <AccountCard
+                key={accountKey(account)}
+                account={account}
+                theme={theme}
+                styles={styles}
+                defaultReservePct={defaultReserve}
+                saving={steer.isPending}
+                onRemove={() => setPending({ kind: "remove", account })}
+                onRedeem={() => setPending({ kind: "reset", account })}
+                onSteer={(change) => steer.mutate({ kind: "account", account, ...change })}
+              />
+            ))}
+          </AccountGrid>
         </View>
       ))}
       {view?.installed && view.fetchedAt !== null ? (
