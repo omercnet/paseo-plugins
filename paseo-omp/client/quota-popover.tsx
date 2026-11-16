@@ -249,7 +249,10 @@ export function QuotaPopover(props: PluginButtonContentProps) {
               <Text style={styles.accountSuffix}>{` · ${account.suffix}`}</Text>
             ) : null}
             {account.tags.length > 0 ? renderTags(account.tags, styles.headingTags) : null}
-            {account.inUse ? <Text style={[styles.badge, { marginLeft: 6 }]}>IN USE</Text> : null}
+            {/* Right-aligned like the Switch button the other accounts have in this spot. */}
+            {account.inUse ? (
+              <Text style={[styles.badge, { marginLeft: "auto", flexShrink: 0 }]}>IN USE</Text>
+            ) : null}
             {login && !account.inUse ? renderSwitch(account, login, true) : null}
           </View>
         ) : account.tags.length > 0 ? (
