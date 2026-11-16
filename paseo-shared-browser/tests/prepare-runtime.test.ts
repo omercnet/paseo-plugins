@@ -5,13 +5,16 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  readlink,
   realpath,
+  rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,7 +47,11 @@ it("removes the staging runtime when preparation fails", async () => {
   expect(await readdir(join(root, "plugin-data", "shared-browser"))).toEqual([]);
 });
 
-const agentBrowserVersion = "0.43.0";
+// Renovate bumps the dependency in package.json, so the tests follow it without a second pin.
+const agentBrowserVersion: string = createRequire(import.meta.url)("../package.json").dependencies[
+  "agent-browser"
+];
+const otherVersion = "0.0.1";
 const platformPackages = [
   "@agent-browser/cli-darwin-arm64",
   "@agent-browser/cli-darwin-x64",
@@ -146,6 +153,10 @@ describe("agent-browser platform package staging", () => {
     if (!target) throw new Error("agent-browser has no target for this host");
     expect(upstream.findNativeBinary(join(runtimeModules, "agent-browser"), target)).toBe(binary);
     expect(await readFile(binary, "utf8")).toBe(expected);
+    // Fixtures are written without the execute bit, so this proves staging sets it.
+    if (os !== "win32" && process.platform !== "win32") {
+      expect((await stat(binary)).mode & 0o111).not.toBe(0);
+    }
     expect(await readdir(join(runtimeModules, "@agent-browser"))).toEqual([expected.split("/")[1]]);
   });
 
@@ -170,7 +181,7 @@ describe("agent-browser platform package staging", () => {
 
   it("rejects a platform package from another release", async () => {
     const { stageAgentBrowserPackages } = await loadStaging();
-    const agentBrowserRoot = await fakeAgentBrowserInstall(join(root, "store"), "0.42.0");
+    const agentBrowserRoot = await fakeAgentBrowserInstall(join(root, "store"), otherVersion);
 
     await expect(
       stageAgentBrowserPackages({
@@ -181,7 +192,60 @@ describe("agent-browser platform package staging", () => {
         cpu: "arm64",
         libc: null,
       }),
-    ).rejects.toThrow(/Expected @agent-browser\/cli-darwin-arm64 0\.43\.0, found .* 0\.42\.0/);
+    ).rejects.toThrow(
+      `Expected @agent-browser/cli-darwin-arm64 ${agentBrowserVersion}, found @agent-browser/cli-darwin-arm64 ${otherVersion}`,
+    );
+  });
+
+  it("rejects a package that names a different package", async () => {
+    const { stageAgentBrowserPackages } = await loadStaging();
+    const agentBrowserRoot = await fakeAgentBrowserInstall(join(root, "store"));
+    await writeFile(
+      join(root, "store", "node_modules", "@agent-browser", "cli-linux-x64-gnu", "package.json"),
+      JSON.stringify({ name: "@agent-browser/cli-linux-x64-musl", version: agentBrowserVersion }),
+    );
+
+    await expect(
+      stageAgentBrowserPackages({
+        agentBrowserRoot,
+        runtimeModules: join(root, "runtime", "node_modules"),
+        version: agentBrowserVersion,
+        os: "linux",
+        cpu: "x64",
+        libc: "glibc",
+      }),
+    ).rejects.toThrow(
+      `Expected @agent-browser/cli-linux-x64-gnu ${agentBrowserVersion}, found @agent-browser/cli-linux-x64-musl`,
+    );
+  });
+
+  it("rejects a platform package without its binary", async () => {
+    const { stageAgentBrowserPackages } = await loadStaging();
+    const agentBrowserRoot = await fakeAgentBrowserInstall(join(root, "store"));
+    await rm(
+      join(
+        root,
+        "store",
+        "node_modules",
+        "@agent-browser",
+        "cli-win32-x64-msvc",
+        "bin",
+        "agent-browser.exe",
+      ),
+    );
+
+    await expect(
+      stageAgentBrowserPackages({
+        agentBrowserRoot,
+        runtimeModules: join(root, "runtime", "node_modules"),
+        version: agentBrowserVersion,
+        os: "win32",
+        cpu: "x64",
+        libc: null,
+      }),
+    ).rejects.toThrow(
+      `@agent-browser/cli-win32-x64-msvc ${agentBrowserVersion} has no bin/agent-browser.exe`,
+    );
   });
 
   it("rejects an unsupported architecture", async () => {
@@ -201,7 +265,7 @@ describe("agent-browser platform package staging", () => {
   });
 });
 
-it("prepares a runtime whose agent-browser entry runs the installed native binary", async () => {
+it("prepares a relocatable runtime whose agent-browser entry runs the native binary", async () => {
   const script = fileURLToPath(new URL("../scripts/prepare-runtime.mjs", import.meta.url).href);
   // A stand-in Chromium keeps the test offline; only agent-browser is real.
   const chromium = join(root, process.platform === "win32" ? "chrome.exe" : "chrome");
@@ -229,9 +293,18 @@ it("prepares a runtime whose agent-browser entry runs the installed native binar
     ".bin",
     process.platform === "win32" ? "agent-browser.exe" : "agent-browser",
   );
-  const { stdout } = await execFileAsync(entry, ["--version"], { encoding: "utf8" });
+  if (process.platform !== "win32") {
+    // Validation must not let the upstream launcher rewrite the entry to an absolute path.
+    expect(isAbsolute(await readlink(entry))).toBe(false);
+  }
+
+  // A moved runtime keeps working and cannot fall back to binaries at the old location.
+  const moved = join(root, "moved-runtime");
+  await rename(runtime, moved);
+  const movedEntry = join(moved, relative(runtime, entry));
+  const { stdout } = await execFileAsync(movedEntry, ["--version"], { encoding: "utf8" });
   expect(stdout).toContain(agentBrowserVersion);
-  expect(await readdir(join(runtime, "node_modules", "@agent-browser"))).toHaveLength(1);
+  expect(await readdir(join(moved, "node_modules", "@agent-browser"))).toHaveLength(1);
 }, 120_000);
 
 it.each(["EBUSY", "EPERM"])(

@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { access, chmod, cp, lstat, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { arch, homedir, platform } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
@@ -188,11 +188,14 @@ async function installChromium() {
   return runtimeChromiumEntry;
 }
 
+// The entry runs the native binary directly through a relative link, so the runtime stays
+// relocatable. The agent-browser.js launcher would rewrite .bin/agent-browser to an absolute
+// path on its first run.
 async function stageAgentBrowserEntry(nativeBinary) {
   if (hostPlatform === "win32") {
     await cp(nativeBinary, runtimeEntry, { force: true });
   } else {
-    await symlink("../agent-browser/bin/agent-browser.js", runtimeEntry);
+    await symlink(relative(dirname(runtimeEntry), nativeBinary), runtimeEntry);
   }
   await chmod(runtimeEntry, 0o700);
 }
