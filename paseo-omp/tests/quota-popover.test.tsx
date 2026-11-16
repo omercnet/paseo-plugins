@@ -144,7 +144,7 @@ describe("quota popover reconciliation", () => {
     expect(container.textContent).not.toContain("80%");
   });
 
-  test("shows plan and organization badges under the account heading", async () => {
+  test("shows plan and organization badges beside the account name", async () => {
     await render([
       {
         ...quota("a", "weekly", 0.4),
@@ -152,8 +152,9 @@ describe("quota popover reconciliation", () => {
         organization: "Example Team",
       },
     ]);
-    const account = heading("same@example.invalid").parentElement;
-    expect(account?.contains(text("Business"))).toBe(true);
-    expect(account?.contains(text("Example Team"))).toBe(true);
+    const name = heading("same@example.invalid");
+    expect(name.contains(text("Business"))).toBe(true);
+    expect(name.contains(text("Example Team"))).toBe(true);
+    expect(name.getAttribute("aria-label")).toBe("same@example.invalid · Business · Example Team");
   });
 });
