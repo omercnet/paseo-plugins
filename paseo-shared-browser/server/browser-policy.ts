@@ -538,16 +538,24 @@ export class SessionManager {
   ): Promise<void> {
     this.assertOpen();
     this.requireViewer(viewerToken);
-    const run = this.relaunchTail.then(() => this.relaunchStale(apply, staleRuntimes));
+    const lifecycleGeneration = this.lifecycleGeneration;
+    const run = this.relaunchTail.then(() =>
+      this.relaunchStale(lifecycleGeneration, apply, staleRuntimes),
+    );
     this.relaunchTail = run.catch(() => undefined);
     return run;
   }
 
   private async relaunchStale(
+    lifecycleGeneration: number,
     apply: () => Promise<void>,
     staleRuntimes: () => Promise<{ workspaceId: string; runtimeId: string }[]>,
   ): Promise<void> {
+    // The viewer authorized this request when it was accepted. A reset or close while it
+    // waited behind another relaunch voids it; that relaunch itself may expire the viewer.
     this.assertOpen();
+    if (lifecycleGeneration !== this.lifecycleGeneration)
+      throw new Error("Shared browser manager was reset");
     await apply();
     // A first attachment that started before the write may still launch with the old
     // value. Let it register its runtime so the staleness check below can see it.

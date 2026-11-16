@@ -299,4 +299,33 @@ describe("launch-option relaunch against a live runtime registry", () => {
     expect(stopped).toEqual([viewer.state.runtimeId]);
     manager.disconnect();
   });
+
+  it("drops a queued relaunch when the manager resets while it waits", async () => {
+    const { manager } = await registry();
+    const viewer = await manager.attach("workspace", "Viewer");
+    let release!: () => void;
+    const first = manager.relaunchOpenBrowsers(
+      viewer.viewerToken,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      async () => [],
+    );
+    let applied = false;
+    const queued = manager.relaunchOpenBrowsers(
+      viewer.viewerToken,
+      async () => {
+        applied = true;
+      },
+      async () => [],
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.reset();
+    release();
+    await first;
+    await expect(queued).rejects.toThrow("Shared browser manager was reset");
+    expect(applied).toBe(false);
+    manager.disconnect();
+  });
 });
