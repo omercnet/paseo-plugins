@@ -16,7 +16,7 @@ const PLAN_LABELS: Record<string, string> = {
 };
 
 /**
- * Plan and organization badges for one login, e.g. ["Business", "Sec Tech Team"] or ["Personal"].
+ * Plan and organization badges for one login, e.g. ["Business", "Example Team"] or ["Personal"].
  * `plan` is the raw plan OMP's usage report names (Codex `planType`, Copilot `plan`).
  */
 export function accountTags(input: {
