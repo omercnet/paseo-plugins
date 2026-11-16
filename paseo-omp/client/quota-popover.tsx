@@ -290,9 +290,14 @@ export function QuotaPopover(props: PluginButtonContentProps) {
             </View>
           );
         })}
-        {login && !account.inUse && !login.onlyLogin && !account.label
-          ? renderSwitch(account, login, false)
-          : null}
+        {/* An unnamed account has no heading row, so its state sits below its limits. */}
+        {!account.label && account.inUse ? (
+          <Text style={[styles.badge, { alignSelf: "flex-start" }]}>IN USE</Text>
+        ) : !account.label && login?.onlyLogin ? (
+          <Text style={[styles.tag, { alignSelf: "flex-start" }]}>ONLY LOGIN</Text>
+        ) : login && !account.inUse && !account.label ? (
+          renderSwitch(account, login, false)
+        ) : null}
       </View>
     );
   }

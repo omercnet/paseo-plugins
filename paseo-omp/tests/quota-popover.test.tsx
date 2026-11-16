@@ -250,4 +250,26 @@ describe("quota popover reconciliation", () => {
     expect(container.textContent).not.toContain("IN USE");
     expect(container.querySelector('[aria-label$="for this session"]')).toBeNull();
   });
+
+  test("shows an unnamed account's state below its limits, where it has no heading", async () => {
+    const unnamed = { ...quota("a", "weekly", 0.3), email: null };
+    const login = {
+      credentialId: 8,
+      label: "OAuth credential #8",
+      active: false,
+      onlyLogin: true,
+      quotaAccountKeys: ["a"],
+    };
+
+    recorded.logins = [login];
+    await render([unnamed]);
+    expect(container.querySelector('[role="heading"]')).toBeNull();
+    expect(text("ONLY LOGIN")).toBeTruthy();
+    expect(container.querySelector('[aria-label$="for this session"]')).toBeNull();
+
+    recorded.logins = [{ ...login, active: true, onlyLogin: false }];
+    await render([unnamed]);
+    expect(text("IN USE")).toBeTruthy();
+    expect(container.textContent).not.toContain("ONLY LOGIN");
+  });
 });
