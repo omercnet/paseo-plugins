@@ -252,8 +252,13 @@ export function QuotaPopover(props: PluginButtonContentProps) {
             {/* Right-aligned like the Switch button the other accounts have in this spot. */}
             {account.inUse ? (
               <Text style={[styles.badge, { marginLeft: "auto", flexShrink: 0 }]}>IN USE</Text>
+            ) : login?.onlyLogin ? (
+              // The provider's only stored credential: nothing to switch to, but its use unproven.
+              <Text style={[styles.tag, { marginLeft: "auto", flexShrink: 0 }]}>ONLY LOGIN</Text>
             ) : null}
-            {login && !account.inUse ? renderSwitch(account, login, true) : null}
+            {login && !account.inUse && !login.onlyLogin
+              ? renderSwitch(account, login, true)
+              : null}
           </View>
         ) : account.tags.length > 0 ? (
           renderTags(account.tags, styles.tags)
@@ -285,7 +290,9 @@ export function QuotaPopover(props: PluginButtonContentProps) {
             </View>
           );
         })}
-        {login && !account.inUse && !account.label ? renderSwitch(account, login, false) : null}
+        {login && !account.inUse && !login.onlyLogin && !account.label
+          ? renderSwitch(account, login, false)
+          : null}
       </View>
     );
   }

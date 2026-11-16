@@ -39,8 +39,13 @@ export const OmpSessionAccountSchema = z.object({
   /** OMP's credential id; `/session pin OAuth credential #<id>` selects this login. */
   credentialId: z.number().int().nonnegative(),
   label: z.string(),
-  /** OMP routes this session's requests to this login. */
+  /** OMP routes this session's requests to this login, as OMP itself reports or recorded it. */
   active: z.boolean(),
+  /**
+   * The provider's only stored credential of any kind. Not proof of use: an environment or explicit
+   * key can still serve the session, so it is shown apart from `active` and never offered a switch.
+   */
+  onlyLogin: z.boolean(),
   /** `OmpQuota.accountKey` values recorded for this login. */
   quotaAccountKeys: z.array(z.string()),
 });

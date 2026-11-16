@@ -94,6 +94,7 @@ describe("session-specific quota selection", () => {
       credentialId: 5,
       label: "me@example.invalid (Team)",
       active: true,
+      onlyLogin: false,
       quotaAccountKeys: ["working"],
     };
 
@@ -824,6 +825,8 @@ describe("session account", () => {
     orgId?: string;
     orgName?: string;
     disabled?: boolean;
+    /** A stored API key instead of an OAuth login. */
+    apiKey?: boolean;
   };
 
   /** OMP's tables with only the columns this reads; tokens sit beside identity as in OMP. */
@@ -845,10 +848,11 @@ describe("session account", () => {
     for (const key of seed.usage) {
       db.prepare("INSERT INTO usage_history VALUES (?, ?)").run(seed.provider, key);
     }
-    for (const { id, disabled, ...identity } of seed.logins) {
-      db.prepare("INSERT INTO auth_credentials VALUES (?, ?, 'oauth', ?, ?)").run(
+    for (const { id, disabled, apiKey, ...identity } of seed.logins) {
+      db.prepare("INSERT INTO auth_credentials VALUES (?, ?, ?, ?, ?)").run(
         id,
         seed.provider,
+        apiKey ? "api_key" : "oauth",
         JSON.stringify({ ...identity, access: "secret-token" }),
         disabled ? "user" : null,
       );
@@ -935,9 +939,27 @@ describe("session account", () => {
     );
 
     expect(result.accounts).toEqual([
-      { credentialId: 2, label: "login 2", active: true, quotaAccountKeys: [sha(teamB)] },
-      { credentialId: 1, label: "login 1", active: false, quotaAccountKeys: [sha(teamA)] },
-      { credentialId: 3, label: "login 3", active: false, quotaAccountKeys: [sha(personal)] },
+      {
+        credentialId: 2,
+        label: "login 2",
+        active: true,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(teamB)],
+      },
+      {
+        credentialId: 1,
+        label: "login 1",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(teamA)],
+      },
+      {
+        credentialId: 3,
+        label: "login 3",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(personal)],
+      },
     ]);
   });
 
@@ -972,18 +994,21 @@ describe("session account", () => {
         credentialId: 1,
         label: "a@example.invalid (Team)",
         active: false,
+        onlyLogin: false,
         quotaAccountKeys: [sha(teamA)],
       },
       {
         credentialId: 2,
         label: "b@example.invalid (Team)",
         active: true,
+        onlyLogin: false,
         quotaAccountKeys: [sha(teamB)],
       },
       {
         credentialId: 3,
         label: "a@example.invalid",
         active: false,
+        onlyLogin: false,
         quotaAccountKeys: [sha(personal)],
       },
     ]);
@@ -1022,6 +1047,7 @@ describe("session account", () => {
         credentialId: 1,
         label: "profile@example.invalid",
         active: true,
+        onlyLogin: true,
         quotaAccountKeys: [sha(profileUsage)],
       },
     ]);
@@ -1030,6 +1056,7 @@ describe("session account", () => {
         credentialId: 1,
         label: "default@example.invalid",
         active: true,
+        onlyLogin: true,
         quotaAccountKeys: [sha(defaultUsage)],
       },
     ]);
@@ -1054,7 +1081,7 @@ describe("session account", () => {
     ]);
   });
 
-  test("treats a provider's only login as in use before any pin, and links it to its sole identity-less usage", async () => {
+  test("flags a provider's only login without claiming it is in use, and links its sole identity-less usage", async () => {
     const root = await home();
     const copilot = "oauth|enterprise:ghe.example.invalid|secret:abc123";
     // No pin: the session has not sent a Copilot request yet, as for a freshly opened agent.
@@ -1071,7 +1098,48 @@ describe("session account", () => {
     );
 
     expect(result.accounts).toEqual([
-      expect.objectContaining({ credentialId: 8, active: true, quotaAccountKeys: [sha(copilot)] }),
+      {
+        credentialId: 8,
+        label: "OAuth credential #8",
+        active: false,
+        onlyLogin: true,
+        quotaAccountKeys: [sha(copilot)],
+      },
+    ]);
+  });
+
+  test("keeps the runtime's not-in-use answer for a sole login, as when an environment key serves the session", async () => {
+    await home();
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "openai-codex" },
+      registryWith({ listProviderAccounts: async () => [runtimeLogin(2, false)] }),
+      agentLookup("omp-plugin"),
+    );
+
+    expect(result.accounts).toEqual([
+      expect.objectContaining({ credentialId: 2, active: false, onlyLogin: true }),
+    ]);
+  });
+
+  test("does not call an OAuth login the only one when a stored API key sits beside it", async () => {
+    const root = await home();
+    await store(join(root, ".omp", "agent"), {
+      provider: "anthropic",
+      usage: [],
+      logins: [
+        { id: 1, email: "a@example.invalid", accountId: "a" },
+        { id: 2, apiKey: true },
+      ],
+    });
+
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "anthropic" },
+      new OmpSubagentControlRegistry(),
+      agentLookup("omp", "session-1"),
+    );
+
+    expect(result.accounts).toEqual([
+      expect.objectContaining({ credentialId: 1, active: false, onlyLogin: false }),
     ]);
   });
 
@@ -1153,8 +1221,20 @@ describe("session account", () => {
       "anthropic",
     );
     const linked = quotaSessionAccounts(groups[0].accounts, [
-      { credentialId: 4, label: "busy", active: false, quotaAccountKeys: ["busy"] },
-      { credentialId: 7, label: "idle", active: true, quotaAccountKeys: ["idle"] },
+      {
+        credentialId: 4,
+        label: "busy",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: ["busy"],
+      },
+      {
+        credentialId: 7,
+        label: "idle",
+        active: true,
+        onlyLogin: false,
+        quotaAccountKeys: ["idle"],
+      },
     ]);
 
     expect(

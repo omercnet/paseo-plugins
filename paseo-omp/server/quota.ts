@@ -332,18 +332,30 @@ export function storedSessionLogins(
         }
       }
       const text = (value: unknown) => (typeof value === "string" && value.trim()) || null;
+      // Every stored credential, API keys included, so "the only login" counts what OMP can use.
       return database
         .prepare(
-          `SELECT id, json_extract(data, '$.email') AS email,
+          `SELECT id, credential_type AS type, json_extract(data, '$.email') AS email,
                   json_extract(data, '$.accountId') AS accountId,
                   json_extract(data, '$.orgName') AS orgName
            FROM auth_credentials
-           WHERE provider = ? AND credential_type = 'oauth' AND disabled_cause IS NULL
+           WHERE provider = ? AND disabled_cause IS NULL
            ORDER BY id`,
         )
         .all(provider)
-        .flatMap((row) => {
+        .flatMap((row): OmpLogoutAccount[] => {
           if (typeof row.id !== "number") return [];
+          if (row.type !== "oauth") {
+            return [
+              {
+                credentialId: row.id,
+                provider,
+                label: `API key #${row.id}`,
+                type: "api_key",
+                active: false,
+              },
+            ];
+          }
           // OMP's own label: the email or account id, then the organization in parentheses.
           const base = text(row.email) ?? text(row.accountId) ?? `OAuth credential #${row.id}`;
           const org = text(row.orgName);
@@ -352,7 +364,7 @@ export function storedSessionLogins(
               credentialId: row.id,
               provider,
               label: org && org !== base ? `${base} (${org})` : base,
-              type: "oauth" as const,
+              type: "oauth",
               active: row.id === active,
             },
           ];
@@ -388,14 +400,15 @@ export async function resolveListOmpSessionAccounts(
       input.provider,
       oauth.map((login) => login.credentialId),
     );
-    // With one stored login and nothing else to authenticate with, OMP has no other account to
-    // route to, so that login is the one in use even before the session records a pin for it.
-    const sole = logins.length === 1 && oauth.length === 1;
+    // One stored credential does not prove use (an environment or explicit key can serve the
+    // session), so OMP's own `active` stands and the sole login is only flagged as such.
+    const onlyLogin = logins.length === 1 && oauth.length === 1;
     return {
       accounts: oauth.map((login) => ({
         credentialId: login.credentialId,
         label: login.label,
-        active: login.active || sole,
+        active: login.active,
+        onlyLogin,
         quotaAccountKeys: keys.get(login.credentialId) ?? [],
       })),
     };

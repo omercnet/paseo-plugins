@@ -199,8 +199,14 @@ describe("quota popover reconciliation", () => {
 
   test("marks the account this session uses and switches to another from its heading", async () => {
     recorded.logins = [
-      { credentialId: 3, label: "same@example.invalid", active: false, quotaAccountKeys: ["a"] },
-      { credentialId: 5, label: "other", active: true, quotaAccountKeys: ["b"] },
+      {
+        credentialId: 3,
+        label: "same@example.invalid",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: ["a"],
+      },
+      { credentialId: 5, label: "other", active: true, onlyLogin: false, quotaAccountKeys: ["b"] },
     ];
     await render([
       quota("a", "weekly", 0.9),
@@ -225,5 +231,23 @@ describe("quota popover reconciliation", () => {
     expect(recorded.sent).toEqual([
       { agentId: "synthetic-agent", text: "/session pin OAuth credential #3" },
     ]);
+  });
+
+  test("labels a provider's only login without a Switch button or an IN USE claim", async () => {
+    recorded.logins = [
+      {
+        credentialId: 8,
+        label: "same@example.invalid",
+        active: false,
+        onlyLogin: true,
+        quotaAccountKeys: ["a"],
+      },
+    ];
+    await render([quota("a", "weekly", 0.3)]);
+
+    const only = heading("same@example.invalid");
+    expect(only.contains(text("ONLY LOGIN"))).toBe(true);
+    expect(container.textContent).not.toContain("IN USE");
+    expect(container.querySelector('[aria-label$="for this session"]')).toBeNull();
   });
 });
