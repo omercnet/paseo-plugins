@@ -31,8 +31,6 @@ import {
 import { type OmpStore, storeLabel } from "../shared/omp-store";
 import { openOmpExternalUrl } from "./external-url";
 import {
-  ACCOUNT_GRID_GAP,
-  accountGridColumns,
   accountGroups,
   accountsPollInterval,
   balanceLine,
@@ -282,25 +280,21 @@ function AccountCard({
   );
 }
 
+/** Fixed account card width: wide enough for the label, badges and the reserve picker on one row. */
+const ACCOUNT_CARD_WIDTH = 440;
+const ACCOUNT_GRID_GAP = 10;
+
 /**
- * Lays account cards out one, two or three to a row by the width it gets, so a wide window shows
- * several logins side by side instead of stretching each one across the page.
+ * Fixed-width account cards that wrap, as many to a row as the page fits, instead of each card
+ * stretching across the page. Nothing is measured, so resizing never flips the column count back.
+ * A page narrower than one card shrinks the card to the page.
  */
 function AccountGrid({ children }: { children: ReactElement[] }) {
-  const [width, setWidth] = useState(0);
-  const columns = accountGridColumns(width);
-  const cardWidth = width > 0 ? (width - ACCOUNT_GRID_GAP * (columns - 1)) / columns : undefined;
   return (
-    <View
-      onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
-      style={{ flexDirection: "row", flexWrap: "wrap", gap: ACCOUNT_GRID_GAP }}
-    >
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: ACCOUNT_GRID_GAP }}>
       {children.map((child) => (
         // Each wrapper takes its card's key, so a removed login never shifts another card's state.
-        <View
-          key={child.key}
-          style={cardWidth === undefined ? { width: "100%" } : { width: cardWidth }}
-        >
+        <View key={child.key} style={{ width: ACCOUNT_CARD_WIDTH, maxWidth: "100%" }}>
           {child}
         </View>
       ))}
