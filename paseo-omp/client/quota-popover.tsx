@@ -93,6 +93,18 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         minWidth: 0,
       },
       accountSuffix: { color: theme.colors.foregroundMuted, fontSize: 11, flexShrink: 0 },
+      tags: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 4 },
+      tag: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 10,
+        fontWeight: "600" as const,
+        paddingHorizontal: 6,
+        paddingVertical: 1,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        overflow: "hidden" as const,
+      },
     }),
     [layout.compact, theme],
   );
@@ -152,6 +164,15 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                     {account.suffix ? (
                       <Text style={styles.accountSuffix}>{` · ${account.suffix}`}</Text>
                     ) : null}
+                  </View>
+                ) : null}
+                {account.tags.length > 0 ? (
+                  <View style={styles.tags}>
+                    {account.tags.map((tag) => (
+                      <Text key={tag} numberOfLines={1} style={styles.tag}>
+                        {tag}
+                      </Text>
+                    ))}
                   </View>
                 ) : null}
                 {account.accountService ? (

@@ -16,6 +16,10 @@ export const OmpQuotaSchema = z.object({
   accountService: z.enum(["github", "ghe"]).nullable(),
   /** GHE hostname; null for public GitHub and every other provider. */
   accountHost: z.string().nullable(),
+  /** Raw plan OMP's cached usage report names (Codex `planType`, Copilot `plan`). */
+  plan: z.string().nullable().default(null),
+  /** Organization name from OMP's cached usage report, when it is not just the plan. */
+  organization: z.string().nullable().default(null),
   label: z.string(),
   windowLabel: z.string().nullable(),
   usedFraction: z.number().min(0).nullable(),

@@ -32,6 +32,8 @@ const quotas: OmpQuota[] = [
     accountId: null,
     accountService: null,
     accountHost: null,
+    plan: null,
+    organization: null,
     label: "Claude 5 Hour",
     windowLabel: "5 Hour",
     usedFraction: 0.25,
@@ -47,6 +49,8 @@ const quotas: OmpQuota[] = [
     accountId: null,
     accountService: null,
     accountHost: null,
+    plan: null,
+    organization: null,
     label: "Cursor Pro",
     windowLabel: null,
     usedFraction: 0.9,
@@ -211,6 +215,8 @@ describe("quota timestamps", () => {
           accountId: null,
           accountService: null,
           accountHost: null,
+          plan: null,
+          organization: null,
           usedFraction: 0.25,
           windowLabel: "5 Hour",
           status: "ok",
@@ -231,9 +237,128 @@ describe("quota reset countdown", () => {
     expect(quotaResetLabel(now - 1_000, now)).toBe("resets 0m");
     expect(quotaResetLabel(null, now)).toBe("");
   });
+
+  test("shows days and hours once a reset is a day or more away", () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const at = (hours: number, minutes = 0) => now + hours * 3_600_000 + minutes * 60_000;
+    expect(quotaResetLabel(at(23, 59), now)).toBe("resets 23h 59m");
+    expect(quotaResetLabel(at(24), now)).toBe("resets 1d 0h");
+    expect(quotaResetLabel(at(357, 52), now)).toBe("resets 14d 21h");
+  });
 });
 
 describe("OMP quota reader", () => {
+  test("tags accounts with the plan and organization from OMP's cached usage reports", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-tags-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, email TEXT,
+      limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT,
+      resets_at INTEGER, recorded_at INTEGER
+    );
+    CREATE TABLE cache (key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)`);
+    const now = Date.now();
+    const usage = database.prepare(
+      "INSERT INTO usage_history VALUES (?, ?, ?, ?, 'weekly', 'Weekly', NULL, 0.1, 'ok', NULL, ?)",
+    );
+    usage.run(
+      1,
+      "openai-codex",
+      "oauth|account:a|email:team@example.invalid",
+      "team@example.invalid",
+      now,
+    );
+    usage.run(
+      2,
+      "openai-codex",
+      "oauth|account:b|email:me@example.invalid",
+      "me@example.invalid",
+      now,
+    );
+    usage.run(
+      3,
+      "anthropic",
+      "oauth|account:c|email:me@example.invalid",
+      "me@example.invalid",
+      now,
+    );
+    usage.run(
+      4,
+      "anthropic",
+      "oauth|account:d|email:work@example.invalid",
+      "work@example.invalid",
+      now,
+    );
+    usage.run(5, "xai-oauth", "oauth|account:e", null, now);
+    const cache = database.prepare("INSERT INTO cache VALUES (?, ?, NULL)");
+    const report = (provider: string, fetchedAt: number, metadata: object) =>
+      JSON.stringify({ expiresAt: 0, value: { provider, fetchedAt, limits: [], metadata } });
+    cache.run(
+      "usage_cache:report:1:openai-codex:https://example.invalid/api:oauth|account:a|email:team@example.invalid",
+      report("openai-codex", 2, {
+        planType: "self_serve_business_prolite",
+        orgName: "self_serve_business_prolite",
+      }),
+    );
+    cache.run(
+      "usage_cache:report:0:openai-codex:default:oauth|account:a|email:team@example.invalid",
+      report("openai-codex", 1, { planType: "plus" }),
+    );
+    cache.run(
+      "usage_cache:report:1:openai-codex:default:oauth|account:b|email:me@example.invalid",
+      report("openai-codex", 1, { planType: "prolite", orgName: "prolite" }),
+    );
+    cache.run(
+      "usage_cache:report:3:anthropic:default:oauth|account:c|email:me@example.invalid",
+      report("anthropic", 1, { orgName: "me@example.invalid's Organization" }),
+    );
+    cache.run(
+      "usage_cache:report:3:anthropic:default:oauth|account:d|email:work@example.invalid",
+      report("anthropic", 1, { orgName: "Example Team" }),
+    );
+    // Another provider's report under the same key suffix, and an unreadable one, are ignored.
+    cache.run(
+      "usage_cache:report:xai-oauth:default:oauth|account:c|email:me@example.invalid",
+      report("xai-oauth", 5, { plan: "business" }),
+    );
+    cache.run("usage_cache:report:xai-oauth:default:oauth|account:e", "not json");
+    database.close();
+
+    const recorded = listOmpQuotasFrom(path, now);
+    const tagsOf = (provider: string, email: string | null) =>
+      quotaProviderGroups(recorded, null)
+        .find((group) => group.provider === provider)
+        ?.accounts.find((account) => account.email === email)?.tags;
+    expect(tagsOf("openai-codex", "team@example.invalid")).toEqual(["Business"]);
+    expect(tagsOf("openai-codex", "me@example.invalid")).toEqual(["Pro Lite"]);
+    expect(tagsOf("anthropic", "me@example.invalid")).toEqual(["Personal"]);
+    expect(tagsOf("anthropic", "work@example.invalid")).toEqual(["Example Team"]);
+    expect(tagsOf("xai-oauth", null)).toEqual([]);
+  });
+
+  test("reads quotas without tags when OMP has no usage cache table", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-no-cache-"));
+    quotaRoots.push(root);
+    const path = join(root, "agent.db");
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY, provider TEXT, account_key TEXT, limit_id TEXT, label TEXT,
+      window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER, recorded_at INTEGER
+    )`);
+    const now = Date.now();
+    database
+      .prepare(
+        "INSERT INTO usage_history VALUES (1, 'anthropic', 'k', 'w', 'Weekly', NULL, 0.1, 'ok', NULL, ?)",
+      )
+      .run(now);
+    database.close();
+    expect(listOmpQuotasFrom(path, now)).toEqual([
+      expect.objectContaining({ label: "Weekly", plan: null, organization: null }),
+    ]);
+  });
+
   test("shows Copilot usernames and distinguishes GitHub from the recorded GHE host", async () => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-copilot-"));
     quotaRoots.push(root);
