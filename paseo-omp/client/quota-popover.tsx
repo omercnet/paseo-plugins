@@ -294,13 +294,8 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         <Text style={styles.muted}>Could not read which account this session uses.</Text>
       ) : null}
       {switchError ? <Text style={styles.error}>{switchError}</Text> : null}
-      {session.status === "running" && logins.length > 1 ? (
-        <Text style={styles.muted}>Switching takes effect after the current turn finishes.</Text>
-      ) : null}
-      <Text style={styles.muted}>{storeLabel(store)}</Text>
-      <Text style={styles.muted}>
-        Last recorded usage from the local agent database, not read live from the provider.
-      </Text>
+      {/* The default store needs no label; a named profile's usage is worth telling apart. */}
+      {store ? <Text style={styles.muted}>{storeLabel(store)}</Text> : null}
       {currentProvider && !hasActive ? (
         <Text style={styles.muted}>
           CURRENT PROVIDER identifies the provider, not the account used by this session.
