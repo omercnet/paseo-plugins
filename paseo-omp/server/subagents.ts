@@ -1,4 +1,5 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
+import type { getOmpSessionModelProvider } from "../shared/quota";
 import type { cancelOmpSubagent, steerOmpSubagent } from "../shared/subagents";
 import { OmpRpcRequestRejectedError } from "./provider/omp-rpc-transport";
 import { isOmpPublicError, OmpPublicError } from "./provider/security";
@@ -8,6 +9,8 @@ export interface OmpSubagentControls {
   /** Resolves `false` when the subagent is no longer running. */
   cancelSubagent(handle: string): Promise<boolean>;
   steerSubagent(handle: string, message: string): Promise<void>;
+  /** The OMP provider of the session's current model, or null once the session has ended. */
+  modelProvider(): string | null;
 }
 
 export class OmpSubagentNotRunningError extends OmpPublicError {
@@ -94,4 +97,12 @@ export async function resolveSteerOmpSubagent(
   const controls = controlsFor(registry, input.agentId);
   await withPublicFailure("steer", () => controls.steerSubagent(input.subagentId, input.message));
   return { accepted: true };
+}
+
+/** No live session (closed, history-only or another daemon's) answers null rather than failing. */
+export function resolveGetOmpSessionModelProvider(
+  input: RpcInput<typeof getOmpSessionModelProvider>,
+  registry: OmpSubagentControlRegistry,
+): RpcOutput<typeof getOmpSessionModelProvider> {
+  return { provider: registry.get(input.agentId)?.modelProvider() ?? null };
 }

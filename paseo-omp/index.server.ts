@@ -57,6 +57,7 @@ import { ompRuleNoticeRow } from "./server/rule-notices";
 import {
   OmpSubagentControlRegistry,
   resolveCancelOmpSubagent,
+  resolveGetOmpSessionModelProvider,
   resolveSteerOmpSubagent,
 } from "./server/subagents";
 import { resolveGetOmpSupportReport } from "./server/support-diagnostics";
@@ -116,7 +117,7 @@ import { getOmpUpdateStatus, installOmpUpdate } from "./shared/omp-update";
 import { getOmpProviderHealth } from "./shared/provider-diagnostics";
 import { getOmpImage } from "./shared/provider-image";
 import { providerLaunchSettings } from "./shared/provider-launch-settings";
-import { listOmpQuotas } from "./shared/quota";
+import { getOmpSessionModelProvider, listOmpQuotas } from "./shared/quota";
 import { cancelOmpSubagent, steerOmpSubagent } from "./shared/subagents";
 import { getOmpSupportReport } from "./shared/support-diagnostics";
 
@@ -282,6 +283,9 @@ export default function contribute(server: PluginServerContext) {
   );
   server.handle(steerOmpSubagent, (input) =>
     resolveSteerOmpSubagent(input, subagentControlRegistry),
+  );
+  server.handle(getOmpSessionModelProvider, (input) =>
+    resolveGetOmpSessionModelProvider(input, subagentControlRegistry),
   );
   const removeTurnRows = registerOmpTurnRows(server, [ompRuleNoticeRow, ompScreenshotRow]);
   const removeSessionOpenHook = server.before("agent.session_open", ({ request }) => {

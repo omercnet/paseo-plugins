@@ -482,6 +482,15 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
     await target.runtime.steerSubagent(target.nativeId, message);
   }
 
+  /** Paseo publishes the model as an opaque id; only the session can map it back to OMP's model. */
+  modelProvider(): string | null {
+    if (this.closed || this.runtimeDead) return null;
+    const model = this.configState.model
+      ? this.nativeModelsByPublicId.get(this.configState.model)
+      : undefined;
+    return model?.provider ?? null;
+  }
+
   /**
    * The native ID and runtime of a subagent this session's current runtime lists as running, or
    * `null`. OMP repeats the check; this scopes the request to this session and answers exactly.

@@ -22,7 +22,7 @@ vi.mock("../client/generated-image", () => ({ OmpGeneratedImagesRow: () => null 
 vi.mock("../client/ast-edit", () => ({ OmpAstEditCard: () => null }));
 
 import contribute from "../index.client";
-import { listOmpQuotas } from "../shared/quota";
+import { getOmpSessionModelProvider, listOmpQuotas } from "../shared/quota";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -175,6 +175,98 @@ test("owned agent directory updates reconcile new agent pills and cached quota r
       expect.objectContaining({ label: "Quotas · 20%" }),
     );
     expect(rpc.mock.calls.filter(([definition]) => definition === listOmpQuotas)).toHaveLength(3);
+  } finally {
+    dispose();
+  }
+});
+
+test("summarizes an OMP Plugin agent's quota by the provider its live session names", async () => {
+  vi.useFakeTimers();
+  const agents = [
+    { id: "live", provider: "omp-plugin", model: "omp:model:opaque", status: "idle" },
+    { id: "ended", provider: "omp-plugin", model: "omp:model:opaque", status: "closed" },
+  ];
+  let onDirectoryUpdate = () => {};
+  const buttons: Array<{ id: string; agentId: string; update: ReturnType<typeof vi.fn> }> = [];
+  const rpc = vi.fn(async (definition, input) => {
+    if (definition.name === "settings.composer-pills.read") {
+      return { status: "ready", revision: "r", values: { quota: true } };
+    }
+    if (definition === getOmpSessionModelProvider) {
+      return { provider: input.agentId === "live" ? "openai-codex" : null };
+    }
+    if (definition !== listOmpQuotas) return { processes: [] };
+    const row = { label: "Window", windowLabel: null, status: "ok", resetsAt: null, recordedAt: 1 };
+    return {
+      quotas: [
+        { ...row, provider: "anthropic", usedFraction: 0.9 },
+        { ...row, provider: "openai-codex", usedFraction: 0.3 },
+      ],
+    };
+  });
+  const registration = () => () => {};
+  const list = async (options?: { subscribe?: object }) => {
+    const result = {
+      entries: agents.map((agent) => ({
+        agent: { ...agent, cwd: "/workspace", workspaceId: "workspace", archivedAt: null },
+      })),
+      pageInfo: { hasMore: false },
+    };
+    if (!options?.subscribe) return result;
+    return {
+      ...result,
+      subscription: {
+        ready: Promise.resolve(result),
+        subscribe: (observer: { update: () => void }) => {
+          onDirectoryUpdate = observer.update;
+          return () => {};
+        },
+        release: async () => {},
+      },
+    };
+  };
+  const client = {
+    paseo: { agents: { list } },
+    rpc,
+    addWorkspacePanel: registration,
+    addCommandCenterItem: registration,
+    addScreen: registration,
+    addSidebarHeaderItem: registration,
+    openScreen: vi.fn(),
+    addTimelineRenderer: registration,
+    addTimelineTransformer: registration,
+    addComposerPill: (options: { id: string; agentId: string }) => {
+      const button = { ...options, update: vi.fn(), remove: vi.fn() };
+      buttons.push(button);
+      return button;
+    },
+  } as unknown as PluginClientContext;
+  const dispose = contribute(client);
+  const quota = (agentId: string) =>
+    buttons.findLast((button) => button.id === "quota" && button.agentId === agentId)?.update;
+  const asked = () =>
+    rpc.mock.calls
+      .filter(([definition]) => definition === getOmpSessionModelProvider)
+      .map(([, input]) => input.agentId);
+  try {
+    await vi.advanceTimersByTimeAsync(300);
+    expect(quota("live")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "OpenAI · 30%" }),
+    );
+    // A closed agent has no session to ask and keeps the all-provider summary.
+    expect(quota("ended")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "Quotas · 90%" }),
+    );
+    expect(asked()).toEqual(["live"]);
+
+    // The same model and status reuse the answer; a new model asks again.
+    onDirectoryUpdate();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(asked()).toEqual(["live"]);
+    agents[0].model = "omp:model:other";
+    onDirectoryUpdate();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(asked()).toEqual(["live", "live"]);
   } finally {
     dispose();
   }

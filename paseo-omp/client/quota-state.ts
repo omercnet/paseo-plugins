@@ -44,6 +44,15 @@ export function quotaProviderFromSession(
   return model?.includes("/") ? model.split("/")[0] : null;
 }
 
+/** An OMP Plugin agent's model reaches Paseo as an opaque id; its live session names the provider. */
+export function needsSessionModelProvider(provider: string, model: string | null): boolean {
+  return (
+    isOmpProvider(provider.split("/")[0]) &&
+    Boolean(model) &&
+    quotaProviderFromSession(provider, model) === null
+  );
+}
+
 export function quotaProviderLabel(provider: string | null): string {
   return provider
     ? (PROVIDER_LABELS[provider] ?? `${provider.slice(0, 1).toUpperCase()}${provider.slice(1)}`)

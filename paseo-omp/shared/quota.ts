@@ -34,3 +34,13 @@ export const listOmpQuotas = defineRpc({
   input: z.object({ store: OmpStoreSchema.optional() }),
   output: z.object({ quotas: z.array(OmpQuotaSchema) }),
 });
+
+/**
+ * The OMP provider (such as `anthropic`) of the model an OMP Plugin agent's live session uses.
+ * Paseo only sees that model as an opaque id, so the provider is null without a live session.
+ */
+export const getOmpSessionModelProvider = defineRpc({
+  name: "paseo-omp.session-model-provider",
+  input: z.object({ agentId: z.string().min(1).max(256) }),
+  output: z.object({ provider: z.string().nullable() }),
+});
