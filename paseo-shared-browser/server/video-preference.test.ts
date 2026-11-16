@@ -277,4 +277,26 @@ describe("launch-option relaunch against a live runtime registry", () => {
     ).rejects.toThrow("Some browsers could not be restarted");
     manager.disconnect();
   });
+
+  it("serializes concurrent identical toggles so the second sees nothing stale", async () => {
+    const { manager, current, stopped } = await registry();
+    const viewer = await manager.attach("workspace", "Viewer");
+    const launchedWith = new Map<string, boolean>([[viewer.state.runtimeId!, false]]);
+    let setting = false;
+    const stale = async () =>
+      [...current].flatMap(([workspaceId, runtimeId]) =>
+        (launchedWith.get(runtimeId) ?? setting) !== setting ? [{ workspaceId, runtimeId }] : [],
+      );
+    const toggle = () =>
+      manager.relaunchOpenBrowsers(
+        viewer.viewerToken,
+        async () => {
+          setting = true;
+        },
+        stale,
+      );
+    await expect(Promise.all([toggle(), toggle()])).resolves.toBeDefined();
+    expect(stopped).toEqual([viewer.state.runtimeId]);
+    manager.disconnect();
+  });
 });

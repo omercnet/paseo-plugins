@@ -235,6 +235,8 @@ export class SessionManager {
   private readonly closedViewerTabs = new Map<string, number>();
   private readonly sessionCreations = new Map<string, Promise<BrowserSession>>();
   private readonly sessionClosures = new Map<string, Promise<void>>();
+  /** Relaunches run one at a time so each reads stale runtimes after the previous one finished. */
+  private relaunchTail: Promise<void> = Promise.resolve();
   /** Advances on every workspace teardown; a creation that overlaps one is never published. */
   private readonly closureGenerations = new Map<string, number>();
   private readonly archived = new Set<string>();
@@ -536,6 +538,16 @@ export class SessionManager {
   ): Promise<void> {
     this.assertOpen();
     this.requireViewer(viewerToken);
+    const run = this.relaunchTail.then(() => this.relaunchStale(apply, staleRuntimes));
+    this.relaunchTail = run.catch(() => undefined);
+    return run;
+  }
+
+  private async relaunchStale(
+    apply: () => Promise<void>,
+    staleRuntimes: () => Promise<{ workspaceId: string; runtimeId: string }[]>,
+  ): Promise<void> {
+    this.assertOpen();
     await apply();
     // A first attachment that started before the write may still launch with the old
     // value. Let it register its runtime so the staleness check below can see it.
