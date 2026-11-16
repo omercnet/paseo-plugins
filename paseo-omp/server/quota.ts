@@ -4,8 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
+import { storeForProvider } from "../shared/omp-store";
 import type { listOmpQuotas, listOmpSessionAccounts, OmpQuota } from "../shared/quota";
-import { ompDataDir } from "./paths";
+import { ompDataDir, withOmpStore } from "./paths";
 import type { OmpLogoutAccount } from "./provider/omp-rpc-protocol";
 import { OmpRpcRequestRejectedError } from "./provider/omp-rpc-transport";
 import { isOmpPublicError, OmpPublicError } from "./provider/security";
@@ -206,16 +207,29 @@ function usageKeyIdentity(accountKey: string): LoginIdentity {
   };
 }
 
-/** OMP's own rule: differing orgs never match, an email on both sides decides, else the account id. */
+/**
+ * OMP's own rule (`oauthMatchesActiveIdentity`): the organization gates the identity, so differing
+ * organizations, or one present on only one side, never match; an email on both sides then
+ * decides, else the account id. A record with no base identity matches on the organization alone.
+ */
 function sameLogin(login: LoginIdentity, usage: LoginIdentity): boolean {
-  if (login.orgId && usage.orgId && login.orgId !== usage.orgId) return false;
+  if (login.orgId !== null || usage.orgId !== null) {
+    if (login.orgId !== usage.orgId) return false;
+    if (usage.email === null && usage.accountId === null) return true;
+  }
   if (login.email && usage.email) return login.email.toLowerCase() === usage.email.toLowerCase();
   return login.accountId !== null && login.accountId === usage.accountId;
 }
 
+function hasIdentity(identity: LoginIdentity): boolean {
+  return identity.email !== null || identity.accountId !== null;
+}
+
 /**
- * The usage accounts recorded for each login. Only identity fields leave the credential row; a
- * provider with one login and one usage account needs none (Copilot keys hold only a fingerprint).
+ * The usage accounts recorded for each login. Only identity fields leave the credential row. A login
+ * with an identity always has to match it. Only when neither the provider's single login nor its
+ * single usage account carries one (Copilot keys hold a credential fingerprint) are the two linked
+ * unchecked.
  */
 export function quotaAccountKeysFor(
   path: string,
@@ -231,10 +245,6 @@ export function quotaAccountKeysFor(
         .prepare("SELECT DISTINCT account_key AS accountKey FROM usage_history WHERE provider = ?")
         .all(provider)
         .flatMap(({ accountKey }) => (typeof accountKey === "string" ? [accountKey] : []));
-      if (credentialIds.length === 1 && usageKeys.length === 1) {
-        matched.set(credentialIds[0], [hashAccountKey(usageKeys[0])]);
-        return matched;
-      }
       const rows = database
         .prepare(
           `SELECT id, json_extract(data, '$.email') AS email,
@@ -243,19 +253,26 @@ export function quotaAccountKeysFor(
            FROM auth_credentials WHERE id IN (${credentialIds.map(() => "?").join(", ")})`,
         )
         .all(...credentialIds);
+      const text = (value: unknown) => (typeof value === "string" && value.trim()) || null;
       for (const row of rows) {
         if (typeof row.id !== "number") continue;
-        const text = (value: unknown) => (typeof value === "string" && value.trim()) || null;
         const login = {
           email: text(row.email),
           accountId: text(row.accountId),
           orgId: text(row.orgId),
         };
-        if (!login.email && !login.accountId) continue;
-        matched.set(
-          row.id,
-          usageKeys.filter((key) => sameLogin(login, usageKeyIdentity(key))).map(hashAccountKey),
-        );
+        if (hasIdentity(login)) {
+          matched.set(
+            row.id,
+            usageKeys.filter((key) => sameLogin(login, usageKeyIdentity(key))).map(hashAccountKey),
+          );
+        } else if (
+          credentialIds.length === 1 &&
+          usageKeys.length === 1 &&
+          !hasIdentity(usageKeyIdentity(usageKeys[0]))
+        ) {
+          matched.set(row.id, [hashAccountKey(usageKeys[0])]);
+        }
       }
     } finally {
       database.close();
@@ -266,16 +283,19 @@ export function quotaAccountKeysFor(
   return matched;
 }
 
-/** Finds the OMP session id Paseo stored for an agent; null when the agent has none. */
-export type OmpSessionIdLookup = (agentId: string) => Promise<string | null>;
+/** The agent's provider and, for an OMP session Paseo persisted, OMP's session id. */
+export type OmpSessionAgent = { provider: string; sessionId: string | null };
+export type OmpSessionAgentLookup = (agentId: string) => Promise<OmpSessionAgent | null>;
 
 /** Paseo's bundled `omp` provider and this plugin's providers both persist OMP's session id. */
-export function sessionIdFromPaseo(paseo: PluginHandlerContext["paseo"]): OmpSessionIdLookup {
+export function sessionAgentFromPaseo(paseo: PluginHandlerContext["paseo"]): OmpSessionAgentLookup {
   return async (agentId) => {
     try {
-      const persistence = (await paseo.agents.ref(agentId).refresh())?.agent.persistence;
-      if (!persistence || !/^omp(-|$)/u.test(persistence.provider)) return null;
-      return persistence.sessionId || null;
+      const agent = (await paseo.agents.ref(agentId).refresh())?.agent;
+      if (!agent) return null;
+      const persistence = agent.persistence;
+      const omp = persistence && /^omp(-|$)/u.test(persistence.provider);
+      return { provider: agent.provider, sessionId: (omp && persistence.sessionId) || null };
     } catch {
       return null;
     }
@@ -344,27 +364,35 @@ export function storedSessionLogins(
   }
 }
 
+/**
+ * Logins and usage come from the agent's own store: a named-profile agent never reads the daemon
+ * default store, whose credential ids belong to other accounts. The store follows the provider
+ * Paseo reports for the agent, not anything the client sends.
+ */
 export async function resolveListOmpSessionAccounts(
   input: RpcInput<typeof listOmpSessionAccounts>,
   registry: OmpSubagentControlRegistry,
-  findSessionId: OmpSessionIdLookup,
-  databasePath = defaultDatabasePath(),
+  findAgent: OmpSessionAgentLookup,
 ): Promise<RpcOutput<typeof listOmpSessionAccounts>> {
-  const logins = await sessionLogins(input, registry, findSessionId, databasePath);
-  const oauth = logins.filter((login) => login.type === "oauth");
-  const keys = quotaAccountKeysFor(
-    databasePath,
-    input.provider,
-    oauth.map((login) => login.credentialId),
-  );
-  return {
-    accounts: oauth.map((login) => ({
-      credentialId: login.credentialId,
-      label: login.label,
-      active: login.active,
-      quotaAccountKeys: keys.get(login.credentialId) ?? [],
-    })),
-  };
+  const agent = await findAgent(input.agentId);
+  return await withOmpStore(storeForProvider(agent?.provider), async () => {
+    const databasePath = defaultDatabasePath();
+    const logins = await sessionLogins(input, registry, agent?.sessionId ?? null, databasePath);
+    const oauth = logins.filter((login) => login.type === "oauth");
+    const keys = quotaAccountKeysFor(
+      databasePath,
+      input.provider,
+      oauth.map((login) => login.credentialId),
+    );
+    return {
+      accounts: oauth.map((login) => ({
+        credentialId: login.credentialId,
+        label: login.label,
+        active: login.active,
+        quotaAccountKeys: keys.get(login.credentialId) ?? [],
+      })),
+    };
+  });
 }
 
 /**
@@ -374,12 +402,11 @@ export async function resolveListOmpSessionAccounts(
 async function sessionLogins(
   input: RpcInput<typeof listOmpSessionAccounts>,
   registry: OmpSubagentControlRegistry,
-  findSessionId: OmpSessionIdLookup,
+  sessionId: string | null,
   databasePath: string,
 ): Promise<OmpLogoutAccount[]> {
   const controls = registry.get(input.agentId);
   if (!controls) {
-    const sessionId = await findSessionId(input.agentId);
     return sessionId ? storedSessionLogins(databasePath, input.provider, sessionId) : [];
   }
   try {

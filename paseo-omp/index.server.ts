@@ -55,7 +55,7 @@ import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
 import {
   resolveListOmpQuotas,
   resolveListOmpSessionAccounts,
-  sessionIdFromPaseo,
+  sessionAgentFromPaseo,
 } from "./server/quota";
 import { ompRuleNoticeRow } from "./server/rule-notices";
 import {
@@ -167,7 +167,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(tailHubLog, resolveTailHubLog);
   server.handle(listOmpQuotas, scoped(resolveListOmpQuotas));
   server.handle(listOmpSessionAccounts, (input, { paseo }) =>
-    resolveListOmpSessionAccounts(input, subagentControlRegistry, sessionIdFromPaseo(paseo)),
+    resolveListOmpSessionAccounts(input, subagentControlRegistry, sessionAgentFromPaseo(paseo)),
   );
   server.handle(
     listOmpAccounts,
