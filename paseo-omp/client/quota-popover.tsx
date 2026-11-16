@@ -85,7 +85,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
       },
       detail: { color: theme.colors.foregroundMuted, fontSize: 11 },
       account: { gap: 6, paddingTop: 4 },
-      accountHeading: { flexDirection: "row" as const, alignItems: "baseline" as const },
+      accountHeading: { flexDirection: "row" as const, alignItems: "center" as const },
       accountLabel: {
         color: theme.colors.foregroundMuted,
         fontSize: 11,
@@ -93,7 +93,8 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         minWidth: 0,
       },
       accountSuffix: { color: theme.colors.foregroundMuted, fontSize: 11, flexShrink: 0 },
-      tags: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 4 },
+      tags: { flexDirection: "row" as const, gap: 4, flexShrink: 0 },
+      headingTags: { flexDirection: "row" as const, gap: 4, flexShrink: 0, marginLeft: 6 },
       tag: {
         color: theme.colors.foregroundMuted,
         fontSize: 10,
@@ -153,9 +154,9 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                 {account.label ? (
                   <View
                     accessibilityRole="header"
-                    accessibilityLabel={
-                      account.suffix ? `${account.label} · ${account.suffix}` : account.label
-                    }
+                    accessibilityLabel={[account.label, account.suffix, ...account.tags]
+                      .filter(Boolean)
+                      .join(" · ")}
                     style={styles.accountHeading}
                   >
                     <Text numberOfLines={1} ellipsizeMode="middle" style={styles.accountLabel}>
@@ -164,9 +165,17 @@ export function QuotaPopover(props: PluginButtonContentProps) {
                     {account.suffix ? (
                       <Text style={styles.accountSuffix}>{` · ${account.suffix}`}</Text>
                     ) : null}
+                    {account.tags.length > 0 ? (
+                      <View style={styles.headingTags}>
+                        {account.tags.map((tag) => (
+                          <Text key={tag} numberOfLines={1} style={styles.tag}>
+                            {tag}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
                   </View>
-                ) : null}
-                {account.tags.length > 0 ? (
+                ) : account.tags.length > 0 ? (
                   <View style={styles.tags}>
                     {account.tags.map((tag) => (
                       <Text key={tag} numberOfLines={1} style={styles.tag}>
