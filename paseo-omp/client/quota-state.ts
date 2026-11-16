@@ -72,8 +72,8 @@ export function quotasForProvider(
 }
 
 /**
- * The quotas the pill summarizes: the session's account in use when OMP named one and its usage is
- * recorded, otherwise every account of the provider.
+ * The quotas the pill summarizes: the session's account in use when OMP named one and it has a
+ * recorded usage value, otherwise every account of the provider.
  */
 export function quotasInUse(
   quotas: readonly OmpQuota[],
@@ -84,7 +84,7 @@ export function quotasInUse(
   const matching = quotasForProvider(quotas, provider, includeAll);
   if (!provider || !inUse) return matching;
   const own = matching.filter((quota) => inUse.quotaAccountKeys.includes(quota.accountKey));
-  return own.length > 0 ? own : matching;
+  return own.some((quota) => quota.usedFraction !== null) ? own : matching;
 }
 
 /**
@@ -101,7 +101,8 @@ export function quotaSummaryForProvider(
   const own =
     provider !== null &&
     inUse !== null &&
-    matching.some((quota) => inUse.quotaAccountKeys.includes(quota.accountKey));
+    matching.length > 0 &&
+    matching.every((quota) => inUse.quotaAccountKeys.includes(quota.accountKey));
   const used = matching.flatMap((quota) =>
     quota.usedFraction === null ? [] : [quota.usedFraction],
   );
@@ -195,7 +196,9 @@ export function quotaSessionAccounts(
   logins: readonly OmpSessionAccount[],
 ): QuotaSessionAccountGroup[] {
   const linked = accounts.map((account) => {
-    const login = logins.find((entry) => entry.quotaAccountKeys.includes(account.accountKey));
+    const owns = (entry: OmpSessionAccount) => entry.quotaAccountKeys.includes(account.accountKey);
+    // Logins can share a usage account; the one in use keeps its mark.
+    const login = logins.find((entry) => entry.active && owns(entry)) ?? logins.find(owns);
     return { ...account, login: login ?? null, inUse: login?.active === true };
   });
   return [...linked.filter((a) => a.inUse), ...linked.filter((a) => !a.inUse)];

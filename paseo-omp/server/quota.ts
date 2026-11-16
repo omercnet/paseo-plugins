@@ -216,6 +216,11 @@ function usageKeyIdentity(accountKey: string): LoginIdentity {
  * OMP's own rule (`oauthMatchesActiveIdentity`): the organization gates the identity, so differing
  * organizations, or one present on only one side, never match; an email on both sides then
  * decides, else the account id. A record with no base identity matches on the organization alone.
+ *
+ * Two parts of OMP's rules are left out. `projectId` is not compared: OMP's usage keys carry no
+ * project, and Antigravity logins share one project. An account id equal to the organization id
+ * (a ChatGPT workspace id every member shares, which `isSameOAuthAccount` skips) is not excluded:
+ * a usage key always carries the email where OMP recorded one, so the email decides first.
  */
 function sameLogin(login: LoginIdentity, usage: LoginIdentity): boolean {
   if (login.orgId !== null || usage.orgId !== null) {

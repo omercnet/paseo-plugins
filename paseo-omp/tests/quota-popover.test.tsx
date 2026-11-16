@@ -10,10 +10,11 @@ const recorded = vi.hoisted(() => ({
   quotas: [] as OmpQuota[],
   logins: [] as OmpSessionAccount[],
   sent: [] as Array<{ agentId: string; text: string }>,
+  status: "idle" as string,
 }));
 
 vi.mock("@getpaseo/plugin/client", () => ({
-  useAgent: () => ({ provider: "omp", model: "anthropic/example", status: "idle" }),
+  useAgent: () => ({ provider: "omp", model: "anthropic/example", status: recorded.status }),
   useRpc: () => vi.fn(),
   usePaseo: () => ({
     agents: {
@@ -55,9 +56,15 @@ vi.mock("react-native", () => ({
   Pressable: (props: {
     children?: ReactNode;
     accessibilityLabel?: string;
+    disabled?: boolean;
     onPress?: () => void;
   }) => (
-    <button type="button" aria-label={props.accessibilityLabel} onClick={props.onPress}>
+    <button
+      type="button"
+      aria-label={props.accessibilityLabel}
+      disabled={props.disabled}
+      onClick={props.disabled ? undefined : props.onPress}
+    >
       {props.children}
     </button>
   ),
@@ -115,6 +122,7 @@ beforeEach(() => {
   recorded.quotas = [];
   recorded.logins = [];
   recorded.sent = [];
+  recorded.status = "idle";
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -228,6 +236,49 @@ describe("quota popover reconciliation", () => {
     ) as HTMLButtonElement;
     expect(button.textContent).toBe("Switch");
     await act(async () => button.click());
+    expect(recorded.sent).toEqual([
+      { agentId: "synthetic-agent", text: "/session pin OAuth credential #3" },
+    ]);
+  });
+
+  test("disables Switch while the agent runs a turn, so it cannot interrupt it", async () => {
+    recorded.logins = [
+      {
+        credentialId: 3,
+        label: "a@x.invalid",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: ["a"],
+      },
+      {
+        credentialId: 5,
+        label: "b@x.invalid",
+        active: true,
+        onlyLogin: false,
+        quotaAccountKeys: ["b"],
+      },
+    ];
+    const rows = [
+      { ...quota("a", "weekly", 0.9), email: "a@x.invalid" },
+      { ...quota("b", "weekly", 0.2), email: "b@x.invalid" },
+    ];
+    const button = () =>
+      container.querySelector(
+        '[aria-label="Use a@x.invalid for this session"]',
+      ) as HTMLButtonElement;
+
+    for (const status of ["running", "initializing"]) {
+      recorded.status = status;
+      await render(rows);
+      expect(button().disabled).toBe(true);
+      await act(async () => button().click());
+      expect(recorded.sent).toEqual([]);
+    }
+
+    recorded.status = "idle";
+    await render(rows);
+    expect(button().disabled).toBe(false);
+    await act(async () => button().click());
     expect(recorded.sent).toEqual([
       { agentId: "synthetic-agent", text: "/session pin OAuth credential #3" },
     ]);

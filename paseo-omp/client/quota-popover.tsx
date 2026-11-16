@@ -233,17 +233,17 @@ export function QuotaPopover(props: PluginButtonContentProps) {
     );
   }
 
-  function renderSwitch(
-    account: QuotaSessionAccountGroup,
-    login: OmpSessionAccount,
-    inHeading: boolean,
-  ) {
-    const busy = switching !== null;
+  function renderSwitch(login: OmpSessionAccount, inHeading: boolean) {
+    // Paseo interrupts a running turn on send, and OMP refuses to pin while it streams.
+    const turnActive = session?.status === "running" || session?.status === "initializing";
+    const busy = switching !== null || turnActive;
     return (
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Use ${account.label ?? login.label} for this session`}
+        accessibilityLabel={`Use ${login.label} for this session`}
+        accessibilityState={{ disabled: busy }}
         disabled={busy}
+        hitSlop={8}
         onPress={() => void switchTo(login)}
         style={({ pressed }) => [
           styles.switch,
@@ -295,9 +295,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
               // The provider's only stored credential: nothing to switch to, but its use unproven.
               <Text style={[styles.tag, { marginLeft: "auto", flexShrink: 0 }]}>ONLY LOGIN</Text>
             ) : null}
-            {login && !account.inUse && !login.onlyLogin
-              ? renderSwitch(account, login, true)
-              : null}
+            {login && !account.inUse && !login.onlyLogin ? renderSwitch(login, true) : null}
           </View>
         ) : account.tags.length > 0 ? (
           renderTags(account.tags, styles.tags)
@@ -335,7 +333,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         ) : !account.label && login?.onlyLogin ? (
           <Text style={[styles.tag, { alignSelf: "flex-start" }]}>ONLY LOGIN</Text>
         ) : login && !account.inUse && !account.label ? (
-          renderSwitch(account, login, false)
+          renderSwitch(login, false)
         ) : null}
       </View>
     );

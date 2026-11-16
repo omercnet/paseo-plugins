@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   quotaDetailLabel,
@@ -17,6 +18,7 @@ import {
   quotasForProvider,
   sessionPinCommand,
 } from "../client/quota-state";
+import contribute from "../index.server";
 import { OmpRpcRequestRejectedError } from "../server/provider/omp-rpc-transport";
 import {
   listOmpQuotasFrom,
@@ -25,7 +27,7 @@ import {
 } from "../server/quota";
 import { OmpSubagentControlRegistry, type OmpSubagentControls } from "../server/subagents";
 import { accountTags } from "../shared/account-tags";
-import type { OmpQuota } from "../shared/quota";
+import { listOmpSessionAccounts, type OmpQuota } from "../shared/quota";
 
 const quotaRoots: string[] = [];
 
@@ -110,6 +112,39 @@ describe("session-specific quota selection", () => {
     expect(
       quotaSummaryForProvider(rows, "anthropic", false, { ...working, quotaAccountKeys: [] }).label,
     ).toBe("100%");
+    // A linked account whose rows hold no usage value does not hide the provider's peak.
+    const unread: OmpQuota[] = [
+      ...rows,
+      { ...quotas[0], accountKey: "unread", usedFraction: null },
+    ];
+    expect(
+      quotaSummaryForProvider(unread, "anthropic", false, {
+        ...working,
+        quotaAccountKeys: ["unread"],
+      }),
+    ).toEqual({
+      visible: true,
+      label: "100%",
+      title: "Anthropic · all accounts · 100% (last recorded usage, not live)",
+    });
+    expect(
+      quotaSeverityForProvider(unread, "anthropic", false, {
+        ...working,
+        quotaAccountKeys: ["unread"],
+      }),
+    ).toBe("danger");
+  });
+
+  test("keeps IN USE on the login in use when two logins share a usage account", () => {
+    const account = quotaProviderGroups([{ ...quotas[0], accountKey: "shared" }], "anthropic")[0]
+      .accounts;
+    const login = { label: "me@example.invalid", onlyLogin: false, quotaAccountKeys: ["shared"] };
+    const [linked] = quotaSessionAccounts(account, [
+      { ...login, credentialId: 3, active: false },
+      { ...login, credentialId: 5, active: true },
+    ]);
+    expect(linked.inUse).toBe(true);
+    expect(linked.login?.credentialId).toBe(5);
   });
 
   test("maps each provider to a distinct icon and severity bucket", () => {
@@ -1037,6 +1072,60 @@ describe("session account", () => {
     expect((await list("expired-session")).accounts.some((login) => login.active)).toBe(false);
     // No stored session at all is not an error: the popover simply cannot name the account.
     expect((await list(null)).accounts).toEqual([]);
+  });
+
+  test("serves the registered RPC from Paseo's own record of the agent", async () => {
+    await codexTeam(join(await home(), ".omp", "agent"));
+    const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
+    const cleanup = contribute({
+      handle(contract: { name: string }, handler: (input: unknown, context: unknown) => unknown) {
+        handlers.set(contract.name, handler);
+      },
+      on: () => () => {},
+      before: () => () => {},
+      registerSettings: () => ({ subscribe: () => () => {} }),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext);
+    const records: Record<string, unknown> = {
+      bundled: {
+        agent: { provider: "omp", persistence: { provider: "omp", sessionId: "bundled-session" } },
+      },
+      // Another provider's session id is not an OMP session.
+      foreign: {
+        agent: {
+          provider: "omp",
+          persistence: { provider: "codex", sessionId: "bundled-session" },
+        },
+      },
+      gone: null,
+    };
+    const paseo = {
+      agents: {
+        ref: (agentId: string) => ({
+          refresh: async () => {
+            if (agentId === "broken") throw new Error("offline");
+            return records[agentId];
+          },
+        }),
+      },
+    };
+    const list = async (agentId: string) =>
+      listOmpSessionAccounts.output.parse(
+        await handlers.get(listOmpSessionAccounts.name)?.(
+          { agentId, provider: "openai-codex" },
+          { paseo },
+        ),
+      ).accounts;
+    try {
+      expect((await list("bundled")).filter((login) => login.active)).toEqual([
+        expect.objectContaining({ credentialId: 2 }),
+      ]);
+      for (const agentId of ["foreign", "gone", "broken"]) {
+        expect(await list(agentId)).toEqual([]);
+      }
+    } finally {
+      cleanup();
+    }
   });
 
   test("reads a profile agent's logins and usage from that profile, never the default store", async () => {
