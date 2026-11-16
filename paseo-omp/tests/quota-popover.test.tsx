@@ -197,7 +197,7 @@ describe("quota popover reconciliation", () => {
     );
   });
 
-  test("shows the account this session uses on top and switches to another on request", async () => {
+  test("marks the account this session uses and switches to another from its heading", async () => {
     recorded.logins = [
       { credentialId: 3, label: "same@example.invalid", active: false, quotaAccountKeys: ["a"] },
       { credentialId: 5, label: "other", active: true, quotaAccountKeys: ["b"] },
@@ -207,8 +207,6 @@ describe("quota popover reconciliation", () => {
       { ...quota("b", "weekly", 0.2), email: "b@x.invalid" },
     ]);
 
-    const banner = container.querySelector('[data-accessibility-label="This session uses other"]');
-    expect(banner?.textContent).toContain("b@x.invalid");
     const inUse = heading("b@x.invalid");
     expect(inUse.contains(text("IN USE"))).toBe(true);
     // The account in use leads its provider even though the other one has more usage.
@@ -218,9 +216,11 @@ describe("quota popover reconciliation", () => {
     ).toBeTruthy();
     expect(container.querySelector('[aria-label="Use b@x.invalid for this session"]')).toBeNull();
 
-    const button = container.querySelector(
+    const other = heading("same@example.invalid");
+    const button = other.querySelector(
       '[aria-label="Use same@example.invalid for this session"]',
     ) as HTMLButtonElement;
+    expect(button.textContent).toBe("Switch");
     await act(async () => button.click());
     expect(recorded.sent).toEqual([
       { agentId: "synthetic-agent", text: "/session pin OAuth credential #3" },

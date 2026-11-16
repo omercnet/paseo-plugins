@@ -79,31 +79,6 @@ export function QuotaPopover(props: PluginButtonContentProps) {
       root: { gap: layout.compact ? 8 : 10, minWidth: layout.compact ? undefined : 260 },
       muted: { color: theme.colors.foregroundMuted, fontSize: 13 },
       error: { color: theme.colors.statusDanger, fontSize: 13 },
-      sessionCard: {
-        gap: 4,
-        padding: layout.compact ? 10 : 12,
-        borderRadius: 10,
-        borderWidth: 2,
-        borderColor: theme.colors.accent,
-        backgroundColor: theme.colors.surface1,
-      },
-      sessionHeading: {
-        color: theme.colors.foregroundMuted,
-        fontSize: 10,
-        fontWeight: "700" as const,
-      },
-      sessionLabelRow: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        flexWrap: "wrap" as const,
-        gap: 6,
-      },
-      sessionLabel: {
-        color: theme.colors.foreground,
-        fontSize: 14,
-        fontWeight: "700" as const,
-        flexShrink: 1,
-      },
       group: (current: boolean) => ({
         gap: 6,
         padding: layout.compact ? 10 : 12,
@@ -174,18 +149,23 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         borderColor: theme.colors.border,
         overflow: "hidden" as const,
       },
+      // Accent outline plus an icon so the switch reads as an action, not another badge.
       switch: {
-        alignSelf: "flex-start" as const,
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 4,
+        flexShrink: 0,
+        marginLeft: "auto" as const,
         paddingHorizontal: 8,
-        paddingVertical: 4,
+        paddingVertical: 3,
         borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: 8,
-        backgroundColor: theme.colors.surface2,
+        borderColor: theme.colors.accent,
+        borderRadius: 999,
       },
-      switchPressed: { opacity: 0.72 },
+      switchBelow: { alignSelf: "flex-start" as const, marginLeft: 0 },
+      switchPressed: { backgroundColor: theme.colors.surface2 },
       switchDisabled: { opacity: 0.45 },
-      switchText: { color: theme.colors.foreground, fontSize: 11, fontWeight: "600" as const },
+      switchText: { color: theme.colors.accent, fontSize: 11, fontWeight: "700" as const },
     }),
     [layout.compact, theme],
   );
@@ -196,12 +176,11 @@ export function QuotaPopover(props: PluginButtonContentProps) {
   const groups = quotaProviderGroups(quotas.data?.quotas ?? [], currentProvider);
   const hasCurrent = groups.some((group) => group.provider === currentProvider);
   const logins = sessionAccounts.data?.accounts ?? [];
-  const activeLogin = logins.find((login) => login.active) ?? null;
+  const hasActive = logins.some((login) => login.active);
   const currentAccounts = quotaSessionAccounts(
     groups.find((group) => group.provider === currentProvider)?.accounts ?? [],
     logins,
   );
-  const activeAccount = currentAccounts.find((account) => account.inUse) ?? null;
 
   function renderTags(tags: readonly string[], style: object) {
     return (
@@ -212,6 +191,33 @@ export function QuotaPopover(props: PluginButtonContentProps) {
           </Text>
         ))}
       </View>
+    );
+  }
+
+  function renderSwitch(
+    account: QuotaSessionAccountGroup,
+    login: OmpSessionAccount,
+    inHeading: boolean,
+  ) {
+    const busy = switching !== null;
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Use ${account.label ?? login.label} for this session`}
+        disabled={busy}
+        onPress={() => void switchTo(login)}
+        style={({ pressed }) => [
+          styles.switch,
+          inHeading ? null : styles.switchBelow,
+          pressed ? styles.switchPressed : null,
+          busy ? styles.switchDisabled : null,
+        ]}
+      >
+        <Icon name="ArrowLeftRight" size={11} color={theme.colors.accent} />
+        <Text style={styles.switchText}>
+          {switching === login.credentialId ? "Switching…" : "Switch"}
+        </Text>
+      </Pressable>
     );
   }
 
@@ -244,6 +250,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
             ) : null}
             {account.tags.length > 0 ? renderTags(account.tags, styles.headingTags) : null}
             {account.inUse ? <Text style={[styles.badge, { marginLeft: 6 }]}>IN USE</Text> : null}
+            {login && !account.inUse ? renderSwitch(account, login, true) : null}
           </View>
         ) : account.tags.length > 0 ? (
           renderTags(account.tags, styles.tags)
@@ -275,46 +282,13 @@ export function QuotaPopover(props: PluginButtonContentProps) {
             </View>
           );
         })}
-        {login && !account.inUse ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Use ${account.label ?? login.label} for this session`}
-            disabled={switching !== null}
-            onPress={() => void switchTo(login)}
-            style={({ pressed }) => [
-              styles.switch,
-              pressed ? styles.switchPressed : null,
-              switching !== null ? styles.switchDisabled : null,
-            ]}
-          >
-            <Text style={styles.switchText}>
-              {switching === login.credentialId ? "Switching…" : "Use for this session"}
-            </Text>
-          </Pressable>
-        ) : null}
+        {login && !account.inUse && !account.label ? renderSwitch(account, login, false) : null}
       </View>
     );
   }
 
   return (
     <View style={styles.root}>
-      {activeLogin ? (
-        <View
-          accessibilityLabel={`This session uses ${activeLogin.label}`}
-          style={styles.sessionCard}
-        >
-          <Text style={styles.sessionHeading}>THIS SESSION USES</Text>
-          <View style={styles.sessionLabelRow}>
-            <Text numberOfLines={1} ellipsizeMode="middle" style={styles.sessionLabel}>
-              {activeAccount?.label ?? activeLogin.label}
-            </Text>
-            {activeAccount && activeAccount.tags.length > 0
-              ? renderTags(activeAccount.tags, styles.tags)
-              : null}
-          </View>
-          <Text style={styles.detail}>{quotaProviderLabel(currentProvider)}</Text>
-        </View>
-      ) : null}
       {sessionAccounts.error ? (
         // The host wraps handler errors in transport details; only a short notice belongs here.
         <Text style={styles.muted}>Could not read which account this session uses.</Text>
@@ -327,7 +301,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
       <Text style={styles.muted}>
         Last recorded usage from the local agent database, not read live from the provider.
       </Text>
-      {currentProvider && !activeLogin ? (
+      {currentProvider && !hasActive ? (
         <Text style={styles.muted}>
           CURRENT PROVIDER identifies the provider, not the account used by this session.
         </Text>
