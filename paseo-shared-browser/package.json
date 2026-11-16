@@ -29,6 +29,7 @@
     "index.client.tsx",
     "index.server.ts",
     "client",
+    "scripts/agent-browser-native.mjs",
     "scripts/chromium-release.mjs",
     "scripts/prepare-dependencies.mjs",
     "scripts/prepare-runtime.mjs",
@@ -58,7 +59,7 @@
   "dependencies": {
     "@getpaseo/plugin": "catalog:",
     "@modelcontextprotocol/sdk": "catalog:",
-    "agent-browser": "0.42.0",
+    "agent-browser": "0.43.0",
     "esbuild": "catalog:",
     "zod": "catalog:"
   },

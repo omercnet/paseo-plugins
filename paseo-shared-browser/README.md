@@ -40,7 +40,7 @@ organization names.
   controller when a takeover is needed, and continues the selected action after control is granted.
   Closing a tab or browser still requires its own confirmation. Actions that need a fresh frame wait
   for one before sending input.
-- The plugin owns `agent-browser` version `0.42.0`, its IPC directory, and the Chromium executable.
+- The plugin owns `agent-browser` version `0.43.0`, its IPC directory, and the Chromium executable.
   It strips inherited `AGENT_BROWSER_*` variables and sets `AGENT_BROWSER_SOCKET_DIR`,
   `AGENT_BROWSER_IDLE_TIMEOUT_MS=0`, `AGENT_BROWSER_STREAM_PORT=0`, and
   `AGENT_BROWSER_NO_AUTO_DIALOG=1` itself.
@@ -104,6 +104,14 @@ Linux ARM64, where that download is unavailable, the installer automatically use
 from `/usr/bin/chromium`. Install a non-Snap Chromium build with the system package manager before
 adding the plugin. Set `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` to an absolute path when Chromium
 is installed elsewhere. The plugin does not emulate x64 Chromium on Linux.
+
+agent-browser 0.43 and newer ships its native binary in a per-platform optional package
+(`@agent-browser/cli-<os>-<arch>`), and runtime preparation stages the host's package into the
+runtime. Install the plugin's dependencies with scripts disabled (`npm install --ignore-scripts` or
+`npm ci --ignore-scripts`, which is what Paseo and `scripts/prepare-dependencies.mjs` do). When the
+platform package is missing, agent-browser's `postinstall` downloads a binary from GitHub releases
+without an integrity check; with scripts disabled, runtime preparation fails instead and names the
+missing package.
 
 Runtime preparation keeps no Chrome download cache. When it uses the upstream installer (every
 platform except Linux ARM64, unless `PASEO_SHARED_BROWSER_CHROMIUM_EXECUTABLE` is set), the
