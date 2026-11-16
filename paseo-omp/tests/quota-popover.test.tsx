@@ -23,7 +23,12 @@ vi.mock("react-native", () => ({
     accessibilityLabel?: string;
     style?: Record<string, unknown>;
   }) => (
-    <div role={props.accessibilityRole === "header" ? "heading" : undefined}>{props.children}</div>
+    <div
+      role={props.accessibilityRole === "header" ? "heading" : undefined}
+      data-accessibility-label={props.accessibilityLabel}
+    >
+      {props.children}
+    </div>
   ),
   Text: (props: { children?: ReactNode }) => <span>{props.children}</span>,
 }));
@@ -155,6 +160,8 @@ describe("quota popover reconciliation", () => {
     const name = heading("same@example.invalid");
     expect(name.contains(text("Business"))).toBe(true);
     expect(name.contains(text("Example Team"))).toBe(true);
-    expect(name.getAttribute("aria-label")).toBe("same@example.invalid · Business · Example Team");
+    expect(name.getAttribute("data-accessibility-label")).toBe(
+      "same@example.invalid · Business · Example Team",
+    );
   });
 });
