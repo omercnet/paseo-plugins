@@ -1,5 +1,18 @@
 # Changelog
 
+## [5.7.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.6.4...paseo-omp-v5.7.0) (2026-11-16)
+
+
+### Features
+
+* **paseo-omp:** label Copilot accounts with username and GHE host ([#624](https://github.com/omercnet/paseo-plugins/issues/624)) ([@taemire](https://github.com/taemire)) ([80d57b5](https://github.com/omercnet/paseo-plugins/commit/80d57b5d92fdaba0e182930ce6c663d846dbe531))
+
+
+### Bug Fixes
+
+* **deps:** keep react-dom on the catalog's react version ([#627](https://github.com/omercnet/paseo-plugins/issues/627)) ([57e9d30](https://github.com/omercnet/paseo-plugins/commit/57e9d30812dba8613bca7691d7559fd09b43d2c4))
+* **paseo-omp:** distinguish accounts in recorded quota popover ([#623](https://github.com/omercnet/paseo-plugins/issues/623)) ([@taemire](https://github.com/taemire)) ([e3d6b23](https://github.com/omercnet/paseo-plugins/commit/e3d6b235cd3e34b5da61a4ae1800cbe5890ac714))
+
 ## [5.6.4](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.6.3...paseo-omp-v5.6.4) (2026-11-14)
 
 

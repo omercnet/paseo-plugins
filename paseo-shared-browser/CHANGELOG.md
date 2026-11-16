@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.12](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.11...shared-browser-v4.1.12) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** update dependency agent-browser to v0.43.0 ([#629](https://github.com/omercnet/paseo-plugins/issues/629)) ([e407fbd](https://github.com/omercnet/paseo-plugins/commit/e407fbd1c3d9fe69583ca1ca6a8fb6e310d11e94))
+* **shared-browser:** add encoded video toggle, keep held gestures alive, recover expired tab polling ([#614](https://github.com/omercnet/paseo-plugins/issues/614)) ([e9c012b](https://github.com/omercnet/paseo-plugins/commit/e9c012bfa19fee70c4fb36c83befbc7a5a1f6a23))
+
 ## [4.1.11](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.10...shared-browser-v4.1.11) (2026-11-14)
 
 

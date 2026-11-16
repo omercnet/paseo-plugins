@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.6](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v4.0.5...paseo-context-mode-v4.0.6) (2026-11-16)
+
+
+### Bug Fixes
+
+* **context-mode:** replace the D1 host update command with plugin upgrade advice ([#630](https://github.com/omercnet/paseo-plugins/issues/630)) ([00818ed](https://github.com/omercnet/paseo-plugins/commit/00818edd685673c62e06809d63342feb0f8588d5))
+
 ## [4.0.5](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v4.0.4...paseo-context-mode-v4.0.5) (2026-11-14)
 
 
