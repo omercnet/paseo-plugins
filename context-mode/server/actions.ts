@@ -42,6 +42,9 @@ const INFORMATIONAL_CHECK = /^D(3|5b?)\b/;
 /** Upstream's fix for an outdated runtime; the plugin offers no in-place upgrade. */
 const UPGRADE_FIX = "run ctx_upgrade";
 
+/** D1's detail on an outdated runtime; since 2.1.7 its fix is the host's update command. */
+const UPDATE_AVAILABLE = "update available";
+
 const UPGRADE_ADVICE: Readonly<Record<BinarySource, string>> = {
   bundled: "Update the Context Mode plugin in Paseo",
   settings: "Upgrade the Context Mode install configured in settings",
@@ -58,7 +61,8 @@ function doctorRow(
   if (INFORMATIONAL_CHECK.test(check)) {
     return { ...row, status: status === "ok" ? "ok" : "warning" };
   }
-  if (upstreamFix === UPGRADE_FIX) {
+  const outdated = /^D1\b/.test(check) && detail.includes(UPDATE_AVAILABLE);
+  if (outdated || upstreamFix === UPGRADE_FIX) {
     // A bundled runtime that trails npm is expected until the next plugin release.
     const upgradeStatus = runtime === "bundled" ? "warning" : status;
     return { ...row, status: upgradeStatus, fix: UPGRADE_ADVICE[runtime] };

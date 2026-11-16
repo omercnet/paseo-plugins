@@ -96,6 +96,24 @@ describe("structured actions", () => {
     });
   });
 
+  test("replaces the host update command that 2.1.7 and later print for an outdated runtime", () => {
+    // Rows as Context Mode 2.1.10 prints them for Claude Code and Copilot.
+    const outdated = [
+      "| D1 version | WARN | 2.1.10 (877eebc): update available, latest on npm is 2.2.0 | Fix: claude plugin marketplace update context-mode && claude plugin update context-mode@context-mode |",
+      "| D1 version | WARN | 2.1.10 (877eebc): update available, latest on npm is 2.2.0 | Fix: npm i -g context-mode && context-mode setup --agents copilot-cli |",
+    ].join("\n");
+    const detail = "2.1.10 (877eebc): update available, latest on npm is 2.2.0";
+    const row = { status: "warning", check: "D1 version", detail };
+    expect(parseContextModeDoctorOutput(outdated, "bundled")).toEqual([
+      { ...row, fix: "Update the Context Mode plugin in Paseo" },
+      { ...row, fix: "Update the Context Mode plugin in Paseo" },
+    ]);
+    expect(parseContextModeDoctorOutput(outdated, "settings")[1]).toEqual({
+      ...row,
+      fix: "Upgrade the Context Mode install configured in settings",
+    });
+  });
+
   test("runs ctx_doctor against the plugin-owned probe store", async () => {
     const handlers = createContextModeActionHandlers(settingsHandle(), {
       resolveBinary: async () => ({
