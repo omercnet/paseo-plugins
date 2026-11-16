@@ -204,6 +204,21 @@ export function quotaSessionAccounts(
   return [...linked.filter((a) => a.inUse), ...linked.filter((a) => !a.inUse)];
 }
 
+/**
+ * Logins OMP names in use, or the provider's only one, that head no usage account: their usage is
+ * unrecorded or carries no identity to match. They are still shown, without limits.
+ */
+export function unlinkedSessionLogins(
+  accounts: readonly QuotaSessionAccountGroup[],
+  logins: readonly OmpSessionAccount[],
+): OmpSessionAccount[] {
+  return logins.filter(
+    (login) =>
+      (login.active || login.onlyLogin) &&
+      !accounts.some((account) => account.login?.credentialId === login.credentialId),
+  );
+}
+
 /** OMP's `/session pin` accepts this exact form for any stored OAuth login. */
 export function sessionPinCommand(credentialId: number): string {
   return `/session pin OAuth credential #${credentialId}`;

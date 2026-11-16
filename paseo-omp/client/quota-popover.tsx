@@ -24,6 +24,7 @@ import {
   quotaSessionAccounts,
   quotaSeverityFromFraction,
   sessionPinCommand,
+  unlinkedSessionLogins,
 } from "./quota-state";
 
 const QUOTA_POLL_MS = 30_000;
@@ -220,6 +221,32 @@ export function QuotaPopover(props: PluginButtonContentProps) {
     groups.find((group) => group.provider === currentProvider)?.accounts ?? [],
     logins,
   );
+  const unlinked = unlinkedSessionLogins(currentAccounts, logins);
+
+  // A login OMP names in use (or the only one) still shows when no usage row is its own.
+  function renderUnlinked(login: OmpSessionAccount, index: number) {
+    return (
+      <View key={`login-${login.credentialId}`} style={styles.account(index === 0)}>
+        <View
+          accessibilityRole="header"
+          accessibilityLabel={[login.label, login.active ? "in use by this session" : null]
+            .filter(Boolean)
+            .join(" · ")}
+          style={styles.accountHeading}
+        >
+          <Text numberOfLines={1} ellipsizeMode="middle" style={styles.accountLabel(login.active)}>
+            {login.label}
+          </Text>
+          {login.active ? (
+            <Text style={[styles.badge, { marginLeft: "auto", flexShrink: 0 }]}>IN USE</Text>
+          ) : (
+            <Text style={[styles.tag, { marginLeft: "auto", flexShrink: 0 }]}>ONLY LOGIN</Text>
+          )}
+        </View>
+        <Text style={styles.detail}>No recorded usage matches this login.</Text>
+      </View>
+    );
+  }
 
   function renderTags(tags: readonly string[], style: object) {
     return (
@@ -243,7 +270,8 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         accessibilityLabel={`Use ${login.label} for this session`}
         accessibilityState={{ disabled: busy }}
         disabled={busy}
-        hitSlop={8}
+        // About 22px tall; the slop brings the touch target to 44px without growing the pill.
+        hitSlop={{ top: 11, bottom: 11, left: 8, right: 8 }}
         onPress={() => void switchTo(login)}
         style={({ pressed }) => [
           styles.switch,
@@ -358,6 +386,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
           {`No recorded quota yet for ${quotaProviderLabel(currentProvider)} (this session's provider).`}
         </Text>
       ) : null}
+      {currentProvider && !hasCurrent ? unlinked.map(renderUnlinked) : null}
       {groups.length === 0 ? (
         <Text style={styles.muted}>No provider quota data available.</Text>
       ) : null}
@@ -377,7 +406,10 @@ export function QuotaPopover(props: PluginButtonContentProps) {
               <Text style={styles.groupLabel}>{quotaProviderLabel(group.provider)}</Text>
               <Text style={styles.badge}>{current ? "CURRENT PROVIDER" : "RECORDED"}</Text>
             </View>
-            {accounts.map(renderAccount)}
+            {current ? unlinked.map(renderUnlinked) : null}
+            {accounts.map((account, index) =>
+              renderAccount(account, index + (current ? unlinked.length : 0)),
+            )}
           </View>
         );
       })}

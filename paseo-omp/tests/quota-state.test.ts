@@ -908,7 +908,7 @@ describe("session account", () => {
         id,
         seed.provider,
         apiKey ? "api_key" : "oauth",
-        JSON.stringify({ ...identity, access: "secret-token" }),
+        JSON.stringify({ ...identity, access: "unread-placeholder" }),
         disabled ? "user" : null,
       );
     }
@@ -1191,9 +1191,10 @@ describe("session account", () => {
     ]);
   });
 
-  test("flags a provider's only login without claiming it is in use, and links its sole identity-less usage", async () => {
+  test("flags a provider's only login without claiming it is in use, and links no usage it cannot prove is its own", async () => {
     const root = await home();
-    const copilot = "oauth|enterprise:ghe.example.invalid|secret:abc123";
+    // Copilot's shape: no identity on the login, only an enterprise host and fingerprint in the key.
+    const copilot = "oauth|enterprise:host-1|secret:fingerprint-1";
     // No pin: the session has not sent a Copilot request yet, as for a freshly opened agent.
     await store(join(root, ".omp", "agent"), {
       provider: "github-copilot",
@@ -1213,7 +1214,8 @@ describe("session account", () => {
         label: "OAuth credential #8",
         active: false,
         onlyLogin: true,
-        quotaAccountKeys: [sha(copilot)],
+        // One login and one usage account do not prove the usage is this login's.
+        quotaAccountKeys: [],
       },
     ]);
   });

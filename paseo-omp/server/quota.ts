@@ -238,9 +238,8 @@ function hasIdentity(identity: LoginIdentity): boolean {
 
 /**
  * The usage accounts recorded for each login. Only identity fields leave the credential row. A login
- * with an identity always has to match it. Only when neither the provider's single login nor its
- * single usage account carries one (Copilot keys hold a credential fingerprint) are the two linked
- * unchecked.
+ * links only to usage whose identity matches its own, so a login without one (Copilot stores none)
+ * links to nothing: one stored login and one usage account do not prove the usage is that login's.
  */
 export function quotaAccountKeysFor(
   path: string,
@@ -272,18 +271,11 @@ export function quotaAccountKeysFor(
           accountId: text(row.accountId),
           orgId: text(row.orgId),
         };
-        if (hasIdentity(login)) {
-          matched.set(
-            row.id,
-            usageKeys.filter((key) => sameLogin(login, usageKeyIdentity(key))).map(hashAccountKey),
-          );
-        } else if (
-          credentialIds.length === 1 &&
-          usageKeys.length === 1 &&
-          !hasIdentity(usageKeyIdentity(usageKeys[0]))
-        ) {
-          matched.set(row.id, [hashAccountKey(usageKeys[0])]);
-        }
+        if (!hasIdentity(login)) continue;
+        matched.set(
+          row.id,
+          usageKeys.filter((key) => sameLogin(login, usageKeyIdentity(key))).map(hashAccountKey),
+        );
       }
     } finally {
       database.close();

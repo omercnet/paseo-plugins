@@ -323,4 +323,33 @@ describe("quota popover reconciliation", () => {
     expect(text("IN USE")).toBeTruthy();
     expect(container.textContent).not.toContain("ONLY LOGIN");
   });
+
+  test("still names a login OMP uses when no recorded usage is its own", async () => {
+    const login = {
+      credentialId: 8,
+      label: "OAuth credential #8",
+      active: true,
+      onlyLogin: false,
+      quotaAccountKeys: [],
+    };
+    recorded.logins = [login];
+    await render([{ ...quota("a", "weekly", 0.3), email: "a@x.invalid" }]);
+
+    const named = heading("OAuth credential #8");
+    expect(named.contains(text("IN USE"))).toBe(true);
+    expect(text("No recorded usage matches this login.")).toBeTruthy();
+    // The usage row it cannot claim stays unmarked, with nothing to switch to.
+    expect(heading("a@x.invalid").textContent).not.toContain("IN USE");
+    expect(container.querySelector('[aria-label$="for this session"]')).toBeNull();
+
+    // The only stored login is named the same way, also when the provider has no usage at all.
+    recorded.logins = [{ ...login, active: false, onlyLogin: true }];
+    await render([]);
+    expect(heading("OAuth credential #8").contains(text("ONLY LOGIN"))).toBe(true);
+
+    // Another unlinked login is neither in use nor the only one, so it adds nothing.
+    recorded.logins = [{ ...login, active: false }];
+    await render([]);
+    expect(container.textContent).not.toContain("OAuth credential #8");
+  });
 });
