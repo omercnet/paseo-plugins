@@ -203,6 +203,8 @@ function AccountCard({
             flexShrink: 1,
           }}
         >
+          {/* Cards wrap into columns away from their provider heading, so each names its own. */}
+          <Icon icon={providerIcon(account.provider)} size={16} color={theme.colors.foreground} />
           <Text numberOfLines={1} style={[styles.cardTitle, { flexShrink: 1 }]}>
             {account.label}
           </Text>
