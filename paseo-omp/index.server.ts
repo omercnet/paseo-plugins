@@ -52,7 +52,11 @@ import { createOmpProvider } from "./server/provider/registration";
 import { OmpPublicError } from "./server/provider/security";
 import { OmpSessionLimit } from "./server/provider/session-limit";
 import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
-import { resolveListOmpQuotas, resolveListOmpSessionAccounts } from "./server/quota";
+import {
+  resolveListOmpQuotas,
+  resolveListOmpSessionAccounts,
+  sessionIdFromPaseo,
+} from "./server/quota";
 import { ompRuleNoticeRow } from "./server/rule-notices";
 import {
   OmpSubagentControlRegistry,
@@ -162,8 +166,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listHubProcesses, resolveListHubProcesses);
   server.handle(tailHubLog, resolveTailHubLog);
   server.handle(listOmpQuotas, scoped(resolveListOmpQuotas));
-  server.handle(listOmpSessionAccounts, (input) =>
-    resolveListOmpSessionAccounts(input, subagentControlRegistry),
+  server.handle(listOmpSessionAccounts, (input, { paseo }) =>
+    resolveListOmpSessionAccounts(input, subagentControlRegistry, sessionIdFromPaseo(paseo)),
   );
   server.handle(
     listOmpAccounts,

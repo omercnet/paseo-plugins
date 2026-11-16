@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import type { listOmpQuotas, listOmpSessionAccounts, OmpQuota } from "../shared/quota";
 import { ompDataDir } from "./paths";
@@ -265,24 +266,91 @@ export function quotaAccountKeysFor(
   return matched;
 }
 
+/** Finds the OMP session id Paseo stored for an agent; null when the agent has none. */
+export type OmpSessionIdLookup = (agentId: string) => Promise<string | null>;
+
+/** Paseo's bundled `omp` provider and this plugin's providers both persist OMP's session id. */
+export function sessionIdFromPaseo(paseo: PluginHandlerContext["paseo"]): OmpSessionIdLookup {
+  return async (agentId) => {
+    try {
+      const persistence = (await paseo.agents.ref(agentId).refresh())?.agent.persistence;
+      if (!persistence || !/^omp(-|$)/u.test(persistence.provider)) return null;
+      return persistence.sessionId || null;
+    } catch {
+      return null;
+    }
+  };
+}
+
+const StickySchema = z.object({ type: z.string(), credentialId: z.number().int() });
+
+/**
+ * The provider's stored OAuth logins with the one OMP pinned to `sessionId` marked active. OMP
+ * persists that pin as `session:sticky:<provider>:<session id>` for 30 days past its last use; a
+ * session that never sent a request to the provider has none. Only identity fields are read.
+ */
+export function storedSessionLogins(
+  path: string,
+  provider: string,
+  sessionId: string,
+  nowSec = Math.floor(Date.now() / 1000),
+): OmpLogoutAccount[] {
+  try {
+    const database = new DatabaseSync(path, { readOnly: true, timeout: 500 });
+    try {
+      const sticky = database
+        .prepare("SELECT value FROM cache WHERE key = ? AND expires_at > ?")
+        .get(`session:sticky:${provider}:${sessionId}`, nowSec);
+      let active: number | null = null;
+      if (typeof sticky?.value === "string") {
+        try {
+          const parsed = StickySchema.safeParse(JSON.parse(sticky.value));
+          if (parsed.success && parsed.data.type === "oauth") active = parsed.data.credentialId;
+        } catch {
+          // An unreadable pin only loses the active marker.
+        }
+      }
+      const text = (value: unknown) => (typeof value === "string" && value.trim()) || null;
+      return database
+        .prepare(
+          `SELECT id, json_extract(data, '$.email') AS email,
+                  json_extract(data, '$.accountId') AS accountId,
+                  json_extract(data, '$.orgName') AS orgName
+           FROM auth_credentials
+           WHERE provider = ? AND credential_type = 'oauth' AND disabled_cause IS NULL
+           ORDER BY id`,
+        )
+        .all(provider)
+        .flatMap((row) => {
+          if (typeof row.id !== "number") return [];
+          // OMP's own label: the email or account id, then the organization in parentheses.
+          const base = text(row.email) ?? text(row.accountId) ?? `OAuth credential #${row.id}`;
+          const org = text(row.orgName);
+          return [
+            {
+              credentialId: row.id,
+              provider,
+              label: org && org !== base ? `${base} (${org})` : base,
+              type: "oauth" as const,
+              active: row.id === active,
+            },
+          ];
+        });
+    } finally {
+      database.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
 export async function resolveListOmpSessionAccounts(
   input: RpcInput<typeof listOmpSessionAccounts>,
   registry: OmpSubagentControlRegistry,
+  findSessionId: OmpSessionIdLookup,
   databasePath = defaultDatabasePath(),
 ): Promise<RpcOutput<typeof listOmpSessionAccounts>> {
-  const controls = registry.get(input.agentId);
-  if (!controls) throw new OmpPublicError("This agent has no running OMP Plugin session");
-  let logins: OmpLogoutAccount[];
-  try {
-    logins = await controls.listProviderAccounts(input.provider);
-  } catch (error) {
-    if (isOmpPublicError(error)) throw error;
-    if (error instanceof OmpRpcRequestRejectedError && error.code === "unsupported_command") {
-      throw new OmpPublicError("Update OMP to show which login this session uses");
-    }
-    // Native OMP error text is never forwarded.
-    throw new OmpPublicError("OMP could not list this session's logins");
-  }
+  const logins = await sessionLogins(input, registry, findSessionId, databasePath);
   const oauth = logins.filter((login) => login.type === "oauth");
   const keys = quotaAccountKeysFor(
     databasePath,
@@ -297,4 +365,31 @@ export async function resolveListOmpSessionAccounts(
       quotaAccountKeys: keys.get(login.credentialId) ?? [],
     })),
   };
+}
+
+/**
+ * A live OMP Plugin session answers itself. Any other OMP session (Paseo's bundled `omp` provider,
+ * or a plugin session not open in this daemon) falls back to the pin OMP recorded for it.
+ */
+async function sessionLogins(
+  input: RpcInput<typeof listOmpSessionAccounts>,
+  registry: OmpSubagentControlRegistry,
+  findSessionId: OmpSessionIdLookup,
+  databasePath: string,
+): Promise<OmpLogoutAccount[]> {
+  const controls = registry.get(input.agentId);
+  if (!controls) {
+    const sessionId = await findSessionId(input.agentId);
+    return sessionId ? storedSessionLogins(databasePath, input.provider, sessionId) : [];
+  }
+  try {
+    return await controls.listProviderAccounts(input.provider);
+  } catch (error) {
+    if (isOmpPublicError(error)) throw error;
+    if (error instanceof OmpRpcRequestRejectedError && error.code === "unsupported_command") {
+      throw new OmpPublicError("Update OMP to show which login this session uses");
+    }
+    // Native OMP error text is never forwarded.
+    throw new OmpPublicError("OMP could not list this session's logins");
+  }
 }

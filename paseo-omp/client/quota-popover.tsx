@@ -316,11 +316,8 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         </View>
       ) : null}
       {sessionAccounts.error ? (
-        <Text style={styles.muted}>
-          {sessionAccounts.error instanceof Error
-            ? sessionAccounts.error.message
-            : "Could not read which account this session uses."}
-        </Text>
+        // The host wraps handler errors in transport details; only a short notice belongs here.
+        <Text style={styles.muted}>Could not read which account this session uses.</Text>
       ) : null}
       {switchError ? <Text style={styles.error}>{switchError}</Text> : null}
       {session.status === "running" && logins.length > 1 ? (

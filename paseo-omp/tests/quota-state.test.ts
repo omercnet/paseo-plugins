@@ -764,18 +764,37 @@ describe("session account", () => {
     const path = join(root, "agent.db");
     const db = new DatabaseSync(path);
     db.exec(`CREATE TABLE usage_history (provider TEXT, account_key TEXT);
-      CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, data TEXT)`);
+      CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT,
+        credential_type TEXT, data TEXT, disabled_cause TEXT);
+      CREATE TABLE cache (key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)`);
     const usage = db.prepare("INSERT INTO usage_history VALUES ('openai-codex', ?)");
     for (const key of [teamA, teamB, personal]) usage.run(key);
-    const credential = db.prepare("INSERT INTO auth_credentials VALUES (?, 'openai-codex', ?)");
-    const data = (email: string, accountId: string, orgId: string) =>
-      JSON.stringify({ email, accountId, orgId, access: "secret-token" });
-    credential.run(1, data("a@example.invalid", "team", "team"));
-    credential.run(2, data("b@example.invalid", "team", "team"));
-    credential.run(3, data("a@example.invalid", "me", "mine"));
+    const credential = db.prepare(
+      "INSERT INTO auth_credentials VALUES (?, 'openai-codex', 'oauth', ?, ?)",
+    );
+    const data = (email: string, accountId: string, orgId: string, orgName: string) =>
+      JSON.stringify({ email, accountId, orgId, orgName, access: "secret-token" });
+    credential.run(1, data("a@example.invalid", "team", "team", "Team"), null);
+    credential.run(2, data("b@example.invalid", "team", "team", "Team"), null);
+    credential.run(3, data("a@example.invalid", "me", "mine", "a@example.invalid"), null);
+    credential.run(4, data("gone@example.invalid", "x", "x", "X"), "user");
+    const pin = db.prepare("INSERT INTO cache VALUES (?, ?, ?)");
+    const future = Math.floor(Date.now() / 1000) + 3_600;
+    pin.run(
+      "session:sticky:openai-codex:bundled-session",
+      JSON.stringify({ type: "oauth", index: 1, credentialId: 2, lastUsedAtMs: 1 }),
+      future,
+    );
+    pin.run(
+      "session:sticky:openai-codex:expired-session",
+      JSON.stringify({ type: "oauth", index: 0, credentialId: 1, lastUsedAtMs: 1 }),
+      1,
+    );
     db.close();
     return path;
   }
+
+  const noSession = async () => null;
 
   function registryWith(controls: Partial<OmpSubagentControls>): OmpSubagentControlRegistry {
     const registry = new OmpSubagentControlRegistry();
@@ -808,6 +827,7 @@ describe("session account", () => {
     const result = await resolveListOmpSessionAccounts(
       { agentId: "agent-1", provider: "openai-codex" },
       registry,
+      noSession,
       await database(),
     );
 
@@ -818,8 +838,7 @@ describe("session account", () => {
     ]);
   });
 
-  test("explains an OMP too old to list logins and an agent without a live session", async () => {
-    const path = await database();
+  test("explains an OMP too old to list logins", async () => {
     const outdated = registryWith({
       listProviderAccounts: async () => {
         throw new OmpRpcRequestRejectedError(undefined, "unsupported_command");
@@ -830,12 +849,49 @@ describe("session account", () => {
       resolveListOmpSessionAccounts(
         { agentId: "agent-1", provider: "openai-codex" },
         outdated,
-        path,
+        noSession,
+        await database(),
       ),
     ).rejects.toThrow("Update OMP to show which login this session uses");
-    await expect(
-      resolveListOmpSessionAccounts({ agentId: "other", provider: "openai-codex" }, outdated, path),
-    ).rejects.toThrow("This agent has no running OMP Plugin session");
+  });
+
+  test("reads the pin OMP recorded for a session no OMP Plugin runtime owns, such as Paseo's bundled omp", async () => {
+    const path = await database();
+    const empty = new OmpSubagentControlRegistry();
+    const forSession = (sessionId: string | null) => async (agentId: string) =>
+      agentId === "bundled-agent" ? sessionId : null;
+    const list = (sessionId: string | null) =>
+      resolveListOmpSessionAccounts(
+        { agentId: "bundled-agent", provider: "openai-codex" },
+        empty,
+        forSession(sessionId),
+        path,
+      );
+
+    expect((await list("bundled-session")).accounts).toEqual([
+      {
+        credentialId: 1,
+        label: "a@example.invalid (Team)",
+        active: false,
+        quotaAccountKeys: [sha(teamA)],
+      },
+      {
+        credentialId: 2,
+        label: "b@example.invalid (Team)",
+        active: true,
+        quotaAccountKeys: [sha(teamB)],
+      },
+      {
+        credentialId: 3,
+        label: "a@example.invalid",
+        active: false,
+        quotaAccountKeys: [sha(personal)],
+      },
+    ]);
+    // An expired pin marks nothing; the logins stay switchable.
+    expect((await list("expired-session")).accounts.some((login) => login.active)).toBe(false);
+    // No stored session at all is not an error: the popover simply cannot name the account.
+    expect((await list(null)).accounts).toEqual([]);
   });
 
   test("puts the account in use first and builds the pin command OMP accepts", () => {
