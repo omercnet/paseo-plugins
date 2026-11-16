@@ -29,6 +29,7 @@
     "index.client.tsx",
     "index.server.ts",
     "client",
+    "scripts/agent-browser-native.mjs",
     "scripts/chromium-release.mjs",
     "scripts/prepare-dependencies.mjs",
     "scripts/prepare-runtime.mjs",

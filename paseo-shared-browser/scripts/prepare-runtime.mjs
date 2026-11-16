@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
+import { stageAgentBrowserPackages } from "./agent-browser-native.mjs";
 import { installChromiumRelease } from "./chromium-release.mjs";
 import { discardRuntime, replaceRuntime } from "./replace-runtime.mjs";
 
@@ -187,17 +188,9 @@ async function installChromium() {
   return runtimeChromiumEntry;
 }
 
-async function stageAgentBrowserEntry() {
+async function stageAgentBrowserEntry(nativeBinary) {
   if (hostPlatform === "win32") {
-    const executableArch = hostArch === "arm64" ? "x64" : hostArch;
-    if (executableArch !== "x64") {
-      throw new Error(`Unsupported agent-browser Windows architecture: ${hostArch}`);
-    }
-    await cp(
-      join(packagedAgentBrowser, "bin", `agent-browser-win32-${executableArch}.exe`),
-      runtimeEntry,
-      { force: true },
-    );
+    await cp(nativeBinary, runtimeEntry, { force: true });
   } else {
     await symlink("../agent-browser/bin/agent-browser.js", runtimeEntry);
   }
@@ -208,11 +201,12 @@ await rm(stagingRoot, { recursive: true, force: true });
 try {
   await mkdir(join(runtimeModules, ".bin"), { recursive: true, mode: 0o700 });
   await chmod(pluginDataRoot, 0o700);
-  await cp(packagedAgentBrowser, join(runtimeModules, "agent-browser"), {
-    recursive: true,
-    force: true,
+  const nativeBinary = await stageAgentBrowserPackages({
+    agentBrowserRoot: packagedAgentBrowser,
+    runtimeModules,
+    version: expectedVersion,
   });
-  await stageAgentBrowserEntry();
+  await stageAgentBrowserEntry(nativeBinary);
 
   const binaryOverride = process.env.PASEO_SHARED_BROWSER_AGENT_BROWSER_BINARY;
   if (binaryOverride)
