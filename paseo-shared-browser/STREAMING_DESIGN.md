@@ -7,7 +7,10 @@ comparisons behind the input design.
 
 ## Transport and ownership
 
-Encoded video is opt-in: the daemon must set `PASEO_SHARED_BROWSER_VIDEO=1`. Without it
+Encoded video is opt-in: a host-wide toggle in the resolution menu, persisted in
+`plugin-data/shared-browser/video-preference.json`, or `PASEO_SHARED_BROWSER_VIDEO=1` in the
+daemon environment (which forces it on). Each Chromium launch reads the effective value, and a
+change relaunches open browsers. Without it
 the capture helper is never loaded and `video.read` returns a typed `video-disabled` reply,
 after which the client stops reading and uses JPEG. When enabled, desktop and web clients
 use Chromium tab capture, a realtime WebCodecs encoder, and bounded encoded-packet reads

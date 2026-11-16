@@ -100,6 +100,7 @@ export function useBrowserCanvasInput(options: CanvasOptions) {
         begin: (input) => current.current.transport.begin(input),
         update: (input) => current.current.transport.update(input),
         end: (input) => current.current.transport.end(input),
+        keepAlive: (input) => current.current.transport.keepAlive(input),
       },
       authority: () => (alive.current ? current.current.authority() : null),
       controlAuthority: () => {

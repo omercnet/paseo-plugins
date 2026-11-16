@@ -32,6 +32,13 @@ export interface BrowserResolutionPickerProps {
   onSelect(id: DevicePresetId): void;
   onToggleFavorite(id: DevicePresetId): void;
   onQualityChange(quality: BrowserDisplayPreferences["captureQuality"]): void;
+  /** Host-wide encoded video. Omitted while the host setting is unknown. */
+  encodedVideo?: {
+    enabled: boolean;
+    forcedByHost: boolean;
+    disabled: boolean;
+    onChange(enabled: boolean): void;
+  };
 }
 
 const STYLES = StyleSheet.create({
@@ -105,6 +112,43 @@ export function BrowserResolutionPicker(props: BrowserResolutionPickerProps) {
           {props.fillViewportDetail} · Follow the visible browser area while controlling
         </Text>
       </View>
+      {props.encodedVideo ? (
+        <View style={STYLES.group}>
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityLabel="Encoded video"
+            accessibilityState={{
+              checked: props.encodedVideo.enabled,
+              disabled: props.encodedVideo.disabled || props.encodedVideo.forcedByHost,
+            }}
+            disabled={props.encodedVideo.disabled || props.encodedVideo.forcedByHost}
+            onPress={() => props.encodedVideo?.onChange(!props.encodedVideo.enabled)}
+            style={({ pressed }) => [
+              STYLES.quality,
+              baseStyle,
+              props.encodedVideo?.enabled ? selectedStyle : null,
+              {
+                opacity:
+                  props.encodedVideo?.disabled || props.encodedVideo?.forcedByHost
+                    ? 0.45
+                    : pressed
+                      ? 0.72
+                      : 1,
+              },
+            ]}
+          >
+            <Icon name="Video" size={18} color={colors.foregroundMuted} />
+            <Text style={[STYLES.title, { color: colors.foreground }]}>
+              Encoded video: {props.encodedVideo.enabled ? "On" : "Off"}
+            </Text>
+          </Pressable>
+          <Text style={[STYLES.detail, { color: colors.foregroundMuted }]}>
+            {props.encodedVideo.forcedByHost
+              ? "Forced on by PASEO_SHARED_BROWSER_VIDEO=1 on the host"
+              : "Smoother streaming for every viewer on this host. Changing it restarts open browsers; logins are kept"}
+          </Text>
+        </View>
+      ) : null}
       {props.groups.map((group) => (
         <View key={group.id} style={STYLES.group}>
           <Text style={[STYLES.header, { color: colors.foregroundMuted }]}>{group.label}</Text>

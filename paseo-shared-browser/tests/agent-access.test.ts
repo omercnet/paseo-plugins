@@ -857,6 +857,116 @@ describe("agent shared-browser authorization", () => {
     });
   });
 
+  it("reattaches an agent to the replacement runtime after an encoded-video relaunch", async () => {
+    let generation = 0;
+    let videoEnabled = false;
+    const launched = new Map<string, boolean>();
+    class RelaunchOwner extends AgentRuntimeOwner {
+      override async create(workspaceId: string): Promise<AgentRuntime> {
+        const runtime = await super.create(workspaceId);
+        generation += 1;
+        launched.set(runtime.runtimeId, videoEnabled);
+        return runtime;
+      }
+      override async request(
+        runtime: AgentRuntime,
+        operation: string,
+        input: JsonValue,
+      ): Promise<JsonValue> {
+        if (operation === "identity") {
+          const current = `page-${generation}`;
+          const data = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+          if (data.targetId && data.targetId !== current)
+            throw new Error("Browser tab is no longer available");
+          return { userAgent: "Fake Chromium", targetId: current };
+        }
+        return super.request(runtime, operation, input);
+      }
+      async videoSettings() {
+        return { enabled: videoEnabled, forcedByHost: false };
+      }
+      async setVideoEnabled(enabled: boolean) {
+        videoEnabled = enabled;
+      }
+      videoLaunched(runtime: AgentRuntime) {
+        return launched.get(runtime.runtimeId) === true;
+      }
+    }
+    const owner = new RelaunchOwner();
+    const supervisor = new RuntimeSupervisor({ owner });
+    supervisors.push(supervisor);
+    const bridge = supervisor.claimBridge("plugin-bridge");
+    const agentTicket = ticket("video-relaunch");
+    await issueTicket(supervisor, bridge, agentTicket);
+    await bindTicket(supervisor, bridge, agentTicket, "agent-one", "workspace-one");
+    await expect(agentRequest(supervisor, agentTicket, "status")).resolves.toMatchObject({
+      state: { tabId: "page-1" },
+    });
+
+    const human = await browserRequest<{ viewerToken: string }>(supervisor, bridge, "attach", {
+      workspaceId: "workspace-one",
+      viewerLabel: "Human",
+    });
+    await expect(
+      browserRequest(supervisor, bridge, "video.set", {
+        viewerToken: human.viewerToken,
+        enabled: true,
+      }),
+    ).resolves.toEqual({ enabled: true, forcedByHost: false });
+    expect(owner.stopped).toHaveLength(1);
+    await expect(browserRequest(supervisor, bridge, "video.settings", {})).resolves.toEqual({
+      enabled: true,
+      forcedByHost: false,
+    });
+    // Same value again: nothing is stale, so nothing restarts.
+    await browserRequest(supervisor, bridge, "video.set", {
+      viewerToken: (
+        await browserRequest<{ viewerToken: string }>(supervisor, bridge, "attach", {
+          workspaceId: "workspace-one",
+          viewerLabel: "Human",
+        })
+      ).viewerToken,
+      enabled: true,
+    });
+    expect(owner.stopped).toHaveLength(1);
+
+    await expect(agentRequest(supervisor, agentTicket, "status")).resolves.toMatchObject({
+      state: { workspaceId: "workspace-one", tabId: "page-2" },
+    });
+  });
+
+  it("routes the gesture keep-alive operation through the supervisor to gesture authority", async () => {
+    const { supervisor, bridge } = createHarness();
+    const human = await browserRequest<{ viewerToken: string; state: BrowserState }>(
+      supervisor,
+      bridge,
+      "attach",
+      { workspaceId: "workspace-one", viewerLabel: "Human" },
+    );
+    const control = await browserRequest<{ controlToken: string }>(
+      supervisor,
+      bridge,
+      "acquire-control",
+      { viewerToken: human.viewerToken, takeover: false },
+    );
+    // A registered route reaches gesture validation; a missing one is an unknown operation.
+    await expect(
+      browserRequest(supervisor, bridge, "gesture.keepalive", {
+        viewerToken: human.viewerToken,
+        controlToken: control.controlToken,
+        gestureId: "g".repeat(32),
+        sequence: 1,
+        expected: {
+          sessionId: human.state.sessionId,
+          runtimeId: human.state.runtimeId ?? null,
+          bridgeEpoch: human.state.bridgeEpoch ?? null,
+          navigationGeneration: human.state.navigationGeneration,
+          viewportGeneration: human.state.viewportGeneration,
+        },
+      }),
+    ).rejects.toThrow("Browser gesture is unavailable");
+  });
+
   it("fails closed for null, unknown, history-only, unbound, and revoked credentials", async () => {
     const { supervisor, bridge } = createHarness();
     const historyOnlyTicket = ticket("history");

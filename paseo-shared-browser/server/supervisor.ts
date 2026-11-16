@@ -5,16 +5,18 @@ import { createServer, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ZodType } from "zod";
-import type { BrowserFrame, BrowserState } from "../shared/browser";
+import type { BrowserFrame, BrowserState, BrowserVideoSettings } from "../shared/browser";
 import {
   beginBrowserGestureRpc,
   captureBrowserRpc,
   closeBrowserRpc,
   endBrowserGestureRpc,
+  keepAliveBrowserGestureRpc,
   MAX_BROWSER_TABS,
   navigateBrowserRpc,
   resizeBrowserRpc,
   sendBrowserInputRpc,
+  setBrowserVideoSettingsRpc,
   setCaptureDensityRpc,
   updateBrowserGestureRpc,
 } from "../shared/browser";
@@ -65,6 +67,12 @@ export interface RuntimeOwner<Runtime extends RuntimeInstance = RuntimeInstance>
   create(workspaceId: string): Promise<Runtime>;
   request(runtime: Runtime, operation: string, input: JsonValue): Promise<JsonValue>;
   stop(runtime: Runtime): Promise<void>;
+  /** Effective host-wide encoded-video launch option, read fresh on every call. */
+  videoSettings?(): Promise<BrowserVideoSettings>;
+  /** Persist the choice; it applies to runtimes created afterwards. */
+  setVideoEnabled?(enabled: boolean): Promise<void>;
+  /** Encoded-video option this runtime was launched with. */
+  videoLaunched?(runtime: Runtime): boolean;
 }
 
 export interface RuntimeSupervisorOptions<Runtime extends RuntimeInstance> {
@@ -406,6 +414,14 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         throw new RuntimeProtocolError("RUNTIME_FAILURE", "Browser runtime was replaced");
       this.invalidateAgentObservations(workspaceId);
       this.revokeAgentControl(workspaceId);
+      // The runtime's viewers and targets die with it. Agents reattach to the next runtime's
+      // default page; advancing the revision rejects completions begun on the old tab.
+      for (const binding of this.agentBindings.values()) {
+        if (binding.workspaceId !== workspaceId) continue;
+        binding.viewerToken = null;
+        binding.tabId = null;
+        binding.selectionRevision++;
+      }
       await this.owner.stop(entry.runtime);
       if (this.workspaces.get(workspaceId) === entry) this.workspaces.delete(workspaceId);
     });
@@ -495,6 +511,11 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         result = await this.browserPolicy.endGesture(endBrowserGestureRpc.input.parse(data));
         this.invalidateAgentObservationsForState(result);
         break;
+      case "gesture.keepalive":
+        result = await this.browserPolicy.keepAliveGesture(
+          keepAliveBrowserGestureRpc.input.parse(data),
+        );
+        break;
       case "list":
         result = { workspaceIds: await this.browserPolicy.listOpenWorkspaceIds() };
         break;
@@ -524,6 +545,25 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
         result = { archived: true };
         break;
       }
+      case "video.settings":
+        result = await this.videoSettings();
+        break;
+      case "video.set": {
+        const input = setBrowserVideoSettingsRpc.input.parse(data);
+        const setVideoEnabled = this.owner.setVideoEnabled?.bind(this.owner);
+        if (!setVideoEnabled)
+          throw new RuntimeProtocolError(
+            "INVALID_REQUEST",
+            "Encoded video settings are unavailable",
+          );
+        await this.browserPolicy.relaunchOpenBrowsers(
+          input.viewerToken,
+          () => setVideoEnabled(input.enabled),
+          () => this.staleVideoRuntimes(),
+        );
+        result = await this.videoSettings();
+        break;
+      }
       default:
         throw new RuntimeProtocolError(
           "INVALID_REQUEST",
@@ -532,6 +572,20 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
     }
     this.assertActiveBridge(bridgeId, epoch);
     return result as JsonValue;
+  }
+
+  private async videoSettings(): Promise<BrowserVideoSettings> {
+    return (await this.owner.videoSettings?.()) ?? { enabled: false, forcedByHost: false };
+  }
+
+  /** Live runtimes launched with an encoded-video option that differs from the effective one. */
+  private async staleVideoRuntimes(): Promise<{ workspaceId: string; runtimeId: string }[]> {
+    const launched = this.owner.videoLaunched?.bind(this.owner);
+    if (!launched) return [];
+    const { enabled } = await this.videoSettings();
+    return [...this.workspaces]
+      .filter(([, entry]) => !entry.lost && launched(entry.runtime) !== enabled)
+      .map(([workspaceId, entry]) => ({ workspaceId, runtimeId: entry.runtime.runtimeId }));
   }
 
   private issueAgentTicket(bridgeId: string, epoch: number, ticket: string): JsonValue {

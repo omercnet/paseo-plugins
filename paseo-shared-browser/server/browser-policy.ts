@@ -20,6 +20,7 @@ import {
   type DevicePresetId,
   type endBrowserGestureRpc,
   FRAME_MAX_BYTES,
+  type keepAliveBrowserGestureRpc,
   MAX_VIEWPORT,
   MIN_VIEWPORT,
   mapDisplayedPoint,
@@ -67,6 +68,7 @@ type UpdateGestureReply = Omit<RpcOutput<typeof updateBrowserGestureRpc>, "state
   state: BrowserState;
 };
 type EndGestureInput = RpcInput<typeof endBrowserGestureRpc>;
+type KeepAliveGestureInput = RpcInput<typeof keepAliveBrowserGestureRpc>;
 
 const VIEWER_TTL_MS = 45_000;
 const CONTROL_LEASE_MS = 30_000;
@@ -233,6 +235,10 @@ export class SessionManager {
   private readonly closedViewerTabs = new Map<string, number>();
   private readonly sessionCreations = new Map<string, Promise<BrowserSession>>();
   private readonly sessionClosures = new Map<string, Promise<void>>();
+  /** Relaunches run one at a time so each reads stale runtimes after the previous one finished. */
+  private relaunchTail: Promise<void> = Promise.resolve();
+  /** Advances on every workspace teardown; a creation that overlaps one is never published. */
+  private readonly closureGenerations = new Map<string, number>();
   private readonly archived = new Set<string>();
   private readonly deliberatelyClosed = new Set<string>();
   private bridgeEpoch = 0;
@@ -472,34 +478,113 @@ export class SessionManager {
         throw new Error("Browser session is stale");
 
       this.deliberatelyClosed.add(session.workspaceId);
-      const workspaceSessions = [...this.sessions.values()].filter(
-        (candidate) => candidate.workspaceId === session.workspaceId,
-      );
-      for (const candidate of workspaceSessions) {
-        candidate.videoLifetime?.cancel();
-        await this.cancelGesture(candidate);
-        candidate.archived = true;
-        for (const token of candidate.viewers.keys()) {
-          this.viewerSessions.delete(token);
-          this.closedViewerWorkspaces.set(token, session.workspaceId);
-        }
-        candidate.viewers.clear();
-        candidate.controller = null;
-      }
-      try {
-        await this.client.closeWorkspace(session.workspaceId, session.runtimeId);
-      } finally {
-        for (const candidate of workspaceSessions) this.sessions.delete(candidate.key);
-      }
+      await this.stopWorkspaceSessions(session, true);
     });
-    this.sessionClosures.set(session.workspaceId, closing);
+    await this.awaitWorkspaceClosure(session.workspaceId, closing);
+    return { closed: true };
+  }
+
+  /**
+   * Tear down every page session of one workspace runtime. A deliberate close fences
+   * the old viewer tokens as closed; a relaunch leaves them simply invalid, so viewers
+   * reattach through the one-shot expired-viewer recovery.
+   */
+  private async stopWorkspaceSessions(session: BrowserSession, fenceViewers: boolean) {
+    const workspaceSessions = [...this.sessions.values()].filter(
+      (candidate) => candidate.workspaceId === session.workspaceId,
+    );
+    for (const candidate of workspaceSessions) {
+      candidate.videoLifetime?.cancel();
+      await this.cancelGesture(candidate);
+      candidate.archived = true;
+      for (const token of candidate.viewers.keys()) {
+        this.viewerSessions.delete(token);
+        if (fenceViewers) this.closedViewerWorkspaces.set(token, session.workspaceId);
+      }
+      candidate.viewers.clear();
+      candidate.controller = null;
+    }
+    try {
+      await this.client.closeWorkspace(session.workspaceId, session.runtimeId);
+    } finally {
+      for (const candidate of workspaceSessions) this.sessions.delete(candidate.key);
+    }
+  }
+
+  /** Attach and reopen wait for a pending closure before creating the next runtime. */
+  private async awaitWorkspaceClosure(workspaceId: string, closing: Promise<void>) {
+    this.closureGenerations.set(workspaceId, (this.closureGenerations.get(workspaceId) ?? 0) + 1);
+    this.sessionClosures.set(workspaceId, closing);
     try {
       await closing;
-      return { closed: true };
     } finally {
-      if (this.sessionClosures.get(session.workspaceId) === closing)
-        this.sessionClosures.delete(session.workspaceId);
+      if (this.sessionClosures.get(workspaceId) === closing)
+        this.sessionClosures.delete(workspaceId);
     }
+  }
+
+  /**
+   * Apply a host-wide launch option for a current viewer, then relaunch every running
+   * workspace runtime that was launched with a different value. `staleRuntimes` is read
+   * from the runtime registry, not from policy sessions, so a runtime whose earlier stop
+   * failed is still found and retried by the next call even when the setting is unchanged.
+   * Profiles persist and nothing is replayed; open pages restart at the launch page.
+   * A runtime that cannot be stopped is reported to the caller.
+   */
+  async relaunchOpenBrowsers(
+    viewerToken: string,
+    apply: () => Promise<void>,
+    staleRuntimes: () => Promise<{ workspaceId: string; runtimeId: string }[]>,
+  ): Promise<void> {
+    this.assertOpen();
+    this.requireViewer(viewerToken);
+    const lifecycleGeneration = this.lifecycleGeneration;
+    const run = this.relaunchTail.then(() =>
+      this.relaunchStale(lifecycleGeneration, apply, staleRuntimes),
+    );
+    this.relaunchTail = run.catch(() => undefined);
+    return run;
+  }
+
+  private async relaunchStale(
+    lifecycleGeneration: number,
+    apply: () => Promise<void>,
+    staleRuntimes: () => Promise<{ workspaceId: string; runtimeId: string }[]>,
+  ): Promise<void> {
+    // The viewer authorized this request when it was accepted. A reset or close while it
+    // waited behind another relaunch voids it; that relaunch itself may expire the viewer.
+    this.assertOpen();
+    if (lifecycleGeneration !== this.lifecycleGeneration)
+      throw new Error("Shared browser manager was reset");
+    await apply();
+    // A first attachment that started before the write may still launch with the old
+    // value. Let it register its runtime so the staleness check below can see it.
+    await Promise.allSettled([...this.sessionCreations.values()]);
+    let failed = false;
+    for (const { workspaceId, runtimeId } of await staleRuntimes()) {
+      const session = [...this.sessions.values()].find(
+        (candidate) =>
+          candidate.workspaceId === workspaceId &&
+          candidate.runtimeId === runtimeId &&
+          !candidate.archived,
+      );
+      const closing = session
+        ? this.serialize(session, () => this.stopWorkspaceSessions(session, false))
+        : this.client.closeWorkspace(workspaceId, runtimeId);
+      try {
+        await this.awaitWorkspaceClosure(workspaceId, closing);
+      } catch {
+        failed = true;
+        continue;
+      }
+      // Keep an open browser open for agents and other devices, as before the change.
+      // A failed replacement is reported; the next attachment can still create it.
+      if (session)
+        await this.getOrCreateSession(workspaceId).catch(() => {
+          failed = true;
+        });
+    }
+    if (failed) throw new Error("Some browsers could not be restarted; try again");
   }
 
   /** Only an explicit human reopen removes the close fence used by viewer and agent attach. */
@@ -1181,9 +1266,38 @@ export class SessionManager {
     });
   }
 
+  /**
+   * Renew a quiet held channel's idle bound after the same identity, sequence and
+   * attachment checks as an update. Dispatches no input and revokes no receipt. A
+   * channel with nothing held must end instead, so the idle bound still reclaims it.
+   */
+  async keepAliveGesture(input: KeepAliveGestureInput) {
+    const session = this.requireViewer(input.viewerToken);
+    return this.serialize(session, async () => {
+      const gesture = this.requireGesture(session, input);
+      try {
+        this.assertGesturePacketContext(gesture, input.expected);
+        gesture.assertSequence(input.sequence, this.now());
+        await this.assertGestureCurrent(session, gesture);
+        // The awaited check can outlast either deadline; never revive an expired channel.
+        const now = this.now();
+        if (now >= gesture.idleUntil || now >= gesture.expiresAt)
+          throw new Error("Browser gesture expired");
+        if (!gesture.isHeld()) throw new Error("Browser gesture has no held input");
+        gesture.renew(now);
+        this.renewController(session, input.viewerToken);
+        this.scheduleGestureTimeout(session, gesture);
+        return { gestureId: gesture.id, nextSequence: gesture.nextSequence };
+      } catch (error) {
+        await this.cancelGesture(session, gesture);
+        throw error;
+      }
+    });
+  }
+
   private requireGesture(
     session: BrowserSession,
-    input: UpdateGestureInput | EndGestureInput,
+    input: UpdateGestureInput | EndGestureInput | KeepAliveGestureInput,
   ): BrowserGesture {
     const gesture = session.gesture;
     if (
@@ -1334,6 +1448,7 @@ export class SessionManager {
     if (this.sessions.size + this.sessionCreations.size >= this.maxSessions)
       throw new Error(`Shared browser session limit (${this.maxSessions}) reached`);
     const lifecycleGeneration = this.lifecycleGeneration;
+    const closureGeneration = this.closureGenerations.get(workspaceId) ?? 0;
     const creation = this.createSession(workspaceId, key, tabId, replaceLost);
     this.sessionCreations.set(key, creation);
     try {
@@ -1344,14 +1459,20 @@ export class SessionManager {
       if (lifecycleGeneration !== this.lifecycleGeneration) {
         throw new Error("Shared browser manager was reset");
       }
-      this.sessions.set(key, session);
-      return session;
+      // A teardown that began while this page was being created missed it in its
+      // snapshot, so its runtime may already be stopped. Drop it (it holds no viewer
+      // yet) and create again once that teardown has finished.
+      if ((this.closureGenerations.get(workspaceId) ?? 0) === closureGeneration) {
+        this.sessions.set(key, session);
+        return session;
+      }
     } catch (error) {
       if (this.archived.has(workspaceId)) throw new Error("Workspace was archived");
       throw error;
     } finally {
       if (this.sessionCreations.get(key) === creation) this.sessionCreations.delete(key);
     }
+    return this.getOrCreateSession(workspaceId, tabId, replaceLost);
   }
 
   private async createSession(
