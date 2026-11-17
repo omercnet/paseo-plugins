@@ -832,12 +832,20 @@ export async function prepareWorkspaceCwdHandler(
 
   if (input.itemKind === "issue") {
     if (await branchExists(baseRoot, localBranchName)) {
-      await runGit(baseRoot, ["worktree", "add", "--", worktreePath, localBranchName]);
+      await runGit(baseRoot, [
+        "worktree",
+        "add",
+        "--no-checkout",
+        "--",
+        worktreePath,
+        localBranchName,
+      ]);
     } else {
       const startPoint = await resolveIssueStartPoint(baseRoot, matchingRemote);
       await runGit(baseRoot, [
         "worktree",
         "add",
+        "--no-checkout",
         "-b",
         localBranchName,
         "--",
@@ -845,6 +853,7 @@ export async function prepareWorkspaceCwdHandler(
         startPoint,
       ]);
     }
+    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
   } else {
     const prHead = await fetchPrHead(baseRoot, matchingRemote, input.prNumber);
     await assertBranchFastForwards(
@@ -853,7 +862,17 @@ export async function prepareWorkspaceCwdHandler(
       prHead,
       `the head of PR #${input.prNumber}`,
     );
-    await runGit(baseRoot, ["worktree", "add", "-B", localBranchName, "--", worktreePath, prHead]);
+    await runGit(baseRoot, [
+      "worktree",
+      "add",
+      "--no-checkout",
+      "-B",
+      localBranchName,
+      "--",
+      worktreePath,
+      prHead,
+    ]);
+    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
   }
 
   return {

@@ -511,6 +511,31 @@ describe("git hardening", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  test("worktree-local includeIf filters do not run during worktree creation", async () => {
+    const root = makeRoot();
+    const marker = join(root, "worktree-filter-ran");
+    const filter = join(root, "worktree-filter.sh");
+    writeFileSync(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    chmodSync(filter, 0o755);
+    const { repoDir } = makePullableRepo(root, {
+      ".gitattributes": { content: "*.evil filter=evil\n" },
+      "payload.evil": { content: "payload\n" },
+    });
+    const filterConfig = join(root, "worktree-filter.gitconfig");
+    writeFileSync(
+      filterConfig,
+      `[filter "evil"]\n\tsmudge = ${filter}\n\tclean = ${filter}\n\trequired = true\n`,
+    );
+    appendFileSync(
+      join(repoDir, ".git", "config"),
+      `\n[includeIf "gitdir:${repoDir}/.git/worktrees/"]\n\tpath = ${filterConfig}\n`,
+    );
+    const result = await prepare(request({ targetDir: repoDir }));
+    expect(gitIn(result.cwd, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(join(result.cwd, "payload.evil"))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("disallows custom git remote helpers even when their URL parses as GitHub", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
