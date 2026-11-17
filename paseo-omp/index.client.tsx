@@ -393,13 +393,14 @@ export default function contribute(client: PluginClientContext) {
     const key = `${agent.model}|${agent.status}`;
     const cached = sessionModelProviders.get(agent.id);
     if (cached?.key === key) return cached.provider;
+    let provider: string | null = null;
     try {
-      const { provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id });
-      sessionModelProviders.set(agent.id, { key, provider });
-      return provider;
+      ({ provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id }));
     } catch {
-      return null;
+      // An older or reloading server without the RPC: cached too, so it is not asked on every pass.
     }
+    sessionModelProviders.set(agent.id, { key, provider });
+    return provider;
   }
 
   async function reconcileOnce(): Promise<void> {

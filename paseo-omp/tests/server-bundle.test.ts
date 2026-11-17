@@ -207,6 +207,7 @@ describe("plugin server bundle", () => {
           expect.arrayContaining([
             "paseo-omp.cancel-subagent",
             "paseo-omp.steer-subagent",
+            "paseo-omp.session-model-provider",
             "paseo-omp.get-image",
             "paseo-omp.resolve-generated-images",
             "paseo-omp.list-accounts",

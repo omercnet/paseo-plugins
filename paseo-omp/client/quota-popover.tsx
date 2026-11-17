@@ -38,8 +38,12 @@ export function QuotaPopover(props: PluginButtonContentProps) {
       session?.status ?? null,
     ],
     queryFn: () => loadSessionModelProvider({ agentId }),
+    // A closed agent has no live session to ask, as in the pill.
     enabled: Boolean(
-      agentId && session && needsSessionModelProvider(session.provider, session.model),
+      agentId &&
+        session &&
+        session.status !== "closed" &&
+        needsSessionModelProvider(session.provider, session.model),
     ),
     retry: false,
   });

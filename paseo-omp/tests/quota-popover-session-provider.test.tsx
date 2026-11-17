@@ -110,18 +110,20 @@ async function show(status: string, sessionProvider: string | null) {
 
 const currentProvider = () => container.textContent?.includes("CURRENT PROVIDER") ?? false;
 
-test("asks the session for its provider again when it ends or resumes while the popover is open", async () => {
-  // Opened before the session runs: nothing to name yet.
+test("asks the live session for its provider when it starts or resumes while the popover is open", async () => {
+  // Opened on a closed agent: no live session to ask, nothing to name.
   await show("closed", null);
-  await vi.waitFor(() => expect(agent.asked).toBe(1));
+  await act(async () => {});
+  expect(agent.asked).toBe(0);
   expect(currentProvider()).toBe(false);
 
-  // The same model resumes: the popover asks again and marks the provider.
+  // The same model resumes: the popover asks and marks the provider.
   await show("idle", "anthropic");
   await vi.waitFor(() => expect(currentProvider()).toBe(true));
-  expect(agent.asked).toBe(2);
+  expect(agent.asked).toBe(1);
 
-  // The session ends: the earlier answer is not kept.
+  // The session ends: the earlier answer is not kept and nothing is asked.
   await show("closed", null);
   await vi.waitFor(() => expect(currentProvider()).toBe(false));
+  expect(agent.asked).toBe(1);
 });

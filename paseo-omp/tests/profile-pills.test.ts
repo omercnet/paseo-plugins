@@ -185,6 +185,8 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
   const agents = [
     { id: "live", provider: "omp-plugin", model: "omp:model:opaque", status: "idle" },
     { id: "ended", provider: "omp-plugin", model: "omp:model:opaque", status: "closed" },
+    // A server without the RPC (older, or reloading) rejects it.
+    { id: "older", provider: "omp-plugin", model: "omp:model:opaque", status: "idle" },
   ];
   let onDirectoryUpdate = () => {};
   const buttons: Array<{ id: string; agentId: string; update: ReturnType<typeof vi.fn> }> = [];
@@ -193,6 +195,7 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
       return { status: "ready", revision: "r", values: { quota: true } };
     }
     if (definition === getOmpSessionModelProvider) {
+      if (input.agentId === "older") throw new Error("unknown operation");
       return { provider: input.agentId === "live" ? "openai-codex" : null };
     }
     if (definition !== listOmpQuotas) return { processes: [] };
@@ -257,16 +260,20 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     expect(quota("ended")).toHaveBeenLastCalledWith(
       expect.objectContaining({ label: "Quotas · 90%" }),
     );
-    expect(asked()).toEqual(["live"]);
+    // A rejected lookup also keeps it.
+    expect(quota("older")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "Quotas · 90%" }),
+    );
+    expect(asked()).toEqual(["live", "older"]);
 
-    // The same model and status reuse the answer; a new model asks again.
+    // The same model and status reuse the answer, a rejection included; a new model asks again.
     onDirectoryUpdate();
     await vi.advanceTimersByTimeAsync(250);
-    expect(asked()).toEqual(["live"]);
+    expect(asked()).toEqual(["live", "older"]);
     agents[0].model = "omp:model:other";
     onDirectoryUpdate();
     await vi.advanceTimersByTimeAsync(250);
-    expect(asked()).toEqual(["live", "live"]);
+    expect(asked()).toEqual(["live", "older", "live"]);
   } finally {
     dispose();
   }
