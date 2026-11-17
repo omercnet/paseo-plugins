@@ -489,7 +489,8 @@ export function StartAgentModal({
 
           {cwdMode === "CWD-BASE" ? (
             <Text style={styles.hint}>
-              CWD-BASE switches the selected checkout to the task branch before the agent starts.
+              CWD-BASE switches {selectedDir ?? "the selected checkout"} to the task branch before
+              the agent starts.
             </Text>
           ) : null}
 

@@ -559,7 +559,7 @@ describe("git hardening", () => {
       wrapper,
       [
         "#!/bin/sh",
-        `if echo "$*" | grep -q -- "config --name-only --get-regexp"; then`,
+        `if echo "$*" | grep -q -- "--get-regexp"; then`,
         "  head -c 9000000 /dev/zero | tr '\\0' 'x'",
         "  exit 0",
         "fi",
@@ -575,6 +575,25 @@ describe("git hardening", () => {
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
+  test("equals-sign filter names cannot bypass neutralization", async () => {
+    const root = makeRoot();
+    const marker = join(root, "eq-filter-ran");
+    const filter = join(root, "eq-filter.sh");
+    writeFileSync(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    chmodSync(filter, 0o755);
+    const { repoDir } = makePullableRepo(root, {
+      ".gitattributes": { content: "*.evil filter=evil=x\n" },
+      "payload.evil": { content: "payload\n" },
+    });
+    gitIn(repoDir, ["config", "filter.evil=x.smudge", filter]);
+    gitIn(repoDir, ["config", "filter.evil=x.clean", filter]);
+    gitIn(repoDir, ["config", "filter.evil=x.required", "true"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(join(repoDir, "payload.evil"))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("disallows custom git remote helpers even when their URL parses as GitHub", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
@@ -588,6 +607,16 @@ describe("git hardening", () => {
     vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
     await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow();
     expect(existsSync(marker)).toBe(false);
+  });
+
+  test("refuses a checkout whose repo config redirects the fetch", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    gitIn(repoDir, ["config", "http.https://github.com.proxy", "http://evil-proxy:8080"]);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /configures transport keys/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 });
 

@@ -158,10 +158,24 @@ const GIT_SAFETY_ARGS = [
   "filter.lfs.process=",
   "-c",
   "filter.lfs.required=false",
+  "-c",
+  "http.proxy=",
+  "-c",
+  "http.sslVerify=true",
 ];
 
+function withSanitizedPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const path = env.PATH;
+  if (path === undefined) return env;
+  const sanitized = path
+    .split(":")
+    .filter((entry) => entry && isAbsolute(entry))
+    .join(":");
+  return { ...env, PATH: sanitized };
+}
+
 function gitEnv(): NodeJS.ProcessEnv {
-  return {
+  return withSanitizedPath({
     ...allowListedEnv(GIT_ENV_KEYS),
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -170,15 +184,29 @@ function gitEnv(): NodeJS.ProcessEnv {
     SSH_ASKPASS: "/bin/false",
     GIT_SSH_COMMAND: "ssh -oBatchMode=yes",
     GIT_TERMINAL_PROMPT: "0",
-  };
+  });
 }
 
-async function configuredFilterSafetyArgs(cwd: string): Promise<string[]> {
+interface FilterOverride {
+  key: string;
+  value: string;
+}
+
+async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]> {
   let stdout = "";
   try {
     const result = await execFileAsync(
       "git",
-      [...GIT_SAFETY_ARGS, "-C", cwd, "config", "--name-only", "--get-regexp", "^filter\\."],
+      [
+        ...GIT_SAFETY_ARGS,
+        "-C",
+        cwd,
+        "config",
+        "--null",
+        "--name-only",
+        "--get-regexp",
+        "^filter\\.",
+      ],
       { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv() },
     );
     stdout = result.stdout;
@@ -197,32 +225,38 @@ async function configuredFilterSafetyArgs(cwd: string): Promise<string[]> {
       );
     }
   }
-  const args: string[] = [];
-  for (const rawKey of stdout.split("\n")) {
-    const key = rawKey.trim();
+  const overrides: FilterOverride[] = [];
+  for (const key of stdout.split("\0")) {
     if (!/^filter\..+\.(clean|smudge|process|required)$/.test(key)) continue;
-    args.push("-c", key.endsWith(".required") ? `${key}=false` : `${key}=`);
+    overrides.push({ key, value: key.endsWith(".required") ? "false" : "" });
   }
-  return args;
+  return overrides;
 }
 
 async function runGit(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<string> {
-  const filterArgs = await configuredFilterSafetyArgs(cwd);
-  const { stdout } = await execFileAsync(
-    "git",
-    [...GIT_SAFETY_ARGS, ...filterArgs, "-C", cwd, ...args],
-    {
-      timeout,
-      maxBuffer: MAX_BUFFER_BYTES,
-      env: gitEnv(),
-    },
-  );
+  const filterOverrides = await configuredFilterSafetyArgs(cwd);
+  const env = gitEnv();
+  // Filter keys are passed losslessly through GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n rather than
+  // `-c key=value`, whose `=` parsing mis-parses subsection names that contain `=` (e.g.
+  // `filter.evil=x.clean`). Environment pairs override config files but not `-c`, which is fine.
+  if (filterOverrides.length > 0) {
+    env.GIT_CONFIG_COUNT = String(filterOverrides.length);
+    for (const [index, override] of filterOverrides.entries()) {
+      env[`GIT_CONFIG_KEY_${index}`] = override.key;
+      env[`GIT_CONFIG_VALUE_${index}`] = override.value;
+    }
+  }
+  const { stdout } = await execFileAsync("git", [...GIT_SAFETY_ARGS, "-C", cwd, ...args], {
+    timeout,
+    maxBuffer: MAX_BUFFER_BYTES,
+    env,
+  });
   return stdout.trim();
 }
 
 /** The environment gh runs with; the viewer queries use it too. */
 export function ghEnv(): NodeJS.ProcessEnv {
-  return { ...allowListedEnv(GH_ENV_KEYS), GIT_TERMINAL_PROMPT: "0" };
+  return withSanitizedPath({ ...allowListedEnv(GH_ENV_KEYS), GIT_TERMINAL_PROMPT: "0" });
 }
 
 async function cloneGitHubRepo(repository: string, targetDir: string): Promise<void> {
@@ -514,9 +548,51 @@ function prRef(prNumber: number): string {
  * concurrent fetch in the same checkout can overwrite between the fetch and the lookup.
  */
 async function fetchPrHead(baseRoot: string, remote: string, prNumber: number): Promise<string> {
+  await assertNoUnsafeTransportConfig(baseRoot);
   const ref = prRef(prNumber);
   await runGit(baseRoot, ["fetch", "--end-of-options", remote, `+pull/${prNumber}/head:${ref}`]);
   return runGit(baseRoot, ["rev-parse", "--verify", `${ref}^{commit}`]);
+}
+
+async function localConfigKeys(repoDir: string, pattern: string): Promise<string[]> {
+  let stdout = "";
+  try {
+    const result = await execFileAsync(
+      "git",
+      [
+        ...GIT_SAFETY_ARGS,
+        "-C",
+        repoDir,
+        "config",
+        "--local",
+        "--null",
+        "--name-only",
+        "--get-regexp",
+        pattern,
+      ],
+      { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv() },
+    );
+    stdout = result.stdout;
+  } catch (err) {
+    const code =
+      err && typeof err === "object" && "code" in err
+        ? (err as { code?: unknown }).code
+        : undefined;
+    if (code !== 1) throw err;
+  }
+  return stdout.split("\0").filter(Boolean);
+}
+
+const UNSAFE_TRANSPORT_CONFIG =
+  "^(http\\.|remote\\..*\\.(proxy|uploadpack|vcs)$|core\\.alternateRefsCommand$|url\\.)";
+
+async function assertNoUnsafeTransportConfig(repoDir: string): Promise<void> {
+  const keys = await localConfigKeys(repoDir, UNSAFE_TRANSPORT_CONFIG);
+  if (keys.length > 0) {
+    throw new Error(
+      `Repository ${repoDir} configures transport keys that could redirect or exfiltrate the fetch (${keys[0]}); remove them from .git/config before starting the agent.`,
+    );
+  }
 }
 
 async function branchExists(repoDir: string, branch: string): Promise<boolean> {

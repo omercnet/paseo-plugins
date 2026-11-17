@@ -250,6 +250,8 @@ describe("prepareWorkspaceCwdHandler git safety", () => {
     delete env.GIT_WORK_TREE;
     delete env.GIT_COMMON_DIR;
     delete env.GIT_INDEX_FILE;
+    env.GIT_CONFIG_GLOBAL = "/dev/null";
+    env.GIT_CONFIG_NOSYSTEM = "1";
     const git = (args: string[]) =>
       execFileSync("git", ["-C", repoDir, ...args], { stdio: "pipe", env });
     git(["init", "-b", "main"]);
