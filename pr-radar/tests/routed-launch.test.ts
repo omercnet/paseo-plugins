@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  automaticRoutingLaunchState,
   buildAgentConfig,
   initialLaunchTarget,
   labelWorkspaceCwd,
@@ -74,6 +75,23 @@ describe("initialLaunchTarget", () => {
       selectedDir: "/work/repo",
       allowClone: false,
     });
+  });
+});
+
+describe("automaticRoutingLaunchState", () => {
+  test("uses initialized defaults only for a new row", () => {
+    const current = {
+      selectedDir: "/work/current",
+      cwdMode: "CWD-WORKTREE" as const,
+      provider: "codex",
+    };
+    const defaults = { cwdMode: "CWD-BASE" as const, provider: "claude" };
+    expect(
+      automaticRoutingLaunchState({ localProjectRoot: "/work/initial" }, current, defaults, true),
+    ).toEqual({ selectedDir: "/work/initial", cwdMode: "CWD-BASE", provider: "claude" });
+    expect(
+      automaticRoutingLaunchState({ localProjectRoot: "/work/initial" }, current, defaults, false),
+    ).toEqual(current);
   });
 });
 

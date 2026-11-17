@@ -8,8 +8,10 @@ import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../sh
 import { ComboSelect, useAgentLaunchOptions } from "./agent-launch-options";
 import {
   type AgentLaunchOverrides,
+  automaticRoutingLaunchState,
   initialLaunchTarget,
   type RadarRow,
+  type RoutingLaunchState,
   restrictRoutedLaunch,
   routedProviderModel,
   vetRoutedProfile,
@@ -124,11 +126,7 @@ export function StartAgentModal({
 
   async function handleRunRouter(
     targetRow: RadarRow,
-    launchState: { selectedDir: string | null; cwdMode: CwdMode; provider: string } = {
-      selectedDir,
-      cwdMode,
-      provider,
-    },
+    launchState: RoutingLaunchState = { selectedDir, cwdMode, provider },
   ) {
     if (!settings.routingScriptPath.trim()) return;
     const invocationSeq = ++routingSeqRef.current;
@@ -220,19 +218,33 @@ export function StartAgentModal({
     }
   }
 
+  const autoRoutingRowIdRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (!row || !settings.routingScriptPath.trim()) {
+    if (!row) {
+      autoRoutingRowIdRef.current = null;
+      // Drop any in-flight result: with no row it must not be applied.
+      routingSeqRef.current += 1;
+      setRoutingBusy(false);
+      return;
+    }
+    const isNewRow = autoRoutingRowIdRef.current !== row.id;
+    autoRoutingRowIdRef.current = row.id;
+    if (!settings.routingScriptPath.trim()) {
       // Drop any in-flight result: with no script configured it must not be applied.
       routingSeqRef.current += 1;
       setRoutingBusy(false);
       return;
     }
-    const target = initialLaunchTarget(row);
-    void handleRunRouter(row, {
-      selectedDir: target.selectedDir,
-      cwdMode: settings.defaultCwdMode,
-      provider: settings.defaultProvider,
-    });
+    void handleRunRouter(
+      row,
+      automaticRoutingLaunchState(
+        row,
+        { selectedDir, cwdMode, provider },
+        { cwdMode: settings.defaultCwdMode, provider: settings.defaultProvider },
+        isNewRow,
+      ),
+    );
   }, [row?.id, settings.routingScriptPath]);
 
   const styles = useMemo(

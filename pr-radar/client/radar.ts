@@ -1,5 +1,6 @@
 import type { usePaseo } from "@getpaseo/plugin/client";
 import { z } from "zod";
+import type { CwdMode } from "../shared/settings";
 import { type GitHubInboxItem, type GitHubIssueItem, HttpsUrlSchema } from "../shared/viewer-scope";
 
 export type PaseoApi = ReturnType<typeof usePaseo>;
@@ -798,6 +799,27 @@ export function routedProviderModel(
 /** Cloning is never preselected: the user has to pick the clone row to allow it. */
 export function initialLaunchTarget(row: Pick<RadarRow, "localProjectRoot">) {
   return { selectedDir: row.localProjectRoot ?? null, allowClone: false };
+}
+
+export interface RoutingLaunchState {
+  selectedDir: string | null;
+  cwdMode: CwdMode;
+  provider: string;
+}
+
+export function automaticRoutingLaunchState(
+  row: Pick<RadarRow, "localProjectRoot">,
+  current: RoutingLaunchState,
+  defaults: Pick<RoutingLaunchState, "cwdMode" | "provider">,
+  isNewRow: boolean,
+): RoutingLaunchState {
+  if (!isNewRow) return current;
+  const target = initialLaunchTarget(row);
+  return {
+    selectedDir: target.selectedDir,
+    cwdMode: defaults.cwdMode,
+    provider: defaults.provider,
+  };
 }
 
 const CWD_TAGS: readonly CwdTag[] = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"];
