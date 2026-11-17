@@ -711,6 +711,46 @@ describe("git hardening", () => {
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
+  test("refuses a PR that replaces a submodule's ancestor with a symlink", async () => {
+    const root = makeRoot();
+    const { repoDir, bareDir } = makePullableRepo(root);
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},nested/sub`]);
+    gitIn(repoDir, ["commit", "-m", "add nested gitlink"]);
+
+    // Build a PR head whose tree turns `nested` into a symlink, based on the pre-gitlink commit.
+    const symlinkTarget = join(root, "symlink-target");
+    writeFileSync(symlinkTarget, "nowhere\n");
+    const blobSha = gitIn(repoDir, ["hash-object", "-w", symlinkTarget]);
+    const scratchIndex = join(root, "scratch-index");
+    writeFileSync(scratchIndex, "");
+    const indexEnv = { ...process.env, GIT_INDEX_FILE: scratchIndex };
+    execFileSync("git", ["-C", repoDir, "read-tree", "HEAD~1"], { env: indexEnv });
+    execFileSync(
+      "git",
+      ["-C", repoDir, "update-index", "--add", "--cacheinfo", `120000,${blobSha},nested`],
+      { env: indexEnv },
+    );
+    const tree = execFileSync("git", ["-C", repoDir, "write-tree"], {
+      env: indexEnv,
+      encoding: "utf8",
+    }).trim();
+    const commit = execFileSync(
+      "git",
+      ["-C", repoDir, "commit-tree", tree, "-m", "symlink nested"],
+      {
+        env: indexEnv,
+        encoding: "utf8",
+      },
+    ).trim();
+    gitIn(repoDir, ["push", bareDir, `+${commit}:refs/pull/7/head`]);
+
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /replaces the submodule under nested/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
   test("submodule filters do not run during the dirty check", async () => {
     const root = makeRoot();
     const { repoDir } = makePullableRepo(root);

@@ -753,21 +753,18 @@ async function assertNoGitlinkToFileOverwrite(
   )
     .split("\0")
     .filter(Boolean);
-  const nonGitlinkAtGitlink = incoming.find((entry) => {
+  // A gitlink path that becomes anything other than a gitlink (file, symlink or directory) and an
+  // ancestor that becomes a leaf (file or symlink) both replace the submodule's working tree.
+  const dangerous = incoming.find((entry) => {
+    const mode = entry.slice(0, entry.indexOf(" "));
     const path = entry.slice(entry.indexOf("\t") + 1);
-    return gitlinkPathSet.has(path) && !entry.startsWith("160000 ");
+    if (gitlinkPathSet.has(path)) return mode !== "160000";
+    return mode !== "040000";
   });
-  const fileAtAncestor = incoming.find((entry) => {
-    const path = entry.slice(entry.indexOf("\t") + 1);
-    return (
-      !gitlinkPathSet.has(path) && (entry.startsWith("100644 ") || entry.startsWith("100755 "))
-    );
-  });
-  const offending = nonGitlinkAtGitlink ?? fileAtAncestor;
-  if (offending) {
-    const path = offending.slice(offending.indexOf("\t") + 1);
+  if (dangerous) {
+    const path = dangerous.slice(dangerous.indexOf("\t") + 1);
     throw new Error(
-      `PR #${prNumber} replaces the submodule under ${path} with a regular file or directory, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
+      `PR #${prNumber} replaces the submodule under ${path} with a regular file, symlink or directory, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
     );
   }
 }
