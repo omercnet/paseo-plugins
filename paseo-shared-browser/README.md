@@ -163,8 +163,20 @@ By default every new agent gets the adapter. Settings, under Shared Browser, can
 
 - **Every new agent** (the default) injects the adapter into every new agent, as above.
 - **Only the agents listed** injects it only into a new agent whose provider id is listed, or whose
-  workspace id or project id is listed. Separate entries with commas or new lines. An empty
-  configuration means no agent.
+  workspace id or project id is listed, and into any agent that carries a listed label (below).
+  Separate entries with commas or new lines. An empty configuration means no agent.
+
+**Labels.** An entry is a label key (`team`: any agent with that label) or `key=value` (`team=blue`:
+that label with exactly that value). Matching is exact and case-sensitive. Labels are not on the
+`agent.create` request, only on the session-open request, so this is decided there, and it works
+differently from the other lists: a server returned from that hook lasts for that session only, while one
+added in `agent.create` is stored on the agent. So an agent with a matching label gets the adapter in
+every interactive session it opens (a new agent, a resume, a refresh, an import), each time with a fresh
+ticket bound to that agent and its workspace; the tickets are revoked together when the agent is
+archived. Helper (background) agents, history sessions and sessions without a workspace are skipped. If
+the ticket cannot be issued or bound the session opens without the tool and the log gets one line. In
+"Every new agent" mode this does nothing, because every new agent already has the tool; an agent that
+the create hook already gave a ticket is not given a second one.
 
 `agent.create` carries the provider and the working directory but no labels and no workspace id, so a
 workspace or project is matched by directory: the workspace whose directory is the agent's directory or

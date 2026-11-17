@@ -65,21 +65,43 @@ type AgentCreateHook = (
   context?: unknown,
 ) => Promise<AgentCreateRequest>;
 
-function captureAgentCreateHook(readAccess?: () => Promise<unknown>): AgentCreateHook {
-  let hook: AgentCreateHook | undefined;
+type SessionOpenRequest = {
+  agentId: string;
+  workspaceId: string | null;
+  reason: "create" | "resume" | "refresh" | "import";
+  purpose: "interactive" | "history";
+  background: boolean;
+  labels: Record<string, string>;
+  env: Record<string, string>;
+  mcpServers: Record<string, unknown>;
+};
+
+type SessionOpenHook = (input: { request: SessionOpenRequest }) => Promise<SessionOpenRequest>;
+
+function captureHooks(readAccess?: () => Promise<unknown>): {
+  create: AgentCreateHook;
+  open: SessionOpenHook;
+} {
+  let create: AgentCreateHook | undefined;
+  let open: SessionOpenHook | undefined;
   contribute({
     registerSettings: vi.fn((definition: { id: string }) =>
       definition.id === "agent-access" && readAccess ? { read: readAccess } : undefined,
     ),
     handle: vi.fn(),
     before: vi.fn((name: string, handler: unknown) => {
-      if (name === "agent.create") hook = handler as AgentCreateHook;
+      if (name === "agent.create") create = handler as AgentCreateHook;
+      if (name === "agent.session_open") open = handler as SessionOpenHook;
       return () => {};
     }),
     on: vi.fn(),
   } as never);
-  if (!hook) throw new Error("agent.create hook was not registered");
-  return hook;
+  if (!create || !open) throw new Error("the agent hooks were not registered");
+  return { create, open };
+}
+
+function captureAgentCreateHook(readAccess?: () => Promise<unknown>): AgentCreateHook {
+  return captureHooks(readAccess).create;
 }
 
 const BASE_STATE: BrowserState = {
@@ -286,7 +308,7 @@ describe("agent access", () => {
 
   const ready = (values: Record<string, unknown>) => async () => ({
     status: "ready",
-    values: { mode: "listed", providers: [], workspaces: [], projects: [], ...values },
+    values: { mode: "listed", providers: [], workspaces: [], projects: [], labels: [], ...values },
   });
   const request = (provider: string, cwd = "/repos/one"): AgentCreateRequest => ({
     config: { provider, cwd },
@@ -471,10 +493,164 @@ describe("agent access", () => {
   it("injects every agent in the default mode", async () => {
     const hook = captureAgentCreateHook(async () => ({
       status: "ready",
-      values: { mode: "all", providers: [], workspaces: [], projects: [] },
+      values: { mode: "all", providers: [], workspaces: [], projects: [], labels: [] },
     }));
     const transformed = await hook({ request: request("anything") });
     expect(transformed.config.mcpServers).toHaveProperty("shared-browser");
+  });
+});
+
+describe("agent access by label", () => {
+  beforeEach(() => {
+    browserMocks.issueAgentTicket.mockReset();
+    browserMocks.bindAgentTicket.mockReset();
+  });
+
+  const ready = (values: Record<string, unknown>) => async () => ({
+    status: "ready",
+    values: { mode: "listed", providers: [], workspaces: [], projects: [], labels: [], ...values },
+  });
+  const open = (over: Partial<SessionOpenRequest> = {}): SessionOpenRequest => ({
+    agentId: "agent-1",
+    workspaceId: "ws_a",
+    reason: "create",
+    purpose: "interactive",
+    background: false,
+    labels: { team: "blue" },
+    env: { EXISTING: "value" },
+    mcpServers: { other: { type: "stdio" } },
+    ...over,
+  });
+
+  it("injects the adapter and binds a fresh ticket for an agent with a matching label", async () => {
+    const { open: hook } = captureHooks(ready({ labels: ["team=blue"] }));
+    const result = await hook({ request: open() });
+    expect(result.mcpServers).toMatchObject({
+      other: { type: "stdio" },
+      "shared-browser": { type: "stdio", env: { ELECTRON_RUN_AS_NODE: "1" } },
+    });
+    const ticket = (result.mcpServers["shared-browser"] as { env: Record<string, string> }).env
+      .PASEO_SHARED_BROWSER_TICKET;
+    expect(ticket).toEqual(expect.any(String));
+    expect(browserMocks.issueAgentTicket).toHaveBeenCalledWith(ticket);
+    expect(browserMocks.bindAgentTicket).toHaveBeenCalledWith(ticket, "agent-1", "ws_a");
+    expect(result.env).toEqual({ EXISTING: "value" });
+  });
+
+  it.each(["create", "resume", "refresh", "import"] as const)(
+    "does it again, with a new ticket, when the session reopens (%s)",
+    async (reason) => {
+      const { open: hook } = captureHooks(ready({ labels: ["team"] }));
+      const first = await hook({ request: open({ reason: "create" }) });
+      const second = await hook({ request: open({ reason }) });
+      const ticketOf = (r: SessionOpenRequest) =>
+        (r.mcpServers["shared-browser"] as { env: Record<string, string> }).env
+          .PASEO_SHARED_BROWSER_TICKET;
+      expect(ticketOf(second)).toEqual(expect.any(String));
+      expect(ticketOf(second)).not.toBe(ticketOf(first));
+      expect(browserMocks.bindAgentTicket).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    ["a different value", { team: "red" }, ["team=blue"]],
+    ["a different key", { squad: "blue" }, ["team"]],
+    ["no labels", {}, ["team"]],
+    ["a key only inherited from Object", { toString: "x" }, ["toString=y"]],
+  ])("leaves an agent with %s alone", async (_name, labels, entries) => {
+    const { open: hook } = captureHooks(ready({ labels: entries }));
+    const input = open({ labels });
+    await expect(hook({ request: input })).resolves.toBe(input);
+    expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
+    expect(browserMocks.bindAgentTicket).not.toHaveBeenCalled();
+  });
+
+  it("does not read the setting for an agent with no labels", async () => {
+    const read = vi.fn(ready({ labels: ["team"] }));
+    const { open: hook } = captureHooks(read);
+    const input = open({ labels: {} });
+    await expect(hook({ request: input })).resolves.toBe(input);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a helper agent", { background: true }],
+    ["a history session", { purpose: "history" as const }],
+    ["a session without a workspace", { workspaceId: null }],
+  ])("leaves %s alone even with a matching label", async (_name, over) => {
+    const { open: hook } = captureHooks(ready({ labels: ["team"] }));
+    const input = open(over);
+    await expect(hook({ request: input })).resolves.toBe(input);
+    expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "all mode",
+      async () => ({
+        status: "ready",
+        values: { mode: "all", providers: [], workspaces: [], projects: [], labels: ["team"] },
+      }),
+    ],
+    ["an invalid setting", async () => ({ status: "invalid", revision: "1", error: "bad" })],
+    ["an unreadable setting", async () => Promise.reject(new Error("down"))],
+  ])(
+    "does nothing in %s (every new agent already has the tool, or the default applies)",
+    async (_name, read) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { open: hook } = captureHooks(read as () => Promise<unknown>);
+        const input = open();
+        await expect(hook({ request: input })).resolves.toBe(input);
+        expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it("does nothing on a Paseo release whose session-open request has no labels, background flag or MCP servers", async () => {
+    const { open: hook } = captureHooks(ready({ labels: ["team"] }));
+    const { labels: _labels, background: _background, mcpServers: _mcpServers, ...older } = open();
+    const input = older as unknown as SessionOpenRequest;
+    await expect(hook({ request: input })).resolves.toBe(input);
+    expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
+  });
+
+  it("does not add a second ticket to an agent the create hook already gave one", async () => {
+    const { open: hook } = captureHooks(ready({ labels: ["team"], providers: ["codex"] }));
+    const input = open({ env: { PASEO_SHARED_BROWSER_TICKET: "t".repeat(32) } });
+    const result = await hook({ request: input });
+    expect(browserMocks.bindAgentTicket).toHaveBeenCalledTimes(1);
+    expect(browserMocks.bindAgentTicket).toHaveBeenCalledWith("t".repeat(32), "agent-1", "ws_a");
+    expect(result.mcpServers).not.toHaveProperty("shared-browser");
+    expect(result.env).not.toHaveProperty("PASEO_SHARED_BROWSER_TICKET");
+  });
+
+  it("leaves a resumed agent that carries a create-hook ticket in its env untouched", async () => {
+    const { open: hook } = captureHooks(ready({ labels: ["team"] }));
+    const input = open({ reason: "resume", env: { PASEO_SHARED_BROWSER_TICKET: "t".repeat(32) } });
+    await expect(hook({ request: input })).resolves.toBe(input);
+    expect(browserMocks.bindAgentTicket).not.toHaveBeenCalled();
+  });
+
+  it("opens the session without the tool, and does not throw, when the ticket cannot be issued or bound", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { open: hook } = captureHooks(ready({ labels: ["team"] }));
+      browserMocks.issueAgentTicket.mockRejectedValueOnce(new Error("supervisor down"));
+      const first = open();
+      await expect(hook({ request: first })).resolves.toBe(first);
+      expect(browserMocks.bindAgentTicket).not.toHaveBeenCalled();
+      browserMocks.bindAgentTicket.mockRejectedValueOnce(new Error("Unknown agent ticket"));
+      const second = open();
+      await expect(hook({ request: second })).resolves.toBe(second);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/could not bind/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

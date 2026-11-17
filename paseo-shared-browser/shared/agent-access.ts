@@ -3,7 +3,7 @@
  *
  * "all" injects the adapter into every new agent (the behaviour before this setting existed, and the
  * default). "listed" injects it only when the new agent matches an entry of one of three lists: its
- * provider id, the id of its workspace, or the id of its workspace's project. An empty configuration
+ * provider id, the id of its workspace, the id of its workspace's project, or one of its labels. An empty configuration
  * means no agent. Agents that already exist are never changed.
  *
  * `agent.create` carries the provider and the working directory but no labels and no workspace id, so
@@ -24,6 +24,7 @@ export const agentAccessSchema = z.object({
   providers: entries,
   workspaces: entries,
   projects: entries,
+  labels: entries,
 });
 
 export type AgentAccess = z.output<typeof agentAccessSchema>;
@@ -41,6 +42,7 @@ export const DEFAULT_AGENT_ACCESS: AgentAccess = {
   providers: [],
   workspaces: [],
   projects: [],
+  labels: [],
 };
 
 export function accessFromState(
@@ -133,6 +135,34 @@ export async function agentGetsBrowser(
   } catch {
     return false;
   }
+}
+
+/**
+ * True when one entry of `entries` matches the agent's labels. An entry is a label key (`team`: the agent has that
+ * label, whatever its value) or `key=value` (the agent has that label with exactly that value). Matching is exact and
+ * case-sensitive. An entry with an empty key never matches.
+ */
+export function labelMatches(
+  entries: readonly string[],
+  labels: Readonly<Record<string, string>>,
+): boolean {
+  return entries.some((entry) => {
+    const separator = entry.indexOf("=");
+    const key = separator < 0 ? entry : entry.slice(0, separator);
+    if (key === "" || !Object.hasOwn(labels, key)) return false;
+    return separator < 0 || labels[key] === entry.slice(separator + 1);
+  });
+}
+
+/**
+ * True when an agent gets the browser tool because of its labels. Labels are only on the session-open request, not on
+ * agent.create, so this runs there. It applies to the "listed" mode only; in "all" every new agent already has the tool.
+ */
+export function agentGetsBrowserByLabel(
+  access: AgentAccess,
+  labels: Readonly<Record<string, string>>,
+): boolean {
+  return access.mode === "listed" && labelMatches(access.labels, labels);
 }
 
 export const MAX_LIST_ENTRIES = MAX_ENTRIES;
