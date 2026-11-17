@@ -171,9 +171,7 @@ workspace or project is matched by directory: the workspace whose directory is t
 the deepest one containing it. Both directories are normalized first (separators, `.` and `..` segments),
 so a path that climbs out of a workspace does not match it. The lookup includes background workspaces. If
 the list is longer than 20 pages of 200, or the lookup fails, those lists match nothing. Workspaces that
-share a directory cannot be told apart, so listing any of them matches them all. The whole decision (the
-settings read and the lookup) has a 2 second deadline, and a timeout counts as no match, so a slow lookup
-never holds up agent creation. The check runs before the adapter, its credential or the supervisor are set up, so
+share a directory cannot be told apart, so listing any of them matches them all. Matching is lexical: nothing on disk is consulted, so symlinks are not resolved and letter case is not folded. The settings read has a 2 second deadline, and a read that is too slow is treated like an unreadable setting, so every new agent gets the tool. The workspace lookup has its own 2 second deadline, and a timeout there counts as no match. Either timeout logs one line, and a slow lookup never holds up agent creation. The check runs before the adapter, its credential or the supervisor are set up, so
 an agent that is not allowed costs nothing. It applies to agents created after the setting is saved. A
 setting that cannot be read or is invalid falls back to every new agent, and the plugin log gets one line
 saying so. The settings screen reports an entry over 256 characters or a list over 200 entries instead of

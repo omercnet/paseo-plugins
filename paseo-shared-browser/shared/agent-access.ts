@@ -61,14 +61,19 @@ export interface WorkspaceRef {
 }
 
 /**
- * A directory in one canonical form: backslashes become slashes, repeated slashes collapse, and `.`
- * and `..` segments resolve (a `..` above the root of an absolute path stays at the root, which is `/`). This is
- * what posix normalize does; it is written out here because shared code does not import Node modules.
+ * A directory in one lexical canonical form: backslashes become slashes, repeated slashes collapse, and
+ * `.` and `..` segments resolve. An absolute path (a leading slash, or a drive such as `C:`) cannot
+ * climb above its root, which is `/` or `C:/`. It is the same idea as posix normalize, written out because
+ * shared code does not import Node modules. Nothing on disk is consulted: symlinks are not resolved and
+ * letter case is not folded.
  */
 export function normalizeDirectory(path: string): string {
-  const absolute = path.replace(/\\/g, "/").startsWith("/");
+  const slashed = path.replace(/\\/g, "/");
+  const drive = /^[A-Za-z]:(?=\/|$)/.exec(slashed)?.[0] ?? "";
+  const rest = slashed.slice(drive.length);
+  const absolute = drive !== "" || rest.startsWith("/");
   const kept: string[] = [];
-  for (const segment of path.replace(/\\/g, "/").split("/")) {
+  for (const segment of rest.split("/")) {
     if (segment === "" || segment === ".") continue;
     if (segment !== "..") {
       kept.push(segment);
@@ -79,7 +84,7 @@ export function normalizeDirectory(path: string): string {
     }
   }
   const joined = kept.join("/");
-  return absolute ? `/${joined}` : joined;
+  return absolute ? `${drive}/${joined}` : joined;
 }
 
 /**

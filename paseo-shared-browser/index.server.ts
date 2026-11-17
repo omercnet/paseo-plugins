@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
 import {
   bindAgentTicket,
   cleanupBrowserServer,
@@ -112,9 +112,15 @@ function mcpBundlePath(): string {
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(browserDisplayPreferences);
   const agentAccess = server.registerSettings(agentAccessSettings);
+  // The deadline covers the settings read alone: a setting that cannot be read in time is an unreadable
+  // setting, and that falls back to the default (every new agent).
   const readAccess = async () => {
     try {
-      const state = await agentAccess.read();
+      const state = await withinDeadline(
+        Promise.resolve(agentAccess.read()),
+        ACCESS_DECISION_TIMEOUT_MS,
+        "the read timed out",
+      );
       const access = accessFromState(state);
       if (access === DEFAULT_AGENT_ACCESS) {
         console.warn(
@@ -124,9 +130,24 @@ export default function contribute(server: PluginServerContext) {
       return access;
     } catch (error) {
       console.warn(
-        `shared-browser: the agent-access setting could not be read (${error instanceof Error ? error.name : "error"}); every new agent gets the browser tool`,
+        `shared-browser: the agent-access setting could not be read (${error instanceof Error ? error.message : "error"}); every new agent gets the browser tool`,
       );
       return DEFAULT_AGENT_ACCESS;
+    }
+  };
+  // The workspace lookup has its own deadline; a timeout or any other failure there is no match.
+  const lookupWorkspaces = async (paseo: PluginHookContext["paseo"]) => {
+    try {
+      return await withinDeadline(
+        listAllWorkspaces(paseo),
+        ACCESS_DECISION_TIMEOUT_MS,
+        "the workspace lookup timed out",
+      );
+    } catch (error) {
+      console.warn(
+        `shared-browser: the workspace lookup failed (${error instanceof Error ? error.message : "error"}); the agent is not matched to a workspace or project`,
+      );
+      throw error;
     }
   };
   server.handle(attachBrowserRpc, handleAttachBrowser);
@@ -155,16 +176,9 @@ export default function contribute(server: PluginServerContext) {
   server.before("agent.create", async ({ request }, context) => {
     if (request.config.internal) return request;
     // Decide before any ticket or supervisor work, so an agent that is not allowed costs nothing.
-    // The whole decision (settings read and workspace lookup) shares one deadline, so a stalled lookup
-    // cannot hold up agent creation; a timeout counts as no match.
-    const allowed = await withinDeadline(
-      (async () =>
-        agentGetsBrowser(await readAccess(), request.config, () =>
-          listAllWorkspaces(context.paseo),
-        ))(),
-      ACCESS_DECISION_TIMEOUT_MS,
-      "Shared Browser access decision timed out",
-    ).catch(() => false);
+    const allowed = await agentGetsBrowser(await readAccess(), request.config, () =>
+      lookupWorkspaces(context.paseo),
+    );
     if (!allowed) return request;
     const ticket = randomBytes(32).toString("base64url");
     if (!(await issueTicketWithinDeadline(ticket))) return request;

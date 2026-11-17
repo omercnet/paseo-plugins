@@ -205,6 +205,12 @@ describe("normalizeDirectory", () => {
     ["/", "/"],
     [".", ""],
     ["C:\\repos\\one\\..\\two", "C:/repos/two"],
+    ["C:\\..\\repos\\one", "C:/repos/one"],
+    ["C:\\", "C:/"],
+    ["C:", "C:/"],
+    ["c:/a//b/", "c:/a/b"],
+    ["c:/../x", "c:/x"],
+    ["C:repos", "C:repos"],
     ["../x", "../x"],
     ["a/../..", ".."],
   ])("%s", (input, expected) => {
@@ -221,6 +227,21 @@ describe("a workspace at the filesystem root", () => {
     for (const cwd of ["", ".", "repos/one", "../x"]) {
       expect(workspacesForDirectory(cwd, root)).toEqual([]);
     }
+  });
+});
+
+describe("a Windows drive root", () => {
+  const windows = [{ id: "w", projectId: "p", workspaceDirectory: "C:\\repos\\one" }];
+  it("cannot be climbed above, and is not another drive", () => {
+    expect(workspacesForDirectory("C:\\..\\repos\\one", windows).map((w) => w.id)).toEqual(["w"]);
+    expect(workspacesForDirectory("C:\\repos\\one\\src", windows).map((w) => w.id)).toEqual(["w"]);
+    expect(workspacesForDirectory("D:\\repos\\one", windows)).toEqual([]);
+    expect(workspacesForDirectory("repos/one", windows)).toEqual([]);
+  });
+  it("a workspace at a drive root contains that drive only", () => {
+    const drive = [{ id: "d", projectId: "p", workspaceDirectory: "C:\\" }];
+    expect(workspacesForDirectory("C:\\repos", drive).map((w) => w.id)).toEqual(["d"]);
+    expect(workspacesForDirectory("D:\\repos", drive)).toEqual([]);
   });
 });
 

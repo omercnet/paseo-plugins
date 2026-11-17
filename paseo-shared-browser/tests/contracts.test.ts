@@ -381,25 +381,48 @@ describe("agent access", () => {
       vi.useRealTimers();
     });
 
-    it.each([
-      ["the settings read", () => new Promise<never>(() => {}), undefined],
-      [
-        "the workspace lookup",
-        ready({ workspaces: ["ws_a"] }),
-        { paseo: { workspaces: { list: () => new Promise<never>(() => {}) } } },
-      ],
-    ])(
-      "a stalled %s counts as no match and does not block creation",
-      async (_name, read, context) => {
-        vi.useFakeTimers();
-        const hook = captureAgentCreateHook(read as () => Promise<unknown>);
+    it("a stalled settings read falls back to every agent, with a log line", async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const hook = captureAgentCreateHook(() => new Promise<never>(() => {}));
+        const pending = hook({ request: request("claude") });
+        await vi.advanceTimersByTimeAsync(2_000);
+        const transformed = await pending;
+        expect(transformed.config.mcpServers).toHaveProperty("shared-browser");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toMatch(/timed out/);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("a stalled workspace lookup counts as no match, with a log line", async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const hook = captureAgentCreateHook(ready({ workspaces: ["ws_a"] }));
         const input = request("claude");
+        const context = { paseo: { workspaces: { list: () => new Promise<never>(() => {}) } } };
         const pending = hook({ request: input }, context);
         await vi.advanceTimersByTimeAsync(2_000);
         await expect(pending).resolves.toBe(input);
         expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
-      },
-    );
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toMatch(/lookup failed.*timed out/);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("leaves no timer behind when the read and the lookup finish in time", async () => {
+      vi.useFakeTimers();
+      const hook = captureAgentCreateHook(ready({ workspaces: ["ws_a"] }));
+      const entries = [{ id: "ws_a", projectId: "proj_1", workspaceDirectory: "/repos/one" }];
+      const transformed = await hook({ request: request("claude") }, workspaceContext(entries));
+      expect(transformed.config.mcpServers).toHaveProperty("shared-browser");
+      expect(vi.getTimerCount()).toBe(0);
+    });
 
     it("does not time out a decision that finishes in time", async () => {
       vi.useFakeTimers();
