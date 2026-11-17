@@ -613,6 +613,37 @@ describe("git hardening", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  test("line-separator filter names cannot bypass neutralization", async () => {
+    const root = makeRoot();
+    const marker1 = join(root, "lsep-filter-ran");
+    const marker2 = join(root, "psep-filter-ran");
+    const filter1 = join(root, "lsep-filter.sh");
+    const filter2 = join(root, "psep-filter.sh");
+    writeFileSync(filter1, `#!/bin/sh\ntouch '${marker1}'\ncat\n`);
+    writeFileSync(filter2, `#!/bin/sh\ntouch '${marker2}'\ncat\n`);
+    chmodSync(filter1, 0o755);
+    chmodSync(filter2, 0o755);
+    const name1 = "evil\u2028x";
+    const name2 = "evil\u2029x";
+    const { repoDir } = makePullableRepo(root, {
+      ".gitattributes": { content: `*.evil1 filter=${name1}\n*.evil2 filter=${name2}\n` },
+      "payload.evil1": { content: "payload1\n" },
+      "payload.evil2": { content: "payload2\n" },
+    });
+    gitIn(repoDir, ["config", `filter.${name1}.smudge`, filter1]);
+    gitIn(repoDir, ["config", `filter.${name1}.clean`, filter1]);
+    gitIn(repoDir, ["config", `filter.${name1}.required`, "true"]);
+    gitIn(repoDir, ["config", `filter.${name2}.smudge`, filter2]);
+    gitIn(repoDir, ["config", `filter.${name2}.clean`, filter2]);
+    gitIn(repoDir, ["config", `filter.${name2}.required`, "true"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(join(repoDir, "payload.evil1"))).toBe(true);
+    expect(existsSync(join(repoDir, "payload.evil2"))).toBe(true);
+    expect(existsSync(marker1)).toBe(false);
+    expect(existsSync(marker2)).toBe(false);
+  });
+
   test("disallows custom git remote helpers even when their URL parses as GitHub", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
