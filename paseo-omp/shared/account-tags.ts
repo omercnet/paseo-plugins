@@ -27,7 +27,13 @@ export function accountTags(input: {
   const { plan, organization, email } = input;
   const tags: string[] = [];
   if (plan) {
-    tags.push(PLAN_LABELS[plan.toLowerCase()] ?? plan.charAt(0).toUpperCase() + plan.slice(1));
+    // An own-property lookup: a plan named like an Object member ("constructor") is still a plan.
+    const key = plan.toLowerCase();
+    tags.push(
+      Object.hasOwn(PLAN_LABELS, key)
+        ? PLAN_LABELS[key]
+        : plan.charAt(0).toUpperCase() + plan.slice(1),
+    );
   }
   // Codex reports its plan as the organization name too; that is not an organization.
   if (organization && organization.toLowerCase() !== plan?.toLowerCase()) {

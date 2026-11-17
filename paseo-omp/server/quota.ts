@@ -67,8 +67,11 @@ type CachedReport = AccountTags & { key: string; provider: string; fetchedAt: nu
 function readCachedReports(database: DatabaseSync): CachedReport[] {
   let rows: Record<string, unknown>[];
   try {
+    // A key range on the primary key (";" follows ":"), where LIKE would scan the whole cache.
     rows = database
-      .prepare("SELECT key, value FROM cache WHERE key LIKE 'usage_cache:report:%'")
+      .prepare(
+        "SELECT key, value FROM cache WHERE key >= 'usage_cache:report:' AND key < 'usage_cache:report;'",
+      )
       .all();
   } catch {
     return [];
@@ -99,19 +102,20 @@ function readCachedReports(database: DatabaseSync): CachedReport[] {
   });
 }
 
-/** OMP caches each report under a key that ends with the account_key usage_history records. */
+/**
+ * OMP caches each report under a key that ends with the account_key usage_history records. Both
+ * tags come from the newest report naming either, so two reports are never mixed into one badge row.
+ */
 function accountTags(
   reports: readonly CachedReport[],
   provider: string,
   accountKey: string,
 ): AccountTags {
-  const matches = reports
+  const best = reports
     .filter((report) => report.provider === provider && report.key.endsWith(`:${accountKey}`))
-    .sort((a, b) => b.fetchedAt - a.fetchedAt);
-  return {
-    plan: matches.find((report) => report.plan)?.plan ?? null,
-    organization: matches.find((report) => report.organization)?.organization ?? null,
-  };
+    .sort((a, b) => b.fetchedAt - a.fetchedAt)
+    .find((report) => report.plan || report.organization);
+  return { plan: best?.plan ?? null, organization: best?.organization ?? null };
 }
 
 // Only live windows are returned: a series whose newest row already reset (or never resets and was

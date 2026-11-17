@@ -15,6 +15,7 @@ import {
   quotasForProvider,
 } from "../client/quota-state";
 import { listOmpQuotasFrom, resolveListOmpQuotas } from "../server/quota";
+import { accountTags } from "../shared/account-tags";
 import type { OmpQuota } from "../shared/quota";
 
 const quotaRoots: string[] = [];
@@ -292,6 +293,13 @@ describe("OMP quota reader", () => {
       now,
     );
     usage.run(5, "xai-oauth", "oauth|account:e", null, now);
+    usage.run(
+      6,
+      "openai-codex",
+      "oauth|account:g|email:mixed@example.invalid",
+      "mixed@example.invalid",
+      now,
+    );
     const cache = database.prepare("INSERT INTO cache VALUES (?, ?, NULL)");
     const report = (provider: string, fetchedAt: number, metadata: object) =>
       JSON.stringify({ expiresAt: 0, value: { provider, fetchedAt, limits: [], metadata } });
@@ -324,6 +332,16 @@ describe("OMP quota reader", () => {
       report("xai-oauth", 5, { plan: "business" }),
     );
     cache.run("usage_cache:report:xai-oauth:default:oauth|account:e", "not json");
+    cache.run("usage_cache:report:xai-oauth:other:oauth|account:e", null);
+    // A newer report names only a plan, an older one only an organization: never mixed.
+    cache.run(
+      "usage_cache:report:1:openai-codex:default:oauth|account:g|email:mixed@example.invalid",
+      report("openai-codex", 9, { planType: "plus" }),
+    );
+    cache.run(
+      "usage_cache:report:0:openai-codex:default:oauth|account:g|email:mixed@example.invalid",
+      report("openai-codex", 3, { orgName: "Example Team" }),
+    );
     database.close();
 
     const recorded = listOmpQuotasFrom(path, now);
@@ -336,6 +354,15 @@ describe("OMP quota reader", () => {
     expect(tagsOf("anthropic", "me@example.invalid")).toEqual(["Personal"]);
     expect(tagsOf("anthropic", "work@example.invalid")).toEqual(["Example Team"]);
     expect(tagsOf("xai-oauth", null)).toEqual([]);
+    expect(tagsOf("openai-codex", "mixed@example.invalid")).toEqual(["Plus"]);
+  });
+
+  test("names a plan that matches an Object member as a plan", () => {
+    for (const plan of ["constructor", "__proto__", "toString"]) {
+      const tags = accountTags({ plan, organization: null, email: null });
+      expect(tags).toEqual([plan.charAt(0).toUpperCase() + plan.slice(1)]);
+      expect(typeof tags[0]).toBe("string");
+    }
   });
 
   test("reads quotas without tags when OMP has no usage cache table", async () => {

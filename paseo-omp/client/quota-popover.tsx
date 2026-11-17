@@ -93,8 +93,15 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         minWidth: 0,
       },
       accountSuffix: { color: theme.colors.foregroundMuted, fontSize: 11, flexShrink: 0 },
-      tags: { flexDirection: "row" as const, gap: 4, flexShrink: 0 },
-      headingTags: { flexDirection: "row" as const, gap: 4, flexShrink: 0, marginLeft: 6 },
+      // Badges may shrink (each ellipsized) so a long organization never pushes the name out.
+      tags: { flexDirection: "row" as const, gap: 4, flexShrink: 1, minWidth: 0 },
+      headingTags: {
+        flexDirection: "row" as const,
+        gap: 4,
+        flexShrink: 1,
+        minWidth: 0,
+        marginLeft: 6,
+      },
       tag: {
         color: theme.colors.foregroundMuted,
         fontSize: 10,
@@ -105,6 +112,9 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         borderWidth: 1,
         borderColor: theme.colors.border,
         overflow: "hidden" as const,
+        flexShrink: 1,
+        minWidth: 0,
+        maxWidth: 160,
       },
     }),
     [layout.compact, theme],
