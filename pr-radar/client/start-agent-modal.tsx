@@ -88,6 +88,11 @@ export function StartAgentModal({
   const [routingBusy, setRoutingBusy] = useState(false);
   const activeRowIdRef = useRef<string | null>(null);
   const editedFieldsRef = useRef<Set<string>>(new Set());
+  const providerRef = useRef(provider);
+
+  useEffect(() => {
+    providerRef.current = provider;
+  }, [provider]);
 
   useEffect(() => {
     activeRowIdRef.current = row?.id ?? null;
@@ -182,7 +187,8 @@ export function StartAgentModal({
         setProfileName(vetted.profileName);
       }
       const canApplyProvider = !editedFieldsRef.current.has("provider");
-      const routedPick = routedProviderModel({ provider: launchState.provider }, result, {
+      const currentProvider = canApplyProvider ? launchState.provider : providerRef.current;
+      const routedPick = routedProviderModel({ provider: currentProvider }, result, {
         applyProvider: canApplyProvider,
       });
       if (routedPick.provider !== undefined && canApplyProvider) {

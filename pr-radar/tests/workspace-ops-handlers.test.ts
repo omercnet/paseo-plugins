@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  ghEnv,
   listLocalDirsHandler,
   prepareWorkspaceCwdHandler,
   type RoutingScriptLimits,
@@ -271,29 +272,37 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
-  test("clones through gh when allowed and the directory is missing", async () => {
+  test("clones through hardened token-free git when allowed and the directory is missing", async () => {
     const root = makeRoot();
     const source = join(root, "source");
     initRepo(source, null);
+    const realGit = execFileSync("which", ["git"]).toString().trim();
     const binDir = join(root, "bin");
     mkdirSync(binDir);
-    const ghLog = join(root, "gh-args.txt");
-    // gh repo clone -- OWNER/REPO TARGET
-    const ghScript = join(binDir, "gh");
+    const envLog = join(root, "clone-git-env.txt");
+    const argsLog = join(root, "clone-git-args.txt");
+    const gitScript = join(binDir, "git");
     writeFileSync(
-      ghScript,
+      gitScript,
       [
         "#!/bin/sh",
-        '[ "$1 $2 $3" = "repo clone --" ] || exit 9',
-        "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1",
-        `echo "$*" > "${ghLog}"`,
-        `git clone -q "${source}" "$5" || exit 8`,
-        'git -C "$5" remote set-url origin "https://github.com/$4.git"',
+        `env >> "${envLog}"`,
+        `printf '%s\\n' "$*" >> "${argsLog}"`,
+        `if [ "$1" = "-c" ] && echo "$*" | grep -q "clone -- https://github.com/owner/repo.git"; then`,
+        `  target=""`,
+        `  for arg do target="$arg"; done`,
+        `  "${realGit}" clone -q "${source}" "$target" || exit 8`,
+        `  "${realGit}" -C "$target" remote set-url origin "https://github.com/owner/repo.git"`,
+        "  exit 0",
+        "fi",
+        `exec "${realGit}" "$@"`,
         "",
       ].join("\n"),
     );
-    chmodSync(ghScript, 0o755);
+    chmodSync(gitScript, 0o755);
     vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
+    vi.stubEnv("GH_TOKEN", "gh-token-value");
+    vi.stubEnv("GITHUB_TOKEN", "github-token-value");
 
     const target = join(root, "nested", "clone");
     const result = await prepare(
@@ -305,8 +314,12 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
         cwdMode: "CWD-BASE",
       }),
     );
-    // The fake gh ran with exactly these arguments (a real gh would not write the log).
-    expect(readFileSync(ghLog, "utf8").trim()).toBe(`repo clone -- owner/repo ${target}`);
+    const cloneArgs = readFileSync(argsLog, "utf8");
+    expect(cloneArgs).toContain(`clone -- https://github.com/owner/repo.git ${target}`);
+    const seen = readFileSync(envLog, "utf8");
+    expect(seen).toContain("GIT_ALLOW_PROTOCOL=file:ssh:https:http");
+    expect(seen).not.toContain("GH_TOKEN=gh-token-value");
+    expect(seen).not.toContain("GITHUB_TOKEN=github-token-value");
     expect(result.cloned).toBe(true);
     expect(result.warning).toBe(`CWD-BASE will switch ${target} from main to pr-radar/issue-3.`);
     expect(result.cwd).toBe(target);
@@ -316,41 +329,12 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
 });
 
 describe("gh environment", () => {
-  test("hands gh its credentials but not the rest of the environment", async () => {
-    const root = makeRoot();
-    const source = join(root, "source");
-    initRepo(source, null);
-    const binDir = join(root, "bin");
-    mkdirSync(binDir);
-    const envLog = join(root, "gh-env.txt");
-    const ghScript = join(binDir, "gh");
-    writeFileSync(
-      ghScript,
-      [
-        "#!/bin/sh",
-        "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1",
-        `env > "${envLog}"`,
-        `git clone -q "${source}" "$5" || exit 8`,
-        'git -C "$5" remote set-url origin "https://github.com/$4.git"',
-        "",
-      ].join("\n"),
-    );
-    chmodSync(ghScript, 0o755);
-    vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
+  test("hands gh its credentials but not the rest of the environment", () => {
     vi.stubEnv("GH_TOKEN", "gh-token-value");
     vi.stubEnv("PR_RADAR_TEST_SECRET", "leak-me");
-    await prepare(
-      request({
-        itemKind: "issue",
-        prNumber: 3,
-        targetDir: join(root, "clone"),
-        allowClone: true,
-        cwdMode: "CWD-BASE",
-      }),
-    );
-    const seen = readFileSync(envLog, "utf8");
-    expect(seen).toContain("GH_TOKEN=gh-token-value");
-    expect(seen).not.toContain("PR_RADAR_TEST_SECRET");
+    const env = ghEnv();
+    expect(env.GH_TOKEN).toBe("gh-token-value");
+    expect(env.PR_RADAR_TEST_SECRET).toBeUndefined();
   });
 });
 
@@ -470,6 +454,7 @@ describe("git hardening", () => {
     const args = readFileSync(argsLog, "utf8");
     expect(args).toContain("protocol.ext.allow=never");
     expect(args).toContain("credential.helper=");
+    expect(args).toContain("credential.https://github.com.helper=!gh auth git-credential");
     expect(args).toContain("core.sshCommand=ssh -oBatchMode=yes");
     expect(args).toContain("filter.lfs.process=");
   });
@@ -484,6 +469,25 @@ describe("git hardening", () => {
     gitIn(repoDir, ["config", "core.sshCommand", evilSsh]);
     await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("configured non-lfs filters do not run during checkout", async () => {
+    const root = makeRoot();
+    const marker = join(root, "filter-ran");
+    const filter = join(root, "evil-filter.sh");
+    writeFileSync(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    chmodSync(filter, 0o755);
+    const { repoDir } = makePullableRepo(root, {
+      ".gitattributes": { content: "*.evil filter=evil\n" },
+      "payload.evil": { content: "payload\n" },
+    });
+    gitIn(repoDir, ["config", "filter.evil.smudge", filter]);
+    gitIn(repoDir, ["config", "filter.evil.clean", filter]);
+    gitIn(repoDir, ["config", "filter.evil.required", "true"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(join(repoDir, "payload.evil"))).toBe(true);
     expect(existsSync(marker)).toBe(false);
   });
 

@@ -26,6 +26,7 @@ import { HighlightedText } from "./highlighted-text";
 import {
   type AgentLaunchOverrides,
   agentActionFor,
+  autoLaunchRequiresModal,
   BUCKET_TITLES,
   BUCKETS,
   buildAgentConfig,
@@ -311,10 +312,10 @@ export function PrRadar({
     async (row: RadarRow) => {
       if (autoLaunchingRef.current || startNewAgentMutation.isPending) return;
       setOpenError(null);
-      const shouldAutoLaunch =
-        settings.autoLaunchMode === "existing_or_clone" ||
-        (settings.autoLaunchMode === "existing_only" && row.hasLocalPlace);
-      if (!shouldAutoLaunch) {
+      if (autoLaunchRequiresModal(settings, row)) {
+        if (settings.defaultCwdMode === "CWD-BASE") {
+          setActionNotice("CWD-BASE will switch the selected checkout before the agent starts.");
+        }
         setModalRow(row);
         return;
       }

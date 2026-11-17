@@ -822,6 +822,19 @@ export function automaticRoutingLaunchState(
   };
 }
 
+export function autoLaunchRequiresModal(
+  settings: {
+    autoLaunchMode: "disabled" | "prompt" | "existing_only" | "existing_or_clone";
+    defaultCwdMode: CwdTag;
+  },
+  row: Pick<RadarRow, "hasLocalPlace">,
+): boolean {
+  const shouldAutoLaunch =
+    settings.autoLaunchMode === "existing_or_clone" ||
+    (settings.autoLaunchMode === "existing_only" && row.hasLocalPlace);
+  return !shouldAutoLaunch || settings.defaultCwdMode === "CWD-BASE";
+}
+
 const CWD_TAGS: readonly CwdTag[] = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"];
 
 interface LabelableWorkspace {

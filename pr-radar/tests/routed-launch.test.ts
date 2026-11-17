@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  autoLaunchRequiresModal,
   automaticRoutingLaunchState,
   buildAgentConfig,
   initialLaunchTarget,
@@ -78,6 +79,29 @@ describe("initialLaunchTarget", () => {
   });
 });
 
+describe("autoLaunchRequiresModal", () => {
+  test("routes CWD-BASE auto-launch through the modal before preparation", () => {
+    expect(
+      autoLaunchRequiresModal(
+        { autoLaunchMode: "existing_or_clone", defaultCwdMode: "CWD-BASE" },
+        { hasLocalPlace: true },
+      ),
+    ).toBe(true);
+    expect(
+      autoLaunchRequiresModal(
+        { autoLaunchMode: "existing_or_clone", defaultCwdMode: "CWD-WORKTREE" },
+        { hasLocalPlace: true },
+      ),
+    ).toBe(false);
+    expect(
+      autoLaunchRequiresModal(
+        { autoLaunchMode: "existing_only", defaultCwdMode: "CWD-WORKTREE" },
+        { hasLocalPlace: false },
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("automaticRoutingLaunchState", () => {
   test("uses initialized defaults only for a new row", () => {
     const current = {
@@ -137,6 +161,13 @@ describe("routedProviderModel", () => {
         { applyProvider: false },
       ),
     ).toEqual({ model: "gpt-x" });
+    expect(
+      routedProviderModel(
+        { provider: "codex" },
+        { provider: "claude", model: "sonnet" },
+        { applyProvider: false },
+      ),
+    ).toEqual({});
   });
 
   test("builds a provider-only agent config without the old provider's model", () => {

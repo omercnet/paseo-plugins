@@ -141,6 +141,8 @@ const GIT_SAFETY_ARGS = [
   "-c",
   "credential.helper=",
   "-c",
+  "credential.https://github.com.helper=!gh auth git-credential",
+  "-c",
   "core.gitProxy=",
   "-c",
   "protocol.ext.allow=never",
@@ -158,19 +160,43 @@ const GIT_SAFETY_ARGS = [
   "filter.lfs.required=false",
 ];
 
+function gitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...allowListedEnv(GIT_ENV_KEYS),
+    GIT_ALLOW_PROTOCOL: "file:ssh:https:http",
+    GIT_ASKPASS: "/bin/false",
+    SSH_ASKPASS: "/bin/false",
+    GIT_SSH_COMMAND: "ssh -oBatchMode=yes",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+}
+
+async function configuredFilterSafetyArgs(cwd: string): Promise<string[]> {
+  const { stdout } = await execFileAsync(
+    "git",
+    [...GIT_SAFETY_ARGS, "-C", cwd, "config", "--name-only", "--get-regexp", "^filter\\."],
+    { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv() },
+  ).catch(() => ({ stdout: "" }));
+  const args: string[] = [];
+  for (const rawKey of stdout.split("\n")) {
+    const key = rawKey.trim();
+    if (!/^filter\..+\.(clean|smudge|process|required)$/.test(key)) continue;
+    args.push("-c", key.endsWith(".required") ? `${key}=false` : `${key}=`);
+  }
+  return args;
+}
+
 async function runGit(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<string> {
-  const { stdout } = await execFileAsync("git", [...GIT_SAFETY_ARGS, "-C", cwd, ...args], {
-    timeout,
-    maxBuffer: MAX_BUFFER_BYTES,
-    env: {
-      ...allowListedEnv(GIT_ENV_KEYS),
-      GIT_ALLOW_PROTOCOL: "file:ssh:https:http",
-      GIT_ASKPASS: "/bin/false",
-      SSH_ASKPASS: "/bin/false",
-      GIT_SSH_COMMAND: "ssh -oBatchMode=yes",
-      GIT_TERMINAL_PROMPT: "0",
+  const filterArgs = await configuredFilterSafetyArgs(cwd);
+  const { stdout } = await execFileAsync(
+    "git",
+    [...GIT_SAFETY_ARGS, ...filterArgs, "-C", cwd, ...args],
+    {
+      timeout,
+      maxBuffer: MAX_BUFFER_BYTES,
+      env: gitEnv(),
     },
-  });
+  );
   return stdout.trim();
 }
 
@@ -179,13 +205,9 @@ export function ghEnv(): NodeJS.ProcessEnv {
   return { ...allowListedEnv(GH_ENV_KEYS), GIT_TERMINAL_PROMPT: "0" };
 }
 
-async function runGh(args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<string> {
-  const { stdout } = await execFileAsync("gh", args, {
-    timeout,
-    maxBuffer: MAX_BUFFER_BYTES,
-    env: ghEnv(),
-  });
-  return stdout.trim();
+async function cloneGitHubRepo(repository: string, targetDir: string): Promise<void> {
+  const cloneUrl = `https://github.com/${repository}.git`;
+  await runGit(dirname(targetDir), ["clone", "--", cloneUrl, targetDir], CLONE_TIMEOUT_MS);
 }
 
 function isInside(base: string, target: string): boolean {
@@ -654,7 +676,7 @@ export async function prepareWorkspaceCwdHandler(
       );
     }
     await mkdir(dirname(baseRoot), { recursive: true });
-    await runGh(["repo", "clone", "--", input.repository, baseRoot], CLONE_TIMEOUT_MS);
+    await cloneGitHubRepo(input.repository, baseRoot);
     cloned = true;
   } else {
     const info = await stat(baseRoot);
