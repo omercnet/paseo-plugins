@@ -72,7 +72,27 @@ export function QuotaPopover(props: PluginButtonContentProps) {
     enabled: session !== undefined && session !== null,
     refetchInterval: QUOTA_POLL_MS,
   });
-  const sessionAccountsKey = ["paseo-omp", "session-accounts", agentId, currentProvider];
+  // Every status change starts a new generation (React's adjust-state-on-prop-change pattern), and
+  // the generation is part of the key. A status seen before (idle, then closed, then idle) thus gets
+  // a fresh query: neither its cached answer nor a request still in flight from the earlier
+  // generation can name the previous session's login for the new one.
+  const [statusGeneration, setStatusGeneration] = useState({
+    status: session?.status,
+    generation: 0,
+  });
+  if (statusGeneration.status !== session?.status) {
+    setStatusGeneration({
+      status: session?.status,
+      generation: statusGeneration.generation + 1,
+    });
+  }
+  const sessionAccountsKey = [
+    "paseo-omp",
+    "session-accounts",
+    agentId,
+    currentProvider,
+    statusGeneration.generation,
+  ];
   const sessionAccounts = useQuery({
     queryKey: sessionAccountsKey,
     queryFn: () => loadSessionAccounts({ agentId, provider: currentProvider ?? "" }),

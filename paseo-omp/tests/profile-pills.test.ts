@@ -290,7 +290,7 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     await vi.advanceTimersByTimeAsync(250);
     expect(asked()).toEqual(["live", "older", "live"]);
     expect(quota("live")).toHaveBeenLastCalledWith(
-      expect.objectContaining({ label: "OpenAI · 30%" }),
+      expect.objectContaining({ label: "30%", title: expect.stringMatching(/^OpenAI · /u) }),
     );
 
     // A rejected lookup is retried once its back-off has passed, so a reloaded server recovers.

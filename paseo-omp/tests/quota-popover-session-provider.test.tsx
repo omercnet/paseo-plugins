@@ -5,24 +5,40 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { QuotaPopover } from "../client/quota-popover";
-import { getOmpSessionModelProvider, type OmpQuota } from "../shared/quota";
+import {
+  getOmpSessionModelProvider,
+  listOmpSessionAccounts,
+  type OmpQuota,
+  type OmpSessionAccount,
+} from "../shared/quota";
 
-// The agent as Paseo reports it, and the provider its live session names (null once it ends).
+// The agent as Paseo reports it, the provider its live session names (null once it ends), and the
+// logins its session lists.
 const agent = vi.hoisted(() => ({
+  provider: "omp-plugin",
+  model: "omp:model:opaque",
   status: "idle",
   sessionProvider: null as string | null,
   asked: 0,
+  logins: [] as OmpSessionAccount[],
+  // When set, the session-account answer waits for it, as a slow server would.
+  accountsGate: null as Promise<void> | null,
 }));
 
 vi.mock("@getpaseo/plugin/client", () => ({
-  useAgent: () => ({ provider: "omp-plugin", model: "omp:model:opaque", status: agent.status }),
+  useAgent: () => ({ provider: agent.provider, model: agent.model, status: agent.status }),
   usePaseo: () => ({}),
   useRpc: (definition: unknown) => async () => {
     if (definition === getOmpSessionModelProvider) {
       agent.asked += 1;
       return { provider: agent.sessionProvider };
     }
-    return { quotas: [quota("anthropic"), quota("openai-codex")], accounts: [] };
+    if (definition === listOmpSessionAccounts) {
+      const answer = agent.logins;
+      if (agent.accountsGate) await agent.accountsGate;
+      return { accounts: answer };
+    }
+    return { quotas: [quota("anthropic"), quota("openai-codex")] };
   },
 }));
 vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: () => null }));
@@ -138,4 +154,90 @@ test("asks the live session for its provider when it starts or resumes while the
   await show("closed", null);
   await vi.waitFor(() => expect(currentProvider()).toBe(false));
   expect(agent.asked).toBe(1);
+});
+
+test("does not show the previous session's login in use once the agent's status changes", async () => {
+  // A bundled omp agent names its provider in the model string; its logins come from OMP's pin.
+  agent.provider = "omp";
+  agent.model = "anthropic/example";
+  const login = (active: boolean): OmpSessionAccount => ({
+    credentialId: 2,
+    label: "lee@example.invalid (Example Team)",
+    active,
+    onlyLogin: false,
+    quotaAccountKeys: ["anthropic"],
+  });
+  try {
+    agent.logins = [login(true)];
+    await show("idle", null);
+    await vi.waitFor(() => expect(container.textContent).toContain("IN USE"));
+
+    // The session closed and its pin expired: the open popover must not keep the old mark.
+    agent.logins = [login(false)];
+    await show("closed", null);
+    await vi.waitFor(() => expect(container.textContent).not.toContain("IN USE"));
+
+    // A new session resumes in the same status: React Query holds the earlier idle answer, but
+    // while the new answer is still on its way the previous session's mark stays hidden.
+    const gate = Promise.withResolvers<void>();
+    agent.accountsGate = gate.promise;
+    await show("idle", null);
+    await act(async () => {});
+    expect(container.textContent).not.toContain("IN USE");
+    gate.resolve();
+    await act(async () => {});
+    expect(container.textContent).not.toContain("IN USE");
+  } finally {
+    agent.provider = "omp-plugin";
+    agent.model = "omp:model:opaque";
+    agent.logins = [];
+    agent.accountsGate = null;
+  }
+});
+
+/** Lets queued query results reach the screen before asserting that something is absent. */
+async function settle() {
+  await act(async () => {
+    const delay = Promise.withResolvers<void>();
+    setTimeout(delay.resolve, 50);
+    await delay.promise;
+  });
+}
+
+test("never shows an answer requested before the status changed, even when it lands after", async () => {
+  agent.provider = "omp";
+  agent.model = "anthropic/example";
+  const login = (active: boolean): OmpSessionAccount => ({
+    credentialId: 2,
+    label: "lee@example.invalid (Example Team)",
+    active,
+    onlyLogin: false,
+    quotaAccountKeys: ["anthropic"],
+  });
+  try {
+    // The first session's request is held: it will answer that its login is in use.
+    const earlier = Promise.withResolvers<void>();
+    agent.logins = [login(true)];
+    agent.accountsGate = earlier.promise;
+    await show("idle", null);
+    await act(async () => {});
+
+    // That session closes and a new one resumes in the same status; the new answer arrives.
+    agent.accountsGate = null;
+    agent.logins = [login(false)];
+    await show("closed", null);
+    await show("idle", null);
+    await settle();
+    expect(container.textContent).not.toContain("IN USE");
+
+    // The earlier request finally lands; it belongs to the old session and changes nothing.
+    earlier.resolve();
+    await settle();
+    expect(container.textContent).not.toContain("IN USE");
+  } finally {
+    agent.provider = "omp-plugin";
+    agent.model = "omp:model:opaque";
+    agent.logins = [];
+    agent.accountsGate = null;
+  }
 });
