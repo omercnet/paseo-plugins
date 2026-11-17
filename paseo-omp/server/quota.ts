@@ -87,7 +87,8 @@ function readCachedReports(database: DatabaseSync): CachedReport[] {
     const parsed = CachedReportSchema.safeParse(json);
     if (!parsed.success) return [];
     const { provider, fetchedAt, metadata } = parsed.data.value;
-    const plan = (metadata?.planType ?? metadata?.plan)?.trim() || null;
+    // A blank planType must not hide a plan the report names.
+    const plan = metadata?.planType?.trim() || metadata?.plan?.trim() || null;
     const organization = metadata?.orgName?.trim() || null;
     return [
       {

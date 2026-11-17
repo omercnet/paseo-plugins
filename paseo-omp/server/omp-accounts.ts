@@ -643,7 +643,8 @@ function labelWithTags(
   const metadata = report?.metadata;
   const orgName = metadata?.orgName?.trim() || null;
   const tags = accountTags({
-    plan: (metadata?.planType ?? metadata?.plan)?.trim() || null,
+    // A blank planType must not hide a plan the report names, as in the quota popover.
+    plan: metadata?.planType?.trim() || metadata?.plan?.trim() || null,
     organization: orgName,
     email: metadata?.email?.trim() || null,
   });

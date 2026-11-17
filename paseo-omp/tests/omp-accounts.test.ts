@@ -366,7 +366,9 @@ describe.skipIf(ON_WINDOWS)("listing", () => {
               limits: [limit("openai-codex:5h", 0.1)],
               metadata: {
                 accountId: "acc-c",
-                planType: "self_serve_business_prolite",
+                // A blank planType falls back to plan, as Copilot-style reports carry it.
+                planType: "  ",
+                plan: "self_serve_business_prolite",
                 orgName: "self_serve_business_prolite",
               },
             },

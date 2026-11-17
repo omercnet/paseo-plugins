@@ -293,6 +293,7 @@ describe("OMP quota reader", () => {
       now,
     );
     usage.run(5, "xai-oauth", "oauth|account:e", null, now);
+    usage.run(7, "github-copilot", "oauth|account:h", null, now);
     usage.run(
       6,
       "openai-codex",
@@ -331,6 +332,11 @@ describe("OMP quota reader", () => {
       "usage_cache:report:xai-oauth:default:oauth|account:c|email:me@example.invalid",
       report("xai-oauth", 5, { plan: "business" }),
     );
+    // A blank planType falls back to the report's plan.
+    cache.run(
+      "usage_cache:report:github-copilot:default:oauth|account:h",
+      report("github-copilot", 1, { planType: "  ", plan: "business" }),
+    );
     cache.run("usage_cache:report:xai-oauth:default:oauth|account:e", "not json");
     cache.run("usage_cache:report:xai-oauth:other:oauth|account:e", null);
     // A newer report names only a plan, an older one only an organization: never mixed.
@@ -355,6 +361,7 @@ describe("OMP quota reader", () => {
     expect(tagsOf("anthropic", "work@example.invalid")).toEqual(["Example Team"]);
     expect(tagsOf("xai-oauth", null)).toEqual([]);
     expect(tagsOf("openai-codex", "mixed@example.invalid")).toEqual(["Plus"]);
+    expect(tagsOf("github-copilot", null)).toEqual(["Business"]);
   });
 
   test("names a plan that matches an Object member as a plan", () => {
