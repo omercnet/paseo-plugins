@@ -594,6 +594,25 @@ describe("git hardening", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  test("empty-name filters cannot bypass neutralization", async () => {
+    const root = makeRoot();
+    const marker = join(root, "empty-filter-ran");
+    const filter = join(root, "empty-filter.sh");
+    writeFileSync(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    chmodSync(filter, 0o755);
+    const { repoDir } = makePullableRepo(root, {
+      ".gitattributes": { content: "*.evil filter=\n" },
+      "payload.evil": { content: "payload\n" },
+    });
+    gitIn(repoDir, ["config", "filter..smudge", filter]);
+    gitIn(repoDir, ["config", "filter..clean", filter]);
+    gitIn(repoDir, ["config", "filter..required", "true"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(join(repoDir, "payload.evil"))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("disallows custom git remote helpers even when their URL parses as GitHub", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");

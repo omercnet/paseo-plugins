@@ -229,7 +229,7 @@ async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]
   }
   const overrides: FilterOverride[] = [];
   for (const key of stdout.split("\0")) {
-    if (!/^filter\..+\.(clean|smudge|process|required)$/.test(key)) continue;
+    if (!/^filter\..*\.(clean|smudge|process|required)$/.test(key)) continue;
     overrides.push({ key, value: key.endsWith(".required") ? "false" : "" });
   }
   return overrides;
