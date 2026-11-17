@@ -570,7 +570,7 @@ describe("agent access by label", () => {
     ["a different value", { team: "red" }, ["team=blue"]],
     ["a different key", { squad: "blue" }, ["team"]],
     ["no labels", {}, ["team"]],
-    ["a key only inherited from Object", { toString: "x" }, ["toString=y"]],
+    ["a key only inherited from Object", { other: "x" }, ["toString"]],
   ])("leaves an agent with %s alone", async (_name, labels, entries) => {
     const { open: hook } = captureHooks(ready({ labels: entries }));
     const input = open({ labels });

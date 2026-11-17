@@ -135,7 +135,8 @@ jumps to the chosen workspace's browser panel.
 
 The plugin automatically injects its stdio MCP adapter only when a new, non-internal agent is
 created with a provider that accepts external MCP servers. Agents that already exist, resumed
-sessions, imported sessions, and Paseo's internal agents are not modified. Paseo's built-in OMP
+sessions, imported sessions, and Paseo's internal agents are not modified (the one exception is the labels list under
+"listed" mode, which is applied at every interactive session open, resumed sessions included). Paseo's built-in OMP
 provider accepts session MCP servers, so new OMP agents receive the adapter.
 Pi agents also receive the adapter, but require Pi's optional MCP support to
 launch it.

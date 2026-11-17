@@ -2,9 +2,10 @@
  * Which new agents get the Shared Browser tool.
  *
  * "all" injects the adapter into every new agent (the behaviour before this setting existed, and the
- * default). "listed" injects it only when the new agent matches an entry of one of three lists: its
+ * default). "listed" injects it only when the new agent matches an entry of one of four lists: its
  * provider id, the id of its workspace, the id of its workspace's project, or one of its labels. An empty configuration
- * means no agent. Agents that already exist are never changed.
+ * means no agent. Agents that already exist are never changed, except that an agent chosen by label gets the tool in
+ * every interactive session it opens, resumed ones included.
  *
  * `agent.create` carries the provider and the working directory but no labels and no workspace id, so
  * the workspace is found by matching the directory against the daemon's workspaces.
