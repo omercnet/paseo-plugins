@@ -286,7 +286,8 @@ export function PrRadar({
         navigation.openAgent({ agentId: created.id, serverId: host.id });
       }
       const baseMsg = `Started new agent in ${prepared.cwdTag} (${prepared.cwd}) for ${row.repository}#${row.number}.`;
-      return request.routingWarning ? `${request.routingWarning} ${baseMsg}` : baseMsg;
+      const warnings = [request.routingWarning, prepared.warning].filter(Boolean);
+      return warnings.length > 0 ? `${warnings.join(" ")} ${baseMsg}` : baseMsg;
     },
     onMutate: (request) => {
       setOpenError(null);

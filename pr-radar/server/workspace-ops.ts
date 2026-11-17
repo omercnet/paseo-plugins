@@ -77,14 +77,24 @@ const GH_ENV_KEYS: ReadonlySet<string> = new Set([
   "all_proxy",
 ]);
 
-// git gets the same set plus the variables that locate its configuration. GIT_SSH_COMMAND, GIT_DIR
-// and similar redirections are deliberately left out.
+// git gets only transport and configuration-location variables. GitHub tokens stay gh-only:
+// repository config, credential helpers or transport helpers must not inherit them from the daemon.
 const GIT_ENV_KEYS: ReadonlySet<string> = new Set([
-  ...GH_ENV_KEYS,
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_SYSTEM",
   "GIT_CONFIG_NOSYSTEM",
-  "GIT_ALLOW_PROTOCOL",
+  "SSH_AUTH_SOCK",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "GIT_SSL_CAINFO",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
 ]);
 
 function allowListedEnv(extraKeys: ReadonlySet<string>): NodeJS.ProcessEnv {
@@ -116,15 +126,49 @@ async function isGitRepo(dir: string): Promise<boolean> {
   return exists(join(dir, ".git"));
 }
 
-// Hooks come from the repository, and a checked-out PR is untrusted: its own hooks (a husky
-// `core.hooksPath`, say) must not run, so every git call switches them off, along with fsmonitor.
-const GIT_SAFETY_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+// Hooks and transport helpers can come from repository config, and a checked-out PR is untrusted:
+// every git call switches off hooks/fsmonitor and neutralizes command-running config that can spawn
+// helper processes during fetch, checkout, diff/status or credential lookup.
+const GIT_SAFETY_ARGS = [
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.sshCommand=ssh -oBatchMode=yes",
+  "-c",
+  "core.askPass=/bin/false",
+  "-c",
+  "credential.helper=",
+  "-c",
+  "core.gitProxy=",
+  "-c",
+  "protocol.ext.allow=never",
+  "-c",
+  "core.pager=cat",
+  "-c",
+  "diff.external=",
+  "-c",
+  "filter.lfs.clean=",
+  "-c",
+  "filter.lfs.smudge=",
+  "-c",
+  "filter.lfs.process=",
+  "-c",
+  "filter.lfs.required=false",
+];
 
 async function runGit(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<string> {
   const { stdout } = await execFileAsync("git", [...GIT_SAFETY_ARGS, "-C", cwd, ...args], {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
-    env: { ...allowListedEnv(GIT_ENV_KEYS), GIT_TERMINAL_PROMPT: "0" },
+    env: {
+      ...allowListedEnv(GIT_ENV_KEYS),
+      GIT_ASKPASS: "/bin/false",
+      SSH_ASKPASS: "/bin/false",
+      GIT_SSH_COMMAND: "ssh -oBatchMode=yes",
+      GIT_TERMINAL_PROMPT: "0",
+    },
   });
   return stdout.trim();
 }
@@ -209,7 +253,7 @@ export function isValidRepositorySlug(repository: string): boolean {
   const trimmed = repository.trim();
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(trimmed)) return false;
   const [owner, name] = trimmed.split("/");
-  return owner !== "." && owner !== ".." && name !== "." && name !== "..";
+  return [owner, name].every((part) => part !== "." && part !== ".." && !part.startsWith("-"));
 }
 
 export function isValidWorktreeName(name: string): boolean {
@@ -648,12 +692,19 @@ export async function prepareWorkspaceCwdHandler(
       : `pr-radar/pr-${input.prNumber}`;
 
   if (input.cwdMode === "CWD-BASE") {
-    const dirty = await runGit(baseRoot, ["status", "--porcelain", "--untracked-files=no"]);
-    if (dirty) {
+    const branchBeforeSwitch = await currentBranch(baseRoot);
+    if (!branchBeforeSwitch) {
       throw new Error(
-        `Base checkout ${baseRoot} has uncommitted changes; commit or stash them, or use CWD-WORKTREE.`,
+        `Base checkout ${baseRoot} is in detached HEAD; check out a branch or use CWD-WORKTREE.`,
       );
     }
+    const dirty = await runGit(baseRoot, ["status", "--porcelain", "--untracked-files=all"]);
+    if (dirty) {
+      throw new Error(
+        `Base checkout ${baseRoot} has uncommitted or untracked changes; commit, stash or remove them, or use CWD-WORKTREE.`,
+      );
+    }
+    const warning = `CWD-BASE will switch ${baseRoot} from ${branchBeforeSwitch} to ${localBranchName}.`;
     if (input.itemKind === "pr") {
       const prHead = await fetchPrHead(baseRoot, matchingRemote, input.prNumber);
       await assertBranchFastForwards(
@@ -680,6 +731,7 @@ export async function prepareWorkspaceCwdHandler(
       cwdTag: "CWD-BASE",
       cloned,
       worktreeCreated: false,
+      warning,
     };
   }
 

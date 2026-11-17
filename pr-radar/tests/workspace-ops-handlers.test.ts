@@ -160,6 +160,9 @@ describe("prepareWorkspaceCwdHandler validation", () => {
     await expect(prepare(request({ repository: "bad/../repo" }))).rejects.toThrow(
       "Invalid repository name: bad/../repo",
     );
+    await expect(prepare(request({ repository: "-flag/repo" }))).rejects.toThrow(
+      "Invalid repository name: -flag/repo",
+    );
   });
 
   test("rejects a relative target directory", async () => {
@@ -212,6 +215,7 @@ describe("prepareWorkspaceCwdHandler validation", () => {
       cwdTag: "CWD-BASE",
       cloned: false,
       worktreeCreated: false,
+      warning: `CWD-BASE will switch ${repoDir} from main to pr-radar/issue-12.`,
     });
   });
 });
@@ -227,6 +231,7 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
       cwdTag: "CWD-BASE",
       cloned: false,
       worktreeCreated: false,
+      warning: `CWD-BASE will switch ${repoDir} from main to pr-radar/pr-7.`,
     });
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
     expect(gitIn(repoDir, ["rev-parse", "HEAD"])).toBe(prHead);
@@ -242,6 +247,28 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
     );
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/issue-12");
     expect(gitIn(repoDir, ["rev-parse", "HEAD"])).toBe(head);
+  });
+
+  test("refuses CWD-BASE from detached HEAD", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "--detach"]);
+    await expect(
+      prepare(
+        request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+      ),
+    ).rejects.toThrow(`Base checkout ${repoDir} is in detached HEAD`);
+  });
+
+  test("refuses CWD-BASE with untracked files before switching", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    writeFileSync(join(repoDir, "scratch.txt"), "mine\n");
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      "has uncommitted or untracked changes",
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
   test("clones through gh when allowed and the directory is missing", async () => {
@@ -281,6 +308,7 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
     // The fake gh ran with exactly these arguments (a real gh would not write the log).
     expect(readFileSync(ghLog, "utf8").trim()).toBe(`repo clone -- owner/repo ${target}`);
     expect(result.cloned).toBe(true);
+    expect(result.warning).toBe(`CWD-BASE will switch ${target} from main to pr-radar/issue-3.`);
     expect(result.cwd).toBe(target);
     expect(gitIn(target, ["rev-parse", "HEAD"])).toBe(gitIn(source, ["rev-parse", "HEAD"]));
     expect(gitIn(target, ["branch", "--show-current"])).toBe("pr-radar/issue-3");
@@ -404,7 +432,7 @@ describe("git hardening", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  test("hands git no secret from the daemon environment", async () => {
+  test("hands git transport settings but no GitHub tokens or daemon secrets", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
     initRepo(repoDir, "https://github.com/owner/repo.git");
@@ -412,10 +440,17 @@ describe("git hardening", () => {
     const binDir = join(root, "git-bin");
     mkdirSync(binDir);
     const envLog = join(root, "git-env.txt");
+    const argsLog = join(root, "git-args.txt");
     const wrapper = join(binDir, "git");
-    writeFileSync(wrapper, `#!/bin/sh\nenv >> '${envLog}'\nexec '${realGit}' "$@"\n`);
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nenv >> '${envLog}'\nprintf '%s\\n' "$*" >> '${argsLog}'\nexec '${realGit}' "$@"\n`,
+    );
     chmodSync(wrapper, 0o755);
     vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
+    vi.stubEnv("GH_TOKEN", "gh-token-value");
+    vi.stubEnv("GITHUB_TOKEN", "github-token-value");
+    vi.stubEnv("GH_ENTERPRISE_TOKEN", "enterprise-token-value");
     vi.stubEnv("PR_RADAR_TEST_SECRET", "leak-me");
     vi.stubEnv("GIT_SSH_COMMAND", "evil-ssh");
     vi.stubEnv("SSL_CERT_FILE", "/etc/ssl/test-ca.pem");
@@ -425,8 +460,30 @@ describe("git hardening", () => {
     const seen = readFileSync(envLog, "utf8");
     expect(seen).toContain("PATH=");
     expect(seen).toContain("SSL_CERT_FILE=/etc/ssl/test-ca.pem");
+    expect(seen).toContain("GIT_SSH_COMMAND=ssh -oBatchMode=yes");
+    expect(seen).not.toContain("GH_TOKEN=gh-token-value");
+    expect(seen).not.toContain("GITHUB_TOKEN=github-token-value");
+    expect(seen).not.toContain("GH_ENTERPRISE_TOKEN=enterprise-token-value");
     expect(seen).not.toContain("PR_RADAR_TEST_SECRET");
-    expect(seen).not.toContain("GIT_SSH_COMMAND");
+    expect(seen).not.toContain("GIT_SSH_COMMAND=evil-ssh");
+    const args = readFileSync(argsLog, "utf8");
+    expect(args).toContain("protocol.ext.allow=never");
+    expect(args).toContain("credential.helper=");
+    expect(args).toContain("core.sshCommand=ssh -oBatchMode=yes");
+    expect(args).toContain("filter.lfs.process=");
+  });
+
+  test("repository core.sshCommand does not override the hardened git transport", async () => {
+    const root = makeRoot();
+    const marker = join(root, "ssh-command-ran");
+    const { repoDir } = makePullableRepo(root);
+    const evilSsh = join(root, "evil-ssh.sh");
+    writeFileSync(evilSsh, `#!/bin/sh\ntouch '${marker}'\nexit 9\n`);
+    chmodSync(evilSsh, 0o755);
+    gitIn(repoDir, ["config", "core.sshCommand", evilSsh]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(marker)).toBe(false);
   });
 });
 
@@ -656,7 +713,7 @@ describe("issue start point without a remote default", () => {
       prepare(
         request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
       ),
-    ).rejects.toThrow(/HEAD is not on any origin branch/);
+    ).rejects.toThrow(/is in detached HEAD/);
     expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
   });
 
@@ -671,16 +728,14 @@ describe("issue start point without a remote default", () => {
     ).rejects.toThrow(/HEAD is not on any origin branch/);
   });
 
-  test("accepts a detached HEAD that a remote branch contains", async () => {
+  test("accepts a detached HEAD that a remote branch contains when creating a worktree", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
     initRepo(repoDir, "https://github.com/owner/repo.git");
     const published = gitIn(repoDir, ["rev-parse", "HEAD"]);
     gitIn(repoDir, ["checkout", "--detach"]);
-    await prepare(
-      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
-    );
-    expect(gitIn(repoDir, ["rev-parse", "HEAD"])).toBe(published);
+    const result = await prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir }));
+    expect(gitIn(result.cwd, ["rev-parse", "HEAD"])).toBe(published);
   });
 });
 

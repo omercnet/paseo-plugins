@@ -73,7 +73,8 @@ describe("workspace ops helpers", () => {
   test("validates repository slugs, worktree names, and target paths", () => {
     expect(isValidRepositorySlug("omercnet/paseo-plugins")).toBe(true);
     expect(isValidRepositorySlug("bad/../repo")).toBe(false);
-    expect(isValidRepositorySlug("-flag/repo")).toBe(true);
+    expect(isValidRepositorySlug("-flag/repo")).toBe(false);
+    expect(isValidRepositorySlug("owner/-repo")).toBe(false);
     expect(isValidWorktreeName("paseo-pr-123-fix")).toBe(true);
     expect(isValidWorktreeName("../../escape")).toBe(false);
     expect(isValidWorktreeName("-branch")).toBe(false);
@@ -324,7 +325,7 @@ describe("prepareWorkspaceCwdHandler git safety", () => {
         },
         settingsFor(root),
       ),
-    ).rejects.toThrow("uncommitted changes");
+    ).rejects.toThrow("uncommitted or untracked changes");
   });
 
   test("rejects a picked subdirectory whose git root is outside the source directory", async () => {

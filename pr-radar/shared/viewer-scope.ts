@@ -116,6 +116,7 @@ export const prepareWorkspaceCwd = defineRpc({
     cwdTag: z.enum(["CWD-WORKTREE", "CWD-BASE"]),
     cloned: z.boolean(),
     worktreeCreated: z.boolean(),
+    warning: z.string().optional(),
   }),
 });
 

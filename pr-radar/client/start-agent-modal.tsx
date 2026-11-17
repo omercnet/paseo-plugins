@@ -481,6 +481,12 @@ export function StartAgentModal({
             </View>
           </View>
 
+          {cwdMode === "CWD-BASE" ? (
+            <Text style={styles.hint}>
+              CWD-BASE switches the selected checkout to the task branch before the agent starts.
+            </Text>
+          ) : null}
+
           {cwdMode === "CWD-WORKTREE" ? (
             <View style={{ gap: 4 }}>
               <Text style={styles.sectionLabel}>Worktree name</Text>
