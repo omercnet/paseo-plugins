@@ -200,13 +200,27 @@ describe("normalizeDirectory", () => {
   it.each([
     ["/repos/one/../outside", "/repos/outside"],
     ["/repos/one/./src//deep/", "/repos/one/src/deep"],
-    ["/repos/one/src/../../..", ""],
-    ["/../..", ""],
+    ["/repos/one/src/../../..", "/"],
+    ["/../..", "/"],
+    ["/", "/"],
+    [".", ""],
     ["C:\\repos\\one\\..\\two", "C:/repos/two"],
     ["../x", "../x"],
     ["a/../..", ".."],
   ])("%s", (input, expected) => {
     expect(normalizeDirectory(input)).toBe(expected);
+  });
+});
+
+describe("a workspace at the filesystem root", () => {
+  const root = [{ id: "r", projectId: "p", workspaceDirectory: "/" }];
+  it("contains every absolute path, and no relative or empty one", () => {
+    for (const cwd of ["/", "/repos/one", "/repos/../x", "/.."]) {
+      expect(workspacesForDirectory(cwd, root).map((w) => w.id)).toEqual(["r"]);
+    }
+    for (const cwd of ["", ".", "repos/one", "../x"]) {
+      expect(workspacesForDirectory(cwd, root)).toEqual([]);
+    }
   });
 });
 

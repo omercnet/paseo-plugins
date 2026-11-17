@@ -29,7 +29,11 @@ export function AgentAccessSettings({ theme }: PluginSurfaceProps) {
   const providers = useRef<SettingsInputHandle>(null);
   const workspaces = useRef<SettingsInputHandle>(null);
   const projects = useRef<SettingsInputHandle>(null);
-  const [listErrors, setListErrors] = useState<Record<ListName, string | null>>(NO_ERRORS);
+  // Errors belong to the revision they were found on; a newer revision (another client saved) clears them.
+  const [found, setFound] = useState<{
+    revision: string | null;
+    errors: Record<ListName, string | null>;
+  }>({ revision: null, errors: NO_ERRORS });
   const muted = { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 19 };
 
   if (settings.status === "loading") {
@@ -58,6 +62,7 @@ export function AgentAccessSettings({ theme }: PluginSurfaceProps) {
   }
 
   const { values } = settings;
+  const listErrors = found.revision === settings.revision ? found.errors : NO_ERRORS;
   const save = (next: typeof values) => void settings.save(next, settings.revision);
   return (
     <SettingsSection title="Shared Browser: agent access">
@@ -114,7 +119,7 @@ export function AgentAccessSettings({ theme }: PluginSurfaceProps) {
               workspaces: parsed.workspaces.error,
               projects: parsed.projects.error,
             };
-            setListErrors(errors);
+            setFound({ revision: settings.revision, errors });
             if (errors.providers || errors.workspaces || errors.projects) return;
             save({
               ...values,

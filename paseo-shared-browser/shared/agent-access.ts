@@ -62,7 +62,7 @@ export interface WorkspaceRef {
 
 /**
  * A directory in one canonical form: backslashes become slashes, repeated slashes collapse, and `.`
- * and `..` segments resolve (a `..` above the root of an absolute path stays at the root). This is
+ * and `..` segments resolve (a `..` above the root of an absolute path stays at the root, which is `/`). This is
  * what posix normalize does; it is written out here because shared code does not import Node modules.
  */
 export function normalizeDirectory(path: string): string {
@@ -79,7 +79,7 @@ export function normalizeDirectory(path: string): string {
     }
   }
   const joined = kept.join("/");
-  return absolute ? `/${joined}`.replace(/\/+$/, "") : joined;
+  return absolute ? `/${joined}` : joined;
 }
 
 /**
@@ -96,7 +96,8 @@ export function workspacesForDirectory(
   for (const workspace of workspaces) {
     if (!workspace.workspaceDirectory) continue;
     const directory = normalizeDirectory(workspace.workspaceDirectory);
-    if (target !== directory && !target.startsWith(`${directory}/`)) continue;
+    const prefix = directory.endsWith("/") ? directory : `${directory}/`;
+    if (target !== directory && !target.startsWith(prefix)) continue;
     if (directory.length > depth) {
       depth = directory.length;
       found = [workspace];
