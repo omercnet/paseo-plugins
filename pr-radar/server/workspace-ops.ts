@@ -164,6 +164,7 @@ async function runGit(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS)
     maxBuffer: MAX_BUFFER_BYTES,
     env: {
       ...allowListedEnv(GIT_ENV_KEYS),
+      GIT_ALLOW_PROTOCOL: "file:ssh:https:http",
       GIT_ASKPASS: "/bin/false",
       SSH_ASKPASS: "/bin/false",
       GIT_SSH_COMMAND: "ssh -oBatchMode=yes",

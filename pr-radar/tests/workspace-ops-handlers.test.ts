@@ -460,6 +460,7 @@ describe("git hardening", () => {
     const seen = readFileSync(envLog, "utf8");
     expect(seen).toContain("PATH=");
     expect(seen).toContain("SSL_CERT_FILE=/etc/ssl/test-ca.pem");
+    expect(seen).toContain("GIT_ALLOW_PROTOCOL=file:ssh:https:http");
     expect(seen).toContain("GIT_SSH_COMMAND=ssh -oBatchMode=yes");
     expect(seen).not.toContain("GH_TOKEN=gh-token-value");
     expect(seen).not.toContain("GITHUB_TOKEN=github-token-value");
@@ -483,6 +484,21 @@ describe("git hardening", () => {
     gitIn(repoDir, ["config", "core.sshCommand", evilSsh]);
     await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("disallows custom git remote helpers even when their URL parses as GitHub", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "custom://github.com/owner/repo");
+    const binDir = join(root, "remote-helper-bin");
+    mkdirSync(binDir);
+    const marker = join(root, "custom-helper-ran");
+    const helper = join(binDir, "git-remote-custom");
+    writeFileSync(helper, `#!/bin/sh\ntouch '${marker}'\nexit 9\n`);
+    chmodSync(helper, 0o755);
+    vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow();
     expect(existsSync(marker)).toBe(false);
   });
 });
