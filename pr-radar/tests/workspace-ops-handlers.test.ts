@@ -669,6 +669,34 @@ describe("git hardening", () => {
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
+  test("config-based hooks do not run on checkout", async () => {
+    const root = makeRoot();
+    const marker = join(root, "config-hook-ran");
+    const hook = join(root, "config-hook.sh");
+    writeFileSync(hook, `#!/bin/sh\ntouch '${marker}'\n`);
+    chmodSync(hook, 0o755);
+    const { repoDir } = makePullableRepo(root);
+    gitIn(repoDir, ["config", "hook.mine.command", hook]);
+    gitIn(repoDir, ["config", "hook.mine.event", "post-checkout"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("refuses a PR that replaces a submodule with a regular file", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root, {
+      submod: { content: "now a regular file\n" },
+    });
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},submod`]);
+    gitIn(repoDir, ["commit", "-m", "add gitlink"]);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /replaces the submodule at submod/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
   test("submodule filters do not run during the dirty check", async () => {
     const root = makeRoot();
     const { repoDir } = makePullableRepo(root);

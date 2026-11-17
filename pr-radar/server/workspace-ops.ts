@@ -159,8 +159,6 @@ const GIT_SAFETY_ARGS = [
   "-c",
   "filter.lfs.required=false",
   "-c",
-  "http.proxy=",
-  "-c",
   "http.sslVerify=true",
   "-c",
   "core.alternaterefscommand=",
@@ -168,6 +166,10 @@ const GIT_SAFETY_ARGS = [
   "submodule.recurse=false",
   "-c",
   "fetch.recurseSubmodules=false",
+  "-c",
+  "hook.post-checkout.enabled=false",
+  "-c",
+  "hook.reference-transaction.enabled=false",
 ];
 
 function withSanitizedPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -211,7 +213,7 @@ async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]
         "--null",
         "--name-only",
         "--get-regexp",
-        "^filter\\.",
+        "^(filter|hook)\\.",
       ],
       { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv(), encoding: "buffer" },
     );
@@ -242,8 +244,13 @@ async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]
   }
   const overrides: FilterOverride[] = [];
   for (const key of stdout.split("\0")) {
-    if (!/^filter\.[\s\S]*\.(clean|smudge|process|required)$/.test(key)) continue;
-    overrides.push({ key, value: key.endsWith(".required") ? "false" : "" });
+    let value: string | null = null;
+    if (/^filter\.[\s\S]*\.(clean|smudge|process|required)$/.test(key)) {
+      value = key.endsWith(".required") ? "false" : "";
+    } else if (/^hook\.[\s\S]*\.(command|event|enabled)$/.test(key)) {
+      value = key.endsWith(".enabled") ? "false" : "";
+    }
+    if (value !== null) overrides.push({ key, value });
   }
   return overrides;
 }
@@ -677,6 +684,45 @@ async function assertNoIgnoredFileOverwrite(
   }
 }
 
+/**
+ * `checkout -B` also silently discards a submodule's uncommitted edits and untracked files when the
+ * incoming tree replaces the gitlink with a regular file or directory. The dirty check passes
+ * because submodules are ignored, so refuse before the switch: any path that is a gitlink in HEAD
+ * (mode 160000) must still be a gitlink in the target tree.
+ */
+async function assertNoGitlinkToFileOverwrite(
+  dir: string,
+  target: string,
+  prNumber: number,
+): Promise<void> {
+  const gitlinks = (await runGit(dir, ["ls-files", "-s", "-z"]))
+    .split("\0")
+    .filter((entry) => entry.startsWith("160000 "));
+  if (gitlinks.length === 0) return;
+  const gitlinkPaths = gitlinks
+    .map((entry) => entry.slice(entry.indexOf("\t") + 1))
+    .filter(Boolean);
+  if (gitlinkPaths.length === 0) return;
+  const incoming = (
+    await runGit(dir, [
+      "ls-tree",
+      "-z",
+      target,
+      "--",
+      ...gitlinkPaths.map((path) => `:(literal)${path}`),
+    ])
+  )
+    .split("\0")
+    .filter(Boolean);
+  const nonGitlink = incoming.find((entry) => !entry.startsWith("160000 "));
+  if (nonGitlink) {
+    const path = nonGitlink.slice(nonGitlink.indexOf("\t") + 1);
+    throw new Error(
+      `PR #${prNumber} replaces the submodule at ${path} with a regular file or directory, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
+    );
+  }
+}
+
 async function currentBranch(repoDir: string): Promise<string | null> {
   const name = await runGit(repoDir, ["branch", "--show-current"], 3_000).catch(() => "");
   return name || null;
@@ -748,6 +794,7 @@ async function refreshPrWorktree(
   const prHead = await fetchPrHead(baseRoot, matchingRemote, prNumber);
   await assertBranchFastForwards(baseRoot, localBranchName, prHead, `the head of PR #${prNumber}`);
   await assertNoIgnoredFileOverwrite(worktreePath, prHead, prNumber);
+  await assertNoGitlinkToFileOverwrite(worktreePath, prHead, prNumber);
   await runGit(worktreePath, ["checkout", "-B", localBranchName, prHead]);
   const wtHead = await runGit(worktreePath, ["rev-parse", "HEAD"]);
   if (wtHead !== prHead) {
@@ -855,6 +902,7 @@ export async function prepareWorkspaceCwdHandler(
         `the head of PR #${input.prNumber}`,
       );
       await assertNoIgnoredFileOverwrite(baseRoot, prHead, input.prNumber);
+      await assertNoGitlinkToFileOverwrite(baseRoot, prHead, input.prNumber);
       await runGit(baseRoot, ["checkout", "-B", localBranchName, prHead]);
       const headSha = await runGit(baseRoot, ["rev-parse", "HEAD"]);
       if (headSha !== prHead) {
