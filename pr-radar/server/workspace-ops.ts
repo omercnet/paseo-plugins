@@ -164,6 +164,10 @@ const GIT_SAFETY_ARGS = [
   "http.sslVerify=true",
   "-c",
   "core.alternaterefscommand=",
+  "-c",
+  "submodule.recurse=false",
+  "-c",
+  "fetch.recurseSubmodules=false",
 ];
 
 function withSanitizedPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -730,7 +734,12 @@ async function refreshPrWorktree(
   prNumber: number,
   localBranchName: string,
 ): Promise<void> {
-  const dirty = await runGit(worktreePath, ["status", "--porcelain", "--untracked-files=no"]);
+  const dirty = await runGit(worktreePath, [
+    "status",
+    "--porcelain",
+    "--untracked-files=no",
+    "--ignore-submodules=all",
+  ]);
   if (dirty) {
     throw new Error(
       `Existing worktree ${worktreePath} has uncommitted changes; commit or stash them before updating PR #${prNumber}.`,
@@ -825,7 +834,12 @@ export async function prepareWorkspaceCwdHandler(
         `Base checkout ${baseRoot} is in detached HEAD; check out a branch or use CWD-WORKTREE.`,
       );
     }
-    const dirty = await runGit(baseRoot, ["status", "--porcelain", "--untracked-files=all"]);
+    const dirty = await runGit(baseRoot, [
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+      "--ignore-submodules=all",
+    ]);
     if (dirty) {
       throw new Error(
         `Base checkout ${baseRoot} has uncommitted or untracked changes; commit, stash or remove them, or use CWD-WORKTREE.`,

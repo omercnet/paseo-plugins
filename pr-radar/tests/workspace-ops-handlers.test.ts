@@ -669,6 +669,35 @@ describe("git hardening", () => {
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
+  test("submodule filters do not run during the dirty check", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const marker = join(root, "submodule-filter-ran");
+    const filter = join(root, "sub-filter.sh");
+    writeFileSync(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    chmodSync(filter, 0o755);
+    const subRepo = join(root, "sub-repo");
+    initRepo(subRepo, null);
+    gitIn(repoDir, ["-c", "protocol.file.allow=always", "submodule", "add", subRepo, "sub"]);
+    const sub = join(repoDir, "sub");
+    gitIn(sub, ["config", "user.email", "test@example.com"]);
+    gitIn(sub, ["config", "user.name", "Test"]);
+    // Configure the filter before committing the filtered file: `git add` below runs it, and
+    // the parent's recursive status would too without --ignore-submodules=all.
+    gitIn(sub, ["config", "filter.evil.clean", filter]);
+    gitIn(sub, ["config", "filter.evil.smudge", filter]);
+    writeFileSync(join(sub, ".gitattributes"), "*.evil filter=evil\n");
+    writeFileSync(join(sub, "p.evil"), "payload\n");
+    gitIn(sub, ["add", ".gitattributes", "p.evil"]);
+    gitIn(sub, ["commit", "-m", "add filtered"]);
+    rmSync(marker, { force: true });
+
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      "uncommitted or untracked changes",
+    );
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("disallows custom git remote helpers even when their URL parses as GitHub", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
