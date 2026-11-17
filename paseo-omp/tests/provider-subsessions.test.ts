@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import { createOmpProvider } from "../server/provider/registration";
+import { FakeRpcChild, observeCommands, READY_FRAME, runtimeFor } from "./helpers/omp-rpc-harness";
 import {
   createHarness,
   EventLog,
@@ -155,84 +156,207 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
-  test("renders nothing for a child agent_pause and keeps the child running", async () => {
-    const { connection, events, runtime } = await createHarness(
-      new FakeOmpRuntime(),
+  test("projects nothing for a transported child agent_pause and keeps the child turn open", async () => {
+    const child = new FakeRpcChild();
+    const promptIds: string[] = [];
+    observeCommands(child, (command) => {
+      const respond = (data: unknown = {}) =>
+        child.write({
+          type: "response",
+          id: command.id,
+          command: command.type,
+          success: true,
+          data,
+        });
+      if (command.type === "negotiate_protocol") respond({ protocolVersion: 2 });
+      else if (command.type === "get_available_models") respond({ models: [MODEL] });
+      else if (command.type === "get_available_commands") respond({ commands: [] });
+      else if (command.type === "get_state") {
+        respond({
+          model: MODEL,
+          thinkingLevel: "medium",
+          isStreaming: false,
+          isCompacting: false,
+          sessionId: NATIVE_SESSION_ID,
+        });
+      } else if (command.type === "get_subagents") respond({ subagents: [] });
+      else if (command.type === "set_subagent_subscription") respond({ level: "events" });
+      else if (command.type === "get_branch_messages") respond({ messages: [] });
+      else if (command.type === "prompt") {
+        promptIds.push(String(command.id));
+        respond({ agentInvoked: true });
+      } else respond();
+    });
+    const violations: unknown[] = [];
+    const { connection, events } = await createHarness(
+      runtimeFor(child, [], undefined, (diagnostic) => {
+        violations.push(diagnostic);
+      }),
       new ManualScheduler(),
       ["prompt.message", "session.subsession"],
     );
-    await openSession(connection, events, "child-pause-open", "session-1");
-    const session = sessionAt(runtime);
-    await startPrompt(connection, events);
-    session.emit({
+    const opening = openSession(connection, events, "child-pause-open", "session-1");
+    child.write(READY_FRAME);
+    await opening;
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    const nested = (event: Record<string, unknown>) =>
+      child.write({ type: "subagent_event", payload: { id: "native-child-pause", event } });
+    const lifecycle = (status: string) =>
+      child.write({
+        type: "subagent_lifecycle",
+        payload: {
+          id: "native-child-pause",
+          agent: "scout",
+          status,
+          parentToolCallId: "task-pause",
+          index: 0,
+        },
+      });
+    child.write({
       type: "tool_execution_start",
       toolCallId: "task-pause",
       toolName: "task",
       args: { tasks: [{ task: "wait for the job" }] },
     });
-    session.emit({
-      type: "subagent_lifecycle",
-      payload: {
-        id: "native-child-pause",
-        agent: "scout",
-        status: "started",
-        parentToolCallId: "task-pause",
-        index: 0,
-      },
-    });
-    const opened = events.findLast(
+    lifecycle("started");
+    const opened = await events.waitFor(
       (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
     );
-    if (opened?.type !== "session.opened") throw new Error("Missing child session");
-    session.emit({
-      type: "subagent_event",
-      payload: {
-        id: "native-child-pause",
-        event: {
-          type: "message_end",
-          message: { role: "assistant", responseId: "child-loop-1", content: "job started" },
-        },
-      },
+    if (opened.type !== "session.opened") throw new Error("Missing child session");
+    nested({
+      type: "message_end",
+      message: { role: "assistant", responseId: "child-loop-1", content: "job started" },
     });
-    const before = events.length;
-    session.emit({
-      type: "subagent_event",
-      payload: {
-        id: "native-child-pause",
-        event: {
-          type: "agent_pause",
-          messages: [{ role: "assistant", responseId: "child-loop-1", content: "job started" }],
-          yielded: true,
-          awaiting: true,
-        },
-      },
+    // The raw 18.21+ shape, carrying a message that never streamed: rendering or settling on the
+    // pause would show up as that text or as an extra child turn transition.
+    nested({
+      type: "agent_pause",
+      messages: [{ role: "assistant", responseId: "pause-only", content: "PAUSE_ONLY" }],
+      yielded: true,
+      awaiting: true,
     });
-    await Promise.resolve();
-    expect(events.slice(before)).toEqual([]);
-    session.emit({
-      type: "subagent_lifecycle",
-      payload: {
-        id: "native-child-pause",
-        agent: "scout",
-        status: "completed",
-        parentToolCallId: "task-pause",
-        index: 0,
-      },
+    nested({
+      type: "message_end",
+      message: { role: "assistant", responseId: "child-loop-2", content: "job finished" },
     });
+    lifecycle("completed");
     await events.waitFor(
       (event) =>
         event.type === "session.turn" &&
         event.sessionId === opened.sessionId &&
         event.state === "completed",
     );
+    const assistantText = new Map<string, string>();
+    for (const event of events) {
+      if (
+        event.type === "timeline.item" &&
+        event.sessionId === opened.sessionId &&
+        event.item.type === "assistant_message"
+      ) {
+        assistantText.set(event.item.id, event.item.text);
+      }
+    }
+    expect([...assistantText.values()]).toEqual(["job started", "job finished"]);
     expect(
-      events.filter(
-        (event) =>
-          event.type === "timeline.item" &&
-          event.sessionId === opened.sessionId &&
-          event.item.type === "assistant_message",
+      events.flatMap((event) =>
+        event.type === "session.turn" && event.sessionId === opened.sessionId ? [event.state] : [],
       ),
-    ).toHaveLength(1);
+    ).toEqual(["started", "completed"]);
+    // A schema that rejected the pause would drop it silently from the timeline's view.
+    expect(violations).toEqual([]);
+
+    child.write({ type: "prompt_result", id: promptIds[0], agentInvoked: true });
+    child.write({
+      type: "agent_end",
+      requestId: promptIds[0],
+      messages: [{ role: "assistant", responseId: "root-answer", content: "done" }],
+      isTerminal: true,
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state === "completed",
+    );
+    await connection.close();
+  });
+
+  test("settles a held parent turn once OMP stops counting its finished child as pending work", async () => {
+    const scheduler = new ManualScheduler();
+    const { connection, events, runtime } = await createHarness(new FakeOmpRuntime(), scheduler, [
+      "prompt.message",
+      "session.subsession",
+    ]);
+    await openSession(connection, events, "held-child-open", "session-1");
+    const session = sessionAt(runtime);
+    const turnId = turnIdFrom(await startPrompt(connection, events));
+    establishTerminalOwnership(session);
+    const parentDone = () =>
+      events.some(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      );
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "task-held",
+      toolName: "task",
+      args: { tasks: [{ task: "long job" }] },
+    });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-child-held",
+        agent: "scout",
+        status: "started",
+        parentToolCallId: "task-held",
+        index: 0,
+      },
+    });
+    const reply = { role: "assistant" as const, responseId: "parent-yield", content: "waiting" };
+    session.emit({ type: "message_end", message: reply });
+    // OMP 18.21+ reports a run paused on a live child agent as a nonterminal agent_end, and
+    // get_state counts the child as pending work until its run closes.
+    session.isSettled = false;
+    session.hasPendingAsyncWork = true;
+    session.emit({
+      type: "agent_end",
+      requestId: `rpc-prompt-${session.promptCount}`,
+      messages: [reply],
+      isTerminal: false,
+    });
+    session.emit({
+      type: "subagent_event",
+      payload: {
+        id: "native-child-held",
+        event: { type: "agent_pause", messages: [], yielded: true, awaiting: true },
+      },
+    });
+    await scheduler.flush(1_000);
+    await scheduler.flush(1_000);
+    expect(parentDone()).toBe(false);
+
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-child-held",
+        agent: "scout",
+        status: "completed",
+        parentToolCallId: "task-held",
+        index: 0,
+      },
+    });
+    await scheduler.flush(1_000);
+    expect(parentDone()).toBe(false);
+
+    // Nothing woke the parent: OMP drops the child from its wake sources and writes no
+    // session_settled.
+    session.isSettled = true;
+    session.hasPendingAsyncWork = false;
+    await scheduler.flush(1_000);
+    await expect(
+      events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      ),
+    ).resolves.toEqual(expect.objectContaining({ state: "completed" }));
     await connection.close();
   });
 

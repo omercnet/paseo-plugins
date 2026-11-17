@@ -937,12 +937,7 @@ describe("OMP RPC transport", () => {
     await session.close();
   });
 
-  test("classifies the OMP 18.21 agent_pause as a lifecycle event like agent_end", () => {
-    expect(OMP_SESSION_EVENT_POLICIES.agent_pause).toBe("lifecycle");
-    expect(OMP_SESSION_EVENT_POLICIES.agent_pause).toBe(OMP_SESSION_EVENT_POLICIES.agent_end);
-  });
-
-  test("accepts the OMP 18.21 agent_pause a subagent emits and rejects a malformed one", async () => {
+  async function openPauseSession() {
     const child = new FakeRpcChild();
     const diagnostics: OmpProtocolViolationDiagnostic[] = [];
     observeCommands(child, (command) => {
@@ -960,29 +955,52 @@ describe("OMP RPC transport", () => {
       diagnostics.push(diagnostic);
     }).startSession({ cwd: "/repo", mode: "full" });
     child.write(READY_FRAME);
-    const session = await opening;
-    // `agent_pause` as pi-coding-agent 18.21+ declares it (session/agent-session-events.ts): the
-    // stopped loop's messages plus required `yielded` and `awaiting` flags. RPC mode re-encodes it
-    // for its own stdout, but the task executor forwards child session events unchanged.
-    const queued: AgentMessage = { role: "user", content: "check the build", timestamp: 1 };
+    return { child, diagnostics, session: await opening };
+  }
+
+  // `agent_pause` as pi-coding-agent 18.21+ declares it (session/agent-session-events.ts): the
+  // stopped loop's messages plus required `yielded` and `awaiting` flags. RPC mode re-encodes it
+  // for its own stdout, but the task executor forwards child session events unchanged.
+  const queuedPauseMessage: AgentMessage = {
+    role: "user",
+    content: "check the build",
+    timestamp: 1,
+  };
+
+  test("accepts the OMP 18.21 agent_pause a subagent emits as a lifecycle event", async () => {
+    expect(OMP_SESSION_EVENT_POLICIES.agent_pause).toBe(OMP_SESSION_EVENT_POLICIES.agent_end);
+    const { child, diagnostics, session } = await openPauseSession();
     const frame = {
       type: "subagent_event",
       payload: {
         id: "child-1",
-        event: { type: "agent_pause", messages: [queued], yielded: true, awaiting: true },
+        event: {
+          type: "agent_pause",
+          messages: [queuedPauseMessage],
+          yielded: true,
+          awaiting: true,
+        },
       },
     } satisfies OmpRpcEvent;
     const received = nextEvent((listener) => session.onEvent(listener));
     child.write(frame);
     await expect(received).resolves.toEqual(frame);
+    expect(diagnostics).toEqual([]);
+    await session.close();
+  });
 
+  test.each([
+    ["a non-boolean yielded", { messages: [queuedPauseMessage], yielded: "yes", awaiting: true }],
+    ["a missing yielded", { messages: [queuedPauseMessage], awaiting: true }],
+    ["a non-boolean awaiting", { messages: [queuedPauseMessage], yielded: true, awaiting: 1 }],
+    ["a missing awaiting", { messages: [queuedPauseMessage], yielded: true }],
+    ["missing messages", { yielded: true, awaiting: false }],
+  ])("rejects a nested agent_pause with %s", async (_defect, fields) => {
+    const { child, diagnostics, session } = await openPauseSession();
     const afterMalformed = nextEvent((listener) => session.onEvent(listener));
     child.write({
       type: "subagent_event",
-      payload: {
-        id: "child-1",
-        event: { type: "agent_pause", messages: [queued], yielded: "yes" },
-      },
+      payload: { id: "child-1", event: { type: "agent_pause", ...fields } },
     });
     child.write({ type: "notice", level: "info", message: "after malformed pause" });
     await expect(afterMalformed).resolves.toEqual({
@@ -993,6 +1011,38 @@ describe("OMP RPC transport", () => {
     expect(diagnostics).toEqual([
       expect.objectContaining({ category: "invalid-event", reason: "subagent-event-schema" }),
     ]);
+    await session.close();
+  });
+
+  test("budgets optional metadata across a nested agent_pause message list like agent_end", async () => {
+    const { child, diagnostics, session } = await openPauseSession();
+    // Each message's details fit the 256 KiB optional metadata budget alone; both together do not,
+    // so the frame-wide sanitizer keeps the first and drops the second.
+    const details = { log: "x".repeat(160 * 1024) };
+    const first = { role: "assistant", id: "pause-first", content: "one", details };
+    const second = { role: "assistant", id: "pause-second", content: "two", details };
+    const received = nextEvent((listener) => session.onEvent(listener));
+    child.write({
+      type: "subagent_event",
+      payload: {
+        id: "child-1",
+        event: { type: "agent_pause", messages: [first, second], yielded: true, awaiting: false },
+      },
+    });
+    const { details: _dropped, ...secondWithoutDetails } = second;
+    await expect(received).resolves.toEqual({
+      type: "subagent_event",
+      payload: {
+        id: "child-1",
+        event: {
+          type: "agent_pause",
+          messages: [first, secondWithoutDetails],
+          yielded: true,
+          awaiting: false,
+        },
+      },
+    });
+    expect(diagnostics).toEqual([]);
     await session.close();
   });
 
