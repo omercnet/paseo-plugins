@@ -241,9 +241,16 @@ export default function contribute(server: PluginServerContext) {
     if (request.purpose !== "interactive" || background === true || !request.workspaceId)
       return request;
     if (!labels || Object.keys(labels).length === 0) return request;
+    // A server stored on the agent at creation (chosen by provider, workspace or project) is already there on every resume.
+    if (mcpServers && Object.hasOwn(mcpServers, MCP_SERVER_ID)) return request;
     if (!agentGetsBrowserByLabel(await readAccess(true), labels)) return request;
     const ticket = randomBytes(32).toString("base64url");
-    if (!(await issueTicketWithinDeadline(ticket))) return request;
+    if (!(await issueTicketWithinDeadline(ticket))) {
+      console.warn(
+        "shared-browser: could not issue a browser ticket for a labelled agent; the session opens without it",
+      );
+      return request;
+    }
     try {
       await withinDeadline(
         bindAgentTicket(ticket, request.agentId, request.workspaceId),

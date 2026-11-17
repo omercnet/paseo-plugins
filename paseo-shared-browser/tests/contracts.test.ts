@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import contribute from "../index.server";
@@ -502,8 +503,13 @@ describe("agent access", () => {
 
 describe("agent access by label", () => {
   beforeEach(() => {
+    vi.stubEnv("PASEO_HOME", join(tmpdir(), "shared-browser-label-tests-no-home"));
     browserMocks.issueAgentTicket.mockReset();
     browserMocks.bindAgentTicket.mockReset();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   const ready = (values: Record<string, unknown>) => async () => ({
@@ -535,6 +541,14 @@ describe("agent access by label", () => {
     expect(browserMocks.issueAgentTicket).toHaveBeenCalledWith(ticket);
     expect(browserMocks.bindAgentTicket).toHaveBeenCalledWith(ticket, "agent-1", "ws_a");
     expect(result.env).toEqual({ EXISTING: "value" });
+  });
+
+  it("leaves a session alone when the server was already stored on the agent at creation", async () => {
+    const { open: hook } = captureHooks(ready({ labels: ["team"] }));
+    const stored = { other: { type: "stdio" }, "shared-browser": { type: "stdio" } };
+    const request = open({ reason: "resume", mcpServers: stored });
+    expect(await hook({ request })).toBe(request);
+    expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
   });
 
   it.each(["create", "resume", "refresh", "import"] as const)(
@@ -646,8 +660,9 @@ describe("agent access by label", () => {
       browserMocks.bindAgentTicket.mockRejectedValueOnce(new Error("Unknown agent ticket"));
       const second = open();
       await expect(hook({ request: second })).resolves.toBe(second);
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0]?.[0])).toMatch(/could not bind/);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/could not issue/);
+      expect(String(warn.mock.calls[1]?.[0])).toMatch(/could not bind/);
     } finally {
       warn.mockRestore();
     }
