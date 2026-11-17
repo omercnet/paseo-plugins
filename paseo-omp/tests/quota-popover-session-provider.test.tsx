@@ -80,8 +80,19 @@ let container: HTMLDivElement;
 let root: Root;
 let client: QueryClient;
 
+// Settings that relocate OMP's store; none may reach a test from the runner's environment.
+const OMP_LOCATION_ENV = [
+  "OMP_AGENT_DIR",
+  "OMP_PROFILE",
+  "PASEO_OMP_AGENT_DIR",
+  "PI_CODING_AGENT_DIR",
+  "PI_CONFIG_DIR",
+  "PI_PROFILE",
+];
+
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  for (const name of OMP_LOCATION_ENV) vi.stubEnv(name, undefined);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -93,6 +104,7 @@ afterEach(async () => {
   client.clear();
   container.remove();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 /** Re-renders the open popover, as Paseo does when the agent's status changes. */

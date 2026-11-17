@@ -274,6 +274,30 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     onDirectoryUpdate();
     await vi.advanceTimersByTimeAsync(250);
     expect(asked()).toEqual(["live", "older", "live"]);
+
+    // The session closes, then resumes with the same model: closed is not asked and shows every
+    // provider; resumed, it shows the known provider again without asking, since the opaque id is
+    // a hash of OMP's provider and model, so one id always names the same provider.
+    agents[0].status = "closed";
+    onDirectoryUpdate();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(asked()).toEqual(["live", "older", "live"]);
+    expect(quota("live")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "Quotas · 90%" }),
+    );
+    agents[0].status = "idle";
+    onDirectoryUpdate();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(asked()).toEqual(["live", "older", "live"]);
+    expect(quota("live")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "OpenAI · 30%" }),
+    );
+
+    // A rejected lookup is retried once its back-off has passed, so a reloaded server recovers.
+    await vi.advanceTimersByTimeAsync(60_000);
+    onDirectoryUpdate();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(asked().filter((id) => id === "older")).toHaveLength(2);
   } finally {
     dispose();
   }

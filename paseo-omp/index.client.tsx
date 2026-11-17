@@ -72,6 +72,7 @@ const STATUS_POLL_MS = 4_000;
 const QUOTA_POLL_MS = 30_000;
 const RECONCILE_DEBOUNCE_MS = 250;
 const SETTINGS_POLL_MS = 15_000;
+const SESSION_PROVIDER_RETRY_MS = 60_000;
 const composerPillSettingsRpc = settingsRpc(composerPillSettings.id);
 
 type AgentEntry = PaseoAgentListResult["entries"][number];
@@ -384,7 +385,12 @@ export default function contribute(client: PluginClientContext) {
   }
 
   // Agent id to its session's provider, asked again only when the agent's model or status changes.
-  const sessionModelProviders = new Map<string, { key: string; provider: string | null }>();
+  // A failed lookup is kept too, but only until `retryAt`, so a server without the RPC is not asked
+  // on every reconcile and a transient failure still recovers.
+  const sessionModelProviders = new Map<
+    string,
+    { key: string; provider: string | null; retryAt?: number }
+  >();
 
   async function sessionModelProvider(agent: AgentEntry["agent"]): Promise<string | null> {
     if (agent.status === "closed" || !needsSessionModelProvider(agent.provider, agent.model)) {
@@ -392,15 +398,21 @@ export default function contribute(client: PluginClientContext) {
     }
     const key = `${agent.model}|${agent.status}`;
     const cached = sessionModelProviders.get(agent.id);
-    if (cached?.key === key) return cached.provider;
-    let provider: string | null = null;
-    try {
-      ({ provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id }));
-    } catch {
-      // An older or reloading server without the RPC: cached too, so it is not asked on every pass.
+    if (cached?.key === key && (cached.retryAt === undefined || Date.now() < cached.retryAt)) {
+      return cached.provider;
     }
-    sessionModelProviders.set(agent.id, { key, provider });
-    return provider;
+    try {
+      const { provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id });
+      sessionModelProviders.set(agent.id, { key, provider });
+      return provider;
+    } catch {
+      sessionModelProviders.set(agent.id, {
+        key,
+        provider: null,
+        retryAt: Date.now() + SESSION_PROVIDER_RETRY_MS,
+      });
+      return null;
+    }
   }
 
   async function reconcileOnce(): Promise<void> {
