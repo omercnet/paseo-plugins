@@ -618,6 +618,44 @@ describe("git hardening", () => {
     );
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
+
+  test("refuses core.alternateRefsCommand in repo config", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const marker = join(root, "alternate-refs-ran");
+    gitIn(repoDir, ["config", "core.alternateRefsCommand", `touch '${marker}'`]);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /configures transport keys/,
+    );
+    expect(existsSync(marker)).toBe(false);
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("refuses transport config pulled in by an include", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const includeFile = join(root, "included.gitconfig");
+    writeFileSync(includeFile, '[http "https://github.com"]\n\tproxy = http://evil-proxy:8080\n');
+    appendFileSync(join(repoDir, ".git", "config"), `\n[include]\n\tpath = ${includeFile}\n`);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /configures transport keys/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("refuses transport config from the worktree config file", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    gitIn(repoDir, ["config", "extensions.worktreeConfig", "true"]);
+    writeFileSync(
+      join(repoDir, ".git", "config.worktree"),
+      "[http]\n\tproxy = http://evil-proxy:8080\n",
+    );
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /configures transport keys/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
 });
 
 describe("prepareWorkspaceCwdHandler CWD-WORKTREE", () => {

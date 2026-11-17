@@ -162,6 +162,8 @@ const GIT_SAFETY_ARGS = [
   "http.proxy=",
   "-c",
   "http.sslVerify=true",
+  "-c",
+  "core.alternaterefscommand=",
 ];
 
 function withSanitizedPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -554,22 +556,14 @@ async function fetchPrHead(baseRoot: string, remote: string, prNumber: number): 
   return runGit(baseRoot, ["rev-parse", "--verify", `${ref}^{commit}`]);
 }
 
-async function localConfigKeys(repoDir: string, pattern: string): Promise<string[]> {
+async function effectiveConfigKeys(repoDir: string, pattern: string): Promise<string[]> {
   let stdout = "";
   try {
+    // No `-c` here: `git config --get-regexp` also lists command-scope values, and the baseline
+    // `-c http.proxy=`/`-c http.sslVerify=true` would otherwise self-trigger the transport guard.
     const result = await execFileAsync(
       "git",
-      [
-        ...GIT_SAFETY_ARGS,
-        "-C",
-        repoDir,
-        "config",
-        "--local",
-        "--null",
-        "--name-only",
-        "--get-regexp",
-        pattern,
-      ],
+      ["-C", repoDir, "config", "--null", "--name-only", "--get-regexp", pattern],
       { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv() },
     );
     stdout = result.stdout;
@@ -584,13 +578,13 @@ async function localConfigKeys(repoDir: string, pattern: string): Promise<string
 }
 
 const UNSAFE_TRANSPORT_CONFIG =
-  "^(http\\.|remote\\..*\\.(proxy|uploadpack|vcs)$|core\\.alternateRefsCommand$|url\\.)";
+  "^(http\\.|remote\\..*\\.(proxy|uploadpack|vcs)$|core\\.alternaterefscommand$|url\\.)";
 
 async function assertNoUnsafeTransportConfig(repoDir: string): Promise<void> {
-  const keys = await localConfigKeys(repoDir, UNSAFE_TRANSPORT_CONFIG);
+  const keys = await effectiveConfigKeys(repoDir, UNSAFE_TRANSPORT_CONFIG);
   if (keys.length > 0) {
     throw new Error(
-      `Repository ${repoDir} configures transport keys that could redirect or exfiltrate the fetch (${keys[0]}); remove them from .git/config before starting the agent.`,
+      `Repository ${repoDir} configures transport keys that could redirect or exfiltrate the fetch (${keys[0]}); remove them from its git config before starting the agent.`,
     );
   }
 }
