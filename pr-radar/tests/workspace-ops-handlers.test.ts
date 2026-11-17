@@ -711,6 +711,41 @@ describe("git hardening", () => {
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
+  test("does not refuse an unchanged gitlink with ordinary siblings", async () => {
+    const root = makeRoot();
+    const { repoDir, bareDir } = makePullableRepo(root);
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},nested/sub`]);
+    gitIn(repoDir, ["commit", "-m", "add nested gitlink"]);
+
+    // Build a PR head that keeps the gitlink and adds an ordinary sibling under the same directory.
+    const readmeFile = join(root, "readme");
+    writeFileSync(readmeFile, "hello\n");
+    const readmeBlob = gitIn(repoDir, ["hash-object", "-w", readmeFile]);
+    const scratchIndex = join(root, "scratch-index");
+    writeFileSync(scratchIndex, "");
+    const indexEnv = { ...process.env, GIT_INDEX_FILE: scratchIndex };
+    execFileSync("git", ["-C", repoDir, "read-tree", "HEAD"], { env: indexEnv });
+    execFileSync(
+      "git",
+      ["-C", repoDir, "update-index", "--add", "--cacheinfo", `100644,${readmeBlob},nested/README`],
+      { env: indexEnv },
+    );
+    const tree = execFileSync("git", ["-C", repoDir, "write-tree"], {
+      env: indexEnv,
+      encoding: "utf8",
+    }).trim();
+    const commit = execFileSync("git", ["-C", repoDir, "commit-tree", tree, "-m", "sibling"], {
+      env: indexEnv,
+      encoding: "utf8",
+    }).trim();
+    gitIn(repoDir, ["push", bareDir, `+${commit}:refs/pull/7/head`]);
+
+    const result = await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(result.cwd).toBe(repoDir);
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+  });
+
   test("refuses a PR that replaces a submodule's ancestor with a symlink", async () => {
     const root = makeRoot();
     const { repoDir, bareDir } = makePullableRepo(root);

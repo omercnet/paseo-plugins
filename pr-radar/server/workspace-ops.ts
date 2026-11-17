@@ -711,17 +711,39 @@ async function assertNoIgnoredFileOverwrite(
 }
 
 /**
+ * Runs git and returns its stdout as UTF-8, failing closed when the output is not valid UTF-8.
+ * `runGit` decodes lossily, which would mangle a non-UTF-8 filename and let a comparison miss it.
+ */
+async function runGitLossless(
+  cwd: string,
+  args: string[],
+  timeout = COMMAND_TIMEOUT_MS,
+): Promise<string> {
+  const { stdout } = await execFileAsync("git", [...GIT_SAFETY_ARGS, "-C", cwd, ...args], {
+    timeout,
+    maxBuffer: MAX_BUFFER_BYTES,
+    env: gitEnv(),
+    encoding: "buffer",
+  });
+  const raw = stdout as Buffer;
+  const decoded = raw.toString("utf8");
+  if (!Buffer.from(decoded, "utf8").equals(raw)) {
+    throw new Error(`Git output in ${cwd} contains invalid UTF-8; refusing to proceed.`);
+  }
+  return decoded;
+}
+
+/**
  * `checkout -B` also silently discards a submodule's uncommitted edits and untracked files when the
- * incoming tree replaces the gitlink with a regular file or directory. The dirty check passes
- * because submodules are ignored, so refuse before the switch: any path that is a gitlink in HEAD
- * (mode 160000) must still be a gitlink in the target tree.
+ * incoming tree replaces the gitlink (or an ancestor directory holding it) with a file, symlink or
+ * directory. The dirty check passes because submodules are ignored, so refuse before the switch.
  */
 async function assertNoGitlinkToFileOverwrite(
   dir: string,
   target: string,
   prNumber: number,
 ): Promise<void> {
-  const gitlinks = (await runGit(dir, ["ls-files", "-s", "-z"]))
+  const gitlinks = (await runGitLossless(dir, ["ls-files", "-s", "-z"]))
     .split("\0")
     .filter((entry) => entry.startsWith("160000 "));
   if (gitlinks.length === 0) return;
@@ -729,43 +751,31 @@ async function assertNoGitlinkToFileOverwrite(
     .map((entry) => entry.slice(entry.indexOf("\t") + 1))
     .filter(Boolean);
   if (gitlinkPaths.length === 0) return;
-  const gitlinkPathSet = new Set(gitlinkPaths);
-  // Query the target tree at each gitlink path and every ancestor directory: a blob at an ancestor
-  // (a PR replacing `nested` with a file when the gitlink is `nested/sub`) also discards the
-  // submodule's working tree, even though the gitlink path itself no longer resolves.
-  const queryPaths = new Set<string>();
+
+  const entryType = async (path: string): Promise<string | null> =>
+    (await runGit(dir, ["cat-file", "-t", `${target}:${path}`], 3_000).catch(() => "")) || null;
+
+  // A gitlink that becomes anything but another gitlink (file, symlink, directory, or removed)
+  // discards the submodule's working tree.
   for (const path of gitlinkPaths) {
-    queryPaths.add(path);
-    let parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-    while (parent) {
-      queryPaths.add(parent);
-      parent = parent.includes("/") ? parent.slice(0, parent.lastIndexOf("/")) : "";
+    const type = await entryType(path);
+    if (type !== "commit") {
+      throw new Error(
+        `PR #${prNumber} replaces the submodule under ${path} with a regular file, symlink or directory, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
+      );
     }
   }
-  const incoming = (
-    await runGit(dir, [
-      "ls-tree",
-      "-z",
-      target,
-      "--",
-      ...Array.from(queryPaths, (path) => `:(literal)${path}`),
-    ])
-  )
-    .split("\0")
-    .filter(Boolean);
-  // A gitlink path that becomes anything other than a gitlink (file, symlink or directory) and an
-  // ancestor that becomes a leaf (file or symlink) both replace the submodule's working tree.
-  const dangerous = incoming.find((entry) => {
-    const mode = entry.slice(0, entry.indexOf(" "));
-    const path = entry.slice(entry.indexOf("\t") + 1);
-    if (gitlinkPathSet.has(path)) return mode !== "160000";
-    return mode !== "040000";
-  });
-  if (dangerous) {
-    const path = dangerous.slice(dangerous.indexOf("\t") + 1);
-    throw new Error(
-      `PR #${prNumber} replaces the submodule under ${path} with a regular file, symlink or directory, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
-    );
+  // An ancestor directory that becomes a leaf (file or symlink) also discards the subtree.
+  for (const path of gitlinkPaths) {
+    let parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    while (parent) {
+      if ((await entryType(parent)) === "blob") {
+        throw new Error(
+          `PR #${prNumber} replaces the submodule under ${parent} with a regular file or symlink, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
+        );
+      }
+      parent = parent.includes("/") ? parent.slice(0, parent.lastIndexOf("/")) : "";
+    }
   }
 }
 
