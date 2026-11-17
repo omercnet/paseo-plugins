@@ -60,6 +60,9 @@ export const OMP_MESSAGE_REPLAY_POLICIES = {
 export const OMP_SESSION_EVENT_POLICIES = {
   agent_start: "lifecycle",
   agent_end: "lifecycle",
+  // OMP 18.21+: a model loop that stopped inside a run that goes on. The RPC wire re-encodes it as
+  // `agent_end` with `isTerminal: false`; it arrives raw only inside `subagent_event` payloads.
+  agent_pause: "lifecycle",
   turn_start: "lifecycle",
   turn_end: "lifecycle",
   message_start: "normalize",
@@ -231,6 +234,7 @@ export type OmpProtocolDiagnosticPhase = (typeof OMP_PROTOCOL_DIAGNOSTIC_PHASES)
 export const OMP_PROTOCOL_EVENT_TYPES = [
   "agent_start",
   "agent_end",
+  "agent_pause",
   "turn_start",
   "turn_end",
   "message_start",
@@ -1572,6 +1576,12 @@ const OmpAutoRetryEndEventSchema = z.object({
 });
 const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
   ...OmpCoreAgentEventSchema.options,
+  z.object({
+    type: z.literal("agent_pause"),
+    messages: z.array(OmpMessageSchema).max(MAX_ARRAY_ITEMS),
+    yielded: z.boolean(),
+    awaiting: z.boolean(),
+  }),
   z.object({ type: z.literal("config_warnings_changed") }),
   z.object({ type: z.literal("advisor_cost_changed") }),
   z.object({ type: z.literal("cache_warming_start") }),
@@ -1897,6 +1907,7 @@ function mapAgentEventDetails(
     case "tool_execution_end":
       return mapRecordField(frame, "result", map, frame.toolName === "task");
     case "agent_end":
+    case "agent_pause":
       return mapRecordField(frame, "messages", (messages) => mapMessageList(messages, map));
     case "irc_message":
       return mapRecordField(frame, "message", map);
