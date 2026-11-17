@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   bindAgentTicket,
   cleanupBrowserServer,
@@ -33,12 +33,12 @@ import {
   revokeAgentBrowserAccess,
 } from "./server/browser";
 import { resolveBrowserRuntimeRoot } from "./server/runtime-path";
+import { listAllWorkspaces } from "./server/workspace-list";
 import {
   accessFromState,
   agentAccessSettings,
   agentGetsBrowser,
   DEFAULT_AGENT_ACCESS,
-  type WorkspaceRef,
 } from "./shared/agent-access";
 import {
   acquireControlRpc,
@@ -70,43 +70,35 @@ import { readBrowserVideoRpc } from "./shared/browser-video";
 const TICKET_ENV = "PASEO_SHARED_BROWSER_TICKET";
 const MCP_SERVER_ID = "shared-browser";
 const TICKET_ISSUE_TIMEOUT_MS = 2_000;
+const ACCESS_DECISION_TIMEOUT_MS = 2_000;
 
-async function issueTicketWithinDeadline(ticket: string): Promise<boolean> {
+/** The result of `work`, or a rejection when it has not settled within `ms`. */
+async function withinDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
-    await Promise.race([
-      issueAgentTicket(ticket),
+    return await Promise.race([
+      work,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("Shared Browser ticket issuance timed out")),
-          TICKET_ISSUE_TIMEOUT_MS,
-        );
+        timer = setTimeout(() => reject(new Error(message)), ms);
         timer.unref();
       }),
     ]);
-    return true;
-  } catch {
-    return false;
   } finally {
     clearTimeout(timer);
   }
 }
 
-const WORKSPACE_PAGE_SIZE = 200;
-const WORKSPACE_PAGE_LIMIT = 20;
-
-async function listWorkspaces(paseo: PluginHookContext["paseo"]): Promise<WorkspaceRef[]> {
-  const workspaces: WorkspaceRef[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < WORKSPACE_PAGE_LIMIT; page += 1) {
-    const result = await paseo.workspaces.list({
-      page: { limit: WORKSPACE_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
-    });
-    workspaces.push(...result.entries);
-    cursor = result.pageInfo.nextCursor ?? undefined;
-    if (!result.pageInfo.hasMore || !cursor) break;
+async function issueTicketWithinDeadline(ticket: string): Promise<boolean> {
+  try {
+    await withinDeadline(
+      issueAgentTicket(ticket),
+      TICKET_ISSUE_TIMEOUT_MS,
+      "Shared Browser ticket issuance timed out",
+    );
+    return true;
+  } catch {
+    return false;
   }
-  return workspaces;
 }
 
 function paseoHome(): string {
@@ -122,8 +114,18 @@ export default function contribute(server: PluginServerContext) {
   const agentAccess = server.registerSettings(agentAccessSettings);
   const readAccess = async () => {
     try {
-      return accessFromState(await agentAccess.read());
-    } catch {
+      const state = await agentAccess.read();
+      const access = accessFromState(state);
+      if (access === DEFAULT_AGENT_ACCESS) {
+        console.warn(
+          `shared-browser: the agent-access setting is ${state?.status ?? "missing"}; every new agent gets the browser tool`,
+        );
+      }
+      return access;
+    } catch (error) {
+      console.warn(
+        `shared-browser: the agent-access setting could not be read (${error instanceof Error ? error.name : "error"}); every new agent gets the browser tool`,
+      );
       return DEFAULT_AGENT_ACCESS;
     }
   };
@@ -153,9 +155,16 @@ export default function contribute(server: PluginServerContext) {
   server.before("agent.create", async ({ request }, context) => {
     if (request.config.internal) return request;
     // Decide before any ticket or supervisor work, so an agent that is not allowed costs nothing.
-    const allowed = await agentGetsBrowser(await readAccess(), request.config, () =>
-      listWorkspaces(context.paseo),
-    );
+    // The whole decision (settings read and workspace lookup) shares one deadline, so a stalled lookup
+    // cannot hold up agent creation; a timeout counts as no match.
+    const allowed = await withinDeadline(
+      (async () =>
+        agentGetsBrowser(await readAccess(), request.config, () =>
+          listAllWorkspaces(context.paseo),
+        ))(),
+      ACCESS_DECISION_TIMEOUT_MS,
+      "Shared Browser access decision timed out",
+    ).catch(() => false);
     if (!allowed) return request;
     const ticket = randomBytes(32).toString("base64url");
     if (!(await issueTicketWithinDeadline(ticket))) return request;

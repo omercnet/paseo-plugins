@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import contribute from "../index.server";
 import {
   type BrowserState,
@@ -346,6 +346,72 @@ describe("agent access", () => {
     await expect(hook({ request: input }, context)).resolves.toBe(input);
   });
 
+  it("lists background workspaces too, and a list cut off at the page limit is no match", async () => {
+    const hook = captureAgentCreateHook(ready({ workspaces: ["ws_a"] }));
+    const entries = [{ id: "ws_a", projectId: "proj_1", workspaceDirectory: "/repos/one" }];
+    const context = workspaceContext(entries);
+    await hook({ request: request("claude") }, context);
+    expect(context.paseo.workspaces.list).toHaveBeenCalledWith(
+      expect.objectContaining({ filter: { includeBackground: true } }),
+    );
+
+    const endless = {
+      paseo: {
+        workspaces: {
+          list: vi
+            .fn()
+            .mockResolvedValue({ entries, pageInfo: { nextCursor: "c", hasMore: true } }),
+        },
+      },
+    };
+    const input = request("claude");
+    await expect(hook({ request: input }, endless)).resolves.toBe(input);
+    expect(endless.paseo.workspaces.list).toHaveBeenCalledTimes(20);
+  });
+
+  it("does not match a directory that climbs out of a listed workspace", async () => {
+    const hook = captureAgentCreateHook(ready({ workspaces: ["ws_a"] }));
+    const entries = [{ id: "ws_a", projectId: "proj_1", workspaceDirectory: "/repos/one" }];
+    const input = request("claude", "/repos/one/../outside");
+    await expect(hook({ request: input }, workspaceContext(entries))).resolves.toBe(input);
+  });
+
+  describe("deadline", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it.each([
+      ["the settings read", () => new Promise<never>(() => {}), undefined],
+      [
+        "the workspace lookup",
+        ready({ workspaces: ["ws_a"] }),
+        { paseo: { workspaces: { list: () => new Promise<never>(() => {}) } } },
+      ],
+    ])(
+      "a stalled %s counts as no match and does not block creation",
+      async (_name, read, context) => {
+        vi.useFakeTimers();
+        const hook = captureAgentCreateHook(read as () => Promise<unknown>);
+        const input = request("claude");
+        const pending = hook({ request: input }, context);
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect(pending).resolves.toBe(input);
+        expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not time out a decision that finishes in time", async () => {
+      vi.useFakeTimers();
+      const hook = captureAgentCreateHook(ready({ providers: ["codex"] }));
+      const pending = hook({ request: request("codex") });
+      await vi.advanceTimersByTimeAsync(1_999);
+      await expect(pending).resolves.toMatchObject({
+        config: { mcpServers: { "shared-browser": expect.anything() } },
+      });
+    });
+  });
+
   it.each([
     ["rejects", async () => Promise.reject(new Error("unreadable"))],
     [
@@ -355,10 +421,28 @@ describe("agent access", () => {
       },
     ],
     ["is invalid", async () => ({ status: "invalid", revision: "1", error: "bad" })],
-  ])("falls back to every agent when the setting %s", async (_name, read) => {
-    const hook = captureAgentCreateHook(read as () => Promise<unknown>);
-    const transformed = await hook({ request: request("anything") });
-    expect(transformed.config.mcpServers).toHaveProperty("shared-browser");
+  ])("falls back to every agent, with one log line, when the setting %s", async (_name, read) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const hook = captureAgentCreateHook(read as () => Promise<unknown>);
+      const transformed = await hook({ request: request("anything") });
+      expect(transformed.config.mcpServers).toHaveProperty("shared-browser");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/every new agent gets the browser tool/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("logs nothing when the setting is readable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const hook = captureAgentCreateHook(ready({ providers: ["codex"] }));
+      await hook({ request: request("codex") });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("injects every agent in the default mode", async () => {

@@ -60,7 +60,27 @@ export interface WorkspaceRef {
   workspaceDirectory?: string | undefined;
 }
 
-const trimEnd = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "");
+/**
+ * A directory in one canonical form: backslashes become slashes, repeated slashes collapse, and `.`
+ * and `..` segments resolve (a `..` above the root of an absolute path stays at the root). This is
+ * what posix normalize does; it is written out here because shared code does not import Node modules.
+ */
+export function normalizeDirectory(path: string): string {
+  const absolute = path.replace(/\\/g, "/").startsWith("/");
+  const kept: string[] = [];
+  for (const segment of path.replace(/\\/g, "/").split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") {
+      kept.push(segment);
+    } else if (kept.length > 0 && kept[kept.length - 1] !== "..") {
+      kept.pop();
+    } else if (!absolute) {
+      kept.push("..");
+    }
+  }
+  const joined = kept.join("/");
+  return absolute ? `/${joined}`.replace(/\/+$/, "") : joined;
+}
 
 /**
  * The workspaces whose directory is the agent's directory, or the deepest directory that contains it.
@@ -70,12 +90,12 @@ export function workspacesForDirectory(
   cwd: string,
   workspaces: readonly WorkspaceRef[],
 ): WorkspaceRef[] {
-  const target = trimEnd(cwd);
+  const target = normalizeDirectory(cwd);
   let depth = -1;
   let found: WorkspaceRef[] = [];
   for (const workspace of workspaces) {
     if (!workspace.workspaceDirectory) continue;
-    const directory = trimEnd(workspace.workspaceDirectory);
+    const directory = normalizeDirectory(workspace.workspaceDirectory);
     if (target !== directory && !target.startsWith(`${directory}/`)) continue;
     if (directory.length > depth) {
       depth = directory.length;
@@ -109,12 +129,31 @@ export async function agentGetsBrowser(
   }
 }
 
-/** The comma or line separated names typed in the settings screen. */
-export function parseEntries(text: string): string[] {
-  const names: string[] = [];
+export const MAX_LIST_ENTRIES = MAX_ENTRIES;
+export const MAX_LIST_ENTRY_LENGTH = MAX_ENTRY_LENGTH;
+
+/**
+ * The comma or line separated names typed in the settings screen. Repeats are dropped. A name over the
+ * length limit or a list over the entry limit is reported in `error` instead of being cut off.
+ */
+export function parseEntries(text: string): { entries: string[]; error: string | null } {
+  const entries: string[] = [];
   for (const piece of text.split(/[,\n]/)) {
     const name = piece.trim();
-    if (name !== "" && name.length <= MAX_ENTRY_LENGTH && !names.includes(name)) names.push(name);
+    if (name === "") continue;
+    if (name.length > MAX_ENTRY_LENGTH) {
+      return {
+        entries: [],
+        error: `An entry is longer than ${MAX_ENTRY_LENGTH} characters: ${name.slice(0, 24)}...`,
+      };
+    }
+    if (!entries.includes(name)) entries.push(name);
   }
-  return names.slice(0, MAX_ENTRIES);
+  if (entries.length > MAX_ENTRIES) {
+    return {
+      entries: [],
+      error: `A list can hold ${MAX_ENTRIES} entries; this one has ${entries.length}.`,
+    };
+  }
+  return { entries, error: null };
 }

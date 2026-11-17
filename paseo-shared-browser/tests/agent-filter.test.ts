@@ -5,6 +5,7 @@ import {
   agentAccessSchema,
   agentGetsBrowser,
   DEFAULT_AGENT_ACCESS,
+  normalizeDirectory,
   parseEntries,
   type WorkspaceRef,
   workspacesForDirectory,
@@ -182,8 +183,53 @@ describe("the setting", () => {
   });
 
   it("parses typed lists: commas or new lines, trimmed, without blanks or repeats", () => {
-    expect(parseEntries("a, b\nc ,, a\n  \n")).toEqual(["a", "b", "c"]);
-    expect(parseEntries("")).toEqual([]);
-    expect(parseEntries("x".repeat(257))).toEqual([]);
+    expect(parseEntries("a, b\nc ,, a\n  \n")).toEqual({ entries: ["a", "b", "c"], error: null });
+    expect(parseEntries("")).toEqual({ entries: [], error: null });
+  });
+
+  it("reports an entry over 256 characters or a list over 200 instead of dropping it", () => {
+    expect(parseEntries(`ok, ${"x".repeat(257)}`).error).toMatch(/longer than 256/);
+    expect(parseEntries("x".repeat(256)).error).toBeNull();
+    const many = Array.from({ length: 201 }, (_, i) => `w${i}`).join(",");
+    expect(parseEntries(many).error).toMatch(/200 entries/);
+    expect(parseEntries(many.replace(",w200", "")).error).toBeNull();
+  });
+});
+
+describe("normalizeDirectory", () => {
+  it.each([
+    ["/repos/one/../outside", "/repos/outside"],
+    ["/repos/one/./src//deep/", "/repos/one/src/deep"],
+    ["/repos/one/src/../../..", ""],
+    ["/../..", ""],
+    ["C:\\repos\\one\\..\\two", "C:/repos/two"],
+    ["../x", "../x"],
+    ["a/../..", ".."],
+  ])("%s", (input, expected) => {
+    expect(normalizeDirectory(input)).toBe(expected);
+  });
+});
+
+describe("dot segments cannot reach a workspace the agent is not in", () => {
+  const one = [{ id: "w", projectId: "p", workspaceDirectory: "/repos/one" }];
+  it("does not match a path that climbs out of the workspace", () => {
+    expect(workspacesForDirectory("/repos/one/../outside", one)).toEqual([]);
+    expect(workspacesForDirectory("/repos/one/src/../../two", one)).toEqual([]);
+    expect(workspacesForDirectory("/repos/onex", one)).toEqual([]);
+  });
+  it("matches a path that is inside after resolving, and a workspace directory with dots", () => {
+    expect(workspacesForDirectory("/repos/one/src/../lib", one).map((w) => w.id)).toEqual(["w"]);
+    expect(workspacesForDirectory("/repos/one/x/..", one).map((w) => w.id)).toEqual(["w"]);
+    const dotted = [{ id: "d", projectId: "p", workspaceDirectory: "/repos/./one/../two/" }];
+    expect(workspacesForDirectory("/repos/two/src", dotted).map((w) => w.id)).toEqual(["d"]);
+  });
+  it("picks the deepest workspace by the resolved path", () => {
+    const nested = [
+      { id: "outer", projectId: "p", workspaceDirectory: "/repos" },
+      { id: "inner", projectId: "p", workspaceDirectory: "/repos/one" },
+    ];
+    expect(workspacesForDirectory("/repos/x/../one/src", nested).map((w) => w.id)).toEqual([
+      "inner",
+    ]);
   });
 });
