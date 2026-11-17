@@ -644,6 +644,31 @@ describe("git hardening", () => {
     expect(existsSync(marker2)).toBe(false);
   });
 
+  test("non-UTF-8 filter discovery output fails closed", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const realGit = execFileSync("which", ["git"]).toString().trim();
+    const binDir = join(root, "badutf-bin");
+    mkdirSync(binDir);
+    const wrapper = join(binDir, "git");
+    writeFileSync(
+      wrapper,
+      [
+        "#!/bin/sh",
+        `if echo "$*" | grep -q -- "--get-regexp"; then`,
+        "  printf 'filter.evil\\377x.smudge\\0'",
+        "  exit 0",
+        "fi",
+        `exec '${realGit}' "$@"`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(wrapper, 0o755);
+    vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow();
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
   test("disallows custom git remote helpers even when their URL parses as GitHub", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");

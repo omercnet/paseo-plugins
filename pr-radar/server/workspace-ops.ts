@@ -195,7 +195,7 @@ interface FilterOverride {
 }
 
 async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]> {
-  let stdout = "";
+  let raw: Buffer = Buffer.alloc(0);
   try {
     const result = await execFileAsync(
       "git",
@@ -209,9 +209,9 @@ async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]
         "--get-regexp",
         "^filter\\.",
       ],
-      { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv() },
+      { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv(), encoding: "buffer" },
     );
-    stdout = result.stdout;
+    raw = result.stdout as Buffer;
   } catch (err) {
     // `git config --get-regexp` exits 1 when nothing matches; only that counts as "no filters".
     // A timeout, buffer overflow or other failure must fail closed, not let repo filters run.
@@ -226,6 +226,15 @@ async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]
         }`,
       );
     }
+    raw = Buffer.alloc(0);
+  }
+  const stdout = raw.toString("utf8");
+  // Re-encoding must reproduce the raw bytes; a mismatch means invalid UTF-8 in a filter name,
+  // which a lossy decode would mangle into a different key and leave the real command active.
+  if (!Buffer.from(stdout, "utf8").equals(raw)) {
+    throw new Error(
+      `Could not enumerate repository filter configuration in ${cwd}: filter names contain invalid UTF-8.`,
+    );
   }
   const overrides: FilterOverride[] = [];
   for (const key of stdout.split("\0")) {
