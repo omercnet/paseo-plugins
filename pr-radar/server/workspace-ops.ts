@@ -617,12 +617,22 @@ export async function prepareWorkspaceCwdHandler(
       throw new Error(`Target path is not a directory: ${baseRoot}`);
     }
     if (!(await isGitRepo(baseRoot))) {
-      // If a worktree was picked, resolve its main git root if possible, otherwise require a git repo.
+      // If a worktree subdirectory was picked, let git discovery find it, otherwise require a git repo.
       const commonDir = await runGit(baseRoot, ["rev-parse", "--git-common-dir"]).catch(() => "");
       if (!commonDir) {
         throw new Error(`Target directory is not a git repository: ${baseRoot}`);
       }
     }
+    const worktreeRoot = await runGit(baseRoot, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--show-toplevel",
+    ]).catch(() => "");
+    if (!worktreeRoot) {
+      throw new Error(`Target directory is not a git worktree: ${baseRoot}`);
+    }
+    baseRoot = worktreeRoot;
+    await assertInsideSourceDir(realSourceDir, baseRoot, "Git worktree root");
     const matched = await findMatchingRemote(baseRoot, input.repository);
     if (!matched) {
       throw new Error(
@@ -946,6 +956,11 @@ function startScriptCapped(
 }
 
 let routingScriptRunning = false;
+let routingScriptFinished: Promise<void> | null = null;
+
+export async function waitForRoutingScriptIdleForTests(): Promise<void> {
+  await routingScriptFinished;
+}
 
 export async function runRoutingScriptHandler(
   input: z.output<typeof runRoutingScript.input>,
@@ -964,9 +979,11 @@ export async function runRoutingScriptHandler(
   // The guard is held until the script's process group is gone or has been sent SIGKILL, which can
   // be after the call itself has failed on a timeout.
   const run = startScriptCapped(scriptPath, input.payload, limits);
-  void run.finished.then(() => {
+  routingScriptFinished = run.finished.then(() => {
     routingScriptRunning = false;
+    routingScriptFinished = null;
   });
+  void routingScriptFinished;
   const stdout = await run.result;
 
   if (!stdout) return {};

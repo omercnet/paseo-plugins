@@ -104,6 +104,23 @@ describe("routedProviderModel", () => {
     });
   });
 
+  test("does not apply another provider's model when the routed provider is skipped", () => {
+    expect(
+      routedProviderModel(
+        { provider: "claude" },
+        { provider: "codex", model: "gpt-x" },
+        { applyProvider: false },
+      ),
+    ).toEqual({});
+    expect(
+      routedProviderModel(
+        { provider: "codex" },
+        { provider: "codex", model: "gpt-x" },
+        { applyProvider: false },
+      ),
+    ).toEqual({ model: "gpt-x" });
+  });
+
   test("builds a provider-only agent config without the old provider's model", () => {
     const picked = routedProviderModel({ provider: "claude" }, { provider: "codex" });
     const config = buildAgentConfig(undefined, { provider: "claude", model: "sonnet", ...picked });

@@ -122,7 +122,14 @@ export function StartAgentModal({
 
   const routingSeqRef = useRef(0);
 
-  async function handleRunRouter(targetRow: RadarRow) {
+  async function handleRunRouter(
+    targetRow: RadarRow,
+    launchState: { selectedDir: string | null; cwdMode: CwdMode; provider: string } = {
+      selectedDir,
+      cwdMode,
+      provider,
+    },
+  ) {
     if (!settings.routingScriptPath.trim()) return;
     const invocationSeq = ++routingSeqRef.current;
     setRoutingBusy(true);
@@ -154,8 +161,8 @@ export function StartAgentModal({
             linkedIssues: targetRow.linkedIssues,
           },
           workspace: {
-            targetDir: selectedDir,
-            cwdMode,
+            targetDir: launchState.selectedDir,
+            cwdMode: launchState.cwdMode,
             localProjectRoot: targetRow.localProjectRoot,
             workspaceIds: targetRow.workspaceIds,
           },
@@ -176,8 +183,11 @@ export function StartAgentModal({
       if (vetted.profileName && !editedFieldsRef.current.has("profile")) {
         setProfileName(vetted.profileName);
       }
-      const routedPick = routedProviderModel({ provider: settings.defaultProvider }, result);
-      if (routedPick.provider !== undefined && !editedFieldsRef.current.has("provider")) {
+      const canApplyProvider = !editedFieldsRef.current.has("provider");
+      const routedPick = routedProviderModel({ provider: launchState.provider }, result, {
+        applyProvider: canApplyProvider,
+      });
+      if (routedPick.provider !== undefined && canApplyProvider) {
         setProvider(routedPick.provider);
       }
       if (routedPick.model !== undefined && !editedFieldsRef.current.has("model")) {
@@ -217,7 +227,12 @@ export function StartAgentModal({
       setRoutingBusy(false);
       return;
     }
-    void handleRunRouter(row);
+    const target = initialLaunchTarget(row);
+    void handleRunRouter(row, {
+      selectedDir: target.selectedDir,
+      cwdMode: settings.defaultCwdMode,
+      provider: settings.defaultProvider,
+    });
   }, [row?.id, settings.routingScriptPath]);
 
   const styles = useMemo(

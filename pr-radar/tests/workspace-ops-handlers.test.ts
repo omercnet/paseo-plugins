@@ -20,6 +20,7 @@ import {
   type RoutingScriptLimits,
   resolveRoutingScript,
   runRoutingScriptHandler,
+  waitForRoutingScriptIdleForTests,
 } from "../server/workspace-ops";
 import { listLocalDirs, prepareWorkspaceCwd, runRoutingScript } from "../shared/viewer-scope";
 
@@ -51,7 +52,8 @@ beforeEach(() => {
   routingScript = "";
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await waitForRoutingScriptIdleForTests();
   vi.unstubAllEnvs();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });

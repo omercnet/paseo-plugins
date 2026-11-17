@@ -177,6 +177,55 @@ describe("issues support", () => {
       "GitHub issue https://github.com/owner/my-repo/issues/12",
     );
   });
+
+  test("puts an issue with only a failed agent in needs-you", () => {
+    const rows = buildIssueRows(
+      {
+        rows: [],
+        warnings: [],
+        workspaceCount: 1,
+        refreshedAt: "2026-11-10T00:00:00Z",
+        repositoryRoots: {},
+        issueMatches: {
+          "owner/my-repo#issue-12": {
+            agents: [
+              {
+                id: "agent-1",
+                title: "Fix crash",
+                status: "error",
+                requiresAttention: false,
+                attentionReason: null,
+                pendingPermissions: 0,
+                updatedAt: "2026-11-10T00:00:00Z",
+              },
+            ],
+            workspaceIds: ["workspace-1"],
+            workspaceNames: ["Fix crash"],
+            cwdTag: "CWD-TBD",
+          },
+        },
+      },
+      [
+        {
+          id: "owner/my-repo#12",
+          repository: "owner/my-repo",
+          number: 12,
+          url: "https://github.com/owner/my-repo/issues/12",
+          title: "Fix crash",
+          author: "alice",
+          authorKind: "human",
+          comments: 3,
+          labels: ["bug"],
+          isSecurity: false,
+          createdAt: "2026-11-10T00:00:00Z",
+          updatedAt: "2026-11-10T00:00:00Z",
+          role: "owner",
+        },
+      ],
+    );
+    expect(rows[0].bucket).toBe("needs-you");
+    expect(rows[0].reason).toBe("Open in your repository");
+  });
 });
 
 function settingsFor(sourceCodeDir: string) {
@@ -276,6 +325,31 @@ describe("prepareWorkspaceCwdHandler git safety", () => {
         settingsFor(root),
       ),
     ).rejects.toThrow("uncommitted changes");
+  });
+
+  test("rejects a picked subdirectory whose git root is outside the source directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-radar-ops-"));
+    tempDirs.push(root);
+    const repoDir = makeGitRepo(root, "https://github.com/owner/repo.git");
+    const nestedSource = join(repoDir, "nested-source");
+    const pickedDir = join(nestedSource, "picked");
+    mkdirSync(pickedDir, { recursive: true });
+    await expect(
+      prepareWorkspaceCwdHandler(
+        {
+          itemKind: "issue",
+          repository: "owner/repo",
+          prNumber: 7,
+          headRefName: "Issue title",
+          baseRefName: "main",
+          targetDir: pickedDir,
+          allowClone: false,
+          cwdMode: "CWD-BASE",
+          worktreeName: null,
+        },
+        settingsFor(nestedSource),
+      ),
+    ).rejects.toThrow("Git worktree root");
   });
 
   test("rejects reusing an unrelated folder with the same worktree name", async () => {

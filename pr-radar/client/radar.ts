@@ -231,15 +231,16 @@ function externalWaitingReason(row: RadarRow): string {
   return "External pull request";
 }
 
+function hasFailedAgent(agents: readonly RadarAgent[]): boolean {
+  return agents.some((agent) => agent.status === "error" || agent.attentionReason === "error");
+}
+
 export function classifyRow(row: RadarRow): Pick<RadarRow, "bucket" | "reason"> {
   const humanBlocker = attentionReason(row.agents);
   if (humanBlocker) return { bucket: "needs-you", reason: humanBlocker };
 
   const activeAgent = hasActiveAgent(row.agents);
-  if (
-    !activeAgent &&
-    row.agents.some((agent) => agent.status === "error" || agent.attentionReason === "error")
-  ) {
+  if (!activeAgent && hasFailedAgent(row.agents)) {
     return { bucket: "needs-you", reason: "Agent failed" };
   }
   if (activeAgent && row.ownership !== "mine") {
@@ -774,16 +775,23 @@ export function profileAgentConfig(profile: AgentProfileLike) {
 /**
  * The provider and model a routing result sets. A routed provider that differs from the current
  * one without a routed model drops the model, which belonged to the old provider (it would
- * otherwise build an id such as `codex/<claude model>`).
+ * otherwise build an id such as `codex/<claude model>`). If the caller refuses a routed provider
+ * because the user edited it, a routed model is applied only when it belongs to the current
+ * provider.
  */
 export function routedProviderModel(
   current: { provider?: string },
   routed: { provider?: string; model?: string },
+  options: { applyProvider?: boolean } = {},
 ): { provider?: string; model?: string } {
   const result: { provider?: string; model?: string } = {};
-  if (routed.provider) result.provider = routed.provider;
-  if (routed.model) result.model = routed.model;
-  else if (routed.provider && routed.provider !== current.provider) result.model = "";
+  const applyProvider = options.applyProvider ?? true;
+  const providerApplied = Boolean(routed.provider && applyProvider);
+  if (providerApplied) result.provider = routed.provider;
+  if (routed.model) {
+    const modelMatchesCurrentProvider = !routed.provider || routed.provider === current.provider;
+    if (providerApplied || modelMatchesCurrentProvider) result.model = routed.model;
+  } else if (providerApplied && routed.provider !== current.provider) result.model = "";
   return result;
 }
 
@@ -932,13 +940,17 @@ export function buildIssueRows(
         : item.role === "assignee"
           ? "Assigned to you"
           : "Open in your repository";
-    const bucket: RadarBucket = attentionReason(agents)
+    const humanBlocker = attentionReason(agents);
+    const activeAgent = hasActiveAgent(agents);
+    const bucket: RadarBucket = humanBlocker
       ? "needs-you"
-      : hasActiveAgent(agents)
+      : activeAgent
         ? "being-handled"
-        : item.role === "assignee"
+        : hasFailedAgent(agents)
           ? "needs-you"
-          : "waiting";
+          : item.role === "assignee"
+            ? "needs-you"
+            : "waiting";
     return {
       itemKind: "issue",
       issueRole: item.role,
