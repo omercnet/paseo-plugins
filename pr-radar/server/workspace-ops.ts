@@ -79,11 +79,19 @@ const GH_ENV_KEYS: ReadonlySet<string> = new Set([
 
 // git gets only transport and configuration-location variables. GitHub tokens stay gh-only:
 // repository config, credential helpers or transport helpers must not inherit them from the daemon.
+// The gh credential helper (credential.https://github.com.helper) needs gh's config-location vars to
+// find its auth, so those non-token vars are passed too.
 const GIT_ENV_KEYS: ReadonlySet<string> = new Set([
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_SYSTEM",
   "GIT_CONFIG_NOSYSTEM",
   "SSH_AUTH_SOCK",
+  "GH_CONFIG_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "XDG_RUNTIME_DIR",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "GIT_SSL_CAINFO",
@@ -143,6 +151,10 @@ const GIT_SAFETY_ARGS = [
   "-c",
   "credential.https://github.com.helper=!gh auth git-credential",
   "-c",
+  "credential.username=",
+  "-c",
+  "credential.https://github.com.username=",
+  "-c",
   "core.gitProxy=",
   "-c",
   "protocol.ext.allow=never",
@@ -166,6 +178,8 @@ const GIT_SAFETY_ARGS = [
   "submodule.recurse=false",
   "-c",
   "fetch.recurseSubmodules=false",
+  "-c",
+  "fetch.bundleURI=",
   "-c",
   "hook.post-checkout.enabled=false",
   "-c",
@@ -577,28 +591,40 @@ async function fetchPrHead(baseRoot: string, remote: string, prNumber: number): 
 }
 
 async function effectiveConfigKeys(repoDir: string, pattern: string): Promise<string[]> {
-  let stdout = "";
+  let raw: Buffer = Buffer.alloc(0);
   try {
     // No `-c` here: `git config --get-regexp` also lists command-scope values, and the baseline
-    // `-c http.proxy=`/`-c http.sslVerify=true` would otherwise self-trigger the transport guard.
+    // `-c http.sslVerify=true` would otherwise self-trigger the transport guard.
     const result = await execFileAsync(
       "git",
       ["-C", repoDir, "config", "--null", "--name-only", "--get-regexp", pattern],
-      { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv() },
+      {
+        timeout: 3_000,
+        maxBuffer: MAX_BUFFER_BYTES,
+        env: { ...gitEnv(), LC_ALL: "C" },
+        encoding: "buffer",
+      },
     );
-    stdout = result.stdout;
+    raw = result.stdout as Buffer;
   } catch (err) {
     const code =
       err && typeof err === "object" && "code" in err
         ? (err as { code?: unknown }).code
         : undefined;
     if (code !== 1) throw err;
+    raw = Buffer.alloc(0);
+  }
+  const stdout = raw.toString("utf8");
+  if (!Buffer.from(stdout, "utf8").equals(raw)) {
+    throw new Error(
+      `Could not enumerate repository git config in ${repoDir}: keys contain invalid UTF-8.`,
+    );
   }
   return stdout.split("\0").filter(Boolean);
 }
 
 const UNSAFE_TRANSPORT_CONFIG =
-  "^(http\\.|remote\\..*\\.(proxy|uploadpack|vcs)$|core\\.alternaterefscommand$|url\\.)";
+  "^(http\\.|remote\\..*\\.(proxy|uploadpack|vcs)$|core\\.alternaterefscommand$|fetch\\.bundleuri$|url\\.)";
 
 async function assertNoUnsafeTransportConfig(repoDir: string): Promise<void> {
   const keys = await effectiveConfigKeys(repoDir, UNSAFE_TRANSPORT_CONFIG);

@@ -192,7 +192,12 @@ export function StartAgentModal({
         applyProvider: canApplyProvider,
       });
       if (routedPick.provider !== undefined && canApplyProvider) {
-        setProvider(routedPick.provider);
+        // If the user hand-picked a model, a cross-provider switch would orphan it; leave the
+        // provider alone then.
+        const crossProvider = routedPick.provider !== providerRef.current;
+        if (!crossProvider || !editedFieldsRef.current.has("model")) {
+          setProvider(routedPick.provider);
+        }
       }
       if (routedPick.model !== undefined && !editedFieldsRef.current.has("model")) {
         setModel(routedPick.model);
@@ -560,6 +565,7 @@ export function StartAgentModal({
                   theme={theme}
                   onSelect={(next) => {
                     editedFieldsRef.current.add("provider");
+                    providerRef.current = next;
                     setProvider(next);
                   }}
                 />
