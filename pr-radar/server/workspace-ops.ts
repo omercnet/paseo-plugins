@@ -690,16 +690,12 @@ async function assertNoIgnoredFileOverwrite(
     .split("\0")
     .filter(Boolean);
   if (ignored.length === 0) return;
+  // `--directory` emits an ignored directory as `private/`; stripping the slash makes the pathspec
+  // also match a tracked *file* named `private` (which the incoming tree replaces the directory
+  // with), not just tracked files underneath it.
+  const pathspecs = [...new Set(ignored.map((path) => `:(literal)${path.replace(/\/$/, "")}`))];
   const incoming = (
-    await runGit(dir, [
-      "ls-tree",
-      "-r",
-      "-z",
-      "--name-only",
-      target,
-      "--",
-      ...ignored.map((path) => `:(literal)${path}`),
-    ])
+    await runGit(dir, ["ls-tree", "-r", "-z", "--name-only", target, "--", ...pathspecs])
   )
     .split("\0")
     .filter(Boolean);
@@ -865,7 +861,7 @@ async function refreshPrWorktree(
   await assertBranchFastForwards(baseRoot, localBranchName, prHead, `the head of PR #${prNumber}`);
   await assertNoIgnoredFileOverwrite(worktreePath, prHead, prNumber);
   await assertNoGitlinkToFileOverwrite(worktreePath, prHead, prNumber);
-  await runGit(worktreePath, ["checkout", "-B", localBranchName, prHead]);
+  await runGit(worktreePath, ["checkout", "--no-overwrite-ignore", "-B", localBranchName, prHead]);
   const wtHead = await runGit(worktreePath, ["rev-parse", "HEAD"]);
   if (wtHead !== prHead) {
     throw new Error(`Worktree verification failed for PR #${prNumber}.`);
@@ -973,16 +969,24 @@ export async function prepareWorkspaceCwdHandler(
       );
       await assertNoIgnoredFileOverwrite(baseRoot, prHead, input.prNumber);
       await assertNoGitlinkToFileOverwrite(baseRoot, prHead, input.prNumber);
-      await runGit(baseRoot, ["checkout", "-B", localBranchName, prHead]);
+      await runGit(baseRoot, ["checkout", "--no-overwrite-ignore", "-B", localBranchName, prHead]);
       const headSha = await runGit(baseRoot, ["rev-parse", "HEAD"]);
       if (headSha !== prHead) {
         throw new Error(`Checkout verification failed for PR #${input.prNumber}.`);
       }
     } else if (await branchExists(baseRoot, localBranchName)) {
-      await runGit(baseRoot, ["checkout", localBranchName]);
+      await assertNoIgnoredFileOverwrite(baseRoot, localBranchName, input.prNumber);
+      await runGit(baseRoot, ["checkout", "--no-overwrite-ignore", localBranchName]);
     } else {
       const startPoint = await resolveIssueStartPoint(baseRoot, matchingRemote);
-      await runGit(baseRoot, ["checkout", "-b", localBranchName, startPoint]);
+      await assertNoIgnoredFileOverwrite(baseRoot, startPoint, input.prNumber);
+      await runGit(baseRoot, [
+        "checkout",
+        "--no-overwrite-ignore",
+        "-b",
+        localBranchName,
+        startPoint,
+      ]);
     }
     return {
       cwd: baseRoot,

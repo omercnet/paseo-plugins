@@ -410,6 +410,45 @@ describe("ignored local files", () => {
     expect(readFileSync(join(repoDir, "build/out.js"), "utf8")).toBe("mine\n");
   });
 
+  test("refuses a PR that replaces an ignored directory with a tracked file", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root, {
+      private: { content: "from-pr\n" },
+    });
+    appendFileSync(join(repoDir, ".git/info/exclude"), "private/\n");
+    mkdirSync(join(repoDir, "private"));
+    writeFileSync(join(repoDir, "private/secret.txt"), "mine\n");
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /would overwrite an ignored local file/,
+    );
+    expect(readFileSync(join(repoDir, "private/secret.txt"), "utf8")).toBe("mine\n");
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("refuses an issue checkout that would overwrite ignored files", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-12"]);
+    writeFileSync(join(repoDir, ".env"), "from-issue\n");
+    writeFileSync(join(repoDir, "private"), "from-issue\n");
+    gitIn(repoDir, ["add", ".env", "private"]);
+    gitIn(repoDir, ["commit", "-m", "issue adds env and private"]);
+    gitIn(repoDir, ["checkout", "main"]);
+    appendFileSync(join(repoDir, ".git/info/exclude"), ".env\nprivate/\n");
+    writeFileSync(join(repoDir, ".env"), "mine\n");
+    mkdirSync(join(repoDir, "private"));
+    writeFileSync(join(repoDir, "private/secret.txt"), "mine\n");
+    await expect(
+      prepare(
+        request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+      ),
+    ).rejects.toThrow(/would overwrite an ignored local file/);
+    expect(readFileSync(join(repoDir, ".env"), "utf8")).toBe("mine\n");
+    expect(readFileSync(join(repoDir, "private/secret.txt"), "utf8")).toBe("mine\n");
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
   test("leaves unrelated ignored files alone", async () => {
     const root = makeRoot();
     const { repoDir, prHead } = makePullableRepo(root);
