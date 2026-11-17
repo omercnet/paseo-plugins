@@ -60,12 +60,17 @@ type AgentCreateRequest = {
   env?: Record<string, string>;
 };
 
-type AgentCreateHook = (input: { request: AgentCreateRequest }) => Promise<AgentCreateRequest>;
+type AgentCreateHook = (
+  input: { request: AgentCreateRequest },
+  context?: unknown,
+) => Promise<AgentCreateRequest>;
 
-function captureAgentCreateHook(): AgentCreateHook {
+function captureAgentCreateHook(readAccess?: () => Promise<unknown>): AgentCreateHook {
   let hook: AgentCreateHook | undefined;
   contribute({
-    registerSettings: vi.fn(),
+    registerSettings: vi.fn((definition: { id: string }) =>
+      definition.id === "agent-access" && readAccess ? { read: readAccess } : undefined,
+    ),
     handle: vi.fn(),
     before: vi.fn((name: string, handler: unknown) => {
       if (name === "agent.create") hook = handler as AgentCreateHook;
@@ -271,6 +276,98 @@ describe("agent MCP injection", () => {
     expect(transformed.config.mcpServers).toMatchObject({
       "shared-browser": { type: "stdio", env: { ELECTRON_RUN_AS_NODE: "1" } },
     });
+  });
+});
+
+describe("agent access", () => {
+  beforeEach(() => {
+    browserMocks.issueAgentTicket.mockClear();
+  });
+
+  const ready = (values: Record<string, unknown>) => async () => ({
+    status: "ready",
+    values: { mode: "listed", providers: [], workspaces: [], projects: [], ...values },
+  });
+  const request = (provider: string, cwd = "/repos/one"): AgentCreateRequest => ({
+    config: { provider, cwd },
+    env: { EXISTING: "value" },
+  });
+  const workspaceContext = (entries: unknown[]) => ({
+    paseo: {
+      workspaces: {
+        list: vi
+          .fn()
+          .mockResolvedValue({ entries, pageInfo: { nextCursor: null, hasMore: false } }),
+      },
+    },
+  });
+
+  it("injects only agents whose provider is listed", async () => {
+    const hook = captureAgentCreateHook(ready({ providers: ["codex"] }));
+    const allowed = await hook({ request: request("codex") });
+    expect(allowed.config.mcpServers).toHaveProperty("shared-browser");
+    expect(browserMocks.issueAgentTicket).toHaveBeenCalledTimes(1);
+
+    const other = request("claude");
+    await expect(hook({ request: other })).resolves.toBe(other);
+    expect(browserMocks.issueAgentTicket).toHaveBeenCalledTimes(1);
+  });
+
+  it("injects nothing and issues no ticket when listed and the lists are empty", async () => {
+    const hook = captureAgentCreateHook(ready({}));
+    const input = request("codex");
+    await expect(hook({ request: input })).resolves.toBe(input);
+    expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
+  });
+
+  it("injects every agent in a listed workspace or project, found by directory", async () => {
+    const entries = [{ id: "ws_a", projectId: "proj_1", workspaceDirectory: "/repos/one" }];
+    const byWorkspace = captureAgentCreateHook(ready({ workspaces: ["ws_a"] }));
+    const first = await byWorkspace(
+      { request: request("claude", "/repos/one/src") },
+      workspaceContext(entries),
+    );
+    expect(first.config.mcpServers).toHaveProperty("shared-browser");
+
+    const byProject = captureAgentCreateHook(ready({ projects: ["proj_1"] }));
+    const second = await byProject({ request: request("claude") }, workspaceContext(entries));
+    expect(second.config.mcpServers).toHaveProperty("shared-browser");
+
+    const outside = request("claude", "/repos/two");
+    await expect(byProject({ request: outside }, workspaceContext(entries))).resolves.toBe(outside);
+  });
+
+  it("treats a failed workspace lookup as no match", async () => {
+    const hook = captureAgentCreateHook(ready({ workspaces: ["ws_a"] }));
+    const input = request("claude");
+    const context = {
+      paseo: { workspaces: { list: vi.fn().mockRejectedValue(new Error("down")) } },
+    };
+    await expect(hook({ request: input }, context)).resolves.toBe(input);
+  });
+
+  it.each([
+    ["rejects", async () => Promise.reject(new Error("unreadable"))],
+    [
+      "throws synchronously",
+      () => {
+        throw new Error("unreadable");
+      },
+    ],
+    ["is invalid", async () => ({ status: "invalid", revision: "1", error: "bad" })],
+  ])("falls back to every agent when the setting %s", async (_name, read) => {
+    const hook = captureAgentCreateHook(read as () => Promise<unknown>);
+    const transformed = await hook({ request: request("anything") });
+    expect(transformed.config.mcpServers).toHaveProperty("shared-browser");
+  });
+
+  it("injects every agent in the default mode", async () => {
+    const hook = captureAgentCreateHook(async () => ({
+      status: "ready",
+      values: { mode: "all", providers: [], workspaces: [], projects: [] },
+    }));
+    const transformed = await hook({ request: request("anything") });
+    expect(transformed.config.mcpServers).toHaveProperty("shared-browser");
   });
 });
 

@@ -1,4 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { AgentAccessSettings } from "./client/agent-access-settings";
 import { contributeSharedBrowserClient, SharedBrowserPanel } from "./client/browser";
 import { contributeSharedBrowserSidebar } from "./client/sidebar";
 
@@ -21,9 +22,16 @@ export default function contribute(client: PluginClientContext) {
     },
   });
 
+  const removeSettings = client.addSettingsScreen({
+    id: "agent-access",
+    title: "Shared Browser",
+    icon: "PanelsTopLeft",
+    Component: AgentAccessSettings,
+  });
   const removeSidebar = contributeSharedBrowserSidebar(client);
   const cleanup = contributeSharedBrowserClient(client);
   return () => {
+    removeSettings();
     removeSidebar();
     return cleanup();
   };

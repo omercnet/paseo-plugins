@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
 import {
   bindAgentTicket,
   cleanupBrowserServer,
@@ -33,6 +33,13 @@ import {
   revokeAgentBrowserAccess,
 } from "./server/browser";
 import { resolveBrowserRuntimeRoot } from "./server/runtime-path";
+import {
+  accessFromState,
+  agentAccessSettings,
+  agentGetsBrowser,
+  DEFAULT_AGENT_ACCESS,
+  type WorkspaceRef,
+} from "./shared/agent-access";
 import {
   acquireControlRpc,
   applyDevicePresetRpc,
@@ -85,6 +92,23 @@ async function issueTicketWithinDeadline(ticket: string): Promise<boolean> {
   }
 }
 
+const WORKSPACE_PAGE_SIZE = 200;
+const WORKSPACE_PAGE_LIMIT = 20;
+
+async function listWorkspaces(paseo: PluginHookContext["paseo"]): Promise<WorkspaceRef[]> {
+  const workspaces: WorkspaceRef[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < WORKSPACE_PAGE_LIMIT; page += 1) {
+    const result = await paseo.workspaces.list({
+      page: { limit: WORKSPACE_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
+    });
+    workspaces.push(...result.entries);
+    cursor = result.pageInfo.nextCursor ?? undefined;
+    if (!result.pageInfo.hasMore || !cursor) break;
+  }
+  return workspaces;
+}
+
 function paseoHome(): string {
   return process.env.PASEO_HOME ?? join(homedir(), ".paseo");
 }
@@ -95,6 +119,14 @@ function mcpBundlePath(): string {
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(browserDisplayPreferences);
+  const agentAccess = server.registerSettings(agentAccessSettings);
+  const readAccess = async () => {
+    try {
+      return accessFromState(await agentAccess.read());
+    } catch {
+      return DEFAULT_AGENT_ACCESS;
+    }
+  };
   server.handle(attachBrowserRpc, handleAttachBrowser);
   server.handle(detachBrowserRpc, handleDetachBrowser);
   server.handle(closeBrowserRpc, handleCloseBrowser);
@@ -118,8 +150,13 @@ export default function contribute(server: PluginServerContext) {
   server.handle(resizeBrowserRpc, handleResizeBrowser);
   server.handle(applyDevicePresetRpc, handleApplyDevicePreset);
   server.handle(sendBrowserInputRpc, handleSendBrowserInput);
-  server.before("agent.create", async ({ request }) => {
+  server.before("agent.create", async ({ request }, context) => {
     if (request.config.internal) return request;
+    // Decide before any ticket or supervisor work, so an agent that is not allowed costs nothing.
+    const allowed = await agentGetsBrowser(await readAccess(), request.config, () =>
+      listWorkspaces(context.paseo),
+    );
+    if (!allowed) return request;
     const ticket = randomBytes(32).toString("base64url");
     if (!(await issueTicketWithinDeadline(ticket))) return request;
     return {

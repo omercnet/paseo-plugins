@@ -157,6 +157,22 @@ The provider launches the stdio adapter on the Paseo daemon host, beside the dae
 runtime. Web, desktop, and mobile clients never own or host the adapter or Chromium, and a client
 disconnect does not close or reset either process.
 
+### Choosing which agents get the tool
+
+By default every new agent gets the adapter. Settings, under Shared Browser, can restrict that:
+
+- **Every new agent** (the default) injects the adapter into every new agent, as above.
+- **Only the agents listed** injects it only into a new agent whose provider id is listed, or whose
+  workspace id or project id is listed. Separate entries with commas or new lines. An empty
+  configuration means no agent.
+
+`agent.create` carries the provider and the working directory but no labels and no workspace id, so a
+workspace or project is matched by directory: the workspace whose directory is the agent's directory or
+the deepest one containing it. Workspaces that share a directory cannot be told apart, so listing any of
+them matches them all. The check runs before the adapter, its credential or the supervisor are set up, so
+an agent that is not allowed costs nothing. It applies to agents created after the setting is saved. A
+setting that cannot be read or is invalid falls back to every new agent.
+
 ## Runtime environment overrides
 
 The plugin recognizes only these deployment overrides:
