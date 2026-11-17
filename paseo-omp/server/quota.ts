@@ -213,9 +213,10 @@ function usageKeyIdentity(accountKey: string): LoginIdentity {
 }
 
 /**
- * OMP's own rule (`oauthMatchesActiveIdentity`): the organization gates the identity, so differing
- * organizations, or one present on only one side, never match; an email on both sides then
- * decides, else the account id. A record with no base identity matches on the organization alone.
+ * OMP's own rule (`limitMatchesActiveAccount`, with `oauthMatchesActiveIdentity` for logins): the
+ * organization gates the identity, so differing organizations, or one present on only one side,
+ * never match; an email on both sides then decides, else the account id. A login with no base
+ * identity matches on the organization alone, as OMP checks that on the login, not the usage.
  *
  * Two parts of OMP's rules are left out. `projectId` is not compared: OMP's usage keys carry no
  * project, and Antigravity logins share one project. An account id equal to the organization id
@@ -225,7 +226,7 @@ function usageKeyIdentity(accountKey: string): LoginIdentity {
 function sameLogin(login: LoginIdentity, usage: LoginIdentity): boolean {
   if (login.orgId !== null || usage.orgId !== null) {
     if (login.orgId !== usage.orgId) return false;
-    if (usage.email === null && usage.accountId === null) return true;
+    if (login.email === null && login.accountId === null) return true;
   }
   if (login.email && usage.email) return login.email.toLowerCase() === usage.email.toLowerCase();
   return login.accountId !== null && login.accountId === usage.accountId;

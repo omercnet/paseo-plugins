@@ -68,7 +68,7 @@ export const listOmpSessionAccounts = defineRpc({
     agentId: z.string().min(1).max(256),
     provider: z
       .string()
-      .regex(/^[a-z0-9][a-z0-9.-]*$/u)
+      .regex(/^[a-z0-9][a-z0-9._-]*$/u)
       .max(128),
   }),
   output: z.object({ accounts: z.array(OmpSessionAccountSchema) }),

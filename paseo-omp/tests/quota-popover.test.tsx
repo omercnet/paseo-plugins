@@ -10,7 +10,10 @@ const recorded = vi.hoisted(() => ({
   quotas: [] as OmpQuota[],
   logins: [] as OmpSessionAccount[],
   sent: [] as Array<{ agentId: string; text: string }>,
+  sendArgs: [] as unknown[][],
   status: "idle" as string,
+  // The agent's live record when it differs from the rendered one (a turn started since render).
+  liveStatus: null as string | null,
 }));
 
 vi.mock("@getpaseo/plugin/client", () => ({
@@ -19,8 +22,10 @@ vi.mock("@getpaseo/plugin/client", () => ({
   usePaseo: () => ({
     agents: {
       ref: (agentId: string) => ({
-        send: async (text: string) => {
-          recorded.sent.push({ agentId, text });
+        current: () => ({ status: recorded.liveStatus ?? recorded.status }),
+        send: async (...args: unknown[]) => {
+          recorded.sendArgs.push(args);
+          recorded.sent.push({ agentId, text: String(args[0]) });
         },
       }),
     },
@@ -123,6 +128,8 @@ beforeEach(() => {
   recorded.logins = [];
   recorded.sent = [];
   recorded.status = "idle";
+  recorded.liveStatus = null;
+  recorded.sendArgs = [];
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -275,13 +282,21 @@ describe("quota popover reconciliation", () => {
       expect(recorded.sent).toEqual([]);
     }
 
+    // A turn that started after the render: the button still looks enabled, but nothing is sent.
     recorded.status = "idle";
+    recorded.liveStatus = "running";
     await render(rows);
     expect(button().disabled).toBe(false);
+    await act(async () => button().click());
+    expect(recorded.sent).toEqual([]);
+
+    recorded.liveStatus = null;
     await act(async () => button().click());
     expect(recorded.sent).toEqual([
       { agentId: "synthetic-agent", text: "/session pin OAuth credential #3" },
     ]);
+    // No send options: Paseo's default for a busy agent is to interrupt, so none is chosen here.
+    expect(recorded.sendArgs).toEqual([["/session pin OAuth credential #3"]]);
   });
 
   test("labels a provider's only login without a Switch button or an IN USE claim", async () => {

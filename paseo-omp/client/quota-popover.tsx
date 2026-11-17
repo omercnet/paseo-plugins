@@ -84,10 +84,15 @@ export function QuotaPopover(props: PluginButtonContentProps) {
   const [switchError, setSwitchError] = useState<string | null>(null);
 
   async function switchTo(login: OmpSessionAccount): Promise<void> {
+    const agent = paseo.agents.ref(agentId);
+    // The rendered status can be stale by the click; a turn that started since must not be
+    // interrupted (send interrupts by default), so read the live record right before sending.
+    const live = agent.current()?.status;
+    if (live === "running" || live === "initializing") return;
     setSwitching(login.credentialId);
     setSwitchError(null);
     try {
-      await paseo.agents.ref(agentId).send(sessionPinCommand(login.credentialId));
+      await agent.send(sessionPinCommand(login.credentialId));
       await queryClient.invalidateQueries({ queryKey: sessionAccountsKey });
       close();
     } catch (cause) {

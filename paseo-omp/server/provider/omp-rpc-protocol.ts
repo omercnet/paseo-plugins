@@ -659,6 +659,7 @@ export const OMP_RPC_DIAGNOSTIC_COMMANDS = [
   "abort",
   "set_host_tools",
   "set_ask_dialog",
+  "get_logout_accounts",
 ] as const;
 export type OmpRpcDiagnosticCommand = (typeof OMP_RPC_DIAGNOSTIC_COMMANDS)[number];
 type JsonBoundViolation = {

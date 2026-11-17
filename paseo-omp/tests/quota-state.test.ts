@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   quotaDetailLabel,
   quotaProviderFromSession,
@@ -860,6 +860,11 @@ describe("session account", () => {
     "XDG_DATA_HOME",
   ];
 
+  // Every test, whether or not it calls home(), runs without the runner's OMP location settings.
+  beforeEach(() => {
+    for (const name of LOCATION_ENV) vi.stubEnv(name, undefined);
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -868,7 +873,6 @@ describe("session account", () => {
   async function home(): Promise<string> {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-session-accounts-"));
     quotaRoots.push(root);
-    for (const name of LOCATION_ENV) vi.stubEnv(name, undefined);
     vi.stubEnv("HOME", root);
     return root;
   }
@@ -1273,6 +1277,10 @@ describe("session account", () => {
 
     expect((await list("oauth|org:b")).accounts[0]?.quotaAccountKeys).toEqual([]);
     expect((await list("oauth|org:a")).accounts[0]?.quotaAccountKeys).toEqual([sha("oauth|org:a")]);
+    // An org-only login matches on the organization even when the usage names its account, as
+    // OMP's limitMatchesActiveAccount decides on the login's identity.
+    const named = "oauth|account:u|email:user@example.invalid|org:a";
+    expect((await list(named)).accounts[0]?.quotaAccountKeys).toEqual([sha(named)]);
   });
 
   test("answers nothing when Paseo cannot name the agent, even with its runtime still registered", async () => {
