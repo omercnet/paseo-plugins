@@ -276,6 +276,10 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
     const root = makeRoot();
     const source = join(root, "source");
     initRepo(source, null);
+    writeFileSync(join(source, ".gitattributes"), "*.evil filter=evil\n");
+    writeFileSync(join(source, "payload.evil"), "payload\n");
+    gitIn(source, ["add", ".gitattributes", "payload.evil"]);
+    gitIn(source, ["commit", "-m", "add filtered file"]);
     const realGit = execFileSync("which", ["git"]).toString().trim();
     const binDir = join(root, "bin");
     mkdirSync(binDir);
@@ -288,7 +292,7 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
         "#!/bin/sh",
         `env >> "${envLog}"`,
         `printf '%s\\n' "$*" >> "${argsLog}"`,
-        `if [ "$1" = "-c" ] && echo "$*" | grep -q "clone -- https://github.com/owner/repo.git"; then`,
+        `if [ "$1" = "-c" ] && echo "$*" | grep -q "clone --no-checkout -- https://github.com/owner/repo.git"; then`,
         `  target=""`,
         `  for arg do target="$arg"; done`,
         `  "${realGit}" clone -q "${source}" "$target" || exit 8`,
@@ -305,6 +309,18 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
     vi.stubEnv("GITHUB_TOKEN", "github-token-value");
 
     const target = join(root, "nested", "clone");
+    const marker = join(root, "clone-filter-ran");
+    const filter = join(root, "clone-filter.sh");
+    writeFileSync(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    chmodSync(filter, 0o755);
+    const filterConfig = join(root, "filter-config.gitconfig");
+    writeFileSync(
+      filterConfig,
+      `[filter "evil"]\n\tsmudge = ${filter}\n\tclean = ${filter}\n\trequired = true\n`,
+    );
+    const globalConfig = join(root, "global.gitconfig");
+    writeFileSync(globalConfig, `[includeIf "gitdir:${target}/.git"]\n\tpath = ${filterConfig}\n`);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", globalConfig);
     const result = await prepare(
       request({
         itemKind: "issue",
@@ -315,7 +331,9 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
       }),
     );
     const cloneArgs = readFileSync(argsLog, "utf8");
-    expect(cloneArgs).toContain(`clone -- https://github.com/owner/repo.git ${target}`);
+    expect(cloneArgs).toContain(
+      `clone --no-checkout -- https://github.com/owner/repo.git ${target}`,
+    );
     const seen = readFileSync(envLog, "utf8");
     expect(seen).toContain("GIT_ALLOW_PROTOCOL=file:ssh:https:http");
     expect(seen).not.toContain("GH_TOKEN=gh-token-value");
@@ -325,6 +343,8 @@ describe("prepareWorkspaceCwdHandler CWD-BASE", () => {
     expect(result.cwd).toBe(target);
     expect(gitIn(target, ["rev-parse", "HEAD"])).toBe(gitIn(source, ["rev-parse", "HEAD"]));
     expect(gitIn(target, ["branch", "--show-current"])).toBe("pr-radar/issue-3");
+    expect(existsSync(join(target, "payload.evil"))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
   });
 });
 

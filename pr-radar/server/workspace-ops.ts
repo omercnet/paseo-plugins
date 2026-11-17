@@ -163,6 +163,8 @@ const GIT_SAFETY_ARGS = [
 function gitEnv(): NodeJS.ProcessEnv {
   return {
     ...allowListedEnv(GIT_ENV_KEYS),
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
     GIT_ALLOW_PROTOCOL: "file:ssh:https:http",
     GIT_ASKPASS: "/bin/false",
     SSH_ASKPASS: "/bin/false",
@@ -207,7 +209,12 @@ export function ghEnv(): NodeJS.ProcessEnv {
 
 async function cloneGitHubRepo(repository: string, targetDir: string): Promise<void> {
   const cloneUrl = `https://github.com/${repository}.git`;
-  await runGit(dirname(targetDir), ["clone", "--", cloneUrl, targetDir], CLONE_TIMEOUT_MS);
+  await runGit(
+    dirname(targetDir),
+    ["clone", "--no-checkout", "--", cloneUrl, targetDir],
+    CLONE_TIMEOUT_MS,
+  );
+  await runGit(targetDir, ["checkout", "--force"], CLONE_TIMEOUT_MS);
 }
 
 function isInside(base: string, target: string): boolean {
