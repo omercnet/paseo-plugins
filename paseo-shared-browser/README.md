@@ -157,6 +157,26 @@ The provider launches the stdio adapter on the Paseo daemon host, beside the dae
 runtime. Web, desktop, and mobile clients never own or host the adapter or Chromium, and a client
 disconnect does not close or reset either process.
 
+### Choosing which agents get the tool
+
+By default every new agent gets the adapter. Settings, under Shared Browser, can restrict that:
+
+- **Every new agent** (the default) injects the adapter into every new agent, as above.
+- **Only the agents listed** injects it only into a new agent whose provider id is listed, or whose
+  workspace id or project id is listed. Separate entries with commas or new lines. An empty
+  configuration means no agent.
+
+`agent.create` carries the provider and the working directory but no labels and no workspace id, so a
+workspace or project is matched by directory: the workspace whose directory is the agent's directory or
+the deepest one containing it. Both directories are normalized first (separators, `.` and `..` segments),
+so a path that climbs out of a workspace does not match it. The lookup includes background workspaces. If
+the list is longer than 20 pages of 200, or the lookup fails, those lists match nothing. Workspaces that
+share a directory cannot be told apart, so listing any of them matches them all. Matching is lexical: nothing on disk is consulted, so symlinks are not resolved and letter case is not folded. The settings read has a 2 second deadline, and a read that is too slow is treated like an unreadable setting, so every new agent gets the tool. The workspace lookup has its own 2 second deadline, and a timeout there counts as no match. Either timeout logs one line, and a slow lookup never holds up agent creation. The check runs before the adapter, its credential or the supervisor are set up, so
+an agent that is not allowed costs nothing. It applies to agents created after the setting is saved. A
+setting that cannot be read or is invalid falls back to every new agent, and the plugin log gets one line
+saying so. The settings screen reports an entry over 256 characters or a list over 200 entries instead of
+cutting it off.
+
 ## Runtime environment overrides
 
 The plugin recognizes only these deployment overrides:

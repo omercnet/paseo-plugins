@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
 import {
   bindAgentTicket,
   cleanupBrowserServer,
@@ -33,6 +33,13 @@ import {
   revokeAgentBrowserAccess,
 } from "./server/browser";
 import { resolveBrowserRuntimeRoot } from "./server/runtime-path";
+import { listAllWorkspaces } from "./server/workspace-list";
+import {
+  accessFromState,
+  agentAccessSettings,
+  agentGetsBrowser,
+  DEFAULT_AGENT_ACCESS,
+} from "./shared/agent-access";
 import {
   acquireControlRpc,
   applyDevicePresetRpc,
@@ -63,25 +70,34 @@ import { readBrowserVideoRpc } from "./shared/browser-video";
 const TICKET_ENV = "PASEO_SHARED_BROWSER_TICKET";
 const MCP_SERVER_ID = "shared-browser";
 const TICKET_ISSUE_TIMEOUT_MS = 2_000;
+const ACCESS_DECISION_TIMEOUT_MS = 2_000;
 
-async function issueTicketWithinDeadline(ticket: string): Promise<boolean> {
+/** The result of `work`, or a rejection when it has not settled within `ms`. */
+async function withinDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
-    await Promise.race([
-      issueAgentTicket(ticket),
+    return await Promise.race([
+      work,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("Shared Browser ticket issuance timed out")),
-          TICKET_ISSUE_TIMEOUT_MS,
-        );
+        timer = setTimeout(() => reject(new Error(message)), ms);
         timer.unref();
       }),
     ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function issueTicketWithinDeadline(ticket: string): Promise<boolean> {
+  try {
+    await withinDeadline(
+      issueAgentTicket(ticket),
+      TICKET_ISSUE_TIMEOUT_MS,
+      "Shared Browser ticket issuance timed out",
+    );
     return true;
   } catch {
     return false;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -95,6 +111,45 @@ function mcpBundlePath(): string {
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(browserDisplayPreferences);
+  const agentAccess = server.registerSettings(agentAccessSettings);
+  // The deadline covers the settings read alone: a setting that cannot be read in time is an unreadable
+  // setting, and that falls back to the default (every new agent).
+  const readAccess = async () => {
+    try {
+      const state = await withinDeadline(
+        Promise.resolve(agentAccess.read()),
+        ACCESS_DECISION_TIMEOUT_MS,
+        "the read timed out",
+      );
+      const access = accessFromState(state);
+      if (access === DEFAULT_AGENT_ACCESS) {
+        console.warn(
+          `shared-browser: the agent-access setting is ${state?.status ?? "missing"}; every new agent gets the browser tool`,
+        );
+      }
+      return access;
+    } catch (error) {
+      console.warn(
+        `shared-browser: the agent-access setting could not be read (${error instanceof Error ? error.message : "error"}); every new agent gets the browser tool`,
+      );
+      return DEFAULT_AGENT_ACCESS;
+    }
+  };
+  // The workspace lookup has its own deadline; a timeout or any other failure there is no match.
+  const lookupWorkspaces = async (paseo: PluginHookContext["paseo"]) => {
+    try {
+      return await withinDeadline(
+        listAllWorkspaces(paseo),
+        ACCESS_DECISION_TIMEOUT_MS,
+        "the workspace lookup timed out",
+      );
+    } catch (error) {
+      console.warn(
+        `shared-browser: the workspace lookup failed (${error instanceof Error ? error.message : "error"}); the agent is not matched to a workspace or project`,
+      );
+      throw error;
+    }
+  };
   server.handle(attachBrowserRpc, handleAttachBrowser);
   server.handle(detachBrowserRpc, handleDetachBrowser);
   server.handle(closeBrowserRpc, handleCloseBrowser);
@@ -118,8 +173,13 @@ export default function contribute(server: PluginServerContext) {
   server.handle(resizeBrowserRpc, handleResizeBrowser);
   server.handle(applyDevicePresetRpc, handleApplyDevicePreset);
   server.handle(sendBrowserInputRpc, handleSendBrowserInput);
-  server.before("agent.create", async ({ request }) => {
+  server.before("agent.create", async ({ request }, context) => {
     if (request.config.internal) return request;
+    // Decide before any ticket or supervisor work, so an agent that is not allowed costs nothing.
+    const allowed = await agentGetsBrowser(await readAccess(), request.config, () =>
+      lookupWorkspaces(context.paseo),
+    );
+    if (!allowed) return request;
     const ticket = randomBytes(32).toString("base64url");
     if (!(await issueTicketWithinDeadline(ticket))) return request;
     return {
