@@ -536,6 +536,45 @@ describe("git hardening", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  test("filter discovery failing stops the launch instead of running repo filters", async () => {
+    const root = makeRoot();
+    const marker = join(root, "overflow-filter-ran");
+    const filter = join(root, "overflow-filter.sh");
+    writeFileSync(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`);
+    chmodSync(filter, 0o755);
+    const { repoDir } = makePullableRepo(root, {
+      ".gitattributes": { content: "*.evil filter=evil\n" },
+      "payload.evil": { content: "payload\n" },
+    });
+    gitIn(repoDir, ["config", "filter.evil.smudge", filter]);
+    gitIn(repoDir, ["config", "filter.evil.clean", filter]);
+    gitIn(repoDir, ["config", "filter.evil.required", "true"]);
+
+    // A git wrapper whose filter discovery outputs more than the 8 MiB cap, so the buffer overflows.
+    const realGit = execFileSync("which", ["git"]).toString().trim();
+    const binDir = join(root, "overflow-bin");
+    mkdirSync(binDir);
+    const wrapper = join(binDir, "git");
+    writeFileSync(
+      wrapper,
+      [
+        "#!/bin/sh",
+        `if echo "$*" | grep -q -- "config --name-only --get-regexp"; then`,
+        "  head -c 9000000 /dev/zero | tr '\\0' 'x'",
+        "  exit 0",
+        "fi",
+        `exec '${realGit}' "$@"`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(wrapper, 0o755);
+    vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
+
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow();
+    expect(existsSync(marker)).toBe(false);
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
   test("disallows custom git remote helpers even when their URL parses as GitHub", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");

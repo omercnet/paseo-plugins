@@ -174,11 +174,29 @@ function gitEnv(): NodeJS.ProcessEnv {
 }
 
 async function configuredFilterSafetyArgs(cwd: string): Promise<string[]> {
-  const { stdout } = await execFileAsync(
-    "git",
-    [...GIT_SAFETY_ARGS, "-C", cwd, "config", "--name-only", "--get-regexp", "^filter\\."],
-    { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv() },
-  ).catch(() => ({ stdout: "" }));
+  let stdout = "";
+  try {
+    const result = await execFileAsync(
+      "git",
+      [...GIT_SAFETY_ARGS, "-C", cwd, "config", "--name-only", "--get-regexp", "^filter\\."],
+      { timeout: 3_000, maxBuffer: MAX_BUFFER_BYTES, env: gitEnv() },
+    );
+    stdout = result.stdout;
+  } catch (err) {
+    // `git config --get-regexp` exits 1 when nothing matches; only that counts as "no filters".
+    // A timeout, buffer overflow or other failure must fail closed, not let repo filters run.
+    const code =
+      err && typeof err === "object" && "code" in err
+        ? (err as { code?: unknown }).code
+        : undefined;
+    if (code !== 1) {
+      throw new Error(
+        `Could not enumerate repository filter configuration in ${cwd}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
   const args: string[] = [];
   for (const rawKey of stdout.split("\n")) {
     const key = rawKey.trim();
