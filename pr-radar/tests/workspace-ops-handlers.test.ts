@@ -692,7 +692,21 @@ describe("git hardening", () => {
     gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},submod`]);
     gitIn(repoDir, ["commit", "-m", "add gitlink"]);
     await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
-      /replaces the submodule at submod/,
+      /replaces the submodule under submod/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("refuses a PR that replaces a submodule's ancestor directory with a file", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root, {
+      nested: { content: "now a regular file\n" },
+    });
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},nested/sub`]);
+    gitIn(repoDir, ["commit", "-m", "add nested gitlink"]);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /replaces the submodule under nested/,
     );
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });

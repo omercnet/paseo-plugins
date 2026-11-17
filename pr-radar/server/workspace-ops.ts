@@ -729,22 +729,45 @@ async function assertNoGitlinkToFileOverwrite(
     .map((entry) => entry.slice(entry.indexOf("\t") + 1))
     .filter(Boolean);
   if (gitlinkPaths.length === 0) return;
+  const gitlinkPathSet = new Set(gitlinkPaths);
+  // Query the target tree at each gitlink path and every ancestor directory: a blob at an ancestor
+  // (a PR replacing `nested` with a file when the gitlink is `nested/sub`) also discards the
+  // submodule's working tree, even though the gitlink path itself no longer resolves.
+  const queryPaths = new Set<string>();
+  for (const path of gitlinkPaths) {
+    queryPaths.add(path);
+    let parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    while (parent) {
+      queryPaths.add(parent);
+      parent = parent.includes("/") ? parent.slice(0, parent.lastIndexOf("/")) : "";
+    }
+  }
   const incoming = (
     await runGit(dir, [
       "ls-tree",
       "-z",
       target,
       "--",
-      ...gitlinkPaths.map((path) => `:(literal)${path}`),
+      ...Array.from(queryPaths, (path) => `:(literal)${path}`),
     ])
   )
     .split("\0")
     .filter(Boolean);
-  const nonGitlink = incoming.find((entry) => !entry.startsWith("160000 "));
-  if (nonGitlink) {
-    const path = nonGitlink.slice(nonGitlink.indexOf("\t") + 1);
+  const nonGitlinkAtGitlink = incoming.find((entry) => {
+    const path = entry.slice(entry.indexOf("\t") + 1);
+    return gitlinkPathSet.has(path) && !entry.startsWith("160000 ");
+  });
+  const fileAtAncestor = incoming.find((entry) => {
+    const path = entry.slice(entry.indexOf("\t") + 1);
+    return (
+      !gitlinkPathSet.has(path) && (entry.startsWith("100644 ") || entry.startsWith("100755 "))
+    );
+  });
+  const offending = nonGitlinkAtGitlink ?? fileAtAncestor;
+  if (offending) {
+    const path = offending.slice(offending.indexOf("\t") + 1);
     throw new Error(
-      `PR #${prNumber} replaces the submodule at ${path} with a regular file or directory, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
+      `PR #${prNumber} replaces the submodule under ${path} with a regular file or directory, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
     );
   }
 }
