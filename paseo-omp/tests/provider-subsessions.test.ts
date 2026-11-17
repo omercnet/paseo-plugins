@@ -155,6 +155,87 @@ describe("OMP direct provider", () => {
     await connection.close();
   });
 
+  test("renders nothing for a child agent_pause and keeps the child running", async () => {
+    const { connection, events, runtime } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      ["prompt.message", "session.subsession"],
+    );
+    await openSession(connection, events, "child-pause-open", "session-1");
+    const session = sessionAt(runtime);
+    await startPrompt(connection, events);
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "task-pause",
+      toolName: "task",
+      args: { tasks: [{ task: "wait for the job" }] },
+    });
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-child-pause",
+        agent: "scout",
+        status: "started",
+        parentToolCallId: "task-pause",
+        index: 0,
+      },
+    });
+    const opened = events.findLast(
+      (event) => event.type === "session.opened" && event.parentSessionId === "session-1",
+    );
+    if (opened?.type !== "session.opened") throw new Error("Missing child session");
+    session.emit({
+      type: "subagent_event",
+      payload: {
+        id: "native-child-pause",
+        event: {
+          type: "message_end",
+          message: { role: "assistant", responseId: "child-loop-1", content: "job started" },
+        },
+      },
+    });
+    const before = events.length;
+    session.emit({
+      type: "subagent_event",
+      payload: {
+        id: "native-child-pause",
+        event: {
+          type: "agent_pause",
+          messages: [{ role: "assistant", responseId: "child-loop-1", content: "job started" }],
+          yielded: true,
+          awaiting: true,
+        },
+      },
+    });
+    await Promise.resolve();
+    expect(events.slice(before)).toEqual([]);
+    session.emit({
+      type: "subagent_lifecycle",
+      payload: {
+        id: "native-child-pause",
+        agent: "scout",
+        status: "completed",
+        parentToolCallId: "task-pause",
+        index: 0,
+      },
+    });
+    await events.waitFor(
+      (event) =>
+        event.type === "session.turn" &&
+        event.sessionId === opened.sessionId &&
+        event.state === "completed",
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.sessionId === opened.sessionId &&
+          event.item.type === "assistant_message",
+      ),
+    ).toHaveLength(1);
+    await connection.close();
+  });
+
   test.each([undefined, "rpc-prompt-1"] as const)(
     "rechecks children after %s terminal state lookup",
     async (requestId) => {

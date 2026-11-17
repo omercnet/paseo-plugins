@@ -28,8 +28,15 @@ type _MessagePolicyCoverage = AssertTrue<
   AssertExact<UpstreamMessageRole, keyof typeof OMP_MESSAGE_REPLAY_POLICIES>
 >;
 type _MessageSchemaCoverage = AssertTrue<AssertExact<UpstreamMessageRole, OmpMessage["role"]>>;
+// The session event table may classify events added after the pinned runtime. Naming them keeps the
+// check exact otherwise: any other event the installed SDK adds or drops still fails here. Remove an
+// entry once the pin reaches the release that added it (agent_pause: OMP 18.21.0).
+type SessionEventsAfterPinnedRuntime = "agent_pause";
 type _SessionEventPolicyCoverage = AssertTrue<
-  AssertExact<AgentSessionEvent["type"], keyof typeof OMP_SESSION_EVENT_POLICIES>
+  AssertExact<
+    AgentSessionEvent["type"] | SessionEventsAfterPinnedRuntime,
+    keyof typeof OMP_SESSION_EVENT_POLICIES
+  >
 >;
 type _SessionEventSchemaCoverage = AssertTrue<
   AgentSessionEvent["type"] extends OmpRpcEvent["type"] ? true : false

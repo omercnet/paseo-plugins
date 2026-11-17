@@ -596,6 +596,10 @@ export class OmpTimelineProjector {
         return;
       }
     }
+    // OMP 18.21+ `agent_pause` only reaches us nested in `subagent_event` (the RPC wire turns it into
+    // a nonterminal `agent_end`). Its messages already streamed as message events and the child's
+    // status comes from `subagent_lifecycle`/`subagent_progress`, so there is nothing to render.
+    if (event.type === "agent_pause") return;
     if (
       (event.type === "message_start" ||
         event.type === "message_update" ||
