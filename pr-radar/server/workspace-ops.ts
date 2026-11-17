@@ -752,14 +752,27 @@ async function assertNoGitlinkToFileOverwrite(
     .filter(Boolean);
   if (gitlinkPaths.length === 0) return;
 
-  const entryType = async (path: string): Promise<string | null> =>
-    (await runGit(dir, ["cat-file", "-t", `${target}:${path}`], 3_000).catch(() => "")) || null;
+  // Returns the mode of the exact entry at `path` in the target tree (or null when absent). A leaf
+  // produces exactly the entry at `path`; a directory produces only its children (`path/…`).
+  const targetEntryMode = async (path: string): Promise<string | null> => {
+    const entries = (
+      await runGitLossless(dir, ["ls-tree", "-z", target, "--", `:(literal)${path}`])
+    )
+      .split("\0")
+      .filter(Boolean);
+    for (const entry of entries) {
+      if (entry.slice(entry.indexOf("\t") + 1) === path) return entry.slice(0, entry.indexOf(" "));
+    }
+    if (entries.some((entry) => entry.slice(entry.indexOf("\t") + 1).startsWith(`${path}/`))) {
+      return "040000";
+    }
+    return null;
+  };
 
   // A gitlink that becomes anything but another gitlink (file, symlink, directory, or removed)
   // discards the submodule's working tree.
   for (const path of gitlinkPaths) {
-    const type = await entryType(path);
-    if (type !== "commit") {
+    if ((await targetEntryMode(path)) !== "160000") {
       throw new Error(
         `PR #${prNumber} replaces the submodule under ${path} with a regular file, symlink or directory, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
       );
@@ -769,7 +782,8 @@ async function assertNoGitlinkToFileOverwrite(
   for (const path of gitlinkPaths) {
     let parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
     while (parent) {
-      if ((await entryType(parent)) === "blob") {
+      const mode = await targetEntryMode(parent);
+      if (mode !== null && mode !== "040000") {
         throw new Error(
           `PR #${prNumber} replaces the submodule under ${parent} with a regular file or symlink, which would discard uncommitted changes inside it; move those changes aside, or use CWD-WORKTREE.`,
         );
