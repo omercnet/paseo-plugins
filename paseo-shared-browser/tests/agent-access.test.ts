@@ -992,24 +992,24 @@ describe("agent shared-browser authorization", () => {
     });
   });
 
-  it("refuses to bind a ticket for an agent that was just revoked, and allows it again later", async () => {
+  it("refuses to bind a ticket issued before the agent was revoked, however late, and binds a fresh one", async () => {
     let now = 1_000;
     const { supervisor, bridge } = createHarness(() => now);
     const late = ticket("late-bind");
-    const restored = ticket("restored-bind");
     await issueTicket(supervisor, bridge, late);
-    await issueTicket(supervisor, bridge, restored);
     await revokeAgent(supervisor, bridge, "agent-archived");
+    const restored = ticket("restored-bind");
+    await issueTicket(supervisor, bridge, restored);
+    for (let beat = 0; beat < 3; beat += 1) {
+      now += 21_000;
+      supervisor.heartbeat(bridge.bridgeId, bridge.epoch);
+    }
     await expect(
       bindTicket(supervisor, bridge, late, "agent-archived", "workspace-one"),
     ).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
     await expect(agentRequest(supervisor, late, "status")).rejects.toMatchObject({
       code: "AUTHENTICATION_FAILED",
     });
-    for (let beat = 0; beat < 3; beat += 1) {
-      now += 21_000;
-      supervisor.heartbeat(bridge.bridgeId, bridge.epoch);
-    }
     await bindTicket(supervisor, bridge, restored, "agent-archived", "workspace-one");
     await expect(agentRequest(supervisor, restored, "status")).resolves.toBeDefined();
   });
