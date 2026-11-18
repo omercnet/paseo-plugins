@@ -863,6 +863,24 @@ describe("git hardening", () => {
     expect(existsSync(join(wt, "work.txt"))).toBe(true);
   });
 
+  test("refuses a partial issue worktree that has local data", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-12"]);
+    writeFileSync(join(repoDir, "work.txt"), "issue work\n");
+    gitIn(repoDir, ["add", "work.txt"]);
+    gitIn(repoDir, ["commit", "-m", "issue work"]);
+    gitIn(repoDir, ["checkout", "main"]);
+    const wt = join(root, "issue-wt");
+    gitIn(repoDir, ["worktree", "add", "--no-checkout", wt, "pr-radar/issue-12"]);
+    writeFileSync(join(wt, "extra.txt"), "user data\n");
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/contains local data/);
+    expect(readFileSync(join(wt, "extra.txt"), "utf8")).toBe("user data\n");
+  });
+
   test("submodule filters do not run during the dirty check", async () => {
     const root = makeRoot();
     const { repoDir } = makePullableRepo(root);
