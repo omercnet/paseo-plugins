@@ -1,3 +1,4 @@
+import { accountTags } from "../shared/account-tags";
 import type { OmpQuota } from "../shared/quota";
 import { isOmpProvider } from "./omp-store-state";
 
@@ -97,6 +98,8 @@ export type QuotaAccountGroup = {
   accountService: OmpQuota["accountService"];
   accountHost: string | null;
   label: string | null;
+  /** Plan and organization badges, e.g. "Business", "Personal" or an organization name. */
+  tags: string[];
   suffix: string | null;
   quotas: OmpQuota[];
   peakFraction: number | null;
@@ -143,6 +146,14 @@ export function quotaProviderGroups(
   return groups;
 }
 
+function quotaAccountTags(quotas: readonly OmpQuota[], email: string | null): string[] {
+  return accountTags({
+    plan: quotas.find((quota) => quota.plan)?.plan ?? null,
+    organization: quotas.find((quota) => quota.organization)?.organization ?? null,
+    email,
+  });
+}
+
 function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
   const byAccount = new Map<string, OmpQuota[]>();
   for (const quota of quotas) {
@@ -165,6 +176,7 @@ function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
         email,
         accountService: service?.accountService ?? null,
         accountHost: service?.accountHost ?? null,
+        tags: quotaAccountTags(accountQuotas, email),
         label: email ?? accountId,
         suffix: null,
         quotas: [...accountQuotas].sort((a, b) => (b.usedFraction ?? -1) - (a.usedFraction ?? -1)),
@@ -207,9 +219,10 @@ function quotaAccountGroups(quotas: readonly OmpQuota[]): QuotaAccountGroup[] {
 export function quotaResetLabel(resetsAtMs: number | null, nowMs: number = Date.now()): string {
   if (resetsAtMs === null) return "";
   const remainingMs = Math.max(0, resetsAtMs - nowMs);
-  const hours = Math.floor(remainingMs / 3_600_000);
+  const totalHours = Math.floor(remainingMs / 3_600_000);
   const minutes = Math.floor((remainingMs % 3_600_000) / 60_000);
-  return hours > 0 ? `resets ${hours}h ${minutes}m` : `resets ${minutes}m`;
+  if (totalHours >= 24) return `resets ${Math.floor(totalHours / 24)}d ${totalHours % 24}h`;
+  return totalHours > 0 ? `resets ${totalHours}h ${minutes}m` : `resets ${minutes}m`;
 }
 
 export function quotaRecordedLabel(recordedAtMs: number, nowMs: number = Date.now()): string {

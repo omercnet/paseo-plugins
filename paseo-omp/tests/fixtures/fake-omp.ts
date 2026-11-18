@@ -371,6 +371,19 @@ function emitChildContract(message: string): void {
       },
     },
   });
+  // OMP 18.21+ forwards a child's loop stop raw inside `subagent_event`; it must render nothing.
+  send({
+    type: "subagent_event",
+    payload: {
+      id: "child-1",
+      event: {
+        type: "agent_pause",
+        messages: [{ role: "assistant", responseId: "child-answer", content: "CHILD_OK" }],
+        yielded: true,
+        awaiting: false,
+      },
+    },
+  });
   send({
     type: "subagent_lifecycle",
     payload: {

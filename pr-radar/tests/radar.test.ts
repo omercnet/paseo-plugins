@@ -20,7 +20,13 @@ import {
   type RadarRow,
   sortRows,
 } from "../client/radar";
-import { needsYouSummary, parseRadarParams, radarWarnings } from "../client/screen-state";
+import {
+  needsYouSummary,
+  parseRadarParams,
+  pickerOptionAccessibility,
+  radarWarnings,
+  viewerCoverage,
+} from "../client/screen-state";
 import { type GitHubInboxItem, GitHubInboxItemSchema } from "../shared/viewer-scope";
 
 function agent(overrides: Partial<RadarAgent> = {}): RadarAgent {
@@ -52,6 +58,9 @@ function row(overrides: Partial<RadarRow> = {}): RadarRow {
     comments: 0,
     labels: [],
     changes: [],
+    linkedIssues: [],
+    cwdTag: "CWD-WORKTREE",
+    hasLocalPlace: true,
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
     checksStatus: "success",
@@ -596,6 +605,72 @@ describe("directory invalidation observations", () => {
       }
     });
   });
+
+  describe("user agent churn", () => {
+    const shown = {
+      workspaceId: "workspace-1",
+      title: "Fix login",
+      status: "running",
+      requiresAttention: false,
+      attentionReason: null,
+      pendingPermissions: [],
+      updatedAt: "2026-11-14T10:00:00.000Z",
+    };
+    const upsert = (fields: Record<string, unknown> = {}) => ({
+      type: "agent_update",
+      payload: { kind: "upsert", agent: { id: "user", ...shown, ...fields } },
+    });
+
+    async function invalidationsAfter(messages: unknown[]) {
+      vi.useFakeTimers();
+      const agents = ownedDirectoryObservation();
+      const paseo = paseoWithOwnedDirectoryObservations(agents, ownedDirectoryObservation());
+      const invalidateDirectoryState = vi.fn();
+      const cleanup = observeDirectoryInvalidation(paseo, invalidateDirectoryState, 500);
+      try {
+        await Promise.resolve();
+        for (const message of messages) {
+          agents.update(message);
+          vi.advanceTimersByTime(500);
+        }
+        return invalidateDirectoryState.mock.calls.length;
+      } finally {
+        cleanup();
+        vi.useRealTimers();
+      }
+    }
+
+    // The daemon re-publishes a running agent with a fresh updatedAt on every usage report.
+    test("ignores repeat upserts that change nothing a row shows", async () => {
+      expect(
+        await invalidationsAfter([
+          upsert(),
+          upsert({ lastUsage: { inputTokens: 10 }, updatedAt: "2026-11-14T10:00:01.000Z" }),
+          upsert({ lastUsage: { inputTokens: 20 }, updatedAt: "2026-11-14T10:00:02.000Z" }),
+        ]),
+      ).toBe(1);
+    });
+
+    test.each([
+      ["status", { status: "idle" }],
+      ["title", { title: "Fix logout" }],
+      ["attention", { requiresAttention: true, attentionReason: "permission" }],
+      ["permissions", { pendingPermissions: [{ id: "permission-1" }] }],
+      ["workspace", { workspaceId: "workspace-2" }],
+    ])("invalidates when the %s changes", async (_name, fields) => {
+      expect(await invalidationsAfter([upsert(), upsert(fields)])).toBe(2);
+    });
+
+    test("invalidates again for an agent that was removed and came back", async () => {
+      expect(
+        await invalidationsAfter([
+          upsert(),
+          { type: "agent_update", payload: { kind: "remove", agentId: "user" } },
+          upsert(),
+        ]),
+      ).toBe(3);
+    });
+  });
 });
 
 describe("PR triage", () => {
@@ -942,6 +1017,7 @@ describe("GitHub inbox", () => {
     reviewDecision: "changes_requested",
     role: "author",
     changes: ["Checks: success → failure"],
+    linkedIssues: [],
   };
 
   test("adds an authored inbox PR without a linked workspace", () => {
@@ -997,6 +1073,7 @@ describe("GitHub inbox", () => {
       reviewDecision: "approved",
       role: "author",
       changes: [],
+      linkedIssues: [],
     };
 
     const [merged] = mergeInboxRows(snapshot, [inbox]);
@@ -1235,5 +1312,42 @@ describe("display helpers", () => {
     expect(formatAge(new Date(now - 30 * 60_000).toISOString(), now)).toBe("30m");
     expect(formatAge(new Date(now - 90 * 60_000).toISOString(), now)).toBe("1h");
     expect(formatAge(new Date(now - 48 * 60 * 60_000).toISOString(), now)).toBe("2d");
+  });
+});
+
+describe("viewerCoverage", () => {
+  const failed = {
+    coverageNote: "1 GitHub issue search request failed; issue list may be incomplete.",
+    truncated: true,
+    updates: 3,
+  };
+
+  test("shows the failure note and the cap warning on the Issues tab, without update controls", () => {
+    expect(viewerCoverage("issues", failed)).toEqual({
+      text: `${failed.coverageNote} Results reached the 100-item inbox cap.`,
+      showUpdates: false,
+    });
+  });
+
+  test("keeps the update controls on the PR tab only when there are updates", () => {
+    expect(viewerCoverage("prs", failed)?.showUpdates).toBe(true);
+    expect(viewerCoverage("prs", { ...failed, updates: 0 })?.showUpdates).toBe(false);
+  });
+
+  test("omits the cap warning when results are complete and shows nothing without viewer data", () => {
+    expect(viewerCoverage("issues", { ...failed, truncated: false })?.text).toBe(
+      failed.coverageNote,
+    );
+    expect(viewerCoverage("issues", undefined)).toBeNull();
+  });
+});
+
+describe("pickerOptionAccessibility", () => {
+  test("exposes the selected state on a picker option", () => {
+    expect(pickerOptionAccessibility(true)).toEqual({
+      accessibilityRole: "button",
+      accessibilityState: { selected: true },
+    });
+    expect(pickerOptionAccessibility(false).accessibilityState).toEqual({ selected: false });
   });
 });

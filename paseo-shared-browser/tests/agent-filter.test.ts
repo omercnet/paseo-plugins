@@ -6,6 +6,7 @@ import {
   agentGetsBrowser,
   agentGetsBrowserByLabel,
   DEFAULT_AGENT_ACCESS,
+  isAbsoluteDirectory,
   labelMatches,
   normalizeDirectory,
   parseEntries,
@@ -313,5 +314,36 @@ describe("labels", () => {
     expect(agentAccessSchema.safeParse({ labels: [""] }).success).toBe(false);
     expect(agentAccessSchema.safeParse({ labels: ["x".repeat(257)] }).success).toBe(false);
     expect(agentAccessSchema.safeParse({ labels: Array(201).fill("l") }).success).toBe(false);
+  });
+});
+
+describe("only absolute directories match a workspace", () => {
+  it.each([
+    ["/", true],
+    ["/etc", true],
+    ["C:/", true],
+    ["c:/x", true],
+    ["", false],
+    [".", false],
+    ["..", false],
+    ["etc", false],
+    ["C:x", false],
+  ])("isAbsoluteDirectory(%j) is %s", (path, expected) => {
+    expect(isAbsoluteDirectory(normalizeDirectory(path))).toBe(expected);
+  });
+
+  it("does not let a relative workspace directory contain an absolute agent directory", () => {
+    const relative = [{ id: "r", projectId: "p", workspaceDirectory: "." }];
+    expect(workspacesForDirectory("/etc", relative)).toEqual([]);
+    expect(workspacesForDirectory("/", relative)).toEqual([]);
+    const empty = [{ id: "e", projectId: "p", workspaceDirectory: "" }];
+    expect(workspacesForDirectory("/etc", empty)).toEqual([]);
+  });
+
+  it("does not match a relative or empty agent directory, even against a root workspace", () => {
+    const root = [{ id: "root", projectId: "p", workspaceDirectory: "/" }];
+    for (const cwd of ["", ".", "etc", "../etc"])
+      expect(workspacesForDirectory(cwd, root)).toEqual([]);
+    expect(workspacesForDirectory("/etc", root).map((w) => w.id)).toEqual(["root"]);
   });
 });

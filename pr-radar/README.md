@@ -28,7 +28,17 @@ DevTools before capture. Both PNGs come from an isolated Paseo test daemon at 2Ã
 - Waiting externally: running checks, pending reviews, repository requirements, and external-author work.
 - Ready: authored pull requests that are mergeable with settled checks and reviews.
 - Viewer labels: `YOURS`, `REVIEW`, and `EXTERNAL`.
-- Contextual actions: ask an existing agent or start one in the linked workspace.
+- Working-directory tags: `CWD-WORKTREE`, `CWD-BASE`, and `CWD-TBD` (shown on rows and maintained as Paseo workspace/agent labels).
+- Draft PRs (DPRs): displayed in a separate collapsible section below regular pull requests.
+- Issues tab: switch between `Pull Requests` and `Issues` (authored by you, assigned to you, or in your owned repos) with the same `Start New Agent`, `Open Existing Agent`, `CWD-*` tags, `Copy link`, and `Open Issue` workflow.
+- Action cluster on every PR:
+  - `Open issues (N)`: opens all linked/closing GitHub issues in your browser when present.
+  - `Start New Agent`: available on every PR (orange when a local checkout/worktree exists, brown when `CWD-TBD` and a clone or directory pick is needed). Opens an interactive directory/worktree chooser (supporting incremental typing, GUI selection, `CWD-WORKTREE` vs `CWD-BASE`, and one-click clone + worktree creation), or launches immediately when configured in Settings.
+  - `Open Existing Agent`: jumps directly to an existing linked Paseo agent.
+  - `Ask agent` / `Open workspace` / `Copy link` / `Open PR`.
+- Settings (`PR Radar settings`): configure `sourceCodeDir` (default `~/src`), `defaultCwdMode` (`CWD-WORKTREE` or `CWD-BASE`), `autoLaunchMode` (`prompt`, `existing_only`, or `existing_or_clone`), default agent launch options (profile, provider, model, effort, mode, context mode), and an optional absolute/`~/` routing script path (copy `examples/pr-radar-route.py`, a small example of the stdin/stdout contract, to e.g. `~/.config/pr-radar/route.py` and edit it). The script path and `sourceCodeDir` are read from the saved settings on the server, never from the request. The script must be an executable regular file owned by you or root, in directories that group and others cannot write (a sticky directory such as `/tmp` is fine); it runs with a minimal environment, a 30 second timeout and a 1 MiB output cap, one at a time (not on Windows). It may set only the `default`, `plan`, `acceptEdits` and `read-only` permission modes and the `contextMode` option; other values are ignored and the launch notice says so. A profile it names is ignored too when that profile sets another permission mode, option or feature value. Directories outside `sourceCodeDir` are refused for clones, checkouts and worktrees. These checks are defense in depth against crafted requests, not a privilege boundary: the settings are the trust source, but any Paseo client can write them.
+
+When PR Radar checks out or fetches a repository, it runs `git` with a hardened environment: `~/.gitconfig` and the system git config are ignored, repository hooks, filters, credential helpers and transport helpers are neutralized, and GitHub credentials come only from the `gh` CLI (never from git's environment). Network proxies must be provided through the environment (`HTTPS_PROXY`/`http_proxy`/`NO_PROXY` and friends), not through git config.
 - Linked workspaces and agents include those in background workspaces. Helpers, meaning background
   agents that Paseo hides from tabs, lists and attention, never appear on a row. They also do not
   count toward its active agents, attention, permission state or the sidebar count.

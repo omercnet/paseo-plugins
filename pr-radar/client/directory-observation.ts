@@ -1,29 +1,60 @@
 import { isHelperAgent, type PaseoApi } from "./radar";
 
+interface AgentUpdate {
+  id?: unknown;
+  workspaceId?: unknown;
+  title?: unknown;
+  status?: unknown;
+  requiresAttention?: unknown;
+  attentionReason?: unknown;
+  pendingPermissions?: unknown;
+}
+
+// The agent fields buildRadarSnapshot and toRadarAgent read, minus `updatedAt`. The daemon touches
+// `updatedAt` and re-publishes a running agent on every usage report, so refetching on it rescanned
+// the directory every second or two. `updatedAt` only orders agents inside a row; the poll keeps it.
+function rowFields(agent: AgentUpdate): string {
+  return JSON.stringify([
+    agent.workspaceId,
+    agent.title,
+    agent.status,
+    agent.requiresAttention,
+    agent.attentionReason,
+    agent.pendingPermissions,
+  ]);
+}
+
 /**
- * Tracks helpers seen on the agent stream so their updates do not refetch the directory. Helpers
- * are fixed at creation, so an upsert identifies one and the later removal reuses that knowledge.
- * Anything unrecognised still invalidates.
+ * Skips agent updates that cannot change a row: helpers (fixed at creation, so an upsert
+ * identifies one and the later removal reuses that knowledge) and repeat upserts of a user agent
+ * whose row fields are unchanged. Anything unrecognised still invalidates.
  */
-function helperUpdateFilter() {
+function quietUpdateFilter() {
   const helperIds = new Set<string>();
+  const shownFields = new Map<string, string>();
   return (message: unknown): boolean => {
     if (typeof message !== "object" || message === null) return false;
     const { type, payload } = message as {
       type?: unknown;
       payload?: {
         kind?: unknown;
-        agent?: { id?: unknown } | null;
+        agent?: AgentUpdate | null;
         agentId?: unknown;
       };
     };
     if (type !== "agent_update" || !payload) return false;
     if (payload.kind === "upsert" && payload.agent && typeof payload.agent.id === "string") {
-      if (!isHelperAgent(payload.agent)) return false;
-      helperIds.add(payload.agent.id);
-      return true;
+      if (isHelperAgent(payload.agent)) {
+        helperIds.add(payload.agent.id);
+        return true;
+      }
+      const fields = rowFields(payload.agent);
+      if (shownFields.get(payload.agent.id) === fields) return true;
+      shownFields.set(payload.agent.id, fields);
+      return false;
     }
     if (payload.kind === "remove" && typeof payload.agentId === "string") {
+      shownFields.delete(payload.agentId);
       return helperIds.delete(payload.agentId);
     }
     return false;
@@ -71,7 +102,7 @@ export function observeDirectoryInvalidation(
 
   void paseo.agents
     .list({ subscribe: {}, includeBackground: true, signal: lifetime.signal })
-    .then(({ subscription }) => attach(subscription, helperUpdateFilter()))
+    .then(({ subscription }) => attach(subscription, quietUpdateFilter()))
     .catch(() => undefined);
   void paseo.workspaces
     .list({ subscribe: {}, includeBackground: true })

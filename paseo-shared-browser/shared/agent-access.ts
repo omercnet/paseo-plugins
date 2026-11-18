@@ -90,6 +90,11 @@ export function normalizeDirectory(path: string): string {
   return absolute ? `${drive}/${joined}` : joined;
 }
 
+/** True for a normalized path that starts at a root (`/` or a drive such as `C:/`). A relative path never matches a workspace. */
+export function isAbsoluteDirectory(normalized: string): boolean {
+  return normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
+}
+
 /**
  * The workspaces whose directory is the agent's directory, or the deepest directory that contains it.
  * Several workspaces can share one directory, so this returns all of them.
@@ -99,11 +104,13 @@ export function workspacesForDirectory(
   workspaces: readonly WorkspaceRef[],
 ): WorkspaceRef[] {
   const target = normalizeDirectory(cwd);
+  if (!isAbsoluteDirectory(target)) return [];
   let depth = -1;
   let found: WorkspaceRef[] = [];
   for (const workspace of workspaces) {
     if (!workspace.workspaceDirectory) continue;
     const directory = normalizeDirectory(workspace.workspaceDirectory);
+    if (!isAbsoluteDirectory(directory)) continue;
     const prefix = directory.endsWith("/") ? directory : `${directory}/`;
     if (target !== directory && !target.startsWith(prefix)) continue;
     if (directory.length > depth) {

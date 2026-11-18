@@ -28,8 +28,17 @@ type _MessagePolicyCoverage = AssertTrue<
   AssertExact<UpstreamMessageRole, keyof typeof OMP_MESSAGE_REPLAY_POLICIES>
 >;
 type _MessageSchemaCoverage = AssertTrue<AssertExact<UpstreamMessageRole, OmpMessage["role"]>>;
+// The session event table may classify events added after the pinned runtime, each named here with
+// the OMP release that added it. Naming them keeps the check exact otherwise: any other event the
+// installed SDK adds or drops still fails here. `omp-sdk-contract.test.ts` fails once the installed
+// SDK reaches an entry's release, so the entry is removed when the pin moves past it.
+export const SESSION_EVENTS_AFTER_PINNED_RUNTIME = { agent_pause: "18.21.0" } as const;
+type SessionEventsAfterPinnedRuntime = keyof typeof SESSION_EVENTS_AFTER_PINNED_RUNTIME;
 type _SessionEventPolicyCoverage = AssertTrue<
-  AssertExact<AgentSessionEvent["type"], keyof typeof OMP_SESSION_EVENT_POLICIES>
+  AssertExact<
+    AgentSessionEvent["type"] | SessionEventsAfterPinnedRuntime,
+    keyof typeof OMP_SESSION_EVENT_POLICIES
+  >
 >;
 type _SessionEventSchemaCoverage = AssertTrue<
   AgentSessionEvent["type"] extends OmpRpcEvent["type"] ? true : false

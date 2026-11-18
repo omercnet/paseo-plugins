@@ -438,6 +438,32 @@ describe("agent access", () => {
       }
     });
 
+    it("a read that rejects after the timeout fired is not an unhandled rejection", async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const unhandled: unknown[] = [];
+      const listener = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", listener);
+      try {
+        const hook = captureAgentCreateHook(
+          () =>
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("late")), 3_000)),
+        );
+        const pending = hook({ request: request("claude") });
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect(pending).resolves.toMatchObject({
+          config: { mcpServers: { "shared-browser": expect.anything() } },
+        });
+        await vi.advanceTimersByTimeAsync(5_000);
+        vi.useRealTimers();
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", listener);
+        warn.mockRestore();
+      }
+    });
+
     it("leaves no timer behind when the read and the lookup finish in time", async () => {
       vi.useFakeTimers();
       const hook = captureAgentCreateHook(ready({ workspaces: ["ws_a"] }));

@@ -46,6 +46,79 @@ function copilotAccount(accountKey: string): CopilotAccount {
   }
 }
 
+const CachedReportSchema = z.object({
+  value: z.object({
+    provider: z.string(),
+    fetchedAt: z.number(),
+    metadata: z
+      .object({
+        plan: z.string().nullish(),
+        planType: z.string().nullish(),
+        orgName: z.string().nullish(),
+      })
+      .nullish(),
+  }),
+});
+
+type AccountTags = Pick<OmpQuota, "plan" | "organization">;
+type CachedReport = AccountTags & { key: string; provider: string; fetchedAt: number };
+
+/** OMP's usage cache; missing on older OMP versions, so any failure yields no tags. */
+function readCachedReports(database: DatabaseSync): CachedReport[] {
+  let rows: Record<string, unknown>[];
+  try {
+    // A key range on the primary key (";" follows ":"), where LIKE would scan the whole cache.
+    rows = database
+      .prepare(
+        "SELECT key, value FROM cache WHERE key >= 'usage_cache:report:' AND key < 'usage_cache:report;'",
+      )
+      .all();
+  } catch {
+    return [];
+  }
+  return rows.flatMap(({ key, value }) => {
+    if (typeof key !== "string" || typeof value !== "string") return [];
+    let json: unknown;
+    try {
+      json = JSON.parse(value);
+    } catch {
+      return [];
+    }
+    const parsed = CachedReportSchema.safeParse(json);
+    if (!parsed.success) return [];
+    const { provider, fetchedAt, metadata } = parsed.data.value;
+    // A blank planType must not hide a plan the report names.
+    const plan = metadata?.planType?.trim() || metadata?.plan?.trim() || null;
+    const organization = metadata?.orgName?.trim() || null;
+    return [
+      {
+        key,
+        provider,
+        fetchedAt,
+        plan,
+        // Codex reports its plan as the organization name too; that is not an organization.
+        organization: organization?.toLowerCase() === plan?.toLowerCase() ? null : organization,
+      },
+    ];
+  });
+}
+
+/**
+ * OMP caches each report under a key that ends with the account_key usage_history records. Both
+ * tags come from the newest report naming either, so two reports are never mixed into one badge row.
+ */
+function accountTags(
+  reports: readonly CachedReport[],
+  provider: string,
+  accountKey: string,
+): AccountTags {
+  const best = reports
+    .filter((report) => report.provider === provider && report.key.endsWith(`:${accountKey}`))
+    .sort((a, b) => b.fetchedAt - a.fetchedAt)
+    .find((report) => report.plan || report.organization);
+  return { plan: best?.plan ?? null, organization: best?.organization ?? null };
+}
+
 // Only live windows are returned: a series whose newest row already reset (or never resets and was
 // abandoned) would otherwise pin the pill at its last exhausted value and bloat the popover.
 export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
@@ -79,6 +152,7 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
            ORDER BY COALESCE(usedFraction, -1) DESC, provider, label, accountKey, limitId`,
         )
         .all(now, now - ABANDONED_AFTER_MS);
+      const reports = readCachedReports(database);
       return rows.flatMap((row) => {
         const parsed = QuotaRowSchema.safeParse(row);
         if (!parsed.success) return [];
@@ -91,6 +165,7 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
             // account_id is only known to be a username for Copilot; other providers keep it private.
             accountId: copilot ? quota.accountId : null,
             ...(copilot ? copilotAccount(quota.accountKey) : UNKNOWN_SERVICE),
+            ...accountTags(reports, quota.provider, quota.accountKey),
           },
         ];
       });

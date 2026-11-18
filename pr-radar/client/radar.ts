@@ -1,6 +1,7 @@
 import type { usePaseo } from "@getpaseo/plugin/client";
 import { z } from "zod";
-import { type GitHubInboxItem, HttpsUrlSchema } from "../shared/viewer-scope";
+import type { CwdMode } from "../shared/settings";
+import { type GitHubInboxItem, type GitHubIssueItem, HttpsUrlSchema } from "../shared/viewer-scope";
 
 export type PaseoApi = ReturnType<typeof usePaseo>;
 export type PaseoWorkspace = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>["entries"][number];
@@ -49,8 +50,11 @@ export interface RadarCheck {
 }
 
 export type ViewerOwnership = "mine" | "external" | "unknown";
+export type CwdTag = "CWD-BASE" | "CWD-WORKTREE" | "CWD-TBD";
 
 export interface RadarRow {
+  itemKind?: "pr" | "issue";
+  issueRole?: GitHubIssueItem["role"];
   id: string;
   number: number | null;
   url: string;
@@ -65,6 +69,9 @@ export interface RadarRow {
   comments: number;
   labels: string[];
   changes: string[];
+  linkedIssues: string[];
+  cwdTag: CwdTag;
+  hasLocalPlace: boolean;
   mergeable: "UNKNOWN" | "MERGEABLE" | "CONFLICTING";
   mergeStateStatus: string | null;
   checksStatus: "success" | "pending" | "none" | "failure";
@@ -88,12 +95,20 @@ export interface RadarWarning {
   message: string;
 }
 
+export interface RadarIssueMatch {
+  workspaceIds: string[];
+  workspaceNames: string[];
+  agents: RadarAgent[];
+  cwdTag: CwdTag;
+}
+
 export interface RadarSnapshot {
   rows: RadarRow[];
   warnings: RadarWarning[];
   workspaceCount: number;
   refreshedAt: string;
   repositoryRoots: Record<string, string>;
+  issueMatches?: Record<string, RadarIssueMatch>;
 }
 
 export interface ViewerScopeData {
@@ -217,15 +232,16 @@ function externalWaitingReason(row: RadarRow): string {
   return "External pull request";
 }
 
+function hasFailedAgent(agents: readonly RadarAgent[]): boolean {
+  return agents.some((agent) => agent.status === "error" || agent.attentionReason === "error");
+}
+
 export function classifyRow(row: RadarRow): Pick<RadarRow, "bucket" | "reason"> {
   const humanBlocker = attentionReason(row.agents);
   if (humanBlocker) return { bucket: "needs-you", reason: humanBlocker };
 
   const activeAgent = hasActiveAgent(row.agents);
-  if (
-    !activeAgent &&
-    row.agents.some((agent) => agent.status === "error" || agent.attentionReason === "error")
-  ) {
+  if (!activeAgent && hasFailedAgent(row.agents)) {
     return { bucket: "needs-you", reason: "Agent failed" };
   }
   if (activeAgent && row.ownership !== "mine") {
@@ -321,6 +337,9 @@ export function agentActionFor(row: RadarRow): RadarAgentAction {
 }
 
 export function buildAgentPrompt(row: RadarRow): string {
+  if (row.itemKind === "issue") {
+    return `Investigate and address GitHub issue ${row.url} (${row.title}). Inspect the repository, implement a fix or plan, run relevant validation, and report the result.`;
+  }
   if (row.reviewRequestedFromMe) {
     return `Review ${row.url}. CI is complete and GitHub is requesting your review. Inspect the changes, follow the repository review workflow, submit the review when justified, and report the result.`;
   }
@@ -355,6 +374,7 @@ export function buildRadarSnapshot(
   const rows = new Map<string, RadarRow>();
   const warnings: RadarWarning[] = [];
   const repositoryRoots: Record<string, string> = {};
+  const issueMatches: Record<string, RadarIssueMatch> = {};
 
   for (const workspace of workspaces) {
     const remoteRepository = workspace.gitRuntime?.remoteUrl
@@ -362,6 +382,37 @@ export function buildRadarSnapshot(
       : null;
     if (remoteRepository) {
       repositoryRoots[remoteRepository.toLowerCase()] ??= workspace.projectRootPath;
+      const issueBranchMatch =
+        workspace.gitRuntime?.currentBranch?.match(/^pr-radar\/issue-(\d+)$/);
+      if (issueBranchMatch) {
+        const issueKey = `${remoteRepository.toLowerCase()}#issue-${issueBranchMatch[1]}`;
+        const wsAgents = agentsByWorkspace.get(workspace.id) ?? [];
+        const wsLabels = (workspace as { labels?: readonly string[] }).labels;
+        const wsCwdTag: CwdTag = wsLabels?.includes("CWD-BASE")
+          ? "CWD-BASE"
+          : wsLabels?.includes("CWD-WORKTREE")
+            ? "CWD-WORKTREE"
+            : "CWD-TBD";
+        const current = issueMatches[issueKey] ?? {
+          workspaceIds: [],
+          workspaceNames: [],
+          agents: [],
+          cwdTag: "CWD-TBD" as CwdTag,
+        };
+        if (!current.workspaceIds.includes(workspace.id)) {
+          current.workspaceIds.push(workspace.id);
+          current.workspaceNames.push(workspace.name);
+        }
+        const knownIds = new Set(current.agents.map((a) => a.id));
+        for (const a of wsAgents) {
+          if (!knownIds.has(a.id)) current.agents.push(a);
+        }
+        sortAgents(current.agents);
+        if (current.cwdTag === "CWD-TBD" && wsCwdTag !== "CWD-TBD") {
+          current.cwdTag = wsCwdTag;
+        }
+        issueMatches[issueKey] = current;
+      }
     }
     const runtime = workspace.githubRuntime;
     if (runtime?.error?.message) {
@@ -409,6 +460,14 @@ export function buildRadarSnapshot(
       continue;
     }
 
+    const workspaceCwdTag: CwdTag = workspace.labels?.includes("CWD-BASE")
+      ? "CWD-BASE"
+      : workspace.labels?.includes("CWD-WORKTREE")
+        ? "CWD-WORKTREE"
+        : workspace.workspaceKind === "worktree"
+          ? "CWD-WORKTREE"
+          : "CWD-BASE";
+
     const row: RadarRow = {
       id,
       number: pullRequest.number ?? null,
@@ -424,6 +483,9 @@ export function buildRadarSnapshot(
       comments: 0,
       labels: [],
       changes: [],
+      linkedIssues: [],
+      cwdTag: workspaceCwdTag,
+      hasLocalPlace: true,
       mergeable: pullRequest.mergeable ?? "UNKNOWN",
       mergeStateStatus: facts?.mergeStateStatus ?? null,
       checksStatus: pullRequest.checksStatus ?? "none",
@@ -460,6 +522,7 @@ export function buildRadarSnapshot(
     workspaceCount: workspaces.length,
     refreshedAt: now.toISOString(),
     repositoryRoots,
+    issueMatches,
   };
 }
 
@@ -480,6 +543,7 @@ export function mergeInboxRows(
       existing.comments = item.comments;
       existing.labels = [...item.labels];
       existing.changes = [...item.changes];
+      existing.linkedIssues = [...item.linkedIssues];
       existing.isDraft = item.isDraft;
       existing.baseRefName = item.baseRefName || existing.baseRefName;
       existing.headRefName = item.headRefName || existing.headRefName;
@@ -490,6 +554,8 @@ export function mergeInboxRows(
       existing.ownership = item.role === "author" ? "mine" : "external";
       existing.reviewRequestedFromMe = item.role === "reviewer";
       existing.localProjectRoot ??= snapshot.repositoryRoots[item.repository.toLowerCase()] ?? null;
+      existing.hasLocalPlace =
+        existing.workspaceIds.length > 0 || Boolean(existing.localProjectRoot);
       if (Date.parse(item.updatedAt) > Date.parse(existing.activityAt ?? "")) {
         existing.activityAt = item.updatedAt;
       }
@@ -514,6 +580,9 @@ export function mergeInboxRows(
       comments: item.comments,
       labels: [...item.labels],
       changes: [...item.changes],
+      linkedIssues: [...item.linkedIssues],
+      cwdTag: "CWD-TBD",
+      hasLocalPlace: Boolean(snapshot.repositoryRoots[item.repository.toLowerCase()]),
       mergeable: item.mergeable,
       mergeStateStatus: item.mergeStateStatus,
       checksStatus: item.checksStatus,
@@ -702,4 +771,256 @@ export function profileAgentConfig(profile: AgentProfileLike) {
       ? { featureValues: profile.featureValues }
       : {}),
   };
+}
+
+/**
+ * The provider and model a routing result sets. A routed provider that differs from the current
+ * one without a routed model drops the model, which belonged to the old provider (it would
+ * otherwise build an id such as `codex/<claude model>`). If the caller refuses a routed provider
+ * because the user edited it, a routed model is applied only when it belongs to the current
+ * provider.
+ */
+export function routedProviderModel(
+  current: { provider?: string },
+  routed: { provider?: string; model?: string },
+  options: { applyProvider?: boolean } = {},
+): { provider?: string; model?: string } {
+  const result: { provider?: string; model?: string } = {};
+  const applyProvider = options.applyProvider ?? true;
+  const providerApplied = Boolean(routed.provider && applyProvider);
+  if (providerApplied) result.provider = routed.provider;
+  if (routed.model) {
+    const modelMatchesCurrentProvider = !routed.provider || routed.provider === current.provider;
+    if (providerApplied || modelMatchesCurrentProvider) result.model = routed.model;
+  } else if (providerApplied && routed.provider !== current.provider) result.model = "";
+  return result;
+}
+
+/** Cloning is never preselected: the user has to pick the clone row to allow it. */
+export function initialLaunchTarget(row: Pick<RadarRow, "localProjectRoot">) {
+  return { selectedDir: row.localProjectRoot ?? null, allowClone: false };
+}
+
+export interface RoutingLaunchState {
+  selectedDir: string | null;
+  cwdMode: CwdMode;
+  provider: string;
+}
+
+export function automaticRoutingLaunchState(
+  row: Pick<RadarRow, "localProjectRoot">,
+  current: RoutingLaunchState,
+  defaults: Pick<RoutingLaunchState, "cwdMode" | "provider">,
+  isNewRow: boolean,
+): RoutingLaunchState {
+  if (!isNewRow) return current;
+  const target = initialLaunchTarget(row);
+  return {
+    selectedDir: target.selectedDir,
+    cwdMode: defaults.cwdMode,
+    provider: defaults.provider,
+  };
+}
+
+export function autoLaunchRequiresModal(
+  settings: {
+    autoLaunchMode: "disabled" | "prompt" | "existing_only" | "existing_or_clone";
+    defaultCwdMode: CwdTag;
+  },
+  row: Pick<RadarRow, "hasLocalPlace">,
+): boolean {
+  const shouldAutoLaunch =
+    settings.autoLaunchMode === "existing_or_clone" ||
+    (settings.autoLaunchMode === "existing_only" && row.hasLocalPlace);
+  return !shouldAutoLaunch || settings.defaultCwdMode === "CWD-BASE";
+}
+
+const CWD_TAGS: readonly CwdTag[] = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"];
+
+interface LabelableWorkspace {
+  // Workspaces before Paseo 0.16.0-beta.1 have no setLabel.
+  setLabel?(label: string, options: { assigned: boolean }): unknown;
+}
+
+/** Marks exactly one CWD tag on the workspace; a host without label support is left unlabelled. */
+export async function labelWorkspaceCwd(
+  workspace: LabelableWorkspace,
+  cwdTag: CwdTag,
+): Promise<void> {
+  if (typeof workspace.setLabel !== "function") return;
+  await Promise.all(CWD_TAGS.map((tag) => workspace.setLabel?.(tag, { assigned: tag === cwdTag })));
+}
+
+// A routing script is user-supplied code, so what it may set on a launch is limited to these lists.
+// Permission modes that skip approvals (bypassPermissions, dontAsk, full access) stay out, so only
+// a person can pick them. Provider `options` keys outside the list are dropped the same way.
+export const ROUTED_MODE_IDS: readonly string[] = ["default", "plan", "acceptEdits", "read-only"];
+export const ROUTED_OPTION_KEYS: readonly string[] = ["contextMode"];
+
+export interface RestrictedRouting {
+  modeId?: string;
+  options?: Record<string, unknown>;
+  ignored: string[];
+}
+
+export function restrictRoutedLaunch(routed: {
+  modeId?: string;
+  options?: Record<string, unknown>;
+}): RestrictedRouting {
+  const ignored: string[] = [];
+  const result: RestrictedRouting = { ignored };
+  const modeId = routed.modeId?.trim();
+  if (modeId) {
+    if (ROUTED_MODE_IDS.includes(modeId)) result.modeId = modeId;
+    else ignored.push(`modeId ${modeId}`);
+  }
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(routed.options ?? {})) {
+    if (ROUTED_OPTION_KEYS.includes(key)) kept[key] = value;
+    else ignored.push(`options.${key}`);
+  }
+  if (Object.keys(kept).length > 0) result.options = kept;
+  return result;
+}
+
+/**
+ * A profile a routing script names is routed input too: its modeId, options and featureValues
+ * reach the agent config. It is accepted only when the profile asks for nothing a script may not
+ * set itself; otherwise the caller keeps the profile the user chose and reports it as ignored.
+ */
+export function vetRoutedProfile(
+  profiles: readonly (AgentProfileLike & { name: string })[],
+  routedName: string | undefined,
+): { profileName?: string; ignored: string[] } {
+  const wanted = routedName?.trim();
+  if (!wanted) return { ignored: [] };
+  const profile = profiles.find(
+    (candidate) => candidate.name.toLowerCase() === wanted.toLowerCase(),
+  );
+  const modeOk = !profile?.modeId?.trim() || ROUTED_MODE_IDS.includes(profile.modeId.trim());
+  const keysOk = [profile?.options, profile?.featureValues].every((bag) =>
+    Object.keys(bag ?? {}).every((key) => ROUTED_OPTION_KEYS.includes(key)),
+  );
+  if (!profile || !modeOk || !keysOk) return { ignored: [`profile ${wanted}`] };
+  return { profileName: profile.name, ignored: [] };
+}
+
+export interface AgentLaunchOverrides {
+  provider?: string;
+  model?: string;
+  modeId?: string;
+  thinkingOptionId?: string;
+  contextMode?: string;
+  options?: Record<string, unknown>;
+}
+
+export function buildAgentConfig(
+  profile: AgentProfileLike | undefined,
+  overrides: AgentLaunchOverrides = {},
+) {
+  const baseProvider = overrides.provider?.trim() || profile?.provider || "claude";
+  const baseModel = overrides.model?.trim() || (overrides.provider?.trim() ? "" : profile?.model);
+  const provider = baseModel ? `${baseProvider}/${baseModel}` : baseProvider;
+  const modeId = overrides.modeId?.trim() || profile?.modeId;
+  const thinkingOptionId = overrides.thinkingOptionId?.trim() || profile?.thinkingOptionId;
+  const mergedOptions: Record<string, unknown> = {
+    ...(profile?.options ?? {}),
+    ...(overrides.options ?? {}),
+    ...(overrides.contextMode?.trim() ? { contextMode: overrides.contextMode.trim() } : {}),
+  };
+  return {
+    provider,
+    ...(modeId ? { modeId } : {}),
+    ...(thinkingOptionId ? { thinkingOptionId } : {}),
+    ...(Object.keys(mergedOptions).length > 0 ? { options: mergedOptions } : {}),
+    ...(profile?.featureValues && Object.keys(profile.featureValues).length > 0
+      ? { featureValues: profile.featureValues }
+      : {}),
+  };
+}
+
+export function splitDraftRows(rows: readonly RadarRow[]): {
+  pullRequests: RadarRow[];
+  draftPullRequests: RadarRow[];
+} {
+  const pullRequests: RadarRow[] = [];
+  const draftPullRequests: RadarRow[] = [];
+  for (const row of rows) {
+    if (row.isDraft) {
+      draftPullRequests.push(row);
+    } else {
+      pullRequests.push(row);
+    }
+  }
+  return { pullRequests, draftPullRequests };
+}
+
+export function buildIssueRows(
+  snapshot: RadarSnapshot | undefined,
+  issueItems: readonly GitHubIssueItem[],
+): RadarRow[] {
+  const roots = snapshot?.repositoryRoots ?? {};
+  const matches = snapshot?.issueMatches ?? {};
+  return issueItems.map((item) => {
+    const issueKey = `${item.repository.toLowerCase()}#issue-${item.number}`;
+    const matched = matches[issueKey];
+    const localProjectRoot = roots[item.repository.toLowerCase()] ?? null;
+    const agents = matched ? [...matched.agents] : [];
+    const workspaceIds = matched ? [...matched.workspaceIds] : [];
+    const workspaceNames = matched ? [...matched.workspaceNames] : [];
+    const cwdTag = matched?.cwdTag ?? "CWD-TBD";
+    const roleLabel =
+      item.role === "author"
+        ? "Authored issue"
+        : item.role === "assignee"
+          ? "Assigned to you"
+          : "Open in your repository";
+    const humanBlocker = attentionReason(agents);
+    const activeAgent = hasActiveAgent(agents);
+    const bucket: RadarBucket = humanBlocker
+      ? "needs-you"
+      : activeAgent
+        ? "being-handled"
+        : hasFailedAgent(agents)
+          ? "needs-you"
+          : item.role === "assignee"
+            ? "needs-you"
+            : "waiting";
+    return {
+      itemKind: "issue",
+      issueRole: item.role,
+      id: issueKey,
+      number: item.number,
+      url: item.url,
+      title: item.title,
+      repository: item.repository,
+      baseRefName: "",
+      headRefName: item.title,
+      isDraft: false,
+      author: item.author,
+      authorKind: item.authorKind,
+      isSecurity: item.isSecurity,
+      comments: item.comments,
+      labels: [...item.labels],
+      changes: [],
+      linkedIssues: [],
+      cwdTag,
+      hasLocalPlace: Boolean(localProjectRoot) || workspaceIds.length > 0,
+      mergeable: "UNKNOWN",
+      mergeStateStatus: null,
+      checksStatus: "none",
+      reviewDecision: null,
+      checks: [],
+      workspaceIds,
+      workspaceNames,
+      localProjectRoot,
+      agents,
+      ownership: item.role === "author" ? "mine" : "external",
+      reviewRequestedFromMe: false,
+      bucket,
+      reason: roleLabel,
+      activityAt: item.updatedAt,
+      refreshedAt: item.updatedAt,
+    };
+  });
 }

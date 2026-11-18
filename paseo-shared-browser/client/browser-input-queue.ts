@@ -84,6 +84,8 @@ export const BROWSER_INPUT_IDLE_MS = 4_000;
 export const BROWSER_INPUT_KEEPALIVE_MS = 2_000;
 const MAX_QUEUED_COMMANDS = 64;
 const MAX_WHEEL_DELTA = 4_000;
+/** Per-event text limit the gesture schema and runtime owner enforce. */
+const MAX_TEXT_LENGTH = 16_000;
 const MAX_FRAME_ADMISSION_ATTEMPTS = 3;
 const FRAME_ADMISSION_WAIT_MS = 4_000;
 
@@ -550,6 +552,16 @@ export function createBrowserInputQueue(options: QueueOptions) {
           previous.event = { ...event, deltaX, deltaY };
           return true;
         }
+      }
+      // Soft keyboards commit text in small pieces, one update each. Text still
+      // queued behind the in-flight call is one insertion; never merge across keys.
+      if (
+        event.kind === "text" &&
+        previous.event.kind === "text" &&
+        previous.event.text.length + event.text.length <= MAX_TEXT_LENGTH
+      ) {
+        previous.event = { kind: "text", text: previous.event.text + event.text };
+        return true;
       }
     }
     if (commands.length >= MAX_QUEUED_COMMANDS) {

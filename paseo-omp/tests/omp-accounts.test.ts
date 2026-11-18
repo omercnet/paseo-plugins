@@ -335,6 +335,58 @@ describe.skipIf(ON_WINDOWS)("listing", () => {
     expect(usedBy(4)).toBe(0.9);
   });
 
+  test("tags each login with its plan and organization instead of repeating it in the label", async () => {
+    const view = await (
+      await install({
+        usage: {
+          reports: [
+            {
+              provider: "anthropic",
+              fetchedAt: NOW,
+              limits: [limit("anthropic:5h", 0.25)],
+              metadata: {
+                accountId: "acc-a",
+                email: "a@example.test",
+                orgName: "Org A",
+              },
+            },
+            {
+              provider: "anthropic",
+              fetchedAt: NOW,
+              limits: [limit("anthropic:5h", 0.9)],
+              metadata: {
+                accountId: "acc-b",
+                email: "b@example.test",
+                orgName: "b@example.test's Organization",
+              },
+            },
+            {
+              provider: "openai-codex",
+              fetchedAt: NOW,
+              limits: [limit("openai-codex:5h", 0.1)],
+              metadata: {
+                accountId: "acc-c",
+                // A blank planType falls back to plan, as Copilot-style reports carry it.
+                planType: "  ",
+                plan: "self_serve_business_prolite",
+                orgName: "self_serve_business_prolite",
+              },
+            },
+          ],
+        },
+      })
+    ).list(undefined, false);
+    const shown = view.accounts.map(({ label, tags }) => ({ label, tags }));
+
+    expect(shown).toEqual([
+      { label: "a@example.test", tags: ["Org A"] },
+      // OMP's label names Org B, but the report says this login is the personal organization.
+      { label: "b@example.test (Org B)", tags: ["Personal"] },
+      { label: "c@example.test", tags: ["Business"] },
+      { label: "key", tags: [] },
+    ]);
+  });
+
   test("does not guess between same-provider logins it cannot tell apart", async () => {
     const accounts = await install({
       resets: { accounts: [] },
