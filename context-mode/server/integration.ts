@@ -1,7 +1,8 @@
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import type { IntegrationAudit, ProviderIntegration } from "../shared/contracts";
 import {
   CONTEXT_MODE_PROVIDERS,
@@ -117,7 +118,10 @@ type ProbeContext = {
   env: Readonly<Record<string, string | undefined>>;
 };
 
-type NativeProbe = { kind: "path"; path: string } | { kind: "file"; path: string; marker: string };
+type NativeProbe =
+  | { kind: "path"; path: string }
+  | { kind: "file"; path: string; marker: string }
+  | { kind: "omp-plugin"; path: string };
 
 /**
  * Where `context-mode setup` (or the agent's own plugin install) registers Context Mode, with
@@ -202,6 +206,42 @@ async function defaultFileContains(path: string, text: string): Promise<boolean>
   }
 }
 
+/** OMP's plugin lock file; a larger one is not a lock file this probe understands. */
+const OMP_LOCK_LIMIT = 1_024 * 1_024;
+
+/** `omp plugin disable` keeps the entry and clears `enabled`; uninstall deletes it. */
+const OmpLockSchema = z.object({
+  plugins: z.object({ "context-mode": z.object({ enabled: z.literal(true) }) }),
+});
+
+/**
+ * Whether OMP's lock file lists Context Mode as enabled. The file can hold other plugins'
+ * settings, so only this boolean leaves the function, and any failure reads as not installed.
+ */
+export async function ompPluginEnabled(path: string): Promise<boolean> {
+  try {
+    const metadata = await stat(path);
+    if (!metadata.isFile() || metadata.size > OMP_LOCK_LIMIT) return false;
+    const handle = await open(path, "r");
+    try {
+      // One byte past the stat size tells a file that grew since from a complete read.
+      const buffer = Buffer.alloc(metadata.size + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+        if (bytesRead === 0) break;
+        length += bytesRead;
+      }
+      if (length > metadata.size) return false;
+      return OmpLockSchema.safeParse(JSON.parse(buffer.toString("utf8", 0, length))).success;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
 async function anyProbeMatches(
   probes: readonly NativeProbe[],
   dependencies: IntegrationDependencies,
@@ -209,13 +249,11 @@ async function anyProbeMatches(
   const pathExists = dependencies.pathExists ?? defaultPathExists;
   const fileContains = dependencies.fileContains ?? defaultFileContains;
   for (const probe of probes) {
-    if (
-      probe.kind === "path"
-        ? await pathExists(probe.path)
-        : await fileContains(probe.path, probe.marker)
-    ) {
-      return true;
-    }
+    let matched: boolean;
+    if (probe.kind === "path") matched = await pathExists(probe.path);
+    else if (probe.kind === "file") matched = await fileContains(probe.path, probe.marker);
+    else matched = await ompPluginEnabled(probe.path);
+    if (matched) return true;
   }
   return false;
 }
@@ -247,14 +285,11 @@ function piProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
 }
 
 function ompProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
-  const agentDir = env.PI_CODING_AGENT_DIR || join(home, ".omp", "agent");
+  const configDir = join(home, env.PI_CONFIG_DIR || ".omp");
+  const agentDir = env.PI_CODING_AGENT_DIR || join(configDir, "agent");
   const probes: NativeProbe[] = [
-    // `omp plugin install context-mode` records itself here; 2.2 runs in-process, not over MCP.
-    {
-      kind: "file",
-      path: join(home, ".omp", "plugins", "omp-plugins.lock.json"),
-      marker: '"context-mode"',
-    },
+    // `omp plugin install context-mode` records itself here; an MCP-config install is in mcp.json.
+    { kind: "omp-plugin", path: join(configDir, "plugins", "omp-plugins.lock.json") },
     { kind: "file", path: join(agentDir, "mcp.json"), marker: '"context-mode"' },
   ];
   if (cwd)
@@ -265,9 +300,9 @@ function ompProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
 const OMP_POLICY: HostOnlyPolicy = {
   probes: ompProbes,
   installed:
-    "OMP runs its own Context Mode, so Paseo injects nothing. From Context Mode 2.2, OMP records its sessions in the shared store, so they appear in Savings.",
+    "OMP runs its own Context Mode, so Paseo injects nothing. From Context Mode 2.2, OMP records its sessions in the shared store, so they appear in Savings; 1.x sessions do not.",
   missing:
-    "Context Mode runs inside OMP only as its own plugin, so Paseo cannot inject it. Install Context Mode 2.2 or later in OMP with `omp plugin install context-mode`.",
+    "OMP runs Context Mode itself, as its own plugin or from its MCP config, so Paseo cannot inject it. Install Context Mode 2.2 or later in OMP with `omp plugin install context-mode`.",
 };
 
 const HOST_ONLY: Readonly<Record<string, HostOnlyPolicy>> = {
