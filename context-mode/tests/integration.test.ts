@@ -1,10 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   createIntegrationAudit,
   injectContextModeOnCreate,
+  ompPluginEnabled,
   readProviderOverrides,
 } from "../server/integration";
 import { ContextModeSettingsSchema } from "../shared/settings";
@@ -321,6 +322,71 @@ describe("integration audit", () => {
     expect(omp.providers.find(({ provider }) => provider === "pi")).toMatchObject({
       activation: "disabled",
     });
+  });
+
+  test("reports OMP's own enabled Context Mode plugin as native, read from its real lock file", async () => {
+    const home = await mkdtemp(join(tmpdir(), "paseo-context-mode-home-"));
+    try {
+      const plugins = join(home, ".omp-work", "plugins");
+      await mkdir(plugins, { recursive: true });
+      const lock = (enabled: boolean) =>
+        writeFile(
+          join(plugins, "omp-plugins.lock.json"),
+          JSON.stringify({ plugins: { "context-mode": { version: "2.2.0", enabled } } }),
+        );
+      const omp = async () => {
+        const audit = await createIntegrationAudit(settings, {
+          home,
+          env: { PI_CONFIG_DIR: ".omp-work" },
+        });
+        return ["omp", "omp-plugin"].map((id) =>
+          audit.providers.find(({ provider }) => provider === id),
+        );
+      };
+
+      await lock(true);
+      for (const row of await omp()) {
+        expect(row).toMatchObject({ platform: null, activation: "native" });
+        expect(row?.detail).toContain("appear in Savings");
+      }
+      // `omp plugin disable` keeps the entry with enabled false.
+      await lock(false);
+      for (const row of await omp()) {
+        expect(row).toMatchObject({ platform: null, activation: "disabled" });
+        expect(row?.detail).toContain("`omp plugin install context-mode`");
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("reads only an enabled context-mode entry from a bounded, well-formed OMP lock file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "paseo-context-mode-omp-lock-"));
+    const lockOf = (plugins: unknown) => JSON.stringify({ plugins, settings: {} });
+    const cases: [string, string, boolean][] = [
+      ["enabled", lockOf({ "context-mode": { enabled: true } }), true],
+      ["disabled", lockOf({ "context-mode": { enabled: false } }), false],
+      ["missing", lockOf({ other: { enabled: true } }), false],
+      ["suffixed", lockOf({ "context-mode-x": { enabled: true } }), false],
+      ["scoped", lockOf({ "@s/context-mode": { enabled: true } }), false],
+      ["malformed", '{"plugins":{"context-mode":{"enabled":true}', false],
+      [
+        "oversized",
+        `${lockOf({ "context-mode": { enabled: true } })}${" ".repeat(1_024 * 1_024)}`,
+        false,
+      ],
+    ];
+    try {
+      for (const [name, content, expected] of cases) {
+        const path = join(dir, `${name}.json`);
+        await writeFile(path, content);
+        expect(await ompPluginEnabled(path), name).toBe(expected);
+      }
+      expect(await ompPluginEnabled(join(dir, "absent.json"))).toBe(false);
+      expect(await ompPluginEnabled(dir)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("never injects into Pi or OMP agents, even with their own install present", async () => {
