@@ -183,13 +183,23 @@ export function StartAgentModal({
         return;
       }
       const vetted = vetRoutedProfile(profiles, result.profile);
+      // Resolve the accepted profile locally (the profiles state has not updated inside this
+      // handler yet), falling back the same way the launch mutation does for an empty profile name.
+      const acceptedProfileName =
+        vetted.profileName && !editedFieldsRef.current.has("profile")
+          ? vetted.profileName
+          : profileName;
       if (vetted.profileName && !editedFieldsRef.current.has("profile")) {
         setProfileName(vetted.profileName);
       }
+      const wantedProfile = acceptedProfileName.trim().toLowerCase();
+      const selectedProfile =
+        (wantedProfile
+          ? profiles.find((candidate) => candidate.name.toLowerCase() === wantedProfile)
+          : undefined) ??
+        profiles.find((candidate) => candidate.name.toLowerCase() === "model router") ??
+        profiles[0];
       const canApplyProvider = !editedFieldsRef.current.has("provider");
-      const selectedProfile = profiles.find(
-        (candidate) => candidate.name.toLowerCase() === profileName.trim().toLowerCase(),
-      );
       const currentProvider =
         (canApplyProvider ? launchState.provider : providerRef.current)?.trim() ||
         selectedProfile?.provider ||

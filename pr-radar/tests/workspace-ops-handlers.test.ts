@@ -892,7 +892,9 @@ describe("git hardening", () => {
     gitIn(repoDir, ["checkout", "main"]);
     const wt = join(root, "issue-wt");
     gitIn(repoDir, ["worktree", "add", "--no-checkout", wt, "pr-radar/issue-12"]);
-    // A local file colliding with the tracked path would be hidden from `git status` as ignored.
+    // Ignore `work.txt` so `git status` would miss it; the filesystem check must still catch it.
+    const exclude = join(repoDir, gitIn(repoDir, ["rev-parse", "--git-path", "info/exclude"]));
+    appendFileSync(exclude, "work.txt\n");
     writeFileSync(join(wt, "work.txt"), "local secret\n");
     await expect(
       prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
