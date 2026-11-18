@@ -57,6 +57,13 @@ const MAX_GLOBAL_MEDIA_IN_FLIGHT = 48;
 const MAX_HEARTBEATS_IN_FLIGHT = 1;
 const AGENT_TICKET_TTL_MS = 10 * 60_000;
 const MAX_UNBOUND_AGENT_TICKETS = 256;
+// A session-open hook issues and then binds a ticket in two requests, so an agent archived between them must not
+// get a ticket bound after its revocation took its snapshot. A bind for an agent revoked this recently is refused;
+// a later bind (the agent was restored) is allowed.
+const REVOKED_AGENT_BIND_REFUSAL_MS = 60_000;
+// Every interactive open of a label-selected agent binds a fresh ticket, so one agent keeps at most this many; the
+// oldest is dropped first.
+const MAX_BOUND_TICKETS_PER_AGENT = 8;
 type SupervisorTimer = NodeJS.Timeout;
 
 export interface RuntimeInstance {
@@ -138,6 +145,7 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
   private readonly agentRequestContext = new AsyncLocalStorage<AgentPublicationContext>();
   private readonly agentBindings = new Map<string, AgentBinding>();
   private readonly agentTickets = new Map<string, Set<string>>();
+  private readonly recentlyRevokedAgents = new Map<string, number>();
   private activeBridge: ActiveBridge | null = null;
   private nextEpoch = 0;
   private bridgeTimer: SupervisorTimer | null = null;
@@ -631,6 +639,11 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
     if (this.archived.has(workspaceId)) this.workspaceArchived(workspaceId);
     if (binding.agentId && (binding.agentId !== agentId || binding.workspaceId !== workspaceId))
       throw new RuntimeProtocolError("AUTHENTICATION_FAILED", "Agent ticket is already bound");
+    const revokedAt = this.recentlyRevokedAgents.get(agentId);
+    if (revokedAt !== undefined && this.now() - revokedAt < REVOKED_AGENT_BIND_REFUSAL_MS) {
+      this.agentBindings.delete(ticket);
+      throw new RuntimeProtocolError("AUTHENTICATION_FAILED", "Agent was revoked");
+    }
     binding.agentId = agentId;
     binding.workspaceId = workspaceId;
     let tickets = this.agentTickets.get(agentId);
@@ -639,11 +652,22 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
       this.agentTickets.set(agentId, tickets);
     }
     tickets.add(ticket);
+    for (const oldest of tickets) {
+      if (tickets.size <= MAX_BOUND_TICKETS_PER_AGENT) break;
+      tickets.delete(oldest);
+      const dropped = this.agentBindings.get(oldest);
+      this.agentBindings.delete(oldest);
+      if (dropped?.viewerToken) void this.browserPolicy.detach(dropped.viewerToken).catch(() => {});
+    }
     return { bound: true };
   }
 
   private async revokeAgent(bridgeId: string, epoch: number, agentId: string): Promise<JsonValue> {
     this.assertActiveBridge(bridgeId, epoch);
+    const now = this.now();
+    for (const [id, at] of this.recentlyRevokedAgents)
+      if (now - at >= REVOKED_AGENT_BIND_REFUSAL_MS) this.recentlyRevokedAgents.delete(id);
+    this.recentlyRevokedAgents.set(agentId, now);
     const tickets = this.agentTickets.get(agentId);
     if (!tickets) return { revoked: 0 };
     const viewers: string[] = [];

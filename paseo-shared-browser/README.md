@@ -174,7 +174,7 @@ differently from the other lists: a server returned from that hook lasts for tha
 added in `agent.create` is stored on the agent. So an agent with a matching label gets the adapter in
 every interactive session it opens (a new agent, a resume, a refresh, an import), each time with a fresh
 ticket bound to that agent and its workspace; the tickets are revoked together when the agent is
-archived. Helper (background) agents, history sessions and sessions without a workspace are skipped. If
+archived, and an agent keeps at most eight bound tickets (the oldest is dropped first). Helper (background) agents, history sessions and sessions without a workspace are skipped. If
 the ticket cannot be issued or bound the session opens without the tool and the log gets one line. In
 "Every new agent" mode this does nothing, because every new agent already has the tool; an agent that
 the create hook already gave a ticket is not given a second one.
