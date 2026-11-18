@@ -323,6 +323,24 @@ describe("integration audit", () => {
     });
   });
 
+  test("reports OMP's own Context Mode plugin as native, its sessions in Savings", async () => {
+    const lock = join("/home/test", ".omp", "plugins", "omp-plugins.lock.json");
+    const audit = await createIntegrationAudit(settings, {
+      ...noNative,
+      fileContains: async (path, marker) => path === lock && marker === '"context-mode"',
+    });
+    for (const provider of ["omp", "omp-plugin"]) {
+      const row = audit.providers.find((entry) => entry.provider === provider);
+      expect(row).toMatchObject({ platform: null, activation: "native" });
+      expect(row?.detail).toContain("appear in Savings");
+    }
+
+    const missing = await createIntegrationAudit(settings, noNative);
+    expect(missing.providers.find(({ provider }) => provider === "omp")?.detail).toContain(
+      "`omp plugin install context-mode`",
+    );
+  });
+
   test("never injects into Pi or OMP agents, even with their own install present", async () => {
     for (const provider of ["pi", "omp", "omp-plugin"]) {
       const request = { config: { provider, cwd: "/work", mcpServers: {} } };

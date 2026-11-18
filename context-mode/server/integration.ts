@@ -249,6 +249,12 @@ function piProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
 function ompProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
   const agentDir = env.PI_CODING_AGENT_DIR || join(home, ".omp", "agent");
   const probes: NativeProbe[] = [
+    // `omp plugin install context-mode` records itself here; 2.2 runs in-process, not over MCP.
+    {
+      kind: "file",
+      path: join(home, ".omp", "plugins", "omp-plugins.lock.json"),
+      marker: '"context-mode"',
+    },
     { kind: "file", path: join(agentDir, "mcp.json"), marker: '"context-mode"' },
   ];
   if (cwd)
@@ -259,9 +265,9 @@ function ompProbes({ home, cwd, env }: ProbeContext): NativeProbe[] {
 const OMP_POLICY: HostOnlyPolicy = {
   probes: ompProbes,
   installed:
-    "OMP loads its own Context Mode server from its MCP config, so Paseo injects nothing. Context Mode 2 has no OMP integration (upstream keeps OMP on 1.0.169), so OMP's sessions are not shown here.",
+    "OMP runs its own Context Mode, so Paseo injects nothing. From Context Mode 2.2, OMP records its sessions in the shared store, so they appear in Savings.",
   missing:
-    "Context Mode 2 has no OMP integration, so Paseo injects nothing. Upstream keeps OMP on Context Mode 1.0.169, installed through OMP's own plugins.",
+    "Context Mode runs inside OMP only as its own plugin, so Paseo cannot inject it. Install Context Mode 2.2 or later in OMP with `omp plugin install context-mode`.",
 };
 
 const HOST_ONLY: Readonly<Record<string, HostOnlyPolicy>> = {
