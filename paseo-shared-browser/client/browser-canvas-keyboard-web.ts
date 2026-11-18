@@ -57,6 +57,18 @@ interface BindingOptions {
   onError(error: Error): void;
 }
 
+// Android soft keyboards delete through InputConnection.deleteSurroundingText.
+// Chrome reports keydown 229/"Unidentified", then beforeinput delete* only when
+// the sink has text next to the caret. With an empty sink the keydown and keyup
+// are all that arrive, so the sink always keeps one invisible character to delete.
+const SINK_TEXT = "\u200B";
+// Character deletions map to the key a hardware keyboard sends. Word deletions
+// stay unmapped: the remote shortcut depends on the host OS (Ctrl or Option).
+const IME_EDIT_KEYS: Record<string, string> = {
+  deleteContentBackward: "Backspace",
+  deleteContentForward: "Delete",
+};
+
 /** DOM-only binding; callers must dispose it and reset on route/control changes. */
 export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: BindingOptions) {
   const document = node.ownerDocument;
@@ -80,13 +92,14 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
   });
   node.tabIndex = 0;
   node.appendChild(sink);
+  sink.value = SINK_TEXT;
   let composing = false;
   let compositionAdmitted = false;
   let altTextPending: string | null = null;
-  // Soft keyboards (Android Chrome) report committed text outside a composition,
-  // such as a space after a word or every key on non-predictive keyboards, as
-  // keydown 229/"Unidentified" followed by beforeinput insertText. That keydown
-  // carries no key to forward, so the insertion itself is the only text source.
+  // Soft keyboards (Android Chrome) report edits outside a composition, such as
+  // a space after a word, every key on non-predictive keyboards, or Backspace,
+  // as keydown 229/"Unidentified" followed by beforeinput insertText or delete*.
+  // That keydown carries no key to forward, so the edit itself is the only source.
   let imeTextPending = false;
   const focused = () => document.activeElement === sink || document.activeElement === node;
   const keyboard = createBrowserCanvasKeyboard({
@@ -103,7 +116,7 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
     composing = false;
     altTextPending = null;
     imeTextPending = false;
-    sink.value = "";
+    sink.value = SINK_TEXT;
   };
   const cancel = () => {
     reset();
@@ -177,12 +190,31 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
     if (accepted) {
       commitText(event.data ?? "");
     }
-    sink.value = "";
+    sink.value = SINK_TEXT;
+  };
+  // One full press, as the matching hardware key would send it.
+  const pressKey = (key: string) => {
+    const press = {
+      key,
+      code: key,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      repeat: false,
+    };
+    if (keyboard.key("down", press)) {
+      keyboard.key("up", press);
+    }
   };
   const beforeInput = (event: KeyboardDomEvent) => {
     if (!composing && options.enabled() && focused()) {
       consume(event);
-      if (
+      const editKey =
+        imeTextPending && event.inputType ? IME_EDIT_KEYS[event.inputType] : undefined;
+      if (editKey) {
+        pressKey(editKey);
+      } else if (
         event.inputType === "insertText" &&
         event.data &&
         (imeTextPending || event.data === altTextPending)
@@ -192,6 +224,13 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
       altTextPending = null;
     }
   };
+  // Blink applies a deleteSurroundingText deletion even when its beforeinput was
+  // cancelled. Put the sink text back so the next Backspace still has a target.
+  const input = () => {
+    if (!composing && sink.value !== SINK_TEXT) {
+      sink.value = SINK_TEXT;
+    }
+  };
   const paste = (event: KeyboardDomEvent) => {
     if (!options.enabled() || !focused()) {
       return;
@@ -199,7 +238,7 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
     consume(event);
     altTextPending = null;
     commitText(event.clipboardData?.getData("text/plain") ?? "");
-    sink.value = "";
+    sink.value = SINK_TEXT;
   };
   const visibility = () => {
     if (document.hidden) {
@@ -216,6 +255,7 @@ export function bindBrowserCanvasKeyboard(node: KeyboardCanvasNode, options: Bin
     [sink, "compositionstart", compositionStart],
     [sink, "compositionend", compositionEnd],
     [sink, "beforeinput", beforeInput],
+    [sink, "input", input],
     [sink, "paste", paste],
     [sink, "blur", cancel],
   ];
