@@ -544,9 +544,13 @@ describe("agent access by label", () => {
   });
 
   it("leaves a session alone when the server was already stored on the agent at creation", async () => {
+    // The host sends mcpServers as {} to out-of-process plugins; the env ticket is the only sign of a stored server.
     const { open: hook } = captureHooks(ready({ labels: ["team"] }));
-    const stored = { other: { type: "stdio" }, "shared-browser": { type: "stdio" } };
-    const request = open({ reason: "resume", mcpServers: stored });
+    const request = open({
+      reason: "resume",
+      mcpServers: {},
+      env: { PASEO_SHARED_BROWSER_TICKET: "t".repeat(32) },
+    });
     expect(await hook({ request })).toBe(request);
     expect(browserMocks.issueAgentTicket).not.toHaveBeenCalled();
   });

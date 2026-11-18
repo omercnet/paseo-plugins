@@ -179,6 +179,10 @@ the ticket cannot be issued or bound the session opens without the tool and the 
 "Every new agent" mode this does nothing, because every new agent already has the tool; an agent that
 the create hook already gave a ticket is not given a second one.
 
+Labels are a convenience for choosing agents, not a lock. Any connected client with write access, and any agent
+that has Paseo tools, can set or delete labels on any agent, itself included, so a label does not keep an
+untrusted agent away from the browser.
+
 `agent.create` carries the provider and the working directory but no labels and no workspace id, so a
 workspace or project is matched by directory: the workspace whose directory is the agent's directory or
 the deepest one containing it. Both directories are normalized first (separators, `.` and `..` segments),

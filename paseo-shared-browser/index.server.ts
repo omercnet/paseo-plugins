@@ -225,6 +225,8 @@ export default function contribute(server: PluginServerContext) {
       const { [TICKET_ENV]: _ticket, ...environment } = request.env;
       return { ...request, env: environment };
     }
+    // The env ticket is the only signal that the create hook already stored the server on this agent: the host sends
+    // mcpServers as {} to out-of-process plugins, so that field says nothing about what is stored.
     if (ticket) return request;
     return injectByLabel(request);
   });
@@ -241,8 +243,6 @@ export default function contribute(server: PluginServerContext) {
     if (request.purpose !== "interactive" || background === true || !request.workspaceId)
       return request;
     if (!labels || Object.keys(labels).length === 0) return request;
-    // A server stored on the agent at creation (chosen by provider, workspace or project) is already there on every resume.
-    if (mcpServers && Object.hasOwn(mcpServers, MCP_SERVER_ID)) return request;
     if (!agentGetsBrowserByLabel(await readAccess(true), labels)) return request;
     const ticket = randomBytes(32).toString("base64url");
     if (!(await issueTicketWithinDeadline(ticket))) {

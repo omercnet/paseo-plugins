@@ -136,7 +136,7 @@ export function AgentAccessSettings({ theme }: PluginSurfaceProps) {
         <SettingsInput
           ref={labels}
           label="Labels"
-          hint="A label key (team) or key=value (team=blue). An agent with a matching label gets the tool in every session, including after a resume."
+          hint="A label key (team) or key=value (team=blue). An agent with a matching label gets the tool in every session, including after a resume. Labels pick agents for convenience; they do not keep an untrusted agent away from the browser, because any agent with Paseo tools can set its own labels."
           initialValue={values.labels.join(", ")}
           error={listErrors.labels}
           onChangeText={() => {}}
