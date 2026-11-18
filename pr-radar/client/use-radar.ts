@@ -4,7 +4,7 @@ import { useEffect, useMemo } from "react";
 import { viewerScope } from "../shared/viewer-scope";
 import { loadAgents, loadWorkspaces } from "./directory-load";
 import { observeDirectoryInvalidation } from "./directory-observation";
-import { applyViewerScope, buildRadarSnapshot, mergeInboxRows } from "./radar";
+import { applyViewerScope, buildIssueRows, buildRadarSnapshot, mergeInboxRows } from "./radar";
 import { radarWarnings, VIEWER_URL_LIMIT } from "./screen-state";
 
 // `live` owns the refresh timers. The sidebar is live unless the screen is open (the screen is
@@ -63,6 +63,10 @@ export function useRadar(hostId: string, windowDays = 30, live = true) {
       ),
     [directory.data, viewer.data],
   );
+  const issues = useMemo(
+    () => buildIssueRows(directory.data, viewer.data?.issueItems ?? []),
+    [directory.data, viewer.data],
+  );
   const warnings = radarWarnings({
     directoryError: Boolean(directory.error),
     directoryTruncated: Boolean(directory.data?.truncated),
@@ -75,12 +79,12 @@ export function useRadar(hostId: string, windowDays = 30, live = true) {
     paseo,
     queryKey,
     rows,
+    issues,
     rawRows,
     warnings,
     data: directory.data,
     error: directory.error,
     isPending: directory.isPending,
-    isFetching: directory.isFetching || viewer.isFetching,
     refetch: directory.refetch,
     viewerData: viewer.data,
     viewerError: viewer.data?.error ?? viewer.error,

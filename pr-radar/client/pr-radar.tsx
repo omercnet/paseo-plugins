@@ -1,7 +1,12 @@
-import { openExternalUrl, type PluginSurfaceProps, useRpc } from "@getpaseo/plugin/client";
+import {
+  openExternalUrl,
+  type PluginSurfaceProps,
+  useRpc,
+  useSettings,
+} from "@getpaseo/plugin/client";
 import { copyText } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -11,22 +16,36 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { acknowledgeViewerScope } from "../shared/viewer-scope";
+import { DEFAULT_PR_RADAR_SETTINGS, prRadarSettings } from "../shared/settings";
 import {
+  acknowledgeViewerScope,
+  prepareWorkspaceCwd,
+  runRoutingScript,
+} from "../shared/viewer-scope";
+import { HighlightedText } from "./highlighted-text";
+import {
+  type AgentLaunchOverrides,
   agentActionFor,
+  autoLaunchRequiresModal,
   BUCKET_TITLES,
   BUCKETS,
+  buildAgentConfig,
   buildAgentPrompt,
   checkSummary,
   formatAge,
   hasActiveAgent,
+  labelWorkspaceCwd,
   matchesRow,
   openPullRequestUrl,
   profileAgentConfig,
   type RadarBucket,
   type RadarRow,
+  restrictRoutedLaunch,
+  routedProviderModel,
   type SortKey,
   sortRows,
+  splitDraftRows,
+  vetRoutedProfile,
 } from "./radar";
 import {
   DIRECTORY_PARTIAL,
@@ -34,8 +53,10 @@ import {
   parseRadarParams,
   type RadarFilter,
   VIEWER_URL_LIMIT,
+  viewerCoverage,
 } from "./screen-state";
 import { SortControls } from "./sort-controls";
+import { type StartAgentLaunchRequest, StartAgentModal } from "./start-agent-modal";
 import { useRadar } from "./use-radar";
 import { revealFocusedChip } from "./web";
 
@@ -79,16 +100,25 @@ export function PrRadar({
   host,
   navigation,
   params = {},
-}: PluginSurfaceProps & { params?: Record<string, string> }) {
+  onOpenSettings,
+}: PluginSurfaceProps & { params?: Record<string, string>; onOpenSettings?: () => void }) {
   const queryClient = useQueryClient();
   const acknowledgeUpdates = useRpc(acknowledgeViewerScope);
+  const prepareCwd = useRpc(prepareWorkspaceCwd);
+  const invokeRouter = useRpc(runRoutingScript);
+  const settingsState = useSettings(prRadarSettings);
+  const settings =
+    settingsState.status === "ready" ? settingsState.values : DEFAULT_PR_RADAR_SETTINGS;
   const parsed = parseRadarParams(params);
   // The host's compact flag follows the window, so a pane narrower than the window (the screen
   // sits beside a sidebar) kept the wide card. Measure the radar's own width as well.
   const [narrow, setNarrow] = useState(false);
   const layout = { ...hostLayout, compact: hostLayout.compact || narrow };
   const [filter, setFilterState] = useState<RadarFilter | null>(parsed.filter);
+  const [activeTab, setActiveTab] = useState<"prs" | "issues">("prs");
   const [focusedPr, setFocusedPr] = useState<string | null>(parsed.pr);
+  const [modalRow, setModalRow] = useState<RadarRow | null>(null);
+  const [dprCollapsed, setDprCollapsed] = useState(false);
   // Chips are local state: openScreen would push a new screen per tap. A chip press also ends PR focus.
   const setFilter = (value: RadarFilter | null) => {
     setFilterState(value);
@@ -123,11 +153,16 @@ export function PrRadar({
     refetch,
     rawRows,
     rows,
+    issues,
     viewerData,
     viewerError,
-    isFetching,
     refetchViewer,
   } = useRadar(host.id, windowDays);
+  // Only a press shows "Scanning": agent updates and the poll refetch in the background, and keying
+  // the label on those flashed it every second or two while agents ran.
+  const refreshMutation = useMutation({
+    mutationFn: () => Promise.all([refetch(), refetchViewer()]),
+  });
 
   useEffect(() => {
     const clock = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
@@ -207,6 +242,186 @@ export function PrRadar({
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   });
+
+  const startNewAgentMutation = useMutation({
+    mutationFn: async (request: StartAgentLaunchRequest) => {
+      const { row } = request;
+      if (!row.number) {
+        throw new Error("An issue or pull request number is required to start a new agent.");
+      }
+      const prepared = await prepareCwd({
+        repository: row.repository,
+        prNumber: row.number,
+        itemKind: row.itemKind ?? "pr",
+        headRefName: row.headRefName,
+        baseRefName: row.baseRefName,
+        targetDir: request.targetDir,
+        allowClone: request.allowClone ?? false,
+        cwdMode: request.cwdMode,
+        worktreeName: request.worktreeName,
+      });
+
+      const targetWorkspace = await paseo.workspaces.open(prepared.cwd);
+      await labelWorkspaceCwd(targetWorkspace, prepared.cwdTag);
+
+      const { config } = await paseo.config.get();
+      const profiles = config.agentProfiles ?? [];
+      const wantedProfile = request.profileName.trim().toLowerCase();
+      const profile =
+        (wantedProfile
+          ? profiles.find((candidate) => candidate.name.toLowerCase() === wantedProfile)
+          : undefined) ??
+        profiles.find((candidate) => candidate.name.toLowerCase() === "model router") ??
+        profiles[0];
+
+      const agentConfig = buildAgentConfig(profile, request.overrides);
+      const prompt = buildAgentPrompt(row);
+      const created = await targetWorkspace.agents.create({
+        config: agentConfig,
+        title: `PR Radar: ${row.repository}#${row.number}`,
+        prompt,
+        labels: { "pr-radar.cwd": prepared.cwdTag },
+      });
+
+      if (navigation) {
+        navigation.openAgent({ agentId: created.id, serverId: host.id });
+      }
+      const baseMsg = `Started new agent in ${prepared.cwdTag} (${prepared.cwd}) for ${row.repository}#${row.number}.`;
+      const warnings = [request.routingWarning, prepared.warning].filter(Boolean);
+      return warnings.length > 0 ? `${warnings.join(" ")} ${baseMsg}` : baseMsg;
+    },
+    onMutate: (request) => {
+      setOpenError(null);
+      setActionNotice(request.routingWarning ?? null);
+    },
+    onSuccess: (message) => {
+      setModalRow(null);
+      setActionNotice(message);
+    },
+    onError: (mutationError) => {
+      setOpenError(
+        mutationError instanceof Error ? mutationError.message : "Could not start new agent.",
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+  });
+
+  const autoLaunchingRef = useRef(false);
+
+  const handleStartNewAgentPress = useCallback(
+    async (row: RadarRow) => {
+      if (autoLaunchingRef.current || startNewAgentMutation.isPending) return;
+      setOpenError(null);
+      if (autoLaunchRequiresModal(settings, row)) {
+        if (settings.defaultCwdMode === "CWD-BASE") {
+          setActionNotice("CWD-BASE will switch the selected checkout before the agent starts.");
+        }
+        setModalRow(row);
+        return;
+      }
+
+      autoLaunchingRef.current = true;
+      try {
+        let overrides: AgentLaunchOverrides = {
+          provider: settings.defaultProvider,
+          model: settings.defaultModel,
+          thinkingOptionId: settings.defaultEffort,
+          modeId: settings.defaultModeId,
+          contextMode: settings.defaultContextMode,
+        };
+        let profileName = settings.defaultProfile;
+        let routingWarning: string | undefined;
+
+        if (settings.routingScriptPath.trim()) {
+          try {
+            const routed = await invokeRouter({
+              payload: {
+                pr: {
+                  id: row.id,
+                  number: row.number,
+                  url: row.url,
+                  title: row.title,
+                  repository: row.repository,
+                  baseRefName: row.baseRefName,
+                  headRefName: row.headRefName,
+                  isDraft: row.isDraft,
+                  author: row.author,
+                  authorKind: row.authorKind,
+                  isSecurity: row.isSecurity,
+                  comments: row.comments,
+                  labels: row.labels,
+                  bucket: row.bucket,
+                  reason: row.reason,
+                  reviewRequestedFromMe: row.reviewRequestedFromMe,
+                  ownership: row.ownership,
+                  checksStatus: row.checksStatus,
+                  reviewDecision: row.reviewDecision,
+                  mergeable: row.mergeable,
+                  linkedIssues: row.linkedIssues,
+                },
+                workspace: {
+                  targetDir: row.localProjectRoot ?? null,
+                  cwdMode: settings.defaultCwdMode,
+                  localProjectRoot: row.localProjectRoot,
+                  workspaceIds: row.workspaceIds,
+                },
+                defaults: {
+                  profile: settings.defaultProfile,
+                  provider: settings.defaultProvider,
+                  model: settings.defaultModel,
+                  effort: settings.defaultEffort,
+                  modeId: settings.defaultModeId,
+                  contextMode: settings.defaultContextMode,
+                },
+              },
+            });
+            const vetted = routed.profile
+              ? vetRoutedProfile(
+                  (await paseo.config.get()).config.agentProfiles ?? [],
+                  routed.profile,
+                )
+              : { ignored: [] as string[] };
+            if (vetted.profileName) profileName = vetted.profileName;
+            overrides = { ...overrides, ...routedProviderModel(overrides, routed) };
+            if (routed.thinkingOptionId) {
+              overrides = { ...overrides, thinkingOptionId: routed.thinkingOptionId };
+            }
+            const restricted = restrictRoutedLaunch(routed);
+            restricted.ignored.push(...vetted.ignored);
+            if (restricted.modeId) overrides = { ...overrides, modeId: restricted.modeId };
+            if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
+            if (restricted.options) overrides = { ...overrides, options: restricted.options };
+            if (restricted.ignored.length > 0) {
+              routingWarning = `Routing script values ignored (${restricted.ignored.join(", ")}).`;
+              setActionNotice(routingWarning);
+            }
+          } catch (routerError) {
+            const reason =
+              routerError instanceof Error ? routerError.message : "Routing script failed.";
+            routingWarning = `Routing script failed (${reason}); using PR Radar defaults.`;
+            setActionNotice(routingWarning);
+          }
+        }
+
+        // onError reports the failure; the guard stays held until the mutation has settled.
+        await startNewAgentMutation
+          .mutateAsync({
+            row,
+            targetDir: row.localProjectRoot ?? null,
+            allowClone: settings.autoLaunchMode === "existing_or_clone",
+            cwdMode: settings.defaultCwdMode,
+            worktreeName: null,
+            profileName,
+            overrides,
+            routingWarning,
+          })
+          .catch(() => undefined);
+      } finally {
+        autoLaunchingRef.current = false;
+      }
+    },
+    [invokeRouter, settings, startNewAgentMutation],
+  );
   const counts = useMemo(() => {
     const result: Record<RadarBucket, number> = {
       "needs-you": 0,
@@ -253,6 +468,18 @@ export function PrRadar({
     [activeOnly, now, rows, savedView, search, selected, focusedPr],
   );
   const sortedRows = useMemo(() => sortRows(visibleRows, sortKey), [visibleRows, sortKey]);
+  const { pullRequests, draftPullRequests } = useMemo(
+    () => splitDraftRows(sortedRows),
+    [sortedRows],
+  );
+  const sortedIssues = useMemo(
+    () =>
+      sortRows(
+        issues.filter((row) => matchesRow(row, search)),
+        sortKey,
+      ),
+    [issues, search, sortKey],
+  );
 
   const styles = useMemo(() => {
     const gutter = layout.compact ? 14 : 24;
@@ -266,18 +493,31 @@ export function PrRadar({
         paddingBottom: 48,
       },
       header: {
+        width: "100%" as const,
         paddingHorizontal: gutter,
         paddingTop: layout.compact ? 18 : 28,
         paddingBottom: 18,
         gap: 14,
       },
       signalLine: {
+        width: "100%" as const,
         flexDirection: "row" as const,
         alignItems: "center" as const,
         justifyContent: "space-between" as const,
         gap: 12,
       },
-      signalLabel: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
+      signalLabel: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        flexShrink: 1,
+      },
+      headerActions: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        flexShrink: 0,
+      },
       signalDot: {
         width: 7,
         height: 7,
@@ -332,11 +572,15 @@ export function PrRadar({
       refresh: {
         minHeight: 36,
         justifyContent: "center" as const,
+        alignItems: "center" as const,
         paddingHorizontal: 12,
         borderWidth: 1,
         borderColor: theme.colors.accent,
         borderRadius: 8,
         backgroundColor: theme.colors.accent,
+      },
+      refreshButton: {
+        minWidth: 92,
       },
       refreshPressed: { opacity: 0.72 },
       refreshText: {
@@ -361,16 +605,28 @@ export function PrRadar({
       },
       chipText: { color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" as const },
       chipTextActive: { color: theme.colors.surface0 },
+      tabBar: {
+        flexDirection: "row" as const,
+        flexWrap: "wrap" as const,
+        alignItems: "center" as const,
+        gap: 7,
+      },
+      highlight: {
+        backgroundColor: theme.colors.accent,
+        color: theme.colors.accentForeground,
+      },
       search: {
-        minHeight: 40,
+        flexGrow: 1,
+        flexBasis: 140,
+        minHeight: 32,
         color: theme.colors.foreground,
         backgroundColor: theme.colors.surface1,
         borderWidth: 1,
         borderColor: theme.colors.border,
         borderRadius: 8,
         paddingHorizontal: 12,
-        paddingVertical: 8,
-        fontSize: 14,
+        paddingVertical: 4,
+        fontSize: 13,
       },
       warning: {
         marginHorizontal: gutter,
@@ -442,7 +698,9 @@ export function PrRadar({
       metadata: { color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 17 },
       actions: {
         flexDirection: "row" as const,
+        flexWrap: "wrap" as const,
         alignItems: "center" as const,
+        justifyContent: layout.compact ? ("flex-start" as const) : ("flex-end" as const),
         gap: 8,
         paddingLeft: layout.compact ? 0 : 12,
         paddingTop: layout.compact ? 4 : 0,
@@ -461,10 +719,42 @@ export function PrRadar({
         borderColor: theme.colors.accent,
         backgroundColor: theme.colors.accent,
       },
+      actionStartOrange: {
+        borderColor: "#ea7a33",
+        backgroundColor: "#c2591a",
+      },
+      actionStartBrown: {
+        borderColor: "#9a5f3b",
+        backgroundColor: "#7c4a2d",
+      },
+      actionStartText: { color: "#ffffff" },
       actionAgentText: { color: theme.colors.accentForeground },
       actionDisabled: { opacity: 0.55 },
       actionText: { color: theme.colors.foreground, fontSize: 12, fontWeight: "600" as const },
       actionPrimaryText: { color: theme.colors.accent },
+      dprHeader: {
+        marginTop: 24,
+        marginHorizontal: gutter,
+        paddingVertical: 12,
+        paddingHorizontal: 14,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface1,
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        justifyContent: "space-between" as const,
+      },
+      dprHeaderTitle: {
+        color: theme.colors.foreground,
+        fontSize: 14,
+        fontWeight: "700" as const,
+      },
+      dprHeaderToggle: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 12,
+        fontWeight: "600" as const,
+      },
       empty: {
         paddingHorizontal: gutter,
         paddingVertical: 52,
@@ -494,6 +784,17 @@ export function PrRadar({
     }
   }, []);
 
+  const openIssues = useCallback(async (row: RadarRow) => {
+    setOpenError(null);
+    try {
+      for (const issueUrl of row.linkedIssues) {
+        await openPullRequestUrl(issueUrl, openExternalUrl);
+      }
+    } catch {
+      setOpenError(`Could not open linked issues for ${row.repository}#${row.number ?? "PR"}.`);
+    }
+  }, []);
+
   const copyPrLink = useCallback(async (row: RadarRow) => {
     setOpenError(null);
     setCopied(null);
@@ -515,19 +816,55 @@ export function PrRadar({
     const primaryAgent = item.agents[0];
     const agentAction = agentActionFor(item);
     const actionPending = agentMutation.isPending && agentMutation.variables?.id === item.id;
-    const ownershipLabel = item.reviewRequestedFromMe
-      ? "REVIEW"
-      : item.ownership === "mine"
-        ? "YOURS"
-        : item.ownership === "external"
-          ? "EXTERNAL"
-          : "SCOPE UNKNOWN";
+    const startPending =
+      startNewAgentMutation.isPending && startNewAgentMutation.variables?.row.id === item.id;
+    const ownershipLabel =
+      item.itemKind === "issue"
+        ? item.issueRole === "assignee"
+          ? "ASSIGNED"
+          : item.issueRole === "owner"
+            ? "OWNER"
+            : "AUTHOR"
+        : item.reviewRequestedFromMe
+          ? "REVIEW"
+          : item.ownership === "mine"
+            ? "YOURS"
+            : item.ownership === "external"
+              ? "EXTERNAL"
+              : "SCOPE UNKNOWN";
     const actions = (
       <View style={styles.actions}>
-        {agentAction ? (
+        {item.linkedIssues.length > 0 ? (
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel={`Open ${item.linkedIssues.length} linked issues for ${item.repository} ${item.number ?? ""}`}
+            onPress={() => void openIssues(item)}
+            style={({ pressed }) => [styles.action, pressed && styles.refreshPressed]}
+          >
+            <Text style={styles.actionText}>Open issues ({item.linkedIssues.length})</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Start New Agent for ${item.repository} ${item.number ?? ""}`}
+          accessibilityState={{ busy: startPending, disabled: startNewAgentMutation.isPending }}
+          disabled={startNewAgentMutation.isPending}
+          onPress={() => void handleStartNewAgentPress(item)}
+          style={({ pressed }) => [
+            styles.action,
+            item.hasLocalPlace ? styles.actionStartOrange : styles.actionStartBrown,
+            (pressed || startPending) && styles.refreshPressed,
+            startNewAgentMutation.isPending && styles.actionDisabled,
+          ]}
+        >
+          <Text style={[styles.actionText, styles.actionStartText]}>
+            {startPending ? "Starting…" : "Start New Agent"}
+          </Text>
+        </Pressable>
+        {agentAction?.kind === "ask" ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`${agentAction.kind === "ask" ? "Ask an agent to handle" : "Start an agent for"} ${item.repository} ${item.number ?? ""}`}
+            accessibilityLabel={`Ask an agent to handle ${item.repository} ${item.number ?? ""}`}
             accessibilityState={{ busy: actionPending, disabled: agentMutation.isPending }}
             disabled={agentMutation.isPending}
             onPress={() => agentMutation.mutate(item)}
@@ -539,27 +876,21 @@ export function PrRadar({
             ]}
           >
             <Text style={[styles.actionText, styles.actionAgentText]}>
-              {actionPending
-                ? agentAction.kind === "ask"
-                  ? "Sending…"
-                  : "Starting…"
-                : agentAction.kind === "ask"
-                  ? "Ask agent"
-                  : "Start agent"}
+              {actionPending ? "Sending…" : "Ask agent"}
             </Text>
           </Pressable>
         ) : null}
         {navigation && primaryAgent ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Open agent ${primaryAgent.title}`}
+            accessibilityLabel={`Open Existing Agent ${primaryAgent.title}`}
             onPress={() => {
               const target = { agentId: primaryAgent.id, serverId: host.id };
               navigation.openAgent(target);
             }}
             style={({ pressed }) => [styles.action, pressed && styles.refreshPressed]}
           >
-            <Text style={styles.actionText}>Open agent</Text>
+            <Text style={styles.actionText}>Open Existing Agent</Text>
           </Pressable>
         ) : null}
         {navigation && !primaryAgent && item.workspaceIds[0] ? (
@@ -576,8 +907,18 @@ export function PrRadar({
           </Pressable>
         ) : null}
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Copy link to pull request ${item.repository} ${item.number ?? ""}`}
+          onPress={() => void copyPrLink(item)}
+          style={({ pressed }) => [styles.action, pressed && styles.refreshPressed]}
+        >
+          <Text style={styles.actionText} accessibilityLiveRegion="polite">
+            {copied?.id === item.id ? "Copied" : "Copy link"}
+          </Text>
+        </Pressable>
+        <Pressable
           accessibilityRole="link"
-          accessibilityLabel={`Open pull request ${item.repository} ${item.number ?? ""}`}
+          accessibilityLabel={`Open ${item.itemKind === "issue" ? "issue" : "pull request"} ${item.repository} ${item.number ?? ""}`}
           onPress={() => void openPr(item)}
           style={({ pressed }) => [
             styles.action,
@@ -585,7 +926,9 @@ export function PrRadar({
             pressed && styles.refreshPressed,
           ]}
         >
-          <Text style={[styles.actionText, styles.actionPrimaryText]}>Open PR</Text>
+          <Text style={[styles.actionText, styles.actionPrimaryText]}>
+            {item.itemKind === "issue" ? "Open Issue" : "Open PR"}
+          </Text>
         </Pressable>
       </View>
     );
@@ -596,25 +939,39 @@ export function PrRadar({
         <View style={styles.rowBody}>
           <View style={styles.rowTop}>
             <Text style={styles.identifier} numberOfLines={1}>
-              {item.repository}
-              {item.number ? ` #${item.number}` : ""}
+              <HighlightedText
+                text={`${item.repository}${item.number ? ` #${item.number}` : ""}`}
+                query={search}
+                highlightStyle={styles.highlight}
+              />
             </Text>
             <Text style={styles.badge}>{ownershipLabel}</Text>
+            <Text style={styles.badge}>{item.cwdTag}</Text>
             {item.isDraft ? <Text style={styles.badge}>DRAFT</Text> : null}
             {item.authorKind === "bot" ? <Text style={styles.badge}>BOT</Text> : null}
             {item.isSecurity ? <Text style={styles.badge}>SECURITY</Text> : null}
             {isStale ? <Text style={styles.badge}>STALE</Text> : null}
           </View>
           <Text style={styles.title} numberOfLines={2} ellipsizeMode="tail">
-            {item.title}
+            <HighlightedText text={item.title} query={search} highlightStyle={styles.highlight} />
           </Text>
           <View style={styles.reasonLine}>
             <View style={[styles.reasonDot, { backgroundColor: color }]} />
-            <Text style={styles.reason}>{item.reason}</Text>
+            <Text style={styles.reason}>
+              <HighlightedText
+                text={item.reason}
+                query={search}
+                highlightStyle={styles.highlight}
+              />
+            </Text>
           </View>
           <Text style={styles.metadata} numberOfLines={1} ellipsizeMode="middle">
-            {checkSummary(item)}
-            {branchSummary}
+            {item.itemKind === "issue" ? "Open issue" : checkSummary(item)}
+            <HighlightedText
+              text={branchSummary}
+              query={search}
+              highlightStyle={styles.highlight}
+            />
           </Text>
           <Text style={styles.metadata} numberOfLines={1} ellipsizeMode="tail">
             {item.author ? `${item.author} · ` : ""}
@@ -630,32 +987,30 @@ export function PrRadar({
           {layout.compact ? actions : null}
         </View>
         {layout.compact ? null : actions}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Copy link to pull request ${item.repository} ${item.number ?? ""}`}
-          onPress={() => void copyPrLink(item)}
-          style={({ pressed }) => [styles.copyButton, pressed && styles.refreshPressed]}
-        >
-          <Text style={styles.copyText} accessibilityLiveRegion="polite">
-            {copied?.id === item.id ? "Copied" : "Copy link"}
-          </Text>
-        </Pressable>
       </View>
     );
   };
 
-  const totalCopy = `${rows.length} open ${rows.length === 1 ? "pull request" : "pull requests"}; ${rawRows.length} linked to ${data?.workspaceCount ?? 0} workspaces`;
-  const emptyCopy = focusedPr
-    ? "This pull request is not in the current queue."
-    : search
-      ? "No pull requests match this search."
-      : activeOnly
-        ? "No pull requests have a running or initializing agent."
-        : savedView
-          ? `No pull requests match the ${SAVED_VIEW_TITLES[savedView].toLowerCase()} view.`
-          : selected
-            ? "No pull requests are in this queue."
-            : "No open pull requests are visible to GitHub or linked to a Paseo workspace.";
+  const totalCopy =
+    activeTab === "issues"
+      ? `${issues.length} open ${issues.length === 1 ? "issue" : "issues"}`
+      : `${rows.length} open ${rows.length === 1 ? "pull request" : "pull requests"}; ${rawRows.length} linked to ${data?.workspaceCount ?? 0} workspaces`;
+  const emptyCopy =
+    activeTab === "issues"
+      ? search
+        ? "No issues match this search."
+        : "No open issues authored by or assigned to you were found."
+      : focusedPr
+        ? "This pull request is not in the current queue."
+        : search
+          ? "No pull requests match this search."
+          : activeOnly
+            ? "No pull requests have a running or initializing agent."
+            : savedView
+              ? `No pull requests match the ${SAVED_VIEW_TITLES[savedView].toLowerCase()} view.`
+              : selected
+                ? "No pull requests are in this queue."
+                : "No open pull requests are visible to GitHub or linked to a Paseo workspace.";
   const summaryMetrics = [
     { label: "Action now", value: counts["needs-you"] },
     { label: "Ready", value: counts.ready },
@@ -665,6 +1020,7 @@ export function PrRadar({
     { label: "Agent PRs", value: activeCount },
   ];
 
+  const coverage = viewerCoverage(activeTab, viewerData);
   const header = (
     <View style={styles.header}>
       <View style={styles.signalLine}>
@@ -672,134 +1028,185 @@ export function PrRadar({
           <View style={styles.signalDot} />
           <Text style={styles.eyebrow}>PR RADAR · {viewerData?.viewer ?? "GITHUB"}</Text>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Refresh pull request status"
-          accessibilityState={{ busy: isFetching }}
-          disabled={isFetching}
-          onPress={() => void Promise.all([refetch(), refetchViewer()])}
-          style={({ pressed }) => [styles.refresh, pressed && styles.refreshPressed]}
-        >
-          <Text style={styles.refreshText}>{isFetching ? "Scanning" : "Refresh"}</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          {onOpenSettings ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open PR Radar settings"
+              onPress={onOpenSettings}
+              style={({ pressed }) => [styles.refresh, pressed && styles.refreshPressed]}
+            >
+              <Text style={styles.refreshText}>Settings</Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Refresh pull request status"
+            accessibilityState={{ busy: refreshMutation.isPending }}
+            disabled={refreshMutation.isPending}
+            onPress={() => refreshMutation.mutate()}
+            style={({ pressed }) => [
+              styles.refresh,
+              styles.refreshButton,
+              pressed && styles.refreshPressed,
+            ]}
+          >
+            <Text style={styles.refreshText}>
+              {refreshMutation.isPending ? "Scanning" : "Refresh"}
+            </Text>
+          </Pressable>
+        </View>
       </View>
       <Text style={styles.heroTitle}>Know what moves next.</Text>
       <Text style={styles.heroDetail}>{totalCopy}</Text>
-      {focusedPr ? <Text style={styles.heroDetail}>Focused PR: {focusedPr}</Text> : null}
-      {data?.truncated ? <Text style={styles.warningText}>{DIRECTORY_PARTIAL}</Text> : null}
-      {rawRows.length > VIEWER_URL_LIMIT ? (
+      <View style={styles.tabBar}>
+        <View accessibilityRole="tablist" style={styles.chipRow}>
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === "prs" }}
+            onPress={() => setActiveTab("prs")}
+            style={[styles.chip, activeTab === "prs" && styles.chipActive]}
+          >
+            <Text style={[styles.chipText, activeTab === "prs" && styles.chipTextActive]}>
+              Pull Requests {rows.length}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === "issues" }}
+            onPress={() => setActiveTab("issues")}
+            style={[styles.chip, activeTab === "issues" && styles.chipActive]}
+          >
+            <Text style={[styles.chipText, activeTab === "issues" && styles.chipTextActive]}>
+              Issues {issues.length}
+            </Text>
+          </Pressable>
+        </View>
+        <TextInput
+          accessibilityLabel={activeTab === "issues" ? "Filter issues" : "Filter pull requests"}
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={setSearch}
+          placeholder="Filter"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          style={styles.search}
+          value={search}
+        />
+      </View>
+      {activeTab === "prs" && focusedPr ? (
+        <Text style={styles.heroDetail}>Focused PR: {focusedPr}</Text>
+      ) : null}
+      {activeTab === "prs" && data?.truncated ? (
+        <Text style={styles.warningText}>{DIRECTORY_PARTIAL}</Text>
+      ) : null}
+      {activeTab === "prs" && rawRows.length > VIEWER_URL_LIMIT ? (
         <Text style={styles.warningText}>{LOOKUP_CAPPED}</Text>
       ) : null}
-      <View accessibilityRole="summary" style={styles.summary}>
-        {summaryMetrics.map(({ label, value }) => (
-          <View key={label} style={styles.metric}>
-            <Text style={styles.metricValue}>{value}</Text>
-            <Text style={styles.metricLabel}>{label}</Text>
+      {activeTab === "prs" ? (
+        <>
+          <View accessibilityRole="summary" style={styles.summary}>
+            {summaryMetrics.map(({ label, value }) => (
+              <View key={label} style={styles.metric}>
+                <Text style={styles.metricValue}>{value}</Text>
+                <Text style={styles.metricLabel}>{label}</Text>
+              </View>
+            ))}
           </View>
-        ))}
-      </View>
-      <ScrollView
-        accessibilityRole="tablist"
-        horizontal
-        onFocus={revealFocusedChip}
-        showsHorizontalScrollIndicator={false}
-        style={styles.chipScroller}
-        contentContainerStyle={styles.chipRow}
-      >
-        <Pressable
-          accessibilityRole="tab"
-          accessibilityState={{
-            selected: selected === null && !activeOnly && !savedView && !focusedPr,
-          }}
-          onPress={() => setFilter(null)}
-          style={[
-            styles.chip,
-            selected === null && !activeOnly && !savedView && !focusedPr && styles.chipActive,
-          ]}
-        >
-          <Text
-            style={[
-              styles.chipText,
-              selected === null && !activeOnly && !savedView && !focusedPr && styles.chipTextActive,
-            ]}
+          <ScrollView
+            accessibilityRole="tablist"
+            horizontal
+            onFocus={revealFocusedChip}
+            showsHorizontalScrollIndicator={false}
+            style={styles.chipScroller}
+            contentContainerStyle={styles.chipRow}
           >
-            All {rows.length}
-          </Text>
-        </Pressable>
-        {BUCKETS.map((bucket) => (
-          <Pressable
-            accessibilityRole="tab"
-            accessibilityState={{ selected: selected === bucket }}
-            key={bucket}
-            onPress={() => setFilter(bucket)}
-            style={[styles.chip, selected === bucket && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, selected === bucket && styles.chipTextActive]}>
-              {BUCKET_TITLES[bucket]} {counts[bucket]}
-            </Text>
-          </Pressable>
-        ))}
-        <Pressable
-          accessibilityRole="tab"
-          accessibilityState={{ selected: activeOnly }}
-          onPress={() => setFilter("active")}
-          style={[styles.chip, activeOnly && styles.chipActive]}
-        >
-          <Text style={[styles.chipText, activeOnly && styles.chipTextActive]}>
-            Active agents {activeCount}
-          </Text>
-        </Pressable>
-        {(Object.keys(SAVED_VIEW_TITLES) as SavedView[]).map((view) => (
-          <Pressable
-            accessibilityRole="tab"
-            accessibilityState={{ selected: savedView === view }}
-            key={view}
-            onPress={() => setFilter(view)}
-            style={[styles.chip, savedView === view && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, savedView === view && styles.chipTextActive]}>
-              {SAVED_VIEW_TITLES[view]} {savedViewCounts[view]}
-            </Text>
-          </Pressable>
-        ))}
-        {([7, 30, 90] as const).map((days) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: windowDays === days }}
-            key={days}
-            onPress={() => setWindowDays(days)}
-            style={[styles.chip, windowDays === days && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, windowDays === days && styles.chipTextActive]}>
-              {days}d
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
-      <TextInput
-        accessibilityLabel="Filter pull requests"
-        autoCapitalize="none"
-        autoCorrect={false}
-        onChangeText={setSearch}
-        placeholder="Filter by PR, branch, workspace, or agent"
-        placeholderTextColor={theme.colors.foregroundMuted}
-        style={styles.search}
-        value={search}
-      />
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{
+                selected: selected === null && !activeOnly && !savedView && !focusedPr,
+              }}
+              onPress={() => setFilter(null)}
+              style={[
+                styles.chip,
+                selected === null && !activeOnly && !savedView && !focusedPr && styles.chipActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.chipText,
+                  selected === null &&
+                    !activeOnly &&
+                    !savedView &&
+                    !focusedPr &&
+                    styles.chipTextActive,
+                ]}
+              >
+                All {rows.length}
+              </Text>
+            </Pressable>
+            {BUCKETS.map((bucket) => (
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{ selected: selected === bucket }}
+                key={bucket}
+                onPress={() => setFilter(bucket)}
+                style={[styles.chip, selected === bucket && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, selected === bucket && styles.chipTextActive]}>
+                  {BUCKET_TITLES[bucket]} {counts[bucket]}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: activeOnly }}
+              onPress={() => setFilter("active")}
+              style={[styles.chip, activeOnly && styles.chipActive]}
+            >
+              <Text style={[styles.chipText, activeOnly && styles.chipTextActive]}>
+                Active agents {activeCount}
+              </Text>
+            </Pressable>
+            {(Object.keys(SAVED_VIEW_TITLES) as SavedView[]).map((view) => (
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{ selected: savedView === view }}
+                key={view}
+                onPress={() => setFilter(view)}
+                style={[styles.chip, savedView === view && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, savedView === view && styles.chipTextActive]}>
+                  {SAVED_VIEW_TITLES[view]} {savedViewCounts[view]}
+                </Text>
+              </Pressable>
+            ))}
+            {([7, 30, 90] as const).map((days) => (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: windowDays === days }}
+                key={days}
+                onPress={() => setWindowDays(days)}
+                style={[styles.chip, windowDays === days && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, windowDays === days && styles.chipTextActive]}>
+                  {days}d
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </>
+      ) : null}
       <SortControls sortKey={sortKey} onSort={setSortKey} styles={styles} />
-      {viewerData ? (
+      {coverage ? (
         <View style={{ gap: 7 }}>
-          <Text style={styles.heroDetail}>
-            {viewerData.coverageNote}
-            {viewerData.truncated ? " Results reached the 100-item inbox cap." : ""}
-          </Text>
-          {viewerData.updates > 0 ? (
+          <Text style={styles.heroDetail}>{coverage.text}</Text>
+          {coverage.showUpdates && viewerData ? (
             <Text style={styles.heroDetail}>
               These are PR state changes detected in the {windowDays}-day view. Marking them seen
               only clears PR Radar badges; it does not change GitHub notifications or pull requests.
             </Text>
           ) : null}
-          {viewerData.updates > 0 ? (
+          {coverage.showUpdates && viewerData ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Mark ${viewerData.updates} detected pull request updates as seen`}
@@ -839,22 +1246,57 @@ export function PrRadar({
     >
       <FlatList
         contentContainerStyle={styles.content}
-        data={sortedRows}
+        data={activeTab === "issues" ? sortedIssues : pullRequests}
         keyExtractor={(item) => item.id}
         ListHeaderComponent={header}
         ListEmptyComponent={
           isPending ? (
             <ActivityIndicator color={theme.colors.accent} style={styles.spinner} />
-          ) : (
+          ) : activeTab === "prs" && draftPullRequests.length > 0 ? null : (
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>
-                {rows.length === 0 ? "Clear runway" : "Nothing here"}
+                {(activeTab === "issues" ? issues.length : rows.length) === 0
+                  ? "Clear runway"
+                  : "Nothing here"}
               </Text>
               <Text style={styles.emptyDetail}>{emptyCopy}</Text>
             </View>
           )
         }
+        ListFooterComponent={
+          activeTab === "prs" && draftPullRequests.length > 0 ? (
+            <View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: !dprCollapsed }}
+                onPress={() => setDprCollapsed((prev) => !prev)}
+                style={styles.dprHeader}
+              >
+                <Text style={styles.dprHeaderTitle}>
+                  Draft PRs (DPRs) · {draftPullRequests.length}
+                </Text>
+                <Text style={styles.dprHeaderToggle}>{dprCollapsed ? "Show" : "Hide"}</Text>
+              </Pressable>
+              {!dprCollapsed ? (
+                <View>
+                  {draftPullRequests.map((item) => (
+                    <View key={item.id}>{renderRow({ item })}</View>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null
+        }
         renderItem={renderRow}
+      />
+      <StartAgentModal
+        row={modalRow}
+        settings={settings}
+        theme={theme}
+        pending={startNewAgentMutation.isPending}
+        error={openError}
+        onClose={() => setModalRow(null)}
+        onStart={(request) => startNewAgentMutation.mutate(request)}
       />
       {data?.warnings.length ? (
         <View style={styles.warning}>

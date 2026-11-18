@@ -4,8 +4,14 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { z } from "zod";
-import type { acknowledgeViewerScope, GitHubInboxItem, viewerScope } from "../shared/viewer-scope";
+import type {
+  acknowledgeViewerScope,
+  GitHubInboxItem,
+  GitHubIssueItem,
+  viewerScope,
+} from "../shared/viewer-scope";
 import { mergeChanges } from "./changes";
+import { ghEnv } from "./workspace-ops";
 
 const execFileAsync = promisify(execFile);
 const SEARCH_LIMIT = 100;
@@ -41,6 +47,8 @@ interface Enrichment {
   mergeable: "UNKNOWN" | "MERGEABLE" | "CONFLICTING";
   mergeStateStatus: string;
   statusCheckRollup: { state: "SUCCESS" | "FAILURE" | "ERROR" | "PENDING" | "EXPECTED" } | null;
+  body?: string | null;
+  closingIssuesReferences?: { nodes?: Array<{ url?: string | null } | null> } | null;
 }
 
 interface StoredItem {
@@ -66,7 +74,7 @@ async function runGh(args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<stri
   const { stdout } = await execFileAsync("gh", args, {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: ghEnv(),
   });
   return stdout.trim();
 }
@@ -149,6 +157,84 @@ async function searchPullRequests(
   return JSON.parse(output) as SearchRecord[];
 }
 
+interface IssueSearchRecord {
+  id: string;
+  number: number;
+  title: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  author: { login: string; is_bot?: boolean; type?: string } | null;
+  repository: { nameWithOwner: string };
+  commentsCount: number;
+  labels: Array<{ name: string }>;
+}
+
+async function searchIssues(
+  filter: "author" | "assignee" | "owner",
+  viewer: string,
+  since: string,
+): Promise<{ records: IssueSearchRecord[]; failed: boolean }> {
+  const fields = [
+    "id",
+    "number",
+    "title",
+    "url",
+    "createdAt",
+    "updatedAt",
+    "author",
+    "repository",
+    "commentsCount",
+    "labels",
+  ].join(",");
+  try {
+    const output = await runSearch([
+      "search",
+      "issues",
+      `--${filter}=${viewer}`,
+      "--state=open",
+      "--archived=false",
+      `--updated=>=${since}`,
+      `--limit=${SEARCH_LIMIT}`,
+      "--sort=updated",
+      "--order=desc",
+      `--json=${fields}`,
+    ]);
+    const parsed = JSON.parse(output);
+    return {
+      records: Array.isArray(parsed) ? (parsed as IssueSearchRecord[]) : [],
+      failed: false,
+    };
+  } catch {
+    return { records: [], failed: true };
+  }
+}
+
+function toIssueItem(record: IssueSearchRecord, role: GitHubIssueItem["role"]): GitHubIssueItem {
+  const labels = record.labels.map(({ name }) => name);
+  const authorKind =
+    record.author?.is_bot || record.author?.type === "Bot" || record.author?.login.endsWith("[bot]")
+      ? "bot"
+      : "human";
+  return {
+    id: record.id,
+    number: record.number,
+    url: record.url,
+    title: record.title,
+    repository: record.repository.nameWithOwner,
+    author: record.author?.login ?? null,
+    authorKind,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    isSecurity:
+      labels.some((label) => /security|vulnerability|cve/i.test(label)) ||
+      /security|vulnerabilit|\bcve\b/i.test(record.title),
+    comments: record.commentsCount,
+    labels,
+    role,
+  };
+}
+
 async function searchScopeUrls(filter: "author" | "review-requested"): Promise<string[]> {
   const output = await runSearch([
     "search",
@@ -173,6 +259,10 @@ const enrichmentQuery = `
         mergeable
         mergeStateStatus
         statusCheckRollup { state }
+        body
+        closingIssuesReferences(first: 20) {
+          nodes { url }
+        }
       }
     }
   }
@@ -243,6 +333,26 @@ function reviewDecision(state: Enrichment | undefined): GitHubInboxItem["reviewD
   }
 }
 
+function extractLinkedIssues(state: Enrichment | undefined): string[] {
+  const urls = new Set<string>();
+  for (const node of state?.closingIssuesReferences?.nodes ?? []) {
+    const url = node?.url?.trim();
+    if (url && /^https:\/\/[^/]+\/[^/]+\/[^/]+\/issues\/\d+$/i.test(url)) {
+      urls.add(url);
+    }
+  }
+  const body = state?.body ?? "";
+  if (body) {
+    const matches = body.match(
+      /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+/g,
+    );
+    for (const match of matches ?? []) {
+      urls.add(match);
+    }
+  }
+  return [...urls];
+}
+
 function toInboxItem(
   record: SearchRecord,
   role: GitHubInboxItem["role"],
@@ -277,6 +387,7 @@ function toInboxItem(
     reviewDecision: reviewDecision(state),
     role,
     changes: [],
+    linkedIssues: extractLinkedIssues(state),
   };
 }
 
@@ -362,6 +473,9 @@ interface Snapshot {
   authoredScope: string[];
   reviewRequestedScope: string[];
   inboxItems: GitHubInboxItem[];
+  issueItems: GitHubIssueItem[];
+  issueTruncated: boolean;
+  issueSearchFailures: number;
   enrichmentFailures: number;
   acknowledgedAt: string | null;
 }
@@ -370,12 +484,39 @@ interface Snapshot {
 async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
   const viewer = await viewerLogin();
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
-  const [authored, reviewRequested, authoredScope, reviewRequestedScope] = await Promise.all([
+  const [
+    authored,
+    reviewRequested,
+    authoredScope,
+    reviewRequestedScope,
+    authoredIssues,
+    assignedIssues,
+    ownedIssues,
+  ] = await Promise.all([
     searchPullRequests("author", viewer, since),
     searchPullRequests("review-requested", viewer, since),
     searchScopeUrls("author"),
     searchScopeUrls("review-requested"),
+    searchIssues("author", viewer, since),
+    searchIssues("assignee", viewer, since),
+    searchIssues("owner", viewer, since),
   ]);
+  const issueMap = new Map<string, GitHubIssueItem>();
+  for (const record of ownedIssues.records) issueMap.set(record.id, toIssueItem(record, "owner"));
+  for (const record of assignedIssues.records)
+    issueMap.set(record.id, toIssueItem(record, "assignee"));
+  for (const record of authoredIssues.records)
+    issueMap.set(record.id, toIssueItem(record, "author"));
+  const issueTruncated =
+    authoredIssues.records.length === SEARCH_LIMIT ||
+    assignedIssues.records.length === SEARCH_LIMIT ||
+    ownedIssues.records.length === SEARCH_LIMIT;
+  const issueSearchFailures = [authoredIssues, assignedIssues, ownedIssues].filter(
+    (res) => res.failed,
+  ).length;
+  const issueItems = [...issueMap.values()].sort(
+    (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
+  );
   const records = new Map<string, { record: SearchRecord; role: GitHubInboxItem["role"] }>();
   for (const record of reviewRequested) records.set(record.id, { record, role: "reviewer" });
   for (const record of authored) records.set(record.id, { record, role: "author" });
@@ -432,6 +573,9 @@ async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
     authoredScope,
     reviewRequestedScope,
     inboxItems,
+    issueItems,
+    issueTruncated,
+    issueSearchFailures,
     enrichmentFailures: enrichment.failures,
     acknowledgedAt,
   };
@@ -446,17 +590,31 @@ export function projectSnapshot(snapshot: Snapshot, urls: string[]): ViewerScope
       ...scope.filter((url) => requestedUrls.has(url.toLowerCase())),
     ]),
   ];
+  const notes: string[] = [];
+  if (snapshot.enrichmentFailures > 0) {
+    notes.push(
+      `${snapshot.enrichmentFailures} GitHub detail request${snapshot.enrichmentFailures === 1 ? "" : "s"} failed; affected PRs use conservative states.`,
+    );
+  }
+  if (snapshot.issueSearchFailures > 0) {
+    notes.push(
+      `${snapshot.issueSearchFailures} GitHub issue search request${snapshot.issueSearchFailures === 1 ? "" : "s"} failed; issue list may be incomplete.`,
+    );
+  }
   const coverageNote =
-    snapshot.enrichmentFailures > 0
-      ? `${snapshot.enrichmentFailures} GitHub detail request${snapshot.enrichmentFailures === 1 ? "" : "s"} failed; affected PRs use conservative states.`
+    notes.length > 0
+      ? notes.join(" ")
       : `Open PRs visible to the GitHub CLI. Organization SSO restrictions may omit results.`;
   return {
     viewer: snapshot.viewer,
     authoredUrls: withScope(snapshot.authored, snapshot.authoredScope),
     reviewRequestedUrls: withScope(snapshot.reviewRequested, snapshot.reviewRequestedScope),
     inboxItems: snapshot.inboxItems,
+    issueItems: snapshot.issueItems,
     truncated:
-      snapshot.authored.length === SEARCH_LIMIT || snapshot.reviewRequested.length === SEARCH_LIMIT,
+      snapshot.authored.length === SEARCH_LIMIT ||
+      snapshot.reviewRequested.length === SEARCH_LIMIT ||
+      snapshot.issueTruncated,
     coverageNote,
     updates: snapshot.inboxItems.filter(({ changes }) => changes.length > 0).length,
     acknowledgedAt: snapshot.acknowledgedAt,
