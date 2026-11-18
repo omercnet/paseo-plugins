@@ -187,14 +187,20 @@ export function StartAgentModal({
         setProfileName(vetted.profileName);
       }
       const canApplyProvider = !editedFieldsRef.current.has("provider");
-      const currentProvider = canApplyProvider ? launchState.provider : providerRef.current;
+      const selectedProfile = profiles.find(
+        (candidate) => candidate.name.toLowerCase() === profileName.trim().toLowerCase(),
+      );
+      const currentProvider =
+        (canApplyProvider ? launchState.provider : providerRef.current)?.trim() ||
+        selectedProfile?.provider ||
+        "claude";
       const routedPick = routedProviderModel({ provider: currentProvider }, result, {
         applyProvider: canApplyProvider,
       });
       if (routedPick.provider !== undefined && canApplyProvider) {
         // If the user hand-picked a model, a cross-provider switch would orphan it; leave the
         // provider alone then.
-        const crossProvider = routedPick.provider !== providerRef.current;
+        const crossProvider = routedPick.provider !== currentProvider;
         if (!crossProvider || !editedFieldsRef.current.has("model")) {
           setProvider(routedPick.provider);
         }

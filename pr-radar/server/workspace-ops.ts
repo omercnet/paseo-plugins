@@ -976,10 +976,12 @@ export async function prepareWorkspaceCwdHandler(
       }
     } else if (await branchExists(baseRoot, localBranchName)) {
       await assertNoIgnoredFileOverwrite(baseRoot, localBranchName, input.prNumber);
+      await assertNoGitlinkToFileOverwrite(baseRoot, localBranchName, input.prNumber);
       await runGit(baseRoot, ["checkout", "--no-overwrite-ignore", localBranchName]);
     } else {
       const startPoint = await resolveIssueStartPoint(baseRoot, matchingRemote);
       await assertNoIgnoredFileOverwrite(baseRoot, startPoint, input.prNumber);
+      await assertNoGitlinkToFileOverwrite(baseRoot, startPoint, input.prNumber);
       await runGit(baseRoot, [
         "checkout",
         "--no-overwrite-ignore",
@@ -1086,7 +1088,15 @@ export async function prepareWorkspaceCwdHandler(
         startPoint,
       ]);
     }
-    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
+    try {
+      await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
+    } catch (err) {
+      // The worktree is already registered; a failed checkout must not leave a half-created one.
+      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath], 3_000).catch(
+        () => {},
+      );
+      throw err;
+    }
   } else {
     const prHead = await fetchPrHead(baseRoot, matchingRemote, input.prNumber);
     await assertBranchFastForwards(

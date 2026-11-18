@@ -825,6 +825,27 @@ describe("git hardening", () => {
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
+  test("refuses an issue checkout that replaces a submodule with a file", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},submod`]);
+    gitIn(repoDir, ["commit", "-m", "add gitlink"]);
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-12"]);
+    gitIn(repoDir, ["rm", "--cached", "submod"]);
+    writeFileSync(join(repoDir, "submod"), "now a file\n");
+    gitIn(repoDir, ["add", "submod"]);
+    gitIn(repoDir, ["commit", "-m", "issue replaces submod"]);
+    gitIn(repoDir, ["checkout", "main"]);
+    await expect(
+      prepare(
+        request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+      ),
+    ).rejects.toThrow(/replaces the submodule under submod/);
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
   test("submodule filters do not run during the dirty check", async () => {
     const root = makeRoot();
     const { repoDir } = makePullableRepo(root);
