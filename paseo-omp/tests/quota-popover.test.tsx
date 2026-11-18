@@ -23,7 +23,12 @@ vi.mock("react-native", () => ({
     accessibilityLabel?: string;
     style?: Record<string, unknown>;
   }) => (
-    <div role={props.accessibilityRole === "header" ? "heading" : undefined}>{props.children}</div>
+    <div
+      role={props.accessibilityRole === "header" ? "heading" : undefined}
+      data-accessibility-label={props.accessibilityLabel}
+    >
+      {props.children}
+    </div>
   ),
   Text: (props: { children?: ReactNode }) => <span>{props.children}</span>,
 }));
@@ -61,6 +66,8 @@ function quota(accountKey: string, limitId: string, usedFraction: number): OmpQu
     accountId: null,
     accountService: null,
     accountHost: null,
+    plan: null,
+    organization: null,
     label: "Usage",
     windowLabel: "Weekly",
     usedFraction,
@@ -140,5 +147,21 @@ describe("quota popover reconciliation", () => {
     expect(text("10%")).toBe(firstLimit);
     expect(secondLimit.isConnected).toBe(false);
     expect(container.textContent).not.toContain("80%");
+  });
+
+  test("shows plan and organization badges beside the account name", async () => {
+    await render([
+      {
+        ...quota("a", "weekly", 0.4),
+        plan: "self_serve_business_prolite",
+        organization: "Example Team",
+      },
+    ]);
+    const name = heading("same@example.invalid");
+    expect(name.contains(text("Business"))).toBe(true);
+    expect(name.contains(text("Example Team"))).toBe(true);
+    expect(name.getAttribute("data-accessibility-label")).toBe(
+      "same@example.invalid · Business · Example Team",
+    );
   });
 });
