@@ -876,23 +876,18 @@ async function refreshPrWorktree(
 async function refreshIssueWorktree(worktreePath: string, localBranchName: string): Promise<void> {
   // A reused issue worktree must already be materialized. `ls-files` is empty only for a
   // `worktree add --no-checkout` whose checkout never ran (or a fully staged deletion). Recover
-  // only when the working tree holds no local data; otherwise refuse rather than overwrite it.
+  // only when the directory holds nothing but `.git`; otherwise refuse rather than overwrite data
+  // that `git status` alone would miss (ignored files, hidden untracked files).
   void localBranchName;
   const tracked = await runGit(worktreePath, ["ls-files"], 3_000);
   if (tracked) return;
-  const status = await runGit(
-    worktreePath,
-    ["status", "--porcelain", "--ignore-submodules=all"],
-    3_000,
-  );
-  const lines = status.split("\n").filter(Boolean);
-  if (lines.length > 0 && lines.every((line) => line.startsWith("D "))) {
-    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
-    return;
+  const localData = (await readdir(worktreePath)).filter((name) => name !== ".git");
+  if (localData.length > 0) {
+    throw new Error(
+      `Existing worktree ${worktreePath} has no tracked files but contains local data; move that data aside or remove the worktree before reusing it.`,
+    );
   }
-  throw new Error(
-    `Existing worktree ${worktreePath} has no tracked files but contains local data; move that data aside or remove the worktree before reusing it.`,
-  );
+  await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
 }
 
 export async function prepareWorkspaceCwdHandler(

@@ -881,6 +881,25 @@ describe("git hardening", () => {
     expect(readFileSync(join(wt, "extra.txt"), "utf8")).toBe("user data\n");
   });
 
+  test("refuses a partial issue worktree with a colliding tracked-path file", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-12"]);
+    writeFileSync(join(repoDir, "work.txt"), "issue work\n");
+    gitIn(repoDir, ["add", "work.txt"]);
+    gitIn(repoDir, ["commit", "-m", "issue work"]);
+    gitIn(repoDir, ["checkout", "main"]);
+    const wt = join(root, "issue-wt");
+    gitIn(repoDir, ["worktree", "add", "--no-checkout", wt, "pr-radar/issue-12"]);
+    // A local file colliding with the tracked path would be hidden from `git status` as ignored.
+    writeFileSync(join(wt, "work.txt"), "local secret\n");
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/contains local data/);
+    expect(readFileSync(join(wt, "work.txt"), "utf8")).toBe("local secret\n");
+  });
+
   test("submodule filters do not run during the dirty check", async () => {
     const root = makeRoot();
     const { repoDir } = makePullableRepo(root);
