@@ -48,15 +48,20 @@ function fakeDom() {
     removeEventListener: nodeTarget.remove,
   } as unknown as KeyboardCanvasNode;
   sink.focus();
+  /** Dispatches to the adapter's listeners; returns whether one cancelled the default. */
   const fire = (name: string, type: string, event: object = {}) => {
+    let cancelled = false;
     for (const listener of registry.get(`${name}:${type}`) ?? [])
       (listener as (event: object) => void)({
-        preventDefault() {},
+        preventDefault() {
+          cancelled = true;
+        },
         stopPropagation() {},
         ...event,
       });
+    return cancelled;
   };
-  return { node, document, fire };
+  return { node, document, sink, fire };
 }
 
 const key = {
@@ -223,5 +228,183 @@ describe("web canvas keyboard adapter Android IME sequences", () => {
     dom.fire("sink", "keydown", edge);
     dom.fire("sink", "beforeinput", { inputType: "insertText", data: "x" });
     expect(texts(dom)).toEqual(["x"]);
+  });
+});
+
+type Bound = ReturnType<typeof bind>;
+/** Remote key edges, such as "down:Backspace". */
+const presses = (dom: Bound) =>
+  dom.events.flatMap((event) => (event.kind === "key" ? [`${event.type}:${event.key}`] : []));
+const BACKSPACE = ["down:Backspace", "up:Backspace"];
+
+/** keydown 229, one beforeinput edit, keyup 229, regardless of what the sink holds. */
+function imeEdit(dom: Bound, inputType: string) {
+  dom.fire("sink", "keydown", ime);
+  dom.fire("sink", "beforeinput", { inputType, data: null });
+  dom.fire("doc", "keyup", ime);
+}
+
+/**
+ * Chrome Android applying a soft-keyboard Backspace (ImeAdapterImpl
+ * deleteSurroundingText): keydown 229; only when the sink has text before the
+ * caret, beforeinput deleteContentBackward, the deletion and input; keyup 229.
+ * Blink applies this deletion even when beforeinput is cancelled
+ * (InputMethodController::DeleteSelectionWithoutAdjustment ignores the result);
+ * cancelHonored covers an engine that does honor it.
+ */
+function softBackspace(dom: Bound, cancelHonored = false) {
+  dom.fire("sink", "keydown", ime);
+  if (dom.sink.value.length > 0) {
+    const cancelled = dom.fire("sink", "beforeinput", {
+      inputType: "deleteContentBackward",
+      data: null,
+    });
+    if (!cancelled || !cancelHonored) {
+      dom.sink.value = dom.sink.value.slice(0, -1);
+      dom.fire("sink", "input", { inputType: "deleteContentBackward", data: null });
+    }
+  }
+  dom.fire("doc", "keyup", ime);
+}
+
+/** Hangul composition steps; Backspace inside it rewrites the composition. */
+function compose(dom: Bound, steps: Array<{ inputType: string; data: string | null }>) {
+  dom.fire("sink", "keydown", ime);
+  dom.fire("sink", "compositionstart", { data: "" });
+  for (const [index, step] of steps.entries()) {
+    if (index > 0) dom.fire("sink", "keydown", { ...ime, isComposing: true });
+    dom.fire("sink", "beforeinput", step);
+  }
+}
+
+describe("web canvas keyboard adapter Android soft-keyboard deletion", () => {
+  it.each<[string, (dom: Bound) => void, { texts: string[]; presses: string[] }]>([
+    [
+      "keydown 229 + beforeinput deleteContentBackward presses Backspace",
+      (dom) => imeEdit(dom, "deleteContentBackward"),
+      { texts: [], presses: BACKSPACE },
+    ],
+    [
+      "keydown 229 + beforeinput deleteContentForward presses Delete",
+      (dom) => imeEdit(dom, "deleteContentForward"),
+      { texts: [], presses: ["down:Delete", "up:Delete"] },
+    ],
+    // Word deletion has no host-independent shortcut (Ctrl or Option+Backspace).
+    [
+      "keydown 229 + beforeinput deleteWordBackward stays unmapped",
+      (dom) => imeEdit(dom, "deleteWordBackward"),
+      { texts: [], presses: [] },
+    ],
+    [
+      "keydown 229 + beforeinput deleteWordForward stays unmapped",
+      (dom) => imeEdit(dom, "deleteWordForward"),
+      { texts: [], presses: [] },
+    ],
+    [
+      "Backspace before any typing (empty field, keydown carries no key)",
+      (dom) => softBackspace(dom),
+      { texts: [], presses: BACKSPACE },
+    ],
+    [
+      "three Backspaces after a committed word",
+      (dom) => {
+        composeWord(dom, "hi");
+        for (let count = 0; count < 3; count += 1) softBackspace(dom);
+      },
+      { texts: ["hi"], presses: [...BACKSPACE, ...BACKSPACE, ...BACKSPACE] },
+    ],
+    [
+      "three Backspaces when the engine honors the cancelled beforeinput",
+      (dom) => {
+        composeWord(dom, "hi");
+        for (let count = 0; count < 3; count += 1) softBackspace(dom, true);
+      },
+      { texts: ["hi"], presses: [...BACKSPACE, ...BACKSPACE, ...BACKSPACE] },
+    ],
+    [
+      "Backspace after a non-composing insertText",
+      (dom) => {
+        dom.fire("sink", "keydown", ime);
+        dom.fire("sink", "beforeinput", { inputType: "insertText", data: "a" });
+        softBackspace(dom);
+      },
+      { texts: ["a"], presses: BACKSPACE },
+    ],
+    [
+      "Backspace after a paste",
+      (dom) => {
+        dom.fire("sink", "paste", { clipboardData: { getData: () => "pasted" } });
+        softBackspace(dom);
+      },
+      { texts: ["pasted"], presses: BACKSPACE },
+    ],
+    [
+      "Backspace after a control reset",
+      (dom) => {
+        dom.binding.reset();
+        softBackspace(dom);
+      },
+      { texts: [], presses: BACKSPACE },
+    ],
+    [
+      "Backspace inside a composing word edits it locally (Gboard predictive)",
+      (dom) => {
+        compose(dom, [
+          { inputType: "insertCompositionText", data: "hel" },
+          { inputType: "insertCompositionText", data: "he" },
+        ]);
+        dom.fire("sink", "compositionend", { data: "he" });
+      },
+      { texts: ["he"], presses: [] },
+    ],
+    [
+      "Hangul: Backspace removes a jamo inside the composition",
+      (dom) => {
+        compose(dom, [
+          { inputType: "insertCompositionText", data: "ㅎ" },
+          { inputType: "insertCompositionText", data: "하" },
+          { inputType: "insertCompositionText", data: "한" },
+          { inputType: "insertCompositionText", data: "하" },
+        ]);
+        dom.fire("sink", "compositionend", { data: "하" });
+      },
+      { texts: ["하"], presses: [] },
+    ],
+    [
+      "Hangul: Backspace empties the composition, then deletes the committed syllable",
+      (dom) => {
+        composeWord(dom, "한");
+        compose(dom, [
+          { inputType: "insertCompositionText", data: "ㄱ" },
+          { inputType: "deleteCompositionText", data: null },
+        ]);
+        dom.fire("sink", "compositionend", { data: "" });
+        softBackspace(dom);
+      },
+      { texts: ["한"], presses: BACKSPACE },
+    ],
+    [
+      "a real Backspace keydown (keyCode 8) presses once even if beforeinput follows",
+      (dom) => {
+        const backspace = { ...key, key: "Backspace", code: "Backspace", keyCode: 8 };
+        dom.fire("sink", "keydown", backspace);
+        dom.fire("sink", "beforeinput", { inputType: "deleteContentBackward", data: null });
+        dom.fire("doc", "keyup", backspace);
+      },
+      { texts: [], presses: BACKSPACE },
+    ],
+    [
+      "an IME deletion after a control reset is dropped",
+      (dom) => {
+        dom.fire("sink", "keydown", ime);
+        dom.binding.reset();
+        dom.fire("sink", "beforeinput", { inputType: "deleteContentBackward", data: null });
+      },
+      { texts: [], presses: [] },
+    ],
+  ])("%s", (_name, replay, expected) => {
+    const dom = bind();
+    replay(dom);
+    expect({ texts: texts(dom), presses: presses(dom) }).toEqual(expected);
   });
 });
