@@ -396,6 +396,38 @@ describe("bounded browser input queue", () => {
     expect(f.errors).toEqual([]);
   });
 
+  it("sends soft-keyboard text queued behind an in-flight call as one insertion, never across keys", async () => {
+    const f = fixture();
+    const backspace = (type: "down" | "up"): BrowserGestureEvent => ({
+      kind: "key",
+      type,
+      key: "Backspace",
+      code: "Backspace",
+      modifiers: 0,
+      repeat: false,
+    });
+    for (const text of ["h", "e", "l", "l", "o"]) f.queue.enqueue({ kind: "text", text });
+    f.queue.enqueue(backspace("down"));
+    f.queue.enqueue(backspace("up"));
+    for (const text of [" ", "w"]) f.queue.enqueue({ kind: "text", text });
+    // Merging stops at the per-event text limit the server enforces.
+    f.queue.enqueue({ kind: "text", text: "x".repeat(15_999) });
+    f.queue.finish();
+    f.beginGate.resolve({ state, gestureId: "owned", nextSequence: 1 });
+    await flush();
+    expect(f.sent.map(({ event }) => (event.kind === "text" ? event.text : event.kind))).toEqual([
+      "h",
+      "ello",
+      "key",
+      "key",
+      " w",
+      "x".repeat(15_999),
+    ]);
+    expect(f.sent.map((input) => input.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(f.ended[0]).toMatchObject({ sequence: 7, cancel: false });
+    expect(f.errors).toEqual([]);
+  });
+
   it("keeps touch-ID edges through 60Hz motion and partial release", async () => {
     const f = fixture();
     const touch = (
