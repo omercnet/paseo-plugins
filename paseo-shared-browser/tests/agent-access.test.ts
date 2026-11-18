@@ -992,6 +992,42 @@ describe("agent shared-browser authorization", () => {
     });
   });
 
+  it("refuses to bind a ticket issued before the agent was revoked, however late, and binds a fresh one", async () => {
+    let now = 1_000;
+    const { supervisor, bridge } = createHarness(() => now);
+    const late = ticket("late-bind");
+    await issueTicket(supervisor, bridge, late);
+    await revokeAgent(supervisor, bridge, "agent-archived");
+    const restored = ticket("restored-bind");
+    await issueTicket(supervisor, bridge, restored);
+    for (let beat = 0; beat < 3; beat += 1) {
+      now += 21_000;
+      supervisor.heartbeat(bridge.bridgeId, bridge.epoch);
+    }
+    await expect(
+      bindTicket(supervisor, bridge, late, "agent-archived", "workspace-one"),
+    ).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
+    await expect(agentRequest(supervisor, late, "status")).rejects.toMatchObject({
+      code: "AUTHENTICATION_FAILED",
+    });
+    await bindTicket(supervisor, bridge, restored, "agent-archived", "workspace-one");
+    await expect(agentRequest(supervisor, restored, "status")).resolves.toBeDefined();
+  });
+
+  it("keeps at most eight bound tickets per agent and drops the oldest first", async () => {
+    const { supervisor, bridge } = createHarness();
+    const tickets = Array.from({ length: 9 }, (_, index) => ticket(`cap-${index}`));
+    for (const t of tickets) {
+      await issueTicket(supervisor, bridge, t);
+      await bindTicket(supervisor, bridge, t, "agent-many", "workspace-one");
+    }
+    await expect(agentRequest(supervisor, tickets[0] as string, "status")).rejects.toMatchObject({
+      code: "AUTHENTICATION_FAILED",
+    });
+    for (const t of tickets.slice(1))
+      await expect(agentRequest(supervisor, t, "status")).resolves.toBeDefined();
+  });
+
   it("expires unbound tickets while retaining bound credentials", async () => {
     let now = 1_000;
     const owner = new AgentRuntimeOwner();

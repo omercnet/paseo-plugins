@@ -1,7 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
+import type {
+  PluginHookContext,
+  PluginServerContext,
+  PluginSessionOpenRequest,
+} from "@getpaseo/plugin/server";
 import {
   bindAgentTicket,
   cleanupBrowserServer,
@@ -38,6 +42,7 @@ import {
   accessFromState,
   agentAccessSettings,
   agentGetsBrowser,
+  agentGetsBrowserByLabel,
   DEFAULT_AGENT_ACCESS,
 } from "./shared/agent-access";
 import {
@@ -109,12 +114,30 @@ function mcpBundlePath(): string {
   return join(resolveBrowserRuntimeRoot(paseoHome()), "shared-browser-mcp.cjs");
 }
 
+/** Fields of the session-open request that only newer Paseo releases send. */
+interface OptionalOpenFields {
+  labels?: Readonly<Record<string, string>>;
+  background?: boolean;
+  mcpServers?: Record<string, unknown>;
+}
+
+/** The stdio server entry that runs the browser adapter for one ticket. */
+function browserMcpServer(ticket: string) {
+  return {
+    type: "stdio" as const,
+    command: process.execPath,
+    args: [mcpBundlePath()],
+    env: { PASEO_HOME: paseoHome(), [TICKET_ENV]: ticket, ELECTRON_RUN_AS_NODE: "1" },
+  };
+}
+
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(browserDisplayPreferences);
   const agentAccess = server.registerSettings(agentAccessSettings);
   // The deadline covers the settings read alone: a setting that cannot be read in time is an unreadable
   // setting, and that falls back to the default (every new agent).
-  const readAccess = async () => {
+  // `quiet` is for the session-open path, which runs on every open: the fallback is still taken, without a log line each time.
+  const readAccess = async (quiet = false) => {
     try {
       const state = await withinDeadline(
         Promise.resolve(agentAccess.read()),
@@ -122,16 +145,18 @@ export default function contribute(server: PluginServerContext) {
         "the read timed out",
       );
       const access = accessFromState(state);
-      if (access === DEFAULT_AGENT_ACCESS) {
+      if (access === DEFAULT_AGENT_ACCESS && !quiet) {
         console.warn(
           `shared-browser: the agent-access setting is ${state?.status ?? "missing"}; every new agent gets the browser tool`,
         );
       }
       return access;
     } catch (error) {
-      console.warn(
-        `shared-browser: the agent-access setting could not be read (${error instanceof Error ? error.message : "error"}); every new agent gets the browser tool`,
-      );
+      if (!quiet) {
+        console.warn(
+          `shared-browser: the agent-access setting could not be read (${error instanceof Error ? error.message : "error"}); every new agent gets the browser tool`,
+        );
+      }
       return DEFAULT_AGENT_ACCESS;
     }
   };
@@ -187,31 +212,62 @@ export default function contribute(server: PluginServerContext) {
       env: { ...request.env, [TICKET_ENV]: ticket },
       config: {
         ...request.config,
-        mcpServers: {
-          ...request.config.mcpServers,
-          [MCP_SERVER_ID]: {
-            type: "stdio",
-            command: process.execPath,
-            args: [mcpBundlePath()],
-            env: {
-              PASEO_HOME: paseoHome(),
-              [TICKET_ENV]: ticket,
-              ELECTRON_RUN_AS_NODE: "1",
-            },
-          },
-        },
+        mcpServers: { ...request.config.mcpServers, [MCP_SERVER_ID]: browserMcpServer(ticket) },
       },
     };
   });
 
   server.before("agent.session_open", async ({ request }) => {
-    if (request.reason !== "create") return request;
     const ticket = request.env[TICKET_ENV];
-    if (!ticket || request.purpose !== "interactive" || !request.workspaceId) return request;
-    await bindAgentTicket(ticket, request.agentId, request.workspaceId);
-    const { [TICKET_ENV]: _ticket, ...environment } = request.env;
-    return { ...request, env: environment };
+    if (request.reason === "create" && ticket) {
+      if (request.purpose !== "interactive" || !request.workspaceId) return request;
+      await bindAgentTicket(ticket, request.agentId, request.workspaceId);
+      const { [TICKET_ENV]: _ticket, ...environment } = request.env;
+      return { ...request, env: environment };
+    }
+    // The env ticket is the only signal that the create hook already stored the server on this agent: the host sends
+    // mcpServers as {} to out-of-process plugins, so that field says nothing about what is stored.
+    if (ticket) return request;
+    return injectByLabel(request);
   });
+
+  // Labels are on the session-open request but not on agent.create, so an agent chosen by label is handled here, in every
+  // interactive session of an agent that carries a matching label: a server returned from this hook lasts for that session
+  // only (unlike one added in agent.create, which is stored on the agent), so each open issues and binds a fresh ticket.
+  // Agents that gave no label, helpers, and sessions without a workspace are returned at once. Nothing here throws: a
+  // failure leaves the session without the tool instead of failing it.
+  const injectByLabel = async (request: PluginSessionOpenRequest) => {
+    // Older Paseo releases (0.13) do not send labels, a background flag or MCP servers on this request, so this does nothing there.
+    const { labels, background, mcpServers } = request as PluginSessionOpenRequest &
+      OptionalOpenFields;
+    if (request.purpose !== "interactive" || background === true || !request.workspaceId)
+      return request;
+    if (!labels || Object.keys(labels).length === 0) return request;
+    if (!agentGetsBrowserByLabel(await readAccess(true), labels)) return request;
+    const ticket = randomBytes(32).toString("base64url");
+    if (!(await issueTicketWithinDeadline(ticket))) {
+      console.warn(
+        "shared-browser: could not issue a browser ticket for a labelled agent; the session opens without it",
+      );
+      return request;
+    }
+    try {
+      await withinDeadline(
+        bindAgentTicket(ticket, request.agentId, request.workspaceId),
+        TICKET_ISSUE_TIMEOUT_MS,
+        "Shared Browser ticket binding timed out",
+      );
+    } catch (error) {
+      console.warn(
+        `shared-browser: could not bind the browser ticket for a labelled agent (${error instanceof Error ? error.message : "error"}); the session opens without it`,
+      );
+      return request;
+    }
+    return {
+      ...request,
+      mcpServers: { ...mcpServers, [MCP_SERVER_ID]: browserMcpServer(ticket) },
+    } as PluginSessionOpenRequest;
+  };
 
   server.on("agent.archived", ({ agent }) => revokeAgentBrowserAccess(agent.id));
 

@@ -4,8 +4,10 @@ import {
   accessFromState,
   agentAccessSchema,
   agentGetsBrowser,
+  agentGetsBrowserByLabel,
   DEFAULT_AGENT_ACCESS,
   isAbsoluteDirectory,
+  labelMatches,
   normalizeDirectory,
   parseEntries,
   type WorkspaceRef,
@@ -26,6 +28,7 @@ const listed = (over: Partial<AgentAccess>): AgentAccess => ({
   providers: [],
   workspaces: [],
   projects: [],
+  labels: [],
   ...over,
 });
 
@@ -267,6 +270,50 @@ describe("dot segments cannot reach a workspace the agent is not in", () => {
     expect(workspacesForDirectory("/repos/x/../one/src", nested).map((w) => w.id)).toEqual([
       "inner",
     ]);
+  });
+});
+
+describe("labels", () => {
+  const labels = { team: "blue", empty: "", "a=b": "c", "": "bare", pair: "a=b" };
+  it.each([
+    [["team"], true],
+    [["team=blue"], true],
+    [["team=red"], false],
+    [["team="], false],
+    [["squad"], false],
+    [["empty"], true],
+    [["empty="], true],
+    [["a=b"], false],
+    [["a"], false],
+    [["=blue"], false],
+    [["=", ""], false],
+    [["=bare"], false],
+    [["pair=a=b"], true],
+    [["pair=a"], false],
+    [["Team"], false],
+    [["team=Blue"], false],
+    [["squad", "team=blue"], true],
+    [[], false],
+    [["toString"], false],
+    [["constructor=x"], false],
+  ])("%j matches %s", (entries, expected) => {
+    expect(labelMatches(entries, labels)).toBe(expected);
+  });
+
+  it("gives the tool by label in listed mode only", () => {
+    expect(agentGetsBrowserByLabel(listed({ labels: ["team"] }), labels)).toBe(true);
+    expect(agentGetsBrowserByLabel({ ...listed({ labels: ["team"] }), mode: "all" }, labels)).toBe(
+      false,
+    );
+    expect(agentGetsBrowserByLabel(listed({}), labels)).toBe(false);
+  });
+
+  it("is a list of the setting, empty by default, with the same limits as the others", () => {
+    expect(agentAccessSchema.parse({}).labels).toEqual([]);
+    expect(agentAccessSchema.safeParse({ labels: ["team=blue"] }).success).toBe(true);
+    expect(agentAccessSchema.safeParse({ labels: [""] }).success).toBe(false);
+    expect(agentAccessSchema.safeParse({ labels: ["x".repeat(257)] }).success).toBe(false);
+    expect(agentAccessSchema.safeParse({ labels: Array(201).fill("l") }).success).toBe(false);
   });
 });
 

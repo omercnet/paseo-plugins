@@ -16,11 +16,12 @@ const MODE_OPTIONS: readonly { label: string; value: AgentAccessMode }[] = [
   { label: "Only the agents listed below", value: "listed" },
 ];
 
-type ListName = "providers" | "workspaces" | "projects";
+type ListName = "providers" | "workspaces" | "projects" | "labels";
 const NO_ERRORS: Record<ListName, string | null> = {
   providers: null,
   workspaces: null,
   projects: null,
+  labels: null,
 };
 
 /** Settings screen: which new agents get the browser tool. */
@@ -29,6 +30,7 @@ export function AgentAccessSettings({ theme }: PluginSurfaceProps) {
   const providers = useRef<SettingsInputHandle>(null);
   const workspaces = useRef<SettingsInputHandle>(null);
   const projects = useRef<SettingsInputHandle>(null);
+  const labels = useRef<SettingsInputHandle>(null);
   // Errors belong to the revision they were found on; a newer revision (another client saved) clears them.
   const [found, setFound] = useState<{
     revision: string | null;
@@ -71,18 +73,21 @@ export function AgentAccessSettings({ theme }: PluginSurfaceProps) {
       providers: parseEntries(providers.current?.getText() ?? ""),
       workspaces: parseEntries(workspaces.current?.getText() ?? ""),
       projects: parseEntries(projects.current?.getText() ?? ""),
+      labels: parseEntries(labels.current?.getText() ?? ""),
     };
     const errors = {
       providers: parsed.providers.error,
       workspaces: parsed.workspaces.error,
       projects: parsed.projects.error,
+      labels: parsed.labels.error,
     };
     setFound({ revision: settings.revision, errors });
-    if (errors.providers || errors.workspaces || errors.projects) return null;
+    if (errors.providers || errors.workspaces || errors.projects || errors.labels) return null;
     return {
       providers: parsed.providers.entries,
       workspaces: parsed.workspaces.entries,
       projects: parsed.projects.entries,
+      labels: parsed.labels.entries,
     };
   };
   return (
@@ -91,7 +96,7 @@ export function AgentAccessSettings({ theme }: PluginSurfaceProps) {
       <SettingsCard key={settings.revision}>
         <SettingsSelect
           label="Browser tool for"
-          hint="Applies to agents created from now on. With the lists empty, no agent gets the tool."
+          hint="Providers, workspaces and projects apply to agents created from now on; labels apply to every session of a labelled agent. With the lists empty, no agent gets the tool."
           error={settings.saveError}
           value={values.mode}
           options={MODE_OPTIONS}
@@ -125,6 +130,15 @@ export function AgentAccessSettings({ theme }: PluginSurfaceProps) {
           hint="Every new agent in a workspace of a listed project gets the tool."
           initialValue={values.projects.join(", ")}
           error={listErrors.projects}
+          onChangeText={() => {}}
+          disabled={settings.saving}
+        />
+        <SettingsInput
+          ref={labels}
+          label="Labels"
+          hint="A label key (team) or key=value (team=blue). An agent with a matching label gets the tool in every session, including after a resume. Labels pick agents for convenience; they do not keep an untrusted agent away from the browser, because any agent with Paseo tools can set its own labels."
+          initialValue={values.labels.join(", ")}
+          error={listErrors.labels}
           onChangeText={() => {}}
           disabled={settings.saving}
         />
