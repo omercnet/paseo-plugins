@@ -428,7 +428,7 @@ describe("ignored local files", () => {
   test("refuses an issue checkout that would overwrite ignored files", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
-    initRepo(repoDir, "https://github.com/owner/repo.git");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
     gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-12"]);
     writeFileSync(join(repoDir, ".env"), "from-issue\n");
     writeFileSync(join(repoDir, "private"), "from-issue\n");
@@ -828,7 +828,7 @@ describe("git hardening", () => {
   test("refuses an issue checkout that replaces a submodule with a file", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
-    initRepo(repoDir, "https://github.com/owner/repo.git");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
     const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
     gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},submod`]);
     gitIn(repoDir, ["commit", "-m", "add gitlink"]);
@@ -844,6 +844,23 @@ describe("git hardening", () => {
       ),
     ).rejects.toThrow(/replaces the submodule under submod/);
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("re-materializes a partially checked out issue worktree", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-12"]);
+    writeFileSync(join(repoDir, "work.txt"), "issue work\n");
+    gitIn(repoDir, ["add", "work.txt"]);
+    gitIn(repoDir, ["commit", "-m", "issue work"]);
+    gitIn(repoDir, ["checkout", "main"]);
+    const wt = join(root, "issue-wt");
+    gitIn(repoDir, ["worktree", "add", "--no-checkout", wt, "pr-radar/issue-12"]);
+    expect(existsSync(join(wt, "work.txt"))).toBe(false);
+    const result = await prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir }));
+    expect(result.cwd).toBe(wt);
+    expect(existsSync(join(wt, "work.txt"))).toBe(true);
   });
 
   test("submodule filters do not run during the dirty check", async () => {

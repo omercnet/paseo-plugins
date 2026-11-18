@@ -868,6 +868,24 @@ async function refreshPrWorktree(
   }
 }
 
+/**
+ * A reused issue worktree may be a half-created one (a `worktree add --no-checkout` whose checkout
+ * failed and left every tracked file missing). Re-materialize the branch in that case; otherwise
+ * the user's work is present and left alone.
+ */
+async function refreshIssueWorktree(worktreePath: string, localBranchName: string): Promise<void> {
+  const branch = await runGit(worktreePath, ["branch", "--show-current"], 3_000).catch(() => "");
+  if (branch !== localBranchName) {
+    await runGit(worktreePath, ["checkout", "--force", localBranchName], CLONE_TIMEOUT_MS);
+    return;
+  }
+  // A `worktree add --no-checkout` whose checkout never ran leaves an empty index; materialize it.
+  const tracked = await runGit(worktreePath, ["ls-files"], 3_000).catch(() => "");
+  if (!tracked) {
+    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
+  }
+}
+
 export async function prepareWorkspaceCwdHandler(
   input: z.output<typeof prepareWorkspaceCwd.input>,
   readSettings: ReadWorkspaceSettings,
@@ -1017,6 +1035,8 @@ export async function prepareWorkspaceCwdHandler(
         input.prNumber,
         localBranchName,
       );
+    } else {
+      await refreshIssueWorktree(existing.path, localBranchName);
     }
     return {
       cwd: existing.path,
@@ -1055,6 +1075,8 @@ export async function prepareWorkspaceCwdHandler(
         input.prNumber,
         localBranchName,
       );
+    } else {
+      await refreshIssueWorktree(worktreePath, localBranchName);
     }
     return {
       cwd: worktreePath,
@@ -1092,9 +1114,8 @@ export async function prepareWorkspaceCwdHandler(
       await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
     } catch (err) {
       // The worktree is already registered; a failed checkout must not leave a half-created one.
-      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath], 3_000).catch(
-        () => {},
-      );
+      // No short timeout here: cleanup must complete, and a removal failure propagates (not swallowed).
+      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath]);
       throw err;
     }
   } else {
