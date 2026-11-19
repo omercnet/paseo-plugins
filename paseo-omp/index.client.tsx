@@ -406,18 +406,22 @@ export default function contribute(client: PluginClientContext) {
     if (cached?.key === key && (cached.retryAt === undefined || Date.now() < cached.retryAt)) {
       return cached.provider;
     }
+    let provider: string | null = null;
     try {
-      const { provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id });
-      sessionModelProviders.set(agent.id, { key, provider });
-      return provider;
+      ({ provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id }));
     } catch {
-      sessionModelProviders.set(agent.id, {
-        key,
-        provider: null,
-        retryAt: Date.now() + SESSION_PROVIDER_RETRY_MS,
-      });
-      return null;
+      // A server without the RPC, or one that is reloading.
     }
+    // A provider is fixed by the opaque model id, so it is kept until the model or status changes.
+    // No answer (a failed call, or null while the session's runtime is down or recovering) is kept
+    // only for the back-off, so the pill names the provider again once the session can answer.
+    sessionModelProviders.set(
+      agent.id,
+      provider === null
+        ? { key, provider, retryAt: Date.now() + SESSION_PROVIDER_RETRY_MS }
+        : { key, provider },
+    );
+    return provider;
   }
 
   async function reconcileOnce(): Promise<void> {

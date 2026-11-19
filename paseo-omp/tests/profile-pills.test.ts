@@ -1,5 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 vi.mock("../client/hub-icon", () => ({ OMP_ICON: { svg: "<svg></svg>" } }));
 vi.mock("../client/hub-popover", () => ({ HubPopover: () => null }));
@@ -24,8 +24,23 @@ vi.mock("../client/ast-edit", () => ({ OmpAstEditCard: () => null }));
 import contribute from "../index.client";
 import { getOmpSessionModelProvider, listOmpQuotas } from "../shared/quota";
 
+// Settings that relocate OMP's store; none may reach a test from the runner's environment.
+const OMP_LOCATION_ENV = [
+  "OMP_AGENT_DIR",
+  "OMP_PROFILE",
+  "PASEO_OMP_AGENT_DIR",
+  "PI_CODING_AGENT_DIR",
+  "PI_CONFIG_DIR",
+  "PI_PROFILE",
+];
+
+beforeEach(() => {
+  for (const name of OMP_LOCATION_ENV) vi.stubEnv(name, undefined);
+});
+
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 test("owned agent directory updates reconcile new agent pills and cached quota results", async () => {
@@ -187,7 +202,10 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     { id: "ended", provider: "omp-plugin", model: "omp:model:opaque", status: "closed" },
     // A server without the RPC (older, or reloading) rejects it.
     { id: "older", provider: "omp-plugin", model: "omp:model:opaque", status: "idle" },
+    // A live session whose OMP runtime is down answers null until it recovers.
+    { id: "recovering", provider: "omp-plugin", model: "omp:model:opaque", status: "idle" },
   ];
+  let runtimeRecovered = false;
   let onDirectoryUpdate = () => {};
   const buttons: Array<{ id: string; agentId: string; update: ReturnType<typeof vi.fn> }> = [];
   const rpc = vi.fn(async (definition, input) => {
@@ -196,6 +214,9 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     }
     if (definition === getOmpSessionModelProvider) {
       if (input.agentId === "older") throw new Error("unknown operation");
+      if (input.agentId === "recovering") {
+        return { provider: runtimeRecovered ? "openai-codex" : null };
+      }
       return { provider: input.agentId === "live" ? "openai-codex" : null };
     }
     if (definition !== listOmpQuotas) return { processes: [] };
@@ -247,10 +268,11 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
   const dispose = contribute(client);
   const quota = (agentId: string) =>
     buttons.findLast((button) => button.id === "quota" && button.agentId === agentId)?.update;
-  const asked = () =>
+  const askedAll = () =>
     rpc.mock.calls
       .filter(([definition]) => definition === getOmpSessionModelProvider)
       .map(([, input]) => input.agentId);
+  const asked = () => askedAll().filter((id) => id !== "recovering");
   try {
     await vi.advanceTimersByTimeAsync(300);
     expect(quota("live")).toHaveBeenLastCalledWith(
@@ -298,6 +320,21 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     onDirectoryUpdate();
     await vi.advanceTimersByTimeAsync(250);
     expect(asked().filter((id) => id === "older")).toHaveLength(2);
+
+    // A null answer (the runtime was down) is kept only for the back-off too: once the runtime has
+    // recovered, the next pass names the provider.
+    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(2);
+    expect(quota("recovering")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "Quotas · 90%" }),
+    );
+    runtimeRecovered = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    onDirectoryUpdate();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(3);
+    expect(quota("recovering")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "30%", title: expect.stringMatching(/^OpenAI · /u) }),
+    );
   } finally {
     dispose();
   }
