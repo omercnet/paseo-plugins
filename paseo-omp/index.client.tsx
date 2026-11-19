@@ -28,6 +28,7 @@ import { quotaProviderIcon } from "./client/provider-icon";
 import { OmpImageTimeline } from "./client/provider-image";
 import { QuotaPopover } from "./client/quota-popover";
 import {
+  needsSessionModelProvider,
   type QuotaSeverity,
   quotaProviderFromSession,
   quotaSeverityForProvider,
@@ -61,7 +62,7 @@ import {
 import { OMP_MCP_AUTH_TIMELINE_KIND, ompMcpAuthorizationTimelineSchema } from "./shared/mcp";
 import { type OmpStore, storeForProvider } from "./shared/omp-store";
 import { ompImageTimelineSchema, transformOmpImageToolItem } from "./shared/provider-image";
-import { listOmpQuotas } from "./shared/quota";
+import { getOmpSessionModelProvider, listOmpQuotas } from "./shared/quota";
 import { OMP_RULE_NOTICE_KIND, ompRuleNoticeSchema } from "./shared/rule-notices";
 import { OMP_SUBAGENT_STRIP_KIND, ompSubagentStripSchema } from "./shared/subagents";
 
@@ -71,6 +72,7 @@ const STATUS_POLL_MS = 4_000;
 const QUOTA_POLL_MS = 30_000;
 const RECONCILE_DEBOUNCE_MS = 250;
 const SETTINGS_POLL_MS = 15_000;
+const SESSION_PROVIDER_RETRY_MS = 60_000;
 const composerPillSettingsRpc = settingsRpc(composerPillSettings.id);
 
 type AgentEntry = PaseoAgentListResult["entries"][number];
@@ -382,15 +384,52 @@ export default function contribute(client: PluginClientContext) {
     }
   }
 
+  // Agent id to its session's provider, asked again only when the agent's model or status changes.
+  // A failed lookup is kept too, but only until `retryAt`, so a server without the RPC is not asked
+  // on every reconcile and a transient failure still recovers.
+  const sessionModelProviders = new Map<
+    string,
+    { key: string; provider: string | null; retryAt?: number }
+  >();
+
+  async function sessionModelProvider(agent: AgentEntry["agent"]): Promise<string | null> {
+    if (agent.status === "closed" || !needsSessionModelProvider(agent.provider, agent.model)) {
+      return null;
+    }
+    const key = `${agent.model}|${agent.status}`;
+    const cached = sessionModelProviders.get(agent.id);
+    if (cached?.key === key && (cached.retryAt === undefined || Date.now() < cached.retryAt)) {
+      return cached.provider;
+    }
+    try {
+      const { provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id });
+      sessionModelProviders.set(agent.id, { key, provider });
+      return provider;
+    } catch {
+      sessionModelProviders.set(agent.id, {
+        key,
+        provider: null,
+        retryAt: Date.now() + SESSION_PROVIDER_RETRY_MS,
+      });
+      return null;
+    }
+  }
+
   async function reconcileOnce(): Promise<void> {
     if (!preferences) return;
-    const agents = await loadAgents(client.paseo);
+    const listed = (await loadAgents(client.paseo)).filter(
+      ({ agent }) => !agent.archivedAt && agent.workspaceId && agent.cwd,
+    );
+    const sessionProviders = await Promise.all(
+      listed.map(({ agent }) => sessionModelProvider(agent)),
+    );
     if (disposed || !preferences) return;
     const activeIds = new Set<string>();
-    for (const { agent } of agents) {
-      if (agent.archivedAt || !agent.workspaceId || !agent.cwd) continue;
+    for (const [index, { agent }] of listed.entries()) {
+      if (!agent.workspaceId || !agent.cwd) continue;
       activeIds.add(agent.id);
-      const quotaProvider = quotaProviderFromSession(agent.provider, agent.model);
+      const quotaProvider =
+        quotaProviderFromSession(agent.provider, agent.model) ?? sessionProviders[index];
       const store = storeForProvider(agent.provider);
       let entry = pills.get(agent.id);
       if (
@@ -418,6 +457,9 @@ export default function contribute(client: PluginClientContext) {
       if (activeIds.has(agentId)) continue;
       removePills(entry);
       pills.delete(agentId);
+    }
+    for (const agentId of sessionModelProviders.keys()) {
+      if (!activeIds.has(agentId)) sessionModelProviders.delete(agentId);
     }
     await Promise.all([refreshHubStatus(), refreshQuotaStatus()]);
   }

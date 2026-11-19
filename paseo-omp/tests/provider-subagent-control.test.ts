@@ -7,6 +7,7 @@ import {
   OmpSubagentControlRegistry,
   type OmpSubagentControls,
   resolveCancelOmpSubagent,
+  resolveGetOmpSessionModelProvider,
   resolveSteerOmpSubagent,
 } from "../server/subagents";
 import { OMP_SUBAGENT_STRIP_KIND, ompSubagentStripSchema } from "../shared/subagents";
@@ -451,11 +452,26 @@ describe("OMP subagent controls", () => {
     await connection.close();
   });
 
+  test("names the OMP provider behind an agent's opaque model only while its session runs", async () => {
+    const { connection, events, runtime, registry } = await createControlledHarness();
+    await openSession(connection, events, "open-a", "session-a", { PASEO_AGENT_ID: "agent-a" });
+    const provider = (agentId: string) =>
+      resolveGetOmpSessionModelProvider({ agentId }, registry).provider;
+
+    expect(provider("agent-a")).toBe("anthropic");
+    expect(provider("agent-unknown")).toBeNull();
+    sessionAt(runtime, 0).emit({ type: "process_exit", error: "OMP exited between turns" });
+    await Promise.resolve();
+    expect(provider("agent-a")).toBeNull();
+    await connection.close();
+  });
+
   test("lets a newer session replace an agent's controls without the older cleanup removing it", () => {
     const registry = new OmpSubagentControlRegistry();
     const controls = (): OmpSubagentControls => ({
       cancelSubagent: async () => false,
       steerSubagent: async () => {},
+      modelProvider: () => null,
     });
     const older = controls();
     const newer = controls();

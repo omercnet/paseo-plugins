@@ -4,9 +4,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { Text, View } from "react-native";
 import { storeForProvider, storeLabel } from "../shared/omp-store";
-import { listOmpQuotas } from "../shared/quota";
+import { getOmpSessionModelProvider, listOmpQuotas } from "../shared/quota";
 import { ompStoreKey } from "./omp-store-state";
 import {
+  needsSessionModelProvider,
   type QuotaProviderGroup,
   quotaDetailLabel,
   quotaProviderFromSession,
@@ -21,8 +22,35 @@ const QUOTA_POLL_MS = 30_000;
 export function QuotaPopover(props: PluginButtonContentProps) {
   const { theme, layout } = props;
   const agentId = props.context === "agent" ? props.agentId : "";
-  const session = useAgent(agentId, (agent) => ({ model: agent.model, provider: agent.provider }));
-  const currentProvider = quotaProviderFromSession(session?.provider ?? "", session?.model ?? null);
+  const session = useAgent(agentId, (agent) => ({
+    model: agent.model,
+    provider: agent.provider,
+    status: agent.status,
+  }));
+  const loadSessionModelProvider = useRpc(getOmpSessionModelProvider);
+  const sessionModelProvider = useQuery({
+    // The answer comes from the live session, so a closed or resumed session asks again.
+    queryKey: [
+      "paseo-omp",
+      "session-model-provider",
+      agentId,
+      session?.model ?? null,
+      session?.status ?? null,
+    ],
+    queryFn: () => loadSessionModelProvider({ agentId }),
+    // A closed agent has no live session to ask, as in the pill.
+    enabled: Boolean(
+      agentId &&
+        session &&
+        session.status !== "closed" &&
+        needsSessionModelProvider(session.provider, session.model),
+    ),
+    retry: false,
+  });
+  const currentProvider =
+    quotaProviderFromSession(session?.provider ?? "", session?.model ?? null) ??
+    sessionModelProvider.data?.provider ??
+    null;
   const store = storeForProvider(session?.provider);
   const loadQuotas = useRpc(listOmpQuotas);
   const quotas = useQuery({

@@ -207,6 +207,7 @@ describe("plugin server bundle", () => {
           expect.arrayContaining([
             "paseo-omp.cancel-subagent",
             "paseo-omp.steer-subagent",
+            "paseo-omp.session-model-provider",
             "paseo-omp.get-image",
             "paseo-omp.resolve-generated-images",
             "paseo-omp.list-accounts",
@@ -247,6 +248,14 @@ describe("plugin server bundle", () => {
         ) as { version: string };
         const supportReport = await supportRegistration?.[1]({ force: true });
         expect(supportReport?.report).toContain(`paseo_omp.version: ${packageManifest.version}`);
+        // The built route answers through the bundle's own session registry: an agent with no
+        // live OMP Plugin session gets the null fallback, not an error.
+        const providerRegistration = handlers.find(
+          ([contract]) => contract.name === "paseo-omp.session-model-provider",
+        );
+        expect(typeof providerRegistration?.[1]).toBe("function");
+        const lookupProvider = providerRegistration?.[1] as (input: { agentId: string }) => unknown;
+        expect(await lookupProvider({ agentId: "no-live-session" })).toEqual({ provider: null });
         expect(beforeHooks).toHaveLength(1);
         const [hookName, hook] = beforeHooks[0] as [
           string,
