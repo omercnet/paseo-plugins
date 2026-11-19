@@ -8,6 +8,7 @@ import {
   resolveTailHubLog,
   tailHubLogFrom,
 } from "../server/hub";
+import { writeDaemonUnits } from "./helpers/omp-daemon-store";
 
 const temporaryDirectories: string[] = [];
 
@@ -118,14 +119,31 @@ describe("omp hub state reader", () => {
     const root = await mkdtemp(join(tmpdir(), "paseo-omp-hub-resolver-"));
     temporaryDirectories.push(root);
     await createProcess(root, "project", "/workspace", "worker", meta("running", 7), "ready");
-    const previous = process.env.PASEO_OMP_RUN_DIR;
+    const daemonDir = join(root, "daemon");
+    await writeDaemonUnits(
+      daemonDir,
+      [{ id: "u1", key: "web", startedAt: 9, log: "listening" }],
+      "/workspace",
+    );
+    const previous = {
+      runDir: process.env.PASEO_OMP_RUN_DIR,
+      daemonDir: process.env.PASEO_OMP_DAEMON_DIR,
+    };
     process.env.PASEO_OMP_RUN_DIR = root;
+    process.env.PASEO_OMP_DAEMON_DIR = daemonDir;
     try {
       await expect(resolveListHubProcesses({ cwd: "/workspace" })).resolves.toEqual({
-        processes: [expect.objectContaining({ name: "worker", state: "running" })],
+        processes: [
+          expect.objectContaining({ name: "web", state: "running" }),
+          expect.objectContaining({ name: "worker", state: "running" }),
+        ],
       });
       await expect(resolveTailHubLog({ cwd: "/workspace", name: "worker" })).resolves.toEqual({
         content: "ready",
+        truncated: false,
+      });
+      await expect(resolveTailHubLog({ cwd: "/workspace", name: "web" })).resolves.toEqual({
+        content: "listening",
         truncated: false,
       });
       await expect(resolveTailHubLog({ cwd: "/workspace", name: "missing" })).resolves.toEqual({
@@ -133,8 +151,153 @@ describe("omp hub state reader", () => {
         truncated: false,
       });
     } finally {
-      if (previous === undefined) delete process.env.PASEO_OMP_RUN_DIR;
-      else process.env.PASEO_OMP_RUN_DIR = previous;
+      if (previous.runDir === undefined) delete process.env.PASEO_OMP_RUN_DIR;
+      else process.env.PASEO_OMP_RUN_DIR = previous.runDir;
+      if (previous.daemonDir === undefined) delete process.env.PASEO_OMP_DAEMON_DIR;
+      else process.env.PASEO_OMP_DAEMON_DIR = previous.daemonDir;
     }
+  });
+});
+
+describe("omp 19 daemon state reader", () => {
+  async function roots(): Promise<{ root: string; daemonDir: string }> {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-daemon-"));
+    temporaryDirectories.push(root);
+    return { root: join(root, "run", "daemons"), daemonDir: join(root, "run", "daemon") };
+  }
+
+  test("lists the project's services from the daemon store beside broker records", async () => {
+    const { root, daemonDir } = await roots();
+    await createProcess(root, "matching", "/workspace", "legacy", meta("running", 150));
+    await writeDaemonUnits(
+      daemonDir,
+      [
+        {
+          id: "u-web",
+          key: "web",
+          owner: "omp-session-2",
+          startedAt: 300,
+          createdAt: 299,
+          command: "bun run dev",
+        },
+        { id: "u-old", key: "old", state: "exited", startedAt: 100, hold: "leases" },
+        { id: "u-detached", key: "kept", startedAt: 200, hold: "detached" },
+        { id: "u-other", key: "other-project", scopeKey: "project:/other", startedAt: 400 },
+        { id: "u-global", key: "lsp", scopeKey: "global", startedAt: 500 },
+        { id: "u-module", key: "speech", kind: "speech", startedAt: 600 },
+      ],
+      "/workspace",
+    );
+
+    const processes = await listHubProcessesFrom(root, "/workspace", daemonDir);
+
+    expect(processes.map((process) => process.name)).toEqual(["web", "kept", "legacy", "old"]);
+    expect(processes[0]).toEqual({
+      name: "web",
+      application: "bun run dev",
+      args: [],
+      cwd: "/workspace",
+      state: "running",
+      owner: "omp-session-2",
+      restartCount: 0,
+      persist: true,
+      detached: false,
+      createdAt: 299,
+      startedAt: 300,
+      readyAt: null,
+      exitedAt: null,
+      exitCode: null,
+    });
+    expect(processes[1]).toMatchObject({ persist: false, detached: true });
+    expect(processes[3]).toMatchObject({ state: "exited", persist: false, detached: false });
+  });
+
+  test("ignores the daemon store unless a daemon directory is given", async () => {
+    const { root, daemonDir } = await roots();
+    await writeDaemonUnits(daemonDir, [{ id: "u1", key: "web" }], "/workspace");
+
+    expect(await listHubProcessesFrom(root, "/workspace")).toEqual([]);
+    expect(await listHubProcessesFrom(root, "/workspace", join(daemonDir, "absent"))).toEqual([]);
+  });
+
+  test("reports a running record whose main process is gone as exited", async () => {
+    const { root, daemonDir } = await roots();
+    // PIDs above the Linux and macOS maximum can never be alive.
+    const deadPid = 2 ** 22 + 1;
+    await writeDaemonUnits(
+      daemonDir,
+      [
+        { id: "u-live", key: "live", pids: [process.pid], startedAt: 6 },
+        { id: "u-dead", key: "dead", pids: [deadPid], startedAt: 5 },
+        { id: "u-ready", key: "ready", state: "ready", pids: [deadPid], startedAt: 4 },
+        // A live daemon may still be ending the tree or restarting the service.
+        { id: "u-stopping", key: "stopping", state: "stopping", pids: [deadPid], startedAt: 3 },
+        { id: "u-restart", key: "restart", state: "restarting", pids: [deadPid], startedAt: 2 },
+        { id: "u-starting", key: "starting", state: "starting", pids: [], startedAt: 1 },
+      ],
+      "/workspace",
+    );
+
+    const processes = await listHubProcessesFrom(root, "/workspace", daemonDir);
+
+    expect(processes.map(({ name, state }) => [name, state])).toEqual([
+      ["live", "running"],
+      ["dead", "exited"],
+      ["ready", "exited"],
+      ["stopping", "stopping"],
+      ["restart", "restarting"],
+      ["starting", "starting"],
+    ]);
+  });
+
+  test("skips malformed snapshots and an unreadable store", async () => {
+    const { root, daemonDir } = await roots();
+    await createProcess(root, "matching", "/workspace", "legacy", meta("running", 1));
+    await writeDaemonUnits(
+      daemonDir,
+      [
+        { id: "u-good", key: "good", startedAt: 5 },
+        { id: "u-bad", key: "bad", rawSnapshot: "{not json" },
+        { id: "u-shape", key: "shape", rawSnapshot: JSON.stringify({ state: 7 }) },
+      ],
+      "/workspace",
+    );
+    expect(
+      (await listHubProcessesFrom(root, "/workspace", daemonDir)).map((process) => process.name),
+    ).toEqual(["good", "legacy"]);
+
+    const corrupt = join(daemonDir, "..", "corrupt");
+    await mkdir(corrupt, { recursive: true });
+    await writeFile(join(corrupt, "daemon.db"), "not a database");
+    expect(
+      (await listHubProcessesFrom(root, "/workspace", corrupt)).map((process) => process.name),
+    ).toEqual(["legacy"]);
+  });
+
+  test("tails the newest daemon unit's log, preferring it over a broker record", async () => {
+    const { root, daemonDir } = await roots();
+    await createProcess(root, "matching", "/workspace", "web", meta("exited", 1, 0), "broker");
+    await writeDaemonUnits(
+      daemonDir,
+      [
+        { id: "u-old", key: "web", state: "exited", startedAt: 10, log: "old" },
+        { id: "u-new", key: "web", startedAt: 20, log: `${"a".repeat(1024)}${"z".repeat(65536)}` },
+        { id: "u-quiet", key: "quiet", startedAt: 30 },
+      ],
+      "/workspace",
+    );
+
+    expect(await tailHubLogFrom(root, "/workspace", "web", daemonDir)).toEqual({
+      content: "z".repeat(64 * 1024),
+      truncated: true,
+    });
+    expect(await tailHubLogFrom(root, "/workspace", "quiet", daemonDir)).toEqual({
+      content: "",
+      truncated: false,
+    });
+    expect(await tailHubLogFrom(root, "/workspace", "web")).toEqual({
+      content: "broker",
+      truncated: false,
+    });
   });
 });

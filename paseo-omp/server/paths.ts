@@ -183,6 +183,25 @@ export function ompHubRunDir(
   return join(root, "run", "daemons");
 }
 
+/**
+ * The run directory of omp 19's single per-user daemon, which owns every service a session
+ * starts. Unlike the 18.x brokers it ignores the profile and any agent-dir override, so every
+ * omp process on the machine agrees on it (pi-utils `getDaemonDir`, `OMP_DAEMON_DIR` first).
+ */
+export function ompDaemonDir(
+  environment: NodeJS.ProcessEnv = currentOmpEnvironment(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (environment.OMP_DAEMON_DIR) return environment.OMP_DAEMON_DIR;
+  const xdgHome = environment.XDG_STATE_HOME;
+  if (xdgHome && (platform === "linux" || platform === "darwin")) {
+    const xdgRoot = join(xdgHome, "omp");
+    if (existsSync(xdgRoot)) return join(xdgRoot, "run", "daemon");
+  }
+  const home = environment.HOME ?? environment.USERPROFILE ?? homedir();
+  return join(home, environment.PI_CONFIG_DIR || ".omp", "run", "daemon");
+}
+
 function configuredSessionDir(agentDir: string): string | undefined {
   for (const settingsPath of [
     join(agentDir, "settings.json"),
