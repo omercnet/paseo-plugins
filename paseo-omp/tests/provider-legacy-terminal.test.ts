@@ -1306,13 +1306,18 @@ describe("OMP direct provider", () => {
     session.emit({ type: "agent_end", messages: [assistant], isTerminal: true });
     establishTerminalOwnership(session);
     session.emit({ type: "session_settled" });
-    branch.resolve();
-
     const terminals = () =>
       events.filter(
         (event) =>
           event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
       );
+    for (let index = 0; index < 10; index += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    // Ownership needs the matched user echo, so nothing settles while the lookup is held.
+    expect(terminals()).toEqual([]);
+    branch.resolve();
+
     for (let index = 0; index < 50 && terminals().length === 0; index += 1) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
