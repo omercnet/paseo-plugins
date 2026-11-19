@@ -1017,15 +1017,48 @@ describe("agent shared-browser authorization", () => {
   it("keeps at most eight bound tickets per agent and drops the oldest first", async () => {
     const { supervisor, bridge } = createHarness();
     const tickets = Array.from({ length: 9 }, (_, index) => ticket(`cap-${index}`));
-    for (const t of tickets) {
+    const other = ticket("cap-other");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const detach = vi.spyOn(
+      (
+        supervisor as unknown as {
+          browserPolicy: { detach(viewerToken: string): Promise<unknown> };
+        }
+      ).browserPolicy,
+      "detach",
+    );
+    await issueTicket(supervisor, bridge, other);
+    await bindTicket(supervisor, bridge, other, "agent-other", "workspace-one");
+    await agentRequest(supervisor, other, "status");
+    for (const t of tickets.slice(0, 8)) {
       await issueTicket(supervisor, bridge, t);
       await bindTicket(supervisor, bridge, t, "agent-many", "workspace-one");
     }
+    await agentRequest(supervisor, tickets[0] as string, "status");
+    const viewers = (
+      supervisor as unknown as {
+        agentBindings: Map<string, { viewerToken?: string | null }>;
+      }
+    ).agentBindings;
+    const oldestViewer = viewers.get(tickets[0] as string)?.viewerToken;
+    const otherViewer = viewers.get(other)?.viewerToken;
+    expect(oldestViewer).toBeTruthy();
+    expect(otherViewer).toBeTruthy();
+    expect(warn).not.toHaveBeenCalled();
+
+    await issueTicket(supervisor, bridge, tickets[8] as string);
+    await bindTicket(supervisor, bridge, tickets[8] as string, "agent-many", "workspace-one");
+
     await expect(agentRequest(supervisor, tickets[0] as string, "status")).rejects.toMatchObject({
       code: "AUTHENTICATION_FAILED",
     });
     for (const t of tickets.slice(1))
       await expect(agentRequest(supervisor, t, "status")).resolves.toBeDefined();
+    await expect(agentRequest(supervisor, other, "status")).resolves.toBeDefined();
+    expect(detach).toHaveBeenCalledWith(oldestViewer);
+    expect(detach).not.toHaveBeenCalledWith(otherViewer);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it("expires unbound tickets while retaining bound credentials", async () => {

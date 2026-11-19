@@ -104,6 +104,7 @@ export function workspacesForDirectory(
   workspaces: readonly WorkspaceRef[],
 ): WorkspaceRef[] {
   const target = normalizeDirectory(cwd);
+  // Early exit only: a relative target can never equal or sit under an absolute workspace directory, so the loop below would find nothing.
   if (!isAbsoluteDirectory(target)) return [];
   let depth = -1;
   let found: WorkspaceRef[] = [];

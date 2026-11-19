@@ -661,6 +661,7 @@ export class RuntimeSupervisor<Runtime extends RuntimeInstance = RuntimeInstance
       tickets.delete(oldest);
       const dropped = this.agentBindings.get(oldest);
       this.agentBindings.delete(oldest);
+      console.warn("[shared-browser] agent ticket cap reached; dropped the oldest bound ticket");
       if (dropped?.viewerToken) void this.browserPolicy.detach(dropped.viewerToken).catch(() => {});
     }
     return { bound: true };
