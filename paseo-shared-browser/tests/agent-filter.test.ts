@@ -328,6 +328,9 @@ describe("only absolute directories match a workspace", () => {
     ["..", false],
     ["etc", false],
     ["C:x", false],
+    ["C:", true],
+    ["C:\\x", true],
+    ["\\\\s\\sh", true],
   ])("isAbsoluteDirectory(%j) is %s", (path, expected) => {
     expect(isAbsoluteDirectory(normalizeDirectory(path))).toBe(expected);
   });
@@ -338,6 +341,10 @@ describe("only absolute directories match a workspace", () => {
     expect(workspacesForDirectory("/", relative)).toEqual([]);
     const empty = [{ id: "e", projectId: "p", workspaceDirectory: "" }];
     expect(workspacesForDirectory("/etc", empty)).toEqual([]);
+    const parent = [{ id: "u", projectId: "p", workspaceDirectory: ".." }];
+    expect(workspacesForDirectory("../../x", parent)).toEqual([]);
+    const folded = [{ id: "f", projectId: "p", workspaceDirectory: "a/.." }];
+    expect(workspacesForDirectory("/etc", folded)).toEqual([]);
   });
 
   it("does not match a relative or empty agent directory, even against a root workspace", () => {

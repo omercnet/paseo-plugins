@@ -1017,15 +1017,41 @@ describe("agent shared-browser authorization", () => {
   it("keeps at most eight bound tickets per agent and drops the oldest first", async () => {
     const { supervisor, bridge } = createHarness();
     const tickets = Array.from({ length: 9 }, (_, index) => ticket(`cap-${index}`));
-    for (const t of tickets) {
+    const other = ticket("cap-other");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const attachHuman = async () =>
+      (
+        await browserRequest<{ state: BrowserState }>(supervisor, bridge, "attach", {
+          workspaceId: "workspace-one",
+          viewerLabel: "Human",
+        })
+      ).state.viewerCount;
+    await issueTicket(supervisor, bridge, other);
+    await bindTicket(supervisor, bridge, other, "agent-other", "workspace-one");
+    await agentRequest(supervisor, other, "status");
+    for (const t of tickets.slice(0, 8)) {
       await issueTicket(supervisor, bridge, t);
       await bindTicket(supervisor, bridge, t, "agent-many", "workspace-one");
     }
+    await agentRequest(supervisor, tickets[0] as string, "status");
+    // Viewers now: the other agent's, the oldest ticket's, and this human's.
+    expect(await attachHuman()).toBe(3);
+    expect(warn).not.toHaveBeenCalled();
+
+    await issueTicket(supervisor, bridge, tickets[8] as string);
+    await bindTicket(supervisor, bridge, tickets[8] as string, "agent-many", "workspace-one");
+
     await expect(agentRequest(supervisor, tickets[0] as string, "status")).rejects.toMatchObject({
       code: "AUTHENTICATION_FAILED",
     });
     for (const t of tickets.slice(1))
       await expect(agentRequest(supervisor, t, "status")).resolves.toBeDefined();
+    await expect(agentRequest(supervisor, other, "status")).resolves.toBeDefined();
+    // The other agent's viewer, the first human's, the eight surviving tickets' and this human's. The oldest
+    // ticket's viewer is gone: it would make twelve.
+    expect(await attachHuman()).toBe(11);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it("expires unbound tickets while retaining bound credentials", async () => {
