@@ -1019,14 +1019,13 @@ describe("agent shared-browser authorization", () => {
     const tickets = Array.from({ length: 9 }, (_, index) => ticket(`cap-${index}`));
     const other = ticket("cap-other");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const detach = vi.spyOn(
+    const attachHuman = async () =>
       (
-        supervisor as unknown as {
-          browserPolicy: { detach(viewerToken: string): Promise<unknown> };
-        }
-      ).browserPolicy,
-      "detach",
-    );
+        await browserRequest<{ state: BrowserState }>(supervisor, bridge, "attach", {
+          workspaceId: "workspace-one",
+          viewerLabel: "Human",
+        })
+      ).state.viewerCount;
     await issueTicket(supervisor, bridge, other);
     await bindTicket(supervisor, bridge, other, "agent-other", "workspace-one");
     await agentRequest(supervisor, other, "status");
@@ -1035,15 +1034,8 @@ describe("agent shared-browser authorization", () => {
       await bindTicket(supervisor, bridge, t, "agent-many", "workspace-one");
     }
     await agentRequest(supervisor, tickets[0] as string, "status");
-    const viewers = (
-      supervisor as unknown as {
-        agentBindings: Map<string, { viewerToken?: string | null }>;
-      }
-    ).agentBindings;
-    const oldestViewer = viewers.get(tickets[0] as string)?.viewerToken;
-    const otherViewer = viewers.get(other)?.viewerToken;
-    expect(oldestViewer).toBeTruthy();
-    expect(otherViewer).toBeTruthy();
+    // Viewers now: the other agent's, the oldest ticket's, and this human's.
+    expect(await attachHuman()).toBe(3);
     expect(warn).not.toHaveBeenCalled();
 
     await issueTicket(supervisor, bridge, tickets[8] as string);
@@ -1055,8 +1047,9 @@ describe("agent shared-browser authorization", () => {
     for (const t of tickets.slice(1))
       await expect(agentRequest(supervisor, t, "status")).resolves.toBeDefined();
     await expect(agentRequest(supervisor, other, "status")).resolves.toBeDefined();
-    expect(detach).toHaveBeenCalledWith(oldestViewer);
-    expect(detach).not.toHaveBeenCalledWith(otherViewer);
+    // The other agent's viewer, the first human's, the eight surviving tickets' and this human's. The oldest
+    // ticket's viewer is gone: it would make twelve.
+    expect(await attachHuman()).toBe(11);
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });
