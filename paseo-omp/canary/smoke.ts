@@ -32,10 +32,28 @@ function reportsSubagentResult(rows: SubagentRows, marker: string): boolean {
   );
 }
 
+function ago(timestamp: string | null | undefined): string {
+  return timestamp ? `${((Date.now() - Date.parse(timestamp)) / 1000).toFixed(1)}s ago` : "never";
+}
+
+// Mock turns settle in milliseconds, so a timeout means a stalled turn. Say where it stalled.
+function describeAgent(result: WaitForFinishResult): string {
+  const agent = result.final;
+  if (!agent) return "no agent snapshot";
+  return [
+    `agent ${agent.id} ${agent.status}`,
+    agent.activeTurn ? `turn started ${ago(agent.activeTurn.startedAt)}` : "no active turn",
+    `last prompt ${ago(agent.lastUserMessageAt)}`,
+    `last update ${ago(agent.updatedAt)}`,
+    `${agent.pendingPermissions.length} pending permissions`,
+    ...(agent.lastError ? [`last error: ${agent.lastError}`] : []),
+  ].join(", ");
+}
+
 function assertFinished(result: WaitForFinishResult, expected: string): void {
   assert(
     result.status === "idle",
-    `Expected idle result, received ${result.status}: ${result.error ?? result.lastMessage ?? "no detail"}`,
+    `Expected idle result, received ${result.status}: ${result.error ?? result.lastMessage ?? "no detail"} (${describeAgent(result)})`,
   );
   assert(result.error === null, `Agent failed: ${result.error ?? "unknown error"}`);
   assert(result.lastMessage === expected, `Expected ${expected}, received ${result.lastMessage}`);
@@ -76,6 +94,26 @@ async function deleteTrackedAgent(agentId: string): Promise<void> {
   await client.deleteAgent(agentId);
   const index = createdAgentIds.indexOf(agentId);
   if (index >= 0) createdAgentIds.splice(index, 1);
+}
+
+// On failure, print each live agent's last timeline events, to show how far a stalled turn got.
+async function reportTrackedAgents(): Promise<void> {
+  for (const agentId of createdAgentIds) {
+    const timeline = await client.fetchAgentTimeline(agentId, {
+      direction: "tail",
+      limit: 6,
+      projection: "canonical",
+    });
+    const events = timeline.entries.map(({ item, timestamp }) => {
+      const name = "name" in item && typeof item.name === "string" ? ` ${item.name}` : "";
+      const text =
+        "text" in item && typeof item.text === "string"
+          ? ` ${JSON.stringify(item.text.slice(0, 80))}`
+          : "";
+      return `${ago(timestamp)} ${item.type}${name}${text}`;
+    });
+    process.stderr.write(`Agent ${agentId} last events: ${events.join("; ") || "none"}\n`);
+  }
 }
 
 async function allowPendingPermissions(
@@ -750,6 +788,11 @@ try {
   if (compatibilityFailures.length > 0) {
     throw new Error(`Canary compatibility failures: ${compatibilityFailures.join("; ")}`);
   }
+} catch (error) {
+  await reportTrackedAgents().catch((reportError) => {
+    process.stderr.write(`Could not read agent timelines: ${String(reportError)}\n`);
+  });
+  throw error;
 } finally {
   for (const agentId of createdAgentIds.reverse()) {
     await client.deleteAgent(agentId).catch(() => undefined);
