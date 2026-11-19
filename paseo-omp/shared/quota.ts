@@ -36,12 +36,14 @@ export const listOmpQuotas = defineRpc({
 });
 
 /**
- * The OMP provider (such as `anthropic`) of the model an OMP Plugin agent's live session uses.
+ * The OMP provider (such as `anthropic`) of a model an OMP Plugin agent's live session knows.
  * Paseo only sees that model as an opaque id, so the provider is null without a live session.
+ * The caller names the model it saw: the answer is that model's provider even when the session has
+ * moved to another model by the time it answers, so a late answer can never label the wrong model.
  */
 export const getOmpSessionModelProvider = defineRpc({
   name: "paseo-omp.session-model-provider",
-  input: z.object({ agentId: z.string().min(1).max(256) }),
+  input: z.object({ agentId: z.string().min(1).max(256), model: z.string().min(1).max(256) }),
   output: z.object({ provider: z.string().nullable() }),
 });
 

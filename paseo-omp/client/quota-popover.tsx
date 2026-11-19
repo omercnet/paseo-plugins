@@ -47,7 +47,8 @@ export function QuotaPopover(props: PluginButtonContentProps) {
       session?.model ?? null,
       session?.status ?? null,
     ],
-    queryFn: () => loadSessionModelProvider({ agentId }),
+    // Runs only with a model (see `enabled`); the answer is for that model, never a later one.
+    queryFn: () => loadSessionModelProvider({ agentId, model: session?.model ?? "" }),
     // A closed agent has no live session to ask, as in the pill.
     enabled: Boolean(
       agentId &&

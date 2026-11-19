@@ -229,7 +229,9 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     };
   });
   const registration = () => () => {};
+  let passes = 0;
   const list = async (options?: { subscribe?: object }) => {
+    if (!options?.subscribe) passes += 1;
     const result = {
       entries: agents.map((agent) => ({
         agent: { ...agent, cwd: "/workspace", workspaceId: "workspace", archivedAt: null },
@@ -282,11 +284,19 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     expect(quota("ended")).toHaveBeenLastCalledWith(
       expect.objectContaining({ label: "Quotas · 90%" }),
     );
-    // A rejected lookup also keeps it.
+    // A rejected lookup also keeps it, and so does a null answer while the runtime is down.
     expect(quota("older")).toHaveBeenLastCalledWith(
       expect.objectContaining({ label: "Quotas · 90%" }),
     );
+    expect(quota("recovering")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "Quotas · 90%" }),
+    );
     expect(asked()).toEqual(["live", "older"]);
+    // Each lookup names the model it saw, so a late answer cannot label a model the agent left.
+    expect(rpc).toHaveBeenCalledWith(getOmpSessionModelProvider, {
+      agentId: "live",
+      model: "omp:model:opaque",
+    });
 
     // The same model and status reuse the answer, a rejection included; a new model asks again.
     onDirectoryUpdate();
@@ -315,26 +325,29 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
       expect.objectContaining({ label: "30%", title: expect.stringMatching(/^OpenAI · /u) }),
     );
 
-    // A rejected lookup is retried once its back-off has passed, so a reloaded server recovers.
-    await vi.advanceTimersByTimeAsync(60_000);
-    onDirectoryUpdate();
-    await vi.advanceTimersByTimeAsync(250);
-    expect(asked().filter((id) => id === "older")).toHaveLength(2);
-
-    // A null answer (the runtime was down) is kept only for the back-off too: once the runtime has
-    // recovered, the next pass names the provider.
-    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(2);
-    expect(quota("recovering")).toHaveBeenLastCalledWith(
-      expect.objectContaining({ label: "Quotas · 90%" }),
-    );
+    // Missing answers are retried once the back-off ends, with no directory update: the directory
+    // may never change again, so the plugin schedules that pass itself.
+    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(1);
     runtimeRecovered = true;
-    await vi.advanceTimersByTimeAsync(60_000);
-    onDirectoryUpdate();
-    await vi.advanceTimersByTimeAsync(250);
-    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(60_000 + 250);
+    expect(asked().filter((id) => id === "older")).toHaveLength(2);
+    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(2);
     expect(quota("recovering")).toHaveBeenLastCalledWith(
       expect.objectContaining({ label: "30%", title: expect.stringMatching(/^OpenAI · /u) }),
     );
+    // The recovered answer is kept; only the rejection keeps its back-off.
+    await vi.advanceTimersByTimeAsync(60_000 + 250);
+    expect(asked().filter((id) => id === "older")).toHaveLength(3);
+    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(2);
+
+    // The failing agent closes: its missing answer is dropped, so no retry pass is left to repeat.
+    agents[2].status = "closed";
+    onDirectoryUpdate();
+    await vi.advanceTimersByTimeAsync(250);
+    const passesAfterClose = passes;
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(passes).toBe(passesAfterClose);
+    expect(asked().filter((id) => id === "older")).toHaveLength(3);
   } finally {
     dispose();
   }

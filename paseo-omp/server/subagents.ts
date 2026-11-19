@@ -10,8 +10,8 @@ export interface OmpSubagentControls {
   /** Resolves `false` when the subagent is no longer running. */
   cancelSubagent(handle: string): Promise<boolean>;
   steerSubagent(handle: string, message: string): Promise<void>;
-  /** The OMP provider of the session's current model, or null once the session has ended. */
-  modelProvider(): string | null;
+  /** The OMP provider of one of the session's models, or null once the session has ended. */
+  modelProvider(model: string): string | null;
   /** The provider's stored logins; `active` marks the ones this session may be using. */
   listProviderAccounts(provider: string): Promise<OmpLogoutAccount[]>;
 }
@@ -107,5 +107,5 @@ export function resolveGetOmpSessionModelProvider(
   input: RpcInput<typeof getOmpSessionModelProvider>,
   registry: OmpSubagentControlRegistry,
 ): RpcOutput<typeof getOmpSessionModelProvider> {
-  return { provider: registry.get(input.agentId)?.modelProvider() ?? null };
+  return { provider: registry.get(input.agentId)?.modelProvider(input.model) ?? null };
 }

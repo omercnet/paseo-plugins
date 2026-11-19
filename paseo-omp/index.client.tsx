@@ -169,6 +169,7 @@ export default function contribute(client: PluginClientContext) {
   let preferences: ComposerPillSettings | undefined;
   let disposed = false;
   let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+  let providerRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let reconcileRunning = false;
   let reconcileQueued = false;
   let hubRefreshRunning = false;
@@ -390,25 +391,32 @@ export default function contribute(client: PluginClientContext) {
   }
 
   // Agent id to its session's provider, asked again only when the agent's model or status changes.
-  // A failed lookup is kept too, but only until `retryAt`, so a server without the RPC is not asked
-  // on every reconcile and a transient failure still recovers.
+  // A missing answer is kept too, but only until `retryAt`, so a server without the RPC is not asked
+  // on every reconcile, and a pass is scheduled for `retryAt` so a transient failure still recovers.
   const sessionModelProviders = new Map<
     string,
     { key: string; provider: string | null; retryAt?: number }
   >();
 
   async function sessionModelProvider(agent: AgentEntry["agent"]): Promise<string | null> {
-    if (agent.status === "closed" || !needsSessionModelProvider(agent.provider, agent.model)) {
+    const model = agent.model;
+    if (agent.status === "closed" || !model || !needsSessionModelProvider(agent.provider, model)) {
+      // A known provider is kept for a resume, but a missing answer is only worth retrying while
+      // the agent can be asked; left behind, its passed back-off would reschedule passes forever.
+      if (sessionModelProviders.get(agent.id)?.retryAt !== undefined) {
+        sessionModelProviders.delete(agent.id);
+      }
       return null;
     }
-    const key = `${agent.model}|${agent.status}`;
+    const key = `${model}|${agent.status}`;
     const cached = sessionModelProviders.get(agent.id);
     if (cached?.key === key && (cached.retryAt === undefined || Date.now() < cached.retryAt)) {
       return cached.provider;
     }
     let provider: string | null = null;
     try {
-      ({ provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id }));
+      // The session answers for the model named here, not whatever it uses by then.
+      ({ provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id, model }));
     } catch {
       // A server without the RPC, or one that is reloading.
     }
@@ -470,7 +478,20 @@ export default function contribute(client: PluginClientContext) {
     for (const agentId of sessionModelProviders.keys()) {
       if (!activeIds.has(agentId)) sessionModelProviders.delete(agentId);
     }
+    scheduleProviderRetry();
     await Promise.all([refreshHubStatus(), refreshQuotaStatus()]);
+  }
+
+  // Nothing else re-asks a session whose answer was missing: the directory may never change again,
+  // and the quota poll reads usage only. So a pass runs when the earliest back-off ends.
+  function scheduleProviderRetry(): void {
+    clearTimeout(providerRetryTimer);
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const { retryAt } of sessionModelProviders.values()) {
+      if (retryAt !== undefined) earliest = Math.min(earliest, retryAt);
+    }
+    if (earliest === Number.POSITIVE_INFINITY) return;
+    providerRetryTimer = setTimeout(scheduleReconcile, Math.max(0, earliest - Date.now()));
   }
 
   async function reconcile(): Promise<void> {
@@ -650,6 +671,7 @@ export default function contribute(client: PluginClientContext) {
     unsubscribeAgentDirectory();
     if (releaseAgentDirectory) void releaseAgentDirectory().catch(() => {});
     clearTimeout(reconcileTimer);
+    clearTimeout(providerRetryTimer);
     clearInterval(hubPoll);
     clearInterval(quotaPoll);
     clearInterval(settingsPoll);

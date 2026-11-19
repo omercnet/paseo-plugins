@@ -254,8 +254,17 @@ describe("plugin server bundle", () => {
           ([contract]) => contract.name === "paseo-omp.session-model-provider",
         );
         expect(typeof providerRegistration?.[1]).toBe("function");
-        const lookupProvider = providerRegistration?.[1] as (input: { agentId: string }) => unknown;
-        expect(await lookupProvider({ agentId: "no-live-session" })).toEqual({ provider: null });
+        const [providerContract, lookupProvider] = providerRegistration as unknown as [
+          { input: { parse(value: unknown): { agentId: string; model: string } } },
+          (input: { agentId: string; model: string }) => unknown,
+        ];
+        // The caller names the model it saw; a lookup without one is not the built contract.
+        expect(() => providerContract.input.parse({ agentId: "no-live-session" })).toThrow();
+        const lookupInput = providerContract.input.parse({
+          agentId: "no-live-session",
+          model: "omp:model:none",
+        });
+        expect(await lookupProvider(lookupInput)).toEqual({ provider: null });
         expect(beforeHooks).toHaveLength(1);
         const [hookName, hook] = beforeHooks[0] as [
           string,
