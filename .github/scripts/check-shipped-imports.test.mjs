@@ -38,12 +38,46 @@ test("readImports finds static, type-only, re-export, dynamic and reference impo
   assert.deepEqual(readImports(source), [
     { specifier: "@types/node", typeOnly: true },
     { specifier: "@getpaseo/client", typeOnly: true },
-    { specifier: "@getpaseo/protocol/hosts", typeOnly: false },
+    { specifier: "@getpaseo/protocol/hosts", typeOnly: true },
     { specifier: "./local", typeOnly: false },
     { specifier: "@getpaseo/protocol/messages", typeOnly: true },
     { specifier: "side-effect", typeOnly: false },
     { specifier: "lazy-pkg", typeOnly: false },
     { specifier: "req-pkg", typeOnly: false },
+  ]);
+});
+
+test("readImports reads all-`type` named bindings as type-only, like the host's TypeScript AST", () => {
+  const source = [
+    'import { type A, type B } from "all-type";',
+    'export { type C } from "export-all-type";',
+    'import { type D, E } from "mixed";',
+    'import F, { type G } from "default-and-type";',
+    'import { type as alias } from "value-named-type";',
+    'import { type as } from "type-named-as";',
+    'import { type as as renamed } from "type-named-as-renamed";',
+    'import {} from "empty";',
+  ].join("\n");
+  assert.deepEqual(
+    readImports(source).map(({ specifier, typeOnly }) => `${specifier} ${typeOnly}`),
+    [
+      "all-type true",
+      "export-all-type true",
+      "mixed false",
+      "default-and-type false",
+      "value-named-type false",
+      "type-named-as true",
+      "type-named-as-renamed true",
+      "empty false",
+    ],
+  );
+});
+
+test("readImports reads every import in a declaration file as type-only, like the host", () => {
+  const source = 'import { X } from "@getpaseo/protocol/x";\nexport type Y = typeof import("lazy");\n';
+  assert.deepEqual(readImports(source, { declaration: true }), [
+    { specifier: "@getpaseo/protocol/x", typeOnly: true },
+    { specifier: "lazy", typeOnly: true },
   ]);
 });
 
@@ -98,11 +132,99 @@ test("checkPlugin scans shipped files only and honours dependencies", (t) => {
   );
 });
 
+test("checkPlugin fails on files globs, negations and missing paths instead of scanning nothing", (t) => {
+  for (const [files, message] of [
+    [["client/**"], /"client\/\*\*" is a glob or negation/],
+    [["client/*.ts"], /"client\/\*\.ts" is a glob or negation/],
+    [["client", "!client/a.ts"], /"!client\/a\.ts" is a glob or negation/],
+    [["client", "dist"], /"dist" does not exist/],
+  ]) {
+    const dir = plugin({ files }, { "client/a.ts": 'import type { PaseoApi } from "@getpaseo/client";\n' });
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    assert.throws(() => checkPlugin(dir), message, JSON.stringify(files));
+  }
+});
+
+test("checkPlugin allows #imports the package.json imports field maps to package files", (t) => {
+  const dir = plugin(
+    {
+      files: ["client", "shared"],
+      imports: {
+        "#shared/*": "./shared/*.ts",
+        "#conditional": { types: "./shared/x.d.ts", default: "./shared/x.ts" },
+        "#bare": "some-package",
+        "#excluded": null,
+      },
+    },
+    {
+      "shared/x.ts": "export const x = 1;\n",
+      "client/a.ts": [
+        'import { x } from "#shared/x";',
+        'import type { X } from "#conditional";',
+        'import "#bare";',
+        'import "#excluded";',
+        'import "#undefined";',
+      ].join("\n"),
+    },
+  );
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.deepEqual(
+    checkPlugin(dir).map(({ file, specifier }) => `${file} ${specifier}`),
+    ["client/a.ts #bare", "client/a.ts #excluded", "client/a.ts #undefined"],
+  );
+});
+
+test("checkPlugin allows only the tsconfig paths aliases a shipped tsconfig.json defines", (t) => {
+  const tsconfig = [
+    "{",
+    "  // Comments and trailing commas are valid tsconfig.json.",
+    '  "compilerOptions": { "paths": { "@/*": ["./shared/*"], "~exact": ["./shared/x.ts"], }, },',
+    "}",
+  ].join("\n");
+  const source = 'import { x } from "@/x";\nimport type { Y } from "~exact";\nimport "~/x";\n';
+  const shipped = plugin(
+    { files: ["client", "shared", "tsconfig.json"] },
+    { "tsconfig.json": tsconfig, "client/a.ts": source, "shared/x.ts": "" },
+  );
+  const unshipped = plugin(
+    { files: ["client", "shared"] },
+    { "tsconfig.json": tsconfig, "client/a.ts": source, "shared/x.ts": "" },
+  );
+  t.after(() => {
+    rmSync(shipped, { recursive: true, force: true });
+    rmSync(unshipped, { recursive: true, force: true });
+  });
+  assert.deepEqual(
+    checkPlugin(shipped).map(({ file, specifier }) => `${file} ${specifier}`),
+    ["client/a.ts ~/x"],
+  );
+  const problems = checkPlugin(unshipped);
+  assert.deepEqual(
+    problems.map(({ file, specifier }) => `${file} ${specifier}`),
+    ["client/a.ts @/x", "client/a.ts ~exact", "client/a.ts ~/x"],
+  );
+  assert.match(
+    problems[0].problem,
+    /tsconfig\.json "paths" alias, but package\.json "files" does not ship tsconfig\.json/,
+  );
+});
+
+test("checkPlugin reads declaration files as type-only", (t) => {
+  const dir = plugin(
+    { files: ["client"] },
+    { "client/types.d.ts": 'import { HostSummary } from "@getpaseo/protocol/hosts";\n' },
+  );
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.deepEqual(checkPlugin(dir), []);
+});
+
 test("every plugin's shipped code imports only host modules and its own dependencies", () => {
   const dirs = discoverPluginDirs(repoRoot);
   assert.ok(dirs.length > 0);
   assert.deepEqual(
-    dirs.flatMap((dir) => checkPlugin(dir).map(({ file, specifier }) => `${dir.slice(repoRoot.length + 1)}/${file}: ${specifier}`)),
+    dirs.flatMap((dir) =>
+      checkPlugin(dir).map(({ file, specifier }) => `${dir.slice(repoRoot.length + 1)}/${file}: ${specifier}`),
+    ),
     [],
   );
 });
