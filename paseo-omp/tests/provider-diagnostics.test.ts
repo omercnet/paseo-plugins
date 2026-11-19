@@ -1,6 +1,6 @@
 import { chmod, lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   buildStatefulCommandEnv,
@@ -53,6 +53,11 @@ async function tempDir(prefix: string): Promise<string> {
   const dir = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   temporaryDirectories.push(dir);
   return dir;
+}
+
+/** Remove random mkdtemp directory names so short substring checks cannot match them. */
+function withoutTempDirNames(text: string, ...dirs: string[]): string {
+  return dirs.reduce((result, dir) => result.split(basename(dir)).join("<tmp>"), text);
 }
 
 async function createFakeBinary(
@@ -798,7 +803,7 @@ describe("computeOmpProviderHealth", () => {
       const health = await computeOmpProviderHealth(baseDeps(agentDir, binaryDir));
 
       expect(health.mcp).toEqual({ status: "configured", serverCount: 1, reason: null });
-      const serialized = JSON.stringify(health);
+      const serialized = withoutTempDirNames(JSON.stringify(health), binaryDir, agentDir);
       expect(serialized).not.toContain("private-descope-name");
       expect(serialized).not.toContain("top-secret-value");
       expect(serialized).not.toContain("npx");
