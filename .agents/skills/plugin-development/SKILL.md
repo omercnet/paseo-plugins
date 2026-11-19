@@ -68,7 +68,7 @@ $S cli <plugin> plugin install "$PWD/<plugin>"   # back to the checkout, so the 
 ## Checklist
 
 1. Fetched and read the three upstream docs for this session.
-2. No shipped import of `@getpaseo/client` or any other non-host, non-protocol-type package that is not in `dependencies`. `node .github/scripts/check-shipped-imports.mjs` checks every plugin; CI runs it on each PR. It needs literal `files` paths that exist in the checkout (no globs or negations) and does not scan files generated at pack time.
+2. No shipped import of `@getpaseo/client` or any other non-host, non-protocol-type package that is not in `dependencies`. `node .github/scripts/check-shipped-imports.mjs` checks every plugin; CI runs it on each PR. It needs literal `files` paths that exist in the checkout (no globs or negations) and does not scan files generated at pack time. `#imports` targets and tsconfig `paths` targets must be files that `files` ships, and a `paths` alias also needs `tsconfig.json` in `files`.
 3. `npm run check`, `npm run typecheck`, `npm test` pass in the plugin.
 4. Packed install outside the monorepo reports `running`.
 5. `requirements.paseo` still matches the APIs used.

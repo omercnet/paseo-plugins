@@ -1,16 +1,20 @@
 // Fails when a plugin's shipped code imports a package the installed plugin cannot resolve.
 //
 // The daemon compiles each plugin with a runtime-boundary esbuild plugin
-// (@getpaseo/server dist/server/server/plugins/compiler-build.js and compiler-imports.js,
-// identical in 0.14.0, 0.15.0 and 0.16.0-beta.2). It reads imports with the TypeScript AST and resolves every
-// one, type-only imports included, from the plugin's install directory unless the host
-// provides it. A package that is only a devDependency resolves in this monorepo but not in an
-// npm install, so the install fails with `Could not resolve type dependency "<pkg>"` (#396, #581).
+// (@getpaseo/server dist/server/server/plugins/compiler-build.js). It reads imports with the
+// TypeScript AST (compiler-imports.js) and resolves every one, type-only imports included, from
+// the plugin's install directory unless the host provides it. compiler-imports.js is identical in
+// 0.14.0, 0.15.0 and 0.16.0-beta.2; the import-boundary code of compiler-build.js is the same in all
+// three (0.15 only adds a client minify step). A package that is only a devDependency resolves in
+// this monorepo but not in an npm install, so the install fails with
+// `Could not resolve type dependency "<pkg>"` (#396, #581).
 //
-// Specifiers that resolve inside the install are allowed: `#name` entries of the package.json
-// `imports` field with relative targets, and `compilerOptions.paths` aliases of the plugin's own
-// tsconfig.json when `files` ships it (its `extends` chain is not read). Without a shipped
-// tsconfig.json, neither esbuild nor TypeScript sees the alias in the install.
+// Specifiers that resolve inside the install are allowed when every target is a shipped file:
+// `#name` entries of the package.json `imports` field, and `compilerOptions.paths` aliases of the
+// plugin's own tsconfig.json when `files` ships it (its `extends` chain is not read). Without a
+// shipped tsconfig.json, neither esbuild nor TypeScript sees the alias in the install. An `imports`
+// conditions object needs a `default` at every level, and every condition and array fallback must
+// be shipped, so whichever one a resolver picks exists.
 //
 // Limits:
 // - `files` entries must be literal paths that exist in the checkout. Globs, negations and
@@ -18,11 +22,13 @@
 // - Generated output is not scanned. Only files committed to the checkout are read, so anything a
 //   pack- or install-time script writes (paseo-shared-browser's scripts/prepare-*.mjs, for
 //   example) ships unchecked. Commit generated sources, as sandbox does with server/docker/image.ts.
-// - Imports are found with regular expressions, not a parser. `import("pkg")` in a type position
-//   counts as a runtime import, so the guard can be stricter than the host there.
+// - Imports are found with regular expressions, not a parser. Stricter than the host:
+//   `import("pkg")` in a type position and `import type x = require("pkg")` count as runtime
+//   imports. Missed: statements without whitespace around keywords, such as `import{a}from"m"`
+//   or `import"m"`; formatted sources (Biome) always have it.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { isBuiltin } from "node:module";
-import { join, relative } from "node:path";
+import { join, posix, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Mirrors PLUGIN_SDK_SPECIFIERS and the host-module rule in the boundary plugin.
@@ -77,7 +83,7 @@ function onlyTypeBindings(clause) {
     .filter(Boolean);
   // `type as x` imports a value named `type`; `type as`, `type as as x` and `type A` are type-only.
   return (
-    elements.length > 0 && elements.every((element) => /^type\s/.test(element) && !/^type\s+as\s+[\w$]+$/.test(element))
+    elements.length > 0 && elements.every((element) => /^type\s/.test(element) && !/^type\s+as\s+\S+$/.test(element))
   );
 }
 
@@ -106,29 +112,109 @@ function packageName(specifier) {
   return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
-/** Whether `specifier` matches an `imports` or tsconfig `paths` key, which may hold one `*`. */
-function matchesPattern(pattern, specifier) {
+/** The `*` capture when `specifier` matches a key that may hold one `*`, or null. */
+function patternCapture(pattern, specifier) {
   const star = pattern.indexOf("*");
-  if (star === -1) return pattern === specifier;
+  if (star === -1) return pattern === specifier ? "" : null;
   const prefix = pattern.slice(0, star);
   const suffix = pattern.slice(star + 1);
-  return (
-    specifier.length >= prefix.length + suffix.length && specifier.startsWith(prefix) && specifier.endsWith(suffix)
-  );
+  if (specifier.length < prefix.length + suffix.length) return null;
+  if (!specifier.startsWith(prefix) || !specifier.endsWith(suffix)) return null;
+  return specifier.slice(prefix.length, specifier.length - suffix.length);
 }
 
-/** Why the boundary plugin would fail to resolve this import from an npm install, or null. */
-export function importProblem({ specifier, typeOnly }, installed, { aliases = [], unshippedAliases = [] } = {}) {
+/** The most specific key matching `specifier`, as Node and TypeScript pick it, with its `*` capture. */
+function bestMatch(entries, specifier) {
+  let best = null;
+  for (const [pattern, value] of entries) {
+    const capture = patternCapture(pattern, specifier);
+    if (capture === null) continue;
+    const specificity = pattern.includes("*") ? pattern.indexOf("*") : Number.POSITIVE_INFINITY;
+    if (!best || specificity > best.specificity) best = { value, capture, specificity };
+  }
+  return best;
+}
+
+const moduleExtensions = [".ts", ".tsx", ".d.ts", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
+
+/**
+ * Whether a plugin-relative module path is a shipped file. `.js` targets also match their `.ts`
+ * source; `probe` adds the extension and index lookups that tsconfig `paths` targets get.
+ */
+function shipsModule(rel, shipped, probe) {
+  const candidates = [rel];
+  const js = rel.match(/^(.*)\.([cm]?)js(x?)$/);
+  if (js) candidates.push(`${js[1]}.${js[2]}ts${js[3]}`, `${js[1]}.d.${js[2]}ts`);
+  if (probe) {
+    candidates.push(...moduleExtensions.flatMap((ext) => [rel + ext, `${rel}/index${ext}`]));
+  }
+  return candidates.some((candidate) => shipped.has(candidate));
+}
+
+/** Why a package.json `imports` value may not resolve to a shipped file, or null. */
+function importsTargetProblem(value, capture, shipped) {
+  if (typeof value === "string") {
+    const target = value.replaceAll("*", capture);
+    const segments = target.split("/");
+    if (
+      segments[0] !== "." ||
+      segments.slice(1).some((s) => s === "" || s === "." || s === ".." || s === "node_modules")
+    ) {
+      return `maps to "${target}", which is not a file path inside the package`;
+    }
+    if (!shipsModule(posix.normalize(target), shipped, false)) {
+      return `maps to "${target}", which package.json "files" does not ship`;
+    }
+    return null;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "maps to an empty array";
+    for (const member of value) {
+      const problem = importsTargetProblem(member, capture, shipped);
+      if (problem) return problem;
+    }
+    return null;
+  }
+  if (value && typeof value === "object") {
+    if (!Object.hasOwn(value, "default")) {
+      return `has a conditions object without "default", so a resolver may match none of them`;
+    }
+    for (const member of Object.values(value)) {
+      const problem = importsTargetProblem(member, capture, shipped);
+      if (problem) return problem;
+    }
+    return null;
+  }
+  return `maps to ${JSON.stringify(value)}`;
+}
+
+/** Why tsconfig `paths` targets may not resolve to shipped files, or null. Every fallback must ship. */
+function pathsTargetProblem(targets, capture, baseUrl, shipped) {
+  if (!Array.isArray(targets) || targets.length === 0) return "has no targets";
+  for (const target of targets) {
+    if (typeof target !== "string") return `maps to ${JSON.stringify(target)}`;
+    const rel = posix.normalize(posix.join(baseUrl, target.replaceAll("*", capture)));
+    if (rel === ".." || rel.startsWith("../") || posix.isAbsolute(rel)) {
+      return `maps to "${target}", which is outside the package`;
+    }
+    if (!shipsModule(rel, shipped, true)) return `maps to "${target}", which package.json "files" does not ship`;
+  }
+  return null;
+}
+
+/**
+ * Why the boundary plugin would fail to resolve this import from an npm install, or null.
+ * `aliasProblem` returns undefined when no `#imports` or tsconfig alias matches the specifier.
+ */
+export function importProblem({ specifier, typeOnly }, installed, aliasProblem = () => undefined) {
   if (specifier.startsWith(".") || specifier.startsWith("/")) return null;
-  if (aliases.some((pattern) => matchesPattern(pattern, specifier))) return null;
-  if (specifier.startsWith("#")) return `${specifier} is not defined in package.json "imports" with a relative target`;
   if (hostSdkSpecifiers.has(specifier) || hostModule.test(specifier) || isBuiltin(specifier)) return null;
   if (specifier === "@types/node") return null;
   if (typeOnly && specifier.startsWith("@getpaseo/protocol/")) return null;
+  const alias = aliasProblem(specifier);
+  if (alias !== undefined) return alias;
+  if (specifier.startsWith("#")) return `${specifier} is not defined in package.json "imports"`;
   if (installed.has(packageName(specifier))) return null;
-  if (unshippedAliases.some((pattern) => matchesPattern(pattern, specifier))) {
-    return `${specifier} is a tsconfig.json "paths" alias, but package.json "files" does not ship tsconfig.json`;
-  }
   return `${packageName(specifier)} is not a dependency or peerDependency and the host does not provide it`;
 }
 
@@ -158,25 +244,18 @@ function shippedFiles(pluginDir, entries) {
   });
 }
 
-/** Leaf targets of a package.json `imports` value: a string, an array, or a conditions object. */
-function importTargets(value) {
-  if (Array.isArray(value)) return value.flatMap(importTargets);
-  if (value && typeof value === "object") return Object.values(value).flatMap(importTargets);
-  return [value];
-}
-
-/** Keys of `compilerOptions.paths` in a tsconfig.json, which allows comments and trailing commas. */
+/** `compilerOptions.paths` and `baseUrl` of a tsconfig.json, which allows comments and trailing commas. */
 function tsconfigPaths(file) {
-  if (!existsSync(file)) return [];
+  const none = { baseUrl: ".", paths: [] };
+  if (!existsSync(file)) return none;
   let config;
   try {
     config = JSON.parse(stripComments(readFileSync(file, "utf8")).replace(/,(\s*[}\]])/g, "$1"));
   } catch {
-    return []; // Unreadable here means no aliases are trusted, so their imports stay flagged.
+    return none; // Unreadable here means no aliases are trusted, so their imports stay flagged.
   }
-  return Object.entries(config.compilerOptions?.paths ?? {})
-    .filter(([, targets]) => Array.isArray(targets) && targets.length > 0)
-    .map(([pattern]) => pattern);
+  const { baseUrl = ".", paths = {} } = config.compilerOptions ?? {};
+  return { baseUrl: String(baseUrl).split("\\").join("/"), paths: Object.entries(paths) };
 }
 
 /** Imports in a plugin's shipped (package.json `files`) source that an npm install cannot resolve. */
@@ -185,30 +264,33 @@ export function checkPlugin(pluginDir) {
   const installed = new Set(
     [pkg.dependencies, pkg.peerDependencies, pkg.optionalDependencies].flatMap((deps) => Object.keys(deps ?? {})),
   );
-  const shipped = shippedFiles(pluginDir, pkg.files ?? ["."]);
-  // esbuild and TypeScript both resolve `#name` through the package's own `imports` field.
-  const packageImports = Object.entries(pkg.imports ?? {})
-    .filter(([key, value]) => {
-      const targets = importTargets(value);
-      return (
-        key.startsWith("#") && targets.length > 0 && targets.every((t) => typeof t === "string" && t.startsWith("./"))
-      );
-    })
-    .map(([key]) => key);
-  const tsconfig = join(pluginDir, "tsconfig.json");
-  const paths = tsconfigPaths(tsconfig);
-  const tsconfigShipped = shipped.includes(tsconfig);
-  const aliases = {
-    aliases: [...packageImports, ...(tsconfigShipped ? paths : [])],
-    unshippedAliases: tsconfigShipped ? [] : paths,
-  };
+  const shipped = new Set(
+    shippedFiles(pluginDir, pkg.files ?? ["."]).map((file) => relative(pluginDir, file).split("\\").join("/")),
+  );
+  const tsconfig = tsconfigPaths(join(pluginDir, "tsconfig.json"));
+  // esbuild and TypeScript resolve `#name` through the package's own `imports` field, and aliases
+  // through the tsconfig.json next to the plugin, but only to files that the install has.
+  function aliasProblem(specifier) {
+    if (specifier.startsWith("#")) {
+      const match = bestMatch(Object.entries(pkg.imports ?? {}), specifier);
+      if (!match) return undefined;
+      const problem = importsTargetProblem(match.value, match.capture, shipped);
+      return problem && `${specifier}: package.json "imports" ${problem}`;
+    }
+    const match = bestMatch(tsconfig.paths, specifier);
+    if (!match) return undefined;
+    if (!shipped.has("tsconfig.json")) {
+      return `${specifier} is a tsconfig.json "paths" alias, but package.json "files" does not ship tsconfig.json`;
+    }
+    const problem = pathsTargetProblem(match.value, match.capture, tsconfig.baseUrl, shipped);
+    return problem && `${specifier}: tsconfig.json "paths" ${problem}`;
+  }
   const problems = [];
-  for (const file of shipped) {
-    const rel = relative(pluginDir, file).split("\\").join("/");
+  for (const rel of shipped) {
     if (!sourceFile.test(rel) || testFile.test(rel)) continue;
-    const imports = readImports(readFileSync(file, "utf8"), { declaration: /\.d\.[cm]?ts$/.test(rel) });
-    for (const entry of imports) {
-      const problem = importProblem(entry, installed, aliases);
+    const source = readFileSync(join(pluginDir, rel), "utf8");
+    for (const entry of readImports(source, { declaration: /\.d\.[cm]?ts$/.test(rel) })) {
+      const problem = importProblem(entry, installed, aliasProblem);
       if (problem) problems.push({ file: rel, specifier: entry.specifier, problem });
     }
   }
