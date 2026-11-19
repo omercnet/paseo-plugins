@@ -139,20 +139,24 @@ const moduleExtensions = [".ts", ".tsx", ".d.ts", ".mts", ".cts", ".js", ".jsx",
 
 /**
  * Whether a plugin-relative module path is a shipped file. `.js` targets also match their `.ts`
- * source; `probe` adds the extension and index lookups that tsconfig `paths` targets get.
+ * source; `probe` adds the extension and index lookups that tsconfig `paths` targets get. A `.d.ts`
+ * only satisfies a type-only import: esbuild bundles runtime imports and has no code in it.
  */
-function shipsModule(rel, shipped, probe) {
+function shipsModule(rel, shipped, probe, typeOnly) {
   const candidates = [rel];
   const js = rel.match(/^(.*)\.([cm]?)js(x?)$/);
   if (js) candidates.push(`${js[1]}.${js[2]}ts${js[3]}`, `${js[1]}.d.${js[2]}ts`);
   if (probe) {
     candidates.push(...moduleExtensions.flatMap((ext) => [rel + ext, `${rel}/index${ext}`]));
   }
-  return candidates.some((candidate) => shipped.has(candidate));
+  return candidates.some((candidate) => (typeOnly || !/\.d\.[cm]?ts$/.test(candidate)) && shipped.has(candidate));
 }
 
-/** Why a package.json `imports` value may not resolve to a shipped file, or null. */
-function importsTargetProblem(value, capture, shipped) {
+/**
+ * Why a package.json `imports` value may not resolve to a shipped file, or null. A runtime import
+ * skips the `types` condition, which esbuild does not match.
+ */
+function importsTargetProblem(value, capture, shipped, typeOnly) {
   if (typeof value === "string") {
     const target = value.replaceAll("*", capture);
     const segments = target.split("/");
@@ -162,7 +166,7 @@ function importsTargetProblem(value, capture, shipped) {
     ) {
       return `maps to "${target}", which is not a file path inside the package`;
     }
-    if (!shipsModule(posix.normalize(target), shipped, false)) {
+    if (!shipsModule(posix.normalize(target), shipped, false, typeOnly)) {
       return `maps to "${target}", which package.json "files" does not ship`;
     }
     return null;
@@ -170,7 +174,7 @@ function importsTargetProblem(value, capture, shipped) {
   if (Array.isArray(value)) {
     if (value.length === 0) return "maps to an empty array";
     for (const member of value) {
-      const problem = importsTargetProblem(member, capture, shipped);
+      const problem = importsTargetProblem(member, capture, shipped, typeOnly);
       if (problem) return problem;
     }
     return null;
@@ -179,8 +183,9 @@ function importsTargetProblem(value, capture, shipped) {
     if (!Object.hasOwn(value, "default")) {
       return `has a conditions object without "default", so a resolver may match none of them`;
     }
-    for (const member of Object.values(value)) {
-      const problem = importsTargetProblem(member, capture, shipped);
+    for (const [condition, member] of Object.entries(value)) {
+      if (condition === "types" && !typeOnly) continue;
+      const problem = importsTargetProblem(member, capture, shipped, typeOnly);
       if (problem) return problem;
     }
     return null;
@@ -189,7 +194,7 @@ function importsTargetProblem(value, capture, shipped) {
 }
 
 /** Why tsconfig `paths` targets may not resolve to shipped files, or null. Every fallback must ship. */
-function pathsTargetProblem(targets, capture, baseUrl, shipped) {
+function pathsTargetProblem(targets, capture, baseUrl, shipped, typeOnly) {
   if (!Array.isArray(targets) || targets.length === 0) return "has no targets";
   for (const target of targets) {
     if (typeof target !== "string") return `maps to ${JSON.stringify(target)}`;
@@ -197,7 +202,8 @@ function pathsTargetProblem(targets, capture, baseUrl, shipped) {
     if (rel === ".." || rel.startsWith("../") || posix.isAbsolute(rel)) {
       return `maps to "${target}", which is outside the package`;
     }
-    if (!shipsModule(rel, shipped, true)) return `maps to "${target}", which package.json "files" does not ship`;
+    if (!shipsModule(rel, shipped, true, typeOnly))
+      return `maps to "${target}", which package.json "files" does not ship`;
   }
   return null;
 }
@@ -211,7 +217,7 @@ export function importProblem({ specifier, typeOnly }, installed, aliasProblem =
   if (hostSdkSpecifiers.has(specifier) || hostModule.test(specifier) || isBuiltin(specifier)) return null;
   if (specifier === "@types/node") return null;
   if (typeOnly && specifier.startsWith("@getpaseo/protocol/")) return null;
-  const alias = aliasProblem(specifier);
+  const alias = aliasProblem(specifier, typeOnly);
   if (alias !== undefined) return alias;
   if (specifier.startsWith("#")) return `${specifier} is not defined in package.json "imports"`;
   if (installed.has(packageName(specifier))) return null;
@@ -270,11 +276,11 @@ export function checkPlugin(pluginDir) {
   const tsconfig = tsconfigPaths(join(pluginDir, "tsconfig.json"));
   // esbuild and TypeScript resolve `#name` through the package's own `imports` field, and aliases
   // through the tsconfig.json next to the plugin, but only to files that the install has.
-  function aliasProblem(specifier) {
+  function aliasProblem(specifier, typeOnly) {
     if (specifier.startsWith("#")) {
       const match = bestMatch(Object.entries(pkg.imports ?? {}), specifier);
       if (!match) return undefined;
-      const problem = importsTargetProblem(match.value, match.capture, shipped);
+      const problem = importsTargetProblem(match.value, match.capture, shipped, typeOnly);
       return problem && `${specifier}: package.json "imports" ${problem}`;
     }
     const match = bestMatch(tsconfig.paths, specifier);
@@ -282,7 +288,7 @@ export function checkPlugin(pluginDir) {
     if (!shipped.has("tsconfig.json")) {
       return `${specifier} is a tsconfig.json "paths" alias, but package.json "files" does not ship tsconfig.json`;
     }
-    const problem = pathsTargetProblem(match.value, match.capture, tsconfig.baseUrl, shipped);
+    const problem = pathsTargetProblem(match.value, match.capture, tsconfig.baseUrl, shipped, typeOnly);
     return problem && `${specifier}: tsconfig.json "paths" ${problem}`;
   }
   const problems = [];

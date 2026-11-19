@@ -234,6 +234,35 @@ test("checkPlugin flags #imports whose targets an npm install does not have", (t
   assert.match(problems[5].problem, /without "default"/);
 });
 
+test("checkPlugin accepts a declaration-only alias target for type-only imports only", (t) => {
+  const dir = plugin(
+    {
+      files: ["client", "shared", "tsconfig.json"],
+      imports: {
+        "#js": "./shared/x.js",
+        "#dts": "./shared/x.d.ts",
+        "#types-gone": { types: "./gone.d.ts", default: "./shared/y.ts" },
+      },
+    },
+    {
+      "tsconfig.json": '{ "compilerOptions": { "paths": { "~decl": ["./shared/x"] } } }',
+      "shared/x.d.ts": "export declare const x: number;\n",
+      "shared/y.ts": "export const y = 1;\n",
+      "client/value.ts":
+        'import { x } from "#js";\nimport { x as d } from "#dts";\nimport { x as p } from "~decl";\nimport { y } from "#types-gone";\n',
+      "client/types.ts":
+        'import type { x } from "#js";\nimport type { x as d } from "#dts";\nimport type { x as p } from "~decl";\nimport type { y } from "#types-gone";\n',
+    },
+  );
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.deepEqual(
+    checkPlugin(dir)
+      .map(({ file, specifier }) => `${file} ${specifier}`)
+      .sort(),
+    ["client/types.ts #types-gone", "client/value.ts #dts", "client/value.ts #js", "client/value.ts ~decl"],
+  );
+});
+
 test("checkPlugin allows only tsconfig paths aliases a shipped tsconfig.json maps to shipped files", (t) => {
   const tsconfig = [
     "{",
