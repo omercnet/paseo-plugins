@@ -317,6 +317,41 @@ test("checkPlugin allows only tsconfig paths aliases a shipped tsconfig.json map
   );
 });
 
+test("checkPlugin judges a bare import by the dependency rule when a catch-all paths alias does not resolve it", (t) => {
+  const tsconfig = '{ "compilerOptions": { "paths": { "*": ["./shared/types/*"] } } }';
+  const source = [
+    'import { parse } from "yaml";',
+    'import type { Document } from "yaml";',
+    'import "dev-only";',
+    'import type { Ambient } from "ambient";',
+    'import { ambient } from "ambient";',
+  ].join("\n");
+  const sources = {
+    "tsconfig.json": tsconfig,
+    "client/a.ts": source,
+    "shared/types/ambient.d.ts": "export declare const ambient: number;\n",
+  };
+  const pkg = { dependencies: { yaml: "1" }, devDependencies: { "dev-only": "1" } };
+  const shipped = plugin({ ...pkg, files: ["client", "shared", "tsconfig.json"] }, sources);
+  const unshipped = plugin({ ...pkg, files: ["client", "shared"] }, sources);
+  t.after(() => {
+    rmSync(shipped, { recursive: true, force: true });
+    rmSync(unshipped, { recursive: true, force: true });
+  });
+  // yaml is declared, so it resolves from node_modules after the alias target misses. A type-only
+  // import of ambient resolves to the shipped .d.ts; its value import and dev-only resolve nowhere.
+  const problems = checkPlugin(shipped);
+  assert.deepEqual(
+    problems.map(({ specifier }) => specifier),
+    ["dev-only", "ambient"],
+  );
+  assert.match(problems[0].problem, /maps to "\.\/shared\/types\/\*".*, and dev-only is not a dependency/);
+  assert.deepEqual(
+    checkPlugin(unshipped).map(({ specifier }) => specifier),
+    ["dev-only", "ambient", "ambient"],
+  );
+});
+
 test("checkPlugin reads declaration files as type-only", (t) => {
   const dir = plugin(
     { files: ["client"] },

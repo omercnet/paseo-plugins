@@ -15,6 +15,8 @@
 // shipped tsconfig.json, neither esbuild nor TypeScript sees the alias in the install. An `imports`
 // conditions object needs a `default` at every level, and every condition and array fallback must
 // be shipped, so whichever one a resolver picks exists.
+// A bare specifier whose `paths` alias does not resolve to a shipped file falls back to node_modules
+// in esbuild and TypeScript, so it passes when it is a declared dependency and fails otherwise.
 //
 // Limits:
 // - `files` entries must be literal paths that exist in the checkout. Globs, negations and
@@ -210,7 +212,8 @@ function pathsTargetProblem(targets, capture, baseUrl, shipped, typeOnly) {
 
 /**
  * Why the boundary plugin would fail to resolve this import from an npm install, or null.
- * `aliasProblem` returns undefined when no `#imports` or tsconfig alias matches the specifier.
+ * `aliasProblem` returns undefined when no `#imports` or tsconfig alias matches the specifier,
+ * null when the alias resolves to a shipped file, and the reason otherwise.
  */
 export function importProblem({ specifier, typeOnly }, installed, aliasProblem = () => undefined) {
   if (specifier.startsWith(".") || specifier.startsWith("/")) return null;
@@ -218,10 +221,15 @@ export function importProblem({ specifier, typeOnly }, installed, aliasProblem =
   if (specifier === "@types/node") return null;
   if (typeOnly && specifier.startsWith("@getpaseo/protocol/")) return null;
   const alias = aliasProblem(specifier, typeOnly);
-  if (alias !== undefined) return alias;
-  if (specifier.startsWith("#")) return `${specifier} is not defined in package.json "imports"`;
+  if (specifier.startsWith("#")) {
+    return alias === undefined ? `${specifier} is not defined in package.json "imports"` : alias;
+  }
+  if (alias === null) return null;
+  // When a tsconfig `paths` target does not resolve, esbuild and TypeScript fall back to
+  // node_modules, so a declared package still resolves through an alias that matches it.
   if (installed.has(packageName(specifier))) return null;
-  return `${packageName(specifier)} is not a dependency or peerDependency and the host does not provide it`;
+  const missing = `${packageName(specifier)} is not a dependency or peerDependency and the host does not provide it`;
+  return alias ? `${alias}, and ${missing}` : missing;
 }
 
 function walk(path) {
