@@ -7,7 +7,7 @@ import {
   ownedHubCleanupDependencies,
   stopOwnedHubProcesses,
 } from "../hub";
-import { ompDataDir, ompHubRunDir } from "../paths";
+import { ompDaemonDir, ompDataDir, ompHubRunDir } from "../paths";
 import { defaultSpawn, runBounded } from "../provider-diagnostics";
 import {
   buildOmpSpawnRequest,
@@ -189,6 +189,8 @@ export interface OmpRpcRuntimeOptions {
     timeoutMs: number,
   ) => Promise<boolean>;
   hubRunDir?: string;
+  /** omp 19's per-user daemon directory; defaults to the one the session's environment selects (`PASEO_OMP_DAEMON_DIR` is test-only). */
+  hubDaemonDir?: string;
 }
 
 const OMP_COMMAND_TIMEOUT_MS = 15_000;
@@ -710,6 +712,7 @@ export class OmpRpcRuntime implements OmpRuntime {
         (args, timeoutMs) =>
           run(request.command, [...prefix, ...args], env, request.cwd, timeoutMs),
         this.options.hubRunDir ?? process.env.PASEO_OMP_RUN_DIR ?? ompHubRunDir(env),
+        this.options.hubDaemonDir ?? (process.env.PASEO_OMP_DAEMON_DIR || ompDaemonDir(env)),
       ),
     );
   }

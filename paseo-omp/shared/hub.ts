@@ -1,11 +1,12 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-// Mirrors the on-disk shape omp's hub writes under
-// ~/.omp/run/daemons/<projectHash>/daemons/<name>/meta.json. That layout is an internal,
-// unversioned implementation detail of the omp harness, not a published API, so every field
-// here is optional-safe on the server side and this schema is intentionally permissive
-// (state is a free-form string, not a fixed enum) to avoid rejecting shapes we have not seen.
+// Mirrors the on-disk shape omp's hub writes: omp 18's per-project brokers under
+// ~/.omp/run/daemons/<projectHash>/daemons/<name>/meta.json, and omp 19's per-user daemon store
+// (~/.omp/run/daemon/daemon.db). Both are internal, unversioned implementation details of the omp
+// harness, not a published API, so every field here is optional-safe on the server side and this
+// schema is intentionally permissive (state is a free-form string, not a fixed enum) to avoid
+// rejecting shapes we have not seen.
 export const HubProcessSchema = z.object({
   name: z.string(),
   application: z.string(),

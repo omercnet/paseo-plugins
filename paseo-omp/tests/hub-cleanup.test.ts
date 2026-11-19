@@ -12,10 +12,11 @@ import {
   stopOwnedHubProcesses,
 } from "../server/hub";
 import type { OmpOperationalFailure } from "../server/operational-failure-diagnostics";
-import { ompHubRunDir } from "../server/paths";
+import { ompDaemonDir, ompHubRunDir } from "../server/paths";
 import { OmpRpcRuntime } from "../server/provider/omp-rpc";
 import type { OmpStartOptions } from "../server/provider/omp-rpc-environment";
 import { createOmpProvider } from "../server/provider/registration";
+import { writeDaemonUnits } from "./helpers/omp-daemon-store";
 import {
   createHarness,
   EventLog,
@@ -34,8 +35,10 @@ const OWNED: HubServiceOwners = new Map([[OWNER, Number.POSITIVE_INFINITY]]);
 const temporaryDirectories: string[] = [];
 
 beforeEach(() => {
-  // Every test passes its own run dir; the ambient override must never leak in or out.
+  // Every test passes its own run dir; the ambient override must never leak in or out, and no
+  // test may read the machine's real omp 19 daemon store.
   vi.stubEnv("PASEO_OMP_RUN_DIR", undefined);
+  vi.stubEnv("PASEO_OMP_DAEMON_DIR", join(tmpdir(), "paseo-omp-no-daemon-store"));
 });
 
 afterEach(async () => {
@@ -144,6 +147,175 @@ describe("owned Hub service cleanup", () => {
     expect(await stateOf(root, "other-agent")).toBe("running");
     expect(await stateOf(root, "handed_off")).toBe("running");
     expect(await stateOf(root, "pre-18-18-9")).toBe("running");
+  });
+
+  test("never stops an 18.x service by a name an omp 19 unit anywhere answers to", async () => {
+    const root = await runDir({ web: {}, api: {} });
+    const daemonDir = join(root, "daemon");
+    // Another project's 19 unit is called `web`; a 19 `omp ps stop -- web` would stop it.
+    await writeDaemonUnits(
+      daemonDir,
+      [{ id: "u-foreign-web", key: "web", owner: "someone-else", scopeKey: "project:/other" }],
+      PROJECT,
+    );
+    const commands: string[][] = [];
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(
+        async (args) => {
+          commands.push([...args]);
+          await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+          return true;
+        },
+        root,
+        daemonDir,
+      ),
+      ...fakeClock(),
+    });
+    expect(commands).toEqual([["ps", "stop", "--dir", PROJECT, "--", "api"]]);
+    expect(result).toEqual({ stopped: ["api"], failed: ["web"], complete: true });
+    expect(await stateOf(root, "web")).toBe("running");
+  });
+
+  test("stops no 18.x service by name when the omp 19 store cannot be read", async () => {
+    const root = await runDir({ web: {} });
+    const daemonDir = join(root, "daemon");
+    await mkdir(daemonDir, { recursive: true });
+    await writeFile(join(daemonDir, "daemon.db"), "not a database");
+    const commands: string[][] = [];
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(
+        async (args) => {
+          commands.push([...args]);
+          return true;
+        },
+        root,
+        daemonDir,
+      ),
+      ...fakeClock(),
+    });
+    expect(commands).toEqual([]);
+    expect(result).toEqual({ stopped: [], failed: ["web"], complete: false });
+  });
+
+  test("stops owned omp 19 daemon services by unit id", async () => {
+    const root = await runDir({ legacy: {} });
+    const daemonDir = join(root, "daemon");
+    await writeDaemonUnits(
+      daemonDir,
+      [
+        { id: "u-web", key: "web", owner: OWNER },
+        { id: "u-held", key: "held", owner: OWNER, hold: "leases" },
+        { id: "u-detached", key: "detached", owner: OWNER, hold: "detached" },
+        { id: "u-foreign", key: "foreign", owner: "someone-else" },
+        { id: "u-other", key: "elsewhere", owner: OWNER, scopeKey: "project:/other" },
+      ],
+      PROJECT,
+    );
+    const commands: string[][] = [];
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(
+        async (args) => {
+          commands.push([...args]);
+          const target = args.at(-1) ?? "";
+          if (target === "legacy") await writeDaemon(root, target, { state: "exited" });
+          else
+            await writeDaemonUnits(
+              daemonDir,
+              [{ id: target, key: "web", state: "exited", owner: OWNER }],
+              PROJECT,
+            );
+          return true;
+        },
+        root,
+        daemonDir,
+      ),
+      ...fakeClock(),
+    });
+
+    // `omp ps stop` matches a bare name in any project, so a daemon unit goes by its id.
+    expect(commands.sort()).toEqual([
+      ["ps", "stop", "--dir", PROJECT, "--", "legacy"],
+      ["ps", "stop", "--dir", PROJECT, "--", "u-web"],
+    ]);
+    expect(result).toEqual({
+      stopped: expect.arrayContaining(["legacy", "web"]),
+      failed: [],
+      complete: true,
+    });
+  });
+
+  test("reports an omp 19 service that stays live, and an unreadable store, as unsettled", async () => {
+    const root = await runDir({});
+    const daemonDir = join(root, "daemon");
+    await writeDaemonUnits(
+      daemonDir,
+      [
+        { id: "u-web", key: "web", owner: OWNER },
+        { id: "u-bad", key: "bad", rawSnapshot: "{" },
+      ],
+      PROJECT,
+    );
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(async () => true, root, daemonDir),
+      ...fakeClock(),
+    });
+    expect(result).toEqual({ stopped: [], failed: ["web"], complete: false });
+  });
+
+  test("waits out an omp 19 stop whose main process is gone but whose tree is still ending", async () => {
+    const root = await runDir({});
+    const daemonDir = join(root, "daemon");
+    // PIDs above the Linux and macOS maximum can never be alive.
+    const deadPid = 2 ** 22 + 1;
+    await writeDaemonUnits(
+      daemonDir,
+      [{ id: "u-web", key: "web", owner: OWNER, pids: [process.pid] }],
+      PROJECT,
+    );
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(
+        async () => {
+          await writeDaemonUnits(
+            daemonDir,
+            [{ id: "u-web", key: "web", owner: OWNER, state: "stopping", pids: [deadPid] }],
+            PROJECT,
+          );
+          return true;
+        },
+        root,
+        daemonDir,
+      ),
+      ...fakeClock(),
+    });
+    expect(result).toEqual({ stopped: [], failed: ["web"], complete: true });
+  });
+
+  test("leaves a same-named omp 19 service that replaced the owned one alone", async () => {
+    const root = await runDir({});
+    const daemonDir = join(root, "daemon");
+    await writeDaemonUnits(daemonDir, [{ id: "u-web", key: "web", owner: OWNER }], PROJECT);
+    const commands: string[][] = [];
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(
+        async (args) => {
+          commands.push([...args]);
+          // Another agent relaunched `web` first: omp dropped our unit and started its own.
+          for (const file of ["daemon.db", "daemon.db-wal", "daemon.db-shm"])
+            await rm(join(daemonDir, file), { force: true });
+          await writeDaemonUnits(
+            daemonDir,
+            [{ id: "u-web-2", key: "web", owner: "someone-else" }],
+            PROJECT,
+          );
+          return false;
+        },
+        root,
+        daemonDir,
+      ),
+      ...fakeClock(),
+    });
+    expect(commands).toEqual([["ps", "stop", "--dir", PROJECT, "--", "u-web"]]);
+    expect(result).toEqual({ stopped: [], failed: ["web"], complete: true });
   });
 
   test("stops a released session id's services only if they started before the hand-off", async () => {
@@ -537,6 +709,58 @@ describe("owned Hub service cleanup", () => {
     expect(ompHubRunDir({ HOME: home, OMP_PROFILE: "work" }, "linux")).toBe(
       join(home, ".omp", "profiles", "work", "run", "daemons"),
     );
+  });
+
+  test("resolves omp 19's per-user daemon directory independently of the profile", async () => {
+    const home = join(tmpdir(), "paseo-omp-hub-no-such-home");
+    const daemon = join(home, ".omp", "run", "daemon");
+    expect(ompDaemonDir({ HOME: home }, "linux")).toBe(daemon);
+    expect(ompDaemonDir({ HOME: home, OMP_PROFILE: "work" }, "linux")).toBe(daemon);
+    expect(ompDaemonDir({ HOME: home, PI_CODING_AGENT_DIR: "/custom/agent" }, "linux")).toBe(
+      daemon,
+    );
+    expect(ompDaemonDir({ HOME: home, PI_CONFIG_DIR: ".pi" }, "linux")).toBe(
+      join(home, ".pi", "run", "daemon"),
+    );
+    expect(ompDaemonDir({ HOME: home, OMP_DAEMON_DIR: "/srv/omp-daemon" }, "linux")).toBe(
+      "/srv/omp-daemon",
+    );
+    const state = await mkdtemp(join(tmpdir(), "paseo-omp-xdg-state-"));
+    temporaryDirectories.push(state);
+    // omp only moves to XDG state once its `omp` directory exists, and never on Windows.
+    expect(ompDaemonDir({ HOME: home, XDG_STATE_HOME: state }, "linux")).toBe(daemon);
+    await mkdir(join(state, "omp"));
+    expect(ompDaemonDir({ HOME: home, XDG_STATE_HOME: state }, "linux")).toBe(
+      join(state, "omp", "run", "daemon"),
+    );
+    // OMP's os.homedir() reads USERPROFILE on Windows, whatever HOME says.
+    expect(
+      ompDaemonDir({ HOME: "/git-bash/home", USERPROFILE: home, XDG_STATE_HOME: state }, "win32"),
+    ).toBe(daemon);
+  });
+
+  test("reads the runtime's omp 19 daemon directory when stopping services", async () => {
+    const root = await runDir({});
+    const daemonDir = join(root, "daemon");
+    await writeDaemonUnits(daemonDir, [{ id: "u-web", key: "web", owner: OWNER }], PROJECT);
+    const calls: string[][] = [];
+    const runtime = new OmpRpcRuntime({
+      environment: { PATH: "/usr/bin", HOME: "/home/test" },
+      hubRunDir: root,
+      hubDaemonDir: daemonDir,
+      runOmpCommand: async (command, args) => {
+        calls.push([command, ...args]);
+        await writeDaemonUnits(
+          daemonDir,
+          [{ id: "u-web", key: "web", owner: OWNER, state: "exited" }],
+          PROJECT,
+        );
+        return true;
+      },
+    });
+    const result = await runtime.stopOwnedServices({ cwd: PROJECT, command: ["omp"] }, OWNED);
+    expect(result).toEqual({ stopped: ["web"], failed: [], complete: true });
+    expect(calls).toEqual([["omp", "ps", "stop", "--dir", PROJECT, "--", "u-web"]]);
   });
 });
 
