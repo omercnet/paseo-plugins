@@ -50,7 +50,11 @@ function ompRunDir(): string {
   return process.env.PASEO_OMP_RUN_DIR ?? join(homedir(), ".omp", "run", "daemons");
 }
 
-/** omp 19's per-user daemon directory; see {@link ompDaemonDir}. */
+/**
+ * omp 19's per-user daemon directory; see {@link ompDaemonDir}. `PASEO_OMP_DAEMON_DIR` is a
+ * test-only override: set in production it makes the Hub read a different store than the one
+ * omp's own `ps stop` acts on.
+ */
 function ompDaemonRunDir(): string {
   return process.env.PASEO_OMP_DAEMON_DIR || ompDaemonDir();
 }
@@ -164,6 +168,13 @@ export interface HubProcessScan {
   strays: string[];
   /** False when a directory that could hold this project's records could not be read. */
   complete: boolean;
+  /**
+   * Every key and label in omp 19's daemon store, across all projects and scopes: `undefined`
+   * when there is no store, `null` when it exists but could not be read. A 19 `omp ps stop
+   * <name>` matches any of them, so an 18.x broker service is only stopped by name when its
+   * name is provably absent here.
+   */
+  daemonUnitNames?: ReadonlySet<string> | null;
 }
 
 async function scanBrokerProcessesFrom(root: string, cwd: string): Promise<HubProcessScan> {
@@ -246,7 +257,13 @@ interface DaemonServiceScan {
   services: DaemonService[];
   unreadable: string[];
   complete: boolean;
+  /** See {@link HubProcessScan.daemonUnitNames}. */
+  unitNames?: ReadonlySet<string> | null;
 }
+
+// omp names units with `crypto.randomUUID()`. A row id that is not a plain basename must never
+// reach a log path or a CLI argument; the leading alphanumeric also rules out `.`, `..` and flags.
+const UNIT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 function processAlive(pid: number): boolean {
   try {
@@ -323,30 +340,39 @@ async function scanDaemonServicesFrom(daemonDir: string, cwd: string): Promise<D
     await access(path);
   } catch (error) {
     // No store: omp 19 never ran here (or omp is older), so it owns no services.
-    return "missing" in readFailure(error) ? scan : { ...scan, complete: false };
+    if ("missing" in readFailure(error)) return scan;
+    return { ...scan, complete: false, unitNames: null };
   }
   // omp keys the scope by the same canonical directory (`daemon/paths.ts` canonicalProjectDir).
   const projectDir = await canonicalProjectDir(cwd);
   let rows: unknown[];
+  let names: unknown[];
   try {
     const database = new DatabaseSync(path, { readOnly: true, timeout: 500 });
     try {
       rows = database
         .prepare("SELECT id, key, snapshot, proc FROM units WHERE kind = ? AND scope_key = ?")
         .all(DAEMON_SERVICE_KIND, `project:${projectDir}`);
+      names = database.prepare("SELECT key, label FROM units").all();
     } finally {
       database.close();
     }
   } catch {
-    return { ...scan, complete: false };
+    return { ...scan, complete: false, unitNames: null };
   }
+  scan.unitNames = new Set(
+    names.flatMap((value) => {
+      const row = value as { key?: unknown; label?: unknown };
+      return [row.key, row.label].filter((name): name is string => typeof name === "string");
+    }),
+  );
   for (const value of rows) {
     const row = DaemonRowSchema.safeParse(value);
     if (!row.success) {
       scan.complete = false;
       continue;
     }
-    const service = toDaemonService(daemonDir, row.data);
+    const service = UNIT_ID.test(row.data.id) ? toDaemonService(daemonDir, row.data) : undefined;
     if (service) scan.services.push(service);
     else scan.unreadable.push(row.data.key);
   }
@@ -373,6 +399,7 @@ export async function scanHubProcessesFrom(
         unreadable: [...brokers.unreadable, ...daemon.unreadable],
         strays: brokers.strays,
         complete: brokers.complete && daemon.complete,
+        daemonUnitNames: daemon.unitNames,
       }
     : brokers;
   scan.processes.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
@@ -511,11 +538,20 @@ export async function stopOwnedHubProcesses(
   const failed = new Set<ScannedHubProcess>();
   const queue = [...owned];
   const stopDeadline = deadline - HUB_CLEANUP_VERIFY_RESERVE_MS;
+  // On a machine that has run omp 19, `omp` may now be the 19 CLI, which resolves a bare name
+  // against every unit in every project. An 18.x broker service is stopped by name only when no
+  // daemon unit anywhere could answer to it; otherwise it is left running and reported failed.
+  const daemonNames = initial.daemonUnitNames;
+  const stoppableByName = (service: ScannedHubProcess): boolean =>
+    service.unitId !== undefined ||
+    daemonNames === undefined ||
+    (daemonNames !== null && !daemonNames.has(service.name));
   const stopNext = async (): Promise<void> => {
     for (let service = queue.shift(); service !== undefined; service = queue.shift()) {
       const remaining = stopDeadline - dependencies.now();
       const stopped =
         remaining > 0 &&
+        stoppableByName(service) &&
         (await dependencies.stop(stopTarget(service), cwd, remaining).catch(() => false));
       if (!stopped) failed.add(service);
     }

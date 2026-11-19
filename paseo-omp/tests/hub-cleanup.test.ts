@@ -149,6 +149,54 @@ describe("owned Hub service cleanup", () => {
     expect(await stateOf(root, "pre-18-18-9")).toBe("running");
   });
 
+  test("never stops an 18.x service by a name an omp 19 unit anywhere answers to", async () => {
+    const root = await runDir({ web: {}, api: {} });
+    const daemonDir = join(root, "daemon");
+    // Another project's 19 unit is called `web`; a 19 `omp ps stop -- web` would stop it.
+    await writeDaemonUnits(
+      daemonDir,
+      [{ id: "u-foreign-web", key: "web", owner: "someone-else", scopeKey: "project:/other" }],
+      PROJECT,
+    );
+    const commands: string[][] = [];
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(
+        async (args) => {
+          commands.push([...args]);
+          await writeDaemon(root, args.at(-1) ?? "", { state: "exited" });
+          return true;
+        },
+        root,
+        daemonDir,
+      ),
+      ...fakeClock(),
+    });
+    expect(commands).toEqual([["ps", "stop", "--dir", PROJECT, "--", "api"]]);
+    expect(result).toEqual({ stopped: ["api"], failed: ["web"], complete: true });
+    expect(await stateOf(root, "web")).toBe("running");
+  });
+
+  test("stops no 18.x service by name when the omp 19 store cannot be read", async () => {
+    const root = await runDir({ web: {} });
+    const daemonDir = join(root, "daemon");
+    await mkdir(daemonDir, { recursive: true });
+    await writeFile(join(daemonDir, "daemon.db"), "not a database");
+    const commands: string[][] = [];
+    const result = await stopOwnedHubProcesses(PROJECT, OWNED, {
+      ...ownedHubCleanupDependencies(
+        async (args) => {
+          commands.push([...args]);
+          return true;
+        },
+        root,
+        daemonDir,
+      ),
+      ...fakeClock(),
+    });
+    expect(commands).toEqual([]);
+    expect(result).toEqual({ stopped: [], failed: ["web"], complete: false });
+  });
+
   test("stops owned omp 19 daemon services by unit id", async () => {
     const root = await runDir({ legacy: {} });
     const daemonDir = join(root, "daemon");
@@ -685,7 +733,10 @@ describe("owned Hub service cleanup", () => {
     expect(ompDaemonDir({ HOME: home, XDG_STATE_HOME: state }, "linux")).toBe(
       join(state, "omp", "run", "daemon"),
     );
-    expect(ompDaemonDir({ HOME: home, XDG_STATE_HOME: state }, "win32")).toBe(daemon);
+    // OMP's os.homedir() reads USERPROFILE on Windows, whatever HOME says.
+    expect(
+      ompDaemonDir({ HOME: "/git-bash/home", USERPROFILE: home, XDG_STATE_HOME: state }, "win32"),
+    ).toBe(daemon);
   });
 
   test("reads the runtime's omp 19 daemon directory when stopping services", async () => {

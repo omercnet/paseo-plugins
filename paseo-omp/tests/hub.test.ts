@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   listHubProcessesFrom,
@@ -210,6 +210,49 @@ describe("omp 19 daemon state reader", () => {
     });
     expect(processes[1]).toMatchObject({ persist: false, detached: true });
     expect(processes[3]).toMatchObject({ state: "exited", persist: false, detached: false });
+  });
+
+  test("scopes daemon services by the canonical project dir, as omp does", async () => {
+    const { root, daemonDir } = await roots();
+    const project = await realpath(await mkdtemp(join(tmpdir(), "paseo-omp-daemon-project-")));
+    temporaryDirectories.push(project);
+    const link = `${project}-link`;
+    await symlink(project, link, "junction");
+    temporaryDirectories.push(link);
+    await writeDaemonUnits(
+      daemonDir,
+      [
+        { id: "u-web", key: "web", startedAt: 3 },
+        // Session and global units are never a project's Hub services.
+        { id: "u-session", key: "session-only", scopeKey: "session:01a1", startedAt: 2 },
+        { id: "u-global", key: "global-only", scopeKey: "global", startedAt: 1 },
+      ],
+      project,
+    );
+
+    for (const cwd of [project, link, `${link}/`, relative(process.cwd(), project)]) {
+      expect((await listHubProcessesFrom(root, cwd, daemonDir)).map(({ name }) => name)).toEqual([
+        "web",
+      ]);
+    }
+  });
+
+  test("never builds a log path or stop target from a row id that is not a basename", async () => {
+    const { root, daemonDir } = await roots();
+    await writeDaemonUnits(
+      daemonDir,
+      [
+        { id: "../../escape", key: "escape", startedAt: 2, log: "secret" },
+        { id: "--flag", key: "flag", startedAt: 1 },
+      ],
+      "/workspace",
+    );
+
+    expect(await listHubProcessesFrom(root, "/workspace", daemonDir)).toEqual([]);
+    expect(await tailHubLogFrom(root, "/workspace", "escape", daemonDir)).toEqual({
+      content: "",
+      truncated: false,
+    });
   });
 
   test("ignores the daemon store unless a daemon directory is given", async () => {

@@ -198,7 +198,9 @@ export function ompDaemonDir(
     const xdgRoot = join(xdgHome, "omp");
     if (existsSync(xdgRoot)) return join(xdgRoot, "run", "daemon");
   }
-  const home = environment.HOME ?? environment.USERPROFILE ?? homedir();
+  // OMP uses `os.homedir()`, evaluated in its own environment: libuv reads USERPROFILE first on
+  // Windows (a Git Bash HOME there does not count) and HOME first elsewhere.
+  const home = (platform === "win32" ? environment.USERPROFILE : environment.HOME) || homedir();
   return join(home, environment.PI_CONFIG_DIR || ".omp", "run", "daemon");
 }
 

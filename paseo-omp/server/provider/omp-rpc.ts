@@ -189,7 +189,7 @@ export interface OmpRpcRuntimeOptions {
     timeoutMs: number,
   ) => Promise<boolean>;
   hubRunDir?: string;
-  /** omp 19's per-user daemon directory; defaults to the one the session's environment selects. */
+  /** omp 19's per-user daemon directory; defaults to the one the session's environment selects (`PASEO_OMP_DAEMON_DIR` is test-only). */
   hubDaemonDir?: string;
 }
 
