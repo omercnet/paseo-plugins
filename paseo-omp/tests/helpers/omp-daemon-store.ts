@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 /** A unit row as omp 19's per-user daemon persists it (`daemon/store.ts`, schema version 1). */
@@ -60,7 +60,8 @@ export async function writeDaemonUnits(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const unit of units) {
-      const scopeKey = unit.scopeKey ?? `project:${project}`;
+      // omp keys a project scope by its canonical path (`path.resolve`, a drive path on Windows).
+      const scopeKey = unit.scopeKey ?? `project:${resolve(project)}`;
       const scope = scopeKey.startsWith("project:")
         ? { kind: "project", dir: scopeKey.slice("project:".length) }
         : { kind: "global" };
