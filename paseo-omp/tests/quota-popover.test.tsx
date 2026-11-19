@@ -242,7 +242,11 @@ describe("quota popover reconciliation", () => {
       '[aria-label="Use same@example.invalid for this session"]',
     ) as HTMLButtonElement;
     expect(button.textContent).toBe("Switch");
-    await act(async () => button.click());
+    // Two clicks before the popover re-renders send one pin, not two.
+    await act(async () => {
+      button.click();
+      button.click();
+    });
     expect(recorded.sent).toEqual([
       { agentId: "synthetic-agent", text: "/session pin OAuth credential #3" },
     ]);

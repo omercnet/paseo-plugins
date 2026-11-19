@@ -1,7 +1,7 @@
 import { type PluginButtonContentProps, useAgent, usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { storeForProvider, storeLabel } from "../shared/omp-store";
 import {
@@ -102,13 +102,17 @@ export function QuotaPopover(props: PluginButtonContentProps) {
   });
   const [switching, setSwitching] = useState<number | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
+  // Set synchronously, so a second click before the next render cannot send a second pin.
+  const switchInFlight = useRef(false);
 
   async function switchTo(login: OmpSessionAccount): Promise<void> {
+    if (switchInFlight.current) return;
     const agent = paseo.agents.ref(agentId);
     // The rendered status can be stale by the click; a turn that started since must not be
     // interrupted (send interrupts by default), so read the live record right before sending.
     const live = agent.current()?.status;
     if (live === "running" || live === "initializing") return;
+    switchInFlight.current = true;
     setSwitching(login.credentialId);
     setSwitchError(null);
     try {
@@ -118,6 +122,7 @@ export function QuotaPopover(props: PluginButtonContentProps) {
     } catch (cause) {
       setSwitchError(cause instanceof Error ? cause.message : "Could not switch the account.");
     } finally {
+      switchInFlight.current = false;
       setSwitching(null);
     }
   }

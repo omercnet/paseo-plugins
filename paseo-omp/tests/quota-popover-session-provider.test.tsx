@@ -20,6 +20,7 @@ const agent = vi.hoisted(() => ({
   status: "idle",
   sessionProvider: null as string | null,
   asked: 0,
+  accountsAsked: 0,
   logins: [] as OmpSessionAccount[],
   // When set, the session-account answer waits for it, as a slow server would.
   accountsGate: null as Promise<void> | null,
@@ -34,6 +35,7 @@ vi.mock("@getpaseo/plugin/client", () => ({
       return { provider: agent.sessionProvider };
     }
     if (definition === listOmpSessionAccounts) {
+      agent.accountsAsked += 1;
       const answer = agent.logins;
       if (agent.accountsGate) await agent.accountsGate;
       return { accounts: answer };
@@ -162,20 +164,23 @@ test("does not show the previous session's login in use once the agent's status 
   agent.model = "anthropic/example";
   const login = (active: boolean): OmpSessionAccount => ({
     credentialId: 2,
-    label: "lee@example.invalid (Example Team)",
+    label: "lee (Example Team)",
     active,
     onlyLogin: false,
     quotaAccountKeys: ["anthropic"],
   });
   try {
+    agent.accountsAsked = 0;
     agent.logins = [login(true)];
     await show("idle", null);
     await vi.waitFor(() => expect(container.textContent).toContain("IN USE"));
+    expect(agent.accountsAsked).toBe(1);
 
     // The session closed and its pin expired: the open popover must not keep the old mark.
     agent.logins = [login(false)];
     await show("closed", null);
     await vi.waitFor(() => expect(container.textContent).not.toContain("IN USE"));
+    expect(agent.accountsAsked).toBe(2);
 
     // A new session resumes in the same status: React Query holds the earlier idle answer, but
     // while the new answer is still on its way the previous session's mark stays hidden.
@@ -187,6 +192,8 @@ test("does not show the previous session's login in use once the agent's status 
     gate.resolve();
     await act(async () => {});
     expect(container.textContent).not.toContain("IN USE");
+    // Each status change asks once; the resumed idle state does not reuse the earlier idle answer.
+    expect(agent.accountsAsked).toBe(3);
   } finally {
     agent.provider = "omp-plugin";
     agent.model = "omp:model:opaque";
@@ -209,7 +216,7 @@ test("never shows an answer requested before the status changed, even when it la
   agent.model = "anthropic/example";
   const login = (active: boolean): OmpSessionAccount => ({
     credentialId: 2,
-    label: "lee@example.invalid (Example Team)",
+    label: "lee (Example Team)",
     active,
     onlyLogin: false,
     quotaAccountKeys: ["anthropic"],
