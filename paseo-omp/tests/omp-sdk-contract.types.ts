@@ -32,7 +32,7 @@ type _MessageSchemaCoverage = AssertTrue<AssertExact<UpstreamMessageRole, OmpMes
 // the OMP release that added it. Naming them keeps the check exact otherwise: any other event the
 // installed SDK adds or drops still fails here. `omp-sdk-contract.test.ts` fails once the installed
 // SDK reaches an entry's release, so the entry is removed when the pin moves past it.
-export const SESSION_EVENTS_AFTER_PINNED_RUNTIME = { agent_pause: "18.21.0" } as const;
+export const SESSION_EVENTS_AFTER_PINNED_RUNTIME = {} as const;
 type SessionEventsAfterPinnedRuntime = keyof typeof SESSION_EVENTS_AFTER_PINNED_RUNTIME;
 type _SessionEventPolicyCoverage = AssertTrue<
   AssertExact<
