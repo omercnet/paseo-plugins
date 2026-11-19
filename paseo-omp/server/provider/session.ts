@@ -2618,8 +2618,9 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
       if (!event.id || event.id !== turn.nativeRequestId) return;
       if (event.agentInvoked) {
         // A request-keyed prompt result proves dispatch, but an unkeyed terminal still needs
-        // ordered native user and assistant evidence from this accepted prompt.
-        this.markAgentEvidence(turn);
+        // ordered native user and assistant evidence from this accepted prompt. OMP can send it
+        // after agent_end, so it is not run activity that makes a waiting agent_end stale.
+        this.markAgentEvidence(turn, false);
         return;
       }
       if (turn.localOnlyDisabled || turn.steersInFlight > 0) return;
@@ -3057,10 +3058,14 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
     this.projector.publishUser(pending.text, pending.clientMessageId, entryId);
   }
 
-  private markAgentEvidence(turn: ActiveTurn): void {
+  /**
+   * `runActivity` orders this evidence after any unkeyed agent_end that is waiting for user
+   * correlation, which marks that agent_end stale. A prompt acknowledgement is not run activity.
+   */
+  private markAgentEvidence(turn: ActiveTurn, runActivity = true): void {
     turn.agentInvoked = true;
     turn.nativeActivity = true;
-    turn.activitySequence += 1;
+    if (runActivity) turn.activitySequence += 1;
     turn.localOnlyEligible = false;
     this.cancelLocalOnlyCompletion(turn);
     this.refreshAmbiguousTerminal(turn);

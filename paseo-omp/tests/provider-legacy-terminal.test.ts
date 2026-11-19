@@ -1269,4 +1269,124 @@ describe("OMP direct provider", () => {
     expect(sessionAt(runtime, 1).closes).toBe(1);
     await expect(connection.close()).rejects.toThrow("provider connection cleanup failed");
   });
+
+  // #655: under CPU pressure OMP's unkeyed agent_end can arrive while the prompt's user echo is
+  // still being matched against the branch, and OMP then sends prompt_result and session_settled.
+  test("finishes once when agent_end arrives before the user echo is matched", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    await finishTurn(
+      events,
+      session,
+      turnIdFrom(await startPrompt(connection, events, "slow-echo-tool", "CANARY_TOOL")),
+    );
+    session.promptAgentInvoked = undefined;
+    const clientMessageId = "slow-echo-image";
+    const turnId = turnIdFrom(
+      await startPrompt(connection, events, clientMessageId, "CANARY_IMAGE"),
+    );
+    const branch = Promise.withResolvers<void>();
+    const lookup = Promise.withResolvers<void>();
+    session.branchMessagesGate = branch.promise;
+    session.branchMessagesObserved = () => lookup.resolve();
+    session.branchMessages.push({ entryId: "slow-echo-user", text: "CANARY_IMAGE" });
+    const assistant = {
+      role: "assistant" as const,
+      content: "CANARY_MOCK_OK",
+      entryId: "slow-echo-assistant",
+      stopReason: "stop",
+    };
+
+    session.emit({ type: "agent_start" });
+    session.emit({ type: "message_end", message: { role: "user", content: "CANARY_IMAGE" } });
+    await lookup.promise;
+    session.emit({ type: "message_end", message: assistant });
+    session.emit({ type: "agent_end", messages: [assistant], isTerminal: true });
+    establishTerminalOwnership(session);
+    session.emit({ type: "session_settled" });
+    branch.resolve();
+
+    const terminals = () =>
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      );
+    for (let index = 0; index < 50 && terminals().length === 0; index += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(terminals()).toEqual([expect.objectContaining({ state: "completed" })]);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === clientMessageId,
+      ),
+    ).toHaveLength(1);
+    await Promise.all(scheduler.runPending());
+    for (let index = 0; index < 10; index += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(terminals()).toHaveLength(1);
+    expect(session.closes).toBe(0);
+  });
+
+  test("still drops a stale agent_end kept across a prompt result once the run moves on", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    await finishTurn(
+      events,
+      session,
+      turnIdFrom(await startPrompt(connection, events, "stale-kept-a", "first")),
+    );
+    session.promptAgentInvoked = undefined;
+    const clientMessageId = "stale-kept-b";
+    const turnId = turnIdFrom(await startPrompt(connection, events, clientMessageId, "second"));
+    const terminals = () =>
+      events.filter(
+        (event) =>
+          event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+      );
+
+    // The previous run's end lands after this prompt was sent, ahead of this run's activity.
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    establishTerminalOwnership(session);
+    session.branchMessages.push({ entryId: "stale-kept-user", text: "second" });
+    session.emit({ type: "agent_start" });
+    session.emit({ type: "message_end", message: { role: "user", content: "second" } });
+    await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.clientMessageId === clientMessageId,
+    );
+    const assistant = {
+      role: "assistant" as const,
+      content: "current",
+      entryId: "stale-kept-assistant",
+      stopReason: "stop",
+    };
+    session.emit({ type: "message_end", message: assistant });
+    // A kept stale end would settle here as an uncorrelated terminal and cancel the turn.
+    await Promise.all(scheduler.runPending());
+    for (let index = 0; index < 10; index += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(terminals()).toEqual([]);
+
+    session.emit({ type: "agent_end", messages: [assistant], isTerminal: true });
+    const terminal = await events.waitFor(
+      (event) =>
+        event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+    );
+    expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
+    for (let index = 0; index < 10; index += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(terminals()).toHaveLength(1);
+  });
 });
