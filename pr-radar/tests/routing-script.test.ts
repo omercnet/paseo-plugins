@@ -192,6 +192,84 @@ describe("runRoutingScriptHandler", () => {
     await expect(route(link)).rejects.toThrow(/must not be writable by group or others/);
   });
 
+  describe("symlinks on the configured path", () => {
+    function dirs(root: string, ...names: string[]): string[] {
+      return names.map((name) => {
+        const dir = join(root, name);
+        mkdirSync(dir);
+        return dir;
+      });
+    }
+
+    test("refuses a symlink held in a directory that group or others can write", async () => {
+      const root = makeRoot();
+      const [safe, shared] = dirs(root, "safe", "shared");
+      const real = writeScript(safe, "real.sh", "echo '{}'");
+      chmodSync(shared, 0o775);
+      const link = join(shared, "link.sh");
+      symlinkSync(real, link);
+      await expect(route(link)).rejects.toThrow(
+        `Routing script directory ${shared} must not be writable by group or others; run chmod go-w`,
+      );
+    });
+
+    test("refuses a chain whose middle hop sits in a writable directory", async () => {
+      // /a/l1 -> /b/l2 -> /c/file: /b is on neither the lexical path nor the real path.
+      const root = makeRoot();
+      const [a, b, c] = dirs(root, "a", "b", "c");
+      const real = writeScript(c, "file.sh", "echo '{}'");
+      symlinkSync(real, join(b, "l2"));
+      symlinkSync(join(b, "l2"), join(a, "l1"));
+      chmodSync(b, 0o777);
+      await expect(route(join(a, "l1"))).rejects.toThrow(
+        `Routing script directory ${b} must not be writable by group or others`,
+      );
+    });
+
+    test("refuses a link inside a writable ancestor, not only its own parent", async () => {
+      const root = makeRoot();
+      const [outer, safe] = dirs(root, "outer", "safe");
+      const inner = join(outer, "inner");
+      mkdirSync(inner);
+      const real = writeScript(safe, "real.sh", "echo '{}'");
+      symlinkSync(real, join(inner, "link.sh"));
+      chmodSync(outer, 0o775);
+      await expect(route(join(inner, "link.sh"))).rejects.toThrow(
+        `Routing script directory ${outer} must not be writable by group or others`,
+      );
+    });
+
+    test("refuses a symlink owned by another user even in a sticky directory", async () => {
+      // Stands in for a link a different user created in a sticky directory such as /tmp.
+      if (process.getuid?.() === 0) return;
+      const root = makeRoot();
+      const [safe, sticky] = dirs(root, "safe", "sticky");
+      const real = writeScript(safe, "real.sh", "echo '{}'");
+      chmodSync(sticky, 0o1777);
+      const link = join(sticky, "link.sh");
+      symlinkSync(real, link);
+      const otherUid = (process.getuid?.() ?? 0) + 1000;
+      await expect(resolveRoutingScript(link, otherUid)).rejects.toThrow(
+        `symbolic link ${link}, which is owned by another user`,
+      );
+      // Owned by us and held in a sticky directory, nobody else can replace it.
+      await expect(resolveRoutingScript(link)).resolves.toBe(real);
+    });
+
+    test("accepts a clean multi-hop chain with absolute and relative links", async () => {
+      const root = makeRoot();
+      const [a, b, c] = dirs(root, "a", "b", "c");
+      const real = writeScript(c, "file.sh", "echo '{}'");
+      symlinkSync("../c/file.sh", join(b, "l2"));
+      symlinkSync(join(b, "l2"), join(a, "l1"));
+      await expect(resolveRoutingScript(join(a, "l1"))).resolves.toBe(real);
+      // The path itself may reach the link through `..` and another link.
+      const viaDotDot = `${a}/../a/l1`;
+      await expect(resolveRoutingScript(viaDotDot)).resolves.toBe(real);
+      await expect(route(join(a, "l1"))).resolves.toEqual({});
+    });
+  });
+
   test("runs the script with an allow-listed environment", async () => {
     const root = makeRoot();
     const envFile = join(root, "env.txt");

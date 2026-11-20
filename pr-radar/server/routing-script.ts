@@ -1,7 +1,7 @@
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, realpath, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { access, lstat, readlink, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { z } from "zod";
 import { RoutingScriptResultSchema, type runRoutingScript } from "../shared/viewer-scope";
@@ -28,6 +28,82 @@ const DEFAULT_ROUTING_LIMITS: RoutingScriptLimits = {
 
 const STICKY_BIT = 0o1000;
 
+type OwnerCheck = (owner: number) => boolean;
+
+/** `start` and every directory above it must have a trusted owner and not be group/other-writable. */
+async function assertTrustedDirectories(
+  start: string,
+  trustedOwner: OwnerCheck,
+  verified: Set<string>,
+): Promise<void> {
+  for (let dir = start; !verified.has(dir); dir = dirname(dir)) {
+    const dirInfo = await stat(dir);
+    if (!trustedOwner(dirInfo.uid)) {
+      throw new Error(
+        `Routing script directory ${dir} is owned by another user; move the script somewhere you own, or run chown on it.`,
+      );
+    }
+    if ((dirInfo.mode & 0o022) !== 0 && (dirInfo.mode & STICKY_BIT) === 0) {
+      throw new Error(
+        `Routing script directory ${dir} must not be writable by group or others; run chmod go-w on it.`,
+      );
+    }
+    verified.add(dir);
+    if (dirname(dir) === dir) break;
+  }
+}
+
+// The kernel stops following links after this many (MAXSYMLINKS is 32 on macOS, 40 on Linux).
+const MAX_SYMLINK_HOPS = 32;
+
+/**
+ * Walks the configured path component by component, as the kernel would, without following a link
+ * blindly: every symbolic link met on the way (including links reached through another link, such
+ * as /a/l1 -> /b/l2 -> /c/file) must belong to a trusted owner, and the directory that holds it
+ * and all that directory's ancestors must not be writable by group or others. A link that anyone
+ * else can create, replace or rename could otherwise point the script at any executable the user
+ * can run, and that executable would pass every check on the resolved path.
+ */
+async function assertTrustedSymlinkChain(
+  expanded: string,
+  trustedOwner: OwnerCheck,
+): Promise<void> {
+  const verifiedDirs = new Set<string>();
+  const split = (path: string) => path.split("/").filter((part) => part !== "" && part !== ".");
+  let pending = split(expanded);
+  let current = "/";
+  let hops = 0;
+  while (pending.length > 0) {
+    const [name, ...rest] = pending;
+    pending = rest;
+    if (name === "..") {
+      current = dirname(current);
+      continue;
+    }
+    const next = join(current, name);
+    const info = await lstat(next);
+    if (!info.isSymbolicLink()) {
+      current = next;
+      continue;
+    }
+    hops += 1;
+    if (hops > MAX_SYMLINK_HOPS) {
+      throw new Error(`Routing script path ${expanded} has too many levels of symbolic links.`);
+    }
+    if (!trustedOwner(info.uid)) {
+      throw new Error(
+        `Routing script path goes through the symbolic link ${next}, which is owned by another user; point the setting at the real file, or run chown on the link.`,
+      );
+    }
+    // `current` holds no links (each one is replaced by its target), so this is the real directory
+    // that contains the link.
+    await assertTrustedDirectories(current, trustedOwner, verifiedDirs);
+    const target = await readlink(next);
+    pending = [...split(target), ...pending];
+    if (isAbsolute(target)) current = "/";
+  }
+}
+
 /**
  * Resolves the configured script to a real path and refuses anything but a regular, executable
  * file that only this user (or root) can modify: the file must be owned by the user or root, and so
@@ -50,12 +126,13 @@ export async function resolveRoutingScript(
   if (!(await exists(expanded))) {
     throw new Error(`Routing script not found: ${expanded}`);
   }
+  const trustedOwner = (owner: number) => uid === undefined || owner === uid || owner === 0;
+  await assertTrustedSymlinkChain(expanded, trustedOwner);
   const scriptPath = await realpath(expanded);
   const info = await stat(scriptPath);
   if (!info.isFile()) {
     throw new Error(`Routing script is not a regular file: ${scriptPath}`);
   }
-  const trustedOwner = (owner: number) => uid === undefined || owner === uid || owner === 0;
   if (!trustedOwner(info.uid)) {
     throw new Error(
       `Routing script ${scriptPath} is owned by another user; run chown on it, or use a script you own.`,
@@ -66,20 +143,7 @@ export async function resolveRoutingScript(
       `Routing script ${scriptPath} must not be writable by group or others; run chmod go-w on it.`,
     );
   }
-  for (let dir = dirname(scriptPath); ; dir = dirname(dir)) {
-    const dirInfo = await stat(dir);
-    if (!trustedOwner(dirInfo.uid)) {
-      throw new Error(
-        `Routing script directory ${dir} is owned by another user; move the script somewhere you own, or run chown on it.`,
-      );
-    }
-    if ((dirInfo.mode & 0o022) !== 0 && (dirInfo.mode & STICKY_BIT) === 0) {
-      throw new Error(
-        `Routing script directory ${dir} must not be writable by group or others; run chmod go-w on it.`,
-      );
-    }
-    if (dirname(dir) === dir) break;
-  }
+  await assertTrustedDirectories(dirname(scriptPath), trustedOwner, new Set());
   try {
     await access(scriptPath, constants.X_OK);
   } catch {
