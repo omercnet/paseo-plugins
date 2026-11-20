@@ -332,8 +332,9 @@ describe("runRoutingScriptHandler", () => {
     chmodSync(sticky, 0o1777);
     chmodSync(open, 0o777);
     const uid = process.getuid?.();
-    // The root directory itself is ours and 0755, so only the directory under test decides.
-    expect(await trustedScriptPath(uid, [plain, sticky, open])).toBe(plain);
+    // The temp root's own ancestors (/tmp is sticky and world-writable on Linux) are marked as
+    // already settled, so only the directory under test decides.
+    expect(await trustedScriptPath(uid, [plain, sticky, open], new Set([root]))).toBe(plain);
     // A sticky directory is still fine for the script's own directory chain (like /tmp).
     const script = writeScript(sticky, "route.sh", "echo '{}'");
     await expect(resolveRoutingScript(script)).resolves.toBe(script);
@@ -452,6 +453,18 @@ describe("runRoutingScriptHandler", () => {
     // Well under the 20 s timeout: the group was killed on exit, not at the timeout.
     expect(Date.now() - started).toBeLessThan(5_000);
     await expectGone(Number(readFileSync(pidFile, "utf8").trim()));
+  });
+
+  test("a hung settings read neither outlasts the budget nor blocks the next call", async () => {
+    const root = makeRoot();
+    const quick = writeScript(root, "quick4.sh", "echo '{}'");
+    const hung = runRoutingScriptHandler({ payload: {} }, () => new Promise(() => {}), {
+      timeoutMs: 300,
+      outputBytes: 1024,
+      killGraceMs: 100,
+    });
+    await expect(hung).rejects.toThrow(/took longer than the time budget/);
+    await expect(route(quick, {}, FAST_LIMITS)).resolves.toEqual({});
   });
 
   test("signals the process group once after a script exits, never again at close", async () => {

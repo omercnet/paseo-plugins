@@ -46,9 +46,10 @@ const ROUTING_SCRIPT_PATH_DIRS = [
 export async function trustedScriptPath(
   uid: number | undefined = process.getuid?.(),
   dirs: readonly string[] = ROUTING_SCRIPT_PATH_DIRS,
+  // Directories whose own trust is already settled; the walk up from a PATH entry stops at them.
+  verified: Set<string> = new Set(),
 ): Promise<string> {
   const trustedOwner = (owner: number) => uid === undefined || owner === uid || owner === 0;
-  const verified = new Set<string>();
   const kept: string[] = [];
   for (const dir of dirs) {
     try {
@@ -335,19 +336,23 @@ export async function waitForRoutingScriptIdleForTests(): Promise<void> {
   }
 }
 
-// Resolves when `turn` does; rejects with the busy error once `ms` have passed.
-async function waitForTurn(turn: Promise<void>, ms: number): Promise<void> {
-  if (ms <= 0) throw new Error(ROUTING_BUSY_MESSAGE);
+// Resolves with `work`, or rejects with `message` once `ms` have passed. The work itself cannot be
+// cancelled, but the caller stops waiting for it, so a hung filesystem read cannot hold a turn.
+async function withinBudget<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  if (ms <= 0) throw new Error(message);
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(ROUTING_BUSY_MESSAGE)), ms);
+    timer = setTimeout(() => reject(new Error(message)), ms);
   });
   try {
-    await Promise.race([turn, expired]);
+    return await Promise.race([work, expired]);
   } finally {
     clearTimeout(timer);
   }
 }
+
+const ROUTING_PREFLIGHT_MESSAGE =
+  "Reading the routing script settings or checking the script took longer than the time budget.";
 
 export async function runRoutingScriptHandler(
   input: z.output<typeof runRoutingScript.input>,
@@ -385,18 +390,18 @@ export async function runRoutingScriptHandler(
 
   let run: ScriptRun;
   try {
-    const settings = await readSettings();
-    let scriptPath = await resolveRoutingScript(settings.routingScriptPath);
+    const preflight = async () => resolveRoutingScript((await readSettings()).routingScriptPath);
+    let scriptPath = await withinBudget(preflight(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
     if (queued) {
       try {
-        await waitForTurn(previous, budgetLeft());
+        await withinBudget(previous, budgetLeft(), ROUTING_BUSY_MESSAGE);
       } finally {
         stopWaiting();
       }
       // The configuration may have changed while this call waited.
-      scriptPath = await resolveRoutingScript((await readSettings()).routingScriptPath);
+      scriptPath = await withinBudget(preflight(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
     }
-    const path = await trustedScriptPath();
+    const path = await withinBudget(trustedScriptPath(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
     let runLimits = limits;
     if (queued) {
       // Taken last, after every await, so the script's own timer starts when the budget says.
