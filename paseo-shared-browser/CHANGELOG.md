@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.2.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.12...shared-browser-v4.2.0) (2026-11-20)
+
+
+### Features
+
+* **shared-browser:** choose agents by label in the session-open hook ([#639](https://github.com/omercnet/paseo-plugins/issues/639)) ([@keithpk](https://github.com/keithpk)) ([295a889](https://github.com/omercnet/paseo-plugins/commit/295a889587b7ed5b19cdca7f4f0cd2484e6bc5e9))
+* **shared-browser:** choose which new agents get the browser tool ([#637](https://github.com/omercnet/paseo-plugins/issues/637)) ([@keithpk](https://github.com/keithpk)) ([069d8f8](https://github.com/omercnet/paseo-plugins/commit/069d8f8988ca433471b2c383979826ccb2edd7ae))
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.17.0-beta.1 ([b099c0e](https://github.com/omercnet/paseo-plugins/commit/b099c0ef5e1268127e84e382b8452a83413d8952))
+* **shared-browser:** follow up on review notes from the label and path PRs ([#651](https://github.com/omercnet/paseo-plugins/issues/651)) ([@keithpk](https://github.com/keithpk)) ([7c6e708](https://github.com/omercnet/paseo-plugins/commit/7c6e7082e4057af93769a8f49085e9f569a588c8))
+* **shared-browser:** forward Android soft-keyboard Backspace and merge queued text ([#650](https://github.com/omercnet/paseo-plugins/issues/650)) ([7c0b2ae](https://github.com/omercnet/paseo-plugins/commit/7c0b2ae9f22b6cebef20d2bebfd43c5cb4455d8d)), refs [#583](https://github.com/omercnet/paseo-plugins/issues/583)
+* **shared-browser:** match workspaces by absolute directories only, and document path and mode behaviour ([#640](https://github.com/omercnet/paseo-plugins/issues/640)) ([@keithpk](https://github.com/keithpk)) ([f927b6e](https://github.com/omercnet/paseo-plugins/commit/f927b6e477d8d369d6ba4abbd71e179e69f568bb))
+
 ## [4.1.12](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.1.11...shared-browser-v4.1.12) (2026-11-16)
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.0.7](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v4.0.6...paseo-context-mode-v4.0.7) (2026-11-20)
+
+
+### Bug Fixes
+
+* **context-mode:** detect OMP's own Context Mode 2.2 plugin ([#647](https://github.com/omercnet/paseo-plugins/issues/647)) ([3a67d11](https://github.com/omercnet/paseo-plugins/commit/3a67d113c2fe6a019c782fc29c29f91e2335646e))
+* **deps:** support Paseo 0.17.0-beta.1 ([b099c0e](https://github.com/omercnet/paseo-plugins/commit/b099c0ef5e1268127e84e382b8452a83413d8952))
+* **deps:** update dependency context-mode to v2.2.0 ([#646](https://github.com/omercnet/paseo-plugins/issues/646)) ([fe0b2d8](https://github.com/omercnet/paseo-plugins/commit/fe0b2d87dcd0741c87ae1a93cd9de531abded575))
+
 ## [4.0.6](https://github.com/omercnet/paseo-plugins/compare/paseo-context-mode-v4.0.5...paseo-context-mode-v4.0.6) (2026-11-16)
 
 

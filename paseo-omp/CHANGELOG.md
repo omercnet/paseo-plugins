@@ -1,5 +1,21 @@
 # Changelog
 
+## [5.8.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.7.0...paseo-omp-v5.8.0) (2026-11-20)
+
+
+### Features
+
+* **paseo-omp:** tag OMP accounts with plan and organization badges ([#632](https://github.com/omercnet/paseo-plugins/issues/632)) ([@taemire](https://github.com/taemire)) ([ea1417d](https://github.com/omercnet/paseo-plugins/commit/ea1417de6505fad5730af764a8bd0812d59c1ee6))
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.17.0-beta.1 ([b099c0e](https://github.com/omercnet/paseo-plugins/commit/b099c0ef5e1268127e84e382b8452a83413d8952))
+* **paseo-omp:** classify the OMP 18.22.0 session events ([#642](https://github.com/omercnet/paseo-plugins/issues/642)) ([28c8ed7](https://github.com/omercnet/paseo-plugins/commit/28c8ed701af6b425f3651953a05e610053f3ebaf))
+* **paseo-omp:** finish a turn whose agent_end arrives before its prompt is matched ([#659](https://github.com/omercnet/paseo-plugins/issues/659)) ([e084780](https://github.com/omercnet/paseo-plugins/commit/e084780c11a346842734ec6c9e0a4bc6417c1ac5))
+* **paseo-omp:** name an OMP Plugin agent's quota provider from its live session ([#633](https://github.com/omercnet/paseo-plugins/issues/633)) ([@taemire](https://github.com/taemire)) ([3c7d52d](https://github.com/omercnet/paseo-plugins/commit/3c7d52d893f2e77a3412f6f59f706e8b056920f4))
+* **paseo-omp:** read Hub services from the OMP 19 per-user daemon ([#663](https://github.com/omercnet/paseo-plugins/issues/663)) ([8298b5d](https://github.com/omercnet/paseo-plugins/commit/8298b5dfc88f7c3dd56aaafed7a2b1496b91f745))
+
 ## [5.7.0](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.6.4...paseo-omp-v5.7.0) (2026-11-16)
 
 

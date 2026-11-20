@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.5](https://github.com/omercnet/paseo-plugins/compare/queens-v4.1.4...queens-v4.1.5) (2026-11-20)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.17.0-beta.1 ([b099c0e](https://github.com/omercnet/paseo-plugins/commit/b099c0ef5e1268127e84e382b8452a83413d8952))
+
 ## [4.1.4](https://github.com/omercnet/paseo-plugins/compare/queens-v4.1.3...queens-v4.1.4) (2026-11-14)
 
 
