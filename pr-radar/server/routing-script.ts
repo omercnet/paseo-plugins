@@ -31,8 +31,34 @@ const STICKY_BIT = 0o1000;
 // The script's PATH. The daemon's own PATH can list directories other users or tools write to
 // (~/.local/bin, a project's node_modules/.bin), and the script's `#!/usr/bin/env interpreter` line
 // would search it. These are the system and Homebrew directories; a script that needs a tool
-// elsewhere should name it by absolute path.
-export const ROUTING_SCRIPT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+// elsewhere should name it by absolute path. A directory is dropped at run time unless it passes the
+// same trust check as the script's own directories (a Homebrew prefix owned by another user, or one
+// group-writable, would let that user supply the interpreter).
+const ROUTING_SCRIPT_PATH_DIRS = [
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+];
+
+export async function trustedScriptPath(
+  uid: number | undefined = process.getuid?.(),
+): Promise<string> {
+  const trustedOwner = (owner: number) => uid === undefined || owner === uid || owner === 0;
+  const verified = new Set<string>();
+  const kept: string[] = [];
+  for (const dir of ROUTING_SCRIPT_PATH_DIRS) {
+    try {
+      await assertTrustedDirectories(dir, trustedOwner, verified);
+      kept.push(dir);
+    } catch {
+      // Missing, owned by another user, or writable by others: not searched.
+    }
+  }
+  return kept.join(":");
+}
 
 type OwnerCheck = (owner: number) => boolean;
 
@@ -83,6 +109,8 @@ async function assertTrustedSymlinkChain(
     const [name, ...rest] = pending;
     pending = rest;
     if (name === "..") {
+      // The directory being left is part of the path too, even though realpath will not list it.
+      await assertTrustedDirectories(current, trustedOwner, verifiedDirs);
       current = dirname(current);
       continue;
     }
@@ -169,6 +197,7 @@ function startScriptCapped(
   scriptPath: string,
   payload: unknown,
   limits: RoutingScriptLimits,
+  path: string,
 ): ScriptRun {
   const finishedGate = Promise.withResolvers<void>();
   const result = new Promise<string>((resolvePromise, rejectPromise) => {
@@ -177,7 +206,7 @@ function startScriptCapped(
     try {
       child = spawn(scriptPath, [], {
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...allowListedEnv(new Set()), PATH: ROUTING_SCRIPT_PATH },
+        env: { ...allowListedEnv(new Set()), PATH: path },
         detached: true,
       });
     } catch (spawnError) {
@@ -191,9 +220,13 @@ function startScriptCapped(
     let errBytes = 0;
     let settled = false;
     let terminating = false;
+    let exited = false;
     let killTimer: NodeJS.Timeout | undefined;
 
-    function signalGroup(signal: NodeJS.Signals): void {
+    // Once the script has exited its process-group id is free to be reused, so later timers must
+    // not signal it; `force` is for the one SIGKILL sent as the script exits and the one in 'close'.
+    function signalGroup(signal: NodeJS.Signals, force = false): void {
+      if (exited && !force) return;
       try {
         if (child.pid !== undefined) process.kill(-child.pid, signal);
       } catch {
@@ -252,10 +285,13 @@ function startScriptCapped(
     // pipes. A descendant that kept them open would otherwise delay 'close' until the timeout and a
     // script that exited 0 would be reported as timed out. Bytes the script already wrote stay in
     // the pipe, so 'close' still delivers the full output.
-    child.on("exit", () => signalGroup("SIGKILL"));
+    child.on("exit", () => {
+      signalGroup("SIGKILL");
+      exited = true;
+    });
     child.on("close", (code) => {
       // Backstop: no descendant may outlive the script, whether it was asked to stop or exited.
-      signalGroup("SIGKILL");
+      signalGroup("SIGKILL", true);
       clearTimeout(killTimer);
       finishedGate.resolve();
       settle(() => {
@@ -348,7 +384,7 @@ export async function runRoutingScriptHandler(
       if (remaining <= 0) throw new Error(ROUTING_BUSY_MESSAGE);
       runLimits = { ...limits, timeoutMs: remaining };
     }
-    run = startScriptCapped(scriptPath, input.payload, runLimits);
+    run = startScriptCapped(scriptPath, input.payload, runLimits, await trustedScriptPath());
   } catch (error) {
     // This call never ran: pass the turn on once the one in front is done, so the order holds.
     void previous.then(() => myTurn.resolve());

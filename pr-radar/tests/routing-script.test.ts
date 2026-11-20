@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -13,10 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
-  ROUTING_SCRIPT_PATH,
   type RoutingScriptLimits,
   resolveRoutingScript,
   runRoutingScriptHandler,
+  trustedScriptPath,
   waitForRoutingScriptIdleForTests,
 } from "../server/routing-script";
 import { listLocalDirs, prepareWorkspaceCwd, runRoutingScript } from "../shared/viewer-scope";
@@ -252,6 +253,20 @@ describe("runRoutingScriptHandler", () => {
       await expect(resolveRoutingScript(link)).resolves.toBe(real);
     });
 
+    test("checks a directory that a later '..' leaves", async () => {
+      const root = makeRoot();
+      const [open, safe] = dirs(root, "open", "safe");
+      chmodSync(open, 0o777);
+      const real = writeScript(safe, "real.sh", "echo '{}'");
+      const link = join(safe, "link.sh");
+      // The link target walks through the writable directory and back out again.
+      symlinkSync(`${open}/../safe/real.sh`, link);
+      await expect(resolveRoutingScript(link)).rejects.toThrow(
+        `Routing script directory ${open} must not be writable by group or others`,
+      );
+      expect(real).toBeTruthy();
+    });
+
     test("accepts a clean multi-hop chain with absolute and relative links", async () => {
       const root = makeRoot();
       const [a, b, c] = dirs(root, "a", "b", "c");
@@ -289,9 +304,22 @@ describe("runRoutingScriptHandler", () => {
     vi.stubEnv("PATH", `${evil}:/usr/bin:/bin`);
     const script = writeScript(root, "path.sh", `echo "$PATH" > "${pathFile}"\necho '{}'`);
     await route(script);
-    expect(readFileSync(pathFile, "utf8").trim()).toBe(ROUTING_SCRIPT_PATH);
-    expect(ROUTING_SCRIPT_PATH.split(":").every((dir) => dir.startsWith("/"))).toBe(true);
-    expect(ROUTING_SCRIPT_PATH).not.toContain(evil);
+    const seen = readFileSync(pathFile, "utf8").trim();
+    expect(seen).toBe(await trustedScriptPath());
+    expect(seen.split(":")).toEqual(expect.arrayContaining(["/usr/bin", "/bin"]));
+    expect(seen.split(":").every((dir) => dir.startsWith("/"))).toBe(true);
+    expect(seen).not.toContain(evil);
+  });
+
+  test("drops a PATH directory that another user owns or can write", async () => {
+    if (process.getuid?.() === 0) return;
+    const otherUid = (process.getuid?.() ?? 0) + 1000;
+    // Stands in for another user: everything this user owns is then someone else's, root's stays.
+    const path = await trustedScriptPath(otherUid);
+    for (const dir of path.split(":").filter(Boolean)) {
+      expect(statSync(dir).uid).toBe(0);
+    }
+    expect(await trustedScriptPath()).toContain("/usr/bin");
   });
 
   test("resolves the interpreter on the fixed PATH, not through the daemon's", async () => {
