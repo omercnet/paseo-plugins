@@ -1396,6 +1396,22 @@ describe("issue start point without a remote default", () => {
     expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
   });
 
+  test("does not count a remote branch named under main or master as the default", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "fix-the-thing"]);
+    commitFile(repoDir, "pushed-pr.txt");
+    // Default is `trunk`: there is no origin/master, so a pushed origin/master/feature is only
+    // a branch whose name starts with it.
+    gitIn(repoDir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    gitIn(repoDir, ["update-ref", "refs/remotes/origin/master/feature", "HEAD"]);
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/HEAD is not on origin\/main or origin\/master/);
+    expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
+  });
+
   test("accepts a HEAD that the remote master branch contains", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");

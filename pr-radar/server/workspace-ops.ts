@@ -852,33 +852,36 @@ async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise
     ).catch(() => "");
     if (resolved) return resolved;
   }
+  // One commit is checked and one is returned: another launch can move HEAD in between.
+  const head = await runGit(baseRoot, ["rev-parse", "--verify", "HEAD^{commit}"], 3_000);
   const branch = await currentBranch(baseRoot);
   if (branch?.startsWith("pr-radar/")) {
     throw new Error(
       `Base checkout ${baseRoot} is on ${branch} and has no recorded default branch for ${remote}; check out the default branch there, or use another directory.`,
     );
   }
-  const defaultBranchRefs = CONVENTIONAL_DEFAULT_BRANCHES.map(
-    (name) => `refs/remotes/${remote}/${name}`,
-  );
-  const published = await runGit(
-    baseRoot,
-    [
-      "for-each-ref",
-      "--count=1",
-      "--contains",
-      "HEAD",
-      "--format=%(refname)",
-      ...defaultBranchRefs,
-    ],
-    3_000,
-  ).catch(() => "");
-  if (!published) {
-    throw new Error(
-      `Base checkout ${baseRoot} has no recorded default branch for ${remote} and its HEAD is not on ${remote}/main or ${remote}/master, so it may carry unmerged code; run git remote set-head ${remote} --auto there, or check out the default branch.`,
+  for (const name of CONVENTIONAL_DEFAULT_BRANCHES) {
+    // The full ref name resolves exactly this ref. `for-each-ref` would also match a branch named
+    // `main/x` by prefix, and a pushed PR branch could be named that.
+    const tip = await runGit(
+      baseRoot,
+      ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${name}^{commit}`],
+      3_000,
+    ).catch(() => "");
+    if (!tip) continue;
+    const published = await runGit(
+      baseRoot,
+      ["merge-base", "--is-ancestor", head, tip],
+      3_000,
+    ).then(
+      () => true,
+      () => false,
     );
+    if (published) return head;
   }
-  return runGit(baseRoot, ["rev-parse", "HEAD"], 3_000);
+  throw new Error(
+    `Base checkout ${baseRoot} has no recorded default branch for ${remote} and its HEAD is not on ${remote}/main or ${remote}/master, so it may carry unmerged code; run git remote set-head ${remote} --auto there, or check out the default branch.`,
+  );
 }
 
 async function refreshPrWorktree(
