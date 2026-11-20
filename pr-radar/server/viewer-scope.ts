@@ -200,15 +200,20 @@ async function searchIssues(
       "--order=desc",
       `--json=${fields}`,
     ]);
-    const parsed = JSON.parse(output);
-    return {
-      records: Array.isArray(parsed) ? (parsed as IssueSearchRecord[]) : [],
-      failed: false,
-    };
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) return { records: [], failed: true };
+    return { records: parsed as IssueSearchRecord[], failed: false };
   } catch {
     return { records: [], failed: true };
   }
 }
+
+/** When one issue matches several searches it is shown under the highest-ranked role. */
+const ISSUE_ROLE_RANK: Record<GitHubIssueItem["role"], number> = {
+  owner: 0,
+  assignee: 1,
+  author: 2,
+};
 
 function toIssueItem(record: IssueSearchRecord, role: GitHubIssueItem["role"]): GitHubIssueItem {
   const labels = record.labels.map(({ name }) => name);
@@ -476,8 +481,10 @@ interface Snapshot {
   issueItems: GitHubIssueItem[];
   issueTruncated: boolean;
   issueSearchFailures: number;
-  /** When each role's issue search last succeeded (ms); a role's carried issues age from here. */
+  /** When each role's issue search last succeeded (ms); a role's kept issues age from here. */
   issueFreshAt: Record<GitHubIssueItem["role"], number>;
+  /** Whether each role's list hit the search cap; a kept role keeps its flag. */
+  issueTruncatedBy: Record<GitHubIssueItem["role"], boolean>;
   enrichmentFailures: number;
   acknowledgedAt: string | null;
 }
@@ -487,7 +494,8 @@ interface Snapshot {
  * snapshot: a failed issue search keeps its role's share of the issues it held, since an empty
  * answer from a failed call says nothing about the issues. Only for the same viewer, and only
  * while that role's last good search is within MAX_STALE_MS, so failures cannot hide behind old
- * data forever (the coverage note keeps reporting them).
+ * data forever (the coverage note keeps reporting them). A snapshot holding kept issues can still
+ * be served for up to MAX_STALE_MS more if the refreshes after it throw outright.
  */
 async function fetchSnapshot(windowDays: number, previous?: Snapshot): Promise<Snapshot> {
   const viewer = await viewerLogin();
@@ -516,30 +524,37 @@ async function fetchSnapshot(windowDays: number, previous?: Snapshot): Promise<S
   for (const record of authoredIssues.records)
     issueMap.set(record.id, toIssueItem(record, "author"));
   const searchedAt = Date.now();
-  const sameViewer = previous?.viewer === viewer;
-  const issueFreshAt = { author: 0, assignee: 0, owner: 0 };
+  const kept = previous?.viewer === viewer ? previous : undefined;
   const searches = [
     ["author", authoredIssues],
     ["assignee", assignedIssues],
     ["owner", ownedIssues],
   ] as const;
+  const issueFreshAt = { author: 0, assignee: 0, owner: 0 };
+  const issueTruncatedBy = { author: false, assignee: false, owner: false };
+  const keptRoles = new Set<GitHubIssueItem["role"]>();
   for (const [role, result] of searches) {
-    issueFreshAt[role] = result.failed
-      ? sameViewer
-        ? (previous?.issueFreshAt[role] ?? 0)
-        : 0
-      : searchedAt;
+    if (!result.failed) {
+      issueFreshAt[role] = searchedAt;
+      issueTruncatedBy[role] = result.records.length === SEARCH_LIMIT;
+    } else if (kept) {
+      issueFreshAt[role] = kept.issueFreshAt[role];
+      if (searchedAt - issueFreshAt[role] <= MAX_STALE_MS) {
+        keptRoles.add(role);
+        issueTruncatedBy[role] = kept.issueTruncatedBy[role];
+      }
+    }
   }
-  for (const item of sameViewer ? (previous?.issueItems ?? []) : []) {
-    const carry =
-      searches.some(([role, result]) => role === item.role && result.failed) &&
-      searchedAt - issueFreshAt[item.role] <= MAX_STALE_MS;
-    if (carry && !issueMap.has(item.id)) issueMap.set(item.id, item);
+  for (const item of kept?.issueItems ?? []) {
+    if (!keptRoles.has(item.role)) continue;
+    const fresh = issueMap.get(item.id);
+    if (!fresh) issueMap.set(item.id, item);
+    // Fresh fields win, but the kept row remembers a higher-ranked role whose search failed.
+    else if (ISSUE_ROLE_RANK[item.role] > ISSUE_ROLE_RANK[fresh.role]) {
+      issueMap.set(item.id, { ...fresh, role: item.role });
+    }
   }
-  const issueTruncated =
-    authoredIssues.records.length === SEARCH_LIMIT ||
-    assignedIssues.records.length === SEARCH_LIMIT ||
-    ownedIssues.records.length === SEARCH_LIMIT;
+  const issueTruncated = Object.values(issueTruncatedBy).some(Boolean);
   const issueSearchFailures = [authoredIssues, assignedIssues, ownedIssues].filter(
     (res) => res.failed,
   ).length;
@@ -606,6 +621,7 @@ async function fetchSnapshot(windowDays: number, previous?: Snapshot): Promise<S
     issueTruncated,
     issueSearchFailures,
     issueFreshAt,
+    issueTruncatedBy,
     enrichmentFailures: enrichment.failures,
     acknowledgedAt,
   };

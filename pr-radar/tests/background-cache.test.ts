@@ -420,5 +420,67 @@ describe("background cache", () => {
         "new title:assignee",
       ]);
     });
+
+    test("a kept higher-ranked role survives a fresh row from a lower-ranked search", async () => {
+      // Assigned to the viewer in a repository they own: both searches find it; it shows as assigned.
+      gh.issuesByFlag = {
+        "--assignee=testuser": JSON.stringify([issueRecord(3, "old title")]),
+        "--owner=testuser": JSON.stringify([issueRecord(3, "old title")]),
+      };
+      const first = await resolveViewerScope({ urls: [], windowDays: 30 });
+      expect(first.issueItems?.map(({ role }) => role)).toEqual(["assignee"]);
+
+      // The assignee search fails; the owner search returns it with a new title. The fresh title
+      // wins, the issue stays "assigned" rather than dropping to "owner".
+      gh.failIssueFlag = "--assignee=testuser";
+      gh.issuesByFlag = { "--owner=testuser": JSON.stringify([issueRecord(3, "new title")]) };
+      const answer = await refreshAgain();
+      expect(answer.issueItems?.map(({ title, role }) => `${title}:${role}`)).toEqual([
+        "new title:assignee",
+      ]);
+    });
+
+    test("each role's kept issues expire on that role's own clock", async () => {
+      gh.issuesByFlag = {
+        "--author=testuser": JSON.stringify([issueRecord(1)]),
+        "--owner=testuser": JSON.stringify([issueRecord(3)]),
+      };
+      await resolveViewerScope({ urls: [], windowDays: 30 });
+      // Only the owner search fails; the author search keeps succeeding every round.
+      gh.failIssueFlag = "--owner=testuser";
+      for (let round = 1; round <= 5; round += 1) {
+        expect(issueNumbers(await refreshAgain())).toEqual([1, 3]);
+      }
+      const expired = await refreshAgain();
+      expect(issueNumbers(expired)).toEqual([1]);
+      expect(expired.coverageNote).toMatch(WARNING);
+    });
+
+    test("a kept role stays flagged truncated until its issues expire", async () => {
+      const full = Array.from({ length: 100 }, (_, index) => issueRecord(index + 1));
+      gh.issuesByFlag = { "--author=testuser": JSON.stringify(full) };
+      const first = await resolveViewerScope({ urls: [], windowDays: 30 });
+      expect(first.truncated).toBe(true);
+
+      gh.failIssueFlag = "--author=testuser";
+      gh.issuesByFlag = {};
+      const kept = await refreshAgain();
+      expect(kept.issueItems).toHaveLength(100);
+      expect(kept.truncated).toBe(true);
+
+      for (let round = 1; round <= 4; round += 1) await refreshAgain();
+      const expired = await refreshAgain();
+      expect(expired.issueItems).toEqual([]);
+      expect(expired.truncated).toBe(false);
+    });
+
+    test("a body that is not a list counts as a failed search, not an empty one", async () => {
+      gh.issues = JSON.stringify([issueRecord(1)]);
+      await resolveViewerScope({ urls: [], windowDays: 30 });
+      gh.issues = JSON.stringify({ message: "API rate limit exceeded" });
+      const answer = await refreshAgain();
+      expect(issueNumbers(answer)).toEqual([1]);
+      expect(answer.coverageNote).toMatch(WARNING);
+    });
   });
 });
