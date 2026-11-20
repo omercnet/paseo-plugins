@@ -1,8 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, test } from "vitest";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   quotaDetailLabel,
   quotaProviderFromSession,
@@ -10,13 +12,22 @@ import {
   quotaProviderIconName,
   quotaRecordedLabel,
   quotaResetLabel,
+  quotaSessionAccounts,
   quotaSeverityForProvider,
   quotaSummaryForProvider,
   quotasForProvider,
+  sessionPinCommand,
 } from "../client/quota-state";
-import { listOmpQuotasFrom, resolveListOmpQuotas } from "../server/quota";
+import contribute from "../index.server";
+import { OmpRpcRequestRejectedError } from "../server/provider/omp-rpc-transport";
+import {
+  listOmpQuotasFrom,
+  resolveListOmpQuotas,
+  resolveListOmpSessionAccounts,
+} from "../server/quota";
+import { OmpSubagentControlRegistry, type OmpSubagentControls } from "../server/subagents";
 import { accountTags } from "../shared/account-tags";
-import type { OmpQuota } from "../shared/quota";
+import { listOmpSessionAccounts, type OmpQuota } from "../shared/quota";
 
 const quotaRoots: string[] = [];
 
@@ -71,12 +82,69 @@ describe("session-specific quota selection", () => {
     expect(quotasForProvider(quotas, "anthropic")).toEqual([quotas[0]]);
     expect(quotaSummaryForProvider(quotas, "anthropic")).toEqual({
       visible: true,
-      label: "Anthropic · 25%",
+      label: "25%",
+      title: "Anthropic · all accounts · 25% (last recorded usage, not live)",
     });
-    expect(quotaSummaryForProvider(quotas, "azure")).toEqual({
+    expect(quotaSummaryForProvider(quotas, "azure")).toMatchObject({ visible: true, label: "n/a" });
+  });
+
+  test("summarizes the account in use, not the provider's busiest account", () => {
+    const rows: OmpQuota[] = [
+      { ...quotas[0], accountKey: "spent", usedFraction: 1 },
+      { ...quotas[0], accountKey: "working", usedFraction: 0.19 },
+    ];
+    const working = {
+      credentialId: 5,
+      label: "me@example.invalid (Team)",
+      active: true,
+      onlyLogin: false,
+      quotaAccountKeys: ["working"],
+    };
+
+    expect(quotaSummaryForProvider(rows, "anthropic", false, working)).toEqual({
       visible: true,
-      label: "Azure · —",
+      label: "19%",
+      title: "Anthropic · me@example.invalid (Team) · 19% (last recorded usage, not live)",
     });
+    expect(quotaSeverityForProvider(rows, "anthropic", false, working)).toBe("ok");
+    // Without an account in use, or with no recorded usage for it, the provider's peak stands.
+    expect(quotaSummaryForProvider(rows, "anthropic").label).toBe("100%");
+    expect(
+      quotaSummaryForProvider(rows, "anthropic", false, { ...working, quotaAccountKeys: [] }).label,
+    ).toBe("100%");
+    // A linked account whose rows hold no usage value does not hide the provider's peak.
+    const unread: OmpQuota[] = [
+      ...rows,
+      { ...quotas[0], accountKey: "unread", usedFraction: null },
+    ];
+    expect(
+      quotaSummaryForProvider(unread, "anthropic", false, {
+        ...working,
+        quotaAccountKeys: ["unread"],
+      }),
+    ).toEqual({
+      visible: true,
+      label: "100%",
+      title: "Anthropic · all accounts · 100% (last recorded usage, not live)",
+    });
+    expect(
+      quotaSeverityForProvider(unread, "anthropic", false, {
+        ...working,
+        quotaAccountKeys: ["unread"],
+      }),
+    ).toBe("danger");
+  });
+
+  test("keeps IN USE on the login in use when two logins share a usage account", () => {
+    const account = quotaProviderGroups([{ ...quotas[0], accountKey: "shared" }], "anthropic")[0]
+      .accounts;
+    const login = { label: "me@example.invalid", onlyLogin: false, quotaAccountKeys: ["shared"] };
+    const [linked] = quotaSessionAccounts(account, [
+      { ...login, credentialId: 3, active: false },
+      { ...login, credentialId: 5, active: true },
+    ]);
+    expect(linked.inUse).toBe(true);
+    expect(linked.login?.credentialId).toBe(5);
   });
 
   test("maps each provider to a distinct icon and severity bucket", () => {
@@ -777,6 +845,529 @@ describe("OMP quota reader", () => {
   });
 });
 
+describe("session account", () => {
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const teamA = "oauth|account:team|email:a@example.invalid|org:team";
+  const teamB = "oauth|account:team|email:b@example.invalid|org:team";
+  const personal = "oauth|account:me|email:a@example.invalid|org:mine";
+  const LOCATION_ENV = [
+    "PASEO_OMP_AGENT_DIR",
+    "OMP_AGENT_DIR",
+    "PI_CODING_AGENT_DIR",
+    "OMP_PROFILE",
+    "PI_PROFILE",
+    "PI_CONFIG_DIR",
+    "XDG_DATA_HOME",
+  ];
+
+  // Every test, whether or not it calls home(), runs without the runner's OMP location settings.
+  beforeEach(() => {
+    for (const name of LOCATION_ENV) vi.stubEnv(name, undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** A fresh HOME, so the daemon default store is `<home>/.omp/agent` and profiles sit beside it. */
+  async function home(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "paseo-omp-session-accounts-"));
+    quotaRoots.push(root);
+    vi.stubEnv("HOME", root);
+    return root;
+  }
+
+  type Login = {
+    id: number;
+    email?: string;
+    accountId?: string;
+    orgId?: string;
+    orgName?: string;
+    disabled?: boolean;
+    /** A stored API key instead of an OAuth login. */
+    apiKey?: boolean;
+  };
+
+  /** OMP's tables with only the columns this reads; tokens sit beside identity as in OMP. */
+  async function store(
+    agentDir: string,
+    seed: {
+      provider: string;
+      usage: string[];
+      logins: Login[];
+      pins?: Array<[sessionId: string, credentialId: number, expiresAtSec: number]>;
+    },
+  ): Promise<void> {
+    await mkdir(agentDir, { recursive: true });
+    const db = new DatabaseSync(join(agentDir, "agent.db"));
+    db.exec(`CREATE TABLE usage_history (provider TEXT, account_key TEXT);
+      CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT,
+        credential_type TEXT, data TEXT, disabled_cause TEXT);
+      CREATE TABLE cache (key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)`);
+    for (const key of seed.usage) {
+      db.prepare("INSERT INTO usage_history VALUES (?, ?)").run(seed.provider, key);
+    }
+    for (const { id, disabled, apiKey, ...identity } of seed.logins) {
+      db.prepare("INSERT INTO auth_credentials VALUES (?, ?, ?, ?, ?)").run(
+        id,
+        seed.provider,
+        apiKey ? "api_key" : "oauth",
+        JSON.stringify({ ...identity, access: "unread-placeholder" }),
+        disabled ? "user" : null,
+      );
+    }
+    for (const [sessionId, credentialId, expiresAt] of seed.pins ?? []) {
+      db.prepare("INSERT INTO cache VALUES (?, ?, ?)").run(
+        `session:sticky:${seed.provider}:${sessionId}`,
+        JSON.stringify({ type: "oauth", index: 0, credentialId, lastUsedAtMs: 1 }),
+        expiresAt,
+      );
+    }
+    db.close();
+  }
+
+  const future = () => Math.floor(Date.now() / 1000) + 3_600;
+
+  const codexTeam = (agentDir: string) =>
+    store(agentDir, {
+      provider: "openai-codex",
+      usage: [teamA, teamB, personal],
+      logins: [
+        { id: 1, email: "a@example.invalid", accountId: "team", orgId: "team", orgName: "Team" },
+        { id: 2, email: "b@example.invalid", accountId: "team", orgId: "team", orgName: "Team" },
+        {
+          id: 3,
+          email: "a@example.invalid",
+          accountId: "me",
+          orgId: "mine",
+          orgName: "a@example.invalid",
+        },
+        {
+          id: 4,
+          email: "gone@example.invalid",
+          accountId: "x",
+          orgId: "x",
+          orgName: "X",
+          disabled: true,
+        },
+      ],
+      pins: [
+        ["bundled-session", 2, future()],
+        ["expired-session", 1, 1],
+      ],
+    });
+
+  const agentLookup =
+    (provider: string, sessionId: string | null = null) =>
+    async () => ({ provider, sessionId });
+
+  function registryWith(controls: Partial<OmpSubagentControls>): OmpSubagentControlRegistry {
+    const registry = new OmpSubagentControlRegistry();
+    registry.register("agent-1", {
+      cancelSubagent: async () => false,
+      steerSubagent: async () => {},
+      listProviderAccounts: async () => [],
+      modelProvider: () => null,
+      ...controls,
+    });
+    return registry;
+  }
+
+  const runtimeLogin = (credentialId: number, active = false) => ({
+    credentialId,
+    provider: "openai-codex",
+    label: `login ${credentialId}`,
+    type: "oauth" as const,
+    active,
+  });
+
+  test("links each login to its own usage when team seats share an account id and emails repeat across orgs", async () => {
+    await codexTeam(join(await home(), ".omp", "agent"));
+    const registry = registryWith({
+      listProviderAccounts: async () => [
+        runtimeLogin(2, true),
+        runtimeLogin(1),
+        runtimeLogin(3),
+        { ...runtimeLogin(9), type: "api_key" },
+      ],
+    });
+
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "openai-codex" },
+      registry,
+      agentLookup("omp-plugin"),
+    );
+
+    expect(result.accounts).toEqual([
+      {
+        credentialId: 2,
+        label: "login 2",
+        active: true,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(teamB)],
+      },
+      {
+        credentialId: 1,
+        label: "login 1",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(teamA)],
+      },
+      {
+        credentialId: 3,
+        label: "login 3",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(personal)],
+      },
+    ]);
+  });
+
+  test("explains an OMP too old to list logins", async () => {
+    await codexTeam(join(await home(), ".omp", "agent"));
+    const outdated = registryWith({
+      listProviderAccounts: async () => {
+        throw new OmpRpcRequestRejectedError(undefined, "unsupported_command");
+      },
+    });
+
+    await expect(
+      resolveListOmpSessionAccounts(
+        { agentId: "agent-1", provider: "openai-codex" },
+        outdated,
+        agentLookup("omp-plugin"),
+      ),
+    ).rejects.toThrow("Update OMP to show which login this session uses");
+  });
+
+  test("reads the pin OMP recorded for a session no OMP Plugin runtime owns, such as Paseo's bundled omp", async () => {
+    await codexTeam(join(await home(), ".omp", "agent"));
+    const list = (sessionId: string | null) =>
+      resolveListOmpSessionAccounts(
+        { agentId: "bundled-agent", provider: "openai-codex" },
+        new OmpSubagentControlRegistry(),
+        agentLookup("omp", sessionId),
+      );
+
+    expect((await list("bundled-session")).accounts).toEqual([
+      {
+        credentialId: 1,
+        label: "a@example.invalid (Team)",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(teamA)],
+      },
+      {
+        credentialId: 2,
+        label: "b@example.invalid (Team)",
+        active: true,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(teamB)],
+      },
+      {
+        credentialId: 3,
+        label: "a@example.invalid",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: [sha(personal)],
+      },
+    ]);
+    // An expired pin marks nothing; the logins stay switchable.
+    expect((await list("expired-session")).accounts.some((login) => login.active)).toBe(false);
+    // No stored session at all is not an error: the popover simply cannot name the account.
+    expect((await list(null)).accounts).toEqual([]);
+  });
+
+  test("serves the registered RPC from Paseo's own record of the agent", async () => {
+    await codexTeam(join(await home(), ".omp", "agent"));
+    const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
+    const cleanup = contribute({
+      handle(contract: { name: string }, handler: (input: unknown, context: unknown) => unknown) {
+        handlers.set(contract.name, handler);
+      },
+      on: () => () => {},
+      before: () => () => {},
+      registerSettings: () => ({ subscribe: () => () => {} }),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext);
+    const records: Record<string, unknown> = {
+      bundled: {
+        agent: { provider: "omp", persistence: { provider: "omp", sessionId: "bundled-session" } },
+      },
+      // Another provider's session id is not an OMP session.
+      foreign: {
+        agent: {
+          provider: "omp",
+          persistence: { provider: "codex", sessionId: "bundled-session" },
+        },
+      },
+      gone: null,
+    };
+    const paseo = {
+      agents: {
+        ref: (agentId: string) => ({
+          refresh: async () => {
+            if (agentId === "broken") throw new Error("offline");
+            return records[agentId];
+          },
+        }),
+      },
+    };
+    const list = async (agentId: string) =>
+      listOmpSessionAccounts.output.parse(
+        await handlers.get(listOmpSessionAccounts.name)?.(
+          { agentId, provider: "openai-codex" },
+          { paseo },
+        ),
+      ).accounts;
+    try {
+      expect((await list("bundled")).filter((login) => login.active)).toEqual([
+        expect.objectContaining({ credentialId: 2 }),
+      ]);
+      for (const agentId of ["foreign", "gone", "broken"]) {
+        expect(await list(agentId)).toEqual([]);
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("reads a profile agent's logins and usage from that profile, never the default store", async () => {
+    const root = await home();
+    const profileUsage = "oauth|account:p|email:profile@example.invalid";
+    const defaultUsage = "oauth|account:d|email:default@example.invalid";
+    // The same credential id is a different account in each store.
+    await store(join(root, ".omp", "agent"), {
+      provider: "anthropic",
+      usage: [defaultUsage],
+      logins: [{ id: 1, email: "default@example.invalid", accountId: "d" }],
+      pins: [["session-1", 1, future()]],
+    });
+    await store(join(root, ".omp", "profiles", "team-a", "agent"), {
+      provider: "anthropic",
+      usage: [profileUsage],
+      logins: [{ id: 1, email: "profile@example.invalid", accountId: "p" }],
+      pins: [["session-1", 1, future()]],
+    });
+    const list = (provider: string) =>
+      resolveListOmpSessionAccounts(
+        { agentId: "agent-1", provider: "anthropic" },
+        new OmpSubagentControlRegistry(),
+        agentLookup(provider, "session-1"),
+      );
+
+    expect((await list("omp-plugin-team-a")).accounts).toEqual([
+      {
+        credentialId: 1,
+        label: "profile@example.invalid",
+        active: true,
+        onlyLogin: true,
+        quotaAccountKeys: [sha(profileUsage)],
+      },
+    ]);
+    expect((await list("omp")).accounts).toEqual([
+      {
+        credentialId: 1,
+        label: "default@example.invalid",
+        active: true,
+        onlyLogin: true,
+        quotaAccountKeys: [sha(defaultUsage)],
+      },
+    ]);
+  });
+
+  test("never hands a removed login's leftover usage to the login that replaced it", async () => {
+    const root = await home();
+    await store(join(root, ".omp", "agent"), {
+      provider: "anthropic",
+      usage: ["oauth|account:old|email:old@example.invalid|org:o"],
+      logins: [{ id: 7, email: "new@example.invalid", accountId: "new", orgId: "o" }],
+      pins: [["session-1", 7, future()]],
+    });
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "anthropic" },
+      new OmpSubagentControlRegistry(),
+      agentLookup("omp", "session-1"),
+    );
+
+    expect(result.accounts).toEqual([
+      expect.objectContaining({ credentialId: 7, quotaAccountKeys: [] }),
+    ]);
+  });
+
+  test("flags a provider's only login without claiming it is in use, and links no usage it cannot prove is its own", async () => {
+    const root = await home();
+    // Copilot's shape: no identity on the login, only an enterprise host and fingerprint in the key.
+    const copilot = "oauth|enterprise:host-1|secret:fingerprint-1";
+    // No pin: the session has not sent a Copilot request yet, as for a freshly opened agent.
+    await store(join(root, ".omp", "agent"), {
+      provider: "github-copilot",
+      usage: [copilot],
+      logins: [{ id: 8 }],
+    });
+
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "github-copilot" },
+      new OmpSubagentControlRegistry(),
+      agentLookup("omp", "session-1"),
+    );
+
+    expect(result.accounts).toEqual([
+      {
+        credentialId: 8,
+        label: "OAuth credential #8",
+        active: false,
+        onlyLogin: true,
+        // One login and one usage account do not prove the usage is this login's.
+        quotaAccountKeys: [],
+      },
+    ]);
+  });
+
+  test("keeps the runtime's not-in-use answer for a sole login, as when an environment key serves the session", async () => {
+    await home();
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "openai-codex" },
+      registryWith({ listProviderAccounts: async () => [runtimeLogin(2, false)] }),
+      agentLookup("omp-plugin"),
+    );
+
+    expect(result.accounts).toEqual([
+      expect.objectContaining({ credentialId: 2, active: false, onlyLogin: true }),
+    ]);
+  });
+
+  test("does not call an OAuth login the only one when a stored API key sits beside it", async () => {
+    const root = await home();
+    await store(join(root, ".omp", "agent"), {
+      provider: "anthropic",
+      usage: [],
+      logins: [
+        { id: 1, email: "a@example.invalid", accountId: "a" },
+        { id: 2, apiKey: true },
+      ],
+    });
+
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "anthropic" },
+      new OmpSubagentControlRegistry(),
+      agentLookup("omp", "session-1"),
+    );
+
+    expect(result.accounts).toEqual([
+      expect.objectContaining({ credentialId: 1, active: false, onlyLogin: false }),
+    ]);
+  });
+
+  test("compares organizations even for a provider's only login and usage account", async () => {
+    const root = await home();
+    const list = async (usage: string) => {
+      await rm(join(root, ".omp"), { recursive: true, force: true });
+      await store(join(root, ".omp", "agent"), {
+        provider: "anthropic",
+        usage: [usage],
+        logins: [{ id: 5, orgId: "a" }],
+      });
+      return resolveListOmpSessionAccounts(
+        { agentId: "agent-1", provider: "anthropic" },
+        new OmpSubagentControlRegistry(),
+        agentLookup("omp", "session-1"),
+      );
+    };
+
+    expect((await list("oauth|org:b")).accounts[0]?.quotaAccountKeys).toEqual([]);
+    expect((await list("oauth|org:a")).accounts[0]?.quotaAccountKeys).toEqual([sha("oauth|org:a")]);
+    // An org-only login matches on the organization even when the usage names its account, as
+    // OMP's limitMatchesActiveAccount decides on the login's identity.
+    const named = "oauth|account:u|email:user@example.invalid|org:a";
+    expect((await list(named)).accounts[0]?.quotaAccountKeys).toEqual([sha(named)]);
+  });
+
+  test("answers nothing when Paseo cannot name the agent, even with its runtime still registered", async () => {
+    const root = await home();
+    // A login in the default store shares the credential id the profile runtime reports.
+    await store(join(root, ".omp", "agent"), {
+      provider: "openai-codex",
+      usage: [teamA],
+      logins: [{ id: 2, email: "a@example.invalid", accountId: "team", orgId: "team" }],
+    });
+
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "openai-codex" },
+      registryWith({ listProviderAccounts: async () => [runtimeLogin(2, true)] }),
+      async () => null,
+    );
+
+    expect(result).toEqual({ accounts: [] });
+  });
+
+  test("keeps an organization-scoped login apart from the same email's org-less usage, as OMP does", async () => {
+    const root = await home();
+    const orgless = "oauth|account:same|email:same@example.invalid";
+    const scoped = "oauth|account:same|email:same@example.invalid|org:corp";
+    await store(join(root, ".omp", "agent"), {
+      provider: "anthropic",
+      usage: [orgless, scoped],
+      logins: [
+        { id: 1, email: "same@example.invalid", accountId: "same", orgId: "corp" },
+        { id: 2, email: "same@example.invalid", accountId: "same" },
+      ],
+    });
+
+    const result = await resolveListOmpSessionAccounts(
+      { agentId: "agent-1", provider: "anthropic" },
+      registryWith({
+        listProviderAccounts: async () => [
+          { ...runtimeLogin(1), provider: "anthropic" },
+          { ...runtimeLogin(2), provider: "anthropic" },
+        ],
+      }),
+      agentLookup("omp-plugin"),
+    );
+
+    expect(result.accounts.map((login) => [login.credentialId, login.quotaAccountKeys])).toEqual([
+      [1, [sha(scoped)]],
+      [2, [sha(orgless)]],
+    ]);
+  });
+
+  test("puts the account in use first and builds the pin command OMP accepts", () => {
+    const groups = quotaProviderGroups(
+      [
+        { ...quotas[0], accountKey: "busy", usedFraction: 0.9 },
+        { ...quotas[0], accountKey: "idle", usedFraction: 0.1 },
+        { ...quotas[0], accountKey: "unlinked", usedFraction: 0.5 },
+      ],
+      "anthropic",
+    );
+    const linked = quotaSessionAccounts(groups[0].accounts, [
+      {
+        credentialId: 4,
+        label: "busy",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: ["busy"],
+      },
+      {
+        credentialId: 7,
+        label: "idle",
+        active: true,
+        onlyLogin: false,
+        quotaAccountKeys: ["idle"],
+      },
+    ]);
+
+    expect(
+      linked.map(({ accountKey, inUse, login }) => [accountKey, inUse, login?.credentialId]),
+    ).toEqual([
+      ["idle", true, 7],
+      ["busy", false, 4],
+      ["unlinked", false, undefined],
+    ]);
+    expect(sessionPinCommand(4)).toBe("/session pin OAuth credential #4");
+  });
+});
+
 describe("profile alias and opaque-model quotas", () => {
   test("recognizes native and profile plugin model providers without guessing opaque ids", () => {
     expect(quotaProviderFromSession("omp-plugin", "anthropic/claude-fable-5")).toBe("anthropic");
@@ -786,12 +1377,15 @@ describe("profile alias and opaque-model quotas", () => {
     expect(quotaProviderFromSession("omp-plugin-team-beta", "omp:model:opaque-hash")).toBeNull();
   });
   test("opaque OMP models retain an explicitly aggregate quota pill", () => {
-    expect(quotaSummaryForProvider(quotas, null, true)).toEqual({
+    expect(quotaSummaryForProvider(quotas, null, true)).toMatchObject({
       visible: true,
       label: "Quotas · 90%",
     });
     expect(quotaSeverityForProvider(quotas, null, true)).toBe("danger");
-    expect(quotaSummaryForProvider([], null, true)).toEqual({ visible: true, label: "Quotas · —" });
+    expect(quotaSummaryForProvider([], null, true)).toMatchObject({
+      visible: true,
+      label: "Quotas · n/a",
+    });
     expect(quotaSummaryForProvider(quotas, null).visible).toBe(false);
   });
 });

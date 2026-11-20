@@ -62,7 +62,12 @@ import {
 import { OMP_MCP_AUTH_TIMELINE_KIND, ompMcpAuthorizationTimelineSchema } from "./shared/mcp";
 import { type OmpStore, storeForProvider } from "./shared/omp-store";
 import { ompImageTimelineSchema, transformOmpImageToolItem } from "./shared/provider-image";
-import { getOmpSessionModelProvider, listOmpQuotas } from "./shared/quota";
+import {
+  getOmpSessionModelProvider,
+  listOmpQuotas,
+  listOmpSessionAccounts,
+  type OmpSessionAccount,
+} from "./shared/quota";
 import { OMP_RULE_NOTICE_KIND, ompRuleNoticeSchema } from "./shared/rule-notices";
 import { OMP_SUBAGENT_STRIP_KIND, ompSubagentStripSchema } from "./shared/subagents";
 
@@ -164,6 +169,7 @@ export default function contribute(client: PluginClientContext) {
   let preferences: ComposerPillSettings | undefined;
   let disposed = false;
   let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+  let providerRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let reconcileRunning = false;
   let reconcileQueued = false;
   let hubRefreshRunning = false;
@@ -385,34 +391,45 @@ export default function contribute(client: PluginClientContext) {
   }
 
   // Agent id to its session's provider, asked again only when the agent's model or status changes.
-  // A failed lookup is kept too, but only until `retryAt`, so a server without the RPC is not asked
-  // on every reconcile and a transient failure still recovers.
+  // A missing answer is kept too, but only until `retryAt`, so a server without the RPC is not asked
+  // on every reconcile, and a pass is scheduled for `retryAt` so a transient failure still recovers.
   const sessionModelProviders = new Map<
     string,
     { key: string; provider: string | null; retryAt?: number }
   >();
 
   async function sessionModelProvider(agent: AgentEntry["agent"]): Promise<string | null> {
-    if (agent.status === "closed" || !needsSessionModelProvider(agent.provider, agent.model)) {
+    const model = agent.model;
+    if (agent.status === "closed" || !model || !needsSessionModelProvider(agent.provider, model)) {
+      // A known provider is kept for a resume, but a missing answer is only worth retrying while
+      // the agent can be asked; left behind, its passed back-off would reschedule passes forever.
+      if (sessionModelProviders.get(agent.id)?.retryAt !== undefined) {
+        sessionModelProviders.delete(agent.id);
+      }
       return null;
     }
-    const key = `${agent.model}|${agent.status}`;
+    const key = `${model}|${agent.status}`;
     const cached = sessionModelProviders.get(agent.id);
     if (cached?.key === key && (cached.retryAt === undefined || Date.now() < cached.retryAt)) {
       return cached.provider;
     }
+    let provider: string | null = null;
     try {
-      const { provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id });
-      sessionModelProviders.set(agent.id, { key, provider });
-      return provider;
+      // The session answers for the model named here, not whatever it uses by then.
+      ({ provider } = await client.rpc(getOmpSessionModelProvider, { agentId: agent.id, model }));
     } catch {
-      sessionModelProviders.set(agent.id, {
-        key,
-        provider: null,
-        retryAt: Date.now() + SESSION_PROVIDER_RETRY_MS,
-      });
-      return null;
+      // A server without the RPC, or one that is reloading.
     }
+    // A provider is fixed by the opaque model id, so it is kept until the model or status changes.
+    // No answer (a failed call, or null while the session's runtime is down or recovering) is kept
+    // only for the back-off, so the pill names the provider again once the session can answer.
+    sessionModelProviders.set(
+      agent.id,
+      provider === null
+        ? { key, provider, retryAt: Date.now() + SESSION_PROVIDER_RETRY_MS }
+        : { key, provider },
+    );
+    return provider;
   }
 
   async function reconcileOnce(): Promise<void> {
@@ -461,7 +478,20 @@ export default function contribute(client: PluginClientContext) {
     for (const agentId of sessionModelProviders.keys()) {
       if (!activeIds.has(agentId)) sessionModelProviders.delete(agentId);
     }
+    scheduleProviderRetry();
     await Promise.all([refreshHubStatus(), refreshQuotaStatus()]);
+  }
+
+  // Nothing else re-asks a session whose answer was missing: the directory may never change again,
+  // and the quota poll reads usage only. So a pass runs when the earliest back-off ends.
+  function scheduleProviderRetry(): void {
+    clearTimeout(providerRetryTimer);
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const { retryAt } of sessionModelProviders.values()) {
+      if (retryAt !== undefined) earliest = Math.min(earliest, retryAt);
+    }
+    if (earliest === Number.POSITIVE_INFINITY) return;
+    providerRetryTimer = setTimeout(scheduleReconcile, Math.max(0, earliest - Date.now()));
   }
 
   async function reconcile(): Promise<void> {
@@ -538,18 +568,26 @@ export default function contribute(client: PluginClientContext) {
           try {
             const result = await loadStoreQuotas(targets[0].entry.store);
             if (disposed || !preferences?.quota) return;
-            for (const { agentId, entry, handle } of targets) {
-              const current = pills.get(agentId);
-              if (current !== entry || current.quota !== handle) continue;
-              const severity = quotaSeverityForProvider(result.quotas, entry.quotaProvider, true);
-              handle.update({
-                ...quotaSummaryForProvider(result.quotas, entry.quotaProvider, true),
-                ...(severity === entry.quotaSeverity
-                  ? {}
-                  : { icon: quotaProviderIcon(entry.quotaProvider, severity) }),
-              });
-              entry.quotaSeverity = severity;
-            }
+            await Promise.all(
+              targets.map(async ({ agentId, entry, handle }) => {
+                const inUse = await accountInUse(agentId, entry.quotaProvider);
+                const current = pills.get(agentId);
+                if (disposed || current !== entry || current.quota !== handle) return;
+                const severity = quotaSeverityForProvider(
+                  result.quotas,
+                  entry.quotaProvider,
+                  true,
+                  inUse,
+                );
+                handle.update({
+                  ...quotaSummaryForProvider(result.quotas, entry.quotaProvider, true, inUse),
+                  ...(severity === entry.quotaSeverity
+                    ? {}
+                    : { icon: quotaProviderIcon(entry.quotaProvider, severity) }),
+                });
+                entry.quotaSeverity = severity;
+              }),
+            );
           } catch {
             // Retain only this store's last result. Failure never falls back to another profile.
           }
@@ -557,6 +595,20 @@ export default function contribute(client: PluginClientContext) {
       );
     } finally {
       quotaRefreshRunning = false;
+    }
+  }
+
+  /** The login OMP routes this agent's provider requests to, or null when it cannot say. */
+  async function accountInUse(
+    agentId: string,
+    provider: string | null,
+  ): Promise<OmpSessionAccount | null> {
+    if (!provider) return null;
+    try {
+      const { accounts } = await client.rpc(listOmpSessionAccounts, { agentId, provider });
+      return accounts.find((account) => account.active) ?? null;
+    } catch {
+      return null;
     }
   }
 
@@ -619,6 +671,7 @@ export default function contribute(client: PluginClientContext) {
     unsubscribeAgentDirectory();
     if (releaseAgentDirectory) void releaseAgentDirectory().catch(() => {});
     clearTimeout(reconcileTimer);
+    clearTimeout(providerRetryTimer);
     clearInterval(hubPoll);
     clearInterval(quotaPoll);
     clearInterval(settingsPoll);

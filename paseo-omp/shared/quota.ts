@@ -36,11 +36,42 @@ export const listOmpQuotas = defineRpc({
 });
 
 /**
- * The OMP provider (such as `anthropic`) of the model an OMP Plugin agent's live session uses.
+ * The OMP provider (such as `anthropic`) of a model an OMP Plugin agent's live session knows.
  * Paseo only sees that model as an opaque id, so the provider is null without a live session.
+ * The caller names the model it saw: the answer is that model's provider even when the session has
+ * moved to another model by the time it answers, so a late answer can never label the wrong model.
  */
 export const getOmpSessionModelProvider = defineRpc({
   name: "paseo-omp.session-model-provider",
-  input: z.object({ agentId: z.string().min(1).max(256) }),
+  input: z.object({ agentId: z.string().min(1).max(256), model: z.string().min(1).max(256) }),
   output: z.object({ provider: z.string().nullable() }),
+});
+
+export const OmpSessionAccountSchema = z.object({
+  /** OMP's credential id; `/session pin OAuth credential #<id>` selects this login. */
+  credentialId: z.number().int().nonnegative(),
+  label: z.string(),
+  /** OMP routes this session's requests to this login, as OMP itself reports or recorded it. */
+  active: z.boolean(),
+  /**
+   * The provider's only stored credential of any kind. Not proof of use: an environment or explicit
+   * key can still serve the session, so it is shown apart from `active` and never offered a switch.
+   */
+  onlyLogin: z.boolean(),
+  /** `OmpQuota.accountKey` values recorded for this login. */
+  quotaAccountKeys: z.array(z.string()),
+});
+export type OmpSessionAccount = z.infer<typeof OmpSessionAccountSchema>;
+
+/** OAuth logins of the agent's current provider, as its live OMP session sees them. */
+export const listOmpSessionAccounts = defineRpc({
+  name: "paseo-omp.list-session-accounts",
+  input: z.object({
+    agentId: z.string().min(1).max(256),
+    provider: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9._-]*$/u)
+      .max(128),
+  }),
+  output: z.object({ accounts: z.array(OmpSessionAccountSchema) }),
 });

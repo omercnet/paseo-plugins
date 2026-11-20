@@ -37,6 +37,8 @@ import {
   type OmpHostToolResult,
   type OmpHostToolUpdate,
   type OmpImage,
+  type OmpLogoutAccount,
+  OmpLogoutAccountsResultSchema,
   type OmpMessage,
   OmpMessageSchema,
   OmpMessagesPageResultSchema,
@@ -121,6 +123,8 @@ export interface OmpRuntimeSession {
   /** Resolves `false` when OMP no longer lists the subagent as running for this session. */
   cancelSubagent(subagentId: string): Promise<boolean>;
   steerSubagent(subagentId: string, message: string): Promise<void>;
+  /** The provider's stored logins; `active` marks the ones this session may be using. */
+  getLogoutAccounts(providerId: string): Promise<OmpLogoutAccount[]>;
   prompt(
     message: string,
     images?: readonly OmpImage[],
@@ -561,6 +565,13 @@ class OmpRpcSession implements OmpRuntimeSession {
     return OmpCancelSubagentResultSchema.parse(
       await this.process.request({ type: "cancel_subagent", subagentId: safeId }),
     ).cancelled;
+  }
+
+  async getLogoutAccounts(providerId: string): Promise<OmpLogoutAccount[]> {
+    const safeId = validateBoundedText(providerId, "provider identifier", MAX_ID_LENGTH);
+    return OmpLogoutAccountsResultSchema.parse(
+      await this.process.request({ type: "get_logout_accounts", providerId: safeId }),
+    ).accounts;
   }
 
   async steerSubagent(subagentId: string, message: string): Promise<void> {

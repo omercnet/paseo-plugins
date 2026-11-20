@@ -1,16 +1,19 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { getOmpSessionModelProvider } from "../shared/quota";
 import type { cancelOmpSubagent, steerOmpSubagent } from "../shared/subagents";
+import type { OmpLogoutAccount } from "./provider/omp-rpc-protocol";
 import { OmpRpcRequestRejectedError } from "./provider/omp-rpc-transport";
 import { isOmpPublicError, OmpPublicError } from "./provider/security";
 
-/** Subagent controls of one live OMP session; history-only sessions never register. */
+/** Controls of one live OMP session; history-only sessions never register. */
 export interface OmpSubagentControls {
   /** Resolves `false` when the subagent is no longer running. */
   cancelSubagent(handle: string): Promise<boolean>;
   steerSubagent(handle: string, message: string): Promise<void>;
-  /** The OMP provider of the session's current model, or null once the session has ended. */
-  modelProvider(): string | null;
+  /** The OMP provider of one of the session's models, or null once the session has ended. */
+  modelProvider(model: string): string | null;
+  /** The provider's stored logins; `active` marks the ones this session may be using. */
+  listProviderAccounts(provider: string): Promise<OmpLogoutAccount[]>;
 }
 
 export class OmpSubagentNotRunningError extends OmpPublicError {
@@ -104,5 +107,5 @@ export function resolveGetOmpSessionModelProvider(
   input: RpcInput<typeof getOmpSessionModelProvider>,
   registry: OmpSubagentControlRegistry,
 ): RpcOutput<typeof getOmpSessionModelProvider> {
-  return { provider: registry.get(input.agentId)?.modelProvider() ?? null };
+  return { provider: registry.get(input.agentId)?.modelProvider(input.model) ?? null };
 }
