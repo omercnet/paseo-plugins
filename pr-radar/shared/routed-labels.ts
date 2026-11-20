@@ -17,8 +17,13 @@ const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 // Unicode general categories Cc (C0, DEL and C1 controls), Cf (format characters: bidi controls
 // such as U+202A-U+202E and U+2066-U+2069 used by Trojan Source, CVE-2021-42574, zero-width
 // U+200B-U+200F, U+2060-U+2064, U+FEFF, tag characters), Cs (lone surrogates), Zl and Zp.
-const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
-const ESCAPED_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
+// Default_Ignorable_Code_Point adds invisible fillers (U+3164, U+115F, U+FFA0) and variation selectors.
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
+const ESCAPED_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+// A script that returns more raw keys than this is rejected before any per-key work.
+const MAX_RAW_LABELS = MAX_SCRIPT_LABELS * 4;
+const MAX_LISTED_REJECTIONS = 5;
+const RESERVED_ROOTS = ["pr-radar", "paseo"];
 
 export interface RejectedLabel {
   key: string;
@@ -50,11 +55,19 @@ export class RoutedLabelsBlockedError extends Error {
   }
 }
 
+// A prefix that is a root of a reserved family (`p`, `paseo`) or extends one (`paseo-`, `pr-radar/`)
+// could admit look-alikes of reserved keys. One malformed entry voids the whole setting, so a typo
+// can never widen a prefix: every script label then stays namespaced.
 export function parseLabelPrefixes(raw: string): string[] {
-  return raw
-    .split(/[\s,]+/)
-    .filter((prefix) => prefix.length > 0 && prefix.length < MAX_LABEL_KEY_LEN)
-    .filter((prefix) => LABEL_KEY.test(prefix));
+  const prefixes = raw.split(/[\s,]+/).filter((prefix) => prefix.length > 0);
+  const usable = prefixes.every((prefix) => {
+    const lower = prefix.toLowerCase();
+    const nearReserved = RESERVED_ROOTS.some(
+      (root) => root.startsWith(lower) || lower.startsWith(root),
+    );
+    return prefix.length < MAX_LABEL_KEY_LEN && LABEL_KEY.test(prefix) && !nearReserved;
+  });
+  return usable ? prefixes : [];
 }
 
 // Keys shown in a notice come from the script, so control and invisible characters are written out.
@@ -64,6 +77,15 @@ export function displayLabelKey(key: string): string {
     (char) => `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`,
   );
   return escaped.length > MAX_SHOWN_KEY_LEN ? `${escaped.slice(0, MAX_SHOWN_KEY_LEN)}...` : escaped;
+}
+
+function quoteLabelKey(key: string): string {
+  return `"${displayLabelKey(key).replaceAll('"', '\\"')}"`;
+}
+
+// How a label is shown in the modal: quoted, so a value cannot pass for a second label.
+export function describeLabel(key: string, value: string): string {
+  return `${quoteLabelKey(key)}=${JSON.stringify(displayLabelKey(value))}`;
 }
 
 function isReservedKey(key: string): boolean {
@@ -136,7 +158,19 @@ export function checkRoutedLabels(raw: unknown, prefixes: readonly string[]): Ch
       rejected: [{ key: "labels", reason: "labels must be an object of string values" }],
     };
   }
-  const entries = Object.entries(raw).map((entry) => toEntry(entry, prefixes));
+  const rawEntries = Object.entries(raw);
+  if (rawEntries.length > MAX_RAW_LABELS) {
+    return {
+      labels: {},
+      rejected: [
+        {
+          key: "labels",
+          reason: `${rawEntries.length} labels returned; at most ${MAX_SCRIPT_LABELS} are allowed`,
+        },
+      ],
+    };
+  }
+  const entries = rawEntries.map((entry) => toEntry(entry, prefixes));
 
   const bySlot = new Map<string, string[]>();
   for (const { final, rawKey } of entries) {
@@ -151,7 +185,8 @@ export function checkRoutedLabels(raw: unknown, prefixes: readonly string[]): Ch
       sharing.length > 1
         ? `key collides with ${sharing
             .filter((other) => other !== entry.rawKey)
-            .map(displayLabelKey)
+            .slice(0, 2)
+            .map(quoteLabelKey)
             .join(", ")} (both become ${entry.final})`
         : null;
     const problem = entry.problem ?? collision;
@@ -174,7 +209,7 @@ export type FallbackRuleStatus = "active" | "expired" | "too-far";
 
 export function fallbackRuleStatus(rule: LabelFallbackRule, now: number): FallbackRuleStatus {
   const until = Date.parse(rule.until);
-  if (until <= now) return "expired";
+  if (!Number.isFinite(until) || until <= now) return "expired";
   if (until - now > MAX_FALLBACK_MS) return "too-far";
   return "active";
 }
@@ -202,7 +237,11 @@ export function activeFallbackRule(
 }
 
 export function describeRejected(rejected: readonly RejectedLabel[]): string {
-  return rejected.map(({ key, reason }) => `${displayLabelKey(key)}: ${reason}`).join("; ");
+  const listed = rejected
+    .slice(0, MAX_LISTED_REJECTIONS)
+    .map(({ key, reason }) => `${quoteLabelKey(key)}: ${reason}`);
+  const more = rejected.length - listed.length;
+  return `${listed.join("; ")}${more > 0 ? `; and ${more} more` : ""}`;
 }
 
 export function describeFallbackRule(rule: LabelFallbackRule): string {

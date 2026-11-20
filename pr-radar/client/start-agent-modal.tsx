@@ -3,7 +3,7 @@ import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { decideRoutedLabels } from "../shared/routed-labels";
+import { decideRoutedLabels, describeLabel } from "../shared/routed-labels";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 import { ComboSelect, useAgentLaunchOptions } from "./agent-launch-options";
@@ -88,16 +88,21 @@ export function StartAgentModal({
   const [routeReason, setRouteReason] = useState<string | null>(null);
   // What the launch will do with the routing script's labels: apply them, skip them under a
   // fallback rule, or refuse to start.
-  const labelDecision = decideRoutedLabels({
-    labels: routedLabels,
-    repository: row?.repository ?? "",
-    policy: settings,
-    now: Date.now(),
-  });
+  const repository = row?.repository ?? "";
+  const labelDecision = useMemo(
+    () =>
+      decideRoutedLabels({
+        labels: routedLabels,
+        repository,
+        policy: settings,
+        now: Date.now(),
+      }),
+    [routedLabels, repository, settings.routingLabelPrefixes, settings.routingLabelFallbacks],
+  );
   const routedLabelText =
     labelDecision.status === "ok"
       ? Object.entries(labelDecision.labels)
-          .map(([key, value]) => `${key}=${value}`)
+          .map(([key, value]) => describeLabel(key, value))
           .join(", ")
       : "";
   const [routeError, setRouteError] = useState<string | null>(null);

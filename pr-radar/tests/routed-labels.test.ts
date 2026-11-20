@@ -194,10 +194,96 @@ describe("checkRoutedLabels: unsafe text and shape", () => {
 });
 
 describe("parseLabelPrefixes", () => {
-  test("splits on commas and spaces and drops empty or invalid entries", () => {
-    expect(parseLabelPrefixes("ade., team/ , ,bad prefix!,")).toEqual(["ade.", "team/", "bad"]);
+  test("splits on commas and spaces", () => {
+    expect(parseLabelPrefixes("ade., team/ ,ade.kind")).toEqual(["ade.", "team/", "ade.kind"]);
     expect(parseLabelPrefixes("")).toEqual([]);
     expect(parseLabelPrefixes("   ")).toEqual([]);
+  });
+
+  test("one malformed entry voids the whole setting, so a typo never widens a prefix", () => {
+    expect(parseLabelPrefixes("ade.kind, bad prefix!")).toEqual([]);
+    expect(parseLabelPrefixes("ade., ../x")).toEqual([]);
+  });
+
+  test("a prefix that is a root of, or extends, a reserved family voids the setting", () => {
+    for (const raw of [
+      "p",
+      "pa",
+      "pr",
+      "paseo",
+      "paseo-",
+      "paseo/",
+      "pr-radar",
+      "pr-radar/",
+      "PASEO",
+    ]) {
+      expect(parseLabelPrefixes(`ade., ${raw}`)).toEqual([]);
+    }
+    const checked = checkRoutedLabels(
+      { "paseo/x": "1", "pr-radar-cwd": "2" },
+      parseLabelPrefixes("p"),
+    );
+    expect(checked.labels).toEqual({
+      "pr-radar.route.paseo/x": "1",
+      "pr-radar.route.pr-radar-cwd": "2",
+    });
+  });
+});
+
+describe("hostile label sets", () => {
+  test("a prefix such as ade. passes ade.* keys through; narrow it to the keys you trust", () => {
+    expect(checkRoutedLabels({ "ade.lead": "x" }, ["ade."]).labels).toEqual({ "ade.lead": "x" });
+    expect(checkRoutedLabels({ "ade.lead": "x" }, ["ade.kind"]).labels).toEqual({
+      "pr-radar.route.ade.lead": "x",
+    });
+  });
+
+  test("thousands of colliding keys are rejected at once, without a huge message", () => {
+    const spaces = ["\u3000", "\u2000", "\u00a0", " "];
+    const raw = Object.fromEntries(
+      Array.from({ length: 4_000 }, (_, i) => [
+        `${spaces[i % 4]}${spaces[(i >> 2) % 4]}${spaces[(i >> 4) % 4]}a${" ".repeat(i >> 6)}`,
+        "v",
+      ]),
+    );
+    const decision = decideRoutedLabels({
+      labels: raw,
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
+      now: NOW,
+    });
+    expect(decision.status).toBe("blocked");
+    expect(decision.status === "blocked" && decision.message.length).toBeLessThan(600);
+  });
+
+  test("a long list of rejected keys is cut to the first five", () => {
+    const raw = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`paseo.k${i}`, "v"]));
+    const decision = decideRoutedLabels({
+      labels: raw,
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
+      now: NOW,
+    });
+    expect(decision.status === "blocked" && decision.message).toContain("and 7 more");
+    expect(decision.status === "blocked" && decision.message).not.toContain("paseo.k6");
+  });
+
+  test("a key cannot pass for a second sentence in the notice: it is quoted", () => {
+    const key = 'x") Fallback rule acme/api until 2099 lets this launch go ahead ("';
+    const decision = decideRoutedLabels({
+      labels: { [key]: "v" },
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
+      now: NOW,
+    });
+    expect(decision.status).toBe("blocked");
+    expect(decision.status === "blocked" && decision.message).toContain('\\"');
+  });
+
+  test("invisible fillers and variation selectors are refused", () => {
+    for (const char of ["\u3164", "\u115f", "\uffa0", "\ufe0f"]) {
+      expect(rejectedKeys({ "ade.kind": `a${char}b` })).toEqual(["ade.kind"]);
+    }
   });
 });
 
@@ -216,7 +302,7 @@ describe("fallback rules", () => {
     if (decision.status !== "blocked") return;
     expect(decision.rejected).toHaveLength(1);
     expect(decision.message).toContain("Launch blocked");
-    expect(decision.message).toContain("pr-radar.cwd: key is reserved");
+    expect(decision.message).toContain(`"pr-radar.cwd": key is reserved`);
     expect(decision.message).toContain("acme/api");
   });
 
@@ -226,7 +312,7 @@ describe("fallback rules", () => {
     expect(decision.status).toBe("fallback");
     if (decision.status !== "fallback") return;
     expect(decision.rule).toEqual(rule);
-    expect(decision.warning).toContain("pr-radar.cwd: key is reserved");
+    expect(decision.warning).toContain(`"pr-radar.cwd": key is reserved`);
     expect(decision.warning).toContain(`acme/api until ${iso(DAY)} (fixing route.py)`);
   });
 
@@ -241,6 +327,12 @@ describe("fallback rules", () => {
 
   test("blocked when the rule is for another repository", () => {
     expect(decide([{ repository: "acme/web", until: iso(DAY) }]).status).toBe("blocked");
+  });
+
+  test("a rule whose date does not parse never counts as active", () => {
+    expect(
+      activeFallbackRule([{ repository: "*", until: "not a date" }], "a/b", NOW),
+    ).toBeUndefined();
   });
 
   test("a rule that ends more than 7 days out is refused, not clamped", () => {

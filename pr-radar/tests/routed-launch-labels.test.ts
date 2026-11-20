@@ -248,7 +248,7 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
     });
     expect(outcome.launched).toBe(true);
     expect(outcome.launch.created[0]?.labels).toEqual({ "pr-radar.cwd": "CWD-WORKTREE" });
-    expect(outcome.message).toContain("paseo.x: key is reserved");
+    expect(outcome.message).toContain(`"paseo.x": key is reserved`);
     expect(outcome.message).toContain("acme/api until");
     expect(outcome.message).toContain("fixing route.py");
   });
@@ -360,7 +360,7 @@ describe("boundary: the registered routing handler to the launched agent", () =>
     const applied = applyAutoRouting({ settings, routed, profiles: [], row: row(), now: NOW });
     expect(applied.status).toBe("blocked");
     await expect(launchNewAgent(launch.deps, request({ labels: routed.labels }))).rejects.toThrow(
-      /pr-radar\.cwd: key is reserved.*paseo\.parent-agent-id: key is reserved/,
+      /"pr-radar\.cwd": key is reserved.*"paseo\.parent-agent-id": key is reserved/,
     );
     expect(launch.created).toEqual([]);
   });
@@ -377,7 +377,7 @@ describe("boundary: the registered routing handler to the launched agent", () =>
     const applied = applyAutoRouting({ settings, routed, profiles: [], row: row(), now: NOW });
     expect(applied).toMatchObject({ status: "blocked" });
     expect(applied.status === "blocked" && applied.message).toContain(
-      "ade.kind: value must be a string",
+      `"ade.kind": value must be a string`,
     );
   });
 });
