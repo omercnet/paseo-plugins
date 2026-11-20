@@ -204,6 +204,17 @@ describe("checkRoutedLabels: unsafe text and shape", () => {
 });
 
 describe("parseLabelPrefixes", () => {
+  test("accepts a prefix of exactly the maximum key length, and voids one character more", () => {
+    const exact = "k".repeat(MAX_LABEL_KEY_LEN);
+    expect(parseLabelPrefixes(exact)).toEqual([exact]);
+    // A key equal to that prefix keeps its own name and still fits the limit.
+    expect(checkRoutedLabels({ [exact]: "v" }, [exact])).toMatchObject({
+      labels: { [exact]: "v" },
+      rejected: [],
+    });
+    expect(parseLabelPrefixes(`${exact}k`)).toEqual([]);
+  });
+
   test("splits on commas and spaces", () => {
     expect(parseLabelPrefixes("ade., team/ ,ade.kind")).toEqual(["ade.", "team/", "ade.kind"]);
     expect(parseLabelPrefixes("")).toEqual([]);

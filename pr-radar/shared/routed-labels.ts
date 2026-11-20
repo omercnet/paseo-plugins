@@ -65,7 +65,7 @@ export function parseLabelPrefixes(raw: string): string[] {
     const nearReserved = RESERVED_ROOTS.some(
       (root) => root.startsWith(lower) || lower.startsWith(root),
     );
-    return prefix.length < MAX_LABEL_KEY_LEN && LABEL_KEY.test(prefix) && !nearReserved;
+    return prefix.length <= MAX_LABEL_KEY_LEN && LABEL_KEY.test(prefix) && !nearReserved;
   });
   return usable ? prefixes : [];
 }
