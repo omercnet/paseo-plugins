@@ -1317,7 +1317,7 @@ describe("display helpers", () => {
 
 describe("viewerCoverage", () => {
   const failed = {
-    coverageNote: "1 GitHub issue search request failed; issue list may be incomplete.",
+    coverageNote: "1 GitHub issue search request failed; issue list may be stale or incomplete.",
     truncated: true,
     updates: 3,
   };

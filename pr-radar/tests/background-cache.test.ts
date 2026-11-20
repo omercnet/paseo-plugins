@@ -7,6 +7,14 @@ const { gh, home } = vi.hoisted(() => ({
   gh: {
     calls: [] as string[][],
     fail: false,
+    /** Fails only `gh search issues`, the way one transient search error does. */
+    failIssues: false,
+    /** When set, only the issue search with this flag (e.g. `--owner=testuser`) fails. */
+    failIssueFlag: null as string | null,
+    /** What a successful `gh search issues` prints. */
+    issues: "[]",
+    /** Per-search answers keyed by flag (e.g. `--owner=testuser`); override `issues`. */
+    issuesByFlag: {} as Record<string, string>,
     /** Resolves pending gh calls when set; lets a test hold a refresh open. */
     gate: null as Promise<void> | null,
   },
@@ -28,7 +36,17 @@ vi.mock("node:child_process", () => ({
     gh.calls.push(args);
     const respond = () => {
       if (gh.fail) return callback(new Error("gh: network down"));
-      const stdout = args[0] === "api" && args[1] === "user" ? "testuser\n" : "[]";
+      const isIssueSearch = args[0] === "search" && args[1] === "issues";
+      const flagFails = gh.failIssueFlag !== null && args.includes(gh.failIssueFlag);
+      if (isIssueSearch && (gh.failIssues || flagFails))
+        return callback(new Error("gh: search rate limited"));
+      const stdout =
+        args[0] === "api" && args[1] === "user"
+          ? "testuser\n"
+          : isIssueSearch
+            ? (Object.entries(gh.issuesByFlag).find(([flag]) => args.includes(flag))?.[1] ??
+              gh.issues)
+            : "[]";
       callback(null, { stdout, stderr: "" });
     };
     if (gh.gate) void gh.gate.then(respond);
@@ -47,12 +65,34 @@ const {
   STALE_AFTER_MS,
 } = await import("../server/viewer-scope");
 
+const issueRecord = (number: number) => ({
+  id: `issue-${number}`,
+  number,
+  title: `Issue ${number}`,
+  url: `https://github.com/a/b/issues/${number}`,
+  createdAt: "2026-11-01T00:00:00Z",
+  updatedAt: "2026-11-02T00:00:00Z",
+  author: { login: "testuser" },
+  repository: { nameWithOwner: "a/b" },
+  commentsCount: 0,
+  labels: [],
+});
+/** Ages the cached window past MAX_STALE_MS, so the next read waits for a fresh sweep. */
+async function refreshAgain() {
+  if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.now() + MAX_STALE_MS + 1_000);
+  return resolveViewerScope({ urls: [], windowDays: 30 });
+}
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const loginCalls = () => gh.calls.filter((args) => args[0] === "api" && args[1] === "user").length;
 
 describe("background cache", () => {
   beforeEach(async () => {
     gh.fail = false;
+    gh.failIssues = false;
+    gh.failIssueFlag = null;
+    gh.issues = "[]";
+    gh.issuesByFlag = {};
     gh.gate = null;
     vi.useRealTimers();
     // Paseo sets PASEO_HOME for agents; keep the state file in the temp home either way.
@@ -232,5 +272,93 @@ describe("background cache", () => {
     await flush();
     expect(gh.calls.length).toBe(calls);
     stop();
+  });
+
+  describe("issue search failures", () => {
+    const issueNumbers = (answer: { issueItems?: Array<{ number: number }> }) =>
+      (answer.issueItems ?? []).map(({ number }) => number).sort();
+    const WARNING = /issue search request.* failed; issue list may be stale or incomplete\./;
+
+    test("a failed issue search keeps the cached issues and shows the warning", async () => {
+      gh.issues = JSON.stringify([issueRecord(1), issueRecord(2)]);
+      const first = await resolveViewerScope({ urls: [], windowDays: 30 });
+      expect(issueNumbers(first)).toEqual([1, 2]);
+      expect(first.coverageNote).not.toMatch(WARNING);
+
+      gh.failIssues = true;
+      const second = await refreshAgain();
+      expect(issueNumbers(second)).toEqual([1, 2]);
+      expect(second.coverageNote).toMatch(/^3 GitHub issue search requests failed/);
+      expect(second.coverageNote).toMatch(WARNING);
+
+      // The kept issues survive further failures, not just the first one.
+      const third = await refreshAgain();
+      expect(issueNumbers(third)).toEqual([1, 2]);
+      expect(third.coverageNote).toMatch(WARNING);
+    });
+
+    test("a failed issue search with nothing cached gives the warning and no issues", async () => {
+      gh.failIssues = true;
+      const answer = await resolveViewerScope({ urls: [], windowDays: 30 });
+      expect(answer.error).toBeNull();
+      expect(answer.issueItems).toEqual([]);
+      expect(answer.coverageNote).toMatch(WARNING);
+    });
+
+    test("a successful refresh replaces the issue list", async () => {
+      gh.issues = JSON.stringify([issueRecord(1), issueRecord(2)]);
+      await resolveViewerScope({ urls: [], windowDays: 30 });
+      gh.issues = JSON.stringify([issueRecord(2), issueRecord(3)]);
+      const answer = await refreshAgain();
+      expect(issueNumbers(answer)).toEqual([2, 3]);
+      expect(answer.coverageNote).not.toMatch(WARNING);
+    });
+
+    test("recovery after a failure drops the issues that closed meanwhile", async () => {
+      gh.issues = JSON.stringify([issueRecord(1), issueRecord(2)]);
+      await resolveViewerScope({ urls: [], windowDays: 30 });
+      gh.failIssues = true;
+      await refreshAgain();
+      gh.failIssues = false;
+      gh.issues = JSON.stringify([issueRecord(2)]);
+      const answer = await refreshAgain();
+      expect(issueNumbers(answer)).toEqual([2]);
+      expect(answer.coverageNote).not.toMatch(WARNING);
+    });
+
+    test("one failed search keeps only the issues its role found", async () => {
+      // The mock answers every filter alike, so every issue lands in the highest-priority role.
+      gh.issues = JSON.stringify([issueRecord(1), issueRecord(2)]);
+      const first = await resolveViewerScope({ urls: [], windowDays: 30 });
+      expect(first.issueItems?.map(({ role }) => role)).toEqual(["author", "author"]);
+
+      // Owner search fails; author and assignee succeed with one issue fewer. The author-role
+      // issue that is gone stays gone: the owner search never held it.
+      gh.failIssueFlag = "--owner=testuser";
+      gh.issues = JSON.stringify([issueRecord(2)]);
+      const answer = await refreshAgain();
+      expect(issueNumbers(answer)).toEqual([2]);
+      expect(answer.coverageNote).toMatch(/^1 GitHub issue search request failed/);
+    });
+
+    test("a failed search keeps its role's issues while the other searches refresh theirs", async () => {
+      gh.issuesByFlag = {
+        "--author=testuser": JSON.stringify([issueRecord(1)]),
+        "--owner=testuser": JSON.stringify([issueRecord(3)]),
+      };
+      const first = await resolveViewerScope({ urls: [], windowDays: 30 });
+      expect(first.issueItems?.map(({ number, role }) => `${number}:${role}`).sort()).toEqual([
+        "1:author",
+        "3:owner",
+      ]);
+
+      // The author search fails, so its issue 1 stays; the owner search succeeds and no longer
+      // lists issue 3, so that one goes.
+      gh.failIssueFlag = "--author=testuser";
+      gh.issuesByFlag = { "--owner=testuser": "[]" };
+      const answer = await refreshAgain();
+      expect(issueNumbers(answer)).toEqual([1]);
+      expect(answer.coverageNote).toMatch(/^1 GitHub issue search request failed/);
+    });
   });
 });

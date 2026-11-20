@@ -480,8 +480,15 @@ interface Snapshot {
   acknowledgedAt: string | null;
 }
 
-/** The expensive part: ~5 s of gh searches and GraphQL enrichment. */
-async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
+/**
+ * The expensive part: ~5 s of gh searches and GraphQL enrichment. `previousIssues` are the issues
+ * the window's last snapshot held; a failed issue search keeps its role's share of them, since an
+ * empty answer from a failed call says nothing about the issues.
+ */
+async function fetchSnapshot(
+  windowDays: number,
+  previousIssues: readonly GitHubIssueItem[] = [],
+): Promise<Snapshot> {
   const viewer = await viewerLogin();
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
   const [
@@ -507,6 +514,13 @@ async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
     issueMap.set(record.id, toIssueItem(record, "assignee"));
   for (const record of authoredIssues.records)
     issueMap.set(record.id, toIssueItem(record, "author"));
+  const failedRoles = new Set<GitHubIssueItem["role"]>();
+  if (authoredIssues.failed) failedRoles.add("author");
+  if (assignedIssues.failed) failedRoles.add("assignee");
+  if (ownedIssues.failed) failedRoles.add("owner");
+  for (const item of previousIssues) {
+    if (failedRoles.has(item.role) && !issueMap.has(item.id)) issueMap.set(item.id, item);
+  }
   const issueTruncated =
     authoredIssues.records.length === SEARCH_LIMIT ||
     assignedIssues.records.length === SEARCH_LIMIT ||
@@ -598,7 +612,7 @@ export function projectSnapshot(snapshot: Snapshot, urls: string[]): ViewerScope
   }
   if (snapshot.issueSearchFailures > 0) {
     notes.push(
-      `${snapshot.issueSearchFailures} GitHub issue search request${snapshot.issueSearchFailures === 1 ? "" : "s"} failed; issue list may be incomplete.`,
+      `${snapshot.issueSearchFailures} GitHub issue search request${snapshot.issueSearchFailures === 1 ? "" : "s"} failed; issue list may be stale or incomplete.`,
     );
   }
   const coverageNote =
@@ -663,7 +677,7 @@ function refreshWindow(windowDays: number): Promise<Snapshot> {
   const running = inflight.get(windowDays);
   if (running) return running;
   const started = Date.now();
-  const promise = fetchSnapshot(windowDays)
+  const promise = fetchSnapshot(windowDays, snapshots.get(windowDays)?.snapshot.issueItems)
     .then((snapshot) => {
       snapshots.set(windowDays, { snapshot, at: Date.now() });
       console.log(
