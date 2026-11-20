@@ -241,9 +241,7 @@ async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]
         : undefined;
     if (code !== 1) {
       throw new Error(
-        `Could not enumerate repository filter configuration in ${cwd}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `Could not enumerate repository filter configuration in ${cwd}: ${errorMessage(err)}`,
       );
     }
     raw = Buffer.alloc(0);
@@ -824,15 +822,21 @@ async function assertNoGitlinkToFileOverwrite(
   }
 }
 
+/** The checked-out branch, or null on a detached HEAD. A git failure is an error, not "detached". */
 async function currentBranch(repoDir: string): Promise<string | null> {
-  const name = await runGit(repoDir, ["branch", "--show-current"], 3_000).catch(() => "");
+  const name = await runGit(repoDir, ["branch", "--show-current"], 3_000);
   return name || null;
 }
 
+/** Remote branch names that stand in for a default branch the remote has not recorded. */
+const CONVENTIONAL_DEFAULT_BRANCHES = ["main", "master"];
+
 /**
  * New issue branches start from the remote default branch. Without a recorded remote default the
- * current HEAD is used, but only when a remote-tracking branch already contains it: a PR branch, a
- * detached PR checkout or a local-only commit would carry unmerged, possibly untrusted code.
+ * current HEAD is used, but only when it is already on the conventional default branch (`main` or
+ * `master`) of the remote: a PR branch, a detached PR checkout or a local-only commit would carry
+ * unmerged, possibly untrusted code. Being on some other remote branch, such as a pushed PR branch,
+ * does not count.
  */
 async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise<string> {
   const remoteHead = await runGit(
@@ -854,6 +858,9 @@ async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise
       `Base checkout ${baseRoot} is on ${branch} and has no recorded default branch for ${remote}; check out the default branch there, or use another directory.`,
     );
   }
+  const defaultBranchRefs = CONVENTIONAL_DEFAULT_BRANCHES.map(
+    (name) => `refs/remotes/${remote}/${name}`,
+  );
   const published = await runGit(
     baseRoot,
     [
@@ -862,13 +869,13 @@ async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise
       "--contains",
       "HEAD",
       "--format=%(refname)",
-      `refs/remotes/${remote}`,
+      ...defaultBranchRefs,
     ],
     3_000,
   ).catch(() => "");
   if (!published) {
     throw new Error(
-      `Base checkout ${baseRoot} has no recorded default branch for ${remote} and its HEAD is not on any ${remote} branch, so it may carry unmerged code; run git remote set-head ${remote} --auto there, or check out the default branch.`,
+      `Base checkout ${baseRoot} has no recorded default branch for ${remote} and its HEAD is not on ${remote}/main or ${remote}/master, so it may carry unmerged code; run git remote set-head ${remote} --auto there, or check out the default branch.`,
     );
   }
   return runGit(baseRoot, ["rev-parse", "HEAD"], 3_000);
@@ -925,7 +932,60 @@ async function refreshIssueWorktree(worktreePath: string, localBranchName: strin
   await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Materializes a worktree that `worktree add --no-checkout` just registered. When the checkout
+ * fails, the half-created worktree is removed, so the next request does not find it by branch and
+ * hand back an unpopulated directory. If that removal fails too, both errors are reported: the
+ * original cause must not be lost, and the leftover worktree needs to be named.
+ */
+async function populateNewWorktree(baseRoot: string, worktreePath: string): Promise<void> {
+  try {
+    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
+  } catch (checkoutError) {
+    try {
+      // No short timeout: the cleanup must be allowed to finish.
+      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath]);
+    } catch (removalError) {
+      throw new AggregateError(
+        [checkoutError, removalError],
+        `Checking out the new worktree ${worktreePath} failed (${errorMessage(checkoutError)}), and removing the half-created worktree failed too (${errorMessage(removalError)}); remove it with git worktree remove --force.`,
+      );
+    }
+    throw checkoutError;
+  }
+}
+
+/**
+ * Launches whose workspace is being prepared right now, one entry per repository and item. Two
+ * launches for the same item would race into the same clone, branch and worktree (a double click,
+ * or two devices), so a second one is refused instead of queued: the queue stays empty, and the
+ * first launch's result is what the user sees.
+ */
+const launchesInFlight = new Set<string>();
+
 export async function prepareWorkspaceCwdHandler(
+  input: z.output<typeof prepareWorkspaceCwd.input>,
+  readSettings: ReadWorkspaceSettings,
+): Promise<z.output<typeof prepareWorkspaceCwd.output>> {
+  const launchKey = `${input.repository.toLowerCase()}#${input.itemKind}-${input.prNumber}`;
+  if (launchesInFlight.has(launchKey)) {
+    throw new Error(
+      `A launch for ${input.itemKind} #${input.prNumber} of ${input.repository} is already preparing its workspace; wait for it to finish, then try again.`,
+    );
+  }
+  launchesInFlight.add(launchKey);
+  try {
+    return await prepareLockedWorkspaceCwd(input, readSettings);
+  } finally {
+    launchesInFlight.delete(launchKey);
+  }
+}
+
+async function prepareLockedWorkspaceCwd(
   input: z.output<typeof prepareWorkspaceCwd.input>,
   readSettings: ReadWorkspaceSettings,
 ): Promise<z.output<typeof prepareWorkspaceCwd.output>> {
@@ -1060,6 +1120,16 @@ export async function prepareWorkspaceCwdHandler(
   // CWD-WORKTREE: reuse existing worktree for this PR/issue branch if present (never reuse baseRoot).
   const resolvedBaseRoot = resolve(baseRoot);
   const existingWorktrees = await listWorktrees(baseRoot);
+  // A CWD-BASE launch leaves the branch checked out in the base checkout, where `worktree add`
+  // cannot also use it. Refuse, naming it, rather than fail inside git or quietly work in the base.
+  const heldByBase = existingWorktrees.some(
+    (wt) => wt.branch === localBranchName && resolve(wt.path) === resolvedBaseRoot,
+  );
+  if (heldByBase) {
+    throw new Error(
+      `Branch ${localBranchName} is checked out in the base checkout ${baseRoot} (an earlier CWD-BASE launch), so a worktree cannot use it too; switch that checkout to another branch, or launch with CWD-BASE.`,
+    );
+  }
   const existing = existingWorktrees.find(
     (wt) => wt.branch === localBranchName && resolve(wt.path) !== resolvedBaseRoot,
   );
@@ -1149,14 +1219,7 @@ export async function prepareWorkspaceCwdHandler(
         startPoint,
       ]);
     }
-    try {
-      await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
-    } catch (err) {
-      // The worktree is already registered; a failed checkout must not leave a half-created one.
-      // No short timeout here: cleanup must complete, and a removal failure propagates (not swallowed).
-      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath]);
-      throw err;
-    }
+    await populateNewWorktree(baseRoot, worktreePath);
   } else {
     const prHead = await fetchPrHead(baseRoot, matchingRemote, input.prNumber);
     await assertBranchFastForwards(
@@ -1175,7 +1238,7 @@ export async function prepareWorkspaceCwdHandler(
       worktreePath,
       prHead,
     ]);
-    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
+    await populateNewWorktree(baseRoot, worktreePath);
   }
 
   return {
