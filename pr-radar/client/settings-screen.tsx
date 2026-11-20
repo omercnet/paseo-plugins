@@ -21,6 +21,7 @@ import {
   type AutoLaunchMode,
   type CwdMode,
   DEFAULT_PR_RADAR_SETTINGS,
+  type PrRadarSettings,
   PrRadarSettingsSchema,
   prRadarSettings,
 } from "../shared/settings";
@@ -32,6 +33,12 @@ import {
   EFFORT_OPTIONS,
   useAgentLaunchOptions,
 } from "./agent-launch-options";
+import {
+  addFallbackRule,
+  createSettingsSaveQueue,
+  removeFallbackRule,
+  type SettingsPatch,
+} from "./settings-save";
 
 type ReadySettings = Extract<SettingsState<typeof prRadarSettings.schema>, { status: "ready" }>;
 
@@ -112,42 +119,32 @@ function ReadyPrRadarSettings({
     values: settings.values,
     revision: settings.revision,
   };
-  const queuedPatchRef = useRef<Partial<typeof settings.values> | null>(null);
-  const saveChainRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const [saveQueue] = useState(() =>
+    createSettingsSaveQueue<PrRadarSettings>({
+      latest: () => latestSettingsRef.current,
+      remember: (values) => {
+        latestSettingsRef.current = { values, revision: latestSettingsRef.current.revision };
+      },
+      parse: (values) => {
+        const parsed = PrRadarSettingsSchema.safeParse(values);
+        return parsed.success
+          ? { success: true, data: parsed.data }
+          : {
+              success: false,
+              message: parsed.error.issues[0]?.message ?? "Invalid setting value.",
+            };
+      },
+      write: (values, revision) => settingsRef.current.save(values, revision),
+      report: setError,
+    }),
+  );
 
-  async function savePatch(patch: Partial<typeof settings.values>): Promise<boolean> {
-    queuedPatchRef.current = { ...(queuedPatchRef.current ?? {}), ...patch };
-    const run = saveChainRef.current.then(async () => {
-      const nextPatch = queuedPatchRef.current;
-      if (!nextPatch) return true;
-      queuedPatchRef.current = null;
-      setError(null);
-      const parsed = PrRadarSettingsSchema.safeParse({
-        ...latestSettingsRef.current.values,
-        ...nextPatch,
-      });
-      if (!parsed.success) {
-        setError(parsed.error.issues[0]?.message ?? "Invalid setting value.");
-        return false;
-      }
-      try {
-        const saved = await settings.save(parsed.data, latestSettingsRef.current.revision);
-        if (saved === false) {
-          setError("Settings changed concurrently; please retry.");
-          return false;
-        }
-        latestSettingsRef.current = {
-          values: parsed.data,
-          revision: latestSettingsRef.current.revision,
-        };
-        return true;
-      } catch (updateError) {
-        setError(updateError instanceof Error ? updateError.message : "Could not save settings.");
-        return false;
-      }
-    });
-    saveChainRef.current = run.catch(() => false);
-    return run;
+  // A plain patch replaces fields; a function patch is applied to the newest saved document, so
+  // list edits (fallback rules) never build on a list that an in-flight save already changed.
+  function savePatch(patch: SettingsPatch<PrRadarSettings>): Promise<boolean> {
+    return saveQueue(patch);
   }
 
   async function handleAddRule() {
@@ -157,9 +154,9 @@ function ReadyPrRadarSettings({
       return;
     }
     setRuleError(null);
-    const saved = await savePatch({
-      routingLabelFallbacks: [...settings.values.routingLabelFallbacks, parsedRule.rule],
-    });
+    const saved = await savePatch((latest) => ({
+      routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, parsedRule.rule),
+    }));
     if (saved) {
       setRuleText("");
       setRuleInputKey((key) => key + 1);
@@ -296,18 +293,16 @@ function ReadyPrRadarSettings({
             placeholder="None: all script labels go under pr-radar.route."
             onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
           />
-          {settings.values.routingLabelFallbacks.map((rule, index) => (
+          {settings.values.routingLabelFallbacks.map((rule) => (
             <SettingsAction
               key={`${rule.repository}-${rule.until}`}
               label={`Label fallback: ${rule.repository}`}
               hint={`${describeFallbackStatus(rule, Date.now())}${rule.note ? ` - ${rule.note}` : ""}`}
               actionLabel="Remove"
               onPress={() =>
-                void savePatch({
-                  routingLabelFallbacks: settings.values.routingLabelFallbacks.filter(
-                    (_, ruleIndex) => ruleIndex !== index,
-                  ),
-                })
+                void savePatch((latest) => ({
+                  routingLabelFallbacks: removeFallbackRule(latest.routingLabelFallbacks, rule),
+                }))
               }
             />
           ))}
