@@ -266,6 +266,56 @@ describe("runRoutingScriptHandler", () => {
     );
   });
 
+  async function expectGone(pid: number): Promise<void> {
+    await vi.waitFor(
+      () => {
+        expect(() => process.kill(pid, 0)).toThrow();
+      },
+      { timeout: 3_000, interval: 50 },
+    );
+  }
+
+  test("kills a descendant with redirected stdio after the script exits successfully", async () => {
+    const root = makeRoot();
+    const pidFile = join(root, "bg-pid.txt");
+    const script = writeScript(
+      root,
+      "bg-detached.sh",
+      `sleep 60 >/dev/null 2>&1 </dev/null &\necho $! > "${pidFile}"\necho '{}'`,
+    );
+    await expect(route(script, {}, FAST_LIMITS)).resolves.toEqual({});
+    await expectGone(Number(readFileSync(pidFile, "utf8").trim()));
+  });
+
+  test("a descendant holding the pipes neither delays the result nor outlives the script", async () => {
+    const root = makeRoot();
+    const pidFile = join(root, "bg-pipe-pid.txt");
+    // The background sleep inherits stdout and stderr, so 'close' cannot fire until it is killed.
+    const script = writeScript(
+      root,
+      "bg-pipes.sh",
+      `sleep 60 &\necho $! > "${pidFile}"\nprintf '{"profile":"fast"}'`,
+    );
+    const started = Date.now();
+    await expect(
+      route(script, {}, { timeoutMs: 20_000, outputBytes: 1024, killGraceMs: 200 }),
+    ).resolves.toEqual({ profile: "fast" });
+    // Well under the 20 s timeout: the group was killed on exit, not at the timeout.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await expectGone(Number(readFileSync(pidFile, "utf8").trim()));
+  });
+
+  test("keeps all of the output a script wrote just before it exited", async () => {
+    const root = makeRoot();
+    const reason = "x".repeat(800);
+    const script = writeScript(root, "big.sh", `sleep 60 &\nprintf '%s' '{"reason":"${reason}"}'`);
+    await expect(
+      route(script, {}, { timeoutMs: 5_000, outputBytes: 4096, killGraceMs: 200 }),
+    ).resolves.toEqual({
+      reason,
+    });
+  });
+
   test("arms one kill timer however many chunks pass the byte cap", async () => {
     const root = makeRoot();
     const script = writeScript(
